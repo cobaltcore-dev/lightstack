@@ -448,21 +448,49 @@ Total Timeline: ~56 weeks (~13 months)
 
 ---
 
-## v0.7.0 Targets
+## v0.7.0 Targets — Foundation & Trust
 
-Based on the remaining findings from the April 2026 codebase review:
+**Spec**: [SPEC-006](./docs/specs/006-v070-foundation/README.md)
+**ADRs**: [ADR-001](./docs/adr/ADR-001-database-dependency-injection.md), [ADR-002](./docs/adr/ADR-002-rate-limiting-architecture.md)
+**Planning**: Two formal reviews completed (CEO + Engineering) with independent AI outside voices. Scope locked.
 
-### Database Architecture
-- **Dependency injection**: Refactor 665 global `database.DB` references to accept pool via constructor (H-3)
+### Execution Sequence
+
+| Step | Scope | Finding | Key Decision |
+|------|-------|---------|-------------|
+| 1 | CI Linting | H-4 | Staged golangci-lint config (disable `unused` during DI) |
+| 2 | Terraform Conformance | New | 15+ configs, sequential CI, no DevStack yet |
+| 3 | Map Failing Tests | New | Document 28 skips by service area |
+| 4 | Database DI | H-3 | `*pgxpool.Pool` injection, 661 refs, smallest-first migration |
+| 5 | Rate Limiting | H-6 | `x/time/rate`, IP + project dual mode, 10K cap |
+| 6 | Cinder Route Redirect | H-8 | 301 redirect old paths, don't remove |
+| 7 | Pagination Migration | — | Adopt `ParsePagination()` across 24 remaining handlers |
+
+### Database Architecture (ADR-001)
+- **Dependency injection**: Refactor 661 global `database.DB` references across 53 files
+- **Approach**: Direct `*pgxpool.Pool` through constructors (not interface)
+- **Migration order**: metadata (8) → compute (3) → glance (53) → keystone (85) → cinder (116) → neutron (184) → nova (212)
 - **Unit test enablement**: DI enables mock database for fast unit tests
 
-### API Security
-- **Rate limiting**: Token-bucket middleware per project_id (H-6)
-- **CI linting**: Re-enable golangci-lint after fixing remaining lint errors (H-4)
+### API Security (ADR-002)
+- **Rate limiting**: `golang.org/x/time/rate.Limiter` (standard library)
+- **Two tiers**: IP-based for auth endpoints, project_id-based for authenticated
+- **Storage**: In-process `sync.Map` with 10-minute eviction, 10K entry cap
+- **Overflow**: Degrade open (allow traffic when cap exceeded)
 
 ### Code Quality
-- **Cinder route deduplication**: Extract shared route registration (H-8)
-- **Pagination migration**: Adopt `common.ParsePagination()` across all 32+ list handlers
+- **CI linting**: Re-enable golangci-lint with staged config
+- **Cinder routes**: Redirect duplicate paths (301), don't remove
+- **Pagination**: Adopt `common.ParsePagination()` across all list handlers
+
+### Trust Signals
+- **Terraform conformance**: Public test suite exercising all `openstack_*` resource types
+- **Failing test map**: All 28 skipped contract tests documented by service area
+
+### Deferred Beyond v0.7.0
+- Load testing (P2, needs `wrk` or `hey` benchmark)
+- DevStack comparison infrastructure (follows conformance configs)
+- Interface-based DB injection (direct pool injection first, interface if needed)
 
 ---
 

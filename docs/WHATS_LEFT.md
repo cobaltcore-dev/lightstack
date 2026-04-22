@@ -23,22 +23,32 @@ The following issues from the April 2026 codebase review have been fixed:
 
 ---
 
-## Remaining Technical Debt
+## v0.7.0 Planned
 
-From the codebase review, 10 items are deferred to v0.7.0:
+These items from the codebase review are now planned for v0.7.0 with concrete approaches:
+
+| ID | Severity | Description | v0.7.0 Approach |
+|----|----------|-------------|-----------------|
+| H-3 | High | Database dependency injection (661 sites) | `*pgxpool.Pool` through constructors, smallest-first ([ADR-001](adr/ADR-001-database-dependency-injection.md)) |
+| H-4 | High | Re-enable CI linting | Staged golangci-lint config, fix 78 test errors first |
+| H-6 | High | Rate limiting middleware | `x/time/rate`, IP + project dual mode, 10K cap ([ADR-002](adr/ADR-002-rate-limiting-architecture.md)) |
+| H-8 | High | Cinder route deduplication | 301 redirect old paths, don't remove |
+| — | Medium | Pagination inconsistency | Adopt `ParsePagination()` across 24 handlers |
+| — | New | Terraform conformance | 15+ configs exercising all `openstack_*` resources |
+
+See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
+
+## Remaining Technical Debt
 
 | ID | Severity | Description | Reason Deferred |
 |----|----------|-------------|-----------------|
-| H-3 | High | Database dependency injection (665 sites) | Major architectural refactor, needs design |
-| H-4 | High | Re-enable CI linting | Needs lint error cleanup first |
-| H-6 | High | Rate limiting middleware | Needs design spec |
-| H-8 | High | Cinder route deduplication | Partially addressed |
-| H-1 | High | Unit test coverage (6 files for 31K lines) | Ongoing effort |
+| H-1 | High | Unit test coverage (6 files for 31K lines) | Ongoing effort, DI enables more unit tests |
 | L-1 | Low | TODO comments in storage package | Tracks planned go-ceph work |
 | L-2 | Low | Dockerfile runs as root | Required for network namespaces |
 | L-5 | Low | Benchmarks not in CI | Nice to have |
 | L-7 | Low | Docker Compose proliferation | Low impact |
 | L-9 | Low | Contract test helper duplication | Low impact |
+| — | P2 | Load testing | Deferred post-v0.7.0 |
 
 ---
 

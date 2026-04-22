@@ -592,6 +592,39 @@ At the **90%+ contract test coverage threshold** where the system provides produ
 
 ---
 
+---
+
+## v0.7.0 Planning (April 2026)
+
+### Status: Planning Complete
+
+Two formal reviews completed:
+- **CEO Review**: Scope challenge, premise validation, implementation alternatives, independent outside voice (10 findings, all resolved)
+- **Engineering Review**: Architecture, code quality, test coverage, performance, independent outside voice (9 findings, all resolved)
+
+### Scope: 7-Step Execution Plan
+
+See [SPEC-006](docs/specs/006-v070-foundation/README.md) for full specification.
+
+| Step | Description | Finding |
+|------|-------------|---------|
+| 1 | Re-enable CI linting (staged config) | H-4 |
+| 2 | Terraform conformance test configs | New |
+| 3 | Map 28 failing contract tests | New |
+| 4 | Database dependency injection (661 refs) | H-3 |
+| 5 | Rate limiting (IP + project dual mode) | H-6 |
+| 6 | Cinder route redirect (301, not removal) | H-8 |
+| 7 | Pagination standardization (24 handlers) | — |
+
+### Key Architectural Decisions
+- [ADR-001](docs/adr/ADR-001-database-dependency-injection.md): Direct pool injection, not interface
+- [ADR-002](docs/adr/ADR-002-rate-limiting-architecture.md): Standard library rate limiter, two-tier
+
+### Next Milestone
+Implementation begins with Phase 1 (CI linting + Terraform conformance + test mapping).
+
+---
+
 **Report Generated**: April 7, 2026
 **Next Review**: After v0.6.1 release (deferred items addressed)
 **Maintainer**: O3K Development Team
