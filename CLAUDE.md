@@ -205,6 +205,8 @@ pkg/                        # Public/reusable packages
 - Network namespaces per project for network isolation
 - Database queries auto-filter by `project_id`
 
+**Dependency Injection Pattern**: Services receive `*pgxpool.Pool` through constructors rather than importing the global `database.DB`. This enables unit testing and makes dependencies explicit. Pattern: `svc.pool.Query(ctx, ...)` instead of `database.DB.Query(ctx, ...)`.
+
 ## Operating Modes
 
 ### Stub Mode (Development - Default)
@@ -309,6 +311,9 @@ Configuration loaded from `config/o3k.yaml` (or via `--config` flag).
 - `neutron.networking_mode`: `stub`, `iptables`, or `ebpf`
 - `cinder.storage_mode`: `stub`, `local`, `rbd`, `s3`, or hybrid (comma-separated)
 - `glance.storage_mode`: `stub`, `local`, `rbd`, `s3`, or hybrid (comma-separated)
+- `rate_limiting.enabled`: Enable rate limiting (default: false)
+- `rate_limiting.auth_rate`: Requests/minute per IP for auth endpoints
+- `rate_limiting.api_rate`: Requests/minute per project for API endpoints
 
 **Multi-node VXLAN** (advanced):
 - Set `neutron.vxlan_enabled: true`
@@ -417,4 +422,5 @@ if requestedVersion == "" {
 - PostgreSQL 18 (primary database) (002-horizon-full-compatibility)
 
 ## Recent Changes
+- v0.7.0 planning: Database DI (ADR-001), rate limiting (ADR-002), Terraform conformance, CI linting, Cinder route redirect, pagination standardization (SPEC-006)
 - 002-horizon-full-compatibility: Added Go 1.26 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking)

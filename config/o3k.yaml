@@ -82,3 +82,14 @@ cache:
     images: 1h          # Images change occasionally
     networks: 30m       # Networks change more frequently
     service_catalog: 24h # Service catalog is static
+
+# Rate limiting (v0.7.0+)
+# Two-tier: IP-based for auth endpoints, project-based for API endpoints
+# See docs/adr/ADR-002-rate-limiting-architecture.md
+rate_limiting:
+  enabled: false              # Set to true to enable rate limiting
+  auth_rate: 20               # Requests per minute per IP (unauthenticated endpoints)
+  api_rate: 100               # Requests per minute per project (authenticated endpoints)
+  eviction_interval: 10m      # Cleanup interval for stale entries
+  max_entries: 10000           # Maximum tracked IPs/projects
+  overflow_policy: allow       # "allow" or "deny" when max_entries exceeded

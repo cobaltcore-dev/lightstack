@@ -690,7 +690,7 @@ OPENSTACK_KEYSTONE_URL = AVAILABLE_REGIONS[0][0]
 
 - **Documentation**: https://github.com/cobaltcore-dev/o3k/tree/main/docs
 - **Issues**: https://github.com/cobaltcore-dev/o3k/issues
-- **Spec**: [OpenStack Horizon 100% Compatibility](../specs/002-horizon-full-compatibility/)
+- **Spec**: [OpenStack Horizon 100% Compatibility](archive/specs/002-horizon-full-compatibility/)
 
 ## References
 

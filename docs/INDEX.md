@@ -118,6 +118,11 @@ Understand O3K's design, implementation, and OpenStack compatibility.
 - **[API](API.md)** - OpenStack API compatibility details
 - **[WHATS_LEFT](WHATS_LEFT.md)** - Optional enterprise features not implemented
 
+#### Architecture Decisions
+- **[Architecture Decision Records](adr/)** - Formal decisions with context, alternatives, and consequences
+  - [ADR-001](adr/ADR-001-database-dependency-injection.md) - Database dependency injection approach
+  - [ADR-002](adr/ADR-002-rate-limiting-architecture.md) - Rate limiting architecture
+
 **Key Stats**: O3K implements 342 endpoints across 5 core services, exceeding the OpenStack baseline by 12 endpoints.
 
 ---
@@ -150,6 +155,13 @@ Test reports, strategies, and code quality reviews.
 
 #### Compatibility
 - **[compatibility/OPENSTACK_COMPATIBILITY_REPORT](compatibility/OPENSTACK_COMPATIBILITY_REPORT.md)** - OpenStack 2025.2 compatibility analysis
+
+---
+
+### 📋 v0.7.0 Planning
+
+- **[SPEC-006: v0.7.0 Foundation](specs/006-v070-foundation/README.md)** - Full specification for architecture and quality improvements
+- **[v0.7.0 Implementation Plan](superpowers/plans/2026-04-22-v070-foundation-plan.md)** - Task-level execution plan with phases and validation gates
 
 ---
 

@@ -5,7 +5,7 @@ bin/
 *.so
 *.dylib
 
-# Compiled binaries in root (should be in bin/)
+# Compiled binaries in root
 /o3k
 /o3k-migrate
 
@@ -14,12 +14,14 @@ bin/
 
 # Output of go coverage tool
 *.out
+coverage.txt
 
 # Dependency directories
 vendor/
 
 # Go workspace file
 go.work
+go.work.sum
 
 # IDE
 .idea/
@@ -41,13 +43,11 @@ Thumbs.db
 config/local.yaml
 .env
 .env.*
+!.env.example
 
 # Database
 *.db
 *.sqlite
-
-# Docker
-.dockerignore
 
 # Sensitive files
 *.key
@@ -58,15 +58,28 @@ config/local.yaml
 secrets/
 credentials/
 
-# LLM-generated temporary files (keep in sprints/ instead)
+# Claude Code — session-specific (user-local, not shared)
+.claude/session-reads.txt
+.claude/settings.local.json
+.claude/plans/
+.claude/worktrees/
+
+# Agent/LLM session artifacts (generated per-session, not project docs)
+task_plan.md
+notes.md
+/output*.md
 /SPRINT_SUMMARY*.md
 /PROJECT_STATUS.md
 /PRE_APPROVAL_CHECKLIST.md
 /TEST_COVERAGE_REPORT.md
 /validation_results*.txt
+*.bak
+*.tmp
+*.old
 
-# Keep important docs
+# Keep important root docs
 !/README.md
 !/CLAUDE.md
 !/CHANGELOG.md
 !/ROADMAP.md
+!/STATUS.md

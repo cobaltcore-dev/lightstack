@@ -664,6 +664,58 @@ neutron:
 
 ---
 
+## Rate Limiting Configuration
+
+O3K supports two-tier rate limiting to protect against brute-force attacks and resource exhaustion. See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural details.
+
+### Configuration
+
+```yaml
+# Rate limiting (v0.7.0+)
+rate_limiting:
+  enabled: false              # Set to true to enable rate limiting
+  auth_rate: 20               # Requests per minute per IP (unauthenticated endpoints)
+  api_rate: 100               # Requests per minute per project (authenticated endpoints)
+  eviction_interval: 10m      # How often to clean up stale rate limit entries
+  max_entries: 10000           # Maximum tracked IPs/projects (degrade open on overflow)
+  overflow_policy: allow       # "allow" (let traffic through) or "deny" (block new entries)
+```
+
+### Settings Reference
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable/disable rate limiting globally |
+| `auth_rate` | int | `20` | Max requests/minute per IP for auth endpoints |
+| `api_rate` | int | `100` | Max requests/minute per project for API endpoints |
+| `eviction_interval` | duration | `10m` | Interval for cleaning stale entries |
+| `max_entries` | int | `10000` | Max concurrent tracked IPs/projects |
+| `overflow_policy` | string | `allow` | Behavior when max_entries exceeded |
+
+### How It Works
+
+1. **Unauthenticated requests** (e.g., `POST /v3/auth/tokens`): Limited by client IP address. Uses `X-Forwarded-For` header if present, falls back to `RemoteAddr`.
+2. **Authenticated requests**: Limited by `project_id` extracted from the JWT token.
+3. **When limit exceeded**: Returns HTTP 429 with `Retry-After` header and OpenStack-compatible error body.
+4. **Overflow behavior**: When 10,000+ unique IPs/projects are tracked, new entries are allowed through without limiting. A warning is logged.
+
+### Environment Variable Override
+
+```bash
+O3K_RATE_LIMITING_ENABLED=true
+O3K_RATE_LIMITING_AUTH_RATE=50
+O3K_RATE_LIMITING_API_RATE=200
+```
+
+### Monitoring
+
+When rate limiting triggers, O3K logs at WARN level:
+```json
+{"level":"warn","project_id":"abc123","rate":"100/m","msg":"rate limit exceeded"}
+```
+
+---
+
 ## Configuration Validation
 
 ### Validate Configuration

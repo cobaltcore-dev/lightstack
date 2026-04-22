@@ -105,6 +105,25 @@ L4/L7 load balancing with HAProxy backend.
 
 ---
 
+### Code Quality & Architecture
+
+#### [SPEC-006: v0.7.0 Foundation](./006-v070-foundation/README.md)
+**Status**: Draft | **Priority**: High | **Timeline**: TBD | **Depends**: SPEC-000
+
+Architecture and code quality improvements for production readiness.
+
+**Key Deliverables**:
+- Database dependency injection (661 references refactored)
+- Rate limiting middleware (IP + project dual mode)
+- CI linting re-enabled (staged golangci-lint config)
+- Terraform conformance test suite (15+ configs)
+- Cinder route consolidation (301 redirects)
+- Pagination standardization (24 handlers)
+
+**ADRs**: [ADR-001](../adr/ADR-001-database-dependency-injection.md), [ADR-002](../adr/ADR-002-rate-limiting-architecture.md)
+
+---
+
 ## Specification Status Legend
 
 - **Draft**: Initial design, not yet implemented
@@ -142,6 +161,8 @@ SPEC-001 (Modular Architecture) ◄─── Must pass SPEC-000 tests
     ↓
     ├─→ SPEC-002 (Auth Enhancement) ◄─── Must pass SPEC-000 tests
     └─→ SPEC-003, 004, 005 (New Services) ◄─── Must pass SPEC-000 tests
+
+SPEC-006 (v0.7.0 Foundation) ◄─── Must maintain SPEC-000 API compatibility
 ```
 
 **Critical**: Every feature, every endpoint, every change must pass SPEC-000 compliance tests.
@@ -155,6 +176,7 @@ SPEC-001 (Modular Architecture) ◄─── Must pass SPEC-000 tests
 | SPEC-003 | 6 weeks | Week 25 | Week 30 | Draft |
 | SPEC-004 | 4 weeks | Week 31 | Week 34 | Draft |
 | SPEC-005 | 6 weeks | Week 35 | Week 40 | Draft |
+| SPEC-006 | TBD | TBD | TBD | Draft |
 
 Total: ~40 weeks to complete core specifications
 

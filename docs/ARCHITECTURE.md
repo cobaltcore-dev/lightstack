@@ -21,7 +21,7 @@ O3K is built on three core principles:
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
 │  │  Keystone    │  │     Nova     │  │   Neutron    │      │
-│  │   :5000      │  │    :8774     │  │    :9696     │      │
+│  │   :35357     │  │    :8774     │  │    :9696     │      │
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
 │  ┌──────────────┐  ┌──────────────┐                        │
 │  │   Cinder     │  │    Glance    │                        │
@@ -174,6 +174,91 @@ O3K is built on three core principles:
 6. Build service catalog dynamically
                     ↓
 7. Return token in X-Subject-Token header + body
+```
+
+### Rate Limiting Architecture
+
+O3K implements two-tier rate limiting as Gin middleware (see [ADR-002](adr/ADR-002-rate-limiting-architecture.md)):
+
+```
+  REQUEST
+    |
+    v
+  Authenticated?
+   / \
+ NO   YES
+  |     |
+  v     v
+ IP-based         Project-based
+ rate.Limiter     rate.Limiter
+ (auth endpoints) (all other endpoints)
+  |                |
+  v                v
+ sync.Map          sync.Map
+ [IP -> limiter]   [project_id -> limiter]
+  |                |
+  +-- evict stale entries every 10 min
+  +-- cap: 10,000 entries max
+  +-- overflow: allow traffic (degrade open)
+```
+
+**Technology**: `golang.org/x/time/rate` (Go standard library)
+
+**Key Design Decisions:**
+- **Two-tier, not per-endpoint**: IP-based for unauthenticated auth endpoints (`POST /v3/auth/tokens`), project-based for all authenticated endpoints
+- **In-process, not Redis**: Single-binary architecture avoids external dependencies
+- **Degrade open**: When entry cap (10K) is exceeded, new IPs/projects are allowed through rather than blocked
+- **Configurable**: Enable/disable and adjust rates via `rate_limiting` block in `o3k.yaml`
+
+### Dependency Injection Pattern
+
+Services receive their database connection pool through constructors rather than importing a global variable (see [ADR-001](adr/ADR-001-database-dependency-injection.md)):
+
+```
+  main.go
+    |
+    +-- database.Connect() -> pool *pgxpool.Pool
+    |
+    +-- keystone.NewAuthService(pool, jwtSecret, ttl, cache)
+    +-- nova.NewService(pool, libvirtURI, mode, cache)
+    +-- neutron.NewService(pool, mode, cache)
+    +-- cinder.NewService(pool, mode, cephPool, cephConf)
+    +-- glance.NewService(pool, mode, ..., cache)
+    +-- metadata.NewService(pool)
+```
+
+**Key Design Decisions:**
+- **Direct pool, not interface**: `*pgxpool.Pool` passed directly rather than through an abstract interface
+- **Same pool, all services**: DI is for testability and explicit dependencies, not service isolation
+- **WithTx()**: Transaction helper accepts pool parameter: `WithTx(ctx, pool, fn)`
+
+### Request Lifecycle
+
+Full request path through O3K middleware stack:
+
+```
+  Client
+    |
+    v
+  Gin Router (port-specific: 35357, 8774, 9696, etc.)
+    |
+    v
+  CORS Middleware (configurable origins)
+    |
+    v
+  Rate Limit Middleware (IP or project-based)
+    |
+    v
+  Auth Middleware (JWT validation, extracts user/project/roles)
+    |     (skipped for: metadata service, version endpoints)
+    v
+  Handler (service method on struct with injected pool)
+    |
+    v
+  svc.pool.Query(ctx, ...) -> PostgreSQL
+    |
+    v
+  Response (structured error format via common.SendError on failure)
 ```
 
 ## Database Schema
