@@ -167,7 +167,7 @@ The following endpoints are **not implemented** and are **LOW priority** for typ
 
 ## Deployment Support
 
-- **Quickstart**: Follow `specs/002-horizon-full-compatibility/quickstart.md`
+- **Quickstart**: Follow `docs/archive/specs/002-horizon-full-compatibility/quickstart.md`
 - **Validation**: Run `test/quickstart_validation_test.sh`
 - **Performance**: Run `test/horizon_load_test.sh` (100+ resources)
 - **Horizon**: Deploy following HORIZON_DEPLOYMENT.md
