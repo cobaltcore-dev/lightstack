@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.1] - 2026-04-22
+
+### 📋 v0.7.0 Planning & Specifications
+- **SPEC-006**: v0.7.0 Foundation specification with 7-step execution plan and validation gates
+- **ADR-001**: Database dependency injection — direct `*pgxpool.Pool` through constructors (661 refs across 53 files)
+- **ADR-002**: Rate limiting architecture — `golang.org/x/time/rate`, two-tier (IP + project), 10K cap
+- **Implementation plan**: 4-phase, 21-task plan with parallelization strategy
+- **ADR directory**: Established `docs/adr/` for Architecture Decision Records
+
+### 📐 Architecture Documentation
+- **Rate limiting section**: Two-tier middleware architecture diagram in ARCHITECTURE.md
+- **Dependency injection section**: Constructor injection pattern and request lifecycle diagram
+- **Configuration**: Rate limiting config block added to `config/o3k.yaml` and CONFIGURATION.md
+- **ROADMAP v0.7.0**: Replaced vague targets with concrete 7-step execution plan
+
+### 🧹 Documentation Cleanup
+- **Archived 8 stale files** to `docs/archive/`: completed sprints (54-57), Horizon spec, superseded IAM design v1, session artifact
+- **Removed ~10,500 lines** of stale content from active documentation
+- **Deleted**: `.bak` backup file, `task_plan.md` session artifact, `.claude` session caches from test directories
+- **Fixed**: 2 broken cross-references to archived files
+- **Updated**: WHATS_LEFT split into "v0.7.0 Planned" and "Remaining" sections
+
+### 🔧 Maintenance
+- **`.gitignore` hardened**: Ignore Claude Code session data (`session-reads.txt`, `settings.local.json`, `plans/`), agent artifacts (`task_plan.md`, `notes.md`, `*.bak`), coverage output
+- **Dependency updates**: gophercloud v2.12.0, aws-sdk-go-v2 monorepo update
+
+---
+
 ## [0.6.0] - 2026-04-07
 
 ### 🔒 Security Hardening
