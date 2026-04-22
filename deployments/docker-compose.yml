@@ -23,7 +23,7 @@ services:
 
   # Redis Cache (optional - for performance optimization)
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: o3k-redis
     command: redis-server --appendonly yes
     volumes:
