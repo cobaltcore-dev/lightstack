@@ -2,8 +2,8 @@
 
 [![CI Pipeline](https://github.com/cobaltcore-dev/o3k/actions/workflows/ci.yml/badge.svg)](https://github.com/cobaltcore-dev/o3k/actions/workflows/ci.yml)
 
-**Status**: v0.6.0 - Production Ready | 104% API Coverage (342/330 endpoints) | 100% Terraform Compatible
-**Last Updated**: April 7, 2026
+**Status**: v0.6.1 - Production Ready | 104% API Coverage (342/330 endpoints) | 100% Terraform Compatible
+**Last Updated**: April 22, 2026
 
 **O3K** (OpenStack 3 Kubernetes-style) is a lightweight, high-performance implementation of OpenStack APIs in pure Go, inspired by how K3s simplified Kubernetes.
 
