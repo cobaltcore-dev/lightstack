@@ -280,6 +280,8 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if projects == nil {
@@ -319,6 +321,8 @@ func (svc *Service) ListUsers(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"users": users})
@@ -379,6 +383,8 @@ func (svc *Service) ListProjects(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"projects": projects})
@@ -594,6 +600,8 @@ func (svc *Service) ListRoles(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"roles": roles})
@@ -826,6 +834,8 @@ func (svc *Service) ListUserProjectRoles(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if roles == nil {
@@ -927,6 +937,8 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if assignments == nil {
@@ -1291,6 +1303,8 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"projects": projects})
@@ -1346,6 +1360,8 @@ func (svc *Service) GetUserGroups(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"groups": groups})

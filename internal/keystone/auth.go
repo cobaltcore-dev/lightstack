@@ -247,6 +247,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		}
 		if err := rows.Err(); err != nil {
 			log.Error().Err(err).Msg("rows iteration error")
+			return nil, "", fmt.Errorf("failed to iterate roles: %w", err)
 		}
 
 		if len(roles) == 0 {
@@ -430,6 +431,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		}
 		if err := rows.Err(); err != nil {
 			log.Error().Err(err).Msg("rows iteration error")
+			return nil, "", fmt.Errorf("failed to iterate roles: %w", err)
 		}
 
 		if len(roles) == 0 {

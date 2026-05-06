@@ -338,6 +338,8 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if volumes == nil {
@@ -436,6 +438,8 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if volumes == nil {
@@ -601,7 +605,11 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle extend action
 	if extendData, ok := req["os-extend"]; ok {
-		extendMap := extendData.(map[string]any)
+		extendMap, ok := extendData.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-extend must be an object"))
+			return
+		}
 		var newSize int
 
 		// Handle different JSON number types
@@ -651,8 +659,16 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle retype action
 	if retypeData, ok := req["os-retype"]; ok {
-		retypeMap := retypeData.(map[string]any)
-		newType := retypeMap["new_type"].(string)
+		retypeMap, ok := retypeData.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-retype must be an object"))
+			return
+		}
+		newType, ok := retypeMap["new_type"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-retype.new_type must be a string"))
+			return
+		}
 
 		// Get or create volume type
 		var typeID string
@@ -700,8 +716,16 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle update readonly flag action
 	if readonlyData, ok := req["os-update_readonly_flag"]; ok {
-		readonlyMap := readonlyData.(map[string]any)
-		readonly := readonlyMap["readonly"].(bool)
+		readonlyMap, ok := readonlyData.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-update_readonly_flag must be an object"))
+			return
+		}
+		readonly, ok := readonlyMap["readonly"].(bool)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-update_readonly_flag.readonly must be a boolean"))
+			return
+		}
 
 		// Update volume readonly flag (stored in metadata or separate field)
 		// For now, update in volume_metadata table
@@ -723,8 +747,16 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle set image metadata action (make volume bootable)
 	if imageMetadataData, ok := req["os-set_image_metadata"]; ok {
-		imageMetadataMap := imageMetadataData.(map[string]any)
-		metadata := imageMetadataMap["metadata"].(map[string]any)
+		imageMetadataMap, ok := imageMetadataData.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-set_image_metadata must be an object"))
+			return
+		}
+		metadata, ok := imageMetadataMap["metadata"].(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-set_image_metadata.metadata must be an object"))
+			return
+		}
 
 		// Store image metadata to make volume bootable
 		for key, value := range metadata {
@@ -748,8 +780,16 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle unset image metadata action
 	if unsetImageMetadata, ok := req["os-unset_image_metadata"]; ok {
-		unsetMap := unsetImageMetadata.(map[string]any)
-		key := unsetMap["key"].(string)
+		unsetMap, ok := unsetImageMetadata.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-unset_image_metadata must be an object"))
+			return
+		}
+		key, ok := unsetMap["key"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-unset_image_metadata.key must be a string"))
+			return
+		}
 
 		// Delete metadata entry with prefixed key
 		metadataKey := "volume_image_" + key
@@ -770,8 +810,16 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle reimage volume action
 	if reimageData, ok := req["os-reimage"]; ok {
-		reimageMap := reimageData.(map[string]any)
-		imageID := reimageMap["image_id"].(string)
+		reimageMap, ok := reimageData.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-reimage must be an object"))
+			return
+		}
+		imageID, ok := reimageMap["image_id"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-reimage.image_id must be a string"))
+			return
+		}
 
 		// Update volume to bootable and store image ID
 		_, err := database.DB.Exec(c.Request.Context(), `
@@ -834,7 +882,11 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			return
 		}
 
-		roleList := roles.([]string)
+		roleList, ok := roles.([]string)
+		if !ok {
+			common.SendError(c, common.NewInternalServerError("failed to read roles"))
+			return
+		}
 		isAdmin := false
 		for _, role := range roleList {
 			if role == "admin" {
@@ -848,8 +900,16 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			return
 		}
 
-		resetStatusMap := resetStatusData.(map[string]any)
-		newStatus := resetStatusMap["status"].(string)
+		resetStatusMap, ok := resetStatusData.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-reset_status must be an object"))
+			return
+		}
+		newStatus, ok := resetStatusMap["status"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-reset_status.status must be a string"))
+			return
+		}
 
 		// Admin operation to manually set volume status
 		_, err := database.DB.Exec(c.Request.Context(), `
@@ -996,6 +1056,8 @@ func (svc *Service) ListSnapshotsDetail(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if snapshots == nil {
@@ -1058,6 +1120,8 @@ func (svc *Service) ListSnapshots(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if snapshots == nil {
@@ -1179,6 +1243,8 @@ func (svc *Service) ListVolumeTypes(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if types == nil {
@@ -1396,6 +1462,8 @@ func (svc *Service) GetVolumeMetadata(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"metadata": metadata})
@@ -1608,6 +1676,8 @@ func (svc *Service) GetSnapshotMetadata(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"metadata": metadata})
@@ -1783,7 +1853,7 @@ func (svc *Service) DeleteSnapshotMetadataKey(c *gin.Context) {
 
 // GetLimits returns volume service limits and quotas
 func (svc *Service) GetLimits(c *gin.Context) {
-	projectID := c.Param("project_id")
+	projectID := c.GetString("project_id")
 
 	// Query current usage from database
 	var volumesUsed, snapshotsUsed, gigabytesUsed int

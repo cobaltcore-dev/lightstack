@@ -23,8 +23,16 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 
 	// Handle addProjectAccess action
 	if addAccess, ok := req["addProjectAccess"]; ok {
-		addMap := addAccess.(map[string]any)
-		projectID := addMap["project"].(string)
+		addMap, ok := addAccess.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("addProjectAccess must be an object"))
+			return
+		}
+		projectID, ok := addMap["project"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("addProjectAccess.project must be a string"))
+			return
+		}
 
 		// Verify volume type exists and is private
 		var isPublic bool
@@ -62,8 +70,16 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 
 	// Handle removeProjectAccess action
 	if removeAccess, ok := req["removeProjectAccess"]; ok {
-		removeMap := removeAccess.(map[string]any)
-		projectID := removeMap["project"].(string)
+		removeMap, ok := removeAccess.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("removeProjectAccess must be an object"))
+			return
+		}
+		projectID, ok := removeMap["project"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("removeProjectAccess.project must be a string"))
+			return
+		}
 
 		// Remove access
 		result, err := database.DB.Exec(c.Request.Context(),
@@ -137,6 +153,8 @@ func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"volume_type_access": access})

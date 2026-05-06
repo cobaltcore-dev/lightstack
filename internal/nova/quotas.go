@@ -2,6 +2,7 @@ package nova
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -76,6 +77,8 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	// Add any missing defaults
@@ -264,8 +267,11 @@ func CheckQuota(c *gin.Context, resource string, requestedAmount int) error {
 		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, projectID).Scan(&usage)
 	case "security_group_rules":
 		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)`, projectID).Scan(&usage)
+	default:
+		return fmt.Errorf("unknown quota resource: %s", resource)
 	}
 	if scanErr != nil {
+		log.Error().Err(scanErr).Str("resource", resource).Str("project_id", projectID).Msg("failed to scan quota usage")
 		return scanErr
 	}
 

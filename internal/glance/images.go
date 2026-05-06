@@ -309,6 +309,8 @@ func (svc *Service) ListImages(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if images == nil {
@@ -490,8 +492,14 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 
 	// Apply updates (simplified - only handles replace operations)
 	for _, update := range updates {
-		op := update["op"].(string)
-		path := update["path"].(string)
+		op, ok := update["op"].(string)
+		if !ok {
+			continue
+		}
+		path, ok := update["path"].(string)
+		if !ok {
+			continue
+		}
 		value := update["value"]
 
 		if op == "replace" {
@@ -751,6 +759,8 @@ func (svc *Service) ListImageMembers(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if members == nil {

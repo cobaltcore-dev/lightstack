@@ -320,6 +320,8 @@ func (svc *Service) ListPorts(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if ports == nil {
@@ -627,6 +629,8 @@ func (svc *Service) ListSecurityGroups(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if securityGroups == nil {
@@ -720,6 +724,8 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -988,6 +994,8 @@ func (svc *Service) ListSecurityGroupRules(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if rules == nil {
@@ -1208,6 +1216,7 @@ func (svc *Service) fetchSecurityGroupRulesForPort(ctx context.Context, security
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		return nil, fmt.Errorf("failed to iterate security group rules: %w", err)
 	}
 
 	return rules, nil

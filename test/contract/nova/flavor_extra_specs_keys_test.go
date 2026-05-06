@@ -121,7 +121,7 @@ func TestNovaUpdateFlavorExtraSpecKey_Contract(t *testing.T) {
 	getReq, _ := http.NewRequest("GET", getURL, nil)
 	getReq.Header.Set("X-Auth-Token", client.TokenID)
 	getResp, err := http.DefaultClient.Do(getReq)
- require.NoError(t, err)
+	require.NoError(t, err)
 	defer getResp.Body.Close()
 
 	getBody, _ := io.ReadAll(getResp.Body)
@@ -180,7 +180,7 @@ func TestNovaDeleteFlavorExtraSpecKey_Contract(t *testing.T) {
 	getReq, _ := http.NewRequest("GET", getURL, nil)
 	getReq.Header.Set("X-Auth-Token", client.TokenID)
 	getResp, err := http.DefaultClient.Do(getReq)
- require.NoError(t, err)
+	require.NoError(t, err)
 	defer getResp.Body.Close()
 
 	getBody, _ := io.ReadAll(getResp.Body)

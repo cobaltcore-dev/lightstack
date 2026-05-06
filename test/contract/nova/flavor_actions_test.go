@@ -59,14 +59,14 @@ func TestNovaFlavorAddTenantAccess_Contract(t *testing.T) {
 	accessReq, _ := http.NewRequest("GET", accessURL, nil)
 	accessReq.Header.Set("X-Auth-Token", client.TokenID)
 	accessResp, err := http.DefaultClient.Do(accessReq)
- require.NoError(t, err)
+	require.NoError(t, err)
 	defer accessResp.Body.Close()
 
 	accessBody, _ := io.ReadAll(accessResp.Body)
 	var accessResult struct {
 		FlavorAccess []struct {
-			FlavorID  string `json:"flavor_id"`
-			TenantID  string `json:"tenant_id"`
+			FlavorID string `json:"flavor_id"`
+			TenantID string `json:"tenant_id"`
 		} `json:"flavor_access"`
 	}
 	json.Unmarshal(accessBody, &accessResult)
@@ -133,7 +133,7 @@ func TestNovaFlavorRemoveTenantAccess_Contract(t *testing.T) {
 	accessReq, _ := http.NewRequest("GET", accessURL, nil)
 	accessReq.Header.Set("X-Auth-Token", client.TokenID)
 	accessResp, err := http.DefaultClient.Do(accessReq)
- require.NoError(t, err)
+	require.NoError(t, err)
 	defer accessResp.Body.Close()
 
 	accessBody, _ := io.ReadAll(accessResp.Body)

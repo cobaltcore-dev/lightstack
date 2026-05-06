@@ -141,6 +141,7 @@ func (nr *NodeRegistry) ListActiveNodes(ctx context.Context) ([]ComputeNode, err
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		return nil, fmt.Errorf("failed to iterate nodes: %w", err)
 	}
 
 	return nodes, nil
