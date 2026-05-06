@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"errors"
 	"context"
 	"fmt"
 	"net/http"
@@ -50,20 +51,20 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
 
 	// Verify volume exists and is available
 	var volumeStatus string
-	var attachedToInstance interface{}
+	var attachedToInstance any
 	err = database.DB.QueryRow(c.Request.Context(),
 		"SELECT status, attached_to_instance_id FROM volumes WHERE id = $1 AND project_id = $2",
 		req.VolumeAttachment.VolumeID, projectID,
 	).Scan(&volumeStatus, &attachedToInstance)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -180,7 +181,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -192,7 +193,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 		volumeID, instanceID,
 	).Scan(&attachmentID, &device)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume attachment"))
 		return
 	}
@@ -303,6 +304,9 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 			"attachedAt": attachedAt.Format(time.RFC3339),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if attachments == nil {
 		attachments = []gin.H{}
@@ -330,6 +334,9 @@ func (svc *Service) getNextAvailableDevice(ctx context.Context, instanceID strin
 			continue
 		}
 		usedDevices[device] = true
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	// Find first available device (vdb, vdc, ..., vdz)

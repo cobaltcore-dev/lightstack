@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -56,7 +57,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		req.Port.NetworkID, projectID,
 	).Scan(&networkID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
@@ -68,11 +69,11 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		req.Port.NetworkID,
 	).Scan(&subnetID, &cidr)
 
-	var fixedIPs []map[string]interface{}
+	var fixedIPs []map[string]any
 	if err == nil {
 		// Allocate IP from subnet
 		allocatedIP := allocateIP(cidr)
-		fixedIPs = []map[string]interface{}{
+		fixedIPs = []map[string]any{
 			{
 				"subnet_id":  subnetID,
 				"ip_address": allocatedIP,
@@ -233,7 +234,7 @@ func (svc *Service) ListPorts(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -282,7 +283,7 @@ func (svc *Service) ListPorts(c *gin.Context) {
 			continue
 		}
 
-		var fixedIPs []map[string]interface{}
+		var fixedIPs []map[string]any
 		json.Unmarshal(fixedIPsJSON, &fixedIPs)
 
 		// Fetch associated security groups for this port
@@ -317,6 +318,9 @@ func (svc *Service) ListPorts(c *gin.Context) {
 			"updated_at":      updatedAt.Format(time.RFC3339),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if ports == nil {
 		ports = []gin.H{}
@@ -344,7 +348,7 @@ func (svc *Service) GetPort(c *gin.Context) {
 		WHERE p.id = $1 AND (p.project_id = $2 OR n.shared = true)
 	`, portID, projectID).Scan(&id, &name, &networkID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
 		return
 	}
@@ -354,7 +358,7 @@ func (svc *Service) GetPort(c *gin.Context) {
 		return
 	}
 
-	var fixedIPs []map[string]interface{}
+	var fixedIPs []map[string]any
 	json.Unmarshal(fixedIPsJSON, &fixedIPs)
 
 	// Fetch associated security groups
@@ -465,7 +469,7 @@ func (svc *Service) UpdatePort(c *gin.Context) {
 	}
 
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argID := 1
 
 	if req.Port.Name != nil {
@@ -621,6 +625,9 @@ func (svc *Service) ListSecurityGroups(c *gin.Context) {
 			"updated_at":  updatedAt.Format(time.RFC3339),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if securityGroups == nil {
 		securityGroups = []gin.H{}
@@ -643,7 +650,7 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, sgID, projectID).Scan(&id, &name, &description, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
 		return
 	}
@@ -711,6 +718,9 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 
 		rules = append(rules, rule)
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"security_group": gin.H{
@@ -772,7 +782,7 @@ func (svc *Service) UpdateSecurityGroup(c *gin.Context) {
 		sgID, projectID,
 	).Scan(&currentName, &currentDesc)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
 		return
 	}
@@ -922,11 +932,14 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 // ListSecurityGroupRules lists all security group rules
 func (svc *Service) ListSecurityGroupRules(c *gin.Context) {
+	projectID := c.GetString("project_id")
 	rows, err := database.DB.Query(c.Request.Context(), `
-		SELECT id, security_group_id, direction, ethertype, protocol, port_range_min, port_range_max, remote_ip_prefix, remote_group_id, created_at
-		FROM security_group_rules
-		ORDER BY created_at DESC
-	`)
+		SELECT sgr.id, sgr.security_group_id, sgr.direction, sgr.ethertype, sgr.protocol, sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id, sgr.created_at
+		FROM security_group_rules sgr
+		JOIN security_groups sg ON sg.id = sgr.security_group_id
+		WHERE sg.project_id = $1
+		ORDER BY sgr.created_at DESC
+	`, projectID)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_sg_rules").Msg("database error")
@@ -972,6 +985,9 @@ func (svc *Service) ListSecurityGroupRules(c *gin.Context) {
 		}
 
 		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	if rules == nil {
@@ -1035,7 +1051,7 @@ type PortInfo struct {
 }
 
 // AllocatePortForInstance creates a port for a VM instance (called from Nova)
-func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string) (interface{}, error) {
+func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string) (any, error) {
 	portID := uuid.New().String()
 	macAddress := generateMAC()
 
@@ -1046,7 +1062,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		networkID, projectID,
 	).Scan(&netID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("network %s not found", networkID)
 	}
 	if err != nil {
@@ -1070,7 +1086,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		return nil, fmt.Errorf("failed to allocate IP from subnet %s", subnetID)
 	}
 
-	fixedIPs := []map[string]interface{}{
+	fixedIPs := []map[string]any{
 		{
 			"subnet_id":  subnetID,
 			"ip_address": allocatedIP,
@@ -1189,6 +1205,9 @@ func (svc *Service) fetchSecurityGroupRulesForPort(ctx context.Context, security
 		}
 
 		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	return rules, nil

@@ -1,9 +1,7 @@
 package keystone
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -30,94 +28,99 @@ func NewService(authService *AuthService, cacheInstance *cache.Cache) *Service {
 	}
 }
 
-// RegisterRoutes registers Keystone routes
-func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
+// RegisterRoutes registers Keystone routes.
+// Public routes (auth) require no token. Management routes require a valid token.
+func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.HandlerFunc) {
 	v3 := r.Group("/v3")
-	{
-		// Version discovery
-		v3.GET("", svc.GetVersion)
 
-		// Authentication
-		v3.POST("/auth/tokens", svc.AuthenticateToken)
-		v3.GET("/auth/tokens", svc.ValidateToken)
-		v3.DELETE("/auth/tokens", svc.RevokeToken)
-		v3.GET("/auth/projects", svc.ListAuthProjects)
+	// Version discovery — no auth required
+	v3.GET("", svc.GetVersion)
 
-		// Users
-		v3.GET("/users", svc.ListUsers)
-		v3.POST("/users", svc.CreateUser)
-		v3.GET("/users/:id", svc.GetUser)
-		v3.PATCH("/users/:id", svc.UpdateUser)
-		v3.DELETE("/users/:id", svc.DeleteUser)
-		v3.POST("/users/:id/password", svc.ChangePassword)
-		v3.GET("/users/:id/projects", svc.GetUserProjects)
-		v3.GET("/users/:id/groups", svc.GetUserGroups)
-		v3.POST("/users/:id/application_credentials", svc.CreateApplicationCredential)
-		v3.GET("/users/:id/application_credentials", svc.ListApplicationCredentials)
-		v3.GET("/users/:id/application_credentials/:cred_id", svc.GetApplicationCredential)
-		v3.DELETE("/users/:id/application_credentials/:cred_id", svc.DeleteApplicationCredential)
+	// Authentication — no auth required (these are how you get a token)
+	auth := v3.Group("/auth")
+	auth.POST("/tokens", svc.AuthenticateToken)
+	auth.GET("/tokens", svc.ValidateToken)
+	auth.DELETE("/tokens", svc.RevokeToken)
+	auth.GET("/projects", svc.ListAuthProjects)
 
-		// Projects (role assignments must come before /projects/:id to avoid conflicts)
-		v3.GET("/projects", svc.ListProjects)
-		v3.POST("/projects", svc.CreateProject)
-		v3.PUT("/projects/:id/users/:user_id/roles/:role_id", svc.AssignRole)
-		v3.DELETE("/projects/:id/users/:user_id/roles/:role_id", svc.UnassignRole)
-		v3.GET("/projects/:id/users/:user_id/roles", svc.ListUserProjectRoles)
-		v3.GET("/projects/:id/users/:user_id/roles/:role_id", svc.CheckRoleAssignment)
-		v3.GET("/projects/:id", svc.GetProject)
-		v3.PATCH("/projects/:id", svc.UpdateProject)
-		v3.DELETE("/projects/:id", svc.DeleteProject)
+	// All management routes require authentication
+	mgmt := v3.Group("")
+	mgmt.Use(authMiddleware)
 
-		// Groups
-		v3.GET("/groups", svc.ListGroups)
-		v3.POST("/groups", svc.CreateGroup)
-		v3.GET("/groups/:id", svc.GetGroup)
-		v3.PATCH("/groups/:id", svc.UpdateGroup)
-		v3.DELETE("/groups/:id", svc.DeleteGroup)
-		v3.GET("/groups/:id/users", svc.ListGroupUsers)
-		v3.PUT("/groups/:id/users/:user_id", svc.AddUserToGroup)
-		v3.DELETE("/groups/:id/users/:user_id", svc.RemoveUserFromGroup)
+	// Users
+	mgmt.GET("/users", svc.ListUsers)
+	mgmt.POST("/users", svc.CreateUser)
+	mgmt.GET("/users/:id", svc.GetUser)
+	mgmt.PATCH("/users/:id", svc.UpdateUser)
+	mgmt.DELETE("/users/:id", svc.DeleteUser)
+	mgmt.POST("/users/:id/password", svc.ChangePassword)
+	mgmt.GET("/users/:id/projects", svc.GetUserProjects)
+	mgmt.GET("/users/:id/groups", svc.GetUserGroups)
+	mgmt.POST("/users/:id/application_credentials", svc.CreateApplicationCredential)
+	mgmt.GET("/users/:id/application_credentials", svc.ListApplicationCredentials)
+	mgmt.GET("/users/:id/application_credentials/:cred_id", svc.GetApplicationCredential)
+	mgmt.DELETE("/users/:id/application_credentials/:cred_id", svc.DeleteApplicationCredential)
 
-		// Roles
-		v3.GET("/roles", svc.ListRoles)
-		v3.POST("/roles", svc.CreateRole)
-		v3.GET("/roles/:id", svc.GetRole)
-		v3.PATCH("/roles/:id", svc.UpdateRole)
-		v3.DELETE("/roles/:id", svc.DeleteRole)
+	// Projects (role assignments must come before /projects/:id to avoid conflicts)
+	mgmt.GET("/projects", svc.ListProjects)
+	mgmt.POST("/projects", svc.CreateProject)
+	mgmt.PUT("/projects/:id/users/:user_id/roles/:role_id", svc.AssignRole)
+	mgmt.DELETE("/projects/:id/users/:user_id/roles/:role_id", svc.UnassignRole)
+	mgmt.GET("/projects/:id/users/:user_id/roles", svc.ListUserProjectRoles)
+	mgmt.GET("/projects/:id/users/:user_id/roles/:role_id", svc.CheckRoleAssignment)
+	mgmt.GET("/projects/:id", svc.GetProject)
+	mgmt.PATCH("/projects/:id", svc.UpdateProject)
+	mgmt.DELETE("/projects/:id", svc.DeleteProject)
 
-		// Role Assignments (additional endpoint)
-		v3.GET("/role_assignments", svc.ListRoleAssignments)
+	// Groups
+	mgmt.GET("/groups", svc.ListGroups)
+	mgmt.POST("/groups", svc.CreateGroup)
+	mgmt.GET("/groups/:id", svc.GetGroup)
+	mgmt.PATCH("/groups/:id", svc.UpdateGroup)
+	mgmt.DELETE("/groups/:id", svc.DeleteGroup)
+	mgmt.GET("/groups/:id/users", svc.ListGroupUsers)
+	mgmt.PUT("/groups/:id/users/:user_id", svc.AddUserToGroup)
+	mgmt.DELETE("/groups/:id/users/:user_id", svc.RemoveUserFromGroup)
 
-		// Domains
-		v3.GET("/domains", svc.ListDomains)
-		v3.POST("/domains", svc.CreateDomain)
-		v3.GET("/domains/:id", svc.GetDomain)
-		v3.PATCH("/domains/:id", svc.UpdateDomain)
-		v3.DELETE("/domains/:id", svc.DeleteDomain)
-		v3.GET("/domains/:id/config", svc.GetDomainConfig)
+	// Roles
+	mgmt.GET("/roles", svc.ListRoles)
+	mgmt.POST("/roles", svc.CreateRole)
+	mgmt.GET("/roles/:id", svc.GetRole)
+	mgmt.PATCH("/roles/:id", svc.UpdateRole)
+	mgmt.DELETE("/roles/:id", svc.DeleteRole)
 
-		// Services (catalog management)
-		v3.GET("/services", svc.ListServices)
-		v3.POST("/services", svc.CreateService)
-		v3.GET("/services/:id", svc.GetService)
-		v3.PATCH("/services/:id", svc.UpdateService)
-		v3.DELETE("/services/:id", svc.DeleteService)
+	// Role Assignments
+	mgmt.GET("/role_assignments", svc.ListRoleAssignments)
 
-		// Endpoints
-		v3.GET("/endpoints", svc.ListEndpoints)
-		v3.POST("/endpoints", svc.CreateEndpoint)
-		v3.DELETE("/endpoints/:id", svc.DeleteEndpoint)
+	// Domains
+	mgmt.GET("/domains", svc.ListDomains)
+	mgmt.POST("/domains", svc.CreateDomain)
+	mgmt.GET("/domains/:id", svc.GetDomain)
+	mgmt.PATCH("/domains/:id", svc.UpdateDomain)
+	mgmt.DELETE("/domains/:id", svc.DeleteDomain)
+	mgmt.GET("/domains/:id/config", svc.GetDomainConfig)
 
-		// Credentials
-		v3.GET("/credentials", svc.ListCredentials)
-		v3.POST("/credentials", svc.CreateCredential)
-		v3.GET("/credentials/:id", svc.GetCredential)
-		v3.PATCH("/credentials/:id", svc.UpdateCredential)
-		v3.DELETE("/credentials/:id", svc.DeleteCredential)
+	// Services (catalog management)
+	mgmt.GET("/services", svc.ListServices)
+	mgmt.POST("/services", svc.CreateService)
+	mgmt.GET("/services/:id", svc.GetService)
+	mgmt.PATCH("/services/:id", svc.UpdateService)
+	mgmt.DELETE("/services/:id", svc.DeleteService)
 
-		// Application Credentials (lookup by ID without user_id)
-		v3.GET("/application_credentials/:id", svc.GetApplicationCredentialByID)
-	}
+	// Endpoints
+	mgmt.GET("/endpoints", svc.ListEndpoints)
+	mgmt.POST("/endpoints", svc.CreateEndpoint)
+	mgmt.DELETE("/endpoints/:id", svc.DeleteEndpoint)
+
+	// Credentials
+	mgmt.GET("/credentials", svc.ListCredentials)
+	mgmt.POST("/credentials", svc.CreateCredential)
+	mgmt.GET("/credentials/:id", svc.GetCredential)
+	mgmt.PATCH("/credentials/:id", svc.UpdateCredential)
+	mgmt.DELETE("/credentials/:id", svc.DeleteCredential)
+
+	// Application Credentials (lookup by ID without user_id)
+	mgmt.GET("/application_credentials/:id", svc.GetApplicationCredentialByID)
 }
 
 // GetVersion returns Keystone API version info
@@ -144,14 +147,9 @@ func (svc *Service) GetVersion(c *gin.Context) {
 
 // AuthenticateToken handles token authentication (POST /v3/auth/tokens)
 func (svc *Service) AuthenticateToken(c *gin.Context) {
-	// Read request body for debug logging
-	bodyBytes, _ := io.ReadAll(c.Request.Body)
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
 	var req AuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		// Log parse error with request body
-		c.Error(fmt.Errorf("auth parse failed: %v, body: %s", err, string(bodyBytes)))
+		log.Debug().Err(err).Str("path", c.Request.URL.Path).Msg("auth request parse failed")
 		common.SendError(c, common.NewBadRequestError("invalid request body: "+err.Error()))
 		return
 	}
@@ -280,6 +278,9 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 			},
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if projects == nil {
 		projects = []gin.H{}
@@ -315,6 +316,9 @@ func (svc *Service) ListUsers(c *gin.Context) {
 			"enabled":   enabled,
 			"domain_id": domainID,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"users": users})
@@ -372,6 +376,9 @@ func (svc *Service) ListProjects(c *gin.Context) {
 			"enabled":     enabled,
 			"domain_id":   domainID,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"projects": projects})
@@ -477,7 +484,7 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 
 	// Build dynamic update query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argIdx := 1
 
 	if req.Project.Name != nil {
@@ -585,6 +592,9 @@ func (svc *Service) ListRoles(c *gin.Context) {
 			"name": name,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"roles": roles})
 }
@@ -669,7 +679,7 @@ func (svc *Service) UpdateRole(c *gin.Context) {
 
 	// Build dynamic update query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argIdx := 1
 
 	if req.Role.Name != nil {
@@ -814,6 +824,9 @@ func (svc *Service) ListUserProjectRoles(c *gin.Context) {
 			"name": name,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if roles == nil {
 		roles = []gin.H{}
@@ -863,7 +876,7 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 	          FROM role_assignments ra
 	          INNER JOIN roles r ON ra.role_id = r.id
 	          WHERE 1=1`
-	args := []interface{}{}
+	args := []any{}
 	argIdx := 1
 
 	if userID != "" {
@@ -911,6 +924,9 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 				"name": rname,
 			},
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	if assignments == nil {
@@ -1054,7 +1070,7 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 
 	// Build dynamic UPDATE query
 	updates := []string{}
-	args := []interface{}{userID}
+	args := []any{userID}
 	argIndex := 2
 
 	if req.User.Name != nil {
@@ -1273,6 +1289,9 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 			"domain_id":   domainID,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"projects": projects})
 }
@@ -1324,6 +1343,9 @@ func (svc *Service) GetUserGroups(c *gin.Context) {
 			"description": description,
 			"domain_id":   domainID,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"groups": groups})

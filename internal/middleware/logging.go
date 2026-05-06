@@ -65,27 +65,15 @@ func LoggingMiddleware() gin.HandlerFunc {
 		// Start timer
 		start := time.Now()
 
-		// Extract user/project from context (populated by auth middleware)
-		userID, _ := c.Get("user_id")
-		projectID, _ := c.Get("project_id")
-
-		// Log incoming request
-		logEvent := logger.Debug().
+		// Log incoming request (user_id/project_id not yet available before auth middleware runs)
+		logger.Debug().
 			Str("request_id", requestID).
 			Str("method", c.Request.Method).
 			Str("path", c.Request.URL.Path).
 			Str("query", redactSensitiveQuery(c.Request.URL.RawQuery)).
 			Str("remote_addr", c.ClientIP()).
-			Str("user_agent", c.Request.UserAgent())
-
-		if userID != nil {
-			logEvent.Str("user_id", userID.(string))
-		}
-		if projectID != nil {
-			logEvent.Str("project_id", projectID.(string))
-		}
-
-		logEvent.Msg("incoming request")
+			Str("user_agent", c.Request.UserAgent()).
+			Msg("incoming request")
 
 		// Process request
 		c.Next()
@@ -93,9 +81,13 @@ func LoggingMiddleware() gin.HandlerFunc {
 		// Calculate duration
 		duration := time.Since(start)
 
+		// Extract user/project from context — populated by auth middleware during c.Next()
+		userID, _ := c.Get("user_id")
+		projectID, _ := c.Get("project_id")
+
 		// Determine log level based on status code
 		statusCode := c.Writer.Status()
-		logEvent = logger.Info()
+		logEvent := logger.Info()
 		if statusCode >= 500 {
 			logEvent = logger.Error()
 		} else if statusCode >= 400 {
@@ -108,9 +100,8 @@ func LoggingMiddleware() gin.HandlerFunc {
 			Str("method", c.Request.Method).
 			Str("path", c.Request.URL.Path).
 			Int("status", statusCode).
-			Dur("duration", duration).
-			Int("response_size", c.Writer.Size()).
-			Dur("duration_ms", duration/time.Millisecond)
+			Int64("duration_ms", duration.Milliseconds()).
+			Int("response_size", c.Writer.Size())
 
 		if userID != nil {
 			logEvent.Str("user_id", userID.(string))

@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"errors"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -43,7 +44,7 @@ func (svc *Service) GetRemoteConsole(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &vncPort, &vncPassword)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -106,12 +107,12 @@ func (svc *Service) GetVNCConsole(c *gin.Context) {
 }
 
 // GetVNCConsoleAction handles VNC console requests from the action API
-func (svc *Service) GetVNCConsoleAction(c *gin.Context, vncConsole interface{}) {
+func (svc *Service) GetVNCConsoleAction(c *gin.Context, vncConsole any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
 	// Parse the already-parsed action body
-	consoleMap, ok := vncConsole.(map[string]interface{})
+	consoleMap, ok := vncConsole.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid console request"))
 		return
@@ -137,7 +138,7 @@ func (svc *Service) getVNCConsoleResponse(c *gin.Context, instanceID, projectID,
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &vncPort, &vncPassword)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -217,7 +218,7 @@ func hashString(s string) int {
 }
 
 // GetConsoleOutputAction handles console output requests (os-getConsoleOutput action)
-func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput interface{}) {
+func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
@@ -228,14 +229,14 @@ func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput interfa
 		instanceID, projectID,
 	).Scan(&id)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
 
 	// Parse length parameter
 	length := 0
-	if consoleMap, ok := consoleOutput.(map[string]interface{}); ok {
+	if consoleMap, ok := consoleOutput.(map[string]any); ok {
 		if lengthVal, ok := consoleMap["length"].(float64); ok {
 			length = int(lengthVal)
 		}
@@ -259,7 +260,7 @@ func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput interfa
 }
 
 // GetSerialConsoleAction handles serial console requests (os-getSerialConsole action)
-func (svc *Service) GetSerialConsoleAction(c *gin.Context, serialConsole interface{}) {
+func (svc *Service) GetSerialConsoleAction(c *gin.Context, serialConsole any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
@@ -270,14 +271,14 @@ func (svc *Service) GetSerialConsoleAction(c *gin.Context, serialConsole interfa
 		instanceID, projectID,
 	).Scan(&id)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
 
 	// Parse console type
 	consoleType := "serial"
-	if consoleMap, ok := serialConsole.(map[string]interface{}); ok {
+	if consoleMap, ok := serialConsole.(map[string]any); ok {
 		if typeVal, ok := consoleMap["type"].(string); ok {
 			consoleType = typeVal
 		}
@@ -296,7 +297,7 @@ func (svc *Service) GetSerialConsoleAction(c *gin.Context, serialConsole interfa
 }
 
 // GetSPICEConsoleAction handles SPICE console requests (os-getSPICEConsole action)
-func (svc *Service) GetSPICEConsoleAction(c *gin.Context, spiceConsole interface{}) {
+func (svc *Service) GetSPICEConsoleAction(c *gin.Context, spiceConsole any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
@@ -307,14 +308,14 @@ func (svc *Service) GetSPICEConsoleAction(c *gin.Context, spiceConsole interface
 		instanceID, projectID,
 	).Scan(&id)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
 
 	// Parse console type
 	consoleType := "spice-html5"
-	if consoleMap, ok := spiceConsole.(map[string]interface{}); ok {
+	if consoleMap, ok := spiceConsole.(map[string]any); ok {
 		if typeVal, ok := consoleMap["type"].(string); ok {
 			consoleType = typeVal
 		}
@@ -333,7 +334,7 @@ func (svc *Service) GetSPICEConsoleAction(c *gin.Context, spiceConsole interface
 }
 
 // GetRDPConsoleAction handles RDP console requests (os-getRDPConsole action)
-func (svc *Service) GetRDPConsoleAction(c *gin.Context, rdpConsole interface{}) {
+func (svc *Service) GetRDPConsoleAction(c *gin.Context, rdpConsole any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
@@ -344,14 +345,14 @@ func (svc *Service) GetRDPConsoleAction(c *gin.Context, rdpConsole interface{}) 
 		instanceID, projectID,
 	).Scan(&id)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
 
 	// Parse console type
 	consoleType := "rdp-html5"
-	if consoleMap, ok := rdpConsole.(map[string]interface{}); ok {
+	if consoleMap, ok := rdpConsole.(map[string]any); ok {
 		if typeVal, ok := consoleMap["type"].(string); ok {
 			consoleType = typeVal
 		}

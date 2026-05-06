@@ -1,8 +1,6 @@
 package middleware
 
 import (
-	"fmt"
-
 	"github.com/gin-gonic/gin"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 )
@@ -19,26 +17,27 @@ func ErrorHandlingMiddleware() gin.HandlerFunc {
 					Str("path", c.Request.URL.Path).
 					Msg("Panic recovered in error handling middleware")
 
-				// Send internal server error
-				osErr := common.NewInternalServerError(fmt.Sprintf("Internal server error: %v", err))
-				common.SendError(c, osErr)
+				// Only send if response not yet written
+				if !c.Writer.Written() {
+					osErr := common.NewInternalServerError("internal server error")
+					common.SendError(c, osErr)
+				}
 			}
 		}()
 
 		c.Next()
 
-		// Check if there are any errors set by handlers
-		if len(c.Errors) > 0 {
-			// Get the last error
+		// Check if there are any errors set by handlers, but only if no response has been written yet.
+		// SendError writes a response directly, so c.Errors populated by non-SendError paths
+		// (e.g. ShouldBindJSON failures that called c.Error) are handled here.
+		if len(c.Errors) > 0 && !c.Writer.Written() {
 			lastErr := c.Errors.Last()
 
-			// If it's already an OpenStack error, use it
 			if osErr, ok := lastErr.Err.(*common.OpenStackError); ok {
 				common.SendError(c, osErr)
 				return
 			}
 
-			// Otherwise, wrap it as internal server error
 			osErr := common.NewInternalServerError(lastErr.Error())
 			common.SendError(c, osErr)
 		}

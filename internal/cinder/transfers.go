@@ -1,6 +1,7 @@
 package cinder
 
 import (
+	"errors"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
@@ -37,7 +38,7 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 		req.Transfer.VolumeID, projectID,
 	).Scan(&volumeStatus)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -118,6 +119,9 @@ func (svc *Service) ListVolumeTransfers(c *gin.Context) {
 			"created_at": createdAt.Format(time.RFC3339),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"transfers": transfers})
 }
@@ -142,7 +146,7 @@ func (svc *Service) GetVolumeTransfer(c *gin.Context) {
 		WHERE id = $1 AND source_project_id = $2 AND accepted = false
 	`, transferID, projectID).Scan(&volumeID, &name, &createdAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("transfer"))
 		return
 	}
@@ -212,7 +216,7 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 		WHERE id = $1 AND accepted = false
 	`, transferID).Scan(&volumeID, &name, &storedAuthKey, &sourceProjectID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("transfer"))
 		return
 	}

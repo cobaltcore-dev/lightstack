@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"errors"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,7 +43,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -64,7 +65,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			portID, projectID,
 		).Scan(&networkID, &fixedIPsJSON, &macAddress, &deviceID)
 
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("port"))
 			return
 		}
@@ -104,7 +105,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			networkID,
 		).Scan(&cidr)
 
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			common.SendError(c, common.NewBadRequestError("network has no subnet"))
 			return
 		}
@@ -205,7 +206,7 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 		portID,
 	).Scan(&attachedInstanceID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
 		return
 	}
@@ -295,7 +296,7 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 		}
 
 		// Parse fixed_ips from JSONB
-		var fixedIPs []map[string]interface{}
+		var fixedIPs []map[string]any
 		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err == nil && len(fixedIPs) > 0 {
 			attachments = append(attachments, gin.H{
 				"id":         id,
@@ -306,6 +307,9 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 				"port_state": state,
 			})
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	if attachments == nil {
@@ -332,7 +336,7 @@ func allocateNextIP(ctx context.Context, networkID, cidr string) (string, error)
 		networkID,
 	).Scan(&fixedIPsJSON)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// First allocation, use .10
 		baseIP := cidr[:len(cidr)-3] // Remove /24
 		return baseIP + "10", nil
@@ -344,7 +348,7 @@ func allocateNextIP(ctx context.Context, networkID, cidr string) (string, error)
 
 	// For simplicity, parse JSON and increment
 	// In production, would use proper IPAM library
-	var ips []map[string]interface{}
+	var ips []map[string]any
 	if err := json.Unmarshal(fixedIPsJSON, &ips); err != nil {
 		// Fallback to simple allocation
 		baseIP := cidr[:len(cidr)-3]

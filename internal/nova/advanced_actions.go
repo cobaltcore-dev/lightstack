@@ -2,6 +2,7 @@ package nova
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -28,8 +29,13 @@ func (svc *Service) SuspendInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status, &powerState)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -86,8 +92,13 @@ func (svc *Service) ResumeInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -144,8 +155,13 @@ func (svc *Service) ShelveInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -212,8 +228,13 @@ func (svc *Service) UnshelveInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -262,12 +283,12 @@ func (svc *Service) ResizeInstance(c *gin.Context) {
 }
 
 // ResizeInstanceAction handles resize from the action API
-func (svc *Service) ResizeInstanceAction(c *gin.Context, resizeData interface{}) {
+func (svc *Service) ResizeInstanceAction(c *gin.Context, resizeData any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
 	// Parse the already-parsed action body
-	resizeMap, ok := resizeData.(map[string]interface{})
+	resizeMap, ok := resizeData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid resize request"))
 		return
@@ -292,8 +313,13 @@ func (svc *Service) resizeInstance(c *gin.Context, instanceID, projectID, flavor
 		instanceID, projectID,
 	).Scan(&status, &currentFlavorID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -310,8 +336,13 @@ func (svc *Service) resizeInstance(c *gin.Context, instanceID, projectID, flavor
 		flavorRef,
 	).Scan(&newFlavorID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("flavor"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -393,8 +424,13 @@ func (svc *Service) RevertResizeInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -445,8 +481,13 @@ func (svc *Service) EvacuateInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -475,8 +516,13 @@ func (svc *Service) MigrateInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -560,8 +606,13 @@ func (svc *Service) LiveMigrateInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -596,7 +647,7 @@ func (svc *Service) AddSecurityGroup(c *gin.Context) {
 		return
 	}
 
-	addSGMap, ok := actionData.(map[string]interface{})
+	addSGMap, ok := actionData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid addSecurityGroup data"))
 		return
@@ -627,8 +678,13 @@ func (svc *Service) AddSecurityGroup(c *gin.Context) {
 		sgName, projectID,
 	).Scan(&sgID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -679,7 +735,7 @@ func (svc *Service) RemoveSecurityGroup(c *gin.Context) {
 		return
 	}
 
-	removeSGMap, ok := actionData.(map[string]interface{})
+	removeSGMap, ok := actionData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid removeSecurityGroup data"))
 		return
@@ -710,8 +766,13 @@ func (svc *Service) RemoveSecurityGroup(c *gin.Context) {
 		sgName, projectID,
 	).Scan(&sgID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -780,7 +841,7 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 		return
 	}
 
-	changePassMap, ok := actionData.(map[string]interface{})
+	changePassMap, ok := actionData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid changePassword data"))
 		return
@@ -799,8 +860,13 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -854,8 +920,13 @@ func (svc *Service) RestoreInstance(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -892,7 +963,7 @@ func (svc *Service) CreateBackupAction(c *gin.Context) {
 		return
 	}
 
-	backupMap, ok := actionData.(map[string]interface{})
+	backupMap, ok := actionData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid createBackup data"))
 		return
@@ -921,8 +992,13 @@ func (svc *Service) CreateBackupAction(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&sourceImageID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -972,6 +1048,9 @@ func (svc *Service) CreateBackupAction(c *gin.Context) {
 			rows.Scan(&id, &createdAt)
 			backupIDs = append(backupIDs, id)
 		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
+		}
 
 		// Delete backups beyond rotation limit
 		if len(backupIDs) > int(rotation) {
@@ -1017,7 +1096,7 @@ func (svc *Service) ResetStateAction(c *gin.Context) {
 		return
 	}
 
-	resetMap, ok := actionData.(map[string]interface{})
+	resetMap, ok := actionData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid os-resetState data"))
 		return

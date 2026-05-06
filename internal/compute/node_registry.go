@@ -9,6 +9,7 @@ import (
 
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 // NodeRegistry manages compute node registration and heartbeats
@@ -137,6 +138,9 @@ func (nr *NodeRegistry) ListActiveNodes(ctx context.Context) ([]ComputeNode, err
 			continue
 		}
 		nodes = append(nodes, node)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	return nodes, nil

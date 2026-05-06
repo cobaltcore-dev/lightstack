@@ -1,6 +1,7 @@
 package cinder
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -30,7 +31,7 @@ func (svc *Service) ListBackups(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	backups := []map[string]interface{}{}
+	backups := []map[string]any{}
 	for rows.Next() {
 		var (
 			id          string
@@ -51,7 +52,7 @@ func (svc *Service) ListBackups(c *gin.Context) {
 			return
 		}
 
-		backup := map[string]interface{}{
+		backup := map[string]any{
 			"id":          id,
 			"volume_id":   volumeID,
 			"name":        name,
@@ -62,6 +63,9 @@ func (svc *Service) ListBackups(c *gin.Context) {
 			"updated_at":  updatedAt.Format(time.RFC3339),
 		}
 		backups = append(backups, backup)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"backups": backups})
@@ -97,7 +101,7 @@ func (svc *Service) CreateBackup(c *gin.Context) {
 		req.Backup.VolumeID, projectID,
 	).Scan(&volumeSize)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -122,7 +126,7 @@ func (svc *Service) CreateBackup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"backup": map[string]interface{}{
+		"backup": map[string]any{
 			"id":          backupID,
 			"volume_id":   req.Backup.VolumeID,
 			"name":        req.Backup.Name,
@@ -156,7 +160,7 @@ func (svc *Service) GetBackup(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, backupID, projectID).Scan(&volumeID, &name, &description, &status, &sizeGB, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("backup"))
 		return
 	}
@@ -167,7 +171,7 @@ func (svc *Service) GetBackup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"backup": map[string]interface{}{
+		"backup": map[string]any{
 			"id":          backupID,
 			"volume_id":   volumeID,
 			"name":        name,
@@ -217,7 +221,7 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 	}
 
 	// Parse restore data
-	restoreMap, ok := restoreData.(map[string]interface{})
+	restoreMap, ok := restoreData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid restore data format"))
 		return
@@ -239,7 +243,7 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 		backupID, projectID,
 	).Scan(&originalVolumeID, &sizeGB)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("backup"))
 		return
 	}
@@ -288,7 +292,7 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"restore": map[string]interface{}{
+		"restore": map[string]any{
 			"backup_id": backupID,
 			"volume_id": restoredVolumeID,
 		},
@@ -297,7 +301,7 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 
 // BackupAction handles backup actions
 func (svc *Service) BackupAction(c *gin.Context) {
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return

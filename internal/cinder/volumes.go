@@ -1,6 +1,7 @@
 package cinder
 
 import (
+	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -201,11 +202,7 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 		return
 	}
 
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 	userID := c.GetString("user_id")
 	volumeID := uuid.New().String()
 
@@ -264,18 +261,14 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 			"created_at":  now.Format("2006-01-02T15:04:05.000000"),
 			"updated_at":  now.Format("2006-01-02T15:04:05.000000"),
 			"metadata":    gin.H{},
-			"attachments": []interface{}{},
+			"attachments": []any{},
 		},
 	})
 }
 
 // ListVolumes lists all volumes (brief)
 func (svc *Service) ListVolumes(c *gin.Context) {
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
 	// Parse pagination parameters
 	limit := 1000
@@ -293,7 +286,7 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -343,6 +336,9 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 			"size": size,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if volumes == nil {
 		volumes = []gin.H{}
@@ -353,11 +349,7 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 
 // ListVolumesDetail lists all volumes (detailed)
 func (svc *Service) ListVolumesDetail(c *gin.Context) {
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
 	// Parse pagination parameters
 	limit := 1000
@@ -375,7 +367,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -422,7 +414,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 			continue
 		}
 
-		attachments := []interface{}{}
+		attachments := []any{}
 		if attachedTo.Valid {
 			attachments = append(attachments, gin.H{
 				"server_id": attachedTo.String,
@@ -442,6 +434,9 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 			"attachments": attachments,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if volumes == nil {
 		volumes = []gin.H{}
@@ -453,11 +448,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 // GetVolume returns a single volume
 func (svc *Service) GetVolume(c *gin.Context) {
 	volumeID := c.Param("id")
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
 	var id, name, status string
 	var size int
@@ -472,7 +463,7 @@ func (svc *Service) GetVolume(c *gin.Context) {
 		WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))
 	`, volumeID, projectID).Scan(&id, &name, &size, &status, &bootable, &attachedTo, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -482,7 +473,7 @@ func (svc *Service) GetVolume(c *gin.Context) {
 		return
 	}
 
-	attachments := []interface{}{}
+	attachments := []any{}
 	if attachedTo.Valid {
 		attachments = append(attachments, gin.H{
 			"server_id": attachedTo.String,
@@ -508,11 +499,7 @@ func (svc *Service) GetVolume(c *gin.Context) {
 // DeleteVolume deletes a volume
 func (svc *Service) DeleteVolume(c *gin.Context) {
 	volumeID := c.Param("id")
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
 	// Check if volume is attached (support lookup by ID or name)
 	var attachedTo sql.NullString
@@ -521,7 +508,7 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 		volumeID, projectID,
 	).Scan(&attachedTo)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -555,13 +542,9 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 // VolumeAction performs an action on a volume
 func (svc *Service) VolumeAction(c *gin.Context) {
 	volumeID := c.Param("id")
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
@@ -569,8 +552,16 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle attach action
 	if attachData, ok := req["os-attach"]; ok {
-		attachMap := attachData.(map[string]interface{})
-		instanceID := attachMap["instance_uuid"].(string)
+		attachMap, ok := attachData.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-attach must be an object"))
+			return
+		}
+		instanceID, ok := attachMap["instance_uuid"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("os-attach.instance_uuid must be a string"))
+			return
+		}
 
 		// Update volume to attached status
 		_, err := database.DB.Exec(c.Request.Context(), `
@@ -610,7 +601,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle extend action
 	if extendData, ok := req["os-extend"]; ok {
-		extendMap := extendData.(map[string]interface{})
+		extendMap := extendData.(map[string]any)
 		var newSize int
 
 		// Handle different JSON number types
@@ -660,7 +651,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle retype action
 	if retypeData, ok := req["os-retype"]; ok {
-		retypeMap := retypeData.(map[string]interface{})
+		retypeMap := retypeData.(map[string]any)
 		newType := retypeMap["new_type"].(string)
 
 		// Get or create volume type
@@ -670,7 +661,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			newType,
 		).Scan(&typeID)
 
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			// Create new volume type if it doesn't exist
 			typeID = uuid.New().String()
 			_, err = database.DB.Exec(c.Request.Context(),
@@ -709,7 +700,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle update readonly flag action
 	if readonlyData, ok := req["os-update_readonly_flag"]; ok {
-		readonlyMap := readonlyData.(map[string]interface{})
+		readonlyMap := readonlyData.(map[string]any)
 		readonly := readonlyMap["readonly"].(bool)
 
 		// Update volume readonly flag (stored in metadata or separate field)
@@ -732,8 +723,8 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle set image metadata action (make volume bootable)
 	if imageMetadataData, ok := req["os-set_image_metadata"]; ok {
-		imageMetadataMap := imageMetadataData.(map[string]interface{})
-		metadata := imageMetadataMap["metadata"].(map[string]interface{})
+		imageMetadataMap := imageMetadataData.(map[string]any)
+		metadata := imageMetadataMap["metadata"].(map[string]any)
 
 		// Store image metadata to make volume bootable
 		for key, value := range metadata {
@@ -757,7 +748,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle unset image metadata action
 	if unsetImageMetadata, ok := req["os-unset_image_metadata"]; ok {
-		unsetMap := unsetImageMetadata.(map[string]interface{})
+		unsetMap := unsetImageMetadata.(map[string]any)
 		key := unsetMap["key"].(string)
 
 		// Delete metadata entry with prefixed key
@@ -779,7 +770,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle reimage volume action
 	if reimageData, ok := req["os-reimage"]; ok {
-		reimageMap := reimageData.(map[string]interface{})
+		reimageMap := reimageData.(map[string]any)
 		imageID := reimageMap["image_id"].(string)
 
 		// Update volume to bootable and store image ID
@@ -857,7 +848,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			return
 		}
 
-		resetStatusMap := resetStatusData.(map[string]interface{})
+		resetStatusMap := resetStatusData.(map[string]any)
 		newStatus := resetStatusMap["status"].(string)
 
 		// Admin operation to manually set volume status
@@ -900,11 +891,7 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 		return
 	}
 
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 	snapshotID := uuid.New().String()
 
 	// Get volume info
@@ -915,7 +902,7 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 		req.Snapshot.VolumeID, projectID,
 	).Scan(&volumeID, &size)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -971,11 +958,7 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 
 // ListSnapshotsDetail is an alias that works with both URL patterns
 func (svc *Service) ListSnapshotsDetail(c *gin.Context) {
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
 	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT id, name, volume_id, size_gb, status, created_at
@@ -1011,6 +994,9 @@ func (svc *Service) ListSnapshotsDetail(c *gin.Context) {
 			"created_at": createdAt.Format("2006-01-02T15:04:05.000000"),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if snapshots == nil {
 		snapshots = []gin.H{}
@@ -1034,11 +1020,7 @@ func (svc *Service) GetDefaultVolumeType(c *gin.Context) {
 
 // ListSnapshots lists all snapshots
 func (svc *Service) ListSnapshots(c *gin.Context) {
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
 	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT id, name, volume_id, size_gb, status, created_at
@@ -1074,6 +1056,9 @@ func (svc *Service) ListSnapshots(c *gin.Context) {
 			"created_at": createdAt.Format("2006-01-02T15:04:05.000000"),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if snapshots == nil {
 		snapshots = []gin.H{}
@@ -1085,11 +1070,7 @@ func (svc *Service) ListSnapshots(c *gin.Context) {
 // GetSnapshot returns a single snapshot
 func (svc *Service) GetSnapshot(c *gin.Context) {
 	snapshotID := c.Param("id")
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
 	var id, name, volumeID, status string
 	var size int
@@ -1101,7 +1082,7 @@ func (svc *Service) GetSnapshot(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, snapshotID, projectID).Scan(&id, &name, &volumeID, &size, &status, &createdAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("snapshot"))
 		return
 	}
@@ -1126,11 +1107,7 @@ func (svc *Service) GetSnapshot(c *gin.Context) {
 // DeleteSnapshot deletes a snapshot
 func (svc *Service) DeleteSnapshot(c *gin.Context) {
 	snapshotID := c.Param("id")
-	// Try to get project_id from URL param first, then from token context
-	projectID := c.Param("project_id")
-	if projectID == "" {
-		projectID = c.GetString("project_id")
-	}
+	projectID := c.GetString("project_id")
 
 	// Get volume ID
 	var volumeID string
@@ -1139,7 +1116,7 @@ func (svc *Service) DeleteSnapshot(c *gin.Context) {
 		snapshotID, projectID,
 	).Scan(&volumeID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("snapshot"))
 		return
 	}
@@ -1200,6 +1177,9 @@ func (svc *Service) ListVolumeTypes(c *gin.Context) {
 			"is_public":   isPublic,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if types == nil {
 		types = []gin.H{}
@@ -1221,7 +1201,7 @@ func (svc *Service) GetVolumeType(c *gin.Context) {
 		WHERE id = $1
 	`, typeID).Scan(&id, &name, &description, &isPublic)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume type"))
 		return
 	}
@@ -1267,7 +1247,7 @@ func (svc *Service) UpdateVolume(c *gin.Context) {
 		volumeID, projectID,
 	).Scan(&currentName, &currentDesc, &sizeGB, &status, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -1336,7 +1316,7 @@ func (svc *Service) UpdateSnapshot(c *gin.Context) {
 		snapshotID, projectID,
 	).Scan(&currentName, &currentDesc, &volumeID, &sizeGB, &status, &createdAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("snapshot"))
 		return
 	}
@@ -1413,6 +1393,9 @@ func (svc *Service) GetVolumeMetadata(c *gin.Context) {
 			continue
 		}
 		metadata[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"metadata": metadata})
@@ -1493,7 +1476,7 @@ func (svc *Service) GetVolumeMetadataKey(c *gin.Context) {
 		volumeID, key,
 	).Scan(&value)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("metadata key"))
 		return
 	}
@@ -1623,6 +1606,9 @@ func (svc *Service) GetSnapshotMetadata(c *gin.Context) {
 		}
 		metadata[key] = value
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"metadata": metadata})
 }
@@ -1702,7 +1688,7 @@ func (svc *Service) GetSnapshotMetadataKey(c *gin.Context) {
 		snapshotID, key,
 	).Scan(&value)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("metadata key"))
 		return
 	}

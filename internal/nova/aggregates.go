@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -29,7 +30,7 @@ func (svc *Service) ListAggregates(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	aggregates := []map[string]interface{}{}
+	aggregates := []map[string]any{}
 	for rows.Next() {
 		var (
 			id               string
@@ -48,15 +49,15 @@ func (svc *Service) ListAggregates(c *gin.Context) {
 			return
 		}
 
-		var metadataMap map[string]interface{}
+		var metadataMap map[string]any
 		if len(metadata) > 0 {
 			json.Unmarshal(metadata, &metadataMap)
 		}
 		if metadataMap == nil {
-			metadataMap = make(map[string]interface{})
+			metadataMap = make(map[string]any)
 		}
 
-		agg := map[string]interface{}{
+		agg := map[string]any{
 			"id":                id,
 			"name":              name,
 			"availability_zone": availabilityZone,
@@ -66,6 +67,9 @@ func (svc *Service) ListAggregates(c *gin.Context) {
 			"updated_at":        updatedAt.Format(time.RFC3339),
 		}
 		aggregates = append(aggregates, agg)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"aggregates": aggregates})
@@ -105,11 +109,11 @@ func (svc *Service) CreateAggregate(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"aggregate": map[string]interface{}{
+		"aggregate": map[string]any{
 			"id":                aggregateUUID,
 			"name":              req.Aggregate.Name,
 			"availability_zone": availabilityZone,
-			"metadata":          map[string]interface{}{},
+			"metadata":          map[string]any{},
 			"hosts":             []string{},
 			"created_at":        now.Format(time.RFC3339),
 			"updated_at":        now.Format(time.RFC3339),
@@ -136,7 +140,7 @@ func (svc *Service) GetAggregate(c *gin.Context) {
 		WHERE uuid = $1
 	`, aggregateID).Scan(&name, &availabilityZone, &metadata, &hosts, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("aggregate"))
 		return
 	}
@@ -146,16 +150,16 @@ func (svc *Service) GetAggregate(c *gin.Context) {
 		return
 	}
 
-	var metadataMap map[string]interface{}
+	var metadataMap map[string]any
 	if len(metadata) > 0 {
 		_ = database.DB.QueryRow(c.Request.Context(), "SELECT $1::jsonb", metadata).Scan(&metadataMap)
 	}
 	if metadataMap == nil {
-		metadataMap = make(map[string]interface{})
+		metadataMap = make(map[string]any)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"aggregate": map[string]interface{}{
+		"aggregate": map[string]any{
 			"id":                aggregateID,
 			"name":              name,
 			"availability_zone": availabilityZone,
@@ -197,7 +201,7 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 
 	// Build update query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argPos := 1
 
 	if req.Aggregate.Name != nil {
@@ -260,7 +264,7 @@ func (svc *Service) DeleteAggregate(c *gin.Context) {
 func (svc *Service) AggregateAction(c *gin.Context) {
 	aggregateID := c.Param("id")
 
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
@@ -285,8 +289,8 @@ func (svc *Service) AggregateAction(c *gin.Context) {
 }
 
 // AddHostToAggregate adds a host to an aggregate
-func (svc *Service) AddHostToAggregate(c *gin.Context, aggregateID string, actionData interface{}) {
-	actionMap, ok := actionData.(map[string]interface{})
+func (svc *Service) AddHostToAggregate(c *gin.Context, aggregateID string, actionData any) {
+	actionMap, ok := actionData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid add_host data"))
 		return
@@ -305,7 +309,7 @@ func (svc *Service) AddHostToAggregate(c *gin.Context, aggregateID string, actio
 		aggregateID,
 	).Scan(&hosts)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("aggregate"))
 		return
 	}
@@ -341,8 +345,8 @@ func (svc *Service) AddHostToAggregate(c *gin.Context, aggregateID string, actio
 }
 
 // RemoveHostFromAggregate removes a host from an aggregate
-func (svc *Service) RemoveHostFromAggregate(c *gin.Context, aggregateID string, actionData interface{}) {
-	actionMap, ok := actionData.(map[string]interface{})
+func (svc *Service) RemoveHostFromAggregate(c *gin.Context, aggregateID string, actionData any) {
+	actionMap, ok := actionData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid remove_host data"))
 		return
@@ -361,7 +365,7 @@ func (svc *Service) RemoveHostFromAggregate(c *gin.Context, aggregateID string, 
 		aggregateID,
 	).Scan(&hosts)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("aggregate"))
 		return
 	}
@@ -403,14 +407,14 @@ func (svc *Service) RemoveHostFromAggregate(c *gin.Context, aggregateID string, 
 }
 
 // SetAggregateMetadata sets metadata for an aggregate
-func (svc *Service) SetAggregateMetadata(c *gin.Context, aggregateID string, actionData interface{}) {
-	actionMap, ok := actionData.(map[string]interface{})
+func (svc *Service) SetAggregateMetadata(c *gin.Context, aggregateID string, actionData any) {
+	actionMap, ok := actionData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid set_metadata data"))
 		return
 	}
 
-	metadata, ok := actionMap["metadata"].(map[string]interface{})
+	metadata, ok := actionMap["metadata"].(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("metadata required"))
 		return

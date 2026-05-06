@@ -139,7 +139,8 @@ func TestCinderGetBackup_Contract(t *testing.T) {
 	createVolReq.Header.Set("X-Auth-Token", client.TokenID)
 	createVolReq.Header.Set("Content-Type", "application/json")
 
-	createVolResp, _ := http.DefaultClient.Do(createVolReq)
+	createVolResp, err := http.DefaultClient.Do(createVolReq)
+ require.NoError(t, err)
 	defer createVolResp.Body.Close()
 
 	createVolRespBody, _ := io.ReadAll(createVolResp.Body)
@@ -170,7 +171,8 @@ func TestCinderGetBackup_Contract(t *testing.T) {
 	createReq.Header.Set("X-Auth-Token", client.TokenID)
 	createReq.Header.Set("Content-Type", "application/json")
 
-	createResp, _ := http.DefaultClient.Do(createReq)
+	createResp, err := http.DefaultClient.Do(createReq)
+ require.NoError(t, err)
 	defer createResp.Body.Close()
 
 	createRespBody, _ := io.ReadAll(createResp.Body)
@@ -228,7 +230,8 @@ func TestCinderDeleteBackup_Contract(t *testing.T) {
 	createVolReq.Header.Set("X-Auth-Token", client.TokenID)
 	createVolReq.Header.Set("Content-Type", "application/json")
 
-	createVolResp, _ := http.DefaultClient.Do(createVolReq)
+	createVolResp, err := http.DefaultClient.Do(createVolReq)
+ require.NoError(t, err)
 	defer createVolResp.Body.Close()
 
 	createVolRespBody, _ := io.ReadAll(createVolResp.Body)
@@ -259,7 +262,8 @@ func TestCinderDeleteBackup_Contract(t *testing.T) {
 	createReq.Header.Set("X-Auth-Token", client.TokenID)
 	createReq.Header.Set("Content-Type", "application/json")
 
-	createResp, _ := http.DefaultClient.Do(createReq)
+	createResp, err := http.DefaultClient.Do(createReq)
+ require.NoError(t, err)
 	defer createResp.Body.Close()
 
 	createRespBody, _ := io.ReadAll(createResp.Body)
@@ -301,7 +305,8 @@ func TestCinderRestoreBackup_Contract(t *testing.T) {
 	createVolReq.Header.Set("X-Auth-Token", client.TokenID)
 	createVolReq.Header.Set("Content-Type", "application/json")
 
-	createVolResp, _ := http.DefaultClient.Do(createVolReq)
+	createVolResp, err := http.DefaultClient.Do(createVolReq)
+ require.NoError(t, err)
 	defer createVolResp.Body.Close()
 
 	createVolRespBody, _ := io.ReadAll(createVolResp.Body)
@@ -332,7 +337,8 @@ func TestCinderRestoreBackup_Contract(t *testing.T) {
 	createReq.Header.Set("X-Auth-Token", client.TokenID)
 	createReq.Header.Set("Content-Type", "application/json")
 
-	createResp, _ := http.DefaultClient.Do(createReq)
+	createResp, err := http.DefaultClient.Do(createReq)
+ require.NoError(t, err)
 	defer createResp.Body.Close()
 
 	createRespBody, _ := io.ReadAll(createResp.Body)

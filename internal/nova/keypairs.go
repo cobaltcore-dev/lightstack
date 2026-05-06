@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"errors"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
@@ -64,6 +65,9 @@ func (svc *Service) ListKeypairs(c *gin.Context) {
 			},
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if keypairs == nil {
 		keypairs = []gin.H{}
@@ -86,7 +90,7 @@ func (svc *Service) GetKeypair(c *gin.Context) {
 		WHERE user_id = $1 AND name = $2
 	`, userID, keypairName).Scan(&name, &publicKey, &fingerprint, &createdAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("keypair"))
 		return
 	}

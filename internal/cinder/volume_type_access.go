@@ -15,7 +15,7 @@ import (
 func (svc *Service) VolumeTypeAction(c *gin.Context) {
 	typeID := c.Param("id")
 
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
@@ -23,7 +23,7 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 
 	// Handle addProjectAccess action
 	if addAccess, ok := req["addProjectAccess"]; ok {
-		addMap := addAccess.(map[string]interface{})
+		addMap := addAccess.(map[string]any)
 		projectID := addMap["project"].(string)
 
 		// Verify volume type exists and is private
@@ -62,7 +62,7 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 
 	// Handle removeProjectAccess action
 	if removeAccess, ok := req["removeProjectAccess"]; ok {
-		removeMap := removeAccess.(map[string]interface{})
+		removeMap := removeAccess.(map[string]any)
 		projectID := removeMap["project"].(string)
 
 		// Remove access
@@ -107,7 +107,7 @@ func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 
 	if isPublic {
 		// Public types don't have access control
-		c.JSON(http.StatusOK, gin.H{"volume_type_access": []interface{}{}})
+		c.JSON(http.StatusOK, gin.H{"volume_type_access": []any{}})
 		return
 	}
 
@@ -125,15 +125,18 @@ func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	access := []map[string]interface{}{}
+	access := []map[string]any{}
 	for rows.Next() {
 		var volumeTypeID, projectID uuid.UUID
 		if rows.Scan(&volumeTypeID, &projectID) == nil {
-			access = append(access, map[string]interface{}{
+			access = append(access, map[string]any{
 				"volume_type_id": volumeTypeID.String(),
 				"project_id":     projectID.String(),
 			})
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"volume_type_access": access})

@@ -141,6 +141,10 @@ func (svc *Service) GetFlavorExtraSpecs(c *gin.Context) {
 			log.Warn().Err(err).Msg("failed to scan flavor extra spec row")
 			continue
 		}
+		extraSpecs[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"extra_specs": extraSpecs})
@@ -258,14 +262,14 @@ func (svc *Service) DeleteFlavorExtraSpecKey(c *gin.Context) {
 func (svc *Service) FlavorAction(c *gin.Context) {
 	flavorID := c.Param("id")
 
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
 
 	// Handle addTenantAccess action
-	if addAccess, ok := req["addTenantAccess"].(map[string]interface{}); ok {
+	if addAccess, ok := req["addTenantAccess"].(map[string]any); ok {
 		tenantID, ok := addAccess["tenant"].(string)
 		if !ok {
 			common.SendError(c, common.NewBadRequestError("tenant is required"))
@@ -295,7 +299,7 @@ func (svc *Service) FlavorAction(c *gin.Context) {
 	}
 
 	// Handle removeTenantAccess action
-	if removeAccess, ok := req["removeTenantAccess"].(map[string]interface{}); ok {
+	if removeAccess, ok := req["removeTenantAccess"].(map[string]any); ok {
 		tenantID, ok := removeAccess["tenant"].(string)
 		if !ok {
 			common.SendError(c, common.NewBadRequestError("tenant is required"))
@@ -346,6 +350,9 @@ func (svc *Service) GetFlavorAccess(c *gin.Context) {
 			"flavor_id": fID,
 			"tenant_id": pID,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"flavor_access": flavorAccess})

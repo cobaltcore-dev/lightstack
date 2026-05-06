@@ -18,7 +18,7 @@ func (svc *Service) ManageVolume(c *gin.Context) {
 	var req struct {
 		Volume struct {
 			Host       string                 `json:"host" binding:"required"`
-			Ref        map[string]interface{} `json:"ref" binding:"required"`
+			Ref        map[string]any `json:"ref" binding:"required"`
 			Name       string                 `json:"name"`
 			VolumeType string                 `json:"volume_type"`
 			Metadata   map[string]string      `json:"metadata"`
@@ -47,7 +47,7 @@ func (svc *Service) ManageVolume(c *gin.Context) {
 		return
 	}
 
-	volume := map[string]interface{}{
+	volume := map[string]any{
 		"id":                volumeID.String(),
 		"name":              req.Volume.Name,
 		"size":              sizeGB,
@@ -72,7 +72,7 @@ func (svc *Service) ListManageableVolumes(c *gin.Context) {
 
 	// In stub mode, return empty list
 	// In real mode, would query storage backend for unmanaged volumes
-	manageableVolumes := []map[string]interface{}{}
+	manageableVolumes := []map[string]any{}
 
 	c.JSON(http.StatusOK, gin.H{"manageable-volumes": manageableVolumes})
 }
@@ -124,7 +124,7 @@ func (svc *Service) ManageSnapshot(c *gin.Context) {
 	var req struct {
 		Snapshot struct {
 			VolumeID string                 `json:"volume_id" binding:"required"`
-			Ref      map[string]interface{} `json:"ref" binding:"required"`
+			Ref      map[string]any `json:"ref" binding:"required"`
 			Name     string                 `json:"name"`
 			Metadata map[string]string      `json:"metadata"`
 		} `json:"snapshot" binding:"required"`
@@ -163,7 +163,7 @@ func (svc *Service) ManageSnapshot(c *gin.Context) {
 		return
 	}
 
-	snapshot := map[string]interface{}{
+	snapshot := map[string]any{
 		"id":         snapshotID.String(),
 		"name":       req.Snapshot.Name,
 		"volume_id":  req.Snapshot.VolumeID,

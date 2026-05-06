@@ -1,6 +1,7 @@
 package keystone
 
 import (
+	"errors"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -25,7 +26,7 @@ func (svc *Service) ListCredentials(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	credentials := []map[string]interface{}{}
+	credentials := []map[string]any{}
 	for rows.Next() {
 		var id, userID, credType, blob string
 		var projectID *string
@@ -35,7 +36,7 @@ func (svc *Service) ListCredentials(c *gin.Context) {
 			continue
 		}
 
-		credential := map[string]interface{}{
+		credential := map[string]any{
 			"id":      id,
 			"user_id": userID,
 			"type":    credType,
@@ -47,6 +48,9 @@ func (svc *Service) ListCredentials(c *gin.Context) {
 		}
 
 		credentials = append(credentials, credential)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(200, gin.H{"credentials": credentials})
@@ -71,7 +75,7 @@ func (svc *Service) CreateCredential(c *gin.Context) {
 	credID := uuid.New()
 	now := time.Now()
 
-	var projectID interface{}
+	var projectID any
 	if req.Credential.ProjectID != "" {
 		projectID = req.Credential.ProjectID
 	}
@@ -87,7 +91,7 @@ func (svc *Service) CreateCredential(c *gin.Context) {
 		return
 	}
 
-	credential := map[string]interface{}{
+	credential := map[string]any{
 		"id":      credID.String(),
 		"user_id": req.Credential.UserID,
 		"type":    req.Credential.Type,
@@ -114,7 +118,7 @@ func (svc *Service) GetCredential(c *gin.Context) {
 		WHERE id = $1
 	`, credID).Scan(&id, &userID, &projectID, &credType, &blob)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("credential"))
 		return
 	}
@@ -124,7 +128,7 @@ func (svc *Service) GetCredential(c *gin.Context) {
 		return
 	}
 
-	credential := map[string]interface{}{
+	credential := map[string]any{
 		"id":      id,
 		"user_id": userID,
 		"type":    credType,
@@ -143,7 +147,7 @@ func (svc *Service) UpdateCredential(c *gin.Context) {
 	credID := c.Param("id")
 
 	var req struct {
-		Credential map[string]interface{} `json:"credential"`
+		Credential map[string]any `json:"credential"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -153,7 +157,7 @@ func (svc *Service) UpdateCredential(c *gin.Context) {
 
 	// Build dynamic update query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argCount := 1
 
 	if blob, ok := req.Credential["blob"].(string); ok {

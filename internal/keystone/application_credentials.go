@@ -1,6 +1,7 @@
 package keystone
 
 import (
+	"errors"
 	"crypto/rand"
 	"encoding/base64"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // ListApplicationCredentials returns application credentials for a user
@@ -30,7 +32,7 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	credentials := []map[string]interface{}{}
+	credentials := []map[string]any{}
 	for rows.Next() {
 		var id, userIDVal, name string
 		var projectID, description *string
@@ -42,7 +44,7 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 			continue
 		}
 
-		credential := map[string]interface{}{
+		credential := map[string]any{
 			"id":           id,
 			"user_id":      userIDVal,
 			"name":         name,
@@ -67,11 +69,11 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 			WHERE acr.application_credential_id = $1
 		`, id)
 		if err == nil {
-			roles := []map[string]interface{}{}
+			roles := []map[string]any{}
 			for roleRows.Next() {
 				var roleID, roleName string
 				if err := roleRows.Scan(&roleID, &roleName); err == nil {
-					roles = append(roles, map[string]interface{}{
+					roles = append(roles, map[string]any{
 						"id":   roleID,
 						"name": roleName,
 					})
@@ -82,6 +84,9 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 		}
 
 		credentials = append(credentials, credential)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(200, gin.H{"application_credentials": credentials})
@@ -98,7 +103,7 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 			ProjectID    string                   `json:"project_id"`
 			ExpiresAt    string                   `json:"expires_at"`
 			Unrestricted bool                     `json:"unrestricted"`
-			Roles        []map[string]interface{} `json:"roles"`
+			Roles        []map[string]any `json:"roles"`
 		} `json:"application_credential"`
 	}
 
@@ -115,22 +120,29 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 	rand.Read(secretBytes)
 	secret := base64.URLEncoding.EncodeToString(secretBytes)
 
-	var projectID interface{}
+	secretHash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_application_credential").Str("user_id", userID).Msg("Failed to hash application credential secret")
+		common.SendError(c, common.NewInternalServerError("failed to create application credential"))
+		return
+	}
+
+	var projectID any
 	if req.ApplicationCredential.ProjectID != "" {
 		projectID = req.ApplicationCredential.ProjectID
 	}
 
-	var expiresAt interface{}
+	var expiresAt any
 	if req.ApplicationCredential.ExpiresAt != "" {
 		if t, err := time.Parse(time.RFC3339, req.ApplicationCredential.ExpiresAt); err == nil {
 			expiresAt = t
 		}
 	}
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err = database.DB.Exec(c.Request.Context(), `
 		INSERT INTO application_credentials (id, user_id, project_id, name, secret_hash, description, expires_at, unrestricted, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, credID, userID, projectID, req.ApplicationCredential.Name, secret, req.ApplicationCredential.Description, expiresAt, req.ApplicationCredential.Unrestricted, now)
+	`, credID, userID, projectID, req.ApplicationCredential.Name, string(secretHash), req.ApplicationCredential.Description, expiresAt, req.ApplicationCredential.Unrestricted, now)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_application_credential").Str("user_id", userID).Msg("Failed to create application credential")
@@ -147,7 +159,7 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 		`, credID, roleID)
 	}
 
-	credential := map[string]interface{}{
+	credential := map[string]any{
 		"id":           credID.String(),
 		"user_id":      userID,
 		"name":         req.ApplicationCredential.Name,
@@ -189,7 +201,7 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 		WHERE id = $1 AND user_id = $2
 	`, credID, userID).Scan(&id, &userIDVal, &projectID, &name, &description, &expiresAt, &unrestricted)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("application credential"))
 		return
 	}
@@ -199,7 +211,7 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 		return
 	}
 
-	credential := map[string]interface{}{
+	credential := map[string]any{
 		"id":           id,
 		"user_id":      userIDVal,
 		"name":         name,
@@ -224,11 +236,11 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 		WHERE acr.application_credential_id = $1
 	`, id)
 	if err == nil {
-		roles := []map[string]interface{}{}
+		roles := []map[string]any{}
 		for roleRows.Next() {
 			var roleID, roleName string
 			if err := roleRows.Scan(&roleID, &roleName); err == nil {
-				roles = append(roles, map[string]interface{}{
+				roles = append(roles, map[string]any{
 					"id":   roleID,
 					"name": roleName,
 				})
@@ -279,7 +291,7 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 		WHERE id = $1
 	`, credID).Scan(&id, &userID, &projectID, &name, &description, &expiresAt, &unrestricted)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("application credential"))
 		return
 	}
@@ -289,7 +301,7 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 		return
 	}
 
-	credential := map[string]interface{}{
+	credential := map[string]any{
 		"id":           id,
 		"user_id":      userID,
 		"name":         name,
@@ -314,11 +326,11 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 		WHERE acr.application_credential_id = $1
 	`, id)
 	if err == nil {
-		roles := []map[string]interface{}{}
+		roles := []map[string]any{}
 		for roleRows.Next() {
 			var roleID, roleName string
 			if err := roleRows.Scan(&roleID, &roleName); err == nil {
-				roles = append(roles, map[string]interface{}{
+				roles = append(roles, map[string]any{
 					"id":   roleID,
 					"name": roleName,
 				})

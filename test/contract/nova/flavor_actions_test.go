@@ -58,7 +58,8 @@ func TestNovaFlavorAddTenantAccess_Contract(t *testing.T) {
 	accessURL := client.ServiceURL("flavors", flavor.ID, "os-flavor-access")
 	accessReq, _ := http.NewRequest("GET", accessURL, nil)
 	accessReq.Header.Set("X-Auth-Token", client.TokenID)
-	accessResp, _ := http.DefaultClient.Do(accessReq)
+	accessResp, err := http.DefaultClient.Do(accessReq)
+ require.NoError(t, err)
 	defer accessResp.Body.Close()
 
 	accessBody, _ := io.ReadAll(accessResp.Body)
@@ -131,7 +132,8 @@ func TestNovaFlavorRemoveTenantAccess_Contract(t *testing.T) {
 	accessURL := client.ServiceURL("flavors", flavor.ID, "os-flavor-access")
 	accessReq, _ := http.NewRequest("GET", accessURL, nil)
 	accessReq.Header.Set("X-Auth-Token", client.TokenID)
-	accessResp, _ := http.DefaultClient.Do(accessReq)
+	accessResp, err := http.DefaultClient.Do(accessReq)
+ require.NoError(t, err)
 	defer accessResp.Body.Close()
 
 	accessBody, _ := io.ReadAll(accessResp.Body)

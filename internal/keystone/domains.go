@@ -25,7 +25,7 @@ func (svc *Service) ListDomains(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	domains := []map[string]interface{}{}
+	domains := []map[string]any{}
 	for rows.Next() {
 		var id uuid.UUID
 		var name string
@@ -37,7 +37,7 @@ func (svc *Service) ListDomains(c *gin.Context) {
 			continue
 		}
 
-		domain := map[string]interface{}{
+		domain := map[string]any{
 			"id":      id.String(),
 			"name":    name,
 			"enabled": enabled,
@@ -48,6 +48,9 @@ func (svc *Service) ListDomains(c *gin.Context) {
 		}
 
 		domains = append(domains, domain)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(200, gin.H{"domains": domains})
@@ -89,7 +92,7 @@ func (svc *Service) CreateDomain(c *gin.Context) {
 		return
 	}
 
-	domain := map[string]interface{}{
+	domain := map[string]any{
 		"id":      domainID.String(),
 		"name":    req.Domain.Name,
 		"enabled": enabled,
@@ -122,7 +125,7 @@ func (svc *Service) GetDomain(c *gin.Context) {
 		return
 	}
 
-	domain := map[string]interface{}{
+	domain := map[string]any{
 		"id":      id.String(),
 		"name":    name,
 		"enabled": enabled,
@@ -140,7 +143,7 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 	domainID := c.Param("id")
 
 	var req struct {
-		Domain map[string]interface{} `json:"domain" binding:"required"`
+		Domain map[string]any `json:"domain" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -161,7 +164,7 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 
 	// Build update query dynamically
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argCount := 1
 
 	if name, ok := req.Domain["name"].(string); ok {
@@ -224,7 +227,7 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 		return
 	}
 
-	domain := map[string]interface{}{
+	domain := map[string]any{
 		"id":      id.String(),
 		"name":    name,
 		"enabled": enabled,
@@ -292,9 +295,9 @@ func (svc *Service) GetDomainConfig(c *gin.Context) {
 	}
 
 	// Return empty config (stub implementation)
-	config := map[string]interface{}{
-		"identity": map[string]interface{}{},
-		"ldap":     map[string]interface{}{},
+	config := map[string]any{
+		"identity": map[string]any{},
+		"ldap":     map[string]any{},
 	}
 
 	c.JSON(200, gin.H{"config": config})

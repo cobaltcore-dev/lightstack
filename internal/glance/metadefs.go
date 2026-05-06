@@ -25,7 +25,7 @@ func (svc *Service) ListMetadefNamespaces(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	namespaces := []map[string]interface{}{}
+	namespaces := []map[string]any{}
 	for rows.Next() {
 		var namespace, visibility string
 		var displayName, description, owner *string
@@ -37,7 +37,7 @@ func (svc *Service) ListMetadefNamespaces(c *gin.Context) {
 			continue
 		}
 
-		ns := map[string]interface{}{
+		ns := map[string]any{
 			"namespace":  namespace,
 			"visibility": visibility,
 			"protected":  protected,
@@ -57,13 +57,16 @@ func (svc *Service) ListMetadefNamespaces(c *gin.Context) {
 
 		namespaces = append(namespaces, ns)
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"namespaces": namespaces})
 }
 
 // CreateMetadefNamespace handles POST /v2/metadefs/namespaces
 func (svc *Service) CreateMetadefNamespace(c *gin.Context) {
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
@@ -95,9 +98,9 @@ func (svc *Service) CreateMetadefNamespace(c *gin.Context) {
 	}
 
 	// Handle resource type associations if provided
-	if rtAssocs, ok := req["resource_type_associations"].([]interface{}); ok {
+	if rtAssocs, ok := req["resource_type_associations"].([]any); ok {
 		for _, assoc := range rtAssocs {
-			if assocMap, ok := assoc.(map[string]interface{}); ok {
+			if assocMap, ok := assoc.(map[string]any); ok {
 				rtName, _ := assocMap["name"].(string)
 				rtPrefix, _ := assocMap["prefix"].(string)
 
@@ -109,7 +112,7 @@ func (svc *Service) CreateMetadefNamespace(c *gin.Context) {
 		}
 	}
 
-	result := map[string]interface{}{
+	result := map[string]any{
 		"namespace":  namespace,
 		"visibility": visibility,
 		"protected":  protected,
@@ -150,7 +153,7 @@ func (svc *Service) GetMetadefNamespace(c *gin.Context) {
 		return
 	}
 
-	result := map[string]interface{}{
+	result := map[string]any{
 		"namespace":  ns,
 		"visibility": visibility,
 		"protected":  protected,
@@ -175,13 +178,13 @@ func (svc *Service) GetMetadefNamespace(c *gin.Context) {
 
 	if err == nil {
 		defer rows.Close()
-		var rtAssocs []map[string]interface{}
+		var rtAssocs []map[string]any
 		for rows.Next() {
 			var name string
 			var prefix *string
 			rows.Scan(&name, &prefix)
 
-			rt := map[string]interface{}{
+			rt := map[string]any{
 				"name": name,
 			}
 			if prefix != nil {
@@ -189,6 +192,9 @@ func (svc *Service) GetMetadefNamespace(c *gin.Context) {
 			}
 
 			rtAssocs = append(rtAssocs, rt)
+		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
 		}
 
 		if len(rtAssocs) > 0 {
@@ -203,7 +209,7 @@ func (svc *Service) GetMetadefNamespace(c *gin.Context) {
 func (svc *Service) UpdateMetadefNamespace(c *gin.Context) {
 	namespace := c.Param("namespace")
 
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
@@ -237,7 +243,7 @@ func (svc *Service) UpdateMetadefNamespace(c *gin.Context) {
 		return
 	}
 
-	result := map[string]interface{}{
+	result := map[string]any{
 		"namespace":  namespace,
 		"visibility": visibility,
 		"protected":  protected,
@@ -280,7 +286,7 @@ func (svc *Service) DeleteMetadefNamespace(c *gin.Context) {
 // ListMetadefResourceTypes handles GET /v2/metadefs/resource_types
 func (svc *Service) ListMetadefResourceTypes(c *gin.Context) {
 	// Return predefined resource types
-	resourceTypes := []map[string]interface{}{
+	resourceTypes := []map[string]any{
 		{
 			"name":       "OS::Glance::Image",
 			"created_at": time.Now().Format(time.RFC3339),

@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"errors"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -113,6 +114,9 @@ func (svc *Service) ListPortForwardings(c *gin.Context) {
 
 		forwardings = append(forwardings, result)
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if forwardings == nil {
 		forwardings = []gin.H{}
@@ -157,7 +161,7 @@ func (svc *Service) CreatePortForwarding(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, floatingIPID, projectID).Scan(&floatingIP, &routerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
 		return
 	}
@@ -259,7 +263,7 @@ func (svc *Service) GetPortForwarding(c *gin.Context) {
 		&pf.InternalPortID, &pf.InternalIPAddress, &pf.ExternalPort, &pf.InternalPort,
 		&pf.Protocol, &pf.Status, &pf.Description, &pf.CreatedAt, &pf.UpdatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port forwarding"))
 		return
 	}
@@ -312,7 +316,7 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 		&currentPF.InternalIPAddress, &currentPF.ExternalPort, &currentPF.InternalPort,
 		&currentPF.Protocol, &floatingIP, &routerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port forwarding"))
 		return
 	}
@@ -324,7 +328,7 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 
 	// Build dynamic UPDATE query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argID := 1
 
 	needsNATUpdate := false
@@ -434,7 +438,7 @@ func (svc *Service) DeletePortForwarding(c *gin.Context) {
 	`, pfID, floatingIPID, projectID).Scan(&externalPort, &internalPort, &protocol,
 		&internalIP, &floatingIP, &routerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port forwarding"))
 		return
 	}

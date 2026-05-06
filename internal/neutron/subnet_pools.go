@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -66,6 +67,9 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 		}
 
 		pools = append(pools, pool)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"subnetpools": pools})
@@ -175,7 +179,7 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 	`, poolID, projectID).Scan(&id, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
 		&shared, &isDefault, &ipVersion, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet pool"))
 		return
 	}
@@ -227,7 +231,7 @@ func (svc *Service) UpdateSubnetPool(c *gin.Context) {
 	}
 
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argID := 1
 
 	if req.SubnetPool.Name != nil {

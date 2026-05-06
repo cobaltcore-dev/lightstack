@@ -1,6 +1,7 @@
 package cinder
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -29,7 +30,7 @@ func (svc *Service) ListQosSpecs(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	qosSpecs := []map[string]interface{}{}
+	qosSpecs := []map[string]any{}
 	for rows.Next() {
 		var (
 			id        string
@@ -46,13 +47,16 @@ func (svc *Service) ListQosSpecs(c *gin.Context) {
 			return
 		}
 
-		qosSpec := map[string]interface{}{
+		qosSpec := map[string]any{
 			"id":       id,
 			"name":     name,
 			"consumer": consumer,
 			"specs":    specs,
 		}
 		qosSpecs = append(qosSpecs, qosSpec)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"qos_specs": qosSpecs})
@@ -97,7 +101,7 @@ func (svc *Service) CreateQosSpec(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"qos_specs": map[string]interface{}{
+		"qos_specs": map[string]any{
 			"id":       qosID,
 			"name":     req.QosSpecs.Name,
 			"consumer": req.QosSpecs.Consumer,
@@ -124,7 +128,7 @@ func (svc *Service) GetQosSpec(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, qosID, projectID).Scan(&name, &consumer, &specs, &createdAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("QoS spec"))
 		return
 	}
@@ -135,7 +139,7 @@ func (svc *Service) GetQosSpec(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"qos_specs": map[string]interface{}{
+		"qos_specs": map[string]any{
 			"id":       qosID,
 			"name":     name,
 			"consumer": consumer,
@@ -165,7 +169,7 @@ func (svc *Service) UpdateQosSpec(c *gin.Context) {
 		qosID, projectID,
 	).Scan(&currentSpecs)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("QoS spec"))
 		return
 	}
@@ -216,7 +220,7 @@ func (svc *Service) UpdateQosSpec(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"qos_specs": map[string]interface{}{
+		"qos_specs": map[string]any{
 			"id":       qosID,
 			"name":     name,
 			"consumer": consumer,

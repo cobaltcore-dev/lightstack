@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -27,7 +28,7 @@ func (svc *Service) ListTrunks(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	trunks := []map[string]interface{}{}
+	trunks := []map[string]any{}
 	for rows.Next() {
 		var id, portID uuid.UUID
 		var projectIDStr uuid.UUID
@@ -47,14 +48,14 @@ func (svc *Service) ListTrunks(c *gin.Context) {
 			WHERE trunk_id = $1
 		`, id)
 
-		subPorts := []map[string]interface{}{}
+		subPorts := []map[string]any{}
 		if subPortRows != nil {
 			for subPortRows.Next() {
 				var subPortID uuid.UUID
 				var segmentationType string
 				var segmentationID int
 				if subPortRows.Scan(&subPortID, &segmentationType, &segmentationID) == nil {
-					subPorts = append(subPorts, map[string]interface{}{
+					subPorts = append(subPorts, map[string]any{
 						"port_id":           subPortID.String(),
 						"segmentation_type": segmentationType,
 						"segmentation_id":   segmentationID,
@@ -64,7 +65,7 @@ func (svc *Service) ListTrunks(c *gin.Context) {
 			subPortRows.Close()
 		}
 
-		trunk := map[string]interface{}{
+		trunk := map[string]any{
 			"id":             id.String(),
 			"name":           name,
 			"description":    description,
@@ -78,6 +79,9 @@ func (svc *Service) ListTrunks(c *gin.Context) {
 			"updated_at":     updatedAt.Format(time.RFC3339),
 		}
 		trunks = append(trunks, trunk)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"trunks": trunks})
@@ -125,7 +129,7 @@ func (svc *Service) CreateTrunk(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"trunk": map[string]interface{}{
+		"trunk": map[string]any{
 			"id":             trunkID.String(),
 			"name":           req.Trunk.Name,
 			"description":    req.Trunk.Description,
@@ -134,7 +138,7 @@ func (svc *Service) CreateTrunk(c *gin.Context) {
 			"port_id":        req.Trunk.PortID,
 			"admin_state_up": adminStateUp,
 			"status":         "ACTIVE",
-			"sub_ports":      []interface{}{},
+			"sub_ports":      []any{},
 			"created_at":     time.Now().Format(time.RFC3339),
 			"updated_at":     time.Now().Format(time.RFC3339),
 		},
@@ -170,7 +174,7 @@ func (svc *Service) GetTrunk(c *gin.Context) {
 		WHERE trunk_id = $1
 	`, id)
 
-	subPorts := []map[string]interface{}{}
+	subPorts := []map[string]any{}
 	if subPortRows != nil {
 		defer subPortRows.Close()
 		for subPortRows.Next() {
@@ -178,7 +182,7 @@ func (svc *Service) GetTrunk(c *gin.Context) {
 			var segmentationType string
 			var segmentationID int
 			if subPortRows.Scan(&subPortID, &segmentationType, &segmentationID) == nil {
-				subPorts = append(subPorts, map[string]interface{}{
+				subPorts = append(subPorts, map[string]any{
 					"port_id":           subPortID.String(),
 					"segmentation_type": segmentationType,
 					"segmentation_id":   segmentationID,
@@ -188,7 +192,7 @@ func (svc *Service) GetTrunk(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"trunk": map[string]interface{}{
+		"trunk": map[string]any{
 			"id":             id.String(),
 			"name":           name,
 			"description":    description,
@@ -210,7 +214,7 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var req struct {
-		Trunk map[string]interface{} `json:"trunk" binding:"required"`
+		Trunk map[string]any `json:"trunk" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -232,29 +236,29 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 
 	// Build UPDATE query dynamically
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argPos := 1
 
 	if name, ok := req.Trunk["name"].(string); ok {
-		updates = append(updates, "name = $"+string(rune(argPos+'0')))
+		updates = append(updates, "name = " + fmt.Sprintf("$%d", argPos))
 		args = append(args, name)
 		argPos++
 	}
 
 	if description, ok := req.Trunk["description"].(string); ok {
-		updates = append(updates, "description = $"+string(rune(argPos+'0')))
+		updates = append(updates, "description = " + fmt.Sprintf("$%d", argPos))
 		args = append(args, description)
 		argPos++
 	}
 
 	if adminStateUp, ok := req.Trunk["admin_state_up"].(bool); ok {
-		updates = append(updates, "admin_state_up = $"+string(rune(argPos+'0')))
+		updates = append(updates, "admin_state_up = " + fmt.Sprintf("$%d", argPos))
 		args = append(args, adminStateUp)
 		argPos++
 	}
 
 	if len(updates) > 0 {
-		updates = append(updates, "updated_at = $"+string(rune(argPos+'0')))
+		updates = append(updates, "updated_at = " + fmt.Sprintf("$%d", argPos))
 		args = append(args, time.Now())
 		argPos++
 
@@ -264,7 +268,7 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 		for i := 1; i < len(updates); i++ {
 			query += ", " + updates[i]
 		}
-		query += " WHERE id = $" + string(rune(argPos+'0')) + " AND project_id = $" + string(rune(argPos+'1'))
+		query += fmt.Sprintf(" WHERE id = $%d AND project_id = $%d", argPos, argPos+1)
 
 		_, err = database.DB.Exec(c.Request.Context(), query, args...)
 		if err != nil {
@@ -300,7 +304,7 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 		WHERE trunk_id = $1
 	`, id)
 
-	subPorts := []map[string]interface{}{}
+	subPorts := []map[string]any{}
 	if subPortRows != nil {
 		defer subPortRows.Close()
 		for subPortRows.Next() {
@@ -308,7 +312,7 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 			var segmentationType string
 			var segmentationID int
 			if subPortRows.Scan(&subPortID, &segmentationType, &segmentationID) == nil {
-				subPorts = append(subPorts, map[string]interface{}{
+				subPorts = append(subPorts, map[string]any{
 					"port_id":           subPortID.String(),
 					"segmentation_type": segmentationType,
 					"segmentation_id":   segmentationID,
@@ -318,7 +322,7 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"trunk": map[string]interface{}{
+		"trunk": map[string]any{
 			"id":             id.String(),
 			"name":           name,
 			"description":    description,
@@ -441,7 +445,7 @@ func (svc *Service) AddSubports(c *gin.Context) {
 		WHERE trunk_id = $1
 	`, id)
 
-	subPorts := []map[string]interface{}{}
+	subPorts := []map[string]any{}
 	if subPortRows != nil {
 		defer subPortRows.Close()
 		for subPortRows.Next() {
@@ -449,7 +453,7 @@ func (svc *Service) AddSubports(c *gin.Context) {
 			var segmentationType string
 			var segmentationID int
 			if subPortRows.Scan(&subPortID, &segmentationType, &segmentationID) == nil {
-				subPorts = append(subPorts, map[string]interface{}{
+				subPorts = append(subPorts, map[string]any{
 					"port_id":           subPortID.String(),
 					"segmentation_type": segmentationType,
 					"segmentation_id":   segmentationID,
@@ -459,7 +463,7 @@ func (svc *Service) AddSubports(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"trunk": map[string]interface{}{
+		"trunk": map[string]any{
 			"id":             id.String(),
 			"name":           name,
 			"description":    description,
@@ -549,7 +553,7 @@ func (svc *Service) RemoveSubports(c *gin.Context) {
 		WHERE trunk_id = $1
 	`, id)
 
-	subPorts := []map[string]interface{}{}
+	subPorts := []map[string]any{}
 	if subPortRows != nil {
 		defer subPortRows.Close()
 		for subPortRows.Next() {
@@ -557,7 +561,7 @@ func (svc *Service) RemoveSubports(c *gin.Context) {
 			var segmentationType string
 			var segmentationID int
 			if subPortRows.Scan(&subPortID, &segmentationType, &segmentationID) == nil {
-				subPorts = append(subPorts, map[string]interface{}{
+				subPorts = append(subPorts, map[string]any{
 					"port_id":           subPortID.String(),
 					"segmentation_type": segmentationType,
 					"segmentation_id":   segmentationID,
@@ -567,7 +571,7 @@ func (svc *Service) RemoveSubports(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"trunk": map[string]interface{}{
+		"trunk": map[string]any{
 			"id":             id.String(),
 			"name":           name,
 			"description":    description,

@@ -26,7 +26,7 @@ func (svc *Service) ListCachedImages(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	cachedImages := []map[string]interface{}{}
+	cachedImages := []map[string]any{}
 	for rows.Next() {
 		var (
 			id       string
@@ -42,7 +42,7 @@ func (svc *Service) ListCachedImages(c *gin.Context) {
 			return
 		}
 
-		image := map[string]interface{}{
+		image := map[string]any{
 			"image_id":      id,
 			"last_accessed": cachedAt.Format(time.RFC3339),
 			"last_modified": cachedAt.Format(time.RFC3339),
@@ -52,6 +52,9 @@ func (svc *Service) ListCachedImages(c *gin.Context) {
 			image["name"] = *name
 		}
 		cachedImages = append(cachedImages, image)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"cached_images": cachedImages})

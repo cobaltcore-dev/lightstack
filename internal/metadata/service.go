@@ -1,7 +1,9 @@
 package metadata
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -87,7 +89,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 		WHERE id = $1
 	`, instanceID).Scan(&uuid, &name, &hostname, &projectID, &userID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -123,6 +125,9 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 			if err := rows.Scan(&key, &value); err == nil {
 				metaMap[key] = value
 			}
+		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
 		}
 		if len(metaMap) > 0 {
 			metadata["meta"] = metaMap
@@ -167,7 +172,7 @@ func (svc *Service) GetUserData(c *gin.Context) {
 		WHERE instance_id = $1
 	`, instanceID).Scan(&userData)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No user-data is not an error, just return empty
 		c.String(http.StatusOK, "")
 		return
@@ -232,7 +237,7 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 			"link":     fmt.Sprintf("tap%d", linkID),
 			"type":     "ipv4",
 			"ip_address": ip,
-			"netmask":  strings.Split(cidr, "/")[1], // Extract netmask from CIDR
+			"netmask":  cidrToNetmask(cidr), // Convert /24 → "255.255.255.0"
 		}
 
 		if gateway != "" {
@@ -245,6 +250,9 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 
 		networks = append(networks, netConfig)
 		linkID++
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	// Return network_data.json structure
@@ -329,4 +337,19 @@ func (svc *Service) ListVersions(c *gin.Context) {
 		"openstack",
 	}
 	c.String(http.StatusOK, strings.Join(versions, "\n"))
+}
+
+// cidrToNetmask converts a CIDR string like "192.168.1.0/24" to "255.255.255.0".
+func cidrToNetmask(cidr string) string {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		// Fall back to returning the prefix length on parse failure
+		parts := strings.SplitN(cidr, "/", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+		return cidr
+	}
+	mask := ipNet.Mask
+	return fmt.Sprintf("%d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3])
 }

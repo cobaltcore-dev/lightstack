@@ -8,6 +8,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/compute"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/rs/zerolog/log"
 )
 
 // VXLANCoordinator coordinates VXLAN network state across compute nodes
@@ -120,6 +121,9 @@ func (vc *VXLANCoordinator) syncNetworks(ctx context.Context) {
 			fmt.Printf("Failed to attach VXLAN to bridge for network %s: %v\n", networkID, err)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 }
 
 // syncPorts ensures all port FDB entries are configured
@@ -176,6 +180,9 @@ func (vc *VXLANCoordinator) syncPorts(ctx context.Context) {
 		if err := vc.vxlanManager.AddFDBEntry(networkID, macAddress, vtepIP); err != nil {
 			fmt.Printf("Failed to add FDB entry for %s on network %s: %v\n", macAddress, networkID, err)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 }
 

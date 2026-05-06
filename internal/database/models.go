@@ -121,7 +121,7 @@ type Port struct {
 	MACAddress   string                   `json:"mac_address"`
 	AdminStateUp bool                     `json:"admin_state_up"`
 	Status       string                   `json:"status"`
-	FixedIPs     []map[string]interface{} `json:"fixed_ips"`
+	FixedIPs     []map[string]any `json:"fixed_ips"`
 	CreatedAt    time.Time                `json:"created_at"`
 	UpdatedAt    time.Time                `json:"updated_at"`
 }

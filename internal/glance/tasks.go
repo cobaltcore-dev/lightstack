@@ -8,13 +8,14 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 // CreateTask handles POST /v2/tasks
 func (svc *Service) CreateTask(c *gin.Context) {
 	var req struct {
 		Type  string                 `json:"type" binding:"required"`
-		Input map[string]interface{} `json:"input"`
+		Input map[string]any `json:"input"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -66,7 +67,7 @@ func (svc *Service) ListTasks(c *gin.Context) {
 	tasks := []gin.H{}
 	for rows.Next() {
 		var id, taskType, status, owner string
-		var input, result map[string]interface{}
+		var input, result map[string]any
 		var createdAt, updatedAt time.Time
 
 		if err := rows.Scan(&id, &taskType, &status, &input, &result, &owner, &createdAt, &updatedAt); err != nil {
@@ -92,6 +93,9 @@ func (svc *Service) ListTasks(c *gin.Context) {
 		}
 
 		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -134,7 +138,7 @@ func (svc *Service) GetTask(c *gin.Context) {
 
 	// Parse input JSON if present
 	if len(inputJSON) > 0 {
-		var input map[string]interface{}
+		var input map[string]any
 		if err := json.Unmarshal(inputJSON, &input); err == nil {
 			task["input"] = input
 		}
@@ -142,7 +146,7 @@ func (svc *Service) GetTask(c *gin.Context) {
 
 	// Parse result JSON if present
 	if len(resultJSON) > 0 {
-		var result map[string]interface{}
+		var result map[string]any
 		if err := json.Unmarshal(resultJSON, &result); err == nil {
 			task["result"] = result
 		}
