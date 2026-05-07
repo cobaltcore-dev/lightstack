@@ -112,6 +112,9 @@ func (svc *Service) ListInstanceActions(c *gin.Context) {
 			"message":    message,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"instanceActions": actions})
 }

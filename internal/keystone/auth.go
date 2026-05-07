@@ -1,6 +1,7 @@
 package keystone
 
 import (
+	"errors"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
@@ -111,10 +113,10 @@ type AuthResponse struct {
 		ExpiresAt string                 `json:"expires_at"`
 		IssuedAt  string                 `json:"issued_at"`
 		Methods   []string               `json:"methods"`
-		User      map[string]interface{} `json:"user"`
+		User      map[string]any `json:"user"`
 		Catalog   []CatalogEntry         `json:"catalog,omitempty"`
-		Project   *map[string]interface{} `json:"project,omitempty"`
-		Roles     []map[string]interface{} `json:"roles,omitempty"`
+		Project   *map[string]any `json:"project,omitempty"`
+		Roles     []map[string]any `json:"roles,omitempty"`
 	} `json:"token"`
 }
 
@@ -154,7 +156,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		domainName,
 	).Scan(&domainID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", common.NewUnauthorizedError("invalid domain")
 	}
 	if err != nil {
@@ -168,7 +170,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		username, domainID,
 	).Scan(&user.ID, &user.Name, &user.PasswordHash, &user.Enabled, &user.DomainID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", common.NewUnauthorizedError("invalid credentials")
 	}
 	if err != nil {
@@ -198,19 +200,19 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		// Fetch project (with domain filter)
 		var proj database.Project
 		var query string
-		var params []interface{}
+		var params []any
 		if projectIDParam != "" {
 			query = "SELECT id, name, description, enabled, domain_id FROM projects WHERE id = $1 AND domain_id = $2"
-			params = []interface{}{projectIDParam, domainID}
+			params = []any{projectIDParam, domainID}
 		} else {
 			query = "SELECT id, name, description, enabled, domain_id FROM projects WHERE name = $1 AND domain_id = $2"
-			params = []interface{}{projectName, domainID}
+			params = []any{projectName, domainID}
 		}
 
 		err := database.DB.QueryRow(ctx, query, params...).Scan(
 			&proj.ID, &proj.Name, &proj.Description, &proj.Enabled, &proj.DomainID,
 		)
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, "", common.NewUnauthorizedError("project not found")
 		}
 		if err != nil {
@@ -242,6 +244,10 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 				return nil, "", fmt.Errorf("failed to scan role: %w", err)
 			}
 			roles = append(roles, roleName)
+		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
+			return nil, "", fmt.Errorf("failed to iterate roles: %w", err)
 		}
 
 		if len(roles) == 0 {
@@ -287,10 +293,10 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		userDomainName = "Default" // fallback
 	}
 
-	resp.Token.User = map[string]interface{}{
+	resp.Token.User = map[string]any{
 		"id":   user.ID,
 		"name": user.Name,
-		"domain": map[string]interface{}{
+		"domain": map[string]any{
 			"id":   user.DomainID,
 			"name": userDomainName,
 		},
@@ -308,10 +314,10 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 			projectDomainName = "Default" // fallback
 		}
 
-		resp.Token.Project = &map[string]interface{}{
+		resp.Token.Project = &map[string]any{
 			"id":   project.ID,
 			"name": project.Name,
-			"domain": map[string]interface{}{
+			"domain": map[string]any{
 				"id":   project.DomainID,
 				"name": projectDomainName,
 			},
@@ -319,7 +325,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 
 		// Add roles
 		for _, roleName := range roles {
-			resp.Token.Roles = append(resp.Token.Roles, map[string]interface{}{
+			resp.Token.Roles = append(resp.Token.Roles, map[string]any{
 				"id":   roleName,
 				"name": roleName,
 			})
@@ -351,7 +357,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		claims.UserID,
 	).Scan(&user.ID, &user.Name, &user.PasswordHash, &user.Enabled, &user.DomainID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", common.NewUnauthorizedError("user not found")
 	}
 	if err != nil {
@@ -378,19 +384,19 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		// Fetch project
 		var proj database.Project
 		var query string
-		var params []interface{}
+		var params []any
 		if projectIDParam != "" {
 			query = "SELECT id, name, description, enabled, domain_id FROM projects WHERE id = $1 AND domain_id = $2"
-			params = []interface{}{projectIDParam, user.DomainID}
+			params = []any{projectIDParam, user.DomainID}
 		} else {
 			query = "SELECT id, name, description, enabled, domain_id FROM projects WHERE name = $1 AND domain_id = $2"
-			params = []interface{}{projectName, user.DomainID}
+			params = []any{projectName, user.DomainID}
 		}
 
 		err := database.DB.QueryRow(ctx, query, params...).Scan(
 			&proj.ID, &proj.Name, &proj.Description, &proj.Enabled, &proj.DomainID,
 		)
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, "", common.NewUnauthorizedError("project not found")
 		}
 		if err != nil {
@@ -422,6 +428,10 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 				return nil, "", fmt.Errorf("failed to scan role: %w", err)
 			}
 			roles = append(roles, roleName)
+		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
+			return nil, "", fmt.Errorf("failed to iterate roles: %w", err)
 		}
 
 		if len(roles) == 0 {
@@ -466,10 +476,10 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		userDomainName = "Default" // fallback
 	}
 
-	resp.Token.User = map[string]interface{}{
+	resp.Token.User = map[string]any{
 		"id":   user.ID,
 		"name": user.Name,
-		"domain": map[string]interface{}{
+		"domain": map[string]any{
 			"id":   user.DomainID,
 			"name": userDomainName,
 		},
@@ -487,10 +497,10 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 			projectDomainName = "Default" // fallback
 		}
 
-		resp.Token.Project = &map[string]interface{}{
+		resp.Token.Project = &map[string]any{
 			"id":   project.ID,
 			"name": project.Name,
-			"domain": map[string]interface{}{
+			"domain": map[string]any{
 				"id":   project.DomainID,
 				"name": projectDomainName,
 			},
@@ -498,7 +508,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 
 		// Add roles
 		for _, roleName := range roles {
-			resp.Token.Roles = append(resp.Token.Roles, map[string]interface{}{
+			resp.Token.Roles = append(resp.Token.Roles, map[string]any{
 				"id":   roleName,
 				"name": roleName,
 			})
@@ -513,7 +523,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 
 // ValidateToken validates and parses a JWT token
 func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
@@ -611,6 +621,9 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache) []Catalog
 			}
 			serviceMap[serviceID].Endpoints = append(serviceMap[serviceID].Endpoints, endpoint)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	// Convert map to slice

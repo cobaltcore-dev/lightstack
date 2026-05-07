@@ -1,7 +1,9 @@
 package nova
 
 import (
+	"errors"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -40,7 +42,7 @@ const (
 
 // NeutronService defines the interface for Neutron operations Nova needs
 type NeutronService interface {
-	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string) (interface{}, error)
+	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string) (any, error)
 }
 
 // NewService creates a new Nova service
@@ -268,7 +270,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	).Scan(&flavor.ID, &flavor.Name, &flavor.VCPUs, &flavor.RAMMB, &flavor.DiskGB)
 	middleware.LogDatabaseQuery(c, "SELECT flavor", time.Since(queryStart), err)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		logger.Warn().Str("flavor_ref", req.Server.FlavorRef).Msg("Flavor not found")
 		middleware.LogOperationEnd(c, "create", "server", req.Server.Name, time.Since(start), err)
 		common.SendError(c, common.NewNotFoundError("flavor"))
@@ -322,7 +324,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	now := time.Now()
 
 	// Handle NULL image_id (for volume-backed instances)
-	var imageID interface{}
+	var imageID any
 	if req.Server.ImageRef != "" {
 		imageID = req.Server.ImageRef
 	} else {
@@ -440,13 +442,23 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 			// Generate VM XML
 			log.Debug().Str("instance_id", instanceID).Msg("Generating VM XML")
+			// Validate imageRef is a well-formed UUID before constructing file path
+			parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
+			if err != nil {
+				log.Error().Err(err).Str("image_ref", req.Server.ImageRef).Str("instance_id", instanceID).Msg("Invalid imageRef — not a valid UUID")
+				database.DB.Exec(svc.ctx,
+					"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
+					"ERROR", time.Now(), instanceID)
+				return
+			}
+			imageUUID := parsedImageUUID.String()
 			spec := hypervisor.VMSpec{
 				UUID:      instanceID,
 				Name:      fmt.Sprintf("instance-%s", instanceID[:8]),
 				VCPUs:     flavor.VCPUs,
 				MemoryMB:  flavor.RAMMB,
 				DiskGB:    flavor.DiskGB,
-				ImagePath: fmt.Sprintf("/var/lib/o3k/images/%s.qcow2", req.Server.ImageRef),
+				ImagePath: fmt.Sprintf("/var/lib/o3k/images/%s.qcow2", imageUUID),
 				Networks:  networks,
 				CloudInit: cloudInit,
 			}
@@ -566,6 +578,9 @@ func (svc *Service) ListServers(c *gin.Context) {
 			},
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if servers == nil {
 		servers = []gin.H{}
@@ -594,7 +609,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -633,9 +648,11 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 
 	var servers []gin.H
 	for rows.Next() {
-		var id, name, status, projectID, userID, flavorID, imageID, flavorName string
+		var id, name, status, projectID, userID, flavorID, flavorName string
 		var powerState, vcpus, ramMB, diskGB int
-		var createdAt, updatedAt, launchedAt time.Time
+		var createdAt, updatedAt time.Time
+		var launchedAt sql.NullTime
+		var imageID sql.NullString
 
 		if err := rows.Scan(&id, &name, &status, &powerState, &projectID, &userID,
 			&flavorID, &imageID, &createdAt, &updatedAt, &launchedAt,
@@ -647,7 +664,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		// Get addresses for this instance
 		addresses := svc.getInstanceAddresses(c.Request.Context(), id, projectID)
 
-		servers = append(servers, gin.H{
+		entry := gin.H{
 			"id":         id,
 			"name":       name,
 			"status":     status,
@@ -657,15 +674,27 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 			"updated":    updatedAt.Format(time.RFC3339),
 			"addresses":  addresses,
 			"OS-EXT-STS:power_state": powerState,
-			"OS-SRV-USG:launched_at": launchedAt.Format(time.RFC3339),
 			"flavor": gin.H{
 				"id":    flavorID,
 				"vcpus": vcpus,
 				"ram":   ramMB,
 				"disk":  diskGB,
 			},
-			"image": gin.H{"id": imageID},
-		})
+		}
+		if imageID.Valid {
+			entry["image"] = gin.H{"id": imageID.String}
+		} else {
+			entry["image"] = ""
+		}
+		if launchedAt.Valid {
+			entry["OS-SRV-USG:launched_at"] = launchedAt.Time.Format(time.RFC3339)
+		} else {
+			entry["OS-SRV-USG:launched_at"] = nil
+		}
+		servers = append(servers, entry)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	if servers == nil {
@@ -702,7 +731,7 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 		}
 
 		// Parse fixed IPs
-		var fixedIPs []map[string]interface{}
+		var fixedIPs []map[string]any
 		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil {
 			continue
 		}
@@ -723,6 +752,9 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 			addresses[networkName] = addressList
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	return addresses
 }
@@ -733,7 +765,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var id, name, status, projID string
-	var userID, flavorID, imageID interface{}
+	var userID, flavorID, imageID any
 	var powerState int
 	var createdAt, updatedAt time.Time
 
@@ -747,7 +779,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 		)
 	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projID, &userID, &flavorID, &imageID, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -804,7 +836,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	).Scan(&libvirtDomainID)
 	middleware.LogDatabaseQuery(c, "SELECT libvirt_domain_id", time.Since(queryStart), err)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		logger.Warn().Str("instance_id", instanceID).Msg("Instance not found")
 		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -856,7 +888,7 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Warn().Err(err).Str("operation", "server_action_bind").Msg("Failed to bind JSON")
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
@@ -976,13 +1008,13 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	}
 
 	// Get libvirt domain ID for remaining actions (support lookup by ID or name)
-	var libvirtDomainID interface{}
+	var libvirtDomainID any
 	err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		log.Warn().Str("instance_id", instanceID).Msg("Instance not found in ServerAction")
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
@@ -1100,6 +1132,9 @@ func (svc *Service) ListFlavors(c *gin.Context) {
 			},
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if flavors == nil {
 		flavors = []gin.H{}
@@ -1118,12 +1153,12 @@ func (svc *Service) ListFlavorsDetail(c *gin.Context) {
 
 	// Build query with pagination support
 	query := "SELECT id, name, vcpus, ram_mb, disk_gb, is_public FROM flavors WHERE is_public = true"
-	var args []interface{}
+	var args []any
 	argIndex := 1
 
 	// Add marker filter using created_at cursor (avoids broken UUID lexicographic ordering)
 	if marker != "" {
-		var markerTime interface{}
+		var markerTime any
 		lookupErr := database.DB.QueryRow(ctx,
 			"SELECT created_at FROM flavors WHERE id = $1", marker).Scan(&markerTime)
 		if lookupErr == nil {
@@ -1176,6 +1211,9 @@ func (svc *Service) ListFlavorsDetail(c *gin.Context) {
 			"swap":                       "",
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if flavors == nil {
 		flavors = []gin.H{}
@@ -1217,7 +1255,7 @@ func (svc *Service) GetFlavor(c *gin.Context) {
 		flavorID,
 	).Scan(&id, &name, &vcpus, &ramMB, &diskGB, &isPublic)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("flavor"))
 		return
 	}
@@ -1360,6 +1398,9 @@ func (svc *Service) ListAvailabilityZones(c *gin.Context) {
 			"hosts":     nil,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	// Fallback to "nova" if no aggregates exist
 	if len(zones) == 0 {
@@ -1395,6 +1436,9 @@ func (svc *Service) ListAvailabilityZonesDetail(c *gin.Context) {
 			continue
 		}
 		zoneHosts[zoneName] = append(zoneHosts[zoneName], hosts...)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	var zones []gin.H
@@ -1603,6 +1647,9 @@ func (svc *Service) GetServerMetadata(c *gin.Context) {
 		}
 		metadata[key] = value
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"metadata": metadata})
 }
@@ -1670,6 +1717,9 @@ func (svc *Service) UpdateServerMetadata(c *gin.Context) {
 		}
 		metadata[key] = value
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"metadata": metadata})
 }
@@ -1728,11 +1778,11 @@ func (svc *Service) ResetServerMetadata(c *gin.Context) {
 }
 
 // RebuildInstanceAction handles the rebuild action
-func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData interface{}) {
+func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	rebuildMap, ok := rebuildData.(map[string]interface{})
+	rebuildMap, ok := rebuildData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid rebuild data"))
 		return
@@ -1811,7 +1861,7 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData interface{
 }
 
 // RescueInstanceAction handles the rescue action
-func (svc *Service) RescueInstanceAction(c *gin.Context, rescueData interface{}) {
+func (svc *Service) RescueInstanceAction(c *gin.Context, rescueData any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
@@ -1834,10 +1884,10 @@ func (svc *Service) RescueInstanceAction(c *gin.Context, rescueData interface{})
 }
 
 // CreateImageAction handles the createImage action
-func (svc *Service) CreateImageAction(c *gin.Context, createImageData interface{}) {
+func (svc *Service) CreateImageAction(c *gin.Context, createImageData any) {
 	projectID := c.GetString("project_id")
 
-	createImageMap, ok := createImageData.(map[string]interface{})
+	createImageMap, ok := createImageData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid createImage data"))
 		return
@@ -1851,7 +1901,7 @@ func (svc *Service) CreateImageAction(c *gin.Context, createImageData interface{
 
 	// Get metadata if provided
 	metadata := make(map[string]string)
-	if metadataRaw, ok := createImageMap["metadata"].(map[string]interface{}); ok {
+	if metadataRaw, ok := createImageMap["metadata"].(map[string]any); ok {
 		for k, v := range metadataRaw {
 			if vStr, ok := v.(string); ok {
 				metadata[k] = vStr
@@ -1984,7 +2034,7 @@ func (svc *Service) ForceDeleteInstanceAction(c *gin.Context) {
 	}
 
 	// In real mode, destroy VM then delete from database
-	var libvirtDomainID interface{}
+	var libvirtDomainID any
 	err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,

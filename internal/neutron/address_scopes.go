@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -29,7 +30,7 @@ func (svc *Service) ListAddressScopes(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	scopes := []map[string]interface{}{}
+	scopes := []map[string]any{}
 	for rows.Next() {
 		var (
 			id        string
@@ -48,7 +49,7 @@ func (svc *Service) ListAddressScopes(c *gin.Context) {
 			return
 		}
 
-		scope := map[string]interface{}{
+		scope := map[string]any{
 			"id":         id,
 			"tenant_id":  projID,
 			"project_id": projID,
@@ -59,6 +60,9 @@ func (svc *Service) ListAddressScopes(c *gin.Context) {
 			"updated_at": updatedAt.Format(time.RFC3339),
 		}
 		scopes = append(scopes, scope)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"address_scopes": scopes})
@@ -101,7 +105,7 @@ func (svc *Service) CreateAddressScope(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"address_scope": map[string]interface{}{
+		"address_scope": map[string]any{
 			"id":         scopeID,
 			"tenant_id":  projectID,
 			"project_id": projectID,
@@ -134,7 +138,7 @@ func (svc *Service) GetAddressScope(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, scopeID, projectID).Scan(&projID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("address scope"))
 		return
 	}
@@ -145,7 +149,7 @@ func (svc *Service) GetAddressScope(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"address_scope": map[string]interface{}{
+		"address_scope": map[string]any{
 			"id":         scopeID,
 			"tenant_id":  projID,
 			"project_id": projID,
@@ -225,7 +229,7 @@ func (svc *Service) UpdateAddressScope(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"address_scope": map[string]interface{}{
+		"address_scope": map[string]any{
 			"id":         scopeID,
 			"tenant_id":  projID,
 			"project_id": projID,

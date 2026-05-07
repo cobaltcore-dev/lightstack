@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -58,7 +59,7 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -141,6 +142,9 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 
 		floatingIPs = append(floatingIPs, result)
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if floatingIPs == nil {
 		floatingIPs = []gin.H{}
@@ -167,7 +171,7 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 		req.FloatingIP.FloatingNetworkID,
 	).Scan(&subnetCIDR)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No subnet exists - use default external IP pool (RFC 5737 TEST-NET-1)
 		subnetCIDR = "192.0.2.0/24"
 	} else if err != nil {
@@ -211,7 +215,7 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 			fixedIPAddr = req.FloatingIP.FixedIPAddress
 		} else {
 			// Extract from fixed_ips JSON
-			var fixedIPs []map[string]interface{}
+			var fixedIPs []map[string]any
 			if err := json.Unmarshal([]byte(fixedIPsJSON), &fixedIPs); err != nil {
 				log.Error().Err(err).Str("operation", "parse_port_fixed_ips").Msg("failed to parse port fixed_ips")
 				common.SendError(c, common.NewInternalServerError("failed to parse port fixed IPs"))
@@ -326,7 +330,7 @@ func (svc *Service) GetFloatingIP(c *gin.Context) {
 	`, floatingIPID, projectID).Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
 		&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
 		return
 	}
@@ -380,7 +384,7 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Parse raw JSON to detect if port_id key is present
-	var rawReq map[string]map[string]interface{}
+	var rawReq map[string]map[string]any
 	if err := c.ShouldBindJSON(&rawReq); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
@@ -394,13 +398,13 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 		floatingIPID, projectID,
 	).Scan(&currentFloatingIP, &currentFixedIP, &currentPortID, &currentRouterID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
 		return
 	}
 
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argID := 1
 
 	// Handle port association/disassociation
@@ -545,7 +549,7 @@ func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 		floatingIPID, projectID,
 	).Scan(&floatingIP, &fixedIP, &portID, &routerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
 		return
 	}
@@ -595,6 +599,9 @@ func (svc *Service) allocateFloatingIP(ctx context.Context, subnetCIDR string) (
 			continue
 		}
 		allocatedIPs[ip] = true
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	// Find first available IP in range

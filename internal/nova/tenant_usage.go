@@ -53,6 +53,9 @@ func (svc *Service) ListTenantUsage(c *gin.Context) {
 			"server_usages":           []gin.H{},
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if tenantUsages == nil {
 		tenantUsages = []gin.H{}

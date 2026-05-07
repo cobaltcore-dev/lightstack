@@ -38,8 +38,11 @@ OPENSTACK_ENDPOINT_TYPE = "publicURL"
 OPENSTACK_SSL_NO_VERIFY = True
 OPENSTACK_SSL_CACERT = None
 
-# Session settings
-SECRET_KEY = os.environ.get('SECRET_KEY', 'o3k-horizon-secret-key')
+# Session settings — must be set via SECRET_KEY environment variable in production
+_secret_key = os.environ.get('SECRET_KEY')
+if not _secret_key:
+    raise RuntimeError("SECRET_KEY environment variable must be set")
+SECRET_KEY = _secret_key
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 SESSION_TIMEOUT = 3600
 

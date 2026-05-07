@@ -85,7 +85,8 @@ func TestNovaGetInstanceAction_Contract(t *testing.T) {
 	listURL := client.ServiceURL("servers", server.ID, "os-instance-actions")
 	listReq, _ := http.NewRequest("GET", listURL, nil)
 	listReq.Header.Set("X-Auth-Token", client.TokenID)
-	listResp, _ := http.DefaultClient.Do(listReq)
+	listResp, err := http.DefaultClient.Do(listReq)
+	require.NoError(t, err)
 	defer listResp.Body.Close()
 
 	listBody, _ := io.ReadAll(listResp.Body)

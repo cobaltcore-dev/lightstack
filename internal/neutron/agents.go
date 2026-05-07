@@ -24,20 +24,20 @@ func (svc *Service) ListAgents(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	agents := []map[string]interface{}{}
+	agents := []map[string]any{}
 	for rows.Next() {
 		var id, agentType, binary, host string
 		var description *string
 		var adminStateUp, alive bool
 		var startedAt, createdAt time.Time
-		var configurations map[string]interface{}
+		var configurations map[string]any
 
 		if err := rows.Scan(&id, &agentType, &binary, &host, &description, &adminStateUp, &alive, &startedAt, &createdAt, &configurations); err != nil {
 			log.Warn().Err(err).Msg("failed to scan agent row")
 			continue
 		}
 
-		agent := map[string]interface{}{
+		agent := map[string]any{
 			"id":             id,
 			"agent_type":     agentType,
 			"binary":         binary,
@@ -55,6 +55,9 @@ func (svc *Service) ListAgents(c *gin.Context) {
 
 		agents = append(agents, agent)
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"agents": agents})
 }
@@ -67,7 +70,7 @@ func (svc *Service) GetAgent(c *gin.Context) {
 	var description *string
 	var adminStateUp, alive bool
 	var startedAt, createdAt time.Time
-	var configurations map[string]interface{}
+	var configurations map[string]any
 
 	err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT id, agent_type, "binary", host, description, admin_state_up, alive, started_at, created_at, configurations
@@ -80,7 +83,7 @@ func (svc *Service) GetAgent(c *gin.Context) {
 		return
 	}
 
-	agent := map[string]interface{}{
+	agent := map[string]any{
 		"id":             id,
 		"agent_type":     agentType,
 		"binary":         binary,
@@ -127,20 +130,20 @@ func (svc *Service) ListL3AgentsOnRouter(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	agents := []map[string]interface{}{}
+	agents := []map[string]any{}
 	for rows.Next() {
 		var id, agentType, binary, host string
 		var description *string
 		var adminStateUp, alive bool
 		var startedAt, createdAt time.Time
-		var configurations map[string]interface{}
+		var configurations map[string]any
 
 		if err := rows.Scan(&id, &agentType, &binary, &host, &description, &adminStateUp, &alive, &startedAt, &createdAt, &configurations); err != nil {
 			log.Warn().Err(err).Msg("failed to scan agent row")
 			continue
 		}
 
-		agent := map[string]interface{}{
+		agent := map[string]any{
 			"id":             id,
 			"agent_type":     agentType,
 			"binary":         binary,
@@ -157,6 +160,9 @@ func (svc *Service) ListL3AgentsOnRouter(c *gin.Context) {
 		}
 
 		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"agents": agents})

@@ -1,6 +1,7 @@
 package glance
 
 import (
+	"errors"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -239,7 +240,7 @@ func (svc *Service) ListImages(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -306,6 +307,11 @@ func (svc *Service) ListImages(c *gin.Context) {
 
 		images = append(images, image)
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
+	}
 
 	if images == nil {
 		images = []gin.H{}
@@ -350,7 +356,7 @@ func (svc *Service) GetImage(c *gin.Context) {
 		LIMIT 1
 	`, imageID, projectID).Scan(&id, &name, &status, &visibility, &sizeBytes, &diskFormat, &containerFormat, &minDisk, &minRAM, &checksum, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -398,6 +404,9 @@ func (svc *Service) GetImage(c *gin.Context) {
 				tags = append(tags, tag)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
+		}
 		if tags == nil {
 			tags = []string{}
 		}
@@ -436,7 +445,7 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 
 	// Delete from database first
 	_, err = database.DB.Exec(ctx,
-		"DELETE FROM images WHERE id = $1 AND (visibility = 'public' OR project_id = $2)",
+		"DELETE FROM images WHERE id = $1 AND project_id = $2",
 		imageID, projectID,
 	)
 	if err != nil {
@@ -475,7 +484,7 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Parse JSON Patch operations
-	var updates []map[string]interface{}
+	var updates []map[string]any
 	if err := c.ShouldBindJSON(&updates); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
@@ -483,8 +492,14 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 
 	// Apply updates (simplified - only handles replace operations)
 	for _, update := range updates {
-		op := update["op"].(string)
-		path := update["path"].(string)
+		op, ok := update["op"].(string)
+		if !ok {
+			continue
+		}
+		path, ok := update["path"].(string)
+		if !ok {
+			continue
+		}
 		value := update["value"]
 
 		if op == "replace" {
@@ -493,7 +508,7 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 				continue
 			}
 			// field is now a validated column name from the allowlist
-			query := fmt.Sprintf("UPDATE images SET %s = $1, updated_at = $2 WHERE id = $3 AND (visibility != 'public' OR project_id = $4)", field)
+			query := fmt.Sprintf("UPDATE images SET %s = $1, updated_at = $2 WHERE id = $3 AND project_id = $4", field)
 			database.DB.Exec(c.Request.Context(), query, value, time.Now(), imageID, projectID)
 		}
 	}
@@ -514,7 +529,7 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 		imageID, projectID,
 	).Scan(&status)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -561,7 +576,7 @@ func (svc *Service) DownloadImageData(c *gin.Context) {
 		imageID, projectID,
 	).Scan(&status, &sizeBytes)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -642,7 +657,7 @@ func (svc *Service) CreateImageMember(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -693,7 +708,7 @@ func (svc *Service) ListImageMembers(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -742,6 +757,11 @@ func (svc *Service) ListImageMembers(c *gin.Context) {
 			"schema":     "/v2/schemas/member",
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
+	}
 
 	if members == nil {
 		members = []gin.H{}
@@ -766,7 +786,7 @@ func (svc *Service) GetImageMember(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -790,7 +810,7 @@ func (svc *Service) GetImageMember(c *gin.Context) {
 		WHERE image_id = $1 AND member_id = $2
 	`, imageID, memberID).Scan(&status, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("member"))
 		return
 	}
@@ -837,7 +857,7 @@ func (svc *Service) UpdateImageMember(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -915,7 +935,7 @@ func (svc *Service) DeleteImageMember(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -958,7 +978,7 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1003,7 +1023,7 @@ func (svc *Service) DeleteImageTag(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1045,7 +1065,7 @@ func (svc *Service) DeactivateImage(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1087,7 +1107,7 @@ func (svc *Service) ReactivateImage(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}

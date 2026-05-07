@@ -1,6 +1,7 @@
 package keystone
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -42,6 +43,9 @@ func (svc *Service) ListGroups(c *gin.Context) {
 				"self": c.Request.Host + "/v3/groups/" + id,
 			},
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	if groups == nil {
@@ -111,7 +115,7 @@ func (svc *Service) GetGroup(c *gin.Context) {
 		groupID,
 	).Scan(&name, &domainID, &description, &createdAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("group"))
 		return
 	}
@@ -152,7 +156,7 @@ func (svc *Service) UpdateGroup(c *gin.Context) {
 
 	// Build dynamic update query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argIdx := 1
 
 	if req.Group.Name != nil {
@@ -264,6 +268,9 @@ func (svc *Service) ListGroupUsers(c *gin.Context) {
 			"domain_id": domainID,
 			"enabled":   enabled,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	if users == nil {

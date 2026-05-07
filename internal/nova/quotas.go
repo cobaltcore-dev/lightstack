@@ -1,6 +1,8 @@
 package nova
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -72,6 +74,11 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 		}
 		quotaSet[resource] = limit
 		delete(defaults, resource) // Remove from defaults if found in DB
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	// Add any missing defaults
@@ -210,7 +217,7 @@ func CheckQuota(c *gin.Context, resource string, requestedAmount int) error {
 		SELECT hard_limit FROM quotas WHERE project_id = $1 AND resource = $2
 	`, projectID, resource).Scan(&limit)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No quota set, use defaults
 		defaults := map[string]int{
 			"instances":             10,
@@ -234,31 +241,38 @@ func CheckQuota(c *gin.Context, resource string, requestedAmount int) error {
 
 	// Get current usage
 	var usage int
+	var scanErr error
 	switch resource {
 	case "instances":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM instances WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM instances WHERE project_id = $1`, projectID).Scan(&usage)
 	case "cores":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(f.vcpus), 0) FROM instances i LEFT JOIN flavors f ON i.flavor_id = f.id WHERE i.project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(f.vcpus), 0) FROM instances i LEFT JOIN flavors f ON i.flavor_id = f.id WHERE i.project_id = $1`, projectID).Scan(&usage)
 	case "ram":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(f.ram_mb), 0) FROM instances i LEFT JOIN flavors f ON i.flavor_id = f.id WHERE i.project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(f.ram_mb), 0) FROM instances i LEFT JOIN flavors f ON i.flavor_id = f.id WHERE i.project_id = $1`, projectID).Scan(&usage)
 	case "volumes":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM volumes WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM volumes WHERE project_id = $1`, projectID).Scan(&usage)
 	case "gigabytes":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1`, projectID).Scan(&usage)
 	case "networks":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM networks WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM networks WHERE project_id = $1`, projectID).Scan(&usage)
 	case "subnets":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM subnets WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM subnets WHERE project_id = $1`, projectID).Scan(&usage)
 	case "ports":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM ports WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM ports WHERE project_id = $1`, projectID).Scan(&usage)
 	case "routers":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM routers WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM routers WHERE project_id = $1`, projectID).Scan(&usage)
 	case "floatingip":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM floating_ips WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM floating_ips WHERE project_id = $1`, projectID).Scan(&usage)
 	case "security_groups":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, projectID).Scan(&usage)
 	case "security_group_rules":
-		database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)`, projectID).Scan(&usage)
+		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)`, projectID).Scan(&usage)
+	default:
+		return fmt.Errorf("unknown quota resource: %s", resource)
+	}
+	if scanErr != nil {
+		log.Error().Err(scanErr).Str("resource", resource).Str("project_id", projectID).Msg("failed to scan quota usage")
+		return scanErr
 	}
 
 	// Check if adding requested amount would exceed limit

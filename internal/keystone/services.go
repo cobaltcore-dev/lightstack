@@ -1,6 +1,7 @@
 package keystone
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	services := []map[string]interface{}{}
+	services := []map[string]any{}
 	for rows.Next() {
 		var id, svcType, name string
 		var description *string
@@ -38,7 +39,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 			continue
 		}
 
-		service := map[string]interface{}{
+		service := map[string]any{
 			"id":      id,
 			"type":    svcType,
 			"name":    name,
@@ -50,6 +51,9 @@ func (svc *Service) ListServices(c *gin.Context) {
 		}
 
 		services = append(services, service)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(200, gin.H{"services": services})
@@ -90,7 +94,7 @@ func (svc *Service) CreateService(c *gin.Context) {
 		return
 	}
 
-	service := map[string]interface{}{
+	service := map[string]any{
 		"id":      serviceID.String(),
 		"type":    req.Service.Type,
 		"name":    req.Service.Name,
@@ -118,7 +122,7 @@ func (svc *Service) GetService(c *gin.Context) {
 		WHERE id = $1
 	`, serviceID).Scan(&id, &svcType, &name, &description, &enabled)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("service"))
 		return
 	}
@@ -128,7 +132,7 @@ func (svc *Service) GetService(c *gin.Context) {
 		return
 	}
 
-	service := map[string]interface{}{
+	service := map[string]any{
 		"id":      id,
 		"type":    svcType,
 		"name":    name,
@@ -184,7 +188,7 @@ func (svc *Service) UpdateService(c *gin.Context) {
 
 	// Build dynamic UPDATE query
 	updates := []string{}
-	params := []interface{}{}
+	params := []any{}
 	paramIndex := 1
 
 	if req.Service.Name != nil {
@@ -234,7 +238,7 @@ func (svc *Service) UpdateService(c *gin.Context) {
 	)
 
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("service"))
 			return
 		}
@@ -244,12 +248,12 @@ func (svc *Service) UpdateService(c *gin.Context) {
 	}
 
 	// Build response
-	service := map[string]interface{}{
+	service := map[string]any{
 		"id":      id,
 		"type":    svcType,
 		"name":    name,
 		"enabled": enabled,
-		"links": map[string]interface{}{
+		"links": map[string]any{
 			"self": fmt.Sprintf("%s/v3/services/%s", common.BaseURL(c, 35357), id),
 		},
 	}
@@ -276,7 +280,7 @@ func (svc *Service) ListEndpoints(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	endpoints := []map[string]interface{}{}
+	endpoints := []map[string]any{}
 	for rows.Next() {
 		var id, serviceID, iface, url string
 		var region *string
@@ -287,7 +291,7 @@ func (svc *Service) ListEndpoints(c *gin.Context) {
 			continue
 		}
 
-		endpoint := map[string]interface{}{
+		endpoint := map[string]any{
 			"id":         id,
 			"service_id": serviceID,
 			"interface":  iface,
@@ -300,6 +304,9 @@ func (svc *Service) ListEndpoints(c *gin.Context) {
 		}
 
 		endpoints = append(endpoints, endpoint)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(200, gin.H{"endpoints": endpoints})
@@ -340,7 +347,7 @@ func (svc *Service) CreateEndpoint(c *gin.Context) {
 		return
 	}
 
-	endpoint := map[string]interface{}{
+	endpoint := map[string]any{
 		"id":         endpointID.String(),
 		"service_id": req.Endpoint.ServiceID,
 		"interface":  req.Endpoint.Interface,

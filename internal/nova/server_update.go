@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -47,7 +48,7 @@ func (svc *Service) UpdateServer(c *gin.Context) {
 		&currentFlavorID, &currentImageID, &createdAt, &updatedAt,
 	)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -59,7 +60,7 @@ func (svc *Service) UpdateServer(c *gin.Context) {
 
 	// Build update query dynamically based on what's being updated
 	updates := []string{}
-	params := []interface{}{instanceID, projectID}
+	params := []any{instanceID, projectID}
 	paramIndex := 3
 
 	if req.Server.Name != nil {

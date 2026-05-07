@@ -96,7 +96,8 @@ func TestNeutronListRBACPolicies_Contract(t *testing.T) {
 	createReq, _ := http.NewRequest("POST", createURL, bytes.NewReader(policyBody))
 	createReq.Header.Set("X-Auth-Token", client.TokenID)
 	createReq.Header.Set("Content-Type", "application/json")
-	createResp, _ := http.DefaultClient.Do(createReq)
+	createResp, err := http.DefaultClient.Do(createReq)
+	require.NoError(t, err)
 	defer createResp.Body.Close()
 
 	// Test: List RBAC policies
@@ -148,7 +149,8 @@ func TestNeutronGetRBACPolicy_Contract(t *testing.T) {
 	createReq, _ := http.NewRequest("POST", createURL, bytes.NewReader(policyBody))
 	createReq.Header.Set("X-Auth-Token", client.TokenID)
 	createReq.Header.Set("Content-Type", "application/json")
-	createResp, _ := http.DefaultClient.Do(createReq)
+	createResp, err := http.DefaultClient.Do(createReq)
+	require.NoError(t, err)
 	defer createResp.Body.Close()
 
 	createBody, _ := io.ReadAll(createResp.Body)
@@ -213,7 +215,8 @@ func TestNeutronUpdateRBACPolicy_Contract(t *testing.T) {
 	createReq, _ := http.NewRequest("POST", createURL, bytes.NewReader(policyBody))
 	createReq.Header.Set("X-Auth-Token", client.TokenID)
 	createReq.Header.Set("Content-Type", "application/json")
-	createResp, _ := http.DefaultClient.Do(createReq)
+	createResp, err := http.DefaultClient.Do(createReq)
+	require.NoError(t, err)
 	defer createResp.Body.Close()
 
 	createBody, _ := io.ReadAll(createResp.Body)
@@ -284,7 +287,8 @@ func TestNeutronDeleteRBACPolicy_Contract(t *testing.T) {
 	createReq, _ := http.NewRequest("POST", createURL, bytes.NewReader(policyBody))
 	createReq.Header.Set("X-Auth-Token", client.TokenID)
 	createReq.Header.Set("Content-Type", "application/json")
-	createResp, _ := http.DefaultClient.Do(createReq)
+	createResp, err := http.DefaultClient.Do(createReq)
+	require.NoError(t, err)
 	defer createResp.Body.Close()
 
 	createBody, _ := io.ReadAll(createResp.Body)

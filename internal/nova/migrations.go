@@ -28,7 +28,7 @@ func (svc *Service) ListMigrations(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	migrations := []map[string]interface{}{}
+	migrations := []map[string]any{}
 	for rows.Next() {
 		var id, serverUUID uuid.UUID
 		var oldFlavorID, newFlavorID *uuid.UUID
@@ -42,7 +42,7 @@ func (svc *Service) ListMigrations(c *gin.Context) {
 			continue
 		}
 
-		migration := map[string]interface{}{
+		migration := map[string]any{
 			"id":             id.String(),
 			"server_uuid":    serverUUID.String(),
 			"source_node":    sourceNode,
@@ -61,6 +61,9 @@ func (svc *Service) ListMigrations(c *gin.Context) {
 		}
 
 		migrations = append(migrations, migration)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"migrations": migrations})
@@ -85,7 +88,7 @@ func (svc *Service) ListServerMigrations(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	migrations := []map[string]interface{}{}
+	migrations := []map[string]any{}
 	for rows.Next() {
 		var id, serverUUID uuid.UUID
 		var oldFlavorID, newFlavorID *uuid.UUID
@@ -99,7 +102,7 @@ func (svc *Service) ListServerMigrations(c *gin.Context) {
 			continue
 		}
 
-		migration := map[string]interface{}{
+		migration := map[string]any{
 			"id":             id.String(),
 			"server_uuid":    serverUUID.String(),
 			"source_node":    sourceNode,
@@ -118,6 +121,9 @@ func (svc *Service) ListServerMigrations(c *gin.Context) {
 		}
 
 		migrations = append(migrations, migration)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"migrations": migrations})
@@ -146,7 +152,7 @@ func (svc *Service) GetServerMigration(c *gin.Context) {
 		return
 	}
 
-	migration := map[string]interface{}{
+	migration := map[string]any{
 		"id":             id.String(),
 		"server_uuid":    serverUUID.String(),
 		"source_node":    sourceNode,
@@ -197,7 +203,7 @@ func (svc *Service) ServerMigrationAction(c *gin.Context) {
 	serverID := c.Param("id")
 	migrationID := c.Param("migration_id")
 
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return

@@ -1,6 +1,7 @@
 package cinder
 
 import (
+	"errors"
 	"encoding/json"
 	"net/http"
 
@@ -57,10 +58,13 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 				quotas[resource] = limit
 			}
 		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
+		}
 	}
 
 	// Add project ID to response
-	quotaSet := make(map[string]interface{})
+	quotaSet := make(map[string]any)
 	quotaSet["id"] = targetProjectID
 	for k, v := range quotas {
 		quotaSet[k] = v
@@ -91,7 +95,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 	}
 
 	var req struct {
-		QuotaSet map[string]interface{} `json:"quota_set"`
+		QuotaSet map[string]any `json:"quota_set"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
@@ -112,7 +116,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 		case int:
 			limit = v
 		case json.Number:
-			// Handle json.Number from interface{} unmarshaling
+			// Handle json.Number from any unmarshaling
 			val, err := v.Int64()
 			if err != nil {
 				continue
@@ -159,9 +163,12 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 				defaults[resource] = limit
 			}
 		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
+		}
 	}
 
-	quotaSet := make(map[string]interface{})
+	quotaSet := make(map[string]any)
 	quotaSet["id"] = projectUUID.String()
 	for k, v := range defaults {
 		quotaSet[k] = v
@@ -190,7 +197,7 @@ func (svc *Service) DeleteQuotaSet(c *gin.Context) {
 	_, err := database.DB.Exec(c.Request.Context(),
 		"DELETE FROM cinder_quotas WHERE project_id = $1",
 		targetProjectID)
-	if err != nil && err != pgx.ErrNoRows {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		log.Error().Err(err).Str("operation", "delete_quota_set").Msg("failed to reset quotas")
 		common.SendError(c, common.NewInternalServerError("failed to reset quotas"))
 		return

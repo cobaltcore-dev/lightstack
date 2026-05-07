@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -31,7 +32,7 @@ func (svc *Service) ListQoSPolicies(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	policies := []map[string]interface{}{}
+	policies := []map[string]any{}
 	for rows.Next() {
 		var (
 			id          string
@@ -50,7 +51,7 @@ func (svc *Service) ListQoSPolicies(c *gin.Context) {
 			return
 		}
 
-		policy := map[string]interface{}{
+		policy := map[string]any{
 			"id":          id,
 			"project_id":  projID,
 			"tenant_id":   projID,
@@ -61,6 +62,9 @@ func (svc *Service) ListQoSPolicies(c *gin.Context) {
 			"updated_at":  updatedAt.Format(time.RFC3339),
 		}
 		policies = append(policies, policy)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"policies": policies})
@@ -103,7 +107,7 @@ func (svc *Service) CreateQoSPolicy(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"policy": map[string]interface{}{
+		"policy": map[string]any{
 			"id":          policyID,
 			"project_id":  projectID,
 			"tenant_id":   projectID,
@@ -136,7 +140,7 @@ func (svc *Service) GetQoSPolicy(c *gin.Context) {
 		WHERE id = $1 AND (project_id = $2 OR shared = true)
 	`, policyID, projectID).Scan(&projID, &name, &description, &shared, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("policy"))
 		return
 	}
@@ -147,7 +151,7 @@ func (svc *Service) GetQoSPolicy(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"policy": map[string]interface{}{
+		"policy": map[string]any{
 			"id":          policyID,
 			"project_id":  projID,
 			"tenant_id":   projID,
@@ -192,7 +196,7 @@ func (svc *Service) UpdateQoSPolicy(c *gin.Context) {
 
 	// Build update query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argPos := 1
 
 	if req.Policy.Name != nil {
@@ -288,7 +292,7 @@ func (svc *Service) ListBandwidthLimitRules(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	rules := []map[string]interface{}{}
+	rules := []map[string]any{}
 	for rows.Next() {
 		var (
 			id           string
@@ -306,7 +310,7 @@ func (svc *Service) ListBandwidthLimitRules(c *gin.Context) {
 			return
 		}
 
-		rule := map[string]interface{}{
+		rule := map[string]any{
 			"id":             id,
 			"max_kbps":       maxKbps,
 			"max_burst_kbps": maxBurstKbps,
@@ -314,6 +318,9 @@ func (svc *Service) ListBandwidthLimitRules(c *gin.Context) {
 			"qos_policy_id":  policyID,
 		}
 		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"bandwidth_limit_rules": rules})
@@ -369,7 +376,7 @@ func (svc *Service) CreateBandwidthLimitRule(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"bandwidth_limit_rule": map[string]interface{}{
+		"bandwidth_limit_rule": map[string]any{
 			"id":             ruleID,
 			"max_kbps":       req.Rule.MaxKbps,
 			"max_burst_kbps": req.Rule.MaxBurstKbps,
@@ -411,7 +418,7 @@ func (svc *Service) GetBandwidthLimitRule(c *gin.Context) {
 		WHERE id = $1 AND qos_policy_id = $2
 	`, ruleID, policyID).Scan(&maxKbps, &maxBurstKbps, &direction, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("rule"))
 		return
 	}
@@ -422,7 +429,7 @@ func (svc *Service) GetBandwidthLimitRule(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"bandwidth_limit_rule": map[string]interface{}{
+		"bandwidth_limit_rule": map[string]any{
 			"id":             ruleID,
 			"max_kbps":       maxKbps,
 			"max_burst_kbps": maxBurstKbps,
@@ -476,7 +483,7 @@ func (svc *Service) UpdateBandwidthLimitRule(c *gin.Context) {
 
 	// Build update query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argPos := 1
 
 	if req.Rule.MaxKbps != nil {

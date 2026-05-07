@@ -15,7 +15,7 @@ import (
 func (svc *Service) VolumeTypeAction(c *gin.Context) {
 	typeID := c.Param("id")
 
-	var req map[string]interface{}
+	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
@@ -23,8 +23,16 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 
 	// Handle addProjectAccess action
 	if addAccess, ok := req["addProjectAccess"]; ok {
-		addMap := addAccess.(map[string]interface{})
-		projectID := addMap["project"].(string)
+		addMap, ok := addAccess.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("addProjectAccess must be an object"))
+			return
+		}
+		projectID, ok := addMap["project"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("addProjectAccess.project must be a string"))
+			return
+		}
 
 		// Verify volume type exists and is private
 		var isPublic bool
@@ -62,8 +70,16 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 
 	// Handle removeProjectAccess action
 	if removeAccess, ok := req["removeProjectAccess"]; ok {
-		removeMap := removeAccess.(map[string]interface{})
-		projectID := removeMap["project"].(string)
+		removeMap, ok := removeAccess.(map[string]any)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("removeProjectAccess must be an object"))
+			return
+		}
+		projectID, ok := removeMap["project"].(string)
+		if !ok {
+			common.SendError(c, common.NewBadRequestError("removeProjectAccess.project must be a string"))
+			return
+		}
 
 		// Remove access
 		result, err := database.DB.Exec(c.Request.Context(),
@@ -107,7 +123,7 @@ func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 
 	if isPublic {
 		// Public types don't have access control
-		c.JSON(http.StatusOK, gin.H{"volume_type_access": []interface{}{}})
+		c.JSON(http.StatusOK, gin.H{"volume_type_access": []any{}})
 		return
 	}
 
@@ -125,15 +141,20 @@ func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	access := []map[string]interface{}{}
+	access := []map[string]any{}
 	for rows.Next() {
 		var volumeTypeID, projectID uuid.UUID
 		if rows.Scan(&volumeTypeID, &projectID) == nil {
-			access = append(access, map[string]interface{}{
+			access = append(access, map[string]any{
 				"volume_type_id": volumeTypeID.String(),
 				"project_id":     projectID.String(),
 			})
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"volume_type_access": access})

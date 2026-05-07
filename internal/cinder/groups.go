@@ -1,6 +1,7 @@
 package cinder
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -29,7 +30,7 @@ func (svc *Service) ListGroups(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	groups := []map[string]interface{}{}
+	groups := []map[string]any{}
 	for rows.Next() {
 		var (
 			id          string
@@ -49,7 +50,7 @@ func (svc *Service) ListGroups(c *gin.Context) {
 			return
 		}
 
-		group := map[string]interface{}{
+		group := map[string]any{
 			"id":          id,
 			"name":        name,
 			"description": description,
@@ -59,6 +60,9 @@ func (svc *Service) ListGroups(c *gin.Context) {
 			"updated_at":  updatedAt.Format(time.RFC3339),
 		}
 		groups = append(groups, group)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"groups": groups})
@@ -96,7 +100,7 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"group": map[string]interface{}{
+		"group": map[string]any{
 			"id":          groupID,
 			"name":        req.Group.Name,
 			"description": req.Group.Description,
@@ -128,7 +132,7 @@ func (svc *Service) GetGroup(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, groupID, projectID).Scan(&name, &description, &status, &groupType, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("group"))
 		return
 	}
@@ -139,7 +143,7 @@ func (svc *Service) GetGroup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"group": map[string]interface{}{
+		"group": map[string]any{
 			"id":          groupID,
 			"name":        name,
 			"description": description,
@@ -218,7 +222,7 @@ func (svc *Service) UpdateGroup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"group": map[string]interface{}{
+		"group": map[string]any{
 			"id":          groupID,
 			"name":        name,
 			"description": description,

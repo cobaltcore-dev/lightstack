@@ -91,6 +91,9 @@ func (svc *Service) ListRBACPolicies(c *gin.Context) {
 			"action":        action,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"rbac_policies": policies})
 }
@@ -143,7 +146,7 @@ func (svc *Service) UpdateRBACPolicy(c *gin.Context) {
 
 	// Build update query
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argPos := 1
 
 	if req.RBACPolicy.TargetTenant != nil {

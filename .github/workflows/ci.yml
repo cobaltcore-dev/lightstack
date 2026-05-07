@@ -50,9 +50,7 @@ jobs:
 
       - name: Run linters
         run: |
-          echo "ℹ️  Linting temporarily disabled - test file cleanup in progress"
-          echo "ℹ️  See task_plan.md for details (78 test file errors to fix)"
-          echo "ℹ️  Production code has been cleaned and passes linting"
+          golangci-lint run ./...
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7

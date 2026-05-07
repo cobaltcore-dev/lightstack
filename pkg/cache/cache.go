@@ -61,7 +61,7 @@ func NewCache(config Config) (*Cache, error) {
 }
 
 // Get retrieves a cached value and unmarshals it into dest
-func (c *Cache) Get(ctx context.Context, key string, dest interface{}) error {
+func (c *Cache) Get(ctx context.Context, key string, dest any) error {
 	if !c.enabled {
 		return ErrCacheDisabled
 	}
@@ -83,7 +83,7 @@ func (c *Cache) Get(ctx context.Context, key string, dest interface{}) error {
 }
 
 // Set stores a value in cache with TTL
-func (c *Cache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (c *Cache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	if !c.enabled {
 		return nil // Silently skip if disabled
 	}

@@ -29,7 +29,7 @@ func (svc *Service) ListMeteringLabels(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	labels := []map[string]interface{}{}
+	labels := []map[string]any{}
 	for rows.Next() {
 		var id, projectID uuid.UUID
 		var name string
@@ -43,7 +43,7 @@ func (svc *Service) ListMeteringLabels(c *gin.Context) {
 			continue
 		}
 
-		label := map[string]interface{}{
+		label := map[string]any{
 			"id":         id.String(),
 			"name":       name,
 			"project_id": projectID.String(),
@@ -56,6 +56,9 @@ func (svc *Service) ListMeteringLabels(c *gin.Context) {
 		}
 
 		labels = append(labels, label)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"metering_labels": labels})
@@ -95,7 +98,7 @@ func (svc *Service) CreateMeteringLabel(c *gin.Context) {
 		return
 	}
 
-	label := map[string]interface{}{
+	label := map[string]any{
 		"id":         id.String(),
 		"name":       req.MeteringLabel.Name,
 		"project_id": projectID,
@@ -132,7 +135,7 @@ func (svc *Service) GetMeteringLabel(c *gin.Context) {
 		return
 	}
 
-	label := map[string]interface{}{
+	label := map[string]any{
 		"id":         id.String(),
 		"name":       name,
 		"project_id": labelProjectID.String(),
@@ -190,7 +193,7 @@ func (svc *Service) ListMeteringLabelRules(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	rules := []map[string]interface{}{}
+	rules := []map[string]any{}
 	for rows.Next() {
 		var id, labelID uuid.UUID
 		var remoteIPPrefix, direction string
@@ -203,7 +206,7 @@ func (svc *Service) ListMeteringLabelRules(c *gin.Context) {
 			continue
 		}
 
-		rule := map[string]interface{}{
+		rule := map[string]any{
 			"id":                id.String(),
 			"metering_label_id": labelID.String(),
 			"remote_ip_prefix":  remoteIPPrefix,
@@ -212,6 +215,9 @@ func (svc *Service) ListMeteringLabelRules(c *gin.Context) {
 		}
 
 		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"metering_label_rules": rules})
@@ -265,7 +271,7 @@ func (svc *Service) CreateMeteringLabelRule(c *gin.Context) {
 		return
 	}
 
-	rule := map[string]interface{}{
+	rule := map[string]any{
 		"id":                id.String(),
 		"metering_label_id": req.MeteringLabelRule.MeteringLabelID,
 		"remote_ip_prefix":  req.MeteringLabelRule.RemoteIPPrefix,

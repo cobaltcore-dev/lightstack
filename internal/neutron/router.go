@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -25,7 +26,7 @@ type Router struct {
 	ProjectID           string                 `json:"tenant_id"` // Keep tenant_id for compatibility
 	AdminStateUp        bool                   `json:"admin_state_up"`
 	Status              string                 `json:"status"`
-	ExternalGatewayInfo map[string]interface{} `json:"external_gateway_info"`
+	ExternalGatewayInfo map[string]any `json:"external_gateway_info"`
 	Distributed         bool                   `json:"distributed"`
 	HA                  bool                   `json:"ha"`
 	CreatedAt           time.Time              `json:"created_at"`
@@ -52,7 +53,7 @@ type CreateRouterRequest struct {
 	Router struct {
 		Name                string                 `json:"name" binding:"required"`
 		AdminStateUp        *bool                  `json:"admin_state_up"`
-		ExternalGatewayInfo map[string]interface{} `json:"external_gateway_info"`
+		ExternalGatewayInfo map[string]any `json:"external_gateway_info"`
 		Distributed         *bool                  `json:"distributed"`
 		HA                  *bool                  `json:"ha"`
 	} `json:"router"`
@@ -63,7 +64,7 @@ type UpdateRouterRequest struct {
 	Router struct {
 		Name                *string                 `json:"name"`
 		AdminStateUp        *bool                   `json:"admin_state_up"`
-		ExternalGatewayInfo *map[string]interface{} `json:"external_gateway_info"`
+		ExternalGatewayInfo *map[string]any `json:"external_gateway_info"`
 	} `json:"router"`
 }
 
@@ -87,7 +88,7 @@ func (svc *Service) ListRouters(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -150,6 +151,9 @@ func (svc *Service) ListRouters(c *gin.Context) {
 			"created_at":            r.CreatedAt.Format(time.RFC3339),
 			"updated_at":            r.UpdatedAt.Format(time.RFC3339),
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
 	}
 
 	if routers == nil {
@@ -253,7 +257,7 @@ func (svc *Service) GetRouter(c *gin.Context) {
 	`, routerID, projectID).Scan(&r.ID, &r.Name, &r.ProjectID, &r.AdminStateUp, &r.Status,
 		&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("router"))
 		return
 	}
@@ -297,7 +301,7 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 	}
 
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argID := 1
 
 	if req.Router.Name != nil {
@@ -361,7 +365,7 @@ func (svc *Service) DeleteRouter(c *gin.Context) {
 		routerID,
 	).Scan(&interfaceCount)
 
-	if err != nil && err != pgx.ErrNoRows {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		log.Error().Err(err).Str("operation", "delete_router_check").Str("router_id", routerID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to check router interfaces"))
 		return
@@ -427,7 +431,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		req.SubnetID,
 	).Scan(&subnetID, &networkID, &cidr, &gatewayIP)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
 		return
 	}
@@ -513,7 +517,7 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 			routerID, req.SubnetID,
 		).Scan(&portID)
 
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("router interface"))
 			return
 		}
@@ -554,7 +558,7 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 }
 
 // Helper function to configure external gateway
-func (svc *Service) configureExternalGateway(ctx context.Context, routerID string, gatewayInfo map[string]interface{}) error {
+func (svc *Service) configureExternalGateway(ctx context.Context, routerID string, gatewayInfo map[string]any) error {
 	if gatewayInfo == nil {
 		return nil
 	}
@@ -606,6 +610,9 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 			if err := svc.routerManager.EnableSNAT(routerID, externalInterface, internalCIDR); err != nil {
 				fmt.Printf("Warning: failed to enable SNAT for %s: %v\n", internalCIDR, err)
 			}
+		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("rows iteration error")
 		}
 	}
 

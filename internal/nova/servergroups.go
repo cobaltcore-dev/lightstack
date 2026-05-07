@@ -48,6 +48,9 @@ func (svc *Service) ListServerGroups(c *gin.Context) {
 			"project_id": projectID,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	c.JSON(http.StatusOK, gin.H{"server_groups": serverGroups})
 }

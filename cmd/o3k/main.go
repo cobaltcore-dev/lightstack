@@ -214,7 +214,7 @@ func main() {
 
 	// Create HTTP servers for each service
 	servers := []*http.Server{
-		createKeystoneServer(cfg, keystoneService),
+		createKeystoneServer(cfg, keystoneService, authService),
 		createNovaServer(cfg, novaService, authService),
 		createNeutronServer(cfg, neutronService, authService),
 		createCinderServer(cfg, cinderService, authService),
@@ -279,7 +279,7 @@ func main() {
 	log.Println("O3K stopped")
 }
 
-func createKeystoneServer(cfg *common.Config, svc *keystone.Service) *http.Server {
+func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService *keystone.AuthService) *http.Server {
 	r := gin.New()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
@@ -306,11 +306,15 @@ func createKeystoneServer(cfg *common.Config, svc *keystone.Service) *http.Serve
 		})
 	})
 
-	svc.RegisterRoutes(r.Group(""))
+	svc.RegisterRoutes(r.Group(""), middleware.AuthMiddleware(authService))
 
 	return &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Keystone.Port),
-		Handler: r,
+		Addr:              fmt.Sprintf(":%d", cfg.Keystone.Port),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 }
 
@@ -328,8 +332,12 @@ func createNovaServer(cfg *common.Config, svc *nova.Service, authService *keysto
 	svc.RegisterRoutes(r.Group(""))
 
 	return &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Nova.Port),
-		Handler: r,
+		Addr:              fmt.Sprintf(":%d", cfg.Nova.Port),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 }
 
@@ -347,8 +355,12 @@ func createNeutronServer(cfg *common.Config, svc *neutron.Service, authService *
 	svc.RegisterRoutes(r.Group(""))
 
 	return &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Neutron.Port),
-		Handler: r,
+		Addr:              fmt.Sprintf(":%d", cfg.Neutron.Port),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 }
 
@@ -366,8 +378,12 @@ func createCinderServer(cfg *common.Config, svc *cinder.Service, authService *ke
 	svc.RegisterRoutes(r.Group(""))
 
 	return &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Cinder.Port),
-		Handler: r,
+		Addr:              fmt.Sprintf(":%d", cfg.Cinder.Port),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 }
 
@@ -392,8 +408,12 @@ func createGlanceServer(cfg *common.Config, svc *glance.Service, authService *ke
 	svc.RegisterRoutes(authGroup)
 
 	return &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Glance.Port),
-		Handler: r,
+		Addr:              fmt.Sprintf(":%d", cfg.Glance.Port),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       300 * time.Second,
+		WriteTimeout:      300 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 }
 
@@ -410,8 +430,12 @@ func createPlacementServer(cfg *common.Config, svc *placement.Service, authServi
 	svc.RegisterRoutes(r.Group(""))
 
 	return &http.Server{
-		Addr:    ":8778",
-		Handler: r,
+		Addr:              ":8778",
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 }
 
@@ -428,7 +452,11 @@ func createMetadataServer(svc *metadata.Service) *http.Server {
 	svc.RegisterRoutes(r.Group(""))
 
 	return &http.Server{
-		Addr:    ":8775",
-		Handler: r,
+		Addr:              ":8775",
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 }

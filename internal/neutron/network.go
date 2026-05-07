@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"errors"
 	"crypto/rand"
 	"fmt"
 	"net"
@@ -515,7 +516,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -572,6 +573,9 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 			"updated_at":     updatedAt.Format(time.RFC3339),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if networks == nil {
 		networks = []gin.H{}
@@ -609,7 +613,7 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		LIMIT 1
 	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
@@ -689,7 +693,7 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 	}
 
 	updates := []string{}
-	args := []interface{}{}
+	args := []any{}
 	argID := 1
 
 	if req.Network.Name != nil {
@@ -854,7 +858,7 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 
 	// Marker-based pagination
 	var markerCondition string
-	var queryArgs []interface{}
+	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
@@ -915,6 +919,9 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 			"updated_at":      updatedAt.Format(time.RFC3339),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("rows iteration error")
+	}
 
 	if subnets == nil {
 		subnets = []gin.H{}
@@ -941,7 +948,7 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 		WHERE s.id = $1 AND (s.project_id = $2 OR n.shared = true)
 	`, subnetID, projectID).Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
 		return
 	}
@@ -1021,7 +1028,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		subnetID, projectID,
 	).Scan(&currentName)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
 		return
 	}
