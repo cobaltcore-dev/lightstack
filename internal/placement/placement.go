@@ -36,17 +36,18 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 // GetVersions returns the root version discovery response
 func (svc *Service) GetVersions(c *gin.Context) {
+	baseURL := "http://" + c.Request.Host + "/"
 	c.JSON(http.StatusOK, gin.H{
 		"versions": []gin.H{
 			{
-				"id":      "v1.0",
-				"status":  "CURRENT",
+				"id":          "v1.0",
+				"status":      "CURRENT",
 				"min_version": placementMinVersion,
 				"max_version": placementMaxVersion,
 				"links": []gin.H{
 					{
 						"rel":  "self",
-						"href": "http://o3k:8778/",
+						"href": baseURL,
 					},
 				},
 			},
@@ -56,16 +57,17 @@ func (svc *Service) GetVersions(c *gin.Context) {
 
 // GetVersion returns v1 version information
 func (svc *Service) GetVersion(c *gin.Context) {
+	baseURL := "http://" + c.Request.Host + "/"
 	c.JSON(http.StatusOK, gin.H{
 		"version": gin.H{
-			"id":      "v1.0",
-			"status":  "CURRENT",
+			"id":          "v1.0",
+			"status":      "CURRENT",
 			"min_version": placementMinVersion,
 			"max_version": placementMaxVersion,
 			"links": []gin.H{
 				{
 					"rel":  "self",
-					"href": "http://o3k:8778/",
+					"href": baseURL,
 				},
 			},
 		},

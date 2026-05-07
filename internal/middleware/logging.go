@@ -234,7 +234,14 @@ func LogDatabaseQuery(c *gin.Context, query string, duration time.Duration, err 
 
 // RecoveryMiddleware handles panics
 func RecoveryMiddleware() gin.HandlerFunc {
-	return gin.RecoveryWithWriter(gin.DefaultWriter)
+	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
+		log.Error().
+			Interface("panic", recovered).
+			Str("method", c.Request.Method).
+			Str("path", c.Request.URL.Path).
+			Msg("panic recovered")
+		c.AbortWithStatus(500)
+	})
 }
 
 // CORSMiddlewareWithConfig adds CORS headers using a configurable origin allowlist.

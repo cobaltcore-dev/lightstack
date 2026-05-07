@@ -220,7 +220,7 @@ func (svc *Service) CreateRouter(c *gin.Context) {
 	if req.Router.ExternalGatewayInfo != nil {
 		if err := svc.configureExternalGateway(c.Request.Context(), routerID, req.Router.ExternalGatewayInfo); err != nil {
 			// Log error but don't fail the creation
-			fmt.Printf("Warning: failed to configure external gateway: %v\n", err)
+			log.Warn().Err(err).Str("router_id", routerID).Msg("failed to configure external gateway")
 		}
 	}
 
@@ -324,7 +324,7 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 
 		// Configure external gateway
 		if err := svc.configureExternalGateway(c.Request.Context(), routerID, *req.Router.ExternalGatewayInfo); err != nil {
-			fmt.Printf("Warning: failed to configure external gateway: %v\n", err)
+			log.Warn().Err(err).Str("router_id", routerID).Msg("failed to configure external gateway")
 		}
 	}
 
@@ -380,7 +380,7 @@ func (svc *Service) DeleteRouter(c *gin.Context) {
 
 	// Delete router namespace
 	if err := svc.routerManager.DeleteRouterNamespace(routerID); err != nil {
-		fmt.Printf("Warning: failed to delete router namespace: %v\n", err)
+		log.Warn().Err(err).Str("router_id", routerID).Msg("failed to delete router namespace")
 	}
 
 	// Delete from database
@@ -485,7 +485,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	cidrSuffix := fmt.Sprintf("%d", maskBits)
 
 	if err := svc.routerManager.AttachInterfaceToRouter(routerID, interfaceName, gatewayIP, cidrSuffix); err != nil {
-		fmt.Printf("Warning: failed to attach interface to router: %v\n", err)
+		log.Warn().Err(err).Str("router_id", routerID).Str("interface", interfaceName).Msg("failed to attach interface to router")
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -526,7 +526,7 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 	// Detach interface from router namespace
 	interfaceName := "qg-" + portID[:10]
 	if err := svc.routerManager.DetachInterfaceFromRouter(routerID, interfaceName); err != nil {
-		fmt.Printf("Warning: failed to detach interface from router: %v\n", err)
+		log.Warn().Err(err).Str("router_id", routerID).Str("interface", interfaceName).Msg("failed to detach interface from router")
 	}
 
 	// Delete router interface record
@@ -608,7 +608,7 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 			}
 
 			if err := svc.routerManager.EnableSNAT(routerID, externalInterface, internalCIDR); err != nil {
-				fmt.Printf("Warning: failed to enable SNAT for %s: %v\n", internalCIDR, err)
+				log.Warn().Err(err).Str("router_id", routerID).Str("cidr", internalCIDR).Msg("failed to enable SNAT")
 			}
 		}
 		if err := rows.Err(); err != nil {

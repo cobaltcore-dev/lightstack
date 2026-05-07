@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // CephClient manages storage operations (RBD, local, or both)
@@ -52,8 +54,7 @@ func NewCephClient(mode, pool, confFile string) *CephClient {
 	// Initialize Ceph connection if RBD mode
 	if mode == "rbd" || mode == "local,rbd" {
 		if err := client.initCephConnection(); err != nil {
-			fmt.Printf("Warning: failed to initialize Ceph connection: %v\n", err)
-			// Continue in degraded mode (will fallback to local if available)
+			log.Warn().Err(err).Msg("failed to initialize Ceph connection; running in degraded mode")
 		}
 	}
 

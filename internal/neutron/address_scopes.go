@@ -34,7 +34,7 @@ func (svc *Service) ListAddressScopes(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id        string
-			projID    string
+			projectID    string
 			name      string
 			ipVersion int
 			shared    bool
@@ -42,7 +42,7 @@ func (svc *Service) ListAddressScopes(c *gin.Context) {
 			updatedAt time.Time
 		)
 
-		err := rows.Scan(&id, &projID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
+		err := rows.Scan(&id, &projectID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "list_address_scopes_scan").Msg("failed to scan address scope row")
 			common.SendError(c, common.NewInternalServerError("failed to read address scope data"))
@@ -51,8 +51,8 @@ func (svc *Service) ListAddressScopes(c *gin.Context) {
 
 		scope := map[string]any{
 			"id":         id,
-			"tenant_id":  projID,
-			"project_id": projID,
+			"tenant_id":  projectID,
+			"project_id": projectID,
 			"name":       name,
 			"ip_version": ipVersion,
 			"shared":     shared,
@@ -124,7 +124,6 @@ func (svc *Service) GetAddressScope(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var (
-		projID    string
 		name      string
 		ipVersion int
 		shared    bool
@@ -136,7 +135,7 @@ func (svc *Service) GetAddressScope(c *gin.Context) {
 		SELECT project_id, name, ip_version, shared, created_at, updated_at
 		FROM address_scopes
 		WHERE id = $1 AND project_id = $2
-	`, scopeID, projectID).Scan(&projID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
+	`, scopeID, projectID).Scan(&projectID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("address scope"))
@@ -151,8 +150,8 @@ func (svc *Service) GetAddressScope(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"address_scope": map[string]any{
 			"id":         scopeID,
-			"tenant_id":  projID,
-			"project_id": projID,
+			"tenant_id":  projectID,
+			"project_id": projectID,
 			"name":       name,
 			"ip_version": ipVersion,
 			"shared":     shared,
@@ -208,7 +207,6 @@ func (svc *Service) UpdateAddressScope(c *gin.Context) {
 
 	// Fetch updated scope
 	var (
-		projID    string
 		name      string
 		ipVersion int
 		shared    bool
@@ -220,7 +218,7 @@ func (svc *Service) UpdateAddressScope(c *gin.Context) {
 		SELECT project_id, name, ip_version, shared, created_at, updated_at
 		FROM address_scopes
 		WHERE id = $1 AND project_id = $2
-	`, scopeID, projectID).Scan(&projID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
+	`, scopeID, projectID).Scan(&projectID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_address_scope_fetch").Msg("failed to fetch updated address scope")
@@ -231,8 +229,8 @@ func (svc *Service) UpdateAddressScope(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"address_scope": map[string]any{
 			"id":         scopeID,
-			"tenant_id":  projID,
-			"project_id": projID,
+			"tenant_id":  projectID,
+			"project_id": projectID,
 			"name":       name,
 			"ip_version": ipVersion,
 			"shared":     shared,

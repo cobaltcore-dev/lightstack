@@ -262,7 +262,7 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 			// Configure DNAT/SNAT rules for floating IP
 			externalInterface := "qg-ext-" + rID[:7]
 			if err := svc.routerManager.AddFloatingIP(rID, floatingIP, *fixedIP, externalInterface); err != nil {
-				fmt.Printf("Warning: failed to configure floating IP NAT: %v\n", err)
+				log.Warn().Err(err).Str("router_id", rID).Str("floating_ip", floatingIP).Msg("failed to configure floating IP NAT")
 			}
 		}
 	}
@@ -558,7 +558,7 @@ func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 	if portID.Valid && fixedIP.Valid && routerID.Valid {
 		externalInterface := "qg-ext-" + routerID.String[:7]
 		if err := svc.routerManager.RemoveFloatingIP(routerID.String, floatingIP.String, fixedIP.String, externalInterface); err != nil {
-			fmt.Printf("Warning: failed to remove floating IP NAT rules: %v\n", err)
+			log.Warn().Err(err).Str("floatingip_id", floatingIPID).Str("router_id", routerID.String).Msg("failed to remove floating IP NAT rules")
 		}
 	}
 

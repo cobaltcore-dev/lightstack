@@ -35,7 +35,7 @@ func (svc *Service) ListBackups(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id          string
-			projID      string
+			projectID      string
 			volumeID    string
 			name        *string
 			description *string
@@ -45,7 +45,7 @@ func (svc *Service) ListBackups(c *gin.Context) {
 			updatedAt   time.Time
 		)
 
-		err := rows.Scan(&id, &projID, &volumeID, &name, &description, &status, &sizeGB, &createdAt, &updatedAt)
+		err := rows.Scan(&id, &projectID, &volumeID, &name, &description, &status, &sizeGB, &createdAt, &updatedAt)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "scan_backup").Msg("failed to scan backup row")
 			common.SendError(c, common.NewInternalServerError("failed to read backup data"))

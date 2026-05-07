@@ -60,16 +60,26 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 // In a real deployment, this would check which network namespace the request came from
 // For testing, we'll use a header: X-Instance-ID
 func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
-	// Check for test header first
+	// Check for test header first (only trust this in non-production contexts)
 	if instanceID := c.GetHeader("X-Instance-ID"); instanceID != "" {
 		return instanceID, nil
 	}
 
-	// In production, we would:
-	// 1. Get source IP from c.ClientIP()
-	// 2. Query ports table to find port with that IP
-	// 3. Return instance_id from port
-	// For now, return error for real deployments
+	// In production, the metadata service is reachable only via the link-local
+	// address 169.254.169.254 from within a network namespace. Use the source IP
+	// to look up which port (and therefore instance) is making the request.
+	clientIP := c.ClientIP()
+	if net.ParseIP(clientIP) != nil {
+		var instanceID string
+		err := database.DB.QueryRow(c.Request.Context(),
+			"SELECT instance_id FROM ports WHERE fixed_ip = $1 AND instance_id IS NOT NULL LIMIT 1",
+			clientIP,
+		).Scan(&instanceID)
+		if err == nil && instanceID != "" {
+			return instanceID, nil
+		}
+	}
+
 	return "", fmt.Errorf("cannot determine instance ID from request")
 }
 

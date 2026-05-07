@@ -36,7 +36,7 @@ func (svc *Service) ListQoSPolicies(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id          string
-			projID      string
+			projectID      string
 			name        string
 			description *string
 			shared      bool
@@ -44,7 +44,7 @@ func (svc *Service) ListQoSPolicies(c *gin.Context) {
 			updatedAt   time.Time
 		)
 
-		err := rows.Scan(&id, &projID, &name, &description, &shared, &createdAt, &updatedAt)
+		err := rows.Scan(&id, &projectID, &name, &description, &shared, &createdAt, &updatedAt)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "list_qos_policies_scan").Msg("failed to scan QoS policy row")
 			common.SendError(c, common.NewInternalServerError("failed to read QoS policy data"))
@@ -53,8 +53,8 @@ func (svc *Service) ListQoSPolicies(c *gin.Context) {
 
 		policy := map[string]any{
 			"id":          id,
-			"project_id":  projID,
-			"tenant_id":   projID,
+			"project_id":  projectID,
+			"tenant_id":   projectID,
 			"name":        name,
 			"description": description,
 			"shared":      shared,
@@ -126,7 +126,6 @@ func (svc *Service) GetQoSPolicy(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var (
-		projID      string
 		name        string
 		description *string
 		shared      bool
@@ -138,7 +137,7 @@ func (svc *Service) GetQoSPolicy(c *gin.Context) {
 		SELECT project_id, name, description, shared, created_at, updated_at
 		FROM qos_policies
 		WHERE id = $1 AND (project_id = $2 OR shared = true)
-	`, policyID, projectID).Scan(&projID, &name, &description, &shared, &createdAt, &updatedAt)
+	`, policyID, projectID).Scan(&projectID, &name, &description, &shared, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("policy"))
@@ -153,8 +152,8 @@ func (svc *Service) GetQoSPolicy(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"policy": map[string]any{
 			"id":          policyID,
-			"project_id":  projID,
-			"tenant_id":   projID,
+			"project_id":  projectID,
+			"tenant_id":   projectID,
 			"name":        name,
 			"description": description,
 			"shared":      shared,

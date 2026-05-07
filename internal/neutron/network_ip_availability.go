@@ -33,10 +33,10 @@ func (svc *Service) ListNetworkIPAvailabilities(c *gin.Context) {
 
 	var availabilities []gin.H
 	for rows.Next() {
-		var networkID, name, projID string
+		var networkID, name, projectID string
 		var subnetCount int
 
-		if err := rows.Scan(&networkID, &name, &projID, &subnetCount); err != nil {
+		if err := rows.Scan(&networkID, &name, &projectID, &subnetCount); err != nil {
 			continue
 		}
 
@@ -48,7 +48,7 @@ func (svc *Service) ListNetworkIPAvailabilities(c *gin.Context) {
 		availabilities = append(availabilities, gin.H{
 			"network_id":   networkID,
 			"network_name": name,
-			"project_id":   projID,
+			"project_id":   projectID,
 			"total_ips":    totalIPs,
 			"used_ips":     usedIPs,
 			"subnet_ip_availability": []gin.H{

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
 	"syscall"
 
 	"github.com/cilium/ebpf"
@@ -30,6 +31,7 @@ type SecurityGroupRule struct {
 
 // SecurityGroupManager manages eBPF-based security groups
 type SecurityGroupManager struct {
+	mu       sync.Mutex
 	coll     *ebpf.Collection
 	prog     *ebpf.Program
 	sgRules  *ebpf.Map
@@ -91,6 +93,9 @@ func (m *SecurityGroupManager) AttachToInterface(ifaceName string) error {
 		return fmt.Errorf("failed to get interface %s: %w", ifaceName, err)
 	}
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Check if already attached
 	if _, exists := m.links[ifaceName]; exists {
 		return fmt.Errorf("XDP program already attached to %s", ifaceName)
@@ -112,6 +117,9 @@ func (m *SecurityGroupManager) AttachToInterface(ifaceName string) error {
 
 // DetachFromInterface detaches the XDP program from a network interface
 func (m *SecurityGroupManager) DetachFromInterface(ifaceName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	l, exists := m.links[ifaceName]
 	if !exists {
 		return fmt.Errorf("XDP program not attached to %s", ifaceName)
@@ -132,15 +140,16 @@ func (m *SecurityGroupManager) UpdateSecurityGroup(portID uint32, rules []Securi
 		return fmt.Errorf("too many rules: %d (max 100)", len(rules))
 	}
 
-	// Serialize rule set to binary format
-	// Format: [rule_count:4 bytes][rule1:24 bytes][rule2:24 bytes]...
-	buf := make([]byte, 4+len(rules)*24)
+	// Serialize rule set to binary format matching the C sg_rule_set struct (packed):
+	// [rule_count:4 bytes][rule1:14 bytes][rule2:14 bytes]...
+	// sg_rule (packed): protocol(1) + direction(1) + port_min(2) + port_max(2) + remote_ip_prefix(4) + remote_ip_mask(4) = 14 bytes
+	const ruleSize = 14
+	buf := make([]byte, 4+len(rules)*ruleSize)
 
 	// Write rule count
 	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(rules)))
 
 	// Write each rule
-	offset := 4
 	for i, rule := range rules {
 		// Parse CIDR
 		_, ipnet, err := net.ParseCIDR(rule.RemoteIPCIDR)
@@ -162,15 +171,14 @@ func (m *SecurityGroupManager) UpdateSecurityGroup(portID uint32, rules []Securi
 		}
 		ipMask := binary.BigEndian.Uint32(maskBytes)
 
-		// Serialize rule (24 bytes total)
-		ruleOffset := offset + i*24
-		buf[ruleOffset] = rule.Protocol                           // 1 byte
-		buf[ruleOffset+1] = rule.Direction                        // 1 byte
-		binary.LittleEndian.PutUint16(buf[ruleOffset+2:], rule.PortMin)  // 2 bytes
-		binary.LittleEndian.PutUint16(buf[ruleOffset+4:], rule.PortMax)  // 2 bytes
-		binary.LittleEndian.PutUint32(buf[ruleOffset+6:], ipPrefix)      // 4 bytes
-		binary.LittleEndian.PutUint32(buf[ruleOffset+10:], ipMask)       // 4 bytes
-		// Padding: 10 bytes reserved for future use
+		// Serialize rule (14 bytes, packed — matches C struct __attribute__((packed)))
+		ruleOffset := 4 + i*ruleSize
+		buf[ruleOffset] = rule.Protocol                                      // 1 byte
+		buf[ruleOffset+1] = rule.Direction                                   // 1 byte
+		binary.LittleEndian.PutUint16(buf[ruleOffset+2:], rule.PortMin)     // 2 bytes
+		binary.LittleEndian.PutUint16(buf[ruleOffset+4:], rule.PortMax)     // 2 bytes
+		binary.LittleEndian.PutUint32(buf[ruleOffset+6:], ipPrefix)         // 4 bytes
+		binary.LittleEndian.PutUint32(buf[ruleOffset+10:], ipMask)          // 4 bytes
 	}
 
 	// Update eBPF map
@@ -209,16 +217,26 @@ func (m *SecurityGroupManager) GetStatistics() (*Statistics, error) {
 
 // Close detaches all XDP programs and releases resources
 func (m *SecurityGroupManager) Close() error {
-	// Detach from all interfaces
-	for ifaceName := range m.links {
+	m.mu.Lock()
+	ifaces := make([]string, 0, len(m.links))
+	for name := range m.links {
+		ifaces = append(ifaces, name)
+	}
+	m.mu.Unlock()
+
+	var errs []error
+	for _, ifaceName := range ifaces {
 		if err := m.DetachFromInterface(ifaceName); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
 
 	// Close collection (also closes maps and programs)
 	m.coll.Close() // Note: Close() doesn't return error in cilium/ebpf v0.12+
 
+	if len(errs) > 0 {
+		return fmt.Errorf("errors detaching XDP programs: %v", errs)
+	}
 	return nil
 }
 
