@@ -19,6 +19,7 @@ type NodeRegistry struct {
 	tunnelIP          string
 	heartbeatInterval time.Duration
 	stopChan          chan struct{}
+	doneChan          chan struct{}
 }
 
 // NewNodeRegistry creates a new node registry
@@ -53,6 +54,7 @@ func NewNodeRegistry(nodeID, tunnelIP string, heartbeatInterval time.Duration) (
 		tunnelIP:          tunnelIP,
 		heartbeatInterval: heartbeatInterval,
 		stopChan:          make(chan struct{}),
+		doneChan:          make(chan struct{}),
 	}, nil
 }
 
@@ -83,13 +85,13 @@ func (nr *NodeRegistry) RegisterNode(ctx context.Context) error {
 func (nr *NodeRegistry) StartHeartbeat(ctx context.Context) {
 	ticker := time.NewTicker(nr.heartbeatInterval)
 	defer ticker.Stop()
+	defer close(nr.doneChan)
 
 	for {
 		select {
 		case <-ticker.C:
 			if err := nr.sendHeartbeat(ctx); err != nil {
-				// Log error but continue
-				fmt.Printf("Heartbeat error: %v\n", err)
+				log.Error().Err(err).Str("hostname", nr.hostname).Msg("heartbeat error")
 			}
 		case <-nr.stopChan:
 			return
@@ -110,9 +112,10 @@ func (nr *NodeRegistry) sendHeartbeat(ctx context.Context) error {
 	return err
 }
 
-// StopHeartbeat stops the heartbeat goroutine
+// StopHeartbeat stops the heartbeat goroutine and waits for it to exit
 func (nr *NodeRegistry) StopHeartbeat() {
 	close(nr.stopChan)
+	<-nr.doneChan
 }
 
 // ListActiveNodes returns all nodes with recent heartbeat (within 2x heartbeat interval)
@@ -135,6 +138,7 @@ func (nr *NodeRegistry) ListActiveNodes(ctx context.Context) ([]ComputeNode, err
 	for rows.Next() {
 		var node ComputeNode
 		if err := rows.Scan(&node.ID, &node.Hostname, &node.TunnelIP, &node.Status, &node.LastHeartbeat, &node.CreatedAt); err != nil {
+			log.Error().Err(err).Msg("failed to scan compute node row")
 			continue
 		}
 		nodes = append(nodes, node)

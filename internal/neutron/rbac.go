@@ -76,15 +76,15 @@ func (svc *Service) ListRBACPolicies(c *gin.Context) {
 
 	policies := []gin.H{}
 	for rows.Next() {
-		var id, projID, objectType, objectID, targetTenant, action string
+		var id, projectID, objectType, objectID, targetTenant, action string
 
-		if err := rows.Scan(&id, &projID, &objectType, &objectID, &targetTenant, &action); err != nil {
+		if err := rows.Scan(&id, &projectID, &objectType, &objectID, &targetTenant, &action); err != nil {
 			continue
 		}
 
 		policies = append(policies, gin.H{
 			"id":            id,
-			"project_id":    projID,
+			"project_id":    projectID,
 			"object_type":   objectType,
 			"object_id":     objectID,
 			"target_tenant": targetTenant,
@@ -103,13 +103,13 @@ func (svc *Service) GetRBACPolicy(c *gin.Context) {
 	policyID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	var projID, objectType, objectID, targetTenant, action string
+	var objectType, objectID, targetTenant, action string
 
 	err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT project_id, object_type, object_id, target_tenant, action
 		FROM rbac_policies
 		WHERE id = $1 AND project_id = $2
-	`, policyID, projectID).Scan(&projID, &objectType, &objectID, &targetTenant, &action)
+	`, policyID, projectID).Scan(&projectID, &objectType, &objectID, &targetTenant, &action)
 
 	if err != nil {
 		common.SendError(c, common.NewNotFoundError("RBAC policy"))
@@ -119,7 +119,7 @@ func (svc *Service) GetRBACPolicy(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"rbac_policy": gin.H{
 			"id":            policyID,
-			"project_id":    projID,
+			"project_id":    projectID,
 			"object_type":   objectType,
 			"object_id":     objectID,
 			"target_tenant": targetTenant,

@@ -13,7 +13,6 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 )
-
 // UpdateQuotaRequest represents a quota update request
 type UpdateQuotaRequest struct {
 	QuotaSet map[string]int `json:"quota_set"`
@@ -207,85 +206,100 @@ func (svc *Service) GetQuotaSetDefaults(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"quota_set": quotaSet})
 }
 
-// CheckQuota checks if creating a resource would exceed quota
+// quotaDefaults holds the default hard limits when no quota row exists in the DB.
+var quotaDefaults = map[string]int{
+	"instances":            10,
+	"cores":                20,
+	"ram":                  51200,
+	"volumes":              10,
+	"gigabytes":            1000,
+	"snapshots":            10,
+	"networks":             10,
+	"subnets":              10,
+	"ports":                50,
+	"routers":              10,
+	"floatingip":           10,
+	"security_groups":      10,
+	"security_group_rules": 100,
+}
+
+// usageQuery returns the SQL expression that counts current usage for resource.
+func usageQuery(resource string) (string, error) {
+	switch resource {
+	case "instances":
+		return `SELECT COUNT(*) FROM instances WHERE project_id = $1`, nil
+	case "cores":
+		return `SELECT COALESCE(SUM(f.vcpus), 0) FROM instances i LEFT JOIN flavors f ON i.flavor_id = f.id WHERE i.project_id = $1`, nil
+	case "ram":
+		return `SELECT COALESCE(SUM(f.ram_mb), 0) FROM instances i LEFT JOIN flavors f ON i.flavor_id = f.id WHERE i.project_id = $1`, nil
+	case "volumes":
+		return `SELECT COUNT(*) FROM volumes WHERE project_id = $1`, nil
+	case "gigabytes":
+		return `SELECT COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1`, nil
+	case "networks":
+		return `SELECT COUNT(*) FROM networks WHERE project_id = $1`, nil
+	case "subnets":
+		return `SELECT COUNT(*) FROM subnets WHERE project_id = $1`, nil
+	case "ports":
+		return `SELECT COUNT(*) FROM ports WHERE project_id = $1`, nil
+	case "routers":
+		return `SELECT COUNT(*) FROM routers WHERE project_id = $1`, nil
+	case "floatingip":
+		return `SELECT COUNT(*) FROM floating_ips WHERE project_id = $1`, nil
+	case "security_groups":
+		return `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, nil
+	case "security_group_rules":
+		return `SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)`, nil
+	default:
+		return "", fmt.Errorf("unknown quota resource: %s", resource)
+	}
+}
+
+// CheckQuota checks if creating a resource would exceed quota.
+// The check runs inside a transaction with a row-level lock on the quotas row
+// to prevent TOCTOU races under concurrent requests.
 func CheckQuota(c *gin.Context, resource string, requestedAmount int) error {
 	projectID := c.GetString("project_id")
 
-	// Get quota limit
-	var limit int
-	err := database.DB.QueryRow(c.Request.Context(), `
-		SELECT hard_limit FROM quotas WHERE project_id = $1 AND resource = $2
-	`, projectID, resource).Scan(&limit)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		// No quota set, use defaults
-		defaults := map[string]int{
-			"instances":             10,
-			"cores":                 20,
-			"ram":                   51200,
-			"volumes":               10,
-			"gigabytes":             1000,
-			"snapshots":             10,
-			"networks":              10,
-			"subnets":               10,
-			"ports":                 50,
-			"routers":               10,
-			"floatingip":            10,
-			"security_groups":       10,
-			"security_group_rules":  100,
-		}
-		limit = defaults[resource]
-	} else if err != nil {
+	uq, err := usageQuery(resource)
+	if err != nil {
 		return err
 	}
 
-	// Get current usage
-	var usage int
-	var scanErr error
-	switch resource {
-	case "instances":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM instances WHERE project_id = $1`, projectID).Scan(&usage)
-	case "cores":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(f.vcpus), 0) FROM instances i LEFT JOIN flavors f ON i.flavor_id = f.id WHERE i.project_id = $1`, projectID).Scan(&usage)
-	case "ram":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(f.ram_mb), 0) FROM instances i LEFT JOIN flavors f ON i.flavor_id = f.id WHERE i.project_id = $1`, projectID).Scan(&usage)
-	case "volumes":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM volumes WHERE project_id = $1`, projectID).Scan(&usage)
-	case "gigabytes":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1`, projectID).Scan(&usage)
-	case "networks":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM networks WHERE project_id = $1`, projectID).Scan(&usage)
-	case "subnets":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM subnets WHERE project_id = $1`, projectID).Scan(&usage)
-	case "ports":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM ports WHERE project_id = $1`, projectID).Scan(&usage)
-	case "routers":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM routers WHERE project_id = $1`, projectID).Scan(&usage)
-	case "floatingip":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM floating_ips WHERE project_id = $1`, projectID).Scan(&usage)
-	case "security_groups":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, projectID).Scan(&usage)
-	case "security_group_rules":
-		scanErr = database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)`, projectID).Scan(&usage)
-	default:
-		return fmt.Errorf("unknown quota resource: %s", resource)
-	}
-	if scanErr != nil {
-		log.Error().Err(scanErr).Str("resource", resource).Str("project_id", projectID).Msg("failed to scan quota usage")
-		return scanErr
-	}
+	return database.WithTx(c.Request.Context(), func(tx pgx.Tx) error {
+		// Lock the quota row for this project+resource for the duration of the transaction.
+		var limit int
+		lockErr := tx.QueryRow(c.Request.Context(), `
+			SELECT hard_limit FROM quotas WHERE project_id = $1 AND resource = $2 FOR UPDATE
+		`, projectID, resource).Scan(&limit)
 
-	// Check if adding requested amount would exceed limit
-	if usage+requestedAmount > limit {
-		return &QuotaExceededError{
-			Resource: resource,
-			Limit:    limit,
-			Usage:    usage,
-			Requested: requestedAmount,
+		if errors.Is(lockErr, pgx.ErrNoRows) {
+			def, ok := quotaDefaults[resource]
+			if !ok {
+				return fmt.Errorf("unknown quota resource: %s", resource)
+			}
+			limit = def
+		} else if lockErr != nil {
+			return lockErr
 		}
-	}
 
-	return nil
+		var usage int
+		if scanErr := tx.QueryRow(c.Request.Context(), uq, projectID).Scan(&usage); scanErr != nil {
+			log.Error().Err(scanErr).Str("resource", resource).Str("project_id", projectID).Msg("failed to scan quota usage")
+			return scanErr
+		}
+
+		if usage+requestedAmount > limit {
+			return &QuotaExceededError{
+				Resource:  resource,
+				Limit:     limit,
+				Usage:     usage,
+				Requested: requestedAmount,
+			}
+		}
+
+		return nil
+	})
 }
 
 // QuotaExceededError represents a quota exceeded error

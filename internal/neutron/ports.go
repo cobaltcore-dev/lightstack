@@ -3,9 +3,11 @@ package neutron
 import (
 	"errors"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"strconv"
@@ -95,6 +97,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	bridgeName := "br-" + req.Port.NetworkID[:8]
 	if err := svc.brManager.AttachToBridge(tapName, bridgeName, true, nsName); err != nil {
 		log.Error().Err(err).Str("operation", "attach_tap_to_bridge").Str("tap", tapName).Msg("failed to attach TAP to bridge")
+		_ = svc.tapManager.DeleteTAPDevice(tapName, true, nsName)
 		common.SendError(c, common.NewInternalServerError("failed to attach TAP to bridge"))
 		return
 	}
@@ -109,6 +112,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_port").Msg("database error")
+		_ = svc.tapManager.DeleteTAPDevice(tapName, true, nsName)
 		common.SendError(c, common.NewInternalServerError("failed to create port"))
 		return
 	}
@@ -162,23 +166,23 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		// eBPF mode: Apply rules directly to port
 		rules, err := svc.fetchSecurityGroupRulesForPort(c.Request.Context(), securityGroups)
 		if err != nil {
-			fmt.Printf("Warning: failed to fetch security group rules: %v\n", err)
+			log.Warn().Err(err).Str("port_id", portID).Msg("failed to fetch security group rules")
 		} else {
 			// Parse MAC address
 			mac, err := net.ParseMAC(macAddress)
 			if err != nil {
-				fmt.Printf("Warning: invalid MAC address %s: %v\n", macAddress, err)
+				log.Warn().Err(err).Str("port_id", portID).Str("mac_address", macAddress).Msg("invalid MAC address")
 			} else {
 				if err := svc.sgManager.ApplySecurityGroupToPort(portID, mac, rules); err != nil {
-					fmt.Printf("Warning: failed to apply eBPF security group rules: %v\n", err)
+					log.Warn().Err(err).Str("port_id", portID).Msg("failed to apply eBPF security group rules")
 				} else {
-					fmt.Printf("Applied %d eBPF security group rules to port %s\n", len(rules), portID)
+					log.Debug().Str("port_id", portID).Int("rule_count", len(rules)).Msg("applied eBPF security group rules")
 
 					// Attach XDP program to TAP interface
 					if err := svc.sgManager.AttachToInterface(tapName); err != nil {
-						fmt.Printf("Warning: failed to attach XDP program to %s: %v\n", tapName, err)
+						log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to attach XDP program to interface")
 					} else {
-						fmt.Printf("Attached XDP security group filter to interface %s\n", tapName)
+						log.Debug().Str("tap", tapName).Msg("attached XDP security group filter to interface")
 					}
 				}
 			}
@@ -191,7 +195,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	if svc.vxlanCoordinator != nil {
 		if err := svc.vxlanCoordinator.DistributeFDBEntry(c.Request.Context(), req.Port.NetworkID, portID, macAddress); err != nil {
 			// Log but don't fail - FDB will be synced on next poll
-			fmt.Printf("Warning: Failed to distribute FDB entry: %v\n", err)
+			log.Warn().Err(err).Str("port_id", portID).Str("network_id", req.Port.NetworkID).Msg("failed to distribute FDB entry")
 		}
 	}
 
@@ -409,7 +413,7 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	// Detach XDP program if eBPF mode
 	if svc.sgManager != nil && svc.mode == "ebpf" {
 		if err := svc.sgManager.DetachFromInterface(tapName); err != nil {
-			fmt.Printf("Warning: failed to detach XDP program from %s: %v\n", tapName, err)
+			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to detach XDP program from interface")
 		}
 
 		// Remove port from eBPF maps (need MAC address)
@@ -433,7 +437,7 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	if svc.vxlanCoordinator != nil {
 		if err := svc.vxlanCoordinator.RemoveFDBEntry(c.Request.Context(), portID); err != nil {
 			// Log but don't fail
-			fmt.Printf("Warning: Failed to remove FDB entry: %v\n", err)
+			log.Warn().Err(err).Str("port_id", portID).Msg("failed to remove FDB entry")
 		}
 	}
 
@@ -523,15 +527,28 @@ func (svc *Service) UpdatePort(c *gin.Context) {
 	svc.GetPort(c)
 }
 
-// allocateIP allocates an IP from a CIDR range
+// allocateIP allocates an IP from a CIDR range using cryptographically random offset
 func allocateIP(cidr string) string {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return ""
 	}
 
-	// Allocate a random IP in the range (simplified)
-	ip := incrementIP(ipNet.IP, uint(10+time.Now().Unix()%240))
+	// Count usable host addresses (excluding network and broadcast)
+	ones, bits := ipNet.Mask.Size()
+	hostBits := bits - ones
+	if hostBits < 2 {
+		return ""
+	}
+	maxOffset := int64(1<<uint(hostBits)) - 2 // exclude network(0) and broadcast
+
+	n, err := rand.Int(rand.Reader, big.NewInt(maxOffset-10))
+	offset := uint(10) // fallback to offset 10 if rand fails
+	if err == nil {
+		offset = uint(n.Int64() + 10)
+	}
+
+	ip := incrementIP(ipNet.IP, offset)
 	return ip.String()
 }
 
@@ -598,7 +615,7 @@ func (svc *Service) ListSecurityGroups(c *gin.Context) {
 		SELECT id, name, description, created_at, updated_at
 		FROM security_groups
 		WHERE project_id = $1
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 	`, projectID)
 
 	if err != nil {
@@ -1140,7 +1157,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	if svc.vxlanCoordinator != nil {
 		if err := svc.vxlanCoordinator.DistributeFDBEntry(ctx, networkID, portID, macAddress); err != nil {
 			// Log but don't fail - FDB will be synced on next poll
-			fmt.Printf("Warning: Failed to distribute FDB entry: %v\n", err)
+			log.Warn().Err(err).Str("port_id", portID).Str("network_id", networkID).Msg("failed to distribute FDB entry")
 		}
 	}
 

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"text/template"
 )
 
@@ -79,25 +80,11 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 		return err
 	}
 
-	// Build dnsmasq command
+	// Build dnsmasq command — load config file and run in foreground for process tracking
 	args := []string{
-		"--interface=" + config.BridgeName,
-		"--bind-interfaces",
-		"--dhcp-range=" + config.DHCPRangeStart + "," + config.DHCPRangeEnd + "," + config.LeaseTime,
-		"--dhcp-leasefile=" + leaseFile,
-		"--pid-file=" + pidFile,
+		"--conf-file=" + configFile,
 		"--no-daemon",
 		"--log-facility=-", // Log to stderr
-	}
-
-	if config.GatewayIP != "" {
-		args = append(args, "--dhcp-option=3,"+config.GatewayIP) // Gateway
-	}
-
-	if len(config.DNSServers) > 0 {
-		for _, dns := range config.DNSServers {
-			args = append(args, "--dhcp-option=6,"+dns) // DNS
-		}
 	}
 
 	// Start dnsmasq in namespace
@@ -114,12 +101,21 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 		return fmt.Errorf("failed to start dnsmasq for network %s: %w", config.NetworkID, err)
 	}
 
+	m.mu.Lock()
 	m.runningPIDs[config.NetworkID] = cmd.Process.Pid
+	m.mu.Unlock()
 	return nil
 }
 
 // StopDHCP stops a DHCP server
 func (m *DHCPManager) StopDHCP(networkID string) error {
+	if m.mode == "stub" {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.stubDHCP, networkID)
+		return nil
+	}
+
 	pidFile := filepath.Join(m.pidPath, networkID+".pid")
 
 	// Read PID from file
@@ -144,7 +140,9 @@ func (m *DHCPManager) StopDHCP(networkID string) error {
 	_ = os.Remove(filepath.Join(m.leasePath, networkID+".leases"))
 	_ = os.Remove(filepath.Join(m.configPath, networkID+".conf"))
 
+	m.mu.Lock()
 	delete(m.runningPIDs, networkID)
+	m.mu.Unlock()
 	return nil
 }
 
@@ -177,17 +175,18 @@ pid-file={{ .PIDFile }}
 
 // IsRunning checks if DHCP server is running for a network
 func (m *DHCPManager) IsRunning(networkID string) bool {
+	m.mu.Lock()
 	pid, exists := m.runningPIDs[networkID]
+	m.mu.Unlock()
 	if !exists {
 		return false
 	}
 
-	// Check if process is still running
+	// Check if process is still running using signal 0
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
 
-	err = proc.Signal(os.Signal(nil))
-	return err == nil
+	return proc.Signal(syscall.Signal(0)) == nil
 }

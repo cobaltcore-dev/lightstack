@@ -483,15 +483,15 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"network": gin.H{
-			"id":              networkID,
-			"name":            req.Network.Name,
-			"tenant_id":       projectID,
-			"admin_state_up":  adminStateUp,
-			"status":          "ACTIVE",
-			"shared":          shared,
-			"mtu":             1500,
-			"created_at":      now.Format(time.RFC3339),
-			"updated_at":      now.Format(time.RFC3339),
+			"id":             networkID,
+			"name":           req.Network.Name,
+			"tenant_id":      projectID,
+			"admin_state_up": adminStateUp,
+			"status":         "ACTIVE",
+			"shared":         shared,
+			"mtu":            mtu,
+			"created_at":     now.Format(time.RFC3339),
+			"updated_at":     now.Format(time.RFC3339),
 		},
 	})
 }
@@ -522,14 +522,15 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := database.DB.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM networks WHERE id = $1",
+			"SELECT created_at, id FROM networks WHERE id = $1",
 			marker,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			markerCondition = fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", argIdx, argIdx+1)
+			queryArgs = append(queryArgs, markerCreatedAt, markerID)
+			argIdx += 2
 		}
 	}
 
@@ -539,7 +540,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at
 		FROM networks
 		WHERE (project_id = $1 OR shared = true)%s
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d
 	`, markerCondition, argIdx, argIdx+1), queryArgs...)
 
@@ -648,6 +649,23 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 	networkID := c.Param("id")
 	projectID := c.GetString("project_id")
 	ctx := c.Request.Context()
+
+	// Check for active ports or subnets before deleting
+	var portCount int
+	if err := database.DB.QueryRow(ctx,
+		"SELECT COUNT(*) FROM ports WHERE network_id = $1", networkID,
+	).Scan(&portCount); err == nil && portCount > 0 {
+		common.SendError(c, common.NewOperationConflictError("delete network", "network has active ports"))
+		return
+	}
+
+	var subnetCount int
+	if err := database.DB.QueryRow(ctx,
+		"SELECT COUNT(*) FROM subnets WHERE network_id = $1", networkID,
+	).Scan(&subnetCount); err == nil && subnetCount > 0 {
+		common.SendError(c, common.NewOperationConflictError("delete network", "network has subnets; delete subnets first"))
+		return
+	}
 
 	bridgeName := "br-" + networkID[:8]
 	nsName := svc.nsManager.GetNamespaceName(projectID)

@@ -19,9 +19,10 @@ var (
 
 // Cache provides Redis-backed caching with TTL support
 type Cache struct {
-	client  *redis.Client
-	enabled bool
-	prefix  string // Key prefix for namespacing
+	client     *redis.Client
+	enabled    bool
+	prefix     string        // Key prefix for namespacing
+	defaultTTL time.Duration // Default TTL applied when 0 is passed to Set
 }
 
 // Config holds cache configuration
@@ -54,9 +55,10 @@ func NewCache(config Config) (*Cache, error) {
 	}
 
 	return &Cache{
-		client:  client,
-		enabled: true,
-		prefix:  config.KeyPrefix,
+		client:     client,
+		enabled:    true,
+		prefix:     config.KeyPrefix,
+		defaultTTL: config.DefaultTTL,
 	}, nil
 }
 
@@ -82,10 +84,14 @@ func (c *Cache) Get(ctx context.Context, key string, dest any) error {
 	return nil
 }
 
-// Set stores a value in cache with TTL
+// Set stores a value in cache with TTL. If ttl is 0, defaultTTL is used.
 func (c *Cache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	if !c.enabled {
 		return nil // Silently skip if disabled
+	}
+
+	if ttl == 0 {
+		ttl = c.defaultTTL
 	}
 
 	data, err := json.Marshal(value)
@@ -172,17 +178,13 @@ func (c *Cache) GetTTL(ctx context.Context, key string) (time.Duration, error) {
 	return ttl, nil
 }
 
-// FlushAll clears the entire cache (use with caution!)
+// FlushAll clears all keys in this cache's namespace (not the entire Redis instance).
 func (c *Cache) FlushAll(ctx context.Context) error {
 	if !c.enabled {
 		return nil
 	}
 
-	if err := c.client.FlushAll(ctx).Err(); err != nil {
-		return fmt.Errorf("failed to flush cache: %w", err)
-	}
-
-	return nil
+	return c.DeletePattern(ctx, "*")
 }
 
 // Close closes the cache connection

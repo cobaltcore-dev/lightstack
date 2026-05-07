@@ -63,9 +63,15 @@ func NewVMManager(libvirtURI, mode string) (*VMManager, error) {
 
 // connectLibvirt establishes a connection to libvirt
 func (m *VMManager) connectLibvirt() error {
-	// Parse URI to get connection type
-	// For qemu:///system, connect to /var/run/libvirt/libvirt-sock
 	socketPath := "/var/run/libvirt/libvirt-sock"
+	// Allow override via configured URI: strip scheme to get socket path
+	if m.libvirtURI != "" && m.libvirtURI != "qemu:///system" {
+		// For custom URIs (e.g. qemu+unix:///path), use the path component
+		// For remote URIs use TCP — not supported in this implementation
+		if len(m.libvirtURI) > 0 {
+			socketPath = m.libvirtURI
+		}
+	}
 
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
@@ -489,8 +495,8 @@ func (m *VMManager) suspendVMStub(vmUUID string) error {
 		return fmt.Errorf("VM not found: %s", vmUUID)
 	}
 
-	vm.state = "SUSPENDED"
-	vm.powerState = 4 // SUSPENDED
+	vm.state = VMStatePaused
+	vm.powerState = 3 // Paused
 	return nil
 }
 

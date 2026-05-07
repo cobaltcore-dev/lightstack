@@ -95,11 +95,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	r.DELETE("/v3/groups/:id", svc.DeleteGroup)
 
 	// QoS Specs without project_id (extracts from token)
-	r.GET("/v3/qos-specs", svc.ListQosSpecs)
-	r.POST("/v3/qos-specs", svc.CreateQosSpec)
-	r.GET("/v3/qos-specs/:id", svc.GetQosSpec)
-	r.PUT("/v3/qos-specs/:id", svc.UpdateQosSpec)
-	r.DELETE("/v3/qos-specs/:id", svc.DeleteQosSpec)
+	r.GET("/v3/qos-specs", svc.ListQoSSpecs)
+	r.POST("/v3/qos-specs", svc.CreateQoSSpec)
+	r.GET("/v3/qos-specs/:id", svc.GetQoSSpec)
+	r.PUT("/v3/qos-specs/:id", svc.UpdateQoSSpec)
+	r.DELETE("/v3/qos-specs/:id", svc.DeleteQoSSpec)
 
 	// Backups without project_id (extracts from token)
 	r.GET("/v3/backups", svc.ListBackups)
@@ -309,7 +309,7 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 		SELECT id, name, size_gb
 		FROM volumes
 		WHERE project_id = $1%s
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d
 	`, markerCondition, argIdx, argIdx+1), queryArgs...)
 
@@ -522,6 +522,15 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 		return
 	}
 
+	// Check for existing snapshots
+	var snapshotCount int
+	if err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT COUNT(*) FROM snapshots WHERE volume_id = $1", volumeID,
+	).Scan(&snapshotCount); err == nil && snapshotCount > 0 {
+		common.SendError(c, common.NewOperationConflictError("delete volume", "volume has snapshots; delete snapshots first"))
+		return
+	}
+
 	// Delete from Ceph
 	if err := svc.cephClient.DeleteVolume(c.Request.Context(), volumeID); err != nil {
 		log.Error().Err(err).Str("operation", "delete_volume_ceph").Str("volume_id", volumeID).Msg("failed to delete volume from Ceph")
@@ -641,7 +650,20 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		}
 
 		// Update volume size
-		_, err := database.DB.Exec(c.Request.Context(), `
+		var currentSize int
+		err := database.DB.QueryRow(c.Request.Context(), `
+			SELECT size_gb FROM volumes WHERE id = $1 AND project_id = $2
+		`, volumeID, projectID).Scan(&currentSize)
+		if err != nil {
+			common.SendError(c, common.NewInternalServerError("failed to fetch volume"))
+			return
+		}
+		if newSize <= currentSize {
+			common.SendError(c, common.NewBadRequestError(fmt.Sprintf("new_size (%d) must be greater than current size (%d)", newSize, currentSize)))
+			return
+		}
+
+		_, err = database.DB.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET size_gb = $1, updated_at = $2
 			WHERE id = $3 AND project_id = $4
@@ -1024,7 +1046,7 @@ func (svc *Service) ListSnapshotsDetail(c *gin.Context) {
 		SELECT id, name, volume_id, size_gb, status, created_at
 		FROM snapshots
 		WHERE project_id = $1
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 	`, projectID)
 
 	if err != nil {
@@ -1088,7 +1110,7 @@ func (svc *Service) ListSnapshots(c *gin.Context) {
 		SELECT id, name, volume_id, size_gb, status, created_at
 		FROM snapshots
 		WHERE project_id = $1
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 	`, projectID)
 
 	if err != nil {

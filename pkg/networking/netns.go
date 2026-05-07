@@ -2,12 +2,12 @@ package networking
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 
+	"github.com/rs/zerolog/log"
 	"github.com/vishvananda/netlink"
 )
 
@@ -24,7 +24,7 @@ func NewNetworkNamespaceManager(mode string) *NetworkNamespaceManager {
 	// Ensure /var/run/netns directory exists for real mode
 	if mode != "stub" {
 		if err := os.MkdirAll("/var/run/netns", 0755); err != nil {
-			log.Printf("Warning: Failed to create /var/run/netns directory: %v", err)
+			log.Warn().Err(err).Msg("failed to create /var/run/netns directory")
 		}
 	}
 
@@ -118,20 +118,25 @@ func (m *NetworkNamespaceManager) NamespaceExists(nsName string) bool {
 	cmd := exec.Command("ip", "netns", "list")
 	output, err := cmd.Output()
 	if err != nil {
-		log.Printf("DEBUG: NamespaceExists check failed for %s, error running 'ip netns list': %v", nsName, err)
+		log.Debug().Str("namespace", nsName).Err(err).Msg("NamespaceExists: failed to run 'ip netns list'")
 		return false
 	}
 
-	log.Printf("DEBUG: Checking if namespace %s exists, output: %q", nsName, string(output))
+	log.Debug().Str("namespace", nsName).Str("output", string(output)).Msg("NamespaceExists: checking namespace list")
 	namespaces := strings.Split(string(output), "\n")
 	for _, ns := range namespaces {
-		if strings.HasPrefix(ns, nsName) {
-			log.Printf("DEBUG: Namespace %s found in list", nsName)
+		// `ip netns list` output may include metadata like "(id: 42)"; use only the name field
+		fields := strings.Fields(ns)
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[0] == nsName {
+			log.Debug().Str("namespace", nsName).Msg("NamespaceExists: found")
 			return true
 		}
 	}
 
-	log.Printf("DEBUG: Namespace %s not found in list", nsName)
+	log.Debug().Str("namespace", nsName).Msg("NamespaceExists: not found")
 	return false
 }
 
@@ -151,22 +156,22 @@ func (m *NetworkNamespaceManager) EnsureNamespaceExists(projectID string) error 
 		return nil
 	}
 
-	log.Printf("DEBUG: EnsureNamespaceExists called for project %s, namespace %s", projectID, nsName)
+	log.Debug().Str("project", projectID).Str("namespace", nsName).Msg("EnsureNamespaceExists called")
 
 	// Check if namespace exists
 	if m.NamespaceExists(nsName) {
-		log.Printf("DEBUG: Namespace %s already exists", nsName)
+		log.Debug().Str("namespace", nsName).Msg("namespace already exists")
 		return nil
 	}
 
-	log.Printf("DEBUG: Namespace %s does not exist, creating it", nsName)
+	log.Debug().Str("namespace", nsName).Msg("namespace does not exist, creating")
 	// Create namespace if it doesn't exist
 	err := m.CreateNamespace(projectID)
 	if err != nil {
-		log.Printf("ERROR: Failed to create namespace %s: %v", nsName, err)
+		log.Error().Err(err).Str("namespace", nsName).Msg("failed to create namespace")
 		return err
 	}
-	log.Printf("DEBUG: Successfully created namespace %s", nsName)
+	log.Debug().Str("namespace", nsName).Msg("namespace created successfully")
 	return nil
 }
 
@@ -315,7 +320,12 @@ func (m *BridgeManager) AttachToBridge(ifName, bridgeName string, inNamespace bo
 		return fmt.Errorf("failed to find bridge %s: %w", bridgeName, err)
 	}
 
-	return netlink.LinkSetMaster(iface, bridge.(*netlink.Bridge))
+	br, ok := bridge.(*netlink.Bridge)
+	if !ok {
+		return fmt.Errorf("link %s is not a bridge (got %T)", bridgeName, bridge)
+	}
+
+	return netlink.LinkSetMaster(iface, br)
 }
 
 // TAPDeviceManager manages TAP devices

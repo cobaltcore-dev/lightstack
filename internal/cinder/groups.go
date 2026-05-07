@@ -34,7 +34,7 @@ func (svc *Service) ListGroups(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id          string
-			projID      string
+			projectID      string
 			name        *string
 			description *string
 			status      string
@@ -43,7 +43,7 @@ func (svc *Service) ListGroups(c *gin.Context) {
 			updatedAt   time.Time
 		)
 
-		err := rows.Scan(&id, &projID, &name, &description, &status, &groupType, &createdAt, &updatedAt)
+		err := rows.Scan(&id, &projectID, &name, &description, &status, &groupType, &createdAt, &updatedAt)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "scan_group").Msg("failed to scan group row")
 			common.SendError(c, common.NewInternalServerError("failed to read group data"))

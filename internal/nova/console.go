@@ -4,6 +4,7 @@ import (
 	"errors"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -36,7 +37,7 @@ func (svc *Service) GetRemoteConsole(c *gin.Context) {
 	}
 
 	// Verify instance exists
-	var libvirtDomainID string
+	var libvirtDomainID sql.NullString
 	var vncPort int
 	var vncPassword string
 	err := database.DB.QueryRow(c.Request.Context(),
@@ -51,7 +52,7 @@ func (svc *Service) GetRemoteConsole(c *gin.Context) {
 
 	// If VNC not configured yet, set it up
 	if vncPort == 0 || vncPassword == "" {
-		vncPort, vncPassword, err = svc.setupVNCConsole(c.Request.Context(), instanceID, libvirtDomainID)
+		vncPort, vncPassword, err = svc.setupVNCConsole(c.Request.Context(), instanceID, libvirtDomainID.String)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "setup_vnc_console").Msg("console setup error")
 			common.SendError(c, common.NewInternalServerError("failed to setup console"))
@@ -130,7 +131,7 @@ func (svc *Service) GetVNCConsoleAction(c *gin.Context, vncConsole any) {
 func (svc *Service) getVNCConsoleResponse(c *gin.Context, instanceID, projectID, consoleType string) {
 
 	// Verify instance exists
-	var libvirtDomainID string
+	var libvirtDomainID sql.NullString
 	var vncPort int
 	var vncPassword string
 	err := database.DB.QueryRow(c.Request.Context(),
@@ -145,7 +146,7 @@ func (svc *Service) getVNCConsoleResponse(c *gin.Context, instanceID, projectID,
 
 	// If VNC not configured yet, set it up
 	if vncPort == 0 || vncPassword == "" {
-		vncPort, vncPassword, err = svc.setupVNCConsole(c.Request.Context(), instanceID, libvirtDomainID)
+		vncPort, vncPassword, err = svc.setupVNCConsole(c.Request.Context(), instanceID, libvirtDomainID.String)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "setup_vnc_console_action").Msg("console setup error")
 			common.SendError(c, common.NewInternalServerError("failed to setup console"))
@@ -192,10 +193,12 @@ func (svc *Service) setupVNCConsole(ctx context.Context, instanceID, libvirtDoma
 }
 
 // generateConsoleToken creates a temporary token for console access
-func generateConsoleToken(instanceID string) string {
-	// In production, this would be stored in a cache with expiration
-	// For now, just create a deterministic token based on instance ID
-	return fmt.Sprintf("token-%s-%d", instanceID[:8], time.Now().Unix())
+func generateConsoleToken(_ string) string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		log.Error().Err(err).Msg("failed to generate console token")
+	}
+	return hex.EncodeToString(b)
 }
 
 // generateVNCPassword creates a random VNC password

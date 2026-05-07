@@ -67,7 +67,10 @@ func (rm *RouterManager) DeleteRouterNamespace(routerID string) error {
 
 // GetRouterNamespaceName returns the namespace name for a router
 func (rm *RouterManager) GetRouterNamespaceName(routerID string) string {
-	return "qrouter-" + routerID[:11] // OpenStack convention: qrouter-{uuid[:11]}
+	if len(routerID) >= 11 {
+		return "qrouter-" + routerID[:11]
+	}
+	return "qrouter-" + routerID
 }
 
 // AttachInterfaceToRouter creates a veth pair and attaches one end to the router namespace

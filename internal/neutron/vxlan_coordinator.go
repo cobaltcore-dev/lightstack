@@ -83,7 +83,7 @@ func (vc *VXLANCoordinator) syncNetworks(ctx context.Context) {
 	`)
 
 	if err != nil {
-		fmt.Printf("Failed to query networks: %v\n", err)
+		log.Error().Err(err).Msg("failed to query networks for VXLAN coordination")
 		return
 	}
 	defer rows.Close()
@@ -102,7 +102,7 @@ func (vc *VXLANCoordinator) syncNetworks(ctx context.Context) {
 		if vni == nil {
 			allocatedVNI, err := vc.allocateVNI(ctx, networkID)
 			if err != nil {
-				fmt.Printf("Failed to allocate VNI for network %s: %v\n", networkID, err)
+				log.Error().Err(err).Str("network_id", networkID).Msg("failed to allocate VNI")
 				continue
 			}
 			vni = &allocatedVNI
@@ -110,7 +110,7 @@ func (vc *VXLANCoordinator) syncNetworks(ctx context.Context) {
 
 		// Create VXLAN interface
 		if err := vc.vxlanManager.CreateVXLAN(networkID, *vni, localIP); err != nil {
-			fmt.Printf("Failed to create VXLAN for network %s: %v\n", networkID, err)
+			log.Error().Err(err).Str("network_id", networkID).Msg("failed to create VXLAN")
 			continue
 		}
 
@@ -118,7 +118,7 @@ func (vc *VXLANCoordinator) syncNetworks(ctx context.Context) {
 		bridgeName := "br-" + networkID[:8]
 		nsName := vc.nsManager.GetNamespaceName(projectID)
 		if err := vc.vxlanManager.AttachToBridge(networkID, bridgeName, true, nsName); err != nil {
-			fmt.Printf("Failed to attach VXLAN to bridge for network %s: %v\n", networkID, err)
+			log.Error().Err(err).Str("network_id", networkID).Msg("failed to attach VXLAN to bridge")
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -131,7 +131,7 @@ func (vc *VXLANCoordinator) syncPorts(ctx context.Context) {
 	// Get all active compute nodes
 	nodes, err := vc.nodeRegistry.ListActiveNodes(ctx)
 	if err != nil {
-		fmt.Printf("Failed to list active nodes: %v\n", err)
+		log.Error().Err(err).Msg("failed to list active nodes")
 		return
 	}
 
@@ -142,7 +142,7 @@ func (vc *VXLANCoordinator) syncPorts(ctx context.Context) {
 	`)
 
 	if err != nil {
-		fmt.Printf("Failed to query FDB entries: %v\n", err)
+		log.Error().Err(err).Msg("failed to query FDB entries")
 		return
 	}
 	defer rows.Close()
@@ -178,7 +178,7 @@ func (vc *VXLANCoordinator) syncPorts(ctx context.Context) {
 
 		// Add FDB entry
 		if err := vc.vxlanManager.AddFDBEntry(networkID, macAddress, vtepIP); err != nil {
-			fmt.Printf("Failed to add FDB entry for %s on network %s: %v\n", macAddress, networkID, err)
+			log.Error().Err(err).Str("mac", macAddress).Str("network_id", networkID).Msg("failed to add FDB entry")
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -186,27 +186,28 @@ func (vc *VXLANCoordinator) syncPorts(ctx context.Context) {
 	}
 }
 
-// allocateVNI allocates a VNI for a network
+// allocateVNI allocates a VNI for a network using a single atomic SQL query
 func (vc *VXLANCoordinator) allocateVNI(ctx context.Context, networkID string) (int, error) {
-	// Try to allocate a VNI atomically using ON CONFLICT
-	for vni := vc.vniRangeStart; vni <= vc.vniRangeEnd; vni++ {
-		result, err := database.DB.Exec(ctx, `
-			INSERT INTO network_vni_allocations (network_id, vni)
-			VALUES ($1, $2)
-			ON CONFLICT (vni) DO NOTHING
-		`, networkID, vni)
+	// Find and reserve the lowest available VNI in the configured range atomically.
+	// This avoids the O(N) sequential-insert loop and races under concurrent allocation.
+	var vni int
+	err := database.DB.QueryRow(ctx, `
+		WITH next_vni AS (
+			SELECT generate_series AS vni
+			FROM generate_series($1::int, $2::int)
+			WHERE generate_series NOT IN (SELECT vni FROM network_vni_allocations)
+			LIMIT 1
+		)
+		INSERT INTO network_vni_allocations (network_id, vni)
+		SELECT $3, vni FROM next_vni
+		RETURNING vni
+	`, vc.vniRangeStart, vc.vniRangeEnd, networkID).Scan(&vni)
 
-		if err != nil {
-			continue
-		}
-
-		rowsAffected := result.RowsAffected()
-		if rowsAffected > 0 {
-			return vni, nil
-		}
+	if err != nil {
+		return 0, fmt.Errorf("no available VNI in range %d-%d: %w", vc.vniRangeStart, vc.vniRangeEnd, err)
 	}
 
-	return 0, fmt.Errorf("no available VNI in range %d-%d", vc.vniRangeStart, vc.vniRangeEnd)
+	return vni, nil
 }
 
 // DistributeFDBEntry adds an FDB entry to the database for distribution

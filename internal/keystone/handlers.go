@@ -123,9 +123,18 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	mgmt.GET("/application_credentials/:id", svc.GetApplicationCredentialByID)
 }
 
+// hasRole returns true if the authenticated user has the given role.
+func hasRole(c *gin.Context, role string) bool {
+	for _, r := range c.GetStringSlice("roles") {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
 // GetVersion returns Keystone API version info
-func (svc *Service) GetVersion(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
+func (svc *Service) GetVersion(c *gin.Context) {	c.JSON(http.StatusOK, gin.H{
 		"version": gin.H{
 			"id":     "v3.14",
 			"status": "stable",
@@ -950,6 +959,12 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 
 // CreateUser creates a new user (POST /v3/users)
 func (svc *Service) CreateUser(c *gin.Context) {
+	// Only admins may create users
+	if !hasRole(c, "admin") {
+		common.SendError(c, common.NewForbiddenError("admin role required to create users"))
+		return
+	}
+
 	var req struct {
 		User struct {
 			Name        string `json:"name" binding:"required"`
@@ -1172,6 +1187,12 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 func (svc *Service) DeleteUser(c *gin.Context) {
 	userID := c.Param("id")
 
+	// Only admins may delete users
+	if !hasRole(c, "admin") {
+		common.SendError(c, common.NewForbiddenError("admin role required to delete users"))
+		return
+	}
+
 	// Execute delete
 	result, err := database.DB.Exec(c.Request.Context(),
 		"DELETE FROM users WHERE id = $1",
@@ -1197,6 +1218,13 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 // ChangePassword changes a user's password (POST /v3/users/:id/password)
 func (svc *Service) ChangePassword(c *gin.Context) {
 	userID := c.Param("id")
+
+	// Users may only change their own password; admins may change any user's password
+	callerID := c.GetString("user_id")
+	if callerID != userID && !hasRole(c, "admin") {
+		common.SendError(c, common.NewForbiddenError("cannot change another user's password"))
+		return
+	}
 
 	var req struct {
 		User struct {

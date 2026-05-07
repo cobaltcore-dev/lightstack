@@ -35,17 +35,18 @@ func (svc *Service) UpdateServer(c *gin.Context) {
 		currentStatus   string
 		currentFlavorID string
 		currentImageID  *string
+		currentUserID   *string
 		createdAt       time.Time
 		updatedAt       time.Time
 	)
 
 	err := database.DB.QueryRow(c.Request.Context(), `
-		SELECT name, status, flavor_id, image_id, created_at, updated_at
+		SELECT name, status, flavor_id, image_id, user_id, created_at, updated_at
 		FROM instances
 		WHERE id = $1 AND project_id = $2
 	`, instanceID, projectID).Scan(
 		&currentName, &currentStatus,
-		&currentFlavorID, &currentImageID, &createdAt, &updatedAt,
+		&currentFlavorID, &currentImageID, &currentUserID, &createdAt, &updatedAt,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -101,7 +102,12 @@ func (svc *Service) UpdateServer(c *gin.Context) {
 		"name":      currentName,
 		"status":    currentStatus,
 		"tenant_id": projectID,
-		"user_id":   projectID, // Simplified
+		"user_id":   func() string {
+			if currentUserID != nil {
+				return *currentUserID
+			}
+			return ""
+		}(),
 		"created":   createdAt.Format(time.RFC3339),
 		"updated":   time.Now().Format(time.RFC3339),
 		"hostId":    "",

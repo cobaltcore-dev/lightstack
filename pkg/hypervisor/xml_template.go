@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // VMSpec defines VM specifications
@@ -87,7 +89,11 @@ func GenerateVMXML(spec VMSpec) string {
 	// Boot disk (RBD-backed or local)
 	if strings.HasPrefix(spec.ImagePath, "rbd:") {
 		// RBD image format: rbd:pool/image
-		parts := strings.Split(strings.TrimPrefix(spec.ImagePath, "rbd:"), "/")
+		parts := strings.SplitN(strings.TrimPrefix(spec.ImagePath, "rbd:"), "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			log.Error().Str("image_path", spec.ImagePath).Msg("invalid RBD image path: expected rbd:pool/image")
+			return ""
+		}
 		pool := parts[0]
 		image := parts[1]
 

@@ -13,8 +13,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ListQosSpecs lists all QoS specifications
-func (svc *Service) ListQosSpecs(c *gin.Context) {
+// ListQoSSpecs lists all QoS specifications
+func (svc *Service) ListQoSSpecs(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	rows, err := database.DB.Query(c.Request.Context(), `
@@ -62,8 +62,8 @@ func (svc *Service) ListQosSpecs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"qos_specs": qosSpecs})
 }
 
-// CreateQosSpec creates a new QoS specification
-func (svc *Service) CreateQosSpec(c *gin.Context) {
+// CreateQoSSpec creates a new QoS specification
+func (svc *Service) CreateQoSSpec(c *gin.Context) {
 	var req struct {
 		QosSpecs struct {
 			Name     string            `json:"name" binding:"required"`
@@ -110,8 +110,8 @@ func (svc *Service) CreateQosSpec(c *gin.Context) {
 	})
 }
 
-// GetQosSpec retrieves a specific QoS specification
-func (svc *Service) GetQosSpec(c *gin.Context) {
+// GetQoSSpec retrieves a specific QoS specification
+func (svc *Service) GetQoSSpec(c *gin.Context) {
 	qosID := c.Param("id")
 	projectID := c.GetString("project_id")
 
@@ -148,8 +148,8 @@ func (svc *Service) GetQosSpec(c *gin.Context) {
 	})
 }
 
-// UpdateQosSpec updates a QoS specification
-func (svc *Service) UpdateQosSpec(c *gin.Context) {
+// UpdateQoSSpec updates a QoS specification
+func (svc *Service) UpdateQoSSpec(c *gin.Context) {
 	qosID := c.Param("id")
 	projectID := c.GetString("project_id")
 
@@ -229,8 +229,8 @@ func (svc *Service) UpdateQosSpec(c *gin.Context) {
 	})
 }
 
-// DeleteQosSpec deletes a QoS specification
-func (svc *Service) DeleteQosSpec(c *gin.Context) {
+// DeleteQoSSpec deletes a QoS specification
+func (svc *Service) DeleteQoSSpec(c *gin.Context) {
 	qosID := c.Param("id")
 	projectID := c.GetString("project_id")
 

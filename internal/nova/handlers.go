@@ -500,6 +500,10 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		}()
 	} else {
 		logger.Debug().Msg("Stub mode: skipping libvirt VM creation")
+		// In stub mode, immediately set instance to ACTIVE so Terraform polling succeeds
+		database.DB.Exec(c.Request.Context(), `
+			UPDATE instances SET status = $1, power_state = $2, launched_at = $3, updated_at = $4 WHERE id = $5
+		`, "ACTIVE", 1, time.Now(), time.Now(), instanceID)
 	}
 
 	middleware.LogOperationEnd(c, "create", "server", instanceID, time.Since(start), nil)
@@ -764,7 +768,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	var id, name, status, projID string
+	var id, name, status string
 	var userID, flavorID, imageID any
 	var powerState int
 	var createdAt, updatedAt time.Time
@@ -777,7 +781,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 		WHERE project_id = $2 AND (
 			(id::text = $1) OR (name = $1)
 		)
-	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projID, &userID, &flavorID, &imageID, &createdAt, &updatedAt)
+	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projectID, &userID, &flavorID, &imageID, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -797,7 +801,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 		"id":                     id,
 		"name":                   name,
 		"status":                 status,
-		"tenant_id":              projID,
+		"tenant_id":              projectID,
 		"created":                createdAt.Format(time.RFC3339),
 		"updated":                updatedAt.Format(time.RFC3339),
 		"addresses":              addresses,
@@ -828,7 +832,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	middleware.LogOperationStart(c, "delete", "server", instanceID)
 
 	// Get libvirt domain ID (support lookup by ID or name)
-	var libvirtDomainID string
+	var libvirtDomainID sql.NullString
 	queryStart := time.Now()
 	err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
@@ -844,13 +848,13 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	}
 
 	// Delete VM from libvirt (if available)
-	if svc.vmManager != nil && libvirtDomainID != "" {
+	if svc.vmManager != nil && libvirtDomainID.Valid && libvirtDomainID.String != "" {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancel()
 
 		libvirtStart := time.Now()
-		if err := svc.vmManager.DeleteVM(ctx, libvirtDomainID); err != nil {
-			logger.Error().Err(err).Str("libvirt_domain_id", libvirtDomainID).Msg("Failed to delete VM from libvirt")
+		if err := svc.vmManager.DeleteVM(ctx, libvirtDomainID.String); err != nil {
+			logger.Error().Err(err).Str("libvirt_domain_id", libvirtDomainID.String).Msg("Failed to delete VM from libvirt")
 			middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(libvirtStart), err)
 			middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
 			log.Error().Err(err).Str("operation", "delete_vm_libvirt").Msg("libvirt error")
@@ -858,7 +862,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 			return
 		}
 		middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(libvirtStart), nil)
-		logger.Info().Str("libvirt_domain_id", libvirtDomainID).Msg("VM deleted from libvirt")
+		logger.Info().Str("libvirt_domain_id", libvirtDomainID.String).Msg("VM deleted from libvirt")
 	}
 
 	// Delete from database (support lookup by ID or name)
