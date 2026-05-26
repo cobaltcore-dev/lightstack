@@ -67,8 +67,8 @@ docker compose version
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/lightstack.git
-cd lightstack
+git clone https://github.com/cobaltcore-dev/o3k.git
+cd o3k
 ```
 
 ### Step 2: Review Configuration
@@ -81,15 +81,15 @@ services:
     image: postgres:18.3-alpine
     container_name: o3k-postgres
     environment:
-      POSTGRES_DB: lightstack
-      POSTGRES_USER: lightstack
+      POSTGRES_DB: o3k
+      POSTGRES_USER: o3k
       POSTGRES_PASSWORD: secret
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lightstack"]
+      test: ["CMD-SHELL", "pg_isready -U o3k"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -110,7 +110,7 @@ services:
       - "9292:9292"    # Glance (images)
       - "8775:8775"    # Metadata service
     environment:
-      O3K_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
+      O3K_DB_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:35357/v3"]
       interval: 10s
@@ -132,7 +132,7 @@ docker compose up -d
 **Expected output:**
 ```
 [+] Running 3/3
- ✔ Network lightstack_default   Created
+ ✔ Network o3k_default   Created
  ✔ Container o3k-postgres       Started (healthy)
  ✔ Container o3k                Started (healthy)
 ```
@@ -147,7 +147,7 @@ docker compose ps
 **Expected output:**
 ```
 NAME           IMAGE                COMMAND                  SERVICE    STATUS
-o3k            lightstack-o3k       "/bin/sh -c '/app/o3…"   o3k        Up (healthy)
+o3k            o3k       "/bin/sh -c '/app/o3…"   o3k        Up (healthy)
 o3k-postgres   postgres:18.3-alpine   "docker-entrypoint.s…"   postgres   Up (healthy)
 ```
 
@@ -211,7 +211,7 @@ All should return JSON with version information.
 │  │  o3k-postgres Container                │     │
 │  │  ┌──────────────────────────────────┐ │     │
 │  │  │  PostgreSQL 16                   │ │     │
-│  │  │  Database: lightstack            │ │     │
+│  │  │  Database: o3k            │ │     │
 │  │  │  Volume: postgres_data           │ │     │
 │  │  └──────────────────────────────────┘ │     │
 │  └───────────────────────────────────────┘     │
@@ -261,7 +261,7 @@ Override defaults by editing `docker-compose.yml`:
 o3k:
   environment:
     # Database
-    O3K_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
+    O3K_DB_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
 
     # JWT Secret (CHANGE IN PRODUCTION!)
     O3K_JWT_SECRET: "your-secret-key-here"
@@ -311,8 +311,8 @@ o3k:
 ```yaml
 postgres:
   environment:
-    POSTGRES_DB: lightstack
-    POSTGRES_USER: lightstack
+    POSTGRES_DB: o3k
+    POSTGRES_USER: o3k
     POSTGRES_PASSWORD: secret  # CHANGE IN PRODUCTION!
     POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
   volumes:
@@ -366,7 +366,7 @@ docker compose logs --since="2026-03-07T20:00:00"
 docker exec -it o3k /bin/sh
 
 # PostgreSQL container
-docker exec -it o3k-postgres psql -U lightstack -d lightstack
+docker exec -it o3k-postgres psql -U o3k -d o3k
 
 # Run migrations manually
 docker exec o3k /app/o3k-migrate up
@@ -379,20 +379,20 @@ docker exec o3k /app/o3k-migrate status
 
 ```bash
 # Connect to database
-docker exec -it o3k-postgres psql -U lightstack -d lightstack
+docker exec -it o3k-postgres psql -U o3k -d o3k
 
 # List tables
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "\dt"
+docker exec o3k-postgres psql -U o3k -d o3k -c "\dt"
 
 # Query instances
-docker exec o3k-postgres psql -U lightstack -d lightstack \
+docker exec o3k-postgres psql -U o3k -d o3k \
   -c "SELECT id, name, status FROM instances;"
 
 # Backup database
-docker exec o3k-postgres pg_dump -U lightstack lightstack > backup.sql
+docker exec o3k-postgres pg_dump -U o3k o3k > backup.sql
 
 # Restore database
-cat backup.sql | docker exec -i o3k-postgres psql -U lightstack lightstack
+cat backup.sql | docker exec -i o3k-postgres psql -U o3k o3k
 ```
 
 ### Update O3K
@@ -548,7 +548,7 @@ docker compose build o3k
 ```bash
 docker buildx build \
   --platform linux/amd64 \
-  -t lightstack-o3k:amd64 \
+  -t o3k:amd64 \
   -f deployments/docker/Dockerfile \
   .
 ```
@@ -557,7 +557,7 @@ docker buildx build \
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  -t lightstack-o3k:latest \
+  -t o3k:latest \
   -f deployments/docker/Dockerfile \
   .
 ```
@@ -624,7 +624,7 @@ See [MULTIARCH.md](MULTIARCH.md) for detailed multi-architecture guide.
 6. **Backups:**
    ```bash
    # Automated daily backup
-   0 2 * * * docker exec o3k-postgres pg_dump -U lightstack lightstack | gzip > /backups/o3k-$(date +\%Y\%m\%d).sql.gz
+   0 2 * * * docker exec o3k-postgres pg_dump -U o3k o3k | gzip > /backups/o3k-$(date +\%Y\%m\%d).sql.gz
    ```
 
 ### Monitoring
@@ -649,7 +649,7 @@ docker stats o3k o3k-postgres
 Create your own Dockerfile based on ours:
 
 ```dockerfile
-FROM lightstack-o3k:latest
+FROM o3k:latest
 
 # Add custom CA certificates
 COPY custom-ca.crt /usr/local/share/ca-certificates/

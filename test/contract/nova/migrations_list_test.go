@@ -207,7 +207,7 @@ func createTestMigration(t *testing.T, serverID string) string {
 
 	migrationID := uuid.New().String()
 
-	cmd := `docker exec o3k-postgres psql -U lightstack -d lightstack -c "
+	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "
 	INSERT INTO server_migrations (id, server_uuid, source_node, dest_node, status, migration_type, created_at, updated_at)
 	VALUES ('` + migrationID + `', '` + serverID + `', 'node1', 'node2', 'migrating', 'live-migration', NOW(), NOW())
 	ON CONFLICT DO NOTHING;"`
@@ -221,6 +221,6 @@ func createTestMigration(t *testing.T, serverID string) string {
 func cleanupTestMigration(t *testing.T, migrationID string) {
 	t.Helper()
 
-	cmd := `docker exec o3k-postgres psql -U lightstack -d lightstack -c "DELETE FROM server_migrations WHERE id='` + migrationID + `';"`
+	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "DELETE FROM server_migrations WHERE id='` + migrationID + `';"`
 	exec.Command("sh", "-c", cmd).Run()
 }

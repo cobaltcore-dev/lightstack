@@ -149,7 +149,7 @@ func createTestAgent(t *testing.T, description, binary string) string {
 	t.Helper()
 
 	agentID := uuid.New().String()
-	cmd := `docker exec o3k-postgres psql -U lightstack -d lightstack -c "INSERT INTO neutron_agents (id, agent_type, \"binary\", host, description, admin_state_up, alive, created_at) VALUES ('` + agentID + `', 'L3 agent', '` + binary + `', 'compute-1', '` + description + `', true, true, NOW()) ON CONFLICT DO NOTHING;"`
+	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "INSERT INTO neutron_agents (id, agent_type, \"binary\", host, description, admin_state_up, alive, created_at) VALUES ('` + agentID + `', 'L3 agent', '` + binary + `', 'compute-1', '` + description + `', true, true, NOW()) ON CONFLICT DO NOTHING;"`
 	exec.Command("sh", "-c", cmd).Run()
 
 	return agentID
@@ -159,7 +159,7 @@ func createTestAgent(t *testing.T, description, binary string) string {
 func cleanupTestAgent(t *testing.T, agentID string) {
 	t.Helper()
 
-	cmd := `docker exec o3k-postgres psql -U lightstack -d lightstack -c "DELETE FROM neutron_agents WHERE id='` + agentID + `';"`
+	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "DELETE FROM neutron_agents WHERE id='` + agentID + `';"`
 	exec.Command("sh", "-c", cmd).Run()
 }
 

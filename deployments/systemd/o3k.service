@@ -1,15 +1,15 @@
 [Unit]
-Description=LightStack OpenStack-Compatible Cloud
-Documentation=https://github.com/sapcc/lightstack
+Description=O3K OpenStack-Compatible Cloud
+Documentation=https://github.com/cobaltcore-dev/o3k
 After=network-online.target postgresql.service libvirtd.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=lightstack
-Group=lightstack
-EnvironmentFile=-/etc/default/lightstack
-ExecStart=/usr/local/bin/lightstack --config /etc/lightstack/lightstack.yaml --migrations /etc/lightstack/migrations
+User=o3k
+Group=o3k
+EnvironmentFile=-/etc/default/o3k
+ExecStart=/usr/local/bin/o3k --config /etc/o3k/o3k.yaml --migrations /etc/o3k/migrations
 Restart=on-failure
 RestartSec=5s
 StartLimitInterval=60s
@@ -20,7 +20,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/lightstack /var/run/lightstack
+ReadWritePaths=/var/lib/o3k /var/run/o3k
 
 # Resource limits
 LimitNOFILE=65536

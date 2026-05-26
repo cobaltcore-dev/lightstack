@@ -383,7 +383,7 @@ go run cmd/o3k/main.go --config config/o3k.yaml
 openstack network create test-network
 
 # Verify in database
-psql -d lightstack -c "SELECT id, name, status FROM networks;"
+psql -d o3k -c "SELECT id, name, status FROM networks;"
 ```
 
 ### Test IPTables Mode (Linux only)

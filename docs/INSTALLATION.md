@@ -57,8 +57,8 @@ Docker Compose provides the easiest way to get O3K running with all dependencies
 #### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/lightstack.git
-cd lightstack
+git clone https://github.com/cobaltcore-dev/o3k.git
+cd o3k
 ```
 
 #### Step 2: Start Services
@@ -139,17 +139,17 @@ brew services start postgresql@14
 
 ```bash
 sudo -u postgres psql << EOF
-CREATE DATABASE lightstack;
-CREATE USER lightstack WITH PASSWORD 'secret';
-GRANT ALL PRIVILEGES ON DATABASE lightstack TO lightstack;
+CREATE DATABASE o3k;
+CREATE USER o3k WITH PASSWORD 'secret';
+GRANT ALL PRIVILEGES ON DATABASE o3k TO o3k;
 EOF
 ```
 
 #### Step 3: Build O3K
 
 ```bash
-git clone https://github.com/yourusername/lightstack.git
-cd lightstack
+git clone https://github.com/cobaltcore-dev/o3k.git
+cd o3k
 
 # Build
 go build -o o3k ./cmd/o3k
@@ -176,7 +176,7 @@ sudo nano /etc/o3k/o3k.yaml
 Update database URL:
 ```yaml
 database:
-  url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
+  url: "postgres://o3k:secret@localhost/o3k?sslmode=disable"
 ```
 
 #### Step 5: Run Migrations
@@ -318,7 +318,7 @@ invalid credentials (HTTP 401)
 2. Verify O3K is running: `docker compose ps` or `curl http://localhost:35357/v3`
 3. Check database has domain:
    ```bash
-   docker exec o3k-postgres psql -U lightstack -d lightstack \
+   docker exec o3k-postgres psql -U o3k -d o3k \
      -c "SELECT * FROM domains;"
    ```
 
@@ -353,12 +353,12 @@ failed to connect to postgres
 
 2. Check database exists:
    ```bash
-   docker exec o3k-postgres psql -U lightstack -l
+   docker exec o3k-postgres psql -U o3k -l
    ```
 
 3. Test connection:
    ```bash
-   psql "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
+   psql "postgres://o3k:secret@localhost/o3k?sslmode=disable"
    ```
 
 ### Issue: Migrations Failed
@@ -427,7 +427,7 @@ openstack --version
 
 2. **Check database:**
    ```bash
-   docker exec o3k-postgres psql -U lightstack -d lightstack
+   docker exec o3k-postgres psql -U o3k -d o3k
    ```
 
 3. **Test APIs directly:**
@@ -484,7 +484,7 @@ openstack volume list         # List volumes
 openstack quota show          # Show quotas
 
 # Database
-docker exec o3k-postgres psql -U lightstack -d lightstack  # Connect
+docker exec o3k-postgres psql -U o3k -d o3k  # Connect
 docker exec o3k /app/o3k-migrate status                    # Migration status
 ```
 

@@ -36,14 +36,14 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # Build
 docker build \
     --platform $PLATFORM \
-    -t lightstack-o3k:latest \
+    -t o3k:latest \
     -f deployments/docker/Dockerfile \
     .
 
 echo ""
 echo -e "${GREEN}✓ Build complete!${NC}"
 echo ""
-echo "Image: lightstack-o3k:latest"
+echo "Image: o3k:latest"
 echo "Platform: $PLATFORM"
 echo ""
 echo "To run:"

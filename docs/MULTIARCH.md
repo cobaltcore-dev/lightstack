@@ -44,7 +44,7 @@ O3K supports both **ARM64** (Apple Silicon, AWS Graviton, Raspberry Pi 4+) and *
 The simplest approach - automatically detects your architecture:
 
 ```bash
-cd /Users/I761222/git/lightstack
+cd /path/to/o3k
 
 # Using convenience script
 ./deployments/docker/build-local.sh
@@ -53,7 +53,7 @@ cd /Users/I761222/git/lightstack
 docker compose build o3k
 
 # Or manually
-docker build -f deployments/docker/Dockerfile -t lightstack-o3k:latest .
+docker build -f deployments/docker/Dockerfile -t o3k:latest .
 ```
 
 ### Use with Docker Compose
@@ -137,13 +137,13 @@ Build only for your current platform:
 **Manual:**
 ```bash
 # Automatic platform detection
-docker build -f deployments/docker/Dockerfile -t lightstack-o3k:latest .
+docker build -f deployments/docker/Dockerfile -t o3k:latest .
 
 # Explicit platform
 docker build \
   --platform linux/arm64 \
   -f deployments/docker/Dockerfile \
-  -t lightstack-o3k:arm64 \
+  -t o3k:arm64 \
   .
 ```
 
@@ -217,7 +217,7 @@ docker buildx build \
 
 ```bash
 # Inspect built image
-docker inspect lightstack-o3k:latest | jq '.[0].Architecture'
+docker inspect o3k:latest | jq '.[0].Architecture'
 
 # Output examples:
 # "arm64"  → ARM64 image
@@ -239,7 +239,7 @@ docker exec o3k uname -m
 
 ```bash
 # Run quick test
-docker run --rm lightstack-o3k:latest uname -m
+docker run --rm o3k:latest uname -m
 
 # Or inside running container
 docker exec o3k /bin/sh -c "uname -m"

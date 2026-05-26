@@ -55,7 +55,7 @@ o3k --config /path/to/custom.yaml
 ```yaml
 # Database connection
 database:
-  url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
+  url: "postgres://o3k:secret@localhost/o3k?sslmode=disable"
   max_connections: 20
   max_idle: 5
   conn_max_lifetime: 1h
@@ -175,9 +175,9 @@ export O3K_LOGGING_FORMAT="text"
 ```yaml
 services:
   o3k:
-    image: lightstack-o3k:latest
+    image: o3k:latest
     environment:
-      O3K_DATABASE_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
+      O3K_DATABASE_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
       O3K_KEYSTONE_JWT_SECRET: "${JWT_SECRET}"
       O3K_LOGGING_LEVEL: "info"
       O3K_NOVA_LIBVIRT_MODE: "real"
@@ -213,13 +213,13 @@ postgres://[user]:[password]@[host]:[port]/[database]?[parameters]
 
 ```bash
 # Local development (no SSL)
-postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable
+postgres://o3k:secret@localhost:5432/o3k?sslmode=disable
 
 # Production (SSL required)
-postgres://lightstack:secret@db.example.com:5432/lightstack?sslmode=require
+postgres://o3k:secret@db.example.com:5432/o3k?sslmode=require
 
 # With timeout
-postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable&connect_timeout=10
+postgres://o3k:secret@localhost:5432/o3k?sslmode=disable&connect_timeout=10
 ```
 
 ### Connection Pool Tuning
@@ -753,7 +753,7 @@ Error: port 8774 already in use
 
 ```yaml
 database:
-  url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
+  url: "postgres://o3k:secret@localhost/o3k?sslmode=disable"
 
 keystone:
   jwt_secret: "dev-secret-do-not-use-in-prod"
@@ -780,7 +780,7 @@ logging:
 
 ```yaml
 database:
-  url: "postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+  url: "postgres://o3k:${DB_PASSWORD}@db.internal:5432/o3k?sslmode=require"
   max_connections: 50
 
 keystone:
@@ -813,7 +813,7 @@ logging:
 
 ```yaml
 database:
-  url: "postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+  url: "postgres://o3k:${DB_PASSWORD}@db.internal:5432/o3k?sslmode=require"
 
 compute:
   tunnel_ip: auto

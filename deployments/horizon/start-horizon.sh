@@ -21,7 +21,7 @@ else
     echo -e "${RED}✗${NC} O3K is not running on localhost:35357"
     echo ""
     echo "Please start O3K first:"
-    echo "  cd /Users/I761222/git/lightstack"
+    echo "  cd /path/to/o3k"
     echo "  ./o3k --config config/o3k.yaml"
     echo ""
     exit 1

@@ -17,7 +17,7 @@ Get O3K running and create your first VM in **5 minutes**.
 ## Step 1: Start O3K (30 seconds)
 
 ```bash
-cd /Users/I761222/git/lightstack
+cd /path/to/o3k
 docker compose up -d
 ```
 
@@ -292,7 +292,7 @@ docker compose logs o3k --tail=50
 docker compose ps
 
 # View database
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "SELECT COUNT(*) FROM instances;"
+docker exec o3k-postgres psql -U o3k -d o3k -c "SELECT COUNT(*) FROM instances;"
 ```
 
 ---
