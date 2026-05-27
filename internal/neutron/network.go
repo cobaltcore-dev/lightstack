@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"context"
 	"errors"
 	"crypto/rand"
 	"fmt"
@@ -490,6 +491,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 			"status":         "ACTIVE",
 			"shared":         shared,
 			"mtu":            mtu,
+			"subnets":        []string{},
 			"created_at":     now.Format(time.RFC3339),
 			"updated_at":     now.Format(time.RFC3339),
 		},
@@ -582,6 +584,11 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		networks = []gin.H{}
 	}
 
+	// Populate subnet IDs for each network (rows above are fully consumed).
+	for _, n := range networks {
+		n["subnets"] = svc.networkSubnetIDs(c.Request.Context(), n["id"].(string))
+	}
+
 	c.JSON(http.StatusOK, gin.H{"networks": networks})
 }
 
@@ -596,6 +603,10 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		cacheKey := "network:" + networkID
 		var cached gin.H
 		if err := svc.cache.Get(ctx, cacheKey, &cached); err == nil {
+			// subnets are queried fresh so they reflect later subnet changes
+			if id, ok := cached["id"].(string); ok {
+				cached["subnets"] = svc.networkSubnetIDs(ctx, id)
+			}
 			c.JSON(http.StatusOK, gin.H{"network": cached})
 			return
 		}
@@ -636,10 +647,13 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		"updated_at":     updatedAt.Format(time.RFC3339),
 	}
 
-	// Store in cache (30min TTL per config)
+	// Store in cache (30min TTL per config) before adding the dynamic subnet
+	// list, so cached entries never carry a stale subnets field.
 	if svc.cache != nil {
 		svc.cache.Set(ctx, "network:"+id, network, 30*time.Minute)
 	}
+
+	network["subnets"] = svc.networkSubnetIDs(ctx, id)
 
 	c.JSON(http.StatusOK, gin.H{"network": network})
 }
@@ -830,12 +844,11 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 		go svc.dhcpManager.StartDHCP(dhcpConfig, nsName)
 	}
 
-	// Calculate allocation pools (entire subnet minus gateway)
-	allocationPools := []gin.H{
-		{
-			"start": incrementIP(ipNet.IP, 2).String(), // Skip network address and gateway
-			"end":   decrementIP(broadcast(ipNet), 1).String(), // Skip broadcast
-		},
+	// OpenStack clients format these as lists and fail on JSON null, so
+	// default an omitted dns_nameservers to an empty slice.
+	dnsNameservers := req.Subnet.DNSNameservers
+	if dnsNameservers == nil {
+		dnsNameservers = []string{}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -848,8 +861,10 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 			"gateway_ip":       gatewayIP,
 			"ip_version":       ipVersion,
 			"enable_dhcp":      enableDHCP,
-			"dns_nameservers":  req.Subnet.DNSNameservers,
-			"allocation_pools": allocationPools,
+			"dns_nameservers":  dnsNameservers,
+			"allocation_pools": subnetAllocationPools(req.Subnet.CIDR),
+			"host_routes":      []gin.H{},
+			"service_types":    []string{},
 			"created_at":       now.Format(time.RFC3339),
 			"updated_at":       now.Format(time.RFC3339),
 		},
@@ -923,18 +938,25 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 			continue
 		}
 
+		if dnsNameservers == nil {
+			dnsNameservers = []string{}
+		}
+
 		subnets = append(subnets, gin.H{
-			"id":              id,
-			"name":            name,
-			"network_id":      networkID,
-			"tenant_id":       projectID,
-			"cidr":            cidr,
-			"gateway_ip":      gatewayIP,
-			"ip_version":      ipVersion,
-			"enable_dhcp":     enableDHCP,
-			"dns_nameservers": dnsNameservers,
-			"created_at":      createdAt.Format(time.RFC3339),
-			"updated_at":      updatedAt.Format(time.RFC3339),
+			"id":               id,
+			"name":             name,
+			"network_id":       networkID,
+			"tenant_id":        projectID,
+			"cidr":             cidr,
+			"gateway_ip":       gatewayIP,
+			"ip_version":       ipVersion,
+			"enable_dhcp":      enableDHCP,
+			"dns_nameservers":  dnsNameservers,
+			"allocation_pools": subnetAllocationPools(cidr),
+			"host_routes":      []gin.H{},
+			"service_types":    []string{},
+			"created_at":       createdAt.Format(time.RFC3339),
+			"updated_at":       updatedAt.Format(time.RFC3339),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -959,11 +981,14 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	var dnsNameservers []string
 	var createdAt, updatedAt time.Time
 
+	// id::text comparison resolves by UUID or name without crashing on a
+	// non-UUID identifier (the CLI looks up by name this way).
 	err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
-		WHERE s.id = $1 AND (s.project_id = $2 OR n.shared = true)
+		WHERE (s.id::text = $1 OR s.name = $1) AND (s.project_id = $2 OR n.shared = true)
+		LIMIT 1
 	`, subnetID, projectID).Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -976,19 +1001,26 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 		return
 	}
 
+	if dnsNameservers == nil {
+		dnsNameservers = []string{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"subnet": gin.H{
-			"id":              id,
-			"name":            name,
-			"network_id":      networkID,
-			"tenant_id":       projectID,
-			"cidr":            cidr,
-			"gateway_ip":      gatewayIP,
-			"ip_version":      ipVersion,
-			"enable_dhcp":     enableDHCP,
-			"dns_nameservers": dnsNameservers,
-			"created_at":      createdAt.Format(time.RFC3339),
-			"updated_at":      updatedAt.Format(time.RFC3339),
+			"id":               id,
+			"name":             name,
+			"network_id":       networkID,
+			"tenant_id":        projectID,
+			"cidr":             cidr,
+			"gateway_ip":       gatewayIP,
+			"ip_version":       ipVersion,
+			"enable_dhcp":      enableDHCP,
+			"dns_nameservers":  dnsNameservers,
+			"allocation_pools": subnetAllocationPools(cidr),
+			"host_routes":      []gin.H{},
+			"service_types":    []string{},
+			"created_at":       createdAt.Format(time.RFC3339),
+			"updated_at":       updatedAt.Format(time.RFC3339),
 		},
 	})
 }
@@ -998,25 +1030,33 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 	subnetID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Get network ID to stop DHCP
-	var networkID string
+	// Resolve subnet by UUID or name to its canonical ID (and network for DHCP).
+	var resolvedID, networkID string
 	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT network_id FROM subnets WHERE id = $1 AND project_id = $2",
+		"SELECT id, network_id FROM subnets WHERE (id::text = $1 OR name = $1) AND project_id = $2 LIMIT 1",
 		subnetID, projectID,
-	).Scan(&networkID)
+	).Scan(&resolvedID, &networkID)
 
-	if err == nil {
-		// Stop DHCP server
-		svc.dhcpManager.StopDHCP(networkID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("subnet"))
+		return
 	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", subnetID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+		return
+	}
+
+	// Stop DHCP server
+	svc.dhcpManager.StopDHCP(networkID)
 
 	// Delete from database
 	_, err = database.DB.Exec(c.Request.Context(),
-		"DELETE FROM subnets WHERE id = $1 AND project_id = $2",
-		subnetID, projectID,
+		"DELETE FROM subnets WHERE id = $1",
+		resolvedID,
 	)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", subnetID).Msg("database error")
+		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
 		return
 	}
@@ -1039,12 +1079,12 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		return
 	}
 
-	// Check subnet exists
-	var currentName string
+	// Resolve subnet by UUID or name to its canonical ID.
+	var resolvedID, currentName string
 	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT name FROM subnets WHERE id = $1 AND project_id = $2",
+		"SELECT id, name FROM subnets WHERE (id::text = $1 OR name = $1) AND project_id = $2 LIMIT 1",
 		subnetID, projectID,
-	).Scan(&currentName)
+	).Scan(&resolvedID, &currentName)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
@@ -1063,10 +1103,10 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 
 	_, err = database.DB.Exec(c.Request.Context(),
 		"UPDATE subnets SET name = $1 WHERE id = $2",
-		currentName, subnetID,
+		currentName, resolvedID,
 	)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", subnetID).Msg("database error")
+		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update subnet"))
 		return
 	}
@@ -1074,10 +1114,12 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	// Return updated subnet
 	var networkID, cidr, gatewayIP string
 	var ipVersion int
+	var enableDHCP bool
+	var dnsNameservers []string
 	err = database.DB.QueryRow(c.Request.Context(),
-		"SELECT network_id, cidr, gateway_ip, ip_version FROM subnets WHERE id = $1",
-		subnetID,
-	).Scan(&networkID, &cidr, &gatewayIP, &ipVersion)
+		"SELECT network_id, cidr, gateway_ip, ip_version, enable_dhcp, dns_nameservers FROM subnets WHERE id = $1",
+		resolvedID,
+	).Scan(&networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_subnet_fetch").Str("subnet_id", subnetID).Msg("database error")
@@ -1085,15 +1127,24 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		return
 	}
 
+	if dnsNameservers == nil {
+		dnsNameservers = []string{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"subnet": gin.H{
-			"id":          subnetID,
-			"name":        currentName,
-			"network_id":  networkID,
-			"cidr":        cidr,
-			"gateway_ip":  gatewayIP,
-			"ip_version":  ipVersion,
-			"tenant_id":   projectID,
+			"id":               resolvedID,
+			"name":             currentName,
+			"network_id":       networkID,
+			"tenant_id":        projectID,
+			"cidr":             cidr,
+			"gateway_ip":       gatewayIP,
+			"ip_version":       ipVersion,
+			"enable_dhcp":      enableDHCP,
+			"dns_nameservers":  dnsNameservers,
+			"allocation_pools": subnetAllocationPools(cidr),
+			"host_routes":      []gin.H{},
+			"service_types":    []string{},
 		},
 	})
 }
@@ -1160,6 +1211,46 @@ func broadcast(ipNet *net.IPNet) net.IP {
 		broadcast[i] = ip[i] | ^mask[i]
 	}
 	return broadcast
+}
+
+// networkSubnetIDs returns the subnet IDs belonging to a network, newest first.
+// It always returns a non-nil slice so the JSON response serializes as a list,
+// and is queried fresh (never cached) so network responses reflect subnet
+// additions/removals immediately.
+func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) []string {
+	ids := []string{}
+	rows, err := database.DB.Query(ctx,
+		"SELECT id FROM subnets WHERE network_id = $1 ORDER BY created_at DESC", networkID)
+	if err != nil {
+		log.Error().Err(err).Str("network_id", networkID).Msg("failed to list subnets for network")
+		return ids
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// subnetAllocationPools computes the default allocation pool for a subnet CIDR
+// (network address + 2 through broadcast - 1). It always returns a non-nil
+// slice so the JSON response serializes as a list, never null — OpenStack
+// clients format allocation_pools as a list and choke on null.
+func subnetAllocationPools(cidr string) []gin.H {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil || ipNet.IP.To4() == nil {
+		return []gin.H{}
+	}
+	return []gin.H{
+		{
+			"start": incrementIP(ipNet.IP, 2).String(),
+			"end":   decrementIP(broadcast(ipNet), 1).String(),
+		},
+	}
 }
 
 func updateString(updates []string) string {
