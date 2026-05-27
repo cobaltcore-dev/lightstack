@@ -137,7 +137,10 @@ func (svc *Service) GetVersions(c *gin.Context) {
 				"links": []gin.H{
 					{
 						"rel":  "self",
-						"href": fmt.Sprintf("%s/", common.BaseURL(c, 9292)),
+						// Must include the /v2/ path: clients do version discovery
+						// against the unversioned catalog endpoint and use this href
+						// as the base, so omitting it sends requests to /images (404).
+						"href": fmt.Sprintf("%s/v2/", common.BaseURL(c, 9292)),
 					},
 				},
 			},
@@ -154,7 +157,7 @@ func (svc *Service) GetVersionV2(c *gin.Context) {
 			"links": []gin.H{
 				{
 					"rel":  "self",
-					"href": fmt.Sprintf("%s/", common.BaseURL(c, 9292)),
+					"href": fmt.Sprintf("%s/v2/", common.BaseURL(c, 9292)),
 				},
 			},
 		},
