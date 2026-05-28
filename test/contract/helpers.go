@@ -19,7 +19,7 @@ func SetupOpenStackClient(t *testing.T) *gophercloud.ProviderClient {
 	username := getEnvOrDefault("OS_USERNAME", "admin")
 	password := getEnvOrDefault("OS_PASSWORD", "secret")
 	projectName := getEnvOrDefault("OS_PROJECT_NAME", "default")
-	domainName := getEnvOrDefault("OS_USER_DOMAIN_NAME", "default")
+	domainName := getEnvOrDefault("OS_USER_DOMAIN_NAME", "Default")
 
 	opts := gophercloud.AuthOptions{
 		IdentityEndpoint: authURL,
@@ -109,7 +109,7 @@ func SkipIfO3KNotRunning(t *testing.T) {
 		Username:         "admin",
 		Password:         "secret",
 		TenantName:       "default",
-		DomainName:       "default",
+		DomainName:       "Default",
 	}
 
 	_, err := openstack.AuthenticatedClient(opts)
