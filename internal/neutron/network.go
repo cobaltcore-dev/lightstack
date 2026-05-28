@@ -2,22 +2,22 @@ package neutron
 
 import (
 	"context"
-	"errors"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // Service handles Neutron API endpoints
@@ -148,7 +148,6 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		v2.GET("/floatingips/:id", svc.GetFloatingIP)
 		v2.PUT("/floatingips/:id", svc.UpdateFloatingIP)
 		v2.DELETE("/floatingips/:id", svc.DeleteFloatingIP)
-
 
 		// Port Forwarding (nested under floatingips)
 		v2.GET("/floatingips/:id/port_forwardings", svc.ListPortForwardings)
@@ -334,12 +333,12 @@ func (svc *Service) GetQuota(c *gin.Context) {
 	// Return quota response
 	c.JSON(200, gin.H{
 		"quota": gin.H{
-			"network":            100,
-			"subnet":             100,
-			"port":               500,
-			"router":             10,
-			"floatingip":         50,
-			"security_group":     100,
+			"network":             100,
+			"subnet":              100,
+			"port":                500,
+			"router":              10,
+			"floatingip":          50,
+			"security_group":      100,
 			"security_group_rule": 500,
 		},
 	})

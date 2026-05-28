@@ -1,69 +1,69 @@
 package neutron
 
 import (
-	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
 )
 
 // Router represents a Neutron L3 router
 type Router struct {
-	ID                  string                 `json:"id"`
-	Name                string                 `json:"name"`
-	ProjectID           string                 `json:"tenant_id"` // Keep tenant_id for compatibility
-	AdminStateUp        bool                   `json:"admin_state_up"`
-	Status              string                 `json:"status"`
+	ID                  string         `json:"id"`
+	Name                string         `json:"name"`
+	ProjectID           string         `json:"tenant_id"` // Keep tenant_id for compatibility
+	AdminStateUp        bool           `json:"admin_state_up"`
+	Status              string         `json:"status"`
 	ExternalGatewayInfo map[string]any `json:"external_gateway_info"`
-	Distributed         bool                   `json:"distributed"`
-	HA                  bool                   `json:"ha"`
-	CreatedAt           time.Time              `json:"created_at"`
-	UpdatedAt           time.Time              `json:"updated_at"`
+	Distributed         bool           `json:"distributed"`
+	HA                  bool           `json:"ha"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
 }
 
 // FloatingIP represents a floating IP address
 type FloatingIP struct {
-	ID                 string    `json:"id"`
-	ProjectID          string    `json:"tenant_id"`
-	FloatingNetworkID  string    `json:"floating_network_id"`
-	FloatingIPAddress  string    `json:"floating_ip_address"`
-	FixedIPAddress     string    `json:"fixed_ip_address"`
-	PortID             string    `json:"port_id"`
-	RouterID           string    `json:"router_id"`
-	Status             string    `json:"status"`
-	Description        string    `json:"description"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+	ProjectID         string    `json:"tenant_id"`
+	FloatingNetworkID string    `json:"floating_network_id"`
+	FloatingIPAddress string    `json:"floating_ip_address"`
+	FixedIPAddress    string    `json:"fixed_ip_address"`
+	PortID            string    `json:"port_id"`
+	RouterID          string    `json:"router_id"`
+	Status            string    `json:"status"`
+	Description       string    `json:"description"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // CreateRouterRequest represents a router creation request
 type CreateRouterRequest struct {
 	Router struct {
-		Name                string                 `json:"name" binding:"required"`
-		AdminStateUp        *bool                  `json:"admin_state_up"`
+		Name                string         `json:"name" binding:"required"`
+		AdminStateUp        *bool          `json:"admin_state_up"`
 		ExternalGatewayInfo map[string]any `json:"external_gateway_info"`
-		Distributed         *bool                  `json:"distributed"`
-		HA                  *bool                  `json:"ha"`
+		Distributed         *bool          `json:"distributed"`
+		HA                  *bool          `json:"ha"`
 	} `json:"router"`
 }
 
 // UpdateRouterRequest represents a router update request
 type UpdateRouterRequest struct {
 	Router struct {
-		Name                *string                 `json:"name"`
-		AdminStateUp        *bool                   `json:"admin_state_up"`
+		Name                *string         `json:"name"`
+		AdminStateUp        *bool           `json:"admin_state_up"`
 		ExternalGatewayInfo *map[string]any `json:"external_gateway_info"`
 	} `json:"router"`
 }

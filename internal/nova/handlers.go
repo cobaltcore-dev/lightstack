@@ -1,38 +1,38 @@
 package nova
 
 import (
-	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/internal/middleware"
 	"github.com/cobaltcore-dev/o3k/internal/neutron"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // Service handles Nova API endpoints
 type Service struct {
-	libvirtURI    string
-	libvirtMode   string
-	vmManager     *hypervisor.VMManager
-	cache         *cache.Cache
-	neutronSvc    NeutronService // For port allocation
-	wg            sync.WaitGroup
-	ctx           context.Context
-	cancel        context.CancelFunc
+	libvirtURI  string
+	libvirtMode string
+	vmManager   *hypervisor.VMManager
+	cache       *cache.Cache
+	neutronSvc  NeutronService // For port allocation
+	wg          sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 const (
@@ -511,17 +511,17 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	// Return instance details
 	c.JSON(http.StatusAccepted, gin.H{
 		"server": gin.H{
-			"id":         instanceID,
-			"name":       req.Server.Name,
-			"status":     "BUILD",
-			"tenant_id":  projectID,
-			"user_id":    userID,
-			"created":    now.Format(time.RFC3339),
-			"updated":    now.Format(time.RFC3339),
-			"flavor":     gin.H{"id": flavor.ID},
-			"image":      gin.H{"id": req.Server.ImageRef},
-			"metadata":   gin.H{},
-			"adminPass":  common.GeneratePassword(16),
+			"id":        instanceID,
+			"name":      req.Server.Name,
+			"status":    "BUILD",
+			"tenant_id": projectID,
+			"user_id":   userID,
+			"created":   now.Format(time.RFC3339),
+			"updated":   now.Format(time.RFC3339),
+			"flavor":    gin.H{"id": flavor.ID},
+			"image":     gin.H{"id": req.Server.ImageRef},
+			"metadata":  gin.H{},
+			"adminPass": common.GeneratePassword(16),
 		},
 	})
 }
@@ -669,14 +669,14 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		addresses := svc.getInstanceAddresses(c.Request.Context(), id, projectID)
 
 		entry := gin.H{
-			"id":         id,
-			"name":       name,
-			"status":     status,
-			"tenant_id":  projectID,
-			"user_id":    userID,
-			"created":    createdAt.Format(time.RFC3339),
-			"updated":    updatedAt.Format(time.RFC3339),
-			"addresses":  addresses,
+			"id":                     id,
+			"name":                   name,
+			"status":                 status,
+			"tenant_id":              projectID,
+			"user_id":                userID,
+			"created":                createdAt.Format(time.RFC3339),
+			"updated":                updatedAt.Format(time.RFC3339),
+			"addresses":              addresses,
 			"OS-EXT-STS:power_state": powerState,
 			"flavor": gin.H{
 				"id":    flavorID,
@@ -745,8 +745,8 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 		for _, ipInfo := range fixedIPs {
 			if ipAddr, ok := ipInfo["ip_address"].(string); ok {
 				addressList = append(addressList, gin.H{
-					"addr":    ipAddr,
-					"version": 4,
+					"addr":            ipAddr,
+					"version":         4,
 					"OS-EXT-IPS:type": "fixed",
 				})
 			}
@@ -1361,18 +1361,18 @@ func (svc *Service) GetHypervisorStatistics(c *gin.Context) {
 	// Return aggregated stats
 	c.JSON(200, gin.H{
 		"hypervisor_statistics": gin.H{
-			"count":              1,
-			"current_workload":   0,
+			"count":                1,
+			"current_workload":     0,
 			"disk_available_least": 800,
-			"free_disk_gb":       900,
-			"free_ram_mb":        28672,
-			"local_gb":           1000,
-			"local_gb_used":      100,
-			"memory_mb":          32768,
-			"memory_mb_used":     4096,
-			"running_vms":        runningVMs,
-			"vcpus":              16,
-			"vcpus_used":         runningVMs * 2, // Assume 2 vCPUs per VM
+			"free_disk_gb":         900,
+			"free_ram_mb":          28672,
+			"local_gb":             1000,
+			"local_gb_used":        100,
+			"memory_mb":            32768,
+			"memory_mb_used":       4096,
+			"running_vms":          runningVMs,
+			"vcpus":                16,
+			"vcpus_used":           runningVMs * 2, // Assume 2 vCPUs per VM
 		},
 	})
 }
@@ -1577,37 +1577,37 @@ func (svc *Service) ListServices(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"services": []gin.H{
 			{
-				"id":                 1,
-				"binary":             "nova-compute",
-				"host":               "o3k-compute-1",
-				"zone":               "nova",
-				"status":             "enabled",
-				"state":              "up",
-				"updated_at":         now,
-				"disabled_reason":    nil,
-				"forced_down":        false,
+				"id":              1,
+				"binary":          "nova-compute",
+				"host":            "o3k-compute-1",
+				"zone":            "nova",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
+				"disabled_reason": nil,
+				"forced_down":     false,
 			},
 			{
-				"id":                 2,
-				"binary":             "nova-scheduler",
-				"host":               "o3k-controller",
-				"zone":               "internal",
-				"status":             "enabled",
-				"state":              "up",
-				"updated_at":         now,
-				"disabled_reason":    nil,
-				"forced_down":        false,
+				"id":              2,
+				"binary":          "nova-scheduler",
+				"host":            "o3k-controller",
+				"zone":            "internal",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
+				"disabled_reason": nil,
+				"forced_down":     false,
 			},
 			{
-				"id":                 3,
-				"binary":             "nova-conductor",
-				"host":               "o3k-controller",
-				"zone":               "internal",
-				"status":             "enabled",
-				"state":              "up",
-				"updated_at":         now,
-				"disabled_reason":    nil,
-				"forced_down":        false,
+				"id":              3,
+				"binary":          "nova-conductor",
+				"host":            "o3k-controller",
+				"zone":            "internal",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
+				"disabled_reason": nil,
+				"forced_down":     false,
 			},
 		},
 	})
@@ -1846,13 +1846,13 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 	}
 
 	server = gin.H{
-		"id":         instanceID,
-		"name":       serverName,
-		"status":     status,
-		"tenant_id":  projectID,
-		"user_id":    userID,
-		"created":    createdAt.Format(time.RFC3339),
-		"updated":    updatedAt.Format(time.RFC3339),
+		"id":        instanceID,
+		"name":      serverName,
+		"status":    status,
+		"tenant_id": projectID,
+		"user_id":   userID,
+		"created":   createdAt.Format(time.RFC3339),
+		"updated":   updatedAt.Format(time.RFC3339),
 		"image": gin.H{
 			"id": imageID,
 		},

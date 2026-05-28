@@ -1,8 +1,8 @@
 package neutron
 
 import (
-	"errors"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"

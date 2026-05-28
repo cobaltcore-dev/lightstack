@@ -17,11 +17,11 @@ func (svc *Service) ManageVolume(c *gin.Context) {
 
 	var req struct {
 		Volume struct {
-			Host       string                 `json:"host" binding:"required"`
-			Ref        map[string]any `json:"ref" binding:"required"`
-			Name       string                 `json:"name"`
-			VolumeType string                 `json:"volume_type"`
-			Metadata   map[string]string      `json:"metadata"`
+			Host       string            `json:"host" binding:"required"`
+			Ref        map[string]any    `json:"ref" binding:"required"`
+			Name       string            `json:"name"`
+			VolumeType string            `json:"volume_type"`
+			Metadata   map[string]string `json:"metadata"`
 		} `json:"volume" binding:"required"`
 	}
 
@@ -123,10 +123,10 @@ func (svc *Service) ManageSnapshot(c *gin.Context) {
 
 	var req struct {
 		Snapshot struct {
-			VolumeID string                 `json:"volume_id" binding:"required"`
-			Ref      map[string]any `json:"ref" binding:"required"`
-			Name     string                 `json:"name"`
-			Metadata map[string]string      `json:"metadata"`
+			VolumeID string            `json:"volume_id" binding:"required"`
+			Ref      map[string]any    `json:"ref" binding:"required"`
+			Name     string            `json:"name"`
+			Metadata map[string]string `json:"metadata"`
 		} `json:"snapshot" binding:"required"`
 	}
 

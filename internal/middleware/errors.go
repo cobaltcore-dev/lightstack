@@ -1,8 +1,8 @@
 package middleware
 
 import (
-	"github.com/gin-gonic/gin"
 	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/gin-gonic/gin"
 )
 
 // ErrorHandlingMiddleware catches panics and converts them to proper error responses

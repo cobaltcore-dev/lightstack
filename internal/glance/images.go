@@ -1,21 +1,21 @@
 package glance
 
 import (
-	"errors"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/storage"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // Service handles Glance API endpoints
@@ -117,13 +117,13 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 // CreateImageRequest represents an image creation request
 type CreateImageRequest struct {
-	Name            string  `json:"name"`
-	DiskFormat      string  `json:"disk_format"`
-	ContainerFormat string  `json:"container_format"`
-	Visibility      string  `json:"visibility"`
-	MinDisk         int     `json:"min_disk"`
-	MinRAM          int     `json:"min_ram"`
-	Protected       bool    `json:"protected"`
+	Name            string   `json:"name"`
+	DiskFormat      string   `json:"disk_format"`
+	ContainerFormat string   `json:"container_format"`
+	Visibility      string   `json:"visibility"`
+	MinDisk         int      `json:"min_disk"`
+	MinRAM          int      `json:"min_ram"`
+	Protected       bool     `json:"protected"`
 	Tags            []string `json:"tags"`
 }
 
@@ -136,7 +136,7 @@ func (svc *Service) GetVersions(c *gin.Context) {
 				"status": "CURRENT",
 				"links": []gin.H{
 					{
-						"rel":  "self",
+						"rel": "self",
 						// Must include the /v2/ path: clients do version discovery
 						// against the unversioned catalog endpoint and use this href
 						// as the base, so omitting it sends requests to /images (404).
@@ -205,21 +205,21 @@ func (svc *Service) CreateImage(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":                imageID,
-		"name":              req.Name,
-		"status":            "queued",
-		"visibility":        visibility,
-		"disk_format":       diskFormat,
-		"container_format":  containerFormat,
-		"min_disk":          req.MinDisk,
-		"min_ram":           req.MinRAM,
-		"protected":         req.Protected,
-		"tags":              req.Tags,
-		"created_at":        now.Format(time.RFC3339),
-		"updated_at":        now.Format(time.RFC3339),
-		"self":              fmt.Sprintf("/v2/images/%s", imageID),
-		"file":              fmt.Sprintf("/v2/images/%s/file", imageID),
-		"schema":            "/v2/schemas/image",
+		"id":               imageID,
+		"name":             req.Name,
+		"status":           "queued",
+		"visibility":       visibility,
+		"disk_format":      diskFormat,
+		"container_format": containerFormat,
+		"min_disk":         req.MinDisk,
+		"min_ram":          req.MinRAM,
+		"protected":        req.Protected,
+		"tags":             req.Tags,
+		"created_at":       now.Format(time.RFC3339),
+		"updated_at":       now.Format(time.RFC3339),
+		"self":             fmt.Sprintf("/v2/images/%s", imageID),
+		"file":             fmt.Sprintf("/v2/images/%s/file", imageID),
+		"schema":           "/v2/schemas/image",
 	})
 }
 
@@ -289,19 +289,19 @@ func (svc *Service) ListImages(c *gin.Context) {
 		}
 
 		image := gin.H{
-			"id":                id,
-			"name":              name,
-			"status":            status,
-			"visibility":        visibility,
-			"disk_format":       diskFormat,
-			"container_format":  containerFormat,
-			"min_disk":          minDisk,
-			"min_ram":           minRAM,
-			"created_at":        createdAt.Format(time.RFC3339),
-			"updated_at":        updatedAt.Format(time.RFC3339),
-			"self":              fmt.Sprintf("/v2/images/%s", id),
-			"file":              fmt.Sprintf("/v2/images/%s/file", id),
-			"schema":            "/v2/schemas/image",
+			"id":               id,
+			"name":             name,
+			"status":           status,
+			"visibility":       visibility,
+			"disk_format":      diskFormat,
+			"container_format": containerFormat,
+			"min_disk":         minDisk,
+			"min_ram":          minRAM,
+			"created_at":       createdAt.Format(time.RFC3339),
+			"updated_at":       updatedAt.Format(time.RFC3339),
+			"self":             fmt.Sprintf("/v2/images/%s", id),
+			"file":             fmt.Sprintf("/v2/images/%s/file", id),
+			"schema":           "/v2/schemas/image",
 		}
 
 		if sizeBytes.Valid {
@@ -322,8 +322,8 @@ func (svc *Service) ListImages(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"images": images,
-		"schema":  "/v2/schemas/images",
-		"first":   "/v2/images",
+		"schema": "/v2/schemas/images",
+		"first":  "/v2/images",
 	})
 }
 
@@ -370,19 +370,19 @@ func (svc *Service) GetImage(c *gin.Context) {
 	}
 
 	image := gin.H{
-		"id":                id,
-		"name":              name,
-		"status":            status,
-		"visibility":        visibility,
-		"disk_format":       diskFormat,
-		"container_format":  containerFormat,
-		"min_disk":          minDisk,
-		"min_ram":           minRAM,
-		"created_at":        createdAt.Format(time.RFC3339),
-		"updated_at":        updatedAt.Format(time.RFC3339),
-		"self":              fmt.Sprintf("/v2/images/%s", id),
-		"file":              fmt.Sprintf("/v2/images/%s/file", id),
-		"schema":            "/v2/schemas/image",
+		"id":               id,
+		"name":             name,
+		"status":           status,
+		"visibility":       visibility,
+		"disk_format":      diskFormat,
+		"container_format": containerFormat,
+		"min_disk":         minDisk,
+		"min_ram":          minRAM,
+		"created_at":       createdAt.Format(time.RFC3339),
+		"updated_at":       updatedAt.Format(time.RFC3339),
+		"self":             fmt.Sprintf("/v2/images/%s", id),
+		"file":             fmt.Sprintf("/v2/images/%s/file", id),
+		"schema":           "/v2/schemas/image",
 	}
 
 	if sizeBytes.Valid {
@@ -607,19 +607,19 @@ func (svc *Service) DownloadImageData(c *gin.Context) {
 // GetImageSchema returns the image schema
 func (svc *Service) GetImageSchema(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"name":       "image",
+		"name": "image",
 		"properties": gin.H{
-			"id":                gin.H{"type": "string"},
-			"name":              gin.H{"type": "string"},
-			"status":            gin.H{"type": "string"},
-			"visibility":        gin.H{"type": "string"},
-			"size":              gin.H{"type": "integer"},
-			"disk_format":       gin.H{"type": "string"},
-			"container_format":  gin.H{"type": "string"},
-			"min_disk":          gin.H{"type": "integer"},
-			"min_ram":           gin.H{"type": "integer"},
-			"created_at":        gin.H{"type": "string"},
-			"updated_at":        gin.H{"type": "string"},
+			"id":               gin.H{"type": "string"},
+			"name":             gin.H{"type": "string"},
+			"status":           gin.H{"type": "string"},
+			"visibility":       gin.H{"type": "string"},
+			"size":             gin.H{"type": "integer"},
+			"disk_format":      gin.H{"type": "string"},
+			"container_format": gin.H{"type": "string"},
+			"min_disk":         gin.H{"type": "integer"},
+			"min_ram":          gin.H{"type": "integer"},
+			"created_at":       gin.H{"type": "string"},
+			"updated_at":       gin.H{"type": "string"},
 		},
 	})
 }

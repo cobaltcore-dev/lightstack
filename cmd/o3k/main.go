@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/cobaltcore-dev/o3k/internal/cinder"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/compute"
@@ -25,6 +24,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/placement"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/gin-gonic/gin"
 )
 
 var (

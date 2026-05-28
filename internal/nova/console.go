@@ -1,20 +1,20 @@
 package nova
 
 import (
-	"errors"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
 )
 
 // GetConsoleRequest represents a console access request

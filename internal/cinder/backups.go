@@ -35,7 +35,7 @@ func (svc *Service) ListBackups(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id          string
-			projectID      string
+			projectID   string
 			volumeID    string
 			name        *string
 			description *string

@@ -197,12 +197,12 @@ func (c *Cache) Close() error {
 
 // Stats returns cache statistics
 type Stats struct {
-	Enabled      bool
-	Connected    bool
-	KeyCount     int64
-	MemoryUsed   string
-	HitRate      float64
-	MissRate     float64
+	Enabled    bool
+	Connected  bool
+	KeyCount   int64
+	MemoryUsed string
+	HitRate    float64
+	MissRate   float64
 }
 
 // GetStats returns current cache statistics

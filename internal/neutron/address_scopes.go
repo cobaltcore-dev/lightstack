@@ -34,7 +34,7 @@ func (svc *Service) ListAddressScopes(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id        string
-			projectID    string
+			projectID string
 			name      string
 			ipVersion int
 			shared    bool

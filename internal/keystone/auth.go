@@ -1,20 +1,20 @@
 package keystone
 
 import (
-	"errors"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
-	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -110,12 +110,12 @@ type AuthRequest struct {
 // AuthResponse represents an authentication response
 type AuthResponse struct {
 	Token struct {
-		ExpiresAt string                 `json:"expires_at"`
-		IssuedAt  string                 `json:"issued_at"`
-		Methods   []string               `json:"methods"`
-		User      map[string]any `json:"user"`
-		Catalog   []CatalogEntry         `json:"catalog,omitempty"`
-		Project   *map[string]any `json:"project,omitempty"`
+		ExpiresAt string           `json:"expires_at"`
+		IssuedAt  string           `json:"issued_at"`
+		Methods   []string         `json:"methods"`
+		User      map[string]any   `json:"user"`
+		Catalog   []CatalogEntry   `json:"catalog,omitempty"`
+		Project   *map[string]any  `json:"project,omitempty"`
 		Roles     []map[string]any `json:"roles,omitempty"`
 	} `json:"token"`
 }

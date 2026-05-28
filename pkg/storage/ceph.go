@@ -13,15 +13,15 @@ import (
 
 // CephClient manages storage operations (RBD, local, or both)
 type CephClient struct {
-	mode     string // "stub", "rbd", "local", or "local,rbd"
-	pool     string
-	confFile string
-	timeout  time.Duration
-	mu       sync.Mutex
+	mode        string // "stub", "rbd", "local", or "local,rbd"
+	pool        string
+	confFile    string
+	timeout     time.Duration
+	mu          sync.Mutex
 	stubVolumes map[string]*stubVolume // For stub mode
 	localPath   string                 // For local mode
-	conn        any            // Ceph RADOS connection (type depends on build tags)
-	ioctx       any            // RADOS IO context for pool (type depends on build tags)
+	conn        any                    // Ceph RADOS connection (type depends on build tags)
+	ioctx       any                    // RADOS IO context for pool (type depends on build tags)
 }
 
 // stubVolume represents a simulated volume
@@ -60,7 +60,6 @@ func NewCephClient(mode, pool, confFile string) *CephClient {
 
 	return client
 }
-
 
 // CreateVolume creates a storage volume
 func (c *CephClient) CreateVolume(ctx context.Context, volumeID string, sizeGB int) error {
@@ -132,7 +131,6 @@ func (c *CephClient) createVolumeLocal(ctx context.Context, volumeID string, siz
 	return nil
 }
 
-
 // deleteVolumeLocal deletes a local volume
 func (c *CephClient) deleteVolumeLocal(ctx context.Context, volumeID string) error {
 	volumePath := filepath.Join(c.localPath, "volume-"+volumeID+".qcow2")
@@ -173,7 +171,6 @@ func (c *CephClient) deleteVolumeStub(volumeID string) error {
 	delete(c.stubVolumes, volumeID)
 	return nil
 }
-
 
 // CreateSnapshot creates a snapshot of a volume
 func (c *CephClient) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) error {

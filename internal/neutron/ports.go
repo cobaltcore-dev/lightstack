@@ -1,11 +1,11 @@
 package neutron
 
 import (
-	"errors"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -13,13 +13,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/networking"
 )
 
 // CreatePortRequest represents a port creation request
@@ -843,7 +843,6 @@ func (svc *Service) UpdateSecurityGroup(c *gin.Context) {
 	})
 }
 
-
 // CreateSecurityGroupRuleRequest represents a security group rule creation request
 type CreateSecurityGroupRuleRequest struct {
 	SecurityGroupRule struct {
@@ -939,16 +938,16 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"security_group_rule": gin.H{
-			"id":                 ruleID,
-			"security_group_id":  req.SecurityGroupRule.SecurityGroupID,
-			"direction":          req.SecurityGroupRule.Direction,
-			"ethertype":          etherType,
-			"protocol":           protocol,
-			"port_range_min":     portMin,
-			"port_range_max":     portMax,
-			"remote_ip_prefix":   remoteIP,
-			"remote_group_id":    remoteGroup,
-			"created_at":         now.Format(time.RFC3339),
+			"id":                ruleID,
+			"security_group_id": req.SecurityGroupRule.SecurityGroupID,
+			"direction":         req.SecurityGroupRule.Direction,
+			"ethertype":         etherType,
+			"protocol":          protocol,
+			"port_range_min":    portMin,
+			"port_range_max":    portMax,
+			"remote_ip_prefix":  remoteIP,
+			"remote_group_id":   remoteGroup,
+			"created_at":        now.Format(time.RFC3339),
 		},
 	})
 }

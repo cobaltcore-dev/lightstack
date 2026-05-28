@@ -1,23 +1,23 @@
 package cinder
 
 import (
-	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/storage"
 )
 
 // Service handles Cinder API endpoints
@@ -1895,15 +1895,15 @@ func (svc *Service) GetLimits(c *gin.Context) {
 		"limits": gin.H{
 			"rate": []gin.H{}, // No rate limiting
 			"absolute": gin.H{
-				"maxTotalVolumes":       1000,
-				"maxTotalSnapshots":     1000,
-				"maxTotalVolumeGigabytes": 10000,
-				"maxTotalBackups":       100,
-				"maxTotalBackupGigabytes": 5000,
-				"totalVolumesUsed":      volumesUsed,
-				"totalSnapshotsUsed":    snapshotsUsed,
-				"totalGigabytesUsed":    gigabytesUsed,
-				"totalBackupsUsed":      0,
+				"maxTotalVolumes":          1000,
+				"maxTotalSnapshots":        1000,
+				"maxTotalVolumeGigabytes":  10000,
+				"maxTotalBackups":          100,
+				"maxTotalBackupGigabytes":  5000,
+				"totalVolumesUsed":         volumesUsed,
+				"totalSnapshotsUsed":       snapshotsUsed,
+				"totalGigabytesUsed":       gigabytesUsed,
+				"totalBackupsUsed":         0,
 				"totalBackupGigabytesUsed": 0,
 			},
 		},
@@ -1933,15 +1933,15 @@ func (svc *Service) GetLimitsNoProject(c *gin.Context) {
 		"limits": gin.H{
 			"rate": []gin.H{}, // No rate limiting
 			"absolute": gin.H{
-				"maxTotalVolumes":       1000,
-				"maxTotalSnapshots":     1000,
-				"maxTotalVolumeGigabytes": 10000,
-				"maxTotalBackups":       100,
-				"maxTotalBackupGigabytes": 5000,
-				"totalVolumesUsed":      volumesUsed,
-				"totalSnapshotsUsed":    snapshotsUsed,
-				"totalGigabytesUsed":    gigabytesUsed,
-				"totalBackupsUsed":      0,
+				"maxTotalVolumes":          1000,
+				"maxTotalSnapshots":        1000,
+				"maxTotalVolumeGigabytes":  10000,
+				"maxTotalBackups":          100,
+				"maxTotalBackupGigabytes":  5000,
+				"totalVolumesUsed":         volumesUsed,
+				"totalSnapshotsUsed":       snapshotsUsed,
+				"totalGigabytesUsed":       gigabytesUsed,
+				"totalBackupsUsed":         0,
 				"totalBackupGigabytesUsed": 0,
 			},
 		},
@@ -1957,30 +1957,30 @@ func (svc *Service) ListServices(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"services": []gin.H{
 			{
-				"binary":         "cinder-volume",
-				"host":           "o3k-volume-1",
-				"zone":           "nova",
-				"status":         "enabled",
-				"state":          "up",
-				"updated_at":     now,
+				"binary":          "cinder-volume",
+				"host":            "o3k-volume-1",
+				"zone":            "nova",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
 				"disabled_reason": nil,
 			},
 			{
-				"binary":         "cinder-scheduler",
-				"host":           "o3k-controller",
-				"zone":           "internal",
-				"status":         "enabled",
-				"state":          "up",
-				"updated_at":     now,
+				"binary":          "cinder-scheduler",
+				"host":            "o3k-controller",
+				"zone":            "internal",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
 				"disabled_reason": nil,
 			},
 			{
-				"binary":         "cinder-backup",
-				"host":           "o3k-backup-1",
-				"zone":           "nova",
-				"status":         "enabled",
-				"state":          "up",
-				"updated_at":     now,
+				"binary":          "cinder-backup",
+				"host":            "o3k-backup-1",
+				"zone":            "nova",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
 				"disabled_reason": nil,
 			},
 		},
@@ -1992,11 +1992,11 @@ func (svc *Service) GetVersions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"versions": []gin.H{
 			{
-				"id":      "v3.0",
-				"status":  "CURRENT",
-				"version": "3.70",
+				"id":          "v3.0",
+				"status":      "CURRENT",
+				"version":     "3.70",
 				"min_version": "3.0",
-				"updated": "2021-04-07T00:00:00Z",
+				"updated":     "2021-04-07T00:00:00Z",
 				"links": []gin.H{
 					{
 						"rel":  "self",
@@ -2018,11 +2018,11 @@ func (svc *Service) GetVersions(c *gin.Context) {
 func (svc *Service) GetVersionV3(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"version": gin.H{
-			"id":      "v3.0",
-			"status":  "CURRENT",
-			"version": "3.71",
+			"id":          "v3.0",
+			"status":      "CURRENT",
+			"version":     "3.71",
 			"min_version": "3.0",
-			"updated": "2021-04-07T00:00:00Z",
+			"updated":     "2021-04-07T00:00:00Z",
 			"links": []gin.H{
 				{
 					"rel":  "self",

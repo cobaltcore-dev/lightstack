@@ -1,22 +1,22 @@
 package neutron
 
 import (
-	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
 )
 
 // CreateFloatingIPRequest represents a floating IP creation request
@@ -443,16 +443,16 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 					common.SendError(c, common.NewBadRequestError("port_id must be a string or null"))
 					return
 				}
-			// Associate with new port
-			var networkID string
-			database.DB.QueryRow(c.Request.Context(),
-				"SELECT network_id FROM ports WHERE id = $1",
-				newPortID,
-			).Scan(&networkID)
+				// Associate with new port
+				var networkID string
+				database.DB.QueryRow(c.Request.Context(),
+					"SELECT network_id FROM ports WHERE id = $1",
+					newPortID,
+				).Scan(&networkID)
 
-			// Find router
-			var routerID string
-			err = database.DB.QueryRow(c.Request.Context(), `
+				// Find router
+				var routerID string
+				err = database.DB.QueryRow(c.Request.Context(), `
 				SELECT DISTINCT r.id
 				FROM routers r
 				JOIN router_interfaces ri ON ri.router_id = r.id
@@ -461,10 +461,10 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 				LIMIT 1
 			`, networkID).Scan(&routerID)
 
-			if err != nil {
-				common.SendError(c, common.NewBadRequestError("no router with external gateway found for this network"))
-				return
-			}
+				if err != nil {
+					common.SendError(c, common.NewBadRequestError("no router with external gateway found for this network"))
+					return
+				}
 
 				// Get fixed IP
 				var fixedIP string

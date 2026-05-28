@@ -1,8 +1,8 @@
 package cinder
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -49,11 +49,11 @@ func (svc *Service) CreateVolumeType(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"volume_type": map[string]any{
-			"id":                               typeID,
-			"name":                             req.VolumeType.Name,
-			"description":                      req.VolumeType.Description,
-			"os-volume-type-access:is_public":  isPublic,
-			"extra_specs":                      map[string]string{},
+			"id":                              typeID,
+			"name":                            req.VolumeType.Name,
+			"description":                     req.VolumeType.Description,
+			"os-volume-type-access:is_public": isPublic,
+			"extra_specs":                     map[string]string{},
 		},
 	})
 }

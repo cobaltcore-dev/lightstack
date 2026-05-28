@@ -1,9 +1,9 @@
 package keystone
 
 import (
-	"errors"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -98,11 +98,11 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 
 	var req struct {
 		ApplicationCredential struct {
-			Name         string                   `json:"name" binding:"required"`
-			Description  string                   `json:"description"`
-			ProjectID    string                   `json:"project_id"`
-			ExpiresAt    string                   `json:"expires_at"`
-			Unrestricted bool                     `json:"unrestricted"`
+			Name         string           `json:"name" binding:"required"`
+			Description  string           `json:"description"`
+			ProjectID    string           `json:"project_id"`
+			ExpiresAt    string           `json:"expires_at"`
+			Unrestricted bool             `json:"unrestricted"`
 			Roles        []map[string]any `json:"roles"`
 		} `json:"application_credential"`
 	}

@@ -112,18 +112,18 @@ type Subnet struct {
 }
 
 type Port struct {
-	ID           string                   `json:"id"`
-	Name         string                   `json:"name"`
-	NetworkID    string                   `json:"network_id"`
-	ProjectID    string                   `json:"tenant_id"`
-	DeviceID     string                   `json:"device_id"`
-	DeviceOwner  string                   `json:"device_owner"`
-	MACAddress   string                   `json:"mac_address"`
-	AdminStateUp bool                     `json:"admin_state_up"`
-	Status       string                   `json:"status"`
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	NetworkID    string           `json:"network_id"`
+	ProjectID    string           `json:"tenant_id"`
+	DeviceID     string           `json:"device_id"`
+	DeviceOwner  string           `json:"device_owner"`
+	MACAddress   string           `json:"mac_address"`
+	AdminStateUp bool             `json:"admin_state_up"`
+	Status       string           `json:"status"`
 	FixedIPs     []map[string]any `json:"fixed_ips"`
-	CreatedAt    time.Time                `json:"created_at"`
-	UpdatedAt    time.Time                `json:"updated_at"`
+	CreatedAt    time.Time        `json:"created_at"`
+	UpdatedAt    time.Time        `json:"updated_at"`
 }
 
 type SecurityGroup struct {
@@ -150,18 +150,18 @@ type SecurityGroupRule struct {
 
 // Cinder models
 type Volume struct {
-	ID                   string     `json:"id"`
-	Name                 string     `json:"name"`
-	ProjectID            string     `json:"tenant_id"`
-	UserID               string     `json:"user_id"`
-	SizeGB               int        `json:"size"`
-	Status               string     `json:"status"`
-	Bootable             bool       `json:"bootable"`
-	AttachedToInstanceID *string    `json:"attachments"`
-	RBDPool              string     `json:"-"`
-	RBDImage             string     `json:"-"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
+	ID                   string    `json:"id"`
+	Name                 string    `json:"name"`
+	ProjectID            string    `json:"tenant_id"`
+	UserID               string    `json:"user_id"`
+	SizeGB               int       `json:"size"`
+	Status               string    `json:"status"`
+	Bootable             bool      `json:"bootable"`
+	AttachedToInstanceID *string   `json:"attachments"`
+	RBDPool              string    `json:"-"`
+	RBDImage             string    `json:"-"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type VolumeType struct {
