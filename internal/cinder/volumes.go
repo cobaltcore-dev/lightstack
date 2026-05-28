@@ -63,6 +63,10 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// MUST be registered before v3/:project_id group to avoid route conflict
 	r.GET("/v3/os-volume-transfer", svc.ListVolumeTransfersNoProject)
 	r.GET("/v3/os-volume-transfer/detail", svc.ListVolumeTransfersNoProject)
+	r.POST("/v3/os-volume-transfer", svc.CreateVolumeTransfer)
+	r.GET("/v3/os-volume-transfer/:id", svc.GetVolumeTransfer)
+	r.POST("/v3/os-volume-transfer/:id/accept", svc.AcceptVolumeTransfer)
+	r.DELETE("/v3/os-volume-transfer/:id", svc.DeleteVolumeTransfer)
 
 	// Volumes operations without project_id (extracts from token)
 	r.POST("/v3/volumes", svc.CreateVolume)
@@ -86,6 +90,17 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// Volume types without project_id (extracts from token)
 	r.GET("/v3/types", svc.ListVolumeTypes)
 	r.GET("/v3/types/default", svc.GetDefaultVolumeType)
+	r.POST("/v3/types", svc.CreateVolumeType)
+	r.GET("/v3/types/:id", svc.GetVolumeType)
+	r.PUT("/v3/types/:id", svc.UpdateVolumeType)
+	r.DELETE("/v3/types/:id", svc.DeleteVolumeType)
+	r.POST("/v3/types/:id/action", svc.VolumeTypeAction)
+	r.GET("/v3/types/:id/os-volume-type-access", svc.ListVolumeTypeAccess)
+	r.GET("/v3/types/:id/extra_specs", svc.ListVolumeTypeExtraSpecs)
+	r.POST("/v3/types/:id/extra_specs", svc.CreateVolumeTypeExtraSpecs)
+	r.GET("/v3/types/:id/extra_specs/:key", svc.GetVolumeTypeExtraSpecKey)
+	r.PUT("/v3/types/:id/extra_specs/:key", svc.UpdateVolumeTypeExtraSpecKey)
+	r.DELETE("/v3/types/:id/extra_specs/:key", svc.DeleteVolumeTypeExtraSpecKey)
 
 	// Volume groups without project_id (extracts from token)
 	r.GET("/v3/groups", svc.ListGroups)
@@ -111,6 +126,34 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 	// Availability zones without project_id (extracts from token)
 	r.GET("/v3/os-availability-zone", svc.ListAvailabilityZones)
+
+	// Volume/snapshot management without project_id (extracts from token)
+	// MUST be registered before v3/:project_id group to avoid route conflict
+	r.POST("/v3/os-volume-manage", svc.ManageVolume)
+	r.GET("/v3/manageable_volumes", svc.ListManageableVolumes)
+	r.POST("/v3/os-snapshot-manage", svc.ManageSnapshot)
+
+	// Volume metadata without project_id (extracts from token)
+	r.GET("/v3/volumes/:id/metadata", svc.GetVolumeMetadata)
+	r.POST("/v3/volumes/:id/metadata", svc.SetVolumeMetadata)
+	r.GET("/v3/volumes/:id/metadata/:key", svc.GetVolumeMetadataKey)
+	r.PUT("/v3/volumes/:id/metadata/:key", svc.UpdateVolumeMetadataKey)
+	r.DELETE("/v3/volumes/:id/metadata/:key", svc.DeleteVolumeMetadataKey)
+
+	// Snapshot metadata without project_id (extracts from token)
+	r.GET("/v3/snapshots/:id/metadata", svc.GetSnapshotMetadata)
+	r.POST("/v3/snapshots/:id/metadata", svc.SetSnapshotMetadata)
+	r.GET("/v3/snapshots/:id/metadata/:key", svc.GetSnapshotMetadataKey)
+	r.PUT("/v3/snapshots/:id/metadata/:key", svc.UpdateSnapshotMetadataKey)
+	r.DELETE("/v3/snapshots/:id/metadata/:key", svc.DeleteSnapshotMetadataKey)
+
+	// OS services list without project_id
+	r.GET("/v3/os-services", svc.ListServices)
+
+	// Quotas without project_id (extracts target project from URL :id)
+	r.GET("/v3/quota-sets/:id", svc.GetQuotaSet)
+	r.PUT("/v3/quota-sets/:id", svc.UpdateQuotaSet)
+	r.DELETE("/v3/quota-sets/:id", svc.DeleteQuotaSet)
 
 	v3 := r.Group("/v3/:project_id")
 	{
