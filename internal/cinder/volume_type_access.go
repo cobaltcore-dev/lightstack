@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// VolumeTypeAction handles POST /v3/:project_id/types/:id/action
+// VolumeTypeAction handles POST /v3/types/:id/action
 func (svc *Service) VolumeTypeAction(c *gin.Context) {
 	typeID := c.Param("id")
 
@@ -105,7 +105,7 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 	common.SendError(c, common.NewBadRequestError("unknown action"))
 }
 
-// ListVolumeTypeAccess handles GET /v3/:project_id/types/:id/os-volume-type-access
+// ListVolumeTypeAccess handles GET /v3/types/:id/os-volume-type-access
 func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 	typeID := c.Param("id")
 
