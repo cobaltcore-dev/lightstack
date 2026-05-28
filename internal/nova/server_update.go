@@ -102,7 +102,7 @@ func (svc *Service) UpdateServer(c *gin.Context) {
 		"name":      currentName,
 		"status":    currentStatus,
 		"tenant_id": projectID,
-		"user_id":   func() string {
+		"user_id": func() string {
 			if currentUserID != nil {
 				return *currentUserID
 			}

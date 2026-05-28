@@ -13,6 +13,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 )
+
 // UpdateQuotaRequest represents a quota update request
 type UpdateQuotaRequest struct {
 	QuotaSet map[string]int `json:"quota_set"`
@@ -49,19 +50,19 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 
 	// Default values if not in database
 	defaults := map[string]int{
-		"instances":             10,
-		"cores":                 20,
-		"ram":                   51200,
-		"volumes":               10,
-		"gigabytes":             1000,
-		"snapshots":             10,
-		"networks":              10,
-		"subnets":               10,
-		"ports":                 50,
-		"routers":               10,
-		"floatingip":            10,
-		"security_groups":       10,
-		"security_group_rules":  100,
+		"instances":            10,
+		"cores":                20,
+		"ram":                  51200,
+		"volumes":              10,
+		"gigabytes":            1000,
+		"snapshots":            10,
+		"networks":             10,
+		"subnets":              10,
+		"ports":                50,
+		"routers":              10,
+		"floatingip":           10,
+		"security_groups":      10,
+		"security_group_rules": 100,
 	}
 
 	// Load limits from database
@@ -187,20 +188,20 @@ func (svc *Service) GetQuotaSetDefaults(c *gin.Context) {
 	projectID := c.Param("id")
 
 	quotaSet := gin.H{
-		"id":                    projectID,
-		"instances":             10,
-		"cores":                 20,
-		"ram":                   51200,
-		"volumes":               10,
-		"gigabytes":             1000,
-		"snapshots":             10,
-		"networks":              10,
-		"subnets":               10,
-		"ports":                 50,
-		"routers":               10,
-		"floatingip":            10,
-		"security_groups":       10,
-		"security_group_rules":  100,
+		"id":                   projectID,
+		"instances":            10,
+		"cores":                20,
+		"ram":                  51200,
+		"volumes":              10,
+		"gigabytes":            1000,
+		"snapshots":            10,
+		"networks":             10,
+		"subnets":              10,
+		"ports":                50,
+		"routers":              10,
+		"floatingip":           10,
+		"security_groups":      10,
+		"security_group_rules": 100,
 	}
 
 	c.JSON(http.StatusOK, gin.H{"quota_set": quotaSet})

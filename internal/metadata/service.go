@@ -235,19 +235,19 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 
 		// Create link (interface)
 		links = append(links, gin.H{
-			"id":                  fmt.Sprintf("tap%d", linkID),
-			"type":                "bridge",
+			"id":                   fmt.Sprintf("tap%d", linkID),
+			"type":                 "bridge",
 			"ethernet_mac_address": mac,
-			"mtu":                 1500,
+			"mtu":                  1500,
 		})
 
 		// Create network config
 		netConfig := gin.H{
-			"id":       fmt.Sprintf("network%d", linkID),
-			"link":     fmt.Sprintf("tap%d", linkID),
-			"type":     "ipv4",
+			"id":         fmt.Sprintf("network%d", linkID),
+			"link":       fmt.Sprintf("tap%d", linkID),
+			"type":       "ipv4",
 			"ip_address": ip,
-			"netmask":  cidrToNetmask(cidr), // Convert /24 → "255.255.255.0"
+			"netmask":    cidrToNetmask(cidr), // Convert /24 → "255.255.255.0"
 		}
 
 		if gateway != "" {

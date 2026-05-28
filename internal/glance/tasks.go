@@ -14,7 +14,7 @@ import (
 // CreateTask handles POST /v2/tasks
 func (svc *Service) CreateTask(c *gin.Context) {
 	var req struct {
-		Type  string                 `json:"type" binding:"required"`
+		Type  string         `json:"type" binding:"required"`
 		Input map[string]any `json:"input"`
 	}
 
@@ -194,8 +194,8 @@ func (svc *Service) GetStoresInfo(c *gin.Context) {
 		{
 			"id": "local",
 			"properties": gin.H{
-				"chunk_size":    65536,
-				"store_type":    "file",
+				"chunk_size":               65536,
+				"store_type":               "file",
 				"filesystem_store_datadir": "/var/lib/o3k/images",
 			},
 		},

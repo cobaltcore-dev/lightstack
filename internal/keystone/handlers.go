@@ -134,7 +134,8 @@ func hasRole(c *gin.Context, role string) bool {
 }
 
 // GetVersion returns Keystone API version info
-func (svc *Service) GetVersion(c *gin.Context) {	c.JSON(http.StatusOK, gin.H{
+func (svc *Service) GetVersion(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
 		"version": gin.H{
 			"id":     "v3.14",
 			"status": "stable",

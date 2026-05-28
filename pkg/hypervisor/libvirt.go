@@ -36,11 +36,11 @@ type VMManager struct {
 
 // stubVM represents a simulated VM in stub mode
 type stubVM struct {
-	uuid      string
-	xml       string
-	state     VMState
+	uuid       string
+	xml        string
+	state      VMState
 	powerState int
-	createdAt time.Time
+	createdAt  time.Time
 }
 
 // NewVMManager creates a new VM manager

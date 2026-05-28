@@ -1,8 +1,8 @@
 package cinder
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"

@@ -12,15 +12,15 @@ import (
 
 // VMSpec defines VM specifications
 type VMSpec struct {
-	UUID        string
-	Name        string
-	VCPUs       int
-	MemoryMB    int
-	DiskGB      int
-	ImagePath   string   // Path to image (RBD or local)
-	Networks    []NetworkConfig
-	Volumes     []VolumeConfig
-	CloudInit   *CloudInitConfig
+	UUID      string
+	Name      string
+	VCPUs     int
+	MemoryMB  int
+	DiskGB    int
+	ImagePath string // Path to image (RBD or local)
+	Networks  []NetworkConfig
+	Volumes   []VolumeConfig
+	CloudInit *CloudInitConfig
 }
 
 // NetworkConfig defines network interface configuration
@@ -32,10 +32,10 @@ type NetworkConfig struct {
 
 // VolumeConfig defines volume attachment configuration
 type VolumeConfig struct {
-	VolumeID  string
-	RBDPool   string
-	RBDImage  string
-	Device    string // vda, vdb, etc.
+	VolumeID string
+	RBDPool  string
+	RBDImage string
+	Device   string // vda, vdb, etc.
 }
 
 // CloudInitConfig defines cloud-init configuration

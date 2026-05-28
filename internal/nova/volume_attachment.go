@@ -1,28 +1,28 @@
 package nova
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
 )
 
 // VolumeAttachment represents a volume attached to an instance
 type VolumeAttachment struct {
-	ID          string    `json:"id"`
-	VolumeID    string    `json:"volumeId"`
-	InstanceID  string    `json:"serverId"`
-	Device      string    `json:"device"`
-	AttachedAt  time.Time `json:"attachedAt"`
+	ID         string    `json:"id"`
+	VolumeID   string    `json:"volumeId"`
+	InstanceID string    `json:"serverId"`
+	Device     string    `json:"device"`
+	AttachedAt time.Time `json:"attachedAt"`
 }
 
 // AttachVolumeRequest represents a volume attachment request
@@ -159,10 +159,10 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"volumeAttachment": gin.H{
-			"id":        attachmentID,
-			"volumeId":  req.VolumeAttachment.VolumeID,
-			"serverId":  instanceID,
-			"device":    device,
+			"id":         attachmentID,
+			"volumeId":   req.VolumeAttachment.VolumeID,
+			"serverId":   instanceID,
+			"device":     device,
 			"attachedAt": now.Format(time.RFC3339),
 		},
 	})

@@ -1,9 +1,9 @@
 package cinder
 
 import (
-	"errors"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"time"
 
@@ -75,10 +75,10 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"transfer": gin.H{
-			"id":        transferID,
-			"volume_id": req.Transfer.VolumeID,
-			"name":      req.Transfer.Name,
-			"auth_key":  authKey,
+			"id":         transferID,
+			"volume_id":  req.Transfer.VolumeID,
+			"name":       req.Transfer.Name,
+			"auth_key":   authKey,
 			"created_at": now.Format(time.RFC3339),
 		},
 	})
