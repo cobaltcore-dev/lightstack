@@ -15,7 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// CreateVolumeTransfer handles POST /v3/:project_id/volume-transfers
+// CreateVolumeTransfer handles POST /v3/os-volume-transfer
 func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
@@ -84,7 +84,7 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 	})
 }
 
-// ListVolumeTransfers handles GET /v3/:project_id/volume-transfers
+// ListVolumeTransfers handles GET /v3/os-volume-transfer
 func (svc *Service) ListVolumeTransfers(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
@@ -131,7 +131,7 @@ func (svc *Service) ListVolumeTransfersNoProject(c *gin.Context) {
 	svc.ListVolumeTransfers(c)
 }
 
-// GetVolumeTransfer handles GET /v3/:project_id/volume-transfers/:id
+// GetVolumeTransfer handles GET /v3/os-volume-transfer/:id
 func (svc *Service) GetVolumeTransfer(c *gin.Context) {
 	transferID := c.Param("id")
 	projectID := c.GetString("project_id")
@@ -166,7 +166,7 @@ func (svc *Service) GetVolumeTransfer(c *gin.Context) {
 	})
 }
 
-// DeleteVolumeTransfer handles DELETE /v3/:project_id/volume-transfers/:id
+// DeleteVolumeTransfer handles DELETE /v3/os-volume-transfer/:id
 func (svc *Service) DeleteVolumeTransfer(c *gin.Context) {
 	transferID := c.Param("id")
 	projectID := c.GetString("project_id")
@@ -190,7 +190,7 @@ func (svc *Service) DeleteVolumeTransfer(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// AcceptVolumeTransfer handles POST /v3/:project_id/volume-transfers/:id/accept
+// AcceptVolumeTransfer handles POST /v3/os-volume-transfer/:id/accept
 func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 	transferID := c.Param("id")
 	projectID := c.GetString("project_id")
