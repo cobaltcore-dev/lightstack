@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,11 +49,8 @@ func TestNovaListServerMigrations_Contract(t *testing.T) {
 
 	client := setupNovaClient(t)
 
-	// Get first server
-	serverID := getTestServerID(t, client)
-	if serverID == "" {
-		t.Skip("No servers available for testing")
-	}
+	serverID, cleanup := getTestServerID(t, client)
+	defer cleanup()
 
 	url := client.ServiceURL("servers", serverID, "migrations")
 	req, err := http.NewRequest("GET", url, nil)
@@ -82,11 +80,8 @@ func TestNovaGetServerMigration_Contract(t *testing.T) {
 
 	client := setupNovaClient(t)
 
-	// Create a test migration record
-	serverID := getTestServerID(t, client)
-	if serverID == "" {
-		t.Skip("No servers available for testing")
-	}
+	serverID, cleanup := getTestServerID(t, client)
+	defer cleanup()
 
 	migrationID := createTestMigration(t, serverID)
 
@@ -122,10 +117,8 @@ func TestNovaDeleteServerMigration_Contract(t *testing.T) {
 
 	client := setupNovaClient(t)
 
-	serverID := getTestServerID(t, client)
-	if serverID == "" {
-		t.Skip("No servers available for testing")
-	}
+	serverID, cleanup := getTestServerID(t, client)
+	defer cleanup()
 
 	migrationID := createTestMigration(t, serverID)
 
@@ -149,10 +142,8 @@ func TestNovaForceCompleteMigration_Contract(t *testing.T) {
 
 	client := setupNovaClient(t)
 
-	serverID := getTestServerID(t, client)
-	if serverID == "" {
-		t.Skip("No servers available for testing")
-	}
+	serverID, cleanup := getTestServerID(t, client)
+	defer cleanup()
 
 	migrationID := createTestMigration(t, serverID)
 
@@ -179,26 +170,26 @@ func TestNovaForceCompleteMigration_Contract(t *testing.T) {
 	cleanupTestMigration(t, migrationID)
 }
 
-// Helper to get test server ID
-func getTestServerID(t *testing.T, client *gophercloud.ServiceClient) string {
-	url := client.ServiceURL("servers", "detail")
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("X-Auth-Token", client.TokenID)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
+// getTestServerID creates a throwaway test server in the project and returns
+// its ID alongside a cleanup function. Callers should `defer cleanup()`.
+//
+// Previously this helper just listed existing servers and returned the first,
+// or "" — which made every migration test skip against a fresh project and
+// coupled them to whatever state earlier tests left behind. Always creating
+// keeps the tests deterministic.
+func getTestServerID(t *testing.T, client *gophercloud.ServiceClient) (string, func()) {
+	t.Helper()
+	server, err := servers.Create(client, servers.CreateOpts{
+		Name:      "migration-test-fixture",
+		FlavorRef: "00000000-0000-0000-0000-000000000010",
+		ImageRef:  "00000000-0000-0000-0000-000000000001",
+	}).Extract()
+	require.NoError(t, err, "Failed to create test server fixture")
 
-	respBody, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Servers []map[string]interface{} `json:"servers"`
+	cleanup := func() {
+		servers.Delete(client, server.ID)
 	}
-	json.Unmarshal(respBody, &result)
-
-	if len(result.Servers) > 0 {
-		return result.Servers[0]["id"].(string)
-	}
-
-	return ""
+	return server.ID, cleanup
 }
 
 // Helper to create test migration in database
