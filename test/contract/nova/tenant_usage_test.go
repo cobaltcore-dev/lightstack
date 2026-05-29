@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 )
 
 // TestNovaListTenantUsage_Contract tests GET /v2.1/:project_id/os-simple-tenant-usage
@@ -51,7 +52,7 @@ func TestNovaGetTenantUsage_Contract(t *testing.T) {
 	client := setupNovaClient(t)
 
 	// Get project ID from token
-	projectID := getProjectID(t, client)
+	projectID := contract.GetProjectIDFromToken(t, client)
 
 	start := time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
 	end := time.Now().Format(time.RFC3339)
@@ -77,35 +78,4 @@ func TestNovaGetTenantUsage_Contract(t *testing.T) {
 
 	assert.NotEmpty(t, result.TenantUsage)
 	assert.Equal(t, projectID, result.TenantUsage["tenant_id"])
-}
-
-// Helper to get project ID from client
-func getProjectID(t *testing.T, client *gophercloud.ServiceClient) string {
-	// Get default project ID from database
-	url := client.ServiceURL("os-simple-tenant-usage")
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("X-Auth-Token", client.TokenID)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Skip("Could not fetch tenant usages")
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	var result struct {
-		TenantUsages []map[string]interface{} `json:"tenant_usages"`
-	}
-	json.Unmarshal(respBody, &result)
-
-	if len(result.TenantUsages) == 0 {
-		t.Skip("No tenant usages available")
-	}
-
-	projectID, ok := result.TenantUsages[0]["tenant_id"].(string)
-	if !ok || projectID == "" {
-		t.Skip("Could not extract project ID")
-	}
-
-	return projectID
 }

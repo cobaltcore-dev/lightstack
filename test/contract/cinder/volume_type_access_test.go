@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 )
 
 // TestCinderVolumeTypeAccessCRUD tests volume type access operations
@@ -54,7 +55,7 @@ func TestCinderVolumeTypeAccessCRUD(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// TEST 2: Add project access
-	projectID := getProjectIDFromToken(t, client)
+	projectID := contract.GetProjectIDFromToken(t, client)
 	addAccess := map[string]interface{}{
 		"addProjectAccess": map[string]interface{}{
 			"project": projectID,
@@ -134,27 +135,4 @@ func TestCinderVolumeTypeAccessCRUD(t *testing.T) {
 	req, _ = http.NewRequest("DELETE", url, nil)
 	req.Header.Set("X-Auth-Token", client.TokenID)
 	http.DefaultClient.Do(req)
-}
-
-// Helper to extract project ID from token context
-func getProjectIDFromToken(t *testing.T, client *gophercloud.ServiceClient) string {
-	// Get projects from keystone
-	req, _ := http.NewRequest("GET", "http://localhost:35357/v3/projects", nil)
-	req.Header.Set("X-Auth-Token", client.TokenID)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Projects []map[string]interface{} `json:"projects"`
-	}
-	json.Unmarshal(respBody, &result)
-
-	if len(result.Projects) > 0 {
-		return result.Projects[0]["id"].(string)
-	}
-
-	t.Skip("No projects available")
-	return ""
 }
