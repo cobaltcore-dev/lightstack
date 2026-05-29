@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/google/uuid"
 	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
@@ -18,7 +19,7 @@ import (
 func TestNeutronListAgents_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	url := client.ServiceURL("agents")
 	req, err := http.NewRequest("GET", url, nil)
@@ -46,7 +47,7 @@ func TestNeutronListAgents_Contract(t *testing.T) {
 func TestNeutronGetAgent_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create test agent
 	agentID := createTestAgent(t, "L3 agent", "neutron-l3-agent")
@@ -80,7 +81,7 @@ func TestNeutronGetAgent_Contract(t *testing.T) {
 func TestNeutronListL3AgentsOnRouter_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create test router
 	routerID := createTestRouter(t, client, "test-router-l3")
@@ -114,7 +115,7 @@ func TestNeutronListL3AgentsOnRouter_Contract(t *testing.T) {
 func TestNeutronAddL3AgentToRouter_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create test router and agent
 	routerID := createTestRouter(t, client, "test-router-add-agent")

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,7 +17,7 @@ import (
 func TestNeutronCreateRBACPolicy_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create a network first
 	network, err := networks.Create(client, networks.CreateOpts{
@@ -74,7 +75,7 @@ func TestNeutronCreateRBACPolicy_Contract(t *testing.T) {
 func TestNeutronListRBACPolicies_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create a network and RBAC policy
 	network, err := networks.Create(client, networks.CreateOpts{
@@ -127,7 +128,7 @@ func TestNeutronListRBACPolicies_Contract(t *testing.T) {
 func TestNeutronGetRBACPolicy_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create network and RBAC policy
 	network, err := networks.Create(client, networks.CreateOpts{
@@ -193,7 +194,7 @@ func TestNeutronGetRBACPolicy_Contract(t *testing.T) {
 func TestNeutronUpdateRBACPolicy_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create network and RBAC policy
 	network, err := networks.Create(client, networks.CreateOpts{
@@ -265,7 +266,7 @@ func TestNeutronUpdateRBACPolicy_Contract(t *testing.T) {
 func TestNeutronDeleteRBACPolicy_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create network and RBAC policy
 	network, err := networks.Create(client, networks.CreateOpts{

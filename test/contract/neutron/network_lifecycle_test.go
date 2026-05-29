@@ -3,6 +3,7 @@ package neutron_test
 import (
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
@@ -16,7 +17,7 @@ import (
 func TestNeutronNetworkCreate_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create network
 	createOpts := networks.CreateOpts{
@@ -49,7 +50,7 @@ func TestNeutronNetworkCreate_Contract(t *testing.T) {
 func TestNeutronSubnetCreate_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create network first
 	network, err := networks.Create(client, networks.CreateOpts{
@@ -94,7 +95,7 @@ func TestNeutronSubnetCreate_Contract(t *testing.T) {
 func TestNeutronPortCreate_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create network
 	network, err := networks.Create(client, networks.CreateOpts{
@@ -136,7 +137,7 @@ func TestNeutronPortCreate_Contract(t *testing.T) {
 func TestNeutronFloatingIPCreate_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create external network
 	extNetwork, err := networks.Create(client, networks.CreateOpts{
@@ -178,7 +179,7 @@ func TestNeutronFloatingIPCreate_Contract(t *testing.T) {
 func TestNeutronNetworkLifecycle_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// 1. Create network
 	network, err := networks.Create(client, networks.CreateOpts{

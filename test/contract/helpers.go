@@ -9,6 +9,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func SetupNeutronClient(t *testing.T) *gophercloud.ServiceClient {
+	t.Helper()
+
+	authURL := getEnvOrDefault("OS_AUTH_URL", "http://localhost:35357/v3")
+	username := getEnvOrDefault("OS_USERNAME", "admin")
+	password := getEnvOrDefault("OS_PASSWORD", "secret")
+	projectName := getEnvOrDefault("OS_PROJECT_NAME", "default")
+	domainName := getEnvOrDefault("OS_USER_DOMAIN_NAME", "Default")
+
+	opts := gophercloud.AuthOptions{
+		IdentityEndpoint: authURL,
+		Username:         username,
+		Password:         password,
+		TenantName:       projectName,
+		DomainName:       domainName,
+	}
+
+	provider, err := openstack.AuthenticatedClient(opts)
+	require.NoError(t, err, "Failed to create authenticated client")
+
+	client, err := openstack.NewNetworkV2(provider, gophercloud.EndpointOpts{})
+	require.NoError(t, err, "Failed to create Neutron client")
+
+	return client
+}
+
 // SetupOpenStackClient creates an authenticated OpenStack client for contract testing.
 // It uses environment variables (OS_AUTH_URL, OS_USERNAME, etc.) to connect to O3K.
 // This function follows the TDD pattern from Constitution Article III.

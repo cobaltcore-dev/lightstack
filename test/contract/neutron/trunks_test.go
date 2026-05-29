@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +26,7 @@ func createDBPort(t *testing.T, name string) string {
 // TestTrunkBasicCRUD tests trunk CRUD operations
 func TestTrunkBasicCRUD(t *testing.T) {
 	skipIfO3KNotRunning(t)
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	portID := createDBPort(t, "test-trunk-port")
 
@@ -99,7 +100,7 @@ func TestTrunkBasicCRUD(t *testing.T) {
 // TestTrunkSubports tests adding subports
 func TestTrunkSubports(t *testing.T) {
 	skipIfO3KNotRunning(t)
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	parentPort := createDBPort(t, "trunk-parent")
 	subPort := createDBPort(t, "trunk-sub")
