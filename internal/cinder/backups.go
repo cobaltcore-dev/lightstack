@@ -253,8 +253,10 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 		return
 	}
 
-	// If volume_id specified, restore to existing volume
-	restoredVolumeID := originalVolumeID
+	// If volume_id specified, restore to existing volume; otherwise
+	// create a new one. Both branches assign restoredVolumeID before
+	// the response references it below.
+	var restoredVolumeID string
 	if requestedVolumeID != nil {
 		restoredVolumeID = *requestedVolumeID
 

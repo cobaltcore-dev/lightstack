@@ -269,8 +269,10 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 	`, volumeID, req.Volume.Name, projectID, userID, req.Volume.Size, "creating", false, svc.cephPool, "volume-"+volumeID, now, now)
 
 	if err != nil {
-		// Rollback: delete from Ceph
-		svc.cephClient.DeleteVolume(c.Request.Context(), volumeID)
+		// Rollback: delete from Ceph (best-effort; the DB error is the user-facing one)
+		if cephErr := svc.cephClient.DeleteVolume(c.Request.Context(), volumeID); cephErr != nil {
+			log.Warn().Err(cephErr).Str("volume_id", volumeID).Msg("rollback: failed to delete volume from Ceph after DB insert failure")
+		}
 		log.Error().Err(err).Str("operation", "create_volume_db").Msg("failed to insert volume into database")
 		common.SendError(c, common.NewInternalServerError("failed to create volume"))
 		return
@@ -287,9 +289,11 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 		}
 		ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 		defer cancel()
-		database.DB.Exec(ctx,
+		if _, err := database.DB.Exec(ctx,
 			"UPDATE volumes SET status = $1, updated_at = $2 WHERE id = $3",
-			"available", time.Now(), volumeID)
+			"available", time.Now(), volumeID); err != nil {
+			log.Error().Err(err).Str("volume_id", volumeID).Msg("failed to update volume status to available")
+		}
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -1047,7 +1051,10 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 	`, snapshotID, req.Snapshot.Name, volumeID, projectID, size, "creating", now)
 
 	if err != nil {
-		svc.cephClient.DeleteSnapshot(c.Request.Context(), volumeID, snapshotID)
+		// Rollback: delete from Ceph (best-effort; the DB error is the user-facing one)
+		if cephErr := svc.cephClient.DeleteSnapshot(c.Request.Context(), volumeID, snapshotID); cephErr != nil {
+			log.Warn().Err(cephErr).Str("snapshot_id", snapshotID).Str("volume_id", volumeID).Msg("rollback: failed to delete snapshot from Ceph after DB insert failure")
+		}
 		log.Error().Err(err).Str("operation", "create_snapshot_db").Msg("failed to insert snapshot into database")
 		common.SendError(c, common.NewInternalServerError("failed to create snapshot"))
 		return
@@ -1064,9 +1071,11 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 		}
 		ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 		defer cancel()
-		database.DB.Exec(ctx,
+		if _, err := database.DB.Exec(ctx,
 			"UPDATE snapshots SET status = $1 WHERE id = $2",
-			"available", snapshotID)
+			"available", snapshotID); err != nil {
+			log.Error().Err(err).Str("snapshot_id", snapshotID).Msg("failed to update snapshot status to available")
+		}
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -1920,18 +1929,23 @@ func (svc *Service) DeleteSnapshotMetadataKey(c *gin.Context) {
 func (svc *Service) GetLimits(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	// Query current usage from database
+	// Query current usage from database. Scan failures degrade to zero usage
+	// (the limit response still ships) and are logged for diagnosis.
 	var volumesUsed, snapshotsUsed, gigabytesUsed int
 
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
-	).Scan(&volumesUsed, &gigabytesUsed)
+	).Scan(&volumesUsed, &gigabytesUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query volume usage for limits")
+	}
 
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM snapshots WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
-	).Scan(&snapshotsUsed)
+	).Scan(&snapshotsUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query snapshot usage for limits")
+	}
 
 	// Return limits response
 	c.JSON(200, gin.H{
@@ -1958,18 +1972,23 @@ func (svc *Service) GetLimitsNoProject(c *gin.Context) {
 	// Extract project_id from JWT token (set by auth middleware)
 	projectID := c.GetString("project_id")
 
-	// Query current usage from database
+	// Query current usage from database. Scan failures degrade to zero usage
+	// (the limit response still ships) and are logged for diagnosis.
 	var volumesUsed, snapshotsUsed, gigabytesUsed int
 
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
-	).Scan(&volumesUsed, &gigabytesUsed)
+	).Scan(&volumesUsed, &gigabytesUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query volume usage for limits")
+	}
 
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM snapshots WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
-	).Scan(&snapshotsUsed)
+	).Scan(&snapshotsUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query snapshot usage for limits")
+	}
 
 	// Return limits response
 	c.JSON(200, gin.H{

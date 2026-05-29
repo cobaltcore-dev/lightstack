@@ -51,7 +51,9 @@ func (svc *Service) ListAggregates(c *gin.Context) {
 
 		var metadataMap map[string]any
 		if len(metadata) > 0 {
-			json.Unmarshal(metadata, &metadataMap)
+			if err := json.Unmarshal(metadata, &metadataMap); err != nil {
+				log.Warn().Err(err).Str("aggregate_id", id).Msg("failed to unmarshal aggregate metadata; treating as empty")
+			}
 		}
 		if metadataMap == nil {
 			metadataMap = make(map[string]any)

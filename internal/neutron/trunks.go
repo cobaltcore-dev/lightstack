@@ -414,7 +414,7 @@ func (svc *Service) AddSubports(c *gin.Context) {
 	}
 
 	// Update trunk updated_at
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, _ = database.DB.Exec(c.Request.Context(),
 		"UPDATE trunks SET updated_at = $1 WHERE id = $2",
 		time.Now(), trunkID,
 	)
@@ -522,7 +522,7 @@ func (svc *Service) RemoveSubports(c *gin.Context) {
 	}
 
 	// Update trunk updated_at
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, _ = database.DB.Exec(c.Request.Context(),
 		"UPDATE trunks SET updated_at = $1 WHERE id = $2",
 		time.Now(), trunkID,
 	)

@@ -193,7 +193,7 @@ func main() {
 	if glanceStorageMode == "" {
 		glanceStorageMode = "stub"
 	}
-	glanceService := glance.NewService(
+	glanceService, err := glance.NewService(
 		glanceStorageMode,
 		cfg.Glance.CephPool,
 		cfg.Glance.CephConf,
@@ -202,6 +202,9 @@ func main() {
 		cfg.Glance.S3Endpoint,
 		cacheInstance,
 	)
+	if err != nil {
+		log.Fatalf("Failed to initialize Glance: %v", err)
+	}
 	log.Printf("Glance initialized in %s mode", glanceStorageMode)
 
 	// Initialize metadata service

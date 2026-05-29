@@ -31,8 +31,17 @@ type Service struct {
 	cache       *cache.Cache
 }
 
-// NewService creates a new Glance service
-func NewService(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string, cacheInstance *cache.Cache) *Service {
+// NewService creates a new Glance service.
+//
+// Returns an error if the configured storage backend fails to initialize
+// in a way that cannot be served by a hybrid fallback (e.g. mode == "s3"
+// with no AWS credentials). See storage.NewImageStore for the per-mode
+// failure policy.
+func NewService(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string, cacheInstance *cache.Cache) (*Service, error) {
+	imageStore, err := storage.NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize Glance image store: %w", err)
+	}
 	return &Service{
 		mode:        mode,
 		storageMode: mode, // storageMode same as mode for backward compatibility
@@ -41,9 +50,9 @@ func NewService(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string,
 		s3Bucket:    s3Bucket,
 		s3Region:    s3Region,
 		s3Endpoint:  s3Endpoint,
-		imageStore:  storage.NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint),
+		imageStore:  imageStore,
 		cache:       cacheInstance,
-	}
+	}, nil
 }
 
 // RegisterRoutes registers Glance routes (excluding version discovery which is handled separately)
@@ -418,7 +427,7 @@ func (svc *Service) GetImage(c *gin.Context) {
 
 	// Store in cache (1h TTL per config)
 	if svc.cache != nil {
-		svc.cache.Set(ctx, "image:"+id, image, 1*time.Hour)
+		svc.cache.TrySet(ctx, "image:"+id, image, 1*time.Hour)
 	}
 
 	c.JSON(http.StatusOK, image)
@@ -462,8 +471,8 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 
 	// Invalidate cache
 	if svc.cache != nil {
-		svc.cache.Delete(ctx, "image:"+imageID)
-		svc.cache.DeletePattern(ctx, "images:*")
+		svc.cache.TryDelete(ctx, "image:"+imageID)
+		svc.cache.TryDeletePattern(ctx, "images:*")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -512,7 +521,9 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 			}
 			// field is now a validated column name from the allowlist
 			query := fmt.Sprintf("UPDATE images SET %s = $1, updated_at = $2 WHERE id = $3 AND project_id = $4", field)
-			database.DB.Exec(c.Request.Context(), query, value, time.Now(), imageID, projectID)
+			if _, err := database.DB.Exec(c.Request.Context(), query, value, time.Now(), imageID, projectID); err != nil {
+				log.Warn().Err(err).Str("image_id", imageID).Str("field", field).Msg("failed to apply image patch op; continuing")
+			}
 		}
 	}
 
@@ -543,25 +554,33 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	}
 
 	// Update status to saving
-	database.DB.Exec(c.Request.Context(),
+	if _, err := database.DB.Exec(c.Request.Context(),
 		"UPDATE images SET status = $1, updated_at = $2 WHERE id = $3",
-		"saving", time.Now(), imageID)
+		"saving", time.Now(), imageID); err != nil {
+		log.Warn().Err(err).Str("image_id", imageID).Msg("failed to mark image as saving")
+	}
 
 	// Upload to storage
 	size, err := svc.imageStore.UploadImage(c.Request.Context(), imageID, c.Request.Body)
 	if err != nil {
-		database.DB.Exec(c.Request.Context(),
+		// Revert status to queued (best-effort; the upload error is the
+		// user-facing one)
+		if _, revertErr := database.DB.Exec(c.Request.Context(),
 			"UPDATE images SET status = $1 WHERE id = $2",
-			"queued", imageID)
+			"queued", imageID); revertErr != nil {
+			log.Warn().Err(revertErr).Str("image_id", imageID).Msg("rollback: failed to revert image status to queued after upload failure")
+		}
 		log.Error().Err(err).Str("operation", "upload_image").Str("image_id", imageID).Msg("failed to upload image to storage")
 		common.SendError(c, common.NewServiceUnavailableError("failed to upload image"))
 		return
 	}
 
 	// Update status to active and set size
-	database.DB.Exec(c.Request.Context(),
+	if _, err := database.DB.Exec(c.Request.Context(),
 		"UPDATE images SET status = $1, size_bytes = $2, updated_at = $3 WHERE id = $4",
-		"active", size, time.Now(), imageID)
+		"active", size, time.Now(), imageID); err != nil {
+		log.Error().Err(err).Str("image_id", imageID).Msg("failed to mark image as active after successful upload")
+	}
 
 	c.Status(http.StatusNoContent)
 }

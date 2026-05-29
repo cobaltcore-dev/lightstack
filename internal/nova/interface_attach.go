@@ -364,7 +364,9 @@ func allocateNextIP(ctx context.Context, networkID, cidr string) (string, error)
 
 	// Increment last octet
 	var a, b, c, d int
-	fmt.Sscanf(lastIP, "%d.%d.%d.%d", &a, &b, &c, &d)
+	if _, err := fmt.Sscanf(lastIP, "%d.%d.%d.%d", &a, &b, &c, &d); err != nil {
+		return "", fmt.Errorf("malformed IP %q in subnet allocation table: %w", lastIP, err)
+	}
 	d++
 	if d > 254 {
 		return "", fmt.Errorf("subnet exhausted")

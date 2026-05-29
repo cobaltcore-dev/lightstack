@@ -104,10 +104,12 @@ func (svc *Service) CreateMetadefNamespace(c *gin.Context) {
 				rtName, _ := assocMap["name"].(string)
 				rtPrefix, _ := assocMap["prefix"].(string)
 
-				database.DB.Exec(c.Request.Context(), `
+				if _, err := database.DB.Exec(c.Request.Context(), `
 					INSERT INTO metadef_resource_types (namespace, name, prefix, created_at)
 					VALUES ($1, $2, $3, $4)
-				`, namespace, rtName, rtPrefix, time.Now())
+				`, namespace, rtName, rtPrefix, time.Now()); err != nil {
+					log.Warn().Err(err).Str("namespace", namespace).Str("resource_type", rtName).Msg("failed to insert metadef resource-type association")
+				}
 			}
 		}
 	}
@@ -182,7 +184,10 @@ func (svc *Service) GetMetadefNamespace(c *gin.Context) {
 		for rows.Next() {
 			var name string
 			var prefix *string
-			rows.Scan(&name, &prefix)
+			if err := rows.Scan(&name, &prefix); err != nil {
+				log.Warn().Err(err).Msg("failed to scan metadef resource-type row; skipping")
+				continue
+			}
 
 			rt := map[string]any{
 				"name": name,
