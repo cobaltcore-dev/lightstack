@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +16,7 @@ import (
 func TestNeutronListQoSPolicies_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	url := client.ServiceURL("qos", "policies")
 	req, err := http.NewRequest("GET", url, nil)
@@ -40,7 +41,7 @@ func TestNeutronListQoSPolicies_Contract(t *testing.T) {
 func TestNeutronCreateQoSPolicy_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	url := client.ServiceURL("qos", "policies")
 	body := strings.NewReader(`{"policy": {"name": "test-qos-policy", "description": "Test QoS policy"}}`)
@@ -77,7 +78,7 @@ func TestNeutronCreateQoSPolicy_Contract(t *testing.T) {
 func TestNeutronGetQoSPolicy_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create policy
 	createURL := client.ServiceURL("qos", "policies")
@@ -118,7 +119,7 @@ func TestNeutronGetQoSPolicy_Contract(t *testing.T) {
 func TestNeutronUpdateQoSPolicy_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create policy
 	createURL := client.ServiceURL("qos", "policies")
@@ -161,7 +162,7 @@ func TestNeutronUpdateQoSPolicy_Contract(t *testing.T) {
 func TestNeutronDeleteQoSPolicy_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create policy
 	createURL := client.ServiceURL("qos", "policies")
@@ -197,7 +198,7 @@ func TestNeutronDeleteQoSPolicy_Contract(t *testing.T) {
 func TestNeutronListBandwidthLimitRules_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create policy
 	createURL := client.ServiceURL("qos", "policies")
@@ -239,7 +240,7 @@ func TestNeutronListBandwidthLimitRules_Contract(t *testing.T) {
 func TestNeutronCreateBandwidthLimitRule_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create policy
 	createURL := client.ServiceURL("qos", "policies")
@@ -283,7 +284,7 @@ func TestNeutronCreateBandwidthLimitRule_Contract(t *testing.T) {
 func TestNeutronGetBandwidthLimitRule_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create policy
 	createURL := client.ServiceURL("qos", "policies")
@@ -341,7 +342,7 @@ func TestNeutronGetBandwidthLimitRule_Contract(t *testing.T) {
 func TestNeutronUpdateBandwidthLimitRule_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create policy
 	createURL := client.ServiceURL("qos", "policies")
@@ -401,7 +402,7 @@ func TestNeutronUpdateBandwidthLimitRule_Contract(t *testing.T) {
 func TestNeutronDeleteBandwidthLimitRule_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create policy
 	createURL := client.ServiceURL("qos", "policies")

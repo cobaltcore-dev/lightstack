@@ -78,7 +78,12 @@ func TestNovaServerMigrate_Contract(t *testing.T) {
 	assert.Contains(t, []int{202, 409}, resp.StatusCode, "Migrate should not return 404")
 }
 
-// TestNovaServerLiveMigrate_Contract tests POST /v2.1/servers/:id/action (os-migrateLive)
+// TestNovaServerLiveMigrate_Contract tests POST /v2.1/servers/:id/action (os-migrateLive).
+//
+// FLAKY: this test passes most runs but fails intermittently against the same
+// code and the same stub-mode stack — suspected timing/state race in the
+// live-migrate action path. Re-run on failure before treating it as a real
+// regression.
 func TestNovaServerLiveMigrate_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 

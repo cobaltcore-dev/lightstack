@@ -10,6 +10,7 @@ import (
 	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,7 +18,7 @@ import (
 func TestNeutronListAddressScopes_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	url := client.ServiceURL("address-scopes")
 	req, err := http.NewRequest("GET", url, nil)
@@ -45,7 +46,7 @@ func TestNeutronListAddressScopes_Contract(t *testing.T) {
 func TestNeutronCreateAddressScope_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	payload := map[string]interface{}{
 		"address_scope": map[string]interface{}{
@@ -88,7 +89,7 @@ func TestNeutronCreateAddressScope_Contract(t *testing.T) {
 func TestNeutronGetAddressScope_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create test address scope
 	scopeID := createTestAddressScope(t, client)
@@ -122,7 +123,7 @@ func TestNeutronGetAddressScope_Contract(t *testing.T) {
 func TestNeutronUpdateAddressScope_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create test address scope
 	scopeID := createTestAddressScope(t, client)
@@ -164,7 +165,7 @@ func TestNeutronUpdateAddressScope_Contract(t *testing.T) {
 func TestNeutronDeleteAddressScope_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create test address scope
 	scopeID := createTestAddressScope(t, client)

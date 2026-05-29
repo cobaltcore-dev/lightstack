@@ -769,14 +769,16 @@ func (svc *Service) GetServer(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var id, name, status string
-	var userID, flavorID, imageID any
+	var userID, flavorID, imageID sql.NullString
 	var powerState int
 	var createdAt, updatedAt time.Time
 
 	// Try to find by ID first, then by name
 	// Use separate conditions to avoid type mismatch when id is UUID and param might be a name
 	err := database.DB.QueryRow(c.Request.Context(), `
-		SELECT id, name, status, power_state, project_id, user_id, flavor_id, image_id, created_at, updated_at
+		SELECT id, name, status, power_state, project_id,
+		       user_id::text, flavor_id::text, image_id::text,
+		       created_at, updated_at
 		FROM instances
 		WHERE project_id = $2 AND (
 			(id::text = $1) OR (name = $1)
@@ -808,14 +810,14 @@ func (svc *Service) GetServer(c *gin.Context) {
 		"OS-EXT-STS:power_state": powerState,
 	}
 
-	if userID != nil {
-		response["user_id"] = userID
+	if userID.Valid {
+		response["user_id"] = userID.String
 	}
-	if flavorID != nil {
-		response["flavor"] = gin.H{"id": flavorID}
+	if flavorID.Valid {
+		response["flavor"] = gin.H{"id": flavorID.String}
 	}
-	if imageID != nil {
-		response["image"] = gin.H{"id": imageID}
+	if imageID.Valid {
+		response["image"] = gin.H{"id": imageID.String}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"server": response})

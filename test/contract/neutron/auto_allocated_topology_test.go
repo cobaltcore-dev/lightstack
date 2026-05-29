@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +15,7 @@ import (
 func TestNeutronGetAutoAllocatedTopology_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Get auto-allocated topology (returns existing or dry-run info)
 	url := client.ServiceURL("auto-allocated-topology", "default")
@@ -45,7 +46,7 @@ func TestNeutronGetAutoAllocatedTopology_Contract(t *testing.T) {
 func TestNeutronCreateAutoAllocatedTopology_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create auto-allocated topology
 	url := client.ServiceURL("auto-allocated-topology", "default")
@@ -76,7 +77,7 @@ func TestNeutronCreateAutoAllocatedTopology_Contract(t *testing.T) {
 func TestNeutronDeleteAutoAllocatedTopology_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create topology first
 	createURL := client.ServiceURL("auto-allocated-topology", "default")

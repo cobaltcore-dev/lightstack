@@ -3,6 +3,7 @@ package neutron_test
 import (
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/quotas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,7 +12,7 @@ import (
 func TestNeutronGetQuota_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Get quota for current project
 	quota, err := quotas.Get(client, client.ProviderClient.TokenID).Extract()

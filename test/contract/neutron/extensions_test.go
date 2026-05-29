@@ -4,45 +4,12 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gophercloud/gophercloud"
-	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 )
-
-func setupNeutronClient(t *testing.T) *gophercloud.ServiceClient {
-	t.Helper()
-
-	authURL := getEnvOrDefault("OS_AUTH_URL", "http://localhost:35357/v3")
-	username := getEnvOrDefault("OS_USERNAME", "admin")
-	password := getEnvOrDefault("OS_PASSWORD", "secret")
-	projectName := getEnvOrDefault("OS_PROJECT_NAME", "default")
-	domainName := getEnvOrDefault("OS_USER_DOMAIN_NAME", "Default")
-
-	opts := gophercloud.AuthOptions{
-		IdentityEndpoint: authURL,
-		Username:         username,
-		Password:         password,
-		TenantName:       projectName,
-		DomainName:       domainName,
-	}
-
-	provider, err := openstack.AuthenticatedClient(opts)
-	require.NoError(t, err, "Failed to create authenticated client")
-
-	client, err := openstack.NewNetworkV2(provider, gophercloud.EndpointOpts{})
-	require.NoError(t, err, "Failed to create Neutron client")
-
-	return client
-}
-
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
 
 func skipIfO3KNotRunning(t *testing.T) {
 	t.Helper()
@@ -54,7 +21,7 @@ func skipIfO3KNotRunning(t *testing.T) {
 func TestNeutronListExtensions_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// List API extensions
 	allPages, err := extensions.List(client).AllPages()
