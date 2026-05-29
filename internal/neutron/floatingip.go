@@ -238,12 +238,17 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 		}
 		fixedIP = &fixedIPAddr
 
-		// Get router ID from port's network
+		// Get router ID from port's network. A scan failure leaves
+		// networkID empty, which causes the subsequent router lookup to
+		// miss — the API then reports no available router, which is the
+		// right answer when the port can't be resolved.
 		var networkID string
-		database.DB.QueryRow(c.Request.Context(),
+		if err := database.DB.QueryRow(c.Request.Context(),
 			"SELECT network_id FROM ports WHERE id = $1",
 			req.FloatingIP.PortID,
-		).Scan(&networkID)
+		).Scan(&networkID); err != nil {
+			log.Warn().Err(err).Str("port_id", req.FloatingIP.PortID).Msg("failed to resolve port network for floating IP association")
+		}
 
 		// Find router with external gateway and interface to this network
 		var rID string
@@ -413,10 +418,15 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 			// port_id key is present (could be null or a string)
 			shouldDisassociate := portIDValue == nil
 
-			// Remove old NAT rules if there was a previous association
+			// Remove old NAT rules if there was a previous association.
+			// Best-effort: the new association/disassociation still
+			// proceeds even if cleanup fails — leftover NAT rules will be
+			// overwritten or pruned, not duplicated.
 			if currentPortID.Valid && currentFixedIP.Valid && currentRouterID.Valid {
 				externalInterface := "qg-ext-" + currentRouterID.String[:7]
-				svc.routerManager.RemoveFloatingIP(currentRouterID.String, currentFloatingIP.String, currentFixedIP.String, externalInterface)
+				if err := svc.routerManager.RemoveFloatingIP(currentRouterID.String, currentFloatingIP.String, currentFixedIP.String, externalInterface); err != nil {
+					log.Warn().Err(err).Str("router_id", currentRouterID.String).Str("floating_ip", currentFloatingIP.String).Msg("failed to remove previous floating IP NAT rules")
+				}
 			}
 
 			if shouldDisassociate {
@@ -443,12 +453,18 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 					common.SendError(c, common.NewBadRequestError("port_id must be a string or null"))
 					return
 				}
-				// Associate with new port
+				// Associate with new port. A scan failure leaves
+				// networkID empty, which causes the subsequent router
+				// lookup to miss — the API then reports no available
+				// router, which is the right answer when the port can't
+				// be resolved.
 				var networkID string
-				database.DB.QueryRow(c.Request.Context(),
+				if err := database.DB.QueryRow(c.Request.Context(),
 					"SELECT network_id FROM ports WHERE id = $1",
 					newPortID,
-				).Scan(&networkID)
+				).Scan(&networkID); err != nil {
+					log.Warn().Err(err).Str("port_id", newPortID).Msg("failed to resolve port network during floating IP reassociation")
+				}
 
 				// Find router
 				var routerID string

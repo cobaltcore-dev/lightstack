@@ -105,12 +105,17 @@ func (svc *Service) CreateAutoAllocatedTopology(c *gin.Context) {
 		return
 	}
 
-	// Create namespace and bridge if in real mode
+	// Create namespace and bridge if in real mode. Bridge creation
+	// failures are logged but not surfaced — the DB rows are already
+	// committed and a missing bridge will be retried on the next port
+	// plug.
 	if svc.mode != "stub" {
 		if err := svc.nsManager.CreateNamespace(projectID); err == nil {
 			bridgeName := "br-" + networkID[:8]
 			nsName := svc.nsManager.GetNamespaceName(projectID)
-			svc.brManager.CreateBridge(bridgeName, true, nsName)
+			if err := svc.brManager.CreateBridge(bridgeName, true, nsName); err != nil {
+				log.Warn().Err(err).Str("bridge", bridgeName).Str("namespace", nsName).Msg("failed to create auto-allocated bridge")
+			}
 		}
 	}
 
@@ -167,11 +172,15 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 		return
 	}
 
-	// Clean up bridge if in real mode
+	// Clean up bridge if in real mode. Failures are logged but not
+	// surfaced — the DB rows are gone, so a leftover bridge is a
+	// hygiene issue, not a correctness one.
 	if svc.mode != "stub" {
 		bridgeName := "br-" + networkID[:8]
 		nsName := svc.nsManager.GetNamespaceName(projectID)
-		svc.brManager.DeleteBridge(bridgeName, true, nsName)
+		if err := svc.brManager.DeleteBridge(bridgeName, true, nsName); err != nil {
+			log.Warn().Err(err).Str("bridge", bridgeName).Str("namespace", nsName).Msg("failed to delete auto-allocated bridge")
+		}
 	}
 
 	c.Status(http.StatusNoContent)

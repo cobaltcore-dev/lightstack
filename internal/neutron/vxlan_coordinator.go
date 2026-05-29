@@ -171,8 +171,12 @@ func (vc *VXLANCoordinator) syncPorts(ctx context.Context) {
 		}
 
 		if !nodeActive {
-			// Remote node is down, remove FDB entry
-			vc.vxlanManager.RemoveFDBEntry(networkID, macAddress)
+			// Remote node is down, remove FDB entry (best-effort: the
+			// loop continues regardless; a leftover entry will be
+			// reconciled on the next sync cycle).
+			if err := vc.vxlanManager.RemoveFDBEntry(networkID, macAddress); err != nil {
+				log.Warn().Err(err).Str("mac", macAddress).Str("network_id", networkID).Msg("failed to remove FDB entry for inactive node")
+			}
 			continue
 		}
 

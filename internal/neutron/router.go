@@ -133,9 +133,13 @@ func (svc *Service) ListRouters(c *gin.Context) {
 			continue
 		}
 
-		// Parse external gateway info
+		// Parse external gateway info. A malformed value leaves
+		// ExternalGatewayInfo nil — the API response then omits it,
+		// which is the right behavior for a corrupt row.
 		if gatewayInfo.Valid {
-			json.Unmarshal([]byte(gatewayInfo.String), &r.ExternalGatewayInfo)
+			if err := json.Unmarshal([]byte(gatewayInfo.String), &r.ExternalGatewayInfo); err != nil {
+				log.Warn().Err(err).Str("router_id", r.ID).Msg("failed to unmarshal external_gateway_info; treating as unset")
+			}
 		}
 
 		routers = append(routers, gin.H{
@@ -210,7 +214,10 @@ func (svc *Service) CreateRouter(c *gin.Context) {
 	`, routerID, req.Router.Name, projectID, adminStateUp, "ACTIVE", gatewayInfoJSON, distributed, ha, now, now)
 
 	if err != nil {
-		svc.routerManager.DeleteRouterNamespace(routerID) // Cleanup on error
+		// Cleanup on error (best-effort; the DB error is the user-facing one)
+		if cleanupErr := svc.routerManager.DeleteRouterNamespace(routerID); cleanupErr != nil {
+			log.Warn().Err(cleanupErr).Str("router_id", routerID).Msg("rollback: failed to delete router namespace after DB insert failure")
+		}
 		log.Error().Err(err).Str("operation", "create_router").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create router"))
 		return
@@ -267,9 +274,13 @@ func (svc *Service) GetRouter(c *gin.Context) {
 		return
 	}
 
-	// Parse external gateway info
+	// Parse external gateway info. A malformed value leaves
+	// ExternalGatewayInfo nil — the API response then omits it, which
+	// is the right behavior for a corrupt row.
 	if gatewayInfo.Valid {
-		json.Unmarshal([]byte(gatewayInfo.String), &r.ExternalGatewayInfo)
+		if err := json.Unmarshal([]byte(gatewayInfo.String), &r.ExternalGatewayInfo); err != nil {
+			log.Warn().Err(err).Str("router_id", r.ID).Msg("failed to unmarshal external_gateway_info; treating as unset")
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

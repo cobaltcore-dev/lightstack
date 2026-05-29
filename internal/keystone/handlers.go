@@ -912,7 +912,6 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 	if roleID != "" {
 		query += fmt.Sprintf(" AND ra.role_id = $%d", argIdx)
 		args = append(args, roleID)
-		argIdx++
 	}
 
 	rows, err := database.DB.Query(c.Request.Context(), query, args...)
@@ -1130,7 +1129,6 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 		}
 		updates = append(updates, "password_hash = $"+fmt.Sprint(argIndex))
 		args = append(args, string(hashedBytes))
-		argIndex++
 	}
 
 	if len(updates) == 0 {

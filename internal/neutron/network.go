@@ -293,43 +293,9 @@ func (svc *Service) ListExtensions(c *gin.Context) {
 	})
 }
 
-// GetQuota returns network quotas for a project
+// GetQuota returns network quotas for a project (limits only; use
+// GetQuotaDetails for limits + usage).
 func (svc *Service) GetQuota(c *gin.Context) {
-	projectID := c.Param("id")
-
-	// Query current usage from database
-	var networksUsed, subnetsUsed, portsUsed, routersUsed, floatingIPsUsed, securityGroupsUsed int
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM networks WHERE project_id = $1",
-		projectID,
-	).Scan(&networksUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM subnets WHERE project_id = $1",
-		projectID,
-	).Scan(&subnetsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM ports WHERE project_id = $1",
-		projectID,
-	).Scan(&portsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM routers WHERE project_id = $1",
-		projectID,
-	).Scan(&routersUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM floating_ips WHERE project_id = $1",
-		projectID,
-	).Scan(&floatingIPsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM security_groups WHERE project_id = $1",
-		projectID,
-	).Scan(&securityGroupsUsed)
-
 	// Return quota response
 	c.JSON(200, gin.H{
 		"quota": gin.H{
@@ -348,38 +314,27 @@ func (svc *Service) GetQuota(c *gin.Context) {
 func (svc *Service) GetQuotaDetails(c *gin.Context) {
 	projectID := c.Param("id")
 
-	// Query current usage
+	// Query current usage. Scan failures degrade to zero (the quota
+	// response still ships) and are logged for diagnosis.
 	var networksUsed, subnetsUsed, portsUsed, routersUsed, floatingIPsUsed, securityGroupsUsed int
 
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM networks WHERE project_id = $1",
-		projectID,
-	).Scan(&networksUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM subnets WHERE project_id = $1",
-		projectID,
-	).Scan(&subnetsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM ports WHERE project_id = $1",
-		projectID,
-	).Scan(&portsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM routers WHERE project_id = $1",
-		projectID,
-	).Scan(&routersUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM floating_ips WHERE project_id = $1",
-		projectID,
-	).Scan(&floatingIPsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM security_groups WHERE project_id = $1",
-		projectID,
-	).Scan(&securityGroupsUsed)
+	usageQueries := []struct {
+		label string
+		sql   string
+		dst   *int
+	}{
+		{"networks", "SELECT COUNT(*) FROM networks WHERE project_id = $1", &networksUsed},
+		{"subnets", "SELECT COUNT(*) FROM subnets WHERE project_id = $1", &subnetsUsed},
+		{"ports", "SELECT COUNT(*) FROM ports WHERE project_id = $1", &portsUsed},
+		{"routers", "SELECT COUNT(*) FROM routers WHERE project_id = $1", &routersUsed},
+		{"floating_ips", "SELECT COUNT(*) FROM floating_ips WHERE project_id = $1", &floatingIPsUsed},
+		{"security_groups", "SELECT COUNT(*) FROM security_groups WHERE project_id = $1", &securityGroupsUsed},
+	}
+	for _, q := range usageQueries {
+		if err := database.DB.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
+			log.Warn().Err(err).Str("resource", q.label).Str("project_id", projectID).Msg("failed to query quota usage")
+		}
+	}
 
 	// Return quota details with usage
 	c.JSON(200, gin.H{
@@ -649,7 +604,7 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	// Store in cache (30min TTL per config) before adding the dynamic subnet
 	// list, so cached entries never carry a stale subnets field.
 	if svc.cache != nil {
-		svc.cache.Set(ctx, "network:"+id, network, 30*time.Minute)
+		svc.cache.TrySet(ctx, "network:"+id, network, 30*time.Minute)
 	}
 
 	network["subnets"] = svc.networkSubnetIDs(ctx, id)
@@ -683,8 +638,11 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 	bridgeName := "br-" + networkID[:8]
 	nsName := svc.nsManager.GetNamespaceName(projectID)
 
-	// Delete bridge
-	svc.brManager.DeleteBridge(bridgeName, true, nsName)
+	// Delete bridge (best-effort: a leftover bridge is hygiene, not
+	// correctness — the network row is about to be deleted).
+	if err := svc.brManager.DeleteBridge(bridgeName, true, nsName); err != nil {
+		log.Warn().Err(err).Str("bridge", bridgeName).Str("namespace", nsName).Msg("failed to delete network bridge")
+	}
 
 	// Delete from database
 	_, err := database.DB.Exec(ctx,
@@ -699,8 +657,8 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 
 	// Invalidate cache
 	if svc.cache != nil {
-		svc.cache.Delete(ctx, "network:"+networkID)
-		svc.cache.DeletePattern(ctx, "networks:*")
+		svc.cache.TryDelete(ctx, "network:"+networkID)
+		svc.cache.TryDeletePattern(ctx, "networks:*")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -840,7 +798,11 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 			LeaseTime:      "24h",
 		}
 
-		go svc.dhcpManager.StartDHCP(dhcpConfig, nsName)
+		go func() {
+			if err := svc.dhcpManager.StartDHCP(dhcpConfig, nsName); err != nil {
+				log.Warn().Err(err).Str("namespace", nsName).Str("network_id", dhcpConfig.NetworkID).Msg("failed to start DHCP server for subnet")
+			}
+		}()
 	}
 
 	// OpenStack clients format these as lists and fail on JSON null, so
@@ -1046,8 +1008,11 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		return
 	}
 
-	// Stop DHCP server
-	svc.dhcpManager.StopDHCP(networkID)
+	// Stop DHCP server (best-effort: a leftover dnsmasq is hygiene,
+	// not correctness — the subnet row is about to be deleted).
+	if err := svc.dhcpManager.StopDHCP(networkID); err != nil {
+		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to stop DHCP server")
+	}
 
 	// Delete from database
 	_, err = database.DB.Exec(c.Request.Context(),

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -146,6 +147,35 @@ func (c *Cache) DeletePattern(ctx context.Context, pattern string) error {
 	}
 
 	return nil
+}
+
+// TrySet writes a cache entry best-effort. It logs a warning on failure
+// but never returns an error. Use this where cache writes are an
+// optimization, not a correctness boundary — failures degrade
+// performance but never break correctness because the underlying
+// database remains the source of truth.
+func (c *Cache) TrySet(ctx context.Context, key string, value any, ttl time.Duration) {
+	if err := c.Set(ctx, key, value, ttl); err != nil {
+		log.Warn().Err(err).Str("key", key).Msg("cache set failed")
+	}
+}
+
+// TryDelete removes a cache entry best-effort. It logs a warning on
+// failure but never returns an error. Stale cache entries from a
+// failed delete will be invalidated again the next time the source is
+// updated.
+func (c *Cache) TryDelete(ctx context.Context, key string) {
+	if err := c.Delete(ctx, key); err != nil {
+		log.Warn().Err(err).Str("key", key).Msg("cache delete failed")
+	}
+}
+
+// TryDeletePattern removes cache entries matching the pattern
+// best-effort. It logs a warning on failure but never returns an error.
+func (c *Cache) TryDeletePattern(ctx context.Context, pattern string) {
+	if err := c.DeletePattern(ctx, pattern); err != nil {
+		log.Warn().Err(err).Str("pattern", pattern).Msg("cache delete-pattern failed")
+	}
 }
 
 // Exists checks if a key exists in cache
