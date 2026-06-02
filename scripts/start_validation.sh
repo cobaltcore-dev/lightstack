@@ -27,10 +27,11 @@ fi
 echo -e "${GREEN}✓ Docker is running${NC}"
 echo ""
 
-# Start O3K services
-echo -e "${YELLOW}[2/5]${NC} Starting O3K services..."
-docker compose down &> /dev/null || true
-docker compose up -d --build
+# Start O3K + Horizon stack
+echo -e "${YELLOW}[2/5]${NC} Starting O3K + Horizon stack..."
+export O3K_JWT_SECRET="${O3K_JWT_SECRET:-validation-only-secret}"
+docker compose -f deployments/docker-compose-horizon.yml down &> /dev/null || true
+docker compose -f deployments/docker-compose-horizon.yml up -d --build
 echo -e "${GREEN}✓ O3K services started${NC}"
 echo ""
 
@@ -58,16 +59,10 @@ echo ""
 VALIDATION_EXIT=$?
 echo ""
 
-# Start Horizon
-echo -e "${YELLOW}[5/5]${NC} Starting Horizon dashboard..."
-docker compose -f docker-compose.horizon.yml up -d
-echo -e "${GREEN}✓ Horizon started${NC}"
-echo ""
-
-# Wait for Horizon to be ready
-echo "Waiting for Horizon to be healthy..."
+# Wait for Horizon (started with the stack in step 2)
+echo -e "${YELLOW}[5/5]${NC} Waiting for Horizon to be healthy..."
 for i in {1..30}; do
-    if curl -s -f http://localhost:8080/ &> /dev/null; then
+    if curl -s -f http://localhost/dashboard/auth/login/ &> /dev/null; then
         echo -e "${GREEN}✓ Horizon is healthy${NC}"
         break
     fi
@@ -91,7 +86,7 @@ echo -e "                    http://localhost:9696/v2.0 (Neutron)"
 echo -e "                    http://localhost:8776/v3 (Cinder)"
 echo -e "                    http://localhost:9292/v2 (Glance)"
 echo ""
-echo -e "✓ Horizon UI:       ${GREEN}http://localhost:8080${NC}"
+echo -e "✓ Horizon UI:       ${GREEN}http://localhost${NC}"
 echo -e "  Login:            admin / secret"
 echo ""
 echo -e "✓ Validation Log:   validation_results_*.txt"
@@ -101,7 +96,7 @@ if [ $VALIDATION_EXIT -eq 0 ]; then
     echo -e "${GREEN}✓ CLI Validation: ALL TESTS PASSED${NC}"
     echo ""
     echo -e "${BLUE}Next Steps:${NC}"
-    echo "1. Open Horizon in browser: http://localhost:8080"
+    echo "1. Open Horizon in browser: http://localhost"
     echo "2. Login with: admin / secret"
     echo "3. Test these workflows:"
     echo "   - Launch an instance"
@@ -116,10 +111,9 @@ else
     echo "1. Review validation_results_*.txt"
     echo "2. Identify missing APIs"
     echo "3. Prioritize by impact"
-    echo "4. Open Horizon (http://localhost:8080) to discover UI-specific gaps"
+    echo "4. Open Horizon (http://localhost) to discover UI-specific gaps"
 fi
 echo ""
 echo -e "${BLUE}To stop services:${NC}"
-echo "  docker compose down"
-echo "  docker compose -f docker-compose.horizon.yml down"
+echo "  docker compose -f deployments/docker-compose-horizon.yml down"
 echo ""

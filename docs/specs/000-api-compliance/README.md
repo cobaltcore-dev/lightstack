@@ -706,7 +706,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Start O3K + Horizon
-        run: docker compose -f docker-compose.yml -f docker-compose.horizon.yml up -d
+        run: docker compose -f deployments/docker-compose-horizon.yml up -d
       - name: Run Selenium tests
         run: make test-compliance-horizon
 ```
