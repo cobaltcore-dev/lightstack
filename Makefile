@@ -141,16 +141,15 @@ fmt:
 	@echo "Formatting code..."
 	go fmt ./...
 
-# Lint code
+# Lint code (golangci-lint is pinned via the `tool` directive in go.mod)
 lint:
 	@echo "Linting code..."
-	golangci-lint run ./...
+	go tool golangci-lint run ./...
 
 # Install development tools
 install-tools:
 	@echo "Installing development tools..."
 	go install github.com/air-verse/air@latest
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 
 # Install eBPF development tools (Linux only)
