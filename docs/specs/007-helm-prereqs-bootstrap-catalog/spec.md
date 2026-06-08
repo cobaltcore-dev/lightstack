@@ -23,11 +23,6 @@
 - Q: Which TLS exposure model must the chart use so WS-3's `https://<host>:<service-port>` URLs resolve? → A: Port-based per-service TLS (option 1) — the chart (SPEC-008) terminates TLS per service port, matching O3K's multi-port design and `docs/KUBERNETES_DEPLOYMENT.md` Option B. A single-`:443` path-based or per-subdomain ingress is out of scope (it would require advertising per-service path prefixes or hostnames, beyond scheme-only rewriting).
 - Q: Does `O3K_ENDPOINT_SCHEME` apply only to the Keystone catalog, or also to resource self-links / pagination? → A: Both — it also governs the self-links and pagination URLs built by `common.BaseURL` (Nova/Neutron/Cinder/Glance responses), so a TLS-fronted deployment never emits `http://` self-links (FR-013a).
 
-### Session 2026-06-08
-
-- Q: Which TLS exposure model must the chart use so WS-3's `https://<host>:<service-port>` URLs resolve? → A: Port-based per-service TLS (option 1) — the chart (SPEC-008) terminates TLS per service port, matching O3K's multi-port design and `docs/KUBERNETES_DEPLOYMENT.md` Option B. A single-`:443` path-based or per-subdomain ingress is out of scope (it would require advertising per-service path prefixes or hostnames, beyond scheme-only rewriting).
-- Q: Does `O3K_ENDPOINT_SCHEME` apply only to the Keystone catalog, or also to resource self-links / pagination? → A: Both — it also governs the self-links and pagination URLs built by `common.BaseURL` (Nova/Neutron/Cinder/Glance responses), so a TLS-fronted deployment never emits `http://` self-links (FR-013a).
-
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Operator sets a non-default admin password at deploy time (Priority: P1)
