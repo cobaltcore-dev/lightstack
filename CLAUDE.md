@@ -420,6 +420,7 @@ if requestedVersion == "" {
 ## Active Technologies
 - Go 1.26 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking) (002-horizon-full-compatibility)
 - PostgreSQL 18 (primary database) (002-horizon-full-compatibility)
+- 007-helm-prereqs-bootstrap-catalog: admin-password bootstrap (bcrypt, `internal/keystone`) + `O3K_ENDPOINT_SCHEME` catalog scheme — no new dependencies, no schema change
 
 ## Recent Changes
 - v0.7.0 planning: Database DI (ADR-001), rate limiting (ADR-002), Terraform conformance, CI linting, Cinder route redirect, pagination standardization (SPEC-006)

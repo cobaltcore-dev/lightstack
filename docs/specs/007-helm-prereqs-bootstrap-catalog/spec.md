@@ -21,6 +21,11 @@
 - Q: How is the seeded `admin` neutralized when a custom `admin_user` is configured (FR-004a)? → A: Set `enabled = false` (option A) on the seeded `admin` row — the native Keystone disabled-user mechanism (column already exists); reversible; the row and its role assignments are preserved (not deleted or scrambled).
 - Q: What role/project provisioning does a custom `admin_user` get, and what does FR-007 constrain? → A: Mirror the seed's grants (option A) — bootstrap grants the custom admin the standard admin role on the seeded `default` project (FR-004b). FR-007 is scoped to preserving project isolation and not altering *other* identities' privileges; it does not forbid granting the configured admin its standard role or disabling the superseded seed `admin`.
 
+### Session 2026-06-08
+
+- Q: Which TLS exposure model must the chart use so WS-3's `https://<host>:<service-port>` URLs resolve? → A: Port-based per-service TLS (option 1) — the chart (SPEC-008) terminates TLS per service port, matching O3K's multi-port design and `docs/KUBERNETES_DEPLOYMENT.md` Option B. A single-`:443` path-based or per-subdomain ingress is out of scope (it would require advertising per-service path prefixes or hostnames, beyond scheme-only rewriting).
+- Q: Does `O3K_ENDPOINT_SCHEME` apply only to the Keystone catalog, or also to resource self-links / pagination? → A: Both — it also governs the self-links and pagination URLs built by `common.BaseURL` (Nova/Neutron/Cinder/Glance responses), so a TLS-fronted deployment never emits `http://` self-links (FR-013a).
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Operator sets a non-default admin password at deploy time (Priority: P1)
@@ -55,6 +60,7 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 2. **Given** no advertised catalog scheme is configured, **When** a client reads the service catalog, **Then** every endpoint URL uses `http://` (unchanged default behavior).
 3. **Given** a configured advertised host (existing host-rewrite behavior), **When** the advertised scheme is also configured as `https`, **Then** the catalog URLs reflect both the configured host and the `https` scheme together.
 4. **Given** either scheme setting, **When** a client reads the catalog, **Then** the catalog structure (service types, names, endpoint interfaces/regions, fields) is identical except for the URL scheme — no API shape change.
+5. **Given** the advertised scheme is `https`, **When** a client lists a paginated resource (e.g. servers, networks) or reads a resource's self-link, **Then** those URLs also use `https://` — not only the Keystone catalog.
 
 ---
 
@@ -96,6 +102,7 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 - **FR-011**: When the scheme is not configured (`O3K_ENDPOINT_SCHEME` unset or empty), advertised catalog endpoint URLs MUST use `http://` (the existing default is preserved).
 - **FR-012**: The scheme configuration MUST compose correctly with the existing advertised-host rewrite, so that host and scheme are both reflected in the final URLs.
 - **FR-013**: The catalog response structure MUST remain unchanged except for the URL scheme — service types, names, endpoint interfaces, regions, IDs, and all other fields MUST be identical (no OpenStack API shape change, no microversion bump). The scheme MUST be applied at catalog-presentation time; the stored catalog rows (migration 040) MUST NOT be modified.
+- **FR-013a**: The configured scheme MUST also apply to advertised resource self-links and pagination URLs in service responses (not only the Keystone catalog), so a TLS-fronted deployment never emits `http://` links. Default remains `http`.
 - **FR-014**: The scheme value MUST be parsed case-insensitively and whitespace-trimmed. An unsupported value MUST NOT produce malformed catalog URLs and MUST NOT cause startup to fail; instead the platform MUST log a prominent warning and fall back to the default `http`.
 
 #### Cross-cutting
@@ -131,17 +138,19 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 - **Configuration surface**: The admin password/user are configured via `keystone.admin_password` / `keystone.admin_user` (config file). The catalog scheme is configured via the `O3K_ENDPOINT_SCHEME` environment variable (resolved 2026-06-04), mirroring the existing `O3K_ENDPOINT_HOST` rewrite.
 - **Default preservation**: With neither scheme knob set, catalog behavior and API shapes are unchanged from today, so non-TLS and existing deployments are unaffected.
 - **Seed migration retained**: The seed migration remains for fresh-DB bootstrapping. When a password is configured for the default `admin` name, bootstrap overrides the seeded credential in place; when a custom `admin_user` is configured, bootstrap neutralizes the seeded `admin` account (FR-004a, resolved 2026-06-04). The seeded `admin/secret` remains live only in the no-password-configured dev case (Round-1 clarification).
+- **TLS exposure model**: WS-3 advertises `https://<host>:<service-port>` (same host, one port per service). The SPEC-008 chart MUST terminate TLS **per service port** (port-based exposure — `docs/KUBERNETES_DEPLOYMENT.md` Option B), so these URLs resolve. This matches O3K's multi-port design (each service on its own port); a single host certificate (wildcard/SAN) covers all ports. Single-`:443` path/subdomain routing is out of scope (resolved 2026-06-08).
 
 ## Dependencies
 
 - **Depends on**: SPEC-000 (OpenStack API compliance — must pass its contract tests).
-- **Blocks**: SPEC-008 (Helm charts), both single-node and multi-node — specifically chart requirements FR-007/FR-007a (admin password) and FR-008b (TLS catalog scheme).
+- **Blocks**: SPEC-008 (Helm charts), both single-node and multi-node — specifically chart requirements FR-007/FR-007a (admin password) and FR-008b (TLS catalog scheme). SPEC-008 MUST expose O3K with **per-service-port TLS termination** (port-based) so the advertised `https://<host>:<port>` catalog and self-link URLs resolve (see Assumptions → TLS exposure model).
 - **Reuses**: existing Keystone bootstrap path and the existing advertised-host (`O3K_ENDPOINT_HOST`) rewrite.
 
 ## Out of Scope
 
 - Authoring the Helm chart itself (Secrets, `values.yaml`, install-time gating) — that is SPEC-008.
 - TLS termination, certificate management, and ingress configuration — handled by the chart/infrastructure; this spec only makes the advertised scheme configurable.
+- Single-`:443` path-based or per-subdomain ingress. WS-3 advertises `https://<host>:<service-port>` (scheme + host only); routing all services through one `:443` host (via path prefixes like `/identity`, `/compute` or per-service subdomains) would require advertising per-service paths/hostnames, which is beyond scheme rewriting. The chart terminates TLS **per service port** instead (see Assumptions → TLS exposure model).
 - Multi-node placement, metadata, north-south networking, and startup reconciliation — tracked separately as SPEC-007 post-conditions.
 - General user/password management beyond the bootstrap admin account.
 - Ongoing admin-password rotation via configuration. Once provisioned, the admin password is rotated through the OpenStack Identity API (e.g., `openstack user password set`), not by changing config — the configured `admin_password` is a first-boot seed (see Clarifications 2026-06-04).
