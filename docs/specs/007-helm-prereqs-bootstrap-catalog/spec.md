@@ -1,13 +1,13 @@
 # Feature Specification: SPEC-007 Helm Prerequisites — Admin-Password Bootstrap + Configurable Catalog Scheme
 
 **Feature Branch**: `007-helm-prereqs-bootstrap-catalog`  
-**Created**: 2026-06-04  
+**Created**: 2026-06-08  
 **Status**: Draft  
 **Input**: User description: "Helm chart prerequisites (SPEC-007): two small config/bootstrap-level changes to O3K that must land before the Helm chart (SPEC-008) can be authored securely over TLS — (WS-2) admin-password bootstrap wiring and (WS-3) configurable service-catalog scheme (http/https)."
 
 ## Clarifications
 
-### Session 2026-06-04
+### Session 2026-06-08
 
 - Q: When no admin password is configured at startup, what should the product (the O3K binary) do? → A: Boot with the well-known default credential but emit a prominent warning (option C). The product does not refuse to start; the "fail the install when no password is supplied" gate is owned by the SPEC-008 Helm chart (FR-007a), not the binary.
 - Q: When a non-empty admin password IS configured, does the binary impose strength validation (minimum length / complexity / denylist)? → A: No — permissive (option A). The binary accepts any non-empty (trimmed) value as supplied; password strength is enforced by the SPEC-008 chart, not the product. (A binary denylist would also reject the explicit dev/CI default of `secret`.)
@@ -20,9 +20,6 @@
 - Q: Does a password change revoke existing tokens? → A: No (option A). O3K tokens are stateless (HMAC-signed, not server-stored, not password-bound); existing tokens remain valid until their TTL expiry (default 24h, configurable) after any password change. Immediate revocation is an explicit non-goal here; operators needing a tighter bound shorten the token TTL.
 - Q: How is the seeded `admin` neutralized when a custom `admin_user` is configured (FR-004a)? → A: Set `enabled = false` (option A) on the seeded `admin` row — the native Keystone disabled-user mechanism (column already exists); reversible; the row and its role assignments are preserved (not deleted or scrambled).
 - Q: What role/project provisioning does a custom `admin_user` get, and what does FR-007 constrain? → A: Mirror the seed's grants (option A) — bootstrap grants the custom admin the standard admin role on the seeded `default` project (FR-004b). FR-007 is scoped to preserving project isolation and not altering *other* identities' privileges; it does not forbid granting the configured admin its standard role or disabling the superseded seed `admin`.
-
-### Session 2026-06-08
-
 - Q: Which TLS exposure model must the chart use so WS-3's `https://<host>:<service-port>` URLs resolve? → A: Port-based per-service TLS (option 1) — the chart (SPEC-008) terminates TLS per service port, matching O3K's multi-port design and `docs/KUBERNETES_DEPLOYMENT.md` Option B. A single-`:443` path-based or per-subdomain ingress is out of scope (it would require advertising per-service path prefixes or hostnames, beyond scheme-only rewriting).
 - Q: Does `O3K_ENDPOINT_SCHEME` apply only to the Keystone catalog, or also to resource self-links / pagination? → A: Both — it also governs the self-links and pagination URLs built by `common.BaseURL` (Nova/Neutron/Cinder/Glance responses), so a TLS-fronted deployment never emits `http://` self-links (FR-013a).
 
@@ -88,7 +85,7 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 - **FR-004a**: When `admin_user` is configured to a name other than the default `admin`, the platform MUST disable the seeded default `admin` account at bootstrap by setting its `enabled` flag to false, so that the well-known `admin/secret` credential can no longer authenticate. The row and its role assignments MUST be preserved (not deleted). (When `admin_user` is `admin`, the seeded row is updated in place per FR-002, so no separate neutralization is needed.)
 - **FR-004b**: When provisioning a custom `admin_user` (a name other than the default `admin`), the platform MUST grant it the same role assignments the seed grants the default `admin` — the standard admin role on the seeded `default` project — so that the custom admin is a fully functional administrator.
 - **FR-005**: The stored admin credential MUST be protected using the same one-way hashing scheme already used for user credentials (no plaintext or reversible storage).
-- **FR-006**: When no admin password is configured (including empty/whitespace), the platform MUST emit a prominent startup warning that it is booting with the well-known default credential, and then continue to boot — it MUST NOT fail silently. The product itself does NOT refuse to start; blocking installation when no password is supplied is owned by the SPEC-008 chart (FR-007a), not the binary.
+- **FR-006**: When no admin password is configured (including empty/whitespace), the platform MUST emit a prominent startup warning (at `WARN` log level) that it is booting with the well-known default credential, and then continue to boot — it MUST NOT fail silently. The product itself does NOT refuse to start; blocking installation when no password is supplied is owned by the SPEC-008 chart (FR-007a), not the binary.
 - **FR-006a**: When a non-empty admin password IS configured, the platform MUST accept it as supplied (after trimming surrounding whitespace) and MUST NOT impose minimum-length, complexity, or denylist validation in the binary — password strength is enforced by the SPEC-008 chart, not the product.
 - **FR-006b**: The platform MUST emit a structured log entry when it provisions the admin account (creates it or seeds its initial password) at bootstrap, identifying the affected user. The platform MUST NEVER write the admin password value (plaintext or hash) to logs.
 - **FR-007**: This feature MUST preserve project isolation and MUST NOT alter the roles, project membership, or scoping of any identity other than the admin account(s) it provisions. Establishing the configured admin (creating it and granting it the standard admin role per FR-004b) and disabling the superseded seed `admin` (FR-004a) are explicitly permitted; no other identity's privileges change.
@@ -103,7 +100,7 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 - **FR-012**: The scheme configuration MUST compose correctly with the existing advertised-host rewrite, so that host and scheme are both reflected in the final URLs.
 - **FR-013**: The catalog response structure MUST remain unchanged except for the URL scheme — service types, names, endpoint interfaces, regions, IDs, and all other fields MUST be identical (no OpenStack API shape change, no microversion bump). The scheme MUST be applied at catalog-presentation time; the stored catalog rows (migration 040) MUST NOT be modified.
 - **FR-013a**: The configured scheme MUST also apply to advertised resource self-links and pagination URLs in service responses (not only the Keystone catalog), so a TLS-fronted deployment never emits `http://` links. Default remains `http`.
-- **FR-014**: The scheme value MUST be parsed case-insensitively and whitespace-trimmed. An unsupported value MUST NOT produce malformed catalog URLs and MUST NOT cause startup to fail; instead the platform MUST log a prominent warning and fall back to the default `http`.
+- **FR-014**: The scheme value MUST be parsed case-insensitively and whitespace-trimmed. An unsupported value MUST NOT produce malformed catalog URLs and MUST NOT cause startup to fail; instead the platform MUST log a prominent warning (at `WARN` level, once) and fall back to the default `http`.
 
 #### Cross-cutting
 
@@ -133,11 +130,11 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 
 ## Assumptions
 
-- **Fail-fast gate ownership**: Resolved (see Clarifications 2026-06-04). The product boots with the default credential and emits a prominent warning when no admin password is configured; it does not refuse to start. The "fail the install when no password is supplied" enforcement lives entirely in the SPEC-008 chart (FR-007a).
+- **Fail-fast gate ownership**: Resolved (see Clarifications 2026-06-08). The product boots with the default credential and emits a prominent warning when no admin password is configured; it does not refuse to start. The "fail the install when no password is supplied" enforcement lives entirely in the SPEC-008 chart (FR-007a).
 - **Scope of admin update**: Bootstrap sets the admin password only at initial provisioning (first-boot seed) and ensures the named admin account exists with its normal admin roles. It does not reconcile or rotate the password on later starts, and does not manage arbitrary additional users; broader user provisioning is out of scope.
-- **Configuration surface**: The admin password/user are configured via `keystone.admin_password` / `keystone.admin_user` (config file). The catalog scheme is configured via the `O3K_ENDPOINT_SCHEME` environment variable (resolved 2026-06-04), mirroring the existing `O3K_ENDPOINT_HOST` rewrite.
+- **Configuration surface**: The admin password/user are configured via `keystone.admin_password` / `keystone.admin_user` (config file). The catalog scheme is configured via the `O3K_ENDPOINT_SCHEME` environment variable (resolved 2026-06-08), mirroring the existing `O3K_ENDPOINT_HOST` rewrite.
 - **Default preservation**: With neither scheme knob set, catalog behavior and API shapes are unchanged from today, so non-TLS and existing deployments are unaffected.
-- **Seed migration retained**: The seed migration remains for fresh-DB bootstrapping. When a password is configured for the default `admin` name, bootstrap overrides the seeded credential in place; when a custom `admin_user` is configured, bootstrap neutralizes the seeded `admin` account (FR-004a, resolved 2026-06-04). The seeded `admin/secret` remains live only in the no-password-configured dev case (Round-1 clarification).
+- **Seed migration retained**: The seed migration remains for fresh-DB bootstrapping. When a password is configured for the default `admin` name, bootstrap overrides the seeded credential in place; when a custom `admin_user` is configured, bootstrap neutralizes the seeded `admin` account (FR-004a, resolved 2026-06-08). The seeded `admin/secret` remains live only in the no-password-configured dev case (Round-1 clarification).
 - **TLS exposure model**: WS-3 advertises `https://<host>:<service-port>` (same host, one port per service). The SPEC-008 chart MUST terminate TLS **per service port** (port-based exposure — `docs/KUBERNETES_DEPLOYMENT.md` Option B), so these URLs resolve. This matches O3K's multi-port design (each service on its own port); a single host certificate (wildcard/SAN) covers all ports. Single-`:443` path/subdomain routing is out of scope (resolved 2026-06-08).
 
 ## Dependencies
@@ -153,5 +150,5 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 - Single-`:443` path-based or per-subdomain ingress. WS-3 advertises `https://<host>:<service-port>` (scheme + host only); routing all services through one `:443` host (via path prefixes like `/identity`, `/compute` or per-service subdomains) would require advertising per-service paths/hostnames, which is beyond scheme rewriting. The chart terminates TLS **per service port** instead (see Assumptions → TLS exposure model).
 - Multi-node placement, metadata, north-south networking, and startup reconciliation — tracked separately as SPEC-007 post-conditions.
 - General user/password management beyond the bootstrap admin account.
-- Ongoing admin-password rotation via configuration. Once provisioned, the admin password is rotated through the OpenStack Identity API (e.g., `openstack user password set`), not by changing config — the configured `admin_password` is a first-boot seed (see Clarifications 2026-06-04).
+- Ongoing admin-password rotation via configuration. Once provisioned, the admin password is rotated through the OpenStack Identity API (e.g., `openstack user password set`), not by changing config — the configured `admin_password` is a first-boot seed (see Clarifications 2026-06-08).
 - Token/session revocation on password change. O3K tokens are stateless (HMAC-signed, not server-stored, not password-bound); after any password change, existing tokens remain valid until their TTL expiry (default 24h, configurable). Immediate revocation would require stateful tokens and is a separate feature.
