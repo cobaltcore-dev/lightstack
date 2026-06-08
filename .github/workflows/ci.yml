@@ -60,6 +60,23 @@ jobs:
     needs: build
     timeout-minutes: 10
 
+    # Postgres service so DB-backed unit tests (e.g. keystone admin bootstrap,
+    # SPEC-007 WS-2) run instead of skipping. Tests connect via O3K_TEST_DB_URL.
+    services:
+      postgres:
+        image: postgres:18.3-alpine
+        env:
+          POSTGRES_USER: o3k
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: o3k_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U o3k -d o3k_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -79,6 +96,8 @@ jobs:
 
       - name: Run unit tests with race detector
         run: go test -race -coverprofile=coverage.txt -covermode=atomic $(go list ./... | grep -v '/test/contract')
+        env:
+          O3K_TEST_DB_URL: postgres://o3k:secret@localhost:5432/o3k_test?sslmode=disable
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v6

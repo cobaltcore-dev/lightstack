@@ -665,6 +665,9 @@ func substituteURLTemplates(url, projectID string) string {
 	// Also handle https://o3k: for future SSL support
 	url = strings.ReplaceAll(url, "https://o3k:", "https://"+baseHost+":")
 
+	// Apply the configured advertised scheme (SPEC-007 WS-3, FR-010/012/013).
+	url = common.ForceScheme(url, common.EndpointScheme())
+
 	return url
 }
 
@@ -675,7 +678,8 @@ func buildHardcodedCatalog(projectID string) []CatalogEntry {
 	if baseHost == "" {
 		baseHost = "localhost"
 	}
-	baseURL := "http://" + baseHost
+	// Honor the configured advertised scheme (SPEC-007 WS-3, FR-010).
+	baseURL := common.EndpointScheme() + "://" + baseHost
 
 	return []CatalogEntry{
 		{

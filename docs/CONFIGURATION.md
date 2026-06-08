@@ -249,9 +249,31 @@ keystone:
   port: 35357                        # API port
   jwt_secret: "change-me-in-production"  # JWT signing secret
   token_ttl: 24h                     # Token lifetime
-  admin_user: admin                  # Default admin username
-  admin_password: secret             # Default admin password
+  admin_user: admin                  # Admin username (first-boot seed)
+  admin_password: secret             # Admin password (first-boot seed) — CHANGE for exposed deployments
 ```
+
+**Admin bootstrap (first-boot seed):** `admin_password` is applied at startup only
+when the admin account is absent or still carries the well-known default `secret`;
+once changed it is never overwritten on later starts (rotate via the Identity API,
+e.g. `openstack user password set`, not config). Setting `admin_user` to a name
+other than `admin` provisions that user with the admin role and **disables** the
+seeded `admin` account. When `admin_password` is unset entirely, O3K boots with the
+default credential and logs a `WARN` — the Helm chart is responsible for requiring a
+password at install time.
+
+`admin_user` is a **first-boot identity**, not a managed one:
+- If `admin_user` names an account that **already exists**, that account is granted
+  the admin role but its password is **left unchanged** (`admin_password` is not
+  applied; a `WARN` is logged). Change an existing user's password via the Identity
+  API, not config.
+- **Renaming** `admin_user` on a later start provisions the new name but does **not**
+  remove the previously-configured one — only the seeded `admin` is disabled. Remove
+  a stale admin account via the Identity API.
+
+**Advertised endpoint scheme:** the service catalog and resource self-links use the
+scheme from the `O3K_ENDPOINT_SCHEME` environment variable (`http` default, or
+`https`), alongside `O3K_ENDPOINT_HOST`. See [Environment Variables](#environment-variables).
 
 **Security Notes:**
 - ⚠️ **Always change `jwt_secret` in production!**
