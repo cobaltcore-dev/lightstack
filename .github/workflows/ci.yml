@@ -150,16 +150,16 @@ jobs:
       - name: Check contract test results
         run: |
           # Parse test results
-          PASSED=$(grep -c "PASS:" /tmp/contract_test_output.txt || echo "0")
-          FAILED=$(grep -c "FAIL:" /tmp/contract_test_output.txt || echo "0")
-          SKIPPED=$(grep -c "SKIP:" /tmp/contract_test_output.txt || echo "0")
+          PASSED=$(grep -c "PASS:" /tmp/contract_test_output.txt || true)
+          FAILED=$(grep -c "FAIL:" /tmp/contract_test_output.txt || true)
+          SKIPPED=$(grep -c "SKIP:" /tmp/contract_test_output.txt || true)
           TOTAL=$((PASSED + FAILED + SKIPPED))
 
           if [ $TOTAL -eq 0 ]; then
             echo "⚠️  Unable to parse test results, using run/fail counts"
-            PASSED=$(grep -c "^--- PASS:" /tmp/contract_test_output.txt || echo "0")
-            FAILED=$(grep -c "^--- FAIL:" /tmp/contract_test_output.txt || echo "0")
-            SKIPPED=$(grep -c "^--- SKIP:" /tmp/contract_test_output.txt || echo "0")
+            PASSED=$(grep -c "^--- PASS:" /tmp/contract_test_output.txt || true)
+            FAILED=$(grep -c "^--- FAIL:" /tmp/contract_test_output.txt || true)
+            SKIPPED=$(grep -c "^--- SKIP:" /tmp/contract_test_output.txt || true)
             TOTAL=$((PASSED + FAILED + SKIPPED))
           fi
 
