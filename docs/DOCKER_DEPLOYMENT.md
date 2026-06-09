@@ -85,7 +85,7 @@ services:
       POSTGRES_USER: o3k
       POSTGRES_PASSWORD: secret
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     ports:
       - "5432:5432"
     healthcheck:
@@ -240,13 +240,34 @@ User/Project Verification
 ```
 Docker Volume: postgres_data
     ↓
-Mounted at: /var/lib/postgresql/data (in postgres container)
+Mounted at: /var/lib/postgresql (in postgres container)
     ↓
 Contains:
     - All database files
     - Users, projects, roles
     - VMs, networks, volumes metadata
     - Survives container restarts
+```
+
+> ⚠️ **Volume migration required when upgrading an existing deployment.** The
+> Postgres data-volume mount path changed from `/var/lib/postgresql/data` to
+> `/var/lib/postgresql` (Postgres 18+ stores its data in a versioned
+> subdirectory such as `18/docker/`, so the volume must be mounted one level
+> up). A pre-existing named volume that was mounted at the old `/data` path
+> will appear **empty** after `docker compose down && up` — the data is still
+> in the volume, but Postgres no longer reads it, so the apparent data loss is
+> silent.
+
+**Before upgrading**, back up the database:
+
+```bash
+docker exec o3k-postgres pg_dump -U o3k o3k > o3k-backup.sql
+```
+
+**After upgrading**, if the database appears empty, restore from the backup:
+
+```bash
+docker exec -i o3k-postgres psql -U o3k o3k < o3k-backup.sql
 ```
 
 ---
@@ -316,7 +337,7 @@ postgres:
     POSTGRES_PASSWORD: secret  # CHANGE IN PRODUCTION!
     POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
   volumes:
-    - postgres_data:/var/lib/postgresql/data
+    - postgres_data:/var/lib/postgresql
     # Optional: Custom init scripts
     - ./init-scripts:/docker-entrypoint-initdb.d:ro
 ```

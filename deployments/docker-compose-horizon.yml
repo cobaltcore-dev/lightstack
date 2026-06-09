@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # PostgreSQL Database
@@ -11,7 +11,7 @@ services:
       POSTGRES_USER: o3k
       POSTGRES_PASSWORD: secret
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     networks:
       - o3k-network
     healthcheck:
@@ -40,12 +40,12 @@ services:
     container_name: o3k
     hostname: o3k
     ports:
-      - "35357:35357"  # Keystone (Identity)
-      - "8774:8774"    # Nova (Compute)
-      - "9696:9696"    # Neutron (Network)
-      - "8776:8776"    # Cinder (Block Storage)
-      - "9292:9292"    # Glance (Image)
-      - "8775:8775"    # Metadata Service
+      - "35357:35357" # Keystone (Identity)
+      - "8774:8774" # Nova (Compute)
+      - "9696:9696" # Neutron (Network)
+      - "8776:8776" # Cinder (Block Storage)
+      - "9292:9292" # Glance (Image)
+      - "8775:8775" # Metadata Service
     environment:
       - O3K_DB_URL=postgres://o3k:secret@postgres:5432/o3k?sslmode=disable
       - O3K_JWT_SECRET=${O3K_JWT_SECRET:?O3K_JWT_SECRET must be set}

@@ -597,7 +597,7 @@ database:
 
 **PostgreSQL tuning:**
 ```sql
--- /var/lib/postgresql/data/postgresql.conf
+-- /var/lib/postgresql/18/docker/postgresql.conf
 shared_buffers = 256MB         # 25% of RAM
 effective_cache_size = 1GB     # 50-75% of RAM
 work_mem = 16MB
