@@ -11,17 +11,17 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ManageVolume handles POST /v3/:project_id/os-volume-manage
+// ManageVolume handles POST /v3/os-volume-manage
 func (svc *Service) ManageVolume(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var req struct {
 		Volume struct {
-			Host       string                 `json:"host" binding:"required"`
-			Ref        map[string]any `json:"ref" binding:"required"`
-			Name       string                 `json:"name"`
-			VolumeType string                 `json:"volume_type"`
-			Metadata   map[string]string      `json:"metadata"`
+			Host       string            `json:"host" binding:"required"`
+			Ref        map[string]any    `json:"ref" binding:"required"`
+			Name       string            `json:"name"`
+			VolumeType string            `json:"volume_type"`
+			Metadata   map[string]string `json:"metadata"`
 		} `json:"volume" binding:"required"`
 	}
 
@@ -61,7 +61,7 @@ func (svc *Service) ManageVolume(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"volume": volume})
 }
 
-// ListManageableVolumes handles GET /v3/:project_id/manageable_volumes
+// ListManageableVolumes handles GET /v3/manageable_volumes
 func (svc *Service) ListManageableVolumes(c *gin.Context) {
 	host := c.Query("host")
 
@@ -117,16 +117,16 @@ func (svc *Service) UnmanageVolume(c *gin.Context, volumeID string) {
 	c.Status(http.StatusAccepted)
 }
 
-// ManageSnapshot handles POST /v3/:project_id/os-snapshot-manage
+// ManageSnapshot handles POST /v3/os-snapshot-manage
 func (svc *Service) ManageSnapshot(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var req struct {
 		Snapshot struct {
-			VolumeID string                 `json:"volume_id" binding:"required"`
-			Ref      map[string]any `json:"ref" binding:"required"`
-			Name     string                 `json:"name"`
-			Metadata map[string]string      `json:"metadata"`
+			VolumeID string            `json:"volume_id" binding:"required"`
+			Ref      map[string]any    `json:"ref" binding:"required"`
+			Name     string            `json:"name"`
+			Metadata map[string]string `json:"metadata"`
 		} `json:"snapshot" binding:"required"`
 	}
 

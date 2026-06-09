@@ -36,7 +36,7 @@ func (svc *Service) ListQoSPolicies(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id          string
-			projectID      string
+			projectID   string
 			name        string
 			description *string
 			shared      bool

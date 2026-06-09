@@ -1,8 +1,8 @@
 package neutron
 
 import (
-	"errors"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -364,8 +364,9 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 	// Update NAT rules if internal IP or port changed
 	if needsNATUpdate && routerID.Valid {
 		externalInterface := "qg-ext-" + routerID.String[:7]
-		// Remove old NAT rule
-		svc.routerManager.RemovePortForwarding(
+		// Remove old NAT rule (best-effort: a new rule is added next; a
+		// stale leftover would be overwritten or pruned on the next sync).
+		if err := svc.routerManager.RemovePortForwarding(
 			routerID.String,
 			floatingIP.String,
 			currentPF.ExternalPort,
@@ -373,7 +374,9 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 			currentPF.InternalPort,
 			currentPF.Protocol,
 			externalInterface,
-		)
+		); err != nil {
+			log.Warn().Err(err).Str("router_id", routerID.String).Str("floating_ip", floatingIP.String).Msg("failed to remove old port-forwarding NAT rule")
+		}
 
 		// Add new NAT rule with updated values
 		newInternalIP := currentPF.InternalIPAddress

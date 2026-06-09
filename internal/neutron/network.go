@@ -1,22 +1,23 @@
 package neutron
 
 import (
-	"errors"
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // Service handles Neutron API endpoints
@@ -147,7 +148,6 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		v2.GET("/floatingips/:id", svc.GetFloatingIP)
 		v2.PUT("/floatingips/:id", svc.UpdateFloatingIP)
 		v2.DELETE("/floatingips/:id", svc.DeleteFloatingIP)
-
 
 		// Port Forwarding (nested under floatingips)
 		v2.GET("/floatingips/:id/port_forwardings", svc.ListPortForwardings)
@@ -293,52 +293,18 @@ func (svc *Service) ListExtensions(c *gin.Context) {
 	})
 }
 
-// GetQuota returns network quotas for a project
+// GetQuota returns network quotas for a project (limits only; use
+// GetQuotaDetails for limits + usage).
 func (svc *Service) GetQuota(c *gin.Context) {
-	projectID := c.Param("id")
-
-	// Query current usage from database
-	var networksUsed, subnetsUsed, portsUsed, routersUsed, floatingIPsUsed, securityGroupsUsed int
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM networks WHERE project_id = $1",
-		projectID,
-	).Scan(&networksUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM subnets WHERE project_id = $1",
-		projectID,
-	).Scan(&subnetsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM ports WHERE project_id = $1",
-		projectID,
-	).Scan(&portsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM routers WHERE project_id = $1",
-		projectID,
-	).Scan(&routersUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM floating_ips WHERE project_id = $1",
-		projectID,
-	).Scan(&floatingIPsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM security_groups WHERE project_id = $1",
-		projectID,
-	).Scan(&securityGroupsUsed)
-
 	// Return quota response
 	c.JSON(200, gin.H{
 		"quota": gin.H{
-			"network":            100,
-			"subnet":             100,
-			"port":               500,
-			"router":             10,
-			"floatingip":         50,
-			"security_group":     100,
+			"network":             100,
+			"subnet":              100,
+			"port":                500,
+			"router":              10,
+			"floatingip":          50,
+			"security_group":      100,
 			"security_group_rule": 500,
 		},
 	})
@@ -348,38 +314,27 @@ func (svc *Service) GetQuota(c *gin.Context) {
 func (svc *Service) GetQuotaDetails(c *gin.Context) {
 	projectID := c.Param("id")
 
-	// Query current usage
+	// Query current usage. Scan failures degrade to zero (the quota
+	// response still ships) and are logged for diagnosis.
 	var networksUsed, subnetsUsed, portsUsed, routersUsed, floatingIPsUsed, securityGroupsUsed int
 
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM networks WHERE project_id = $1",
-		projectID,
-	).Scan(&networksUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM subnets WHERE project_id = $1",
-		projectID,
-	).Scan(&subnetsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM ports WHERE project_id = $1",
-		projectID,
-	).Scan(&portsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM routers WHERE project_id = $1",
-		projectID,
-	).Scan(&routersUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM floating_ips WHERE project_id = $1",
-		projectID,
-	).Scan(&floatingIPsUsed)
-
-	database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM security_groups WHERE project_id = $1",
-		projectID,
-	).Scan(&securityGroupsUsed)
+	usageQueries := []struct {
+		label string
+		sql   string
+		dst   *int
+	}{
+		{"networks", "SELECT COUNT(*) FROM networks WHERE project_id = $1", &networksUsed},
+		{"subnets", "SELECT COUNT(*) FROM subnets WHERE project_id = $1", &subnetsUsed},
+		{"ports", "SELECT COUNT(*) FROM ports WHERE project_id = $1", &portsUsed},
+		{"routers", "SELECT COUNT(*) FROM routers WHERE project_id = $1", &routersUsed},
+		{"floating_ips", "SELECT COUNT(*) FROM floating_ips WHERE project_id = $1", &floatingIPsUsed},
+		{"security_groups", "SELECT COUNT(*) FROM security_groups WHERE project_id = $1", &securityGroupsUsed},
+	}
+	for _, q := range usageQueries {
+		if err := database.DB.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
+			log.Warn().Err(err).Str("resource", q.label).Str("project_id", projectID).Msg("failed to query quota usage")
+		}
+	}
 
 	// Return quota details with usage
 	c.JSON(200, gin.H{
@@ -490,6 +445,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 			"status":         "ACTIVE",
 			"shared":         shared,
 			"mtu":            mtu,
+			"subnets":        []string{},
 			"created_at":     now.Format(time.RFC3339),
 			"updated_at":     now.Format(time.RFC3339),
 		},
@@ -582,6 +538,11 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		networks = []gin.H{}
 	}
 
+	// Populate subnet IDs for each network (rows above are fully consumed).
+	for _, n := range networks {
+		n["subnets"] = svc.networkSubnetIDs(c.Request.Context(), n["id"].(string))
+	}
+
 	c.JSON(http.StatusOK, gin.H{"networks": networks})
 }
 
@@ -596,6 +557,10 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		cacheKey := "network:" + networkID
 		var cached gin.H
 		if err := svc.cache.Get(ctx, cacheKey, &cached); err == nil {
+			// subnets are queried fresh so they reflect later subnet changes
+			if id, ok := cached["id"].(string); ok {
+				cached["subnets"] = svc.networkSubnetIDs(ctx, id)
+			}
 			c.JSON(http.StatusOK, gin.H{"network": cached})
 			return
 		}
@@ -636,10 +601,13 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		"updated_at":     updatedAt.Format(time.RFC3339),
 	}
 
-	// Store in cache (30min TTL per config)
+	// Store in cache (30min TTL per config) before adding the dynamic subnet
+	// list, so cached entries never carry a stale subnets field.
 	if svc.cache != nil {
-		svc.cache.Set(ctx, "network:"+id, network, 30*time.Minute)
+		svc.cache.TrySet(ctx, "network:"+id, network, 30*time.Minute)
 	}
+
+	network["subnets"] = svc.networkSubnetIDs(ctx, id)
 
 	c.JSON(http.StatusOK, gin.H{"network": network})
 }
@@ -670,8 +638,11 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 	bridgeName := "br-" + networkID[:8]
 	nsName := svc.nsManager.GetNamespaceName(projectID)
 
-	// Delete bridge
-	svc.brManager.DeleteBridge(bridgeName, true, nsName)
+	// Delete bridge (best-effort: a leftover bridge is hygiene, not
+	// correctness — the network row is about to be deleted).
+	if err := svc.brManager.DeleteBridge(bridgeName, true, nsName); err != nil {
+		log.Warn().Err(err).Str("bridge", bridgeName).Str("namespace", nsName).Msg("failed to delete network bridge")
+	}
 
 	// Delete from database
 	_, err := database.DB.Exec(ctx,
@@ -686,8 +657,8 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 
 	// Invalidate cache
 	if svc.cache != nil {
-		svc.cache.Delete(ctx, "network:"+networkID)
-		svc.cache.DeletePattern(ctx, "networks:*")
+		svc.cache.TryDelete(ctx, "network:"+networkID)
+		svc.cache.TryDeletePattern(ctx, "networks:*")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -827,15 +798,18 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 			LeaseTime:      "24h",
 		}
 
-		go svc.dhcpManager.StartDHCP(dhcpConfig, nsName)
+		go func() {
+			if err := svc.dhcpManager.StartDHCP(dhcpConfig, nsName); err != nil {
+				log.Warn().Err(err).Str("namespace", nsName).Str("network_id", dhcpConfig.NetworkID).Msg("failed to start DHCP server for subnet")
+			}
+		}()
 	}
 
-	// Calculate allocation pools (entire subnet minus gateway)
-	allocationPools := []gin.H{
-		{
-			"start": incrementIP(ipNet.IP, 2).String(), // Skip network address and gateway
-			"end":   decrementIP(broadcast(ipNet), 1).String(), // Skip broadcast
-		},
+	// OpenStack clients format these as lists and fail on JSON null, so
+	// default an omitted dns_nameservers to an empty slice.
+	dnsNameservers := req.Subnet.DNSNameservers
+	if dnsNameservers == nil {
+		dnsNameservers = []string{}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -848,8 +822,10 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 			"gateway_ip":       gatewayIP,
 			"ip_version":       ipVersion,
 			"enable_dhcp":      enableDHCP,
-			"dns_nameservers":  req.Subnet.DNSNameservers,
-			"allocation_pools": allocationPools,
+			"dns_nameservers":  dnsNameservers,
+			"allocation_pools": subnetAllocationPools(req.Subnet.CIDR),
+			"host_routes":      []gin.H{},
+			"service_types":    []string{},
 			"created_at":       now.Format(time.RFC3339),
 			"updated_at":       now.Format(time.RFC3339),
 		},
@@ -923,18 +899,25 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 			continue
 		}
 
+		if dnsNameservers == nil {
+			dnsNameservers = []string{}
+		}
+
 		subnets = append(subnets, gin.H{
-			"id":              id,
-			"name":            name,
-			"network_id":      networkID,
-			"tenant_id":       projectID,
-			"cidr":            cidr,
-			"gateway_ip":      gatewayIP,
-			"ip_version":      ipVersion,
-			"enable_dhcp":     enableDHCP,
-			"dns_nameservers": dnsNameservers,
-			"created_at":      createdAt.Format(time.RFC3339),
-			"updated_at":      updatedAt.Format(time.RFC3339),
+			"id":               id,
+			"name":             name,
+			"network_id":       networkID,
+			"tenant_id":        projectID,
+			"cidr":             cidr,
+			"gateway_ip":       gatewayIP,
+			"ip_version":       ipVersion,
+			"enable_dhcp":      enableDHCP,
+			"dns_nameservers":  dnsNameservers,
+			"allocation_pools": subnetAllocationPools(cidr),
+			"host_routes":      []gin.H{},
+			"service_types":    []string{},
+			"created_at":       createdAt.Format(time.RFC3339),
+			"updated_at":       updatedAt.Format(time.RFC3339),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -959,11 +942,14 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	var dnsNameservers []string
 	var createdAt, updatedAt time.Time
 
+	// id::text comparison resolves by UUID or name without crashing on a
+	// non-UUID identifier (the CLI looks up by name this way).
 	err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
-		WHERE s.id = $1 AND (s.project_id = $2 OR n.shared = true)
+		WHERE (s.id::text = $1 OR s.name = $1) AND (s.project_id = $2 OR n.shared = true)
+		LIMIT 1
 	`, subnetID, projectID).Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -976,19 +962,26 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 		return
 	}
 
+	if dnsNameservers == nil {
+		dnsNameservers = []string{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"subnet": gin.H{
-			"id":              id,
-			"name":            name,
-			"network_id":      networkID,
-			"tenant_id":       projectID,
-			"cidr":            cidr,
-			"gateway_ip":      gatewayIP,
-			"ip_version":      ipVersion,
-			"enable_dhcp":     enableDHCP,
-			"dns_nameservers": dnsNameservers,
-			"created_at":      createdAt.Format(time.RFC3339),
-			"updated_at":      updatedAt.Format(time.RFC3339),
+			"id":               id,
+			"name":             name,
+			"network_id":       networkID,
+			"tenant_id":        projectID,
+			"cidr":             cidr,
+			"gateway_ip":       gatewayIP,
+			"ip_version":       ipVersion,
+			"enable_dhcp":      enableDHCP,
+			"dns_nameservers":  dnsNameservers,
+			"allocation_pools": subnetAllocationPools(cidr),
+			"host_routes":      []gin.H{},
+			"service_types":    []string{},
+			"created_at":       createdAt.Format(time.RFC3339),
+			"updated_at":       updatedAt.Format(time.RFC3339),
 		},
 	})
 }
@@ -998,25 +991,36 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 	subnetID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Get network ID to stop DHCP
-	var networkID string
+	// Resolve subnet by UUID or name to its canonical ID (and network for DHCP).
+	var resolvedID, networkID string
 	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT network_id FROM subnets WHERE id = $1 AND project_id = $2",
+		"SELECT id, network_id FROM subnets WHERE (id::text = $1 OR name = $1) AND project_id = $2 LIMIT 1",
 		subnetID, projectID,
-	).Scan(&networkID)
+	).Scan(&resolvedID, &networkID)
 
-	if err == nil {
-		// Stop DHCP server
-		svc.dhcpManager.StopDHCP(networkID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("subnet"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", subnetID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+		return
+	}
+
+	// Stop DHCP server (best-effort: a leftover dnsmasq is hygiene,
+	// not correctness — the subnet row is about to be deleted).
+	if err := svc.dhcpManager.StopDHCP(networkID); err != nil {
+		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to stop DHCP server")
 	}
 
 	// Delete from database
 	_, err = database.DB.Exec(c.Request.Context(),
 		"DELETE FROM subnets WHERE id = $1 AND project_id = $2",
-		subnetID, projectID,
+		resolvedID, projectID,
 	)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", subnetID).Msg("database error")
+		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
 		return
 	}
@@ -1039,12 +1043,12 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		return
 	}
 
-	// Check subnet exists
-	var currentName string
+	// Resolve subnet by UUID or name to its canonical ID.
+	var resolvedID, currentName string
 	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT name FROM subnets WHERE id = $1 AND project_id = $2",
+		"SELECT id, name FROM subnets WHERE (id::text = $1 OR name = $1) AND project_id = $2 LIMIT 1",
 		subnetID, projectID,
-	).Scan(&currentName)
+	).Scan(&resolvedID, &currentName)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
@@ -1062,11 +1066,11 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	}
 
 	_, err = database.DB.Exec(c.Request.Context(),
-		"UPDATE subnets SET name = $1 WHERE id = $2",
-		currentName, subnetID,
+		"UPDATE subnets SET name = $1 WHERE id = $2 AND project_id = $3",
+		currentName, resolvedID, projectID,
 	)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", subnetID).Msg("database error")
+		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update subnet"))
 		return
 	}
@@ -1074,10 +1078,12 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	// Return updated subnet
 	var networkID, cidr, gatewayIP string
 	var ipVersion int
+	var enableDHCP bool
+	var dnsNameservers []string
 	err = database.DB.QueryRow(c.Request.Context(),
-		"SELECT network_id, cidr, gateway_ip, ip_version FROM subnets WHERE id = $1",
-		subnetID,
-	).Scan(&networkID, &cidr, &gatewayIP, &ipVersion)
+		"SELECT network_id, cidr, gateway_ip, ip_version, enable_dhcp, dns_nameservers FROM subnets WHERE id = $1",
+		resolvedID,
+	).Scan(&networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_subnet_fetch").Str("subnet_id", subnetID).Msg("database error")
@@ -1085,15 +1091,24 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		return
 	}
 
+	if dnsNameservers == nil {
+		dnsNameservers = []string{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"subnet": gin.H{
-			"id":          subnetID,
-			"name":        currentName,
-			"network_id":  networkID,
-			"cidr":        cidr,
-			"gateway_ip":  gatewayIP,
-			"ip_version":  ipVersion,
-			"tenant_id":   projectID,
+			"id":               resolvedID,
+			"name":             currentName,
+			"network_id":       networkID,
+			"tenant_id":        projectID,
+			"cidr":             cidr,
+			"gateway_ip":       gatewayIP,
+			"ip_version":       ipVersion,
+			"enable_dhcp":      enableDHCP,
+			"dns_nameservers":  dnsNameservers,
+			"allocation_pools": subnetAllocationPools(cidr),
+			"host_routes":      []gin.H{},
+			"service_types":    []string{},
 		},
 	})
 }
@@ -1160,6 +1175,46 @@ func broadcast(ipNet *net.IPNet) net.IP {
 		broadcast[i] = ip[i] | ^mask[i]
 	}
 	return broadcast
+}
+
+// networkSubnetIDs returns the subnet IDs belonging to a network, newest first.
+// It always returns a non-nil slice so the JSON response serializes as a list,
+// and is queried fresh (never cached) so network responses reflect subnet
+// additions/removals immediately.
+func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) []string {
+	ids := []string{}
+	rows, err := database.DB.Query(ctx,
+		"SELECT id FROM subnets WHERE network_id = $1 ORDER BY created_at DESC", networkID)
+	if err != nil {
+		log.Error().Err(err).Str("network_id", networkID).Msg("failed to list subnets for network")
+		return ids
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// subnetAllocationPools computes the default allocation pool for a subnet CIDR
+// (network address + 2 through broadcast - 1). It always returns a non-nil
+// slice so the JSON response serializes as a list, never null — OpenStack
+// clients format allocation_pools as a list and choke on null.
+func subnetAllocationPools(cidr string) []gin.H {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil || ipNet.IP.To4() == nil {
+		return []gin.H{}
+	}
+	return []gin.H{
+		{
+			"start": incrementIP(ipNet.IP, 2).String(),
+			"end":   decrementIP(broadcast(ipNet), 1).String(),
+		},
+	}
 }
 
 func updateString(updates []string) string {

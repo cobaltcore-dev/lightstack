@@ -152,7 +152,7 @@ func TestCinderManageSnapshot_Contract(t *testing.T) {
 func createDBVolume(t *testing.T, name string) string {
 	t.Helper()
 
-	cmd := `docker exec o3k-postgres psql -U lightstack -d lightstack -c "INSERT INTO volumes (id, name, size_gb, status, project_id, created_at, updated_at) SELECT gen_random_uuid(), '` + name + `', 1, 'available', id, NOW(), NOW() FROM projects WHERE name='default' LIMIT 1 RETURNING id;" | grep -E '[a-f0-9]{8}-[a-f0-9]{4}' | tr -d ' '`
+	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "INSERT INTO volumes (id, name, size_gb, status, project_id, created_at, updated_at) SELECT gen_random_uuid(), '` + name + `', 1, 'available', id, NOW(), NOW() FROM projects WHERE name='default' LIMIT 1 RETURNING id;" | grep -E '[a-f0-9]{8}-[a-f0-9]{4}' | tr -d ' '`
 
 	output, err := exec.Command("sh", "-c", cmd).Output()
 	if err != nil {

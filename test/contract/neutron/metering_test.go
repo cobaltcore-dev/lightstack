@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,7 +17,7 @@ import (
 func TestNeutronListMeteringLabels_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	url := client.ServiceURL("metering", "metering-labels")
 	req, err := http.NewRequest("GET", url, nil)
@@ -44,7 +45,7 @@ func TestNeutronListMeteringLabels_Contract(t *testing.T) {
 func TestNeutronCreateMeteringLabel_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create metering label
 	payload := map[string]interface{}{
@@ -90,7 +91,7 @@ func TestNeutronCreateMeteringLabel_Contract(t *testing.T) {
 func TestNeutronGetMeteringLabel_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create label first
 	labelID := createTestMeteringLabel(t, client, "test-label-get")
@@ -125,7 +126,7 @@ func TestNeutronGetMeteringLabel_Contract(t *testing.T) {
 func TestNeutronDeleteMeteringLabel_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create label first
 	labelID := createTestMeteringLabel(t, client, "test-label-delete")
@@ -147,7 +148,7 @@ func TestNeutronDeleteMeteringLabel_Contract(t *testing.T) {
 func TestNeutronListMeteringLabelRules_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	url := client.ServiceURL("metering", "metering-label-rules")
 	req, err := http.NewRequest("GET", url, nil)
@@ -175,7 +176,7 @@ func TestNeutronListMeteringLabelRules_Contract(t *testing.T) {
 func TestNeutronCreateMeteringLabelRule_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create label first
 	labelID := createTestMeteringLabel(t, client, "test-label-for-rule")

@@ -311,7 +311,7 @@ O3K can be configured through YAML files or environment variables.
 ```yaml
 # config/o3k.yaml
 database:
-  url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
+  url: "postgres://o3k:secret@localhost/o3k?sslmode=disable"
 
 keystone:
   jwt_secret: "change-me-in-production"

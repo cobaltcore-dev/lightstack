@@ -34,7 +34,7 @@ func (svc *Service) ListGroups(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id          string
-			projectID      string
+			projectID   string
 			name        *string
 			description *string
 			status      string

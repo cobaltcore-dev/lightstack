@@ -12,21 +12,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/rs/zerolog/log"
 )
 
 // ImageStore manages image storage operations
 type ImageStore struct {
-	mode        string // "stub", "local", "rbd", "s3", or combinations like "local,rbd", "local,s3"
-	cephPool    string
-	cephConf    string
-	s3Bucket    string
-	s3Region    string
-	s3Endpoint  string
-	timeout     time.Duration
-	localPath   string
-	mu          sync.Mutex
-	stubImages  map[string]*stubImage // For stub mode
-	s3Client    *s3.Client
+	mode       string // "stub", "local", "rbd", "s3", or combinations like "local,rbd", "local,s3"
+	cephPool   string
+	cephConf   string
+	s3Bucket   string
+	s3Region   string
+	s3Endpoint string
+	timeout    time.Duration
+	localPath  string
+	mu         sync.Mutex
+	stubImages map[string]*stubImage // For stub mode
+	s3Client   *s3.Client
 }
 
 // stubImage represents a simulated image
@@ -36,8 +37,19 @@ type stubImage struct {
 	createdAt time.Time
 }
 
-// NewImageStore creates a new image store
-func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string) *ImageStore {
+// NewImageStore creates a new image store.
+//
+// Failure policy follows the project's "Fail-Fast Design" principle
+// (CLAUDE.md / docs/ARCHITECTURE.md) for external dependencies, combined
+// with the per-mode behaviour documented in docs/STORAGE_MODES.md:
+//
+//   - mode == "s3" (S3 is the only backend): an S3 client init failure is
+//     fatal — return the error so the caller (Glance) can refuse to start.
+//   - hybrid modes containing "s3" (e.g. "local,s3", "rbd,s3"): log the
+//     error and continue. The documented "Automatic S3 fallback" lets the
+//     primary backend serve traffic; S3 operations will surface
+//     "S3 client not initialized" until the config is corrected.
+func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string) (*ImageStore, error) {
 	// Use /var/lib/o3k/images for local storage (Docker-friendly)
 	// Falls back to ~/.o3k/images for non-containerized deployments
 	localPath := "/var/lib/o3k/images"
@@ -65,10 +77,19 @@ func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint stri
 
 	// Initialize S3 client if needed
 	if mode == "s3" || containsMode(mode, "s3") {
-		store.initS3Client()
+		if err := store.initS3Client(); err != nil {
+			if mode == "s3" {
+				return nil, fmt.Errorf("S3 is the configured storage mode but S3 client init failed: %w", err)
+			}
+			log.Error().Err(err).
+				Str("mode", mode).
+				Str("region", s3Region).
+				Str("endpoint", s3Endpoint).
+				Msg("S3 client init failed; falling back to other configured backend(s)")
+		}
 	}
 
-	return store
+	return store, nil
 }
 
 // containsMode checks if a mode string contains a specific mode
@@ -154,6 +175,21 @@ func (s *ImageStore) UploadImage(ctx context.Context, imageID string, reader io.
 	}
 }
 
+// ctxReader wraps an io.Reader so that long-running copies honor a
+// context's deadline or cancellation. Local file I/O doesn't natively
+// respect context.Context, so we check between Read calls.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (cr *ctxReader) Read(p []byte) (int, error) {
+	if err := cr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return cr.r.Read(p)
+}
+
 // uploadImageStub simulates image upload
 func (s *ImageStore) uploadImageStub(imageID string, reader io.Reader) (int64, error) {
 	s.mu.Lock()
@@ -188,8 +224,9 @@ func (s *ImageStore) uploadImageLocal(ctx context.Context, imageID string, reade
 	}
 	defer file.Close()
 
-	// Copy data from reader to file
-	size, err := io.Copy(file, reader)
+	// Copy data from reader to file. Wrap the source so the timeout
+	// actually fires — os.File doesn't natively respect context.
+	size, err := io.Copy(file, &ctxReader{ctx: ctx, r: reader})
 	if err != nil {
 		_ = os.Remove(imagePath) // Cleanup on error
 		return 0, fmt.Errorf("failed to write image data: %w", err)
@@ -198,20 +235,19 @@ func (s *ImageStore) uploadImageLocal(ctx context.Context, imageID string, reade
 	return size, nil
 }
 
-// uploadImageRBD uploads image to RBD
-func (s *ImageStore) uploadImageRBD(ctx context.Context, imageID string, reader io.Reader) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
+// uploadImageRBD uploads image to RBD. This is a stub pending go-ceph
+// integration; once wired up, restore the WithTimeout(ctx, s.timeout)
+// guard around the exec.CommandContext call.
+func (s *ImageStore) uploadImageRBD(_ context.Context, imageID string, _ io.Reader) (int64, error) {
 	imageName := "image-" + imageID
 
 	// TODO: Use go-ceph to write to RBD
+	// ctx, cancel := context.WithTimeout(ctx, s.timeout); defer cancel()
 	// cmd := exec.CommandContext(ctx, "rbd", "import", "-", fmt.Sprintf("%s/%s", s.cephPool, imageName))
 	// cmd.Stdin = reader
 	// return cmd.Run()
 
-	_ = imageName
-	return 0, fmt.Errorf("Ceph cluster not configured (would upload to %s/%s)", s.cephPool, imageName)
+	return 0, fmt.Errorf("ceph cluster not configured (would upload to %s/%s)", s.cephPool, imageName)
 }
 
 // uploadImageS3 uploads image to S3
@@ -346,23 +382,25 @@ func (s *ImageStore) downloadImageLocal(ctx context.Context, imageID string, wri
 	}
 	defer file.Close()
 
-	_, err = io.Copy(writer, file)
+	// Wrap the source so the timeout actually fires — os.File doesn't
+	// natively respect context.
+	_, err = io.Copy(writer, &ctxReader{ctx: ctx, r: file})
 	return err
 }
 
-// downloadImageRBD downloads from RBD
-func (s *ImageStore) downloadImageRBD(ctx context.Context, imageID string, writer io.Writer) error {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
+// downloadImageRBD downloads from RBD. This is a stub pending go-ceph
+// integration; once wired up, restore the WithTimeout(ctx, s.timeout)
+// guard around the exec.CommandContext call.
+func (s *ImageStore) downloadImageRBD(_ context.Context, imageID string, _ io.Writer) error {
 	imageName := "image-" + imageID
 
 	// TODO: Use go-ceph
+	// ctx, cancel := context.WithTimeout(ctx, s.timeout); defer cancel()
 	// cmd := exec.CommandContext(ctx, "rbd", "export", fmt.Sprintf("%s/%s", s.cephPool, imageName), "-")
 	// cmd.Stdout = writer
 	// return cmd.Run()
 
-	return fmt.Errorf("Ceph cluster not configured (would download from %s/%s)", s.cephPool, imageName)
+	return fmt.Errorf("ceph cluster not configured (would download from %s/%s)", s.cephPool, imageName)
 }
 
 // downloadImageS3 downloads from S3
@@ -450,18 +488,18 @@ func (s *ImageStore) deleteImageLocal(ctx context.Context, imageID string) error
 	return err
 }
 
-// deleteImageRBD deletes from RBD
-func (s *ImageStore) deleteImageRBD(ctx context.Context, imageID string) error {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
+// deleteImageRBD deletes from RBD. This is a stub pending go-ceph
+// integration; once wired up, restore the WithTimeout(ctx, s.timeout)
+// guard around the exec.CommandContext call.
+func (s *ImageStore) deleteImageRBD(_ context.Context, imageID string) error {
 	imageName := "image-" + imageID
 
 	// TODO: Use go-ceph
+	// ctx, cancel := context.WithTimeout(ctx, s.timeout); defer cancel()
 	// cmd := exec.CommandContext(ctx, "rbd", "rm", fmt.Sprintf("%s/%s", s.cephPool, imageName))
 	// return cmd.Run()
 
-	return fmt.Errorf("Ceph cluster not configured (would delete %s/%s)", s.cephPool, imageName)
+	return fmt.Errorf("ceph cluster not configured (would delete %s/%s)", s.cephPool, imageName)
 }
 
 // deleteImageS3 deletes from S3
@@ -533,19 +571,20 @@ func (s *ImageStore) imageExistsLocal(imageID string) (bool, error) {
 	return false, err
 }
 
-// imageExistsRBD checks if image exists in RBD
-func (s *ImageStore) imageExistsRBD(ctx context.Context, imageID string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
+// imageExistsRBD checks if image exists in RBD. This is a stub pending
+// go-ceph integration; once wired up, restore the
+// WithTimeout(ctx, s.timeout) guard around the exec.CommandContext
+// call.
+func (s *ImageStore) imageExistsRBD(_ context.Context, imageID string) (bool, error) {
 	imageName := "image-" + imageID
 
 	// TODO: Use go-ceph
+	// ctx, cancel := context.WithTimeout(ctx, s.timeout); defer cancel()
 	// cmd := exec.CommandContext(ctx, "rbd", "info", fmt.Sprintf("%s/%s", s.cephPool, imageName))
 	// err := cmd.Run()
 	// return err == nil, nil
 
-	return false, fmt.Errorf("Ceph cluster not configured (would check %s/%s)", s.cephPool, imageName)
+	return false, fmt.Errorf("ceph cluster not configured (would check %s/%s)", s.cephPool, imageName)
 }
 
 // imageExistsS3 checks if image exists in S3
@@ -603,7 +642,7 @@ func (s *ImageStore) GetImageSize(ctx context.Context, imageID string) (int64, e
 		return s.getImageSizeS3(ctx, imageID)
 	case "rbd", "local,rbd", "rbd,s3":
 		// For RBD, would parse rbd info output
-		return 0, fmt.Errorf("Ceph cluster not configured")
+		return 0, fmt.Errorf("ceph cluster not configured")
 	default:
 		return 0, fmt.Errorf("unsupported storage mode: %s", s.mode)
 	}

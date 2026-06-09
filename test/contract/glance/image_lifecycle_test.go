@@ -46,16 +46,6 @@ func TestGlanceImageCreate_Contract(t *testing.T) {
 	assert.Equal(t, image.ID, fetchedImage.ID)
 }
 
-// TestGlanceImageUpload_Contract tests image data upload
-func TestGlanceImageUpload_Contract(t *testing.T) {
-	t.Skip("Image upload/download tested in image_data_test.go")
-}
-
-// TestGlanceImageDownload_Contract tests image data download
-func TestGlanceImageDownload_Contract(t *testing.T) {
-	t.Skip("Image upload/download tested in image_data_test.go")
-}
-
 // TestGlanceImageList_Contract tests listing images
 func TestGlanceImageList_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
@@ -70,11 +60,6 @@ func TestGlanceImageList_Contract(t *testing.T) {
 	require.NoError(t, err, "Failed to extract images from pages")
 	// Empty list is valid - just verify no error occurred
 	assert.GreaterOrEqual(t, len(allImages), 0, "Image list length should be >= 0")
-}
-
-// TestGlanceImageUpdate_Contract tests image update
-func TestGlanceImageUpdate_Contract(t *testing.T) {
-	t.Skip("Image PATCH update API is complex in gophercloud v1, tested via HTTP in other tests")
 }
 
 // TestGlanceImageDelete_Contract tests image deletion

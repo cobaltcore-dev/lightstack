@@ -1,9 +1,9 @@
 package keystone
 
 import (
-	"errors"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -98,11 +98,11 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 
 	var req struct {
 		ApplicationCredential struct {
-			Name         string                   `json:"name" binding:"required"`
-			Description  string                   `json:"description"`
-			ProjectID    string                   `json:"project_id"`
-			ExpiresAt    string                   `json:"expires_at"`
-			Unrestricted bool                     `json:"unrestricted"`
+			Name         string           `json:"name" binding:"required"`
+			Description  string           `json:"description"`
+			ProjectID    string           `json:"project_id"`
+			ExpiresAt    string           `json:"expires_at"`
+			Unrestricted bool             `json:"unrestricted"`
 			Roles        []map[string]any `json:"roles"`
 		} `json:"application_credential"`
 	}
@@ -150,13 +150,18 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 		return
 	}
 
-	// Associate roles
+	// Associate roles. A failed role insert is logged but doesn't
+	// abort: the credential row already exists; missing roles will
+	// limit what it can do but the API caller still gets a working
+	// credential they can re-grant manually.
 	for _, role := range req.ApplicationCredential.Roles {
 		roleID := role["id"].(string)
-		database.DB.Exec(c.Request.Context(), `
+		if _, err := database.DB.Exec(c.Request.Context(), `
 			INSERT INTO application_credential_roles (application_credential_id, role_id)
 			VALUES ($1, $2)
-		`, credID, roleID)
+		`, credID, roleID); err != nil {
+			log.Warn().Err(err).Str("credential_id", credID.String()).Str("role_id", roleID).Msg("failed to associate role with application credential")
+		}
 	}
 
 	credential := map[string]any{

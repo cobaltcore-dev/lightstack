@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/cobaltcore-dev/o3k/internal/cinder"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/compute"
@@ -25,6 +24,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/placement"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/gin-gonic/gin"
 )
 
 var (
@@ -193,7 +193,7 @@ func main() {
 	if glanceStorageMode == "" {
 		glanceStorageMode = "stub"
 	}
-	glanceService := glance.NewService(
+	glanceService, err := glance.NewService(
 		glanceStorageMode,
 		cfg.Glance.CephPool,
 		cfg.Glance.CephConf,
@@ -202,6 +202,9 @@ func main() {
 		cfg.Glance.S3Endpoint,
 		cacheInstance,
 	)
+	if err != nil {
+		log.Fatalf("Failed to initialize Glance: %v", err)
+	}
 	log.Printf("Glance initialized in %s mode", glanceStorageMode)
 
 	// Initialize metadata service

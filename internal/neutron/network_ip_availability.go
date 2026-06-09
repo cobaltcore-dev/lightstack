@@ -46,11 +46,11 @@ func (svc *Service) ListNetworkIPAvailabilities(c *gin.Context) {
 		usedIPs := 0                  // Stub: assume no IPs used
 
 		availabilities = append(availabilities, gin.H{
-			"network_id":   networkID,
-			"network_name": name,
-			"project_id":   projectID,
-			"total_ips":    totalIPs,
-			"used_ips":     usedIPs,
+			"network_id":             networkID,
+			"network_name":           name,
+			"project_id":             projectID,
+			"total_ips":              totalIPs,
+			"used_ips":               usedIPs,
 			"subnet_ip_availability": []gin.H{
 				// Would list per-subnet availability in real mode
 			},

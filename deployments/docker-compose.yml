@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # PostgreSQL Database
@@ -6,15 +6,15 @@ services:
     image: postgres:18.3-alpine
     container_name: o3k-postgres
     environment:
-      POSTGRES_DB: lightstack
-      POSTGRES_USER: lightstack
+      POSTGRES_DB: o3k
+      POSTGRES_USER: o3k
       POSTGRES_PASSWORD: secret
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lightstack"]
+      test: ["CMD-SHELL", "pg_isready -U o3k"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -51,20 +51,20 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "35357:35357"  # Keystone (Identity)
-      - "8774:8774"    # Nova (Compute)
-      - "9696:9696"    # Neutron (Network)
-      - "8776:8776"    # Cinder (Block Storage)
-      - "9292:9292"    # Glance (Image)
-      - "8775:8775"    # Metadata Service
+      - "35357:35357" # Keystone (Identity)
+      - "8774:8774" # Nova (Compute)
+      - "9696:9696" # Neutron (Network)
+      - "8776:8776" # Cinder (Block Storage)
+      - "9292:9292" # Glance (Image)
+      - "8775:8775" # Metadata Service
     environment:
-      O3K_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
+      O3K_DB_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
       O3K_REDIS_URL: "redis://redis:6379/0"
       O3K_CACHE_ENABLED: "true"
       O3K_JWT_SECRET: "${O3K_JWT_SECRET:-change-me-in-production}"
       O3K_LOG_LEVEL: "info"
       O3K_LOG_FORMAT: "json"
-      O3K_ENDPOINT_HOST: "localhost"  # Use localhost for service catalog URLs (accessible from host)
+      O3K_ENDPOINT_HOST: "localhost" # Use localhost for service catalog URLs (accessible from host)
     networks:
       - o3k-network
     restart: unless-stopped

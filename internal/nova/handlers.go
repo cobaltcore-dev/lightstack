@@ -1,38 +1,38 @@
 package nova
 
 import (
-	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/internal/middleware"
 	"github.com/cobaltcore-dev/o3k/internal/neutron"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // Service handles Nova API endpoints
 type Service struct {
-	libvirtURI    string
-	libvirtMode   string
-	vmManager     *hypervisor.VMManager
-	cache         *cache.Cache
-	neutronSvc    NeutronService // For port allocation
-	wg            sync.WaitGroup
-	ctx           context.Context
-	cancel        context.CancelFunc
+	libvirtURI  string
+	libvirtMode string
+	vmManager   *hypervisor.VMManager
+	cache       *cache.Cache
+	neutronSvc  NeutronService // For port allocation
+	wg          sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 const (
@@ -367,9 +367,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Error().Interface("panic", r).Str("instance_id", instanceID).Msg("PANIC in VM creation goroutine")
-					database.DB.Exec(context.Background(),
+					if _, err := database.DB.Exec(context.Background(),
 						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-						"ERROR", time.Now(), instanceID)
+						"ERROR", time.Now(), instanceID); err != nil {
+						log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after VM-creation panic")
+					}
 				}
 			}()
 
@@ -446,9 +448,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
 			if err != nil {
 				log.Error().Err(err).Str("image_ref", req.Server.ImageRef).Str("instance_id", instanceID).Msg("Invalid imageRef — not a valid UUID")
-				database.DB.Exec(svc.ctx,
+				if _, dbErr := database.DB.Exec(svc.ctx,
 					"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-					"ERROR", time.Now(), instanceID)
+					"ERROR", time.Now(), instanceID); dbErr != nil {
+					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after invalid imageRef")
+				}
 				return
 			}
 			imageUUID := parsedImageUUID.String()
@@ -475,9 +479,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// Update instance status to ERROR
 				dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
 				defer dbCancel()
-				database.DB.Exec(dbCtx,
+				if _, dbErr := database.DB.Exec(dbCtx,
 					"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-					"ERROR", time.Now(), instanceID)
+					"ERROR", time.Now(), instanceID); dbErr != nil {
+					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after libvirt create failure")
+				}
 				return
 			}
 
@@ -492,18 +498,22 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			// Update instance with libvirt UUID
 			dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
 			defer dbCancel()
-			database.DB.Exec(dbCtx, `
+			if _, err := database.DB.Exec(dbCtx, `
 				UPDATE instances
 				SET status = $1, power_state = $2, libvirt_domain_id = $3, launched_at = $4, updated_at = $5
 				WHERE id = $6
-			`, "ACTIVE", 1, libvirtUUID, time.Now(), time.Now(), instanceID)
+			`, "ACTIVE", 1, libvirtUUID, time.Now(), time.Now(), instanceID); err != nil {
+				log.Error().Err(err).Str("instance_id", instanceID).Str("libvirt_uuid", libvirtUUID).Msg("failed to mark instance ACTIVE after libvirt create")
+			}
 		}()
 	} else {
 		logger.Debug().Msg("Stub mode: skipping libvirt VM creation")
 		// In stub mode, immediately set instance to ACTIVE so Terraform polling succeeds
-		database.DB.Exec(c.Request.Context(), `
+		if _, err := database.DB.Exec(c.Request.Context(), `
 			UPDATE instances SET status = $1, power_state = $2, launched_at = $3, updated_at = $4 WHERE id = $5
-		`, "ACTIVE", 1, time.Now(), time.Now(), instanceID)
+		`, "ACTIVE", 1, time.Now(), time.Now(), instanceID); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE")
+		}
 	}
 
 	middleware.LogOperationEnd(c, "create", "server", instanceID, time.Since(start), nil)
@@ -511,17 +521,17 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	// Return instance details
 	c.JSON(http.StatusAccepted, gin.H{
 		"server": gin.H{
-			"id":         instanceID,
-			"name":       req.Server.Name,
-			"status":     "BUILD",
-			"tenant_id":  projectID,
-			"user_id":    userID,
-			"created":    now.Format(time.RFC3339),
-			"updated":    now.Format(time.RFC3339),
-			"flavor":     gin.H{"id": flavor.ID},
-			"image":      gin.H{"id": req.Server.ImageRef},
-			"metadata":   gin.H{},
-			"adminPass":  common.GeneratePassword(16),
+			"id":        instanceID,
+			"name":      req.Server.Name,
+			"status":    "BUILD",
+			"tenant_id": projectID,
+			"user_id":   userID,
+			"created":   now.Format(time.RFC3339),
+			"updated":   now.Format(time.RFC3339),
+			"flavor":    gin.H{"id": flavor.ID},
+			"image":     gin.H{"id": req.Server.ImageRef},
+			"metadata":  gin.H{},
+			"adminPass": common.GeneratePassword(16),
 		},
 	})
 }
@@ -544,13 +554,17 @@ func (svc *Service) ListServers(c *gin.Context) {
 		}
 	}
 	if markerParam := c.Query("marker"); markerParam != "" {
-		// Marker-based pagination: get offset of marker UUID
+		// Marker-based pagination: get offset of marker UUID.
+		// Scan failures (including no-rows) leave offset at zero, which
+		// returns the full page — the same fallback we used before.
 		var markerOffset int
-		database.DB.QueryRow(c.Request.Context(),
+		if err := database.DB.QueryRow(c.Request.Context(),
 			`SELECT ROW_NUMBER() OVER (ORDER BY created_at DESC) - 1
 			 FROM instances WHERE project_id = $1 AND id = $2`,
 			projectID, markerParam,
-		).Scan(&markerOffset)
+		).Scan(&markerOffset); err != nil {
+			log.Warn().Err(err).Str("marker", markerParam).Msg("failed to resolve pagination marker; ignoring")
+		}
 		if markerOffset > 0 {
 			offset = markerOffset
 		}
@@ -669,14 +683,14 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		addresses := svc.getInstanceAddresses(c.Request.Context(), id, projectID)
 
 		entry := gin.H{
-			"id":         id,
-			"name":       name,
-			"status":     status,
-			"tenant_id":  projectID,
-			"user_id":    userID,
-			"created":    createdAt.Format(time.RFC3339),
-			"updated":    updatedAt.Format(time.RFC3339),
-			"addresses":  addresses,
+			"id":                     id,
+			"name":                   name,
+			"status":                 status,
+			"tenant_id":              projectID,
+			"user_id":                userID,
+			"created":                createdAt.Format(time.RFC3339),
+			"updated":                updatedAt.Format(time.RFC3339),
+			"addresses":              addresses,
 			"OS-EXT-STS:power_state": powerState,
 			"flavor": gin.H{
 				"id":    flavorID,
@@ -745,8 +759,8 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 		for _, ipInfo := range fixedIPs {
 			if ipAddr, ok := ipInfo["ip_address"].(string); ok {
 				addressList = append(addressList, gin.H{
-					"addr":    ipAddr,
-					"version": 4,
+					"addr":            ipAddr,
+					"version":         4,
 					"OS-EXT-IPS:type": "fixed",
 				})
 			}
@@ -769,14 +783,16 @@ func (svc *Service) GetServer(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var id, name, status string
-	var userID, flavorID, imageID any
+	var userID, flavorID, imageID sql.NullString
 	var powerState int
 	var createdAt, updatedAt time.Time
 
 	// Try to find by ID first, then by name
 	// Use separate conditions to avoid type mismatch when id is UUID and param might be a name
 	err := database.DB.QueryRow(c.Request.Context(), `
-		SELECT id, name, status, power_state, project_id, user_id, flavor_id, image_id, created_at, updated_at
+		SELECT id, name, status, power_state, project_id,
+		       user_id::text, flavor_id::text, image_id::text,
+		       created_at, updated_at
 		FROM instances
 		WHERE project_id = $2 AND (
 			(id::text = $1) OR (name = $1)
@@ -808,14 +824,14 @@ func (svc *Service) GetServer(c *gin.Context) {
 		"OS-EXT-STS:power_state": powerState,
 	}
 
-	if userID != nil {
-		response["user_id"] = userID
+	if userID.Valid {
+		response["user_id"] = userID.String
 	}
-	if flavorID != nil {
-		response["flavor"] = gin.H{"id": flavorID}
+	if flavorID.Valid {
+		response["flavor"] = gin.H{"id": flavorID.String}
 	}
-	if imageID != nil {
-		response["image"] = gin.H{"id": imageID}
+	if imageID.Valid {
+		response["image"] = gin.H{"id": imageID.String}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"server": response})
@@ -1046,9 +1062,11 @@ func (svc *Service) ServerAction(c *gin.Context) {
 		// Handle actions in stub mode by updating database only
 		if _, ok := req["reboot"]; ok {
 			// Just mark as rebooting then active
-			database.DB.Exec(c.Request.Context(),
+			if _, err := database.DB.Exec(c.Request.Context(),
 				"UPDATE instances SET status = $1, updated_at = $2 WHERE (id::text = $3 OR name = $3) AND project_id = $4",
-				"REBOOT", time.Now(), instanceID, projectID)
+				"REBOOT", time.Now(), instanceID, projectID); err != nil {
+				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance REBOOT")
+			}
 			svc.wg.Add(1)
 			go func() {
 				defer svc.wg.Done()
@@ -1059,18 +1077,24 @@ func (svc *Service) ServerAction(c *gin.Context) {
 				}
 				ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 				defer cancel()
-				database.DB.Exec(ctx,
+				if _, err := database.DB.Exec(ctx,
 					"UPDATE instances SET status = $1, updated_at = $2 WHERE (id::text = $3 OR name = $3) AND project_id = $4",
-					"ACTIVE", time.Now(), instanceID, projectID)
+					"ACTIVE", time.Now(), instanceID, projectID); err != nil {
+					log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE after reboot")
+				}
 			}()
 		} else if _, ok := req["os-stop"]; ok {
-			database.DB.Exec(c.Request.Context(),
+			if _, err := database.DB.Exec(c.Request.Context(),
 				"UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE (id::text = $4 OR name = $4) AND project_id = $5",
-				"SHUTOFF", 4, time.Now(), instanceID, projectID)
+				"SHUTOFF", 4, time.Now(), instanceID, projectID); err != nil {
+				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance SHUTOFF")
+			}
 		} else if _, ok := req["os-start"]; ok {
-			database.DB.Exec(c.Request.Context(),
+			if _, err := database.DB.Exec(c.Request.Context(),
 				"UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE (id::text = $4 OR name = $4) AND project_id = $5",
-				"ACTIVE", 1, time.Now(), instanceID, projectID)
+				"ACTIVE", 1, time.Now(), instanceID, projectID); err != nil {
+				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE on start")
+			}
 		} else {
 			common.SendError(c, common.NewBadRequestError("unknown action"))
 			return
@@ -1285,7 +1309,7 @@ func (svc *Service) GetFlavor(c *gin.Context) {
 	// Store in cache (24 hour TTL - flavors rarely change)
 	if svc.cache != nil {
 		cacheKey := "flavor:" + id
-		svc.cache.Set(ctx, cacheKey, flavor, 24*time.Hour)
+		svc.cache.TrySet(ctx, cacheKey, flavor, 24*time.Hour)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"flavor": flavor})
@@ -1352,27 +1376,30 @@ func (svc *Service) ListHypervisorsDetail(c *gin.Context) {
 
 // GetHypervisorStatistics returns aggregated hypervisor statistics (for Horizon)
 func (svc *Service) GetHypervisorStatistics(c *gin.Context) {
-	// Count running instances
+	// Count running instances. Scan failures degrade to zero (the stats
+	// response still ships) and are logged for diagnosis.
 	var runningVMs int
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM instances WHERE power_state = 1",
-	).Scan(&runningVMs)
+	).Scan(&runningVMs); err != nil {
+		log.Warn().Err(err).Msg("failed to count running instances for hypervisor statistics")
+	}
 
 	// Return aggregated stats
 	c.JSON(200, gin.H{
 		"hypervisor_statistics": gin.H{
-			"count":              1,
-			"current_workload":   0,
+			"count":                1,
+			"current_workload":     0,
 			"disk_available_least": 800,
-			"free_disk_gb":       900,
-			"free_ram_mb":        28672,
-			"local_gb":           1000,
-			"local_gb_used":      100,
-			"memory_mb":          32768,
-			"memory_mb_used":     4096,
-			"running_vms":        runningVMs,
-			"vcpus":              16,
-			"vcpus_used":         runningVMs * 2, // Assume 2 vCPUs per VM
+			"free_disk_gb":         900,
+			"free_ram_mb":          28672,
+			"local_gb":             1000,
+			"local_gb_used":        100,
+			"memory_mb":            32768,
+			"memory_mb_used":       4096,
+			"running_vms":          runningVMs,
+			"vcpus":                16,
+			"vcpus_used":           runningVMs * 2, // Assume 2 vCPUs per VM
 		},
 	})
 }
@@ -1577,37 +1604,37 @@ func (svc *Service) ListServices(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"services": []gin.H{
 			{
-				"id":                 1,
-				"binary":             "nova-compute",
-				"host":               "o3k-compute-1",
-				"zone":               "nova",
-				"status":             "enabled",
-				"state":              "up",
-				"updated_at":         now,
-				"disabled_reason":    nil,
-				"forced_down":        false,
+				"id":              1,
+				"binary":          "nova-compute",
+				"host":            "o3k-compute-1",
+				"zone":            "nova",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
+				"disabled_reason": nil,
+				"forced_down":     false,
 			},
 			{
-				"id":                 2,
-				"binary":             "nova-scheduler",
-				"host":               "o3k-controller",
-				"zone":               "internal",
-				"status":             "enabled",
-				"state":              "up",
-				"updated_at":         now,
-				"disabled_reason":    nil,
-				"forced_down":        false,
+				"id":              2,
+				"binary":          "nova-scheduler",
+				"host":            "o3k-controller",
+				"zone":            "internal",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
+				"disabled_reason": nil,
+				"forced_down":     false,
 			},
 			{
-				"id":                 3,
-				"binary":             "nova-conductor",
-				"host":               "o3k-controller",
-				"zone":               "internal",
-				"status":             "enabled",
-				"state":              "up",
-				"updated_at":         now,
-				"disabled_reason":    nil,
-				"forced_down":        false,
+				"id":              3,
+				"binary":          "nova-conductor",
+				"host":            "o3k-controller",
+				"zone":            "internal",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
+				"disabled_reason": nil,
+				"forced_down":     false,
 			},
 		},
 	})
@@ -1824,9 +1851,11 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 			}
 			ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 			defer cancel()
-			database.DB.Exec(ctx,
+			if _, err := database.DB.Exec(ctx,
 				"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
-				"ACTIVE", time.Now(), instanceID, projectID)
+				"ACTIVE", time.Now(), instanceID, projectID); err != nil {
+				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ACTIVE after async transition")
+			}
 		}()
 	}
 
@@ -1846,13 +1875,13 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 	}
 
 	server = gin.H{
-		"id":         instanceID,
-		"name":       serverName,
-		"status":     status,
-		"tenant_id":  projectID,
-		"user_id":    userID,
-		"created":    createdAt.Format(time.RFC3339),
-		"updated":    updatedAt.Format(time.RFC3339),
+		"id":        instanceID,
+		"name":      serverName,
+		"status":    status,
+		"tenant_id": projectID,
+		"user_id":   userID,
+		"created":   createdAt.Format(time.RFC3339),
+		"updated":   updatedAt.Format(time.RFC3339),
 		"image": gin.H{
 			"id": imageID,
 		},
@@ -1927,12 +1956,16 @@ func (svc *Service) CreateImageAction(c *gin.Context, createImageData any) {
 		return
 	}
 
-	// Store metadata if provided
+	// Store metadata if provided. Failures are logged but don't abort:
+	// the image already exists and is usable; missing metadata can be
+	// re-set by the caller without recreating the image.
 	for key, value := range metadata {
-		database.DB.Exec(c.Request.Context(), `
+		if _, err := database.DB.Exec(c.Request.Context(), `
 			INSERT INTO image_properties (image_id, name, value)
 			VALUES ($1, $2, $3)
-		`, imageID, key, value)
+		`, imageID, key, value); err != nil {
+			log.Warn().Err(err).Str("image_id", imageID).Str("key", key).Msg("failed to persist image property")
+		}
 	}
 
 	// Return Location header with image URL
@@ -2049,7 +2082,11 @@ func (svc *Service) ForceDeleteInstanceAction(c *gin.Context) {
 		if domainStr != "" {
 			ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 			defer cancel()
-			svc.vmManager.DeleteVM(ctx, domainStr)
+			// Best-effort: a leftover libvirt domain is hygiene, not
+			// correctness — the instance row is about to be deleted.
+			if err := svc.vmManager.DeleteVM(ctx, domainStr); err != nil {
+				log.Warn().Err(err).Str("domain", domainStr).Str("instance_id", instanceID).Msg("failed to delete libvirt domain")
+			}
 		}
 	}
 

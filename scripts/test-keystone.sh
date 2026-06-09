@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test script for LightStack Phase 1 (Keystone)
+# Test script for O3K Phase 1 (Keystone)
 
 set -e
 
@@ -11,7 +11,7 @@ NC='\033[0m' # No Color
 
 BASE_URL="http://localhost:5000"
 
-echo -e "${YELLOW}=== LightStack Keystone Test Suite ===${NC}\n"
+echo -e "${YELLOW}=== O3K Keystone Test Suite ===${NC}\n"
 
 # Test 1: Version Discovery
 echo -e "${YELLOW}Test 1: Version Discovery${NC}"

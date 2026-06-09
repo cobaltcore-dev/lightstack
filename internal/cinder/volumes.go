@@ -1,23 +1,23 @@
 package cinder
 
 import (
-	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/storage"
 )
 
 // Service handles Cinder API endpoints
@@ -63,6 +63,10 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// MUST be registered before v3/:project_id group to avoid route conflict
 	r.GET("/v3/os-volume-transfer", svc.ListVolumeTransfersNoProject)
 	r.GET("/v3/os-volume-transfer/detail", svc.ListVolumeTransfersNoProject)
+	r.POST("/v3/os-volume-transfer", svc.CreateVolumeTransfer)
+	r.GET("/v3/os-volume-transfer/:id", svc.GetVolumeTransfer)
+	r.POST("/v3/os-volume-transfer/:id/accept", svc.AcceptVolumeTransfer)
+	r.DELETE("/v3/os-volume-transfer/:id", svc.DeleteVolumeTransfer)
 
 	// Volumes operations without project_id (extracts from token)
 	r.POST("/v3/volumes", svc.CreateVolume)
@@ -86,6 +90,17 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// Volume types without project_id (extracts from token)
 	r.GET("/v3/types", svc.ListVolumeTypes)
 	r.GET("/v3/types/default", svc.GetDefaultVolumeType)
+	r.POST("/v3/types", svc.CreateVolumeType)
+	r.GET("/v3/types/:id", svc.GetVolumeType)
+	r.PUT("/v3/types/:id", svc.UpdateVolumeType)
+	r.DELETE("/v3/types/:id", svc.DeleteVolumeType)
+	r.POST("/v3/types/:id/action", svc.VolumeTypeAction)
+	r.GET("/v3/types/:id/os-volume-type-access", svc.ListVolumeTypeAccess)
+	r.GET("/v3/types/:id/extra_specs", svc.ListVolumeTypeExtraSpecs)
+	r.POST("/v3/types/:id/extra_specs", svc.CreateVolumeTypeExtraSpecs)
+	r.GET("/v3/types/:id/extra_specs/:key", svc.GetVolumeTypeExtraSpecKey)
+	r.PUT("/v3/types/:id/extra_specs/:key", svc.UpdateVolumeTypeExtraSpecKey)
+	r.DELETE("/v3/types/:id/extra_specs/:key", svc.DeleteVolumeTypeExtraSpecKey)
 
 	// Volume groups without project_id (extracts from token)
 	r.GET("/v3/groups", svc.ListGroups)
@@ -111,6 +126,34 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 	// Availability zones without project_id (extracts from token)
 	r.GET("/v3/os-availability-zone", svc.ListAvailabilityZones)
+
+	// Volume/snapshot management without project_id (extracts from token)
+	// MUST be registered before v3/:project_id group to avoid route conflict
+	r.POST("/v3/os-volume-manage", svc.ManageVolume)
+	r.GET("/v3/manageable_volumes", svc.ListManageableVolumes)
+	r.POST("/v3/os-snapshot-manage", svc.ManageSnapshot)
+
+	// Volume metadata without project_id (extracts from token)
+	r.GET("/v3/volumes/:id/metadata", svc.GetVolumeMetadata)
+	r.POST("/v3/volumes/:id/metadata", svc.SetVolumeMetadata)
+	r.GET("/v3/volumes/:id/metadata/:key", svc.GetVolumeMetadataKey)
+	r.PUT("/v3/volumes/:id/metadata/:key", svc.UpdateVolumeMetadataKey)
+	r.DELETE("/v3/volumes/:id/metadata/:key", svc.DeleteVolumeMetadataKey)
+
+	// Snapshot metadata without project_id (extracts from token)
+	r.GET("/v3/snapshots/:id/metadata", svc.GetSnapshotMetadata)
+	r.POST("/v3/snapshots/:id/metadata", svc.SetSnapshotMetadata)
+	r.GET("/v3/snapshots/:id/metadata/:key", svc.GetSnapshotMetadataKey)
+	r.PUT("/v3/snapshots/:id/metadata/:key", svc.UpdateSnapshotMetadataKey)
+	r.DELETE("/v3/snapshots/:id/metadata/:key", svc.DeleteSnapshotMetadataKey)
+
+	// OS services list without project_id
+	r.GET("/v3/os-services", svc.ListServices)
+
+	// Quotas without project_id (extracts target project from URL :id)
+	r.GET("/v3/quota-sets/:id", svc.GetQuotaSet)
+	r.PUT("/v3/quota-sets/:id", svc.UpdateQuotaSet)
+	r.DELETE("/v3/quota-sets/:id", svc.DeleteQuotaSet)
 
 	v3 := r.Group("/v3/:project_id")
 	{
@@ -226,8 +269,10 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 	`, volumeID, req.Volume.Name, projectID, userID, req.Volume.Size, "creating", false, svc.cephPool, "volume-"+volumeID, now, now)
 
 	if err != nil {
-		// Rollback: delete from Ceph
-		svc.cephClient.DeleteVolume(c.Request.Context(), volumeID)
+		// Rollback: delete from Ceph (best-effort; the DB error is the user-facing one)
+		if cephErr := svc.cephClient.DeleteVolume(c.Request.Context(), volumeID); cephErr != nil {
+			log.Warn().Err(cephErr).Str("volume_id", volumeID).Msg("rollback: failed to delete volume from Ceph after DB insert failure")
+		}
 		log.Error().Err(err).Str("operation", "create_volume_db").Msg("failed to insert volume into database")
 		common.SendError(c, common.NewInternalServerError("failed to create volume"))
 		return
@@ -244,9 +289,11 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 		}
 		ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 		defer cancel()
-		database.DB.Exec(ctx,
+		if _, err := database.DB.Exec(ctx,
 			"UPDATE volumes SET status = $1, updated_at = $2 WHERE id = $3",
-			"available", time.Now(), volumeID)
+			"available", time.Now(), volumeID); err != nil {
+			log.Error().Err(err).Str("volume_id", volumeID).Msg("failed to update volume status to available")
+		}
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -1004,7 +1051,10 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 	`, snapshotID, req.Snapshot.Name, volumeID, projectID, size, "creating", now)
 
 	if err != nil {
-		svc.cephClient.DeleteSnapshot(c.Request.Context(), volumeID, snapshotID)
+		// Rollback: delete from Ceph (best-effort; the DB error is the user-facing one)
+		if cephErr := svc.cephClient.DeleteSnapshot(c.Request.Context(), volumeID, snapshotID); cephErr != nil {
+			log.Warn().Err(cephErr).Str("snapshot_id", snapshotID).Str("volume_id", volumeID).Msg("rollback: failed to delete snapshot from Ceph after DB insert failure")
+		}
 		log.Error().Err(err).Str("operation", "create_snapshot_db").Msg("failed to insert snapshot into database")
 		common.SendError(c, common.NewInternalServerError("failed to create snapshot"))
 		return
@@ -1021,9 +1071,11 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 		}
 		ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 		defer cancel()
-		database.DB.Exec(ctx,
+		if _, err := database.DB.Exec(ctx,
 			"UPDATE snapshots SET status = $1 WHERE id = $2",
-			"available", snapshotID)
+			"available", snapshotID); err != nil {
+			log.Error().Err(err).Str("snapshot_id", snapshotID).Msg("failed to update snapshot status to available")
+		}
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
@@ -1877,33 +1929,38 @@ func (svc *Service) DeleteSnapshotMetadataKey(c *gin.Context) {
 func (svc *Service) GetLimits(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	// Query current usage from database
+	// Query current usage from database. Scan failures degrade to zero usage
+	// (the limit response still ships) and are logged for diagnosis.
 	var volumesUsed, snapshotsUsed, gigabytesUsed int
 
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
-	).Scan(&volumesUsed, &gigabytesUsed)
+	).Scan(&volumesUsed, &gigabytesUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query volume usage for limits")
+	}
 
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM snapshots WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
-	).Scan(&snapshotsUsed)
+	).Scan(&snapshotsUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query snapshot usage for limits")
+	}
 
 	// Return limits response
 	c.JSON(200, gin.H{
 		"limits": gin.H{
 			"rate": []gin.H{}, // No rate limiting
 			"absolute": gin.H{
-				"maxTotalVolumes":       1000,
-				"maxTotalSnapshots":     1000,
-				"maxTotalVolumeGigabytes": 10000,
-				"maxTotalBackups":       100,
-				"maxTotalBackupGigabytes": 5000,
-				"totalVolumesUsed":      volumesUsed,
-				"totalSnapshotsUsed":    snapshotsUsed,
-				"totalGigabytesUsed":    gigabytesUsed,
-				"totalBackupsUsed":      0,
+				"maxTotalVolumes":          1000,
+				"maxTotalSnapshots":        1000,
+				"maxTotalVolumeGigabytes":  10000,
+				"maxTotalBackups":          100,
+				"maxTotalBackupGigabytes":  5000,
+				"totalVolumesUsed":         volumesUsed,
+				"totalSnapshotsUsed":       snapshotsUsed,
+				"totalGigabytesUsed":       gigabytesUsed,
+				"totalBackupsUsed":         0,
 				"totalBackupGigabytesUsed": 0,
 			},
 		},
@@ -1915,33 +1972,38 @@ func (svc *Service) GetLimitsNoProject(c *gin.Context) {
 	// Extract project_id from JWT token (set by auth middleware)
 	projectID := c.GetString("project_id")
 
-	// Query current usage from database
+	// Query current usage from database. Scan failures degrade to zero usage
+	// (the limit response still ships) and are logged for diagnosis.
 	var volumesUsed, snapshotsUsed, gigabytesUsed int
 
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
-	).Scan(&volumesUsed, &gigabytesUsed)
+	).Scan(&volumesUsed, &gigabytesUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query volume usage for limits")
+	}
 
-	database.DB.QueryRow(c.Request.Context(),
+	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM snapshots WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
-	).Scan(&snapshotsUsed)
+	).Scan(&snapshotsUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query snapshot usage for limits")
+	}
 
 	// Return limits response
 	c.JSON(200, gin.H{
 		"limits": gin.H{
 			"rate": []gin.H{}, // No rate limiting
 			"absolute": gin.H{
-				"maxTotalVolumes":       1000,
-				"maxTotalSnapshots":     1000,
-				"maxTotalVolumeGigabytes": 10000,
-				"maxTotalBackups":       100,
-				"maxTotalBackupGigabytes": 5000,
-				"totalVolumesUsed":      volumesUsed,
-				"totalSnapshotsUsed":    snapshotsUsed,
-				"totalGigabytesUsed":    gigabytesUsed,
-				"totalBackupsUsed":      0,
+				"maxTotalVolumes":          1000,
+				"maxTotalSnapshots":        1000,
+				"maxTotalVolumeGigabytes":  10000,
+				"maxTotalBackups":          100,
+				"maxTotalBackupGigabytes":  5000,
+				"totalVolumesUsed":         volumesUsed,
+				"totalSnapshotsUsed":       snapshotsUsed,
+				"totalGigabytesUsed":       gigabytesUsed,
+				"totalBackupsUsed":         0,
 				"totalBackupGigabytesUsed": 0,
 			},
 		},
@@ -1957,30 +2019,30 @@ func (svc *Service) ListServices(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"services": []gin.H{
 			{
-				"binary":         "cinder-volume",
-				"host":           "o3k-volume-1",
-				"zone":           "nova",
-				"status":         "enabled",
-				"state":          "up",
-				"updated_at":     now,
+				"binary":          "cinder-volume",
+				"host":            "o3k-volume-1",
+				"zone":            "nova",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
 				"disabled_reason": nil,
 			},
 			{
-				"binary":         "cinder-scheduler",
-				"host":           "o3k-controller",
-				"zone":           "internal",
-				"status":         "enabled",
-				"state":          "up",
-				"updated_at":     now,
+				"binary":          "cinder-scheduler",
+				"host":            "o3k-controller",
+				"zone":            "internal",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
 				"disabled_reason": nil,
 			},
 			{
-				"binary":         "cinder-backup",
-				"host":           "o3k-backup-1",
-				"zone":           "nova",
-				"status":         "enabled",
-				"state":          "up",
-				"updated_at":     now,
+				"binary":          "cinder-backup",
+				"host":            "o3k-backup-1",
+				"zone":            "nova",
+				"status":          "enabled",
+				"state":           "up",
+				"updated_at":      now,
 				"disabled_reason": nil,
 			},
 		},
@@ -1992,11 +2054,11 @@ func (svc *Service) GetVersions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"versions": []gin.H{
 			{
-				"id":      "v3.0",
-				"status":  "CURRENT",
-				"version": "3.70",
+				"id":          "v3.0",
+				"status":      "CURRENT",
+				"version":     "3.70",
 				"min_version": "3.0",
-				"updated": "2021-04-07T00:00:00Z",
+				"updated":     "2021-04-07T00:00:00Z",
 				"links": []gin.H{
 					{
 						"rel":  "self",
@@ -2018,11 +2080,11 @@ func (svc *Service) GetVersions(c *gin.Context) {
 func (svc *Service) GetVersionV3(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"version": gin.H{
-			"id":      "v3.0",
-			"status":  "CURRENT",
-			"version": "3.71",
+			"id":          "v3.0",
+			"status":      "CURRENT",
+			"version":     "3.71",
 			"min_version": "3.0",
-			"updated": "2021-04-07T00:00:00Z",
+			"updated":     "2021-04-07T00:00:00Z",
 			"links": []gin.H{
 				{
 					"rel":  "self",

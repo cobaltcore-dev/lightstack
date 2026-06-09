@@ -17,7 +17,7 @@ Get O3K running and create your first VM in **5 minutes**.
 ## Step 1: Start O3K (30 seconds)
 
 ```bash
-cd /Users/I761222/git/lightstack
+cd /path/to/o3k
 docker compose up -d
 ```
 
@@ -136,7 +136,39 @@ openstack network list
 
 ---
 
-## Step 6: Create Your First VM (1 minute)
+## Step 6: Add a Boot Image (1 minute)
+
+O3K ships with no images, so upload the tiny CirrOS test image before booting a VM.
+
+```bash
+# Download CirrOS (~20 MB cloud test image)
+curl -L -o /tmp/cirros-0.6.2-x86_64-disk.img \
+  https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img
+
+# Upload it to Glance
+openstack image create \
+  --disk-format qcow2 \
+  --container-format bare \
+  --public \
+  --file /tmp/cirros-0.6.2-x86_64-disk.img \
+  cirros
+
+# Verify the image is ACTIVE
+openstack image list
+```
+
+**Expected output:**
+```
++--------------------------------------+--------+--------+
+| ID                                   | Name   | Status |
++--------------------------------------+--------+--------+
+| 67224b52-ed49-4b2f-8e59-13911e420948 | cirros | active |
++--------------------------------------+--------+--------+
+```
+
+---
+
+## Step 7: Create Your First VM (1 minute)
 
 ```bash
 # Create a VM
@@ -178,7 +210,7 @@ openstack server list
 
 ---
 
-## Step 7: Inspect Your VM (30 seconds)
+## Step 8: Inspect Your VM (30 seconds)
 
 ```bash
 # Get detailed VM information
@@ -204,7 +236,7 @@ openstack quota show --compute
 
 ---
 
-## Step 8: Create More Resources (2 minutes)
+## Step 9: Create More Resources (2 minutes)
 
 ### Create Multiple VMs
 
@@ -292,7 +324,7 @@ docker compose logs o3k --tail=50
 docker compose ps
 
 # View database
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "SELECT COUNT(*) FROM instances;"
+docker exec o3k-postgres psql -U o3k -d o3k -c "SELECT COUNT(*) FROM instances;"
 ```
 
 ---

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Comprehensive test script for LightStack Phases 0-2
+# Comprehensive test script for O3K Phases 0-2
 
 set -e
 
@@ -11,7 +11,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       LightStack Comprehensive Test Suite (Phases 0-2)         ║${NC}"
+echo -e "${BLUE}║             O3K Comprehensive Test Suite (Phases 0-2)          ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}\n"
 
 KEYSTONE_URL="http://localhost:5000"
@@ -55,8 +55,8 @@ echo -e "${YELLOW}=== Phase 0: Foundation Tests ===${NC}\n"
 # ============================================================================
 
 # Test: Binary exists
-if [ -f "bin/lightstack" ]; then
-    echo -e "${GREEN}✓${NC} Binary exists ($(ls -lh bin/lightstack | awk '{print $5}'))"
+if [ -f "bin/o3k" ]; then
+    echo -e "${GREEN}✓${NC} Binary exists ($(ls -lh bin/o3k | awk '{print $5}'))"
     ((PASS++))
 else
     echo -e "${RED}✗${NC} Binary not found"
@@ -64,7 +64,7 @@ else
 fi
 
 # Test: Config file exists
-if [ -f "config/lightstack.yaml" ]; then
+if [ -f "config/o3k.yaml" ]; then
     echo -e "${GREEN}✓${NC} Config file exists"
     ((PASS++))
 else
@@ -300,7 +300,7 @@ echo -e "${BLUE}║${NC}  ${YELLOW}Total:${NC}  $((PASS + FAIL))                
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}\n"
 
 if [ $FAIL -eq 0 ]; then
-    echo -e "${GREEN}🎉 All tests passed! LightStack Phases 0-2 are fully functional.${NC}\n"
+    echo -e "${GREEN}🎉 All tests passed! O3K Phases 0-2 are fully functional.${NC}\n"
     echo -e "${YELLOW}Ready for:${NC}"
     echo "  ✓ OpenStack CLI usage"
     echo "  ✓ Horizon dashboard login"

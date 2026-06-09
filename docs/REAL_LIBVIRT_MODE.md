@@ -651,7 +651,7 @@ sudo chmod 666 /dev/kvm
 openstack server list -f json > instances.json
 
 # Backup database
-pg_dump lightstack > backup.sql
+pg_dump o3k > backup.sql
 ```
 
 ### Step 2: Install Prerequisites

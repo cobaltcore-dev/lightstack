@@ -1,6 +1,9 @@
 package contract_test
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"testing"
 
@@ -8,6 +11,32 @@ import (
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/stretchr/testify/require"
 )
+
+func SetupNeutronClient(t *testing.T) *gophercloud.ServiceClient {
+	t.Helper()
+
+	authURL := getEnvOrDefault("OS_AUTH_URL", "http://localhost:35357/v3")
+	username := getEnvOrDefault("OS_USERNAME", "admin")
+	password := getEnvOrDefault("OS_PASSWORD", "secret")
+	projectName := getEnvOrDefault("OS_PROJECT_NAME", "default")
+	domainName := getEnvOrDefault("OS_USER_DOMAIN_NAME", "Default")
+
+	opts := gophercloud.AuthOptions{
+		IdentityEndpoint: authURL,
+		Username:         username,
+		Password:         password,
+		TenantName:       projectName,
+		DomainName:       domainName,
+	}
+
+	provider, err := openstack.AuthenticatedClient(opts)
+	require.NoError(t, err, "Failed to create authenticated client")
+
+	client, err := openstack.NewNetworkV2(provider, gophercloud.EndpointOpts{})
+	require.NoError(t, err, "Failed to create Neutron client")
+
+	return client
+}
 
 // SetupOpenStackClient creates an authenticated OpenStack client for contract testing.
 // It uses environment variables (OS_AUTH_URL, OS_USERNAME, etc.) to connect to O3K.
@@ -19,7 +48,7 @@ func SetupOpenStackClient(t *testing.T) *gophercloud.ProviderClient {
 	username := getEnvOrDefault("OS_USERNAME", "admin")
 	password := getEnvOrDefault("OS_PASSWORD", "secret")
 	projectName := getEnvOrDefault("OS_PROJECT_NAME", "default")
-	domainName := getEnvOrDefault("OS_USER_DOMAIN_NAME", "default")
+	domainName := getEnvOrDefault("OS_USER_DOMAIN_NAME", "Default")
 
 	opts := gophercloud.AuthOptions{
 		IdentityEndpoint: authURL,
@@ -98,6 +127,40 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+// GetProjectIDFromToken returns the project_id of the authenticated user by
+// querying Keystone (/v3/projects). Useful for tests that need to construct
+// resource URLs scoped to the caller's project but don't want to depend on
+// the project having pre-existing data.
+//
+// Returns the first project Keystone reports for the token — for contract
+// tests authenticating as the seeded admin user, this is the "default"
+// project.
+func GetProjectIDFromToken(t *testing.T, client *gophercloud.ServiceClient) string {
+	t.Helper()
+
+	authURL := getEnvOrDefault("OS_AUTH_URL", "http://localhost:35357/v3")
+	req, err := http.NewRequest("GET", authURL+"/projects", nil)
+	require.NoError(t, err)
+	req.Header.Set("X-Auth-Token", client.TokenID)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var result struct {
+		Projects []map[string]interface{} `json:"projects"`
+	}
+	require.NoError(t, json.Unmarshal(body, &result))
+	require.NotEmpty(t, result.Projects, "Keystone returned no projects for this token")
+
+	projectID, ok := result.Projects[0]["id"].(string)
+	require.True(t, ok && projectID != "", "Project entry missing usable id")
+	return projectID
+}
+
 // SkipIfO3KNotRunning skips the test if O3K is not running.
 // Use this in contract tests to avoid false failures in CI.
 func SkipIfO3KNotRunning(t *testing.T) {
@@ -109,7 +172,7 @@ func SkipIfO3KNotRunning(t *testing.T) {
 		Username:         "admin",
 		Password:         "secret",
 		TenantName:       "default",
-		DomainName:       "default",
+		DomainName:       "Default",
 	}
 
 	_, err := openstack.AuthenticatedClient(opts)

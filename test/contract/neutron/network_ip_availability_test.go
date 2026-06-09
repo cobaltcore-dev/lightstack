@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +16,7 @@ import (
 func TestNeutronListNetworkIPAvailabilities_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	url := client.ServiceURL("network-ip-availabilities")
 	req, err := http.NewRequest("GET", url, nil)
@@ -42,7 +43,7 @@ func TestNeutronListNetworkIPAvailabilities_Contract(t *testing.T) {
 func TestNeutronGetNetworkIPAvailability_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create network first
 	createBody := `{"network": {"name": "ip-avail-test", "admin_state_up": true}}`

@@ -1,28 +1,28 @@
 package nova
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
 )
 
 // VolumeAttachment represents a volume attached to an instance
 type VolumeAttachment struct {
-	ID          string    `json:"id"`
-	VolumeID    string    `json:"volumeId"`
-	InstanceID  string    `json:"serverId"`
-	Device      string    `json:"device"`
-	AttachedAt  time.Time `json:"attachedAt"`
+	ID         string    `json:"id"`
+	VolumeID   string    `json:"volumeId"`
+	InstanceID string    `json:"serverId"`
+	Device     string    `json:"device"`
+	AttachedAt time.Time `json:"attachedAt"`
 }
 
 // AttachVolumeRequest represents a volume attachment request
@@ -113,8 +113,11 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 	`, instanceID, "in-use", now, req.VolumeAttachment.VolumeID)
 
 	if err != nil {
-		// Rollback attachment
-		database.DB.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID)
+		// Rollback attachment (best-effort; the update error is the
+		// user-facing one)
+		if _, rbErr := database.DB.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID); rbErr != nil {
+			log.Warn().Err(rbErr).Str("attachment_id", attachmentID).Msg("rollback: failed to delete volume attachment after volume update failure")
+		}
 		log.Error().Err(err).Str("operation", "update_volume_status").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update volume status"))
 		return
@@ -149,20 +152,26 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 			})
 
 			if err := svc.vmManager.AttachDevice(ctx, libvirtDomainID, diskXML); err != nil {
-				// Update attachment status to error (don't delete, admin can retry)
-				database.DB.Exec(ctx,
+				// Update attachment status to error (don't delete, admin
+				// can retry). A failed update leaves the attachment row
+				// claiming success when libvirt actually failed —
+				// logged so an operator can reconcile.
+				log.Error().Err(err).Str("attachment_id", attachmentID).Str("libvirt_domain", libvirtDomainID).Msg("failed to attach volume to VM")
+				if _, dbErr := database.DB.Exec(ctx,
 					"UPDATE volume_attachments SET device = $1 WHERE id = $2",
-					device+"(error)", attachmentID)
+					device+"(error)", attachmentID); dbErr != nil {
+					log.Error().Err(dbErr).Str("attachment_id", attachmentID).Msg("failed to mark attachment error status")
+				}
 			}
 		}()
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"volumeAttachment": gin.H{
-			"id":        attachmentID,
-			"volumeId":  req.VolumeAttachment.VolumeID,
-			"serverId":  instanceID,
-			"device":    device,
+			"id":         attachmentID,
+			"volumeId":   req.VolumeAttachment.VolumeID,
+			"serverId":   instanceID,
+			"device":     device,
 			"attachedAt": now.Format(time.RFC3339),
 		},
 	})

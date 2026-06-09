@@ -134,7 +134,8 @@ func hasRole(c *gin.Context, role string) bool {
 }
 
 // GetVersion returns Keystone API version info
-func (svc *Service) GetVersion(c *gin.Context) {	c.JSON(http.StatusOK, gin.H{
+func (svc *Service) GetVersion(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
 		"version": gin.H{
 			"id":     "v3.14",
 			"status": "stable",
@@ -911,7 +912,6 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 	if roleID != "" {
 		query += fmt.Sprintf(" AND ra.role_id = $%d", argIdx)
 		args = append(args, roleID)
-		argIdx++
 	}
 
 	rows, err := database.DB.Query(c.Request.Context(), query, args...)
@@ -1129,7 +1129,6 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 		}
 		updates = append(updates, "password_hash = $"+fmt.Sprint(argIndex))
 		args = append(args, string(hashedBytes))
-		argIndex++
 	}
 
 	if len(updates) == 0 {

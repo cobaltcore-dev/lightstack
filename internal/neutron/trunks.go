@@ -240,25 +240,25 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 	argPos := 1
 
 	if name, ok := req.Trunk["name"].(string); ok {
-		updates = append(updates, "name = " + fmt.Sprintf("$%d", argPos))
+		updates = append(updates, "name = "+fmt.Sprintf("$%d", argPos))
 		args = append(args, name)
 		argPos++
 	}
 
 	if description, ok := req.Trunk["description"].(string); ok {
-		updates = append(updates, "description = " + fmt.Sprintf("$%d", argPos))
+		updates = append(updates, "description = "+fmt.Sprintf("$%d", argPos))
 		args = append(args, description)
 		argPos++
 	}
 
 	if adminStateUp, ok := req.Trunk["admin_state_up"].(bool); ok {
-		updates = append(updates, "admin_state_up = " + fmt.Sprintf("$%d", argPos))
+		updates = append(updates, "admin_state_up = "+fmt.Sprintf("$%d", argPos))
 		args = append(args, adminStateUp)
 		argPos++
 	}
 
 	if len(updates) > 0 {
-		updates = append(updates, "updated_at = " + fmt.Sprintf("$%d", argPos))
+		updates = append(updates, "updated_at = "+fmt.Sprintf("$%d", argPos))
 		args = append(args, time.Now())
 		argPos++
 
@@ -414,7 +414,7 @@ func (svc *Service) AddSubports(c *gin.Context) {
 	}
 
 	// Update trunk updated_at
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, _ = database.DB.Exec(c.Request.Context(),
 		"UPDATE trunks SET updated_at = $1 WHERE id = $2",
 		time.Now(), trunkID,
 	)
@@ -522,7 +522,7 @@ func (svc *Service) RemoveSubports(c *gin.Context) {
 	}
 
 	// Update trunk updated_at
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, _ = database.DB.Exec(c.Request.Context(),
 		"UPDATE trunks SET updated_at = $1 WHERE id = $2",
 		time.Now(), trunkID,
 	)

@@ -12,15 +12,15 @@ import (
 
 // VMSpec defines VM specifications
 type VMSpec struct {
-	UUID        string
-	Name        string
-	VCPUs       int
-	MemoryMB    int
-	DiskGB      int
-	ImagePath   string   // Path to image (RBD or local)
-	Networks    []NetworkConfig
-	Volumes     []VolumeConfig
-	CloudInit   *CloudInitConfig
+	UUID      string
+	Name      string
+	VCPUs     int
+	MemoryMB  int
+	DiskGB    int
+	ImagePath string // Path to image (RBD or local)
+	Networks  []NetworkConfig
+	Volumes   []VolumeConfig
+	CloudInit *CloudInitConfig
 }
 
 // NetworkConfig defines network interface configuration
@@ -32,10 +32,10 @@ type NetworkConfig struct {
 
 // VolumeConfig defines volume attachment configuration
 type VolumeConfig struct {
-	VolumeID  string
-	RBDPool   string
-	RBDImage  string
-	Device    string // vda, vdb, etc.
+	VolumeID string
+	RBDPool  string
+	RBDImage string
+	Device   string // vda, vdb, etc.
 }
 
 // CloudInitConfig defines cloud-init configuration
@@ -49,7 +49,7 @@ func GenerateVMXML(spec VMSpec) string {
 	var sb strings.Builder
 
 	// Domain header
-	sb.WriteString(fmt.Sprintf(`<domain type='kvm'>
+	fmt.Fprintf(&sb, `<domain type='kvm'>
   <name>%s</name>
   <uuid>%s</uuid>
   <memory unit='MiB'>%d</memory>
@@ -84,7 +84,7 @@ func GenerateVMXML(spec VMSpec) string {
   <devices>
     <emulator>/usr/bin/qemu-system-x86_64</emulator>
 `,
-		spec.Name, spec.UUID, spec.MemoryMB, spec.MemoryMB, spec.VCPUs))
+		spec.Name, spec.UUID, spec.MemoryMB, spec.MemoryMB, spec.VCPUs)
 
 	// Boot disk (RBD-backed or local)
 	if strings.HasPrefix(spec.ImagePath, "rbd:") {
@@ -97,7 +97,7 @@ func GenerateVMXML(spec VMSpec) string {
 		pool := parts[0]
 		image := parts[1]
 
-		sb.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&sb, `
     <disk type='network' device='disk'>
       <driver name='qemu' type='qcow2' cache='writeback'/>
       <source protocol='rbd' name='%s/%s'>
@@ -105,16 +105,16 @@ func GenerateVMXML(spec VMSpec) string {
       </source>
       <target dev='vda' bus='virtio'/>
     </disk>
-`, pool, image))
+`, pool, image)
 	} else {
 		// Local file
-		sb.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&sb, `
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' cache='writeback'/>
       <source file='%s'/>
       <target dev='vda' bus='virtio'/>
     </disk>
-`, spec.ImagePath))
+`, spec.ImagePath)
 	}
 
 	// Attached volumes
@@ -124,7 +124,7 @@ func GenerateVMXML(spec VMSpec) string {
 			device = fmt.Sprintf("vd%c", 'b'+i) // vdb, vdc, etc.
 		}
 
-		sb.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&sb, `
     <disk type='network' device='disk'>
       <driver name='qemu' type='raw'/>
       <source protocol='rbd' name='%s/%s'>
@@ -132,18 +132,18 @@ func GenerateVMXML(spec VMSpec) string {
       </source>
       <target dev='%s' bus='virtio'/>
     </disk>
-`, vol.RBDPool, vol.RBDImage, device))
+`, vol.RBDPool, vol.RBDImage, device)
 	}
 
 	// Network interfaces
 	for _, net := range spec.Networks {
-		sb.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&sb, `
     <interface type='bridge'>
       <mac address='%s'/>
       <source bridge='%s'/>
       <model type='virtio'/>
     </interface>
-`, net.MACAddress, net.BridgeName))
+`, net.MACAddress, net.BridgeName)
 	}
 
 	// Serial console
@@ -165,14 +165,14 @@ func GenerateVMXML(spec VMSpec) string {
 
 	// Cloud-init (if provided)
 	if spec.CloudInit != nil {
-		sb.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&sb, `
     <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
       <source file='/var/lib/o3k/cloud-init/%s.iso'/>
       <target dev='hdc' bus='ide'/>
       <readonly/>
     </disk>
-`, spec.UUID))
+`, spec.UUID)
 	}
 
 	// Close devices and domain
@@ -227,7 +227,7 @@ func GenerateCloudInitISO(uuid string, config *CloudInitConfig) (string, error) 
 		userDataPath,
 	)
 
-	output, err := cmd.CombinedOutput()
+	_, err = cmd.CombinedOutput()
 	if err != nil {
 		// Try mkisofs as fallback (older systems)
 		cmd = exec.Command("mkisofs",
@@ -238,7 +238,7 @@ func GenerateCloudInitISO(uuid string, config *CloudInitConfig) (string, error) 
 			metaDataPath,
 			userDataPath,
 		)
-		output, err = cmd.CombinedOutput()
+		output, err := cmd.CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("failed to create ISO (genisoimage/mkisofs not available): %w, output: %s", err, output)
 		}
@@ -288,26 +288,24 @@ func GenerateDiskXML(spec DiskSpec) string {
 
 	// Extract device letter from path (e.g., "/dev/vdb" -> "vdb")
 	device := spec.Device
-	if strings.HasPrefix(device, "/dev/") {
-		device = strings.TrimPrefix(device, "/dev/")
-	}
+	device = strings.TrimPrefix(device, "/dev/")
 
 	if spec.Type == "network" && spec.Protocol == "rbd" {
 		// RBD network disk
-		sb.WriteString(fmt.Sprintf(`<disk type='network' device='disk'>
+		fmt.Fprintf(&sb, `<disk type='network' device='disk'>
   <driver name='qemu' type='raw' cache='writeback'/>
   <source protocol='rbd' name='%s'>
     <host name='127.0.0.1' port='6789'/>
   </source>
   <target dev='%s' bus='virtio'/>
-</disk>`, spec.Source, device))
+</disk>`, spec.Source, device)
 	} else {
 		// Local file disk
-		sb.WriteString(fmt.Sprintf(`<disk type='file' device='disk'>
+		fmt.Fprintf(&sb, `<disk type='file' device='disk'>
   <driver name='qemu' type='qcow2' cache='writeback'/>
   <source file='%s'/>
   <target dev='%s' bus='virtio'/>
-</disk>`, spec.Source, device))
+</disk>`, spec.Source, device)
 	}
 
 	return sb.String()

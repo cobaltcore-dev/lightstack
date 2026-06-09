@@ -97,15 +97,15 @@ done
 
 ```bash
 # Docker
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "SELECT version();"
+docker exec o3k-postgres psql -U o3k -d o3k -c "SELECT version();"
 
 # Check database size
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
-  SELECT pg_size_pretty(pg_database_size('lightstack')) AS size;
+docker exec o3k-postgres psql -U o3k -d o3k -c "
+  SELECT pg_size_pretty(pg_database_size('o3k')) AS size;
 "
 
 # Check table sizes
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
+docker exec o3k-postgres psql -U o3k -d o3k -c "
   SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
   FROM pg_tables
   WHERE schemaname = 'public'
@@ -229,7 +229,7 @@ BACKUP_FILE="$BACKUP_DIR/o3k-$DATE.sql.gz"
 mkdir -p $BACKUP_DIR
 
 # Create backup
-docker exec o3k-postgres pg_dump -U lightstack lightstack | gzip > $BACKUP_FILE
+docker exec o3k-postgres pg_dump -U o3k o3k | gzip > $BACKUP_FILE
 
 # Keep only last 7 days
 find $BACKUP_DIR -name "o3k-*.sql.gz" -mtime +7 -delete
@@ -246,10 +246,10 @@ echo "Backup completed: $BACKUP_FILE"
 **Manual backup:**
 ```bash
 # Backup
-docker exec o3k-postgres pg_dump -U lightstack lightstack > o3k-backup.sql
+docker exec o3k-postgres pg_dump -U o3k o3k > o3k-backup.sql
 
 # Compressed backup
-docker exec o3k-postgres pg_dump -U lightstack lightstack | gzip > o3k-backup.sql.gz
+docker exec o3k-postgres pg_dump -U o3k o3k | gzip > o3k-backup.sql.gz
 ```
 
 ### Database Restore
@@ -259,10 +259,10 @@ docker exec o3k-postgres pg_dump -U lightstack lightstack | gzip > o3k-backup.sq
 docker compose stop o3k
 
 # Restore from backup
-cat o3k-backup.sql | docker exec -i o3k-postgres psql -U lightstack lightstack
+cat o3k-backup.sql | docker exec -i o3k-postgres psql -U o3k o3k
 
 # Or compressed:
-gunzip -c o3k-backup.sql.gz | docker exec -i o3k-postgres psql -U lightstack lightstack
+gunzip -c o3k-backup.sql.gz | docker exec -i o3k-postgres psql -U o3k o3k
 
 # Start O3K
 docker compose start o3k
@@ -310,7 +310,7 @@ docker compose up -d postgres
 sleep 10
 
 # 4. Restore database
-gunzip -c /backups/o3k/latest.sql.gz | docker exec -i o3k-postgres psql -U lightstack lightstack
+gunzip -c /backups/o3k/latest.sql.gz | docker exec -i o3k-postgres psql -U o3k o3k
 
 # 5. Start O3K
 docker compose up -d o3k
@@ -366,13 +366,13 @@ docker exec o3k /app/o3k-migrate down 1
 
 ```bash
 # Vacuum database (reclaim space)
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "VACUUM ANALYZE;"
+docker exec o3k-postgres psql -U o3k -d o3k -c "VACUUM ANALYZE;"
 
 # Reindex (improve query performance)
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "REINDEX DATABASE lightstack;"
+docker exec o3k-postgres psql -U o3k -d o3k -c "REINDEX DATABASE o3k;"
 
 # Check for table bloat
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
+docker exec o3k-postgres psql -U o3k -d o3k -c "
   SELECT schemaname, tablename,
          pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
   FROM pg_tables
@@ -406,14 +406,14 @@ SystemKeepFree=2G
 
 ```bash
 # Delete old deleted VMs (soft-deleted)
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
+docker exec o3k-postgres psql -U o3k -d o3k -c "
   DELETE FROM instances
   WHERE deleted = true
     AND deleted_at < NOW() - INTERVAL '30 days';
 "
 
 # Delete old tokens (if storing in DB)
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
+docker exec o3k-postgres psql -U o3k -d o3k -c "
   DELETE FROM tokens WHERE expires_at < NOW();
 "
 ```
@@ -446,8 +446,8 @@ docker stats o3k
 docker exec o3k top
 
 # Check for slow queries (enable query logging)
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
-  ALTER DATABASE lightstack SET log_min_duration_statement = 1000;
+docker exec o3k-postgres psql -U o3k -d o3k -c "
+  ALTER DATABASE o3k SET log_min_duration_statement = 1000;
 "
 ```
 
@@ -465,15 +465,15 @@ docker compose restart o3k
 
 ```bash
 # Check active connections
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
-  SELECT count(*) FROM pg_stat_activity WHERE datname = 'lightstack';
+docker exec o3k-postgres psql -U o3k -d o3k -c "
+  SELECT count(*) FROM pg_stat_activity WHERE datname = 'o3k';
 "
 
 # Kill idle connections
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
+docker exec o3k-postgres psql -U o3k -d o3k -c "
   SELECT pg_terminate_backend(pid)
   FROM pg_stat_activity
-  WHERE datname = 'lightstack'
+  WHERE datname = 'o3k'
     AND state = 'idle'
     AND state_change < NOW() - INTERVAL '10 minutes';
 "
@@ -497,8 +497,8 @@ docker system df
 docker system prune -a
 
 # Check database size
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
-  SELECT pg_size_pretty(pg_database_size('lightstack'));
+docker exec o3k-postgres psql -U o3k -d o3k -c "
+  SELECT pg_size_pretty(pg_database_size('o3k'));
 "
 ```
 
@@ -546,7 +546,7 @@ docker compose restart o3k
 
 ```bash
 # Using SQL
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
+docker exec o3k-postgres psql -U o3k -d o3k -c "
   UPDATE users
   SET password_hash = crypt('new-secure-password', gen_salt('bf'))
   WHERE name = 'admin';
@@ -597,7 +597,7 @@ database:
 
 **PostgreSQL tuning:**
 ```sql
--- /var/lib/postgresql/data/postgresql.conf
+-- /var/lib/postgresql/18/docker/postgresql.conf
 shared_buffers = 256MB         # 25% of RAM
 effective_cache_size = 1GB     # 50-75% of RAM
 work_mem = 16MB
@@ -619,7 +619,7 @@ CREATE INDEX IF NOT EXISTS idx_networks_project ON networks(project_id);
 time openstack server list
 
 # Database query time
-docker exec o3k-postgres psql -U lightstack -d lightstack -c "
+docker exec o3k-postgres psql -U o3k -d o3k -c "
   SELECT query, mean_exec_time, calls
   FROM pg_stat_statements
   ORDER BY mean_exec_time DESC

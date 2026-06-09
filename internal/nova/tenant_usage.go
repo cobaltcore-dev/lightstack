@@ -43,14 +43,14 @@ func (svc *Service) ListTenantUsage(c *gin.Context) {
 		}
 
 		tenantUsages = append(tenantUsages, gin.H{
-			"tenant_id":               projectID,
-			"total_local_gb_usage":    totalLocalGB,
-			"total_vcpus_usage":       totalVCPUs,
-			"total_memory_mb_usage":   totalMemoryMB,
-			"total_hours":             totalHours,
-			"start":                   time.Now().Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05.000000"),
-			"stop":                    time.Now().Format("2006-01-02T15:04:05.000000"),
-			"server_usages":           []gin.H{},
+			"tenant_id":             projectID,
+			"total_local_gb_usage":  totalLocalGB,
+			"total_vcpus_usage":     totalVCPUs,
+			"total_memory_mb_usage": totalMemoryMB,
+			"total_hours":           totalHours,
+			"start":                 time.Now().Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05.000000"),
+			"stop":                  time.Now().Format("2006-01-02T15:04:05.000000"),
+			"server_usages":         []gin.H{},
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -97,14 +97,14 @@ func (svc *Service) GetTenantUsage(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"tenant_usage": gin.H{
-			"tenant_id":               tenantID,
-			"total_local_gb_usage":    totalLocalGB,
-			"total_vcpus_usage":       totalVCPUs,
-			"total_memory_mb_usage":   totalMemoryMB,
-			"total_hours":             totalHours,
-			"start":                   time.Now().Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05.000000"),
-			"stop":                    time.Now().Format("2006-01-02T15:04:05.000000"),
-			"server_usages":           []gin.H{},
+			"tenant_id":             tenantID,
+			"total_local_gb_usage":  totalLocalGB,
+			"total_vcpus_usage":     totalVCPUs,
+			"total_memory_mb_usage": totalMemoryMB,
+			"total_hours":           totalHours,
+			"start":                 time.Now().Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05.000000"),
+			"stop":                  time.Now().Format("2006-01-02T15:04:05.000000"),
+			"server_usages":         []gin.H{},
 		},
 	})
 }

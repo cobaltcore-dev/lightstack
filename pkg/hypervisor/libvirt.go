@@ -3,11 +3,11 @@ package hypervisor
 import (
 	"context"
 	"fmt"
-	"net"
 	"sync"
 	"time"
 
 	libvirt "github.com/digitalocean/go-libvirt"
+	"github.com/digitalocean/go-libvirt/socket/dialers"
 	"github.com/google/uuid"
 )
 
@@ -36,11 +36,11 @@ type VMManager struct {
 
 // stubVM represents a simulated VM in stub mode
 type stubVM struct {
-	uuid      string
-	xml       string
-	state     VMState
+	uuid       string
+	xml        string
+	state      VMState
 	powerState int
-	createdAt time.Time
+	createdAt  time.Time
 }
 
 // NewVMManager creates a new VM manager
@@ -73,14 +73,11 @@ func (m *VMManager) connectLibvirt() error {
 		}
 	}
 
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
-	if err != nil {
-		return fmt.Errorf("failed to dial libvirt socket: %w", err)
-	}
-
-	l := libvirt.New(conn)
+	l := libvirt.NewWithDialer(dialers.NewLocal(
+		dialers.WithSocket(socketPath),
+		dialers.WithLocalTimeout(2*time.Second),
+	))
 	if err := l.Connect(); err != nil {
-		_ = conn.Close()
 		return fmt.Errorf("failed to connect to libvirt: %w", err)
 	}
 

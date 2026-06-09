@@ -160,4 +160,3 @@ func TestDefaultCloudInitConfig(t *testing.T) {
 		t.Error("UserData missing cloud-config header")
 	}
 }
-

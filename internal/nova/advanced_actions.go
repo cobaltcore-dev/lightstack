@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
 )
 
 // Suspend suspends a running instance (saves RAM to disk)
@@ -67,12 +67,16 @@ func (svc *Service) SuspendInstance(c *gin.Context) {
 			defer cancel()
 
 			if err := svc.vmManager.SuspendVM(ctx, libvirtDomainID); err != nil {
-				// On failure, revert to ERROR state
+				// On failure, revert to ERROR state. If the rollback
+				// itself fails, log it — the instance row will then
+				// disagree with libvirt and require operator attention.
 				dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
 				defer dbCancel()
-				database.DB.Exec(dbCtx,
+				if _, dbErr := database.DB.Exec(dbCtx,
 					"UPDATE instances SET status = $1, task_state = $2 WHERE id = $3",
-					"ERROR", "", instanceID)
+					"ERROR", "", instanceID); dbErr != nil {
+					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after suspend failure")
+				}
 			}
 		}()
 	}
@@ -130,12 +134,16 @@ func (svc *Service) ResumeInstance(c *gin.Context) {
 			defer cancel()
 
 			if err := svc.vmManager.ResumeVM(ctx, libvirtDomainID); err != nil {
-				// On failure, revert to ERROR state
+				// On failure, revert to ERROR state. If the rollback
+				// itself fails, log it — the instance row will then
+				// disagree with libvirt and require operator attention.
 				dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
 				defer dbCancel()
-				database.DB.Exec(dbCtx,
+				if _, dbErr := database.DB.Exec(dbCtx,
 					"UPDATE instances SET status = $1, task_state = $2 WHERE id = $3",
-					"ERROR", "", instanceID)
+					"ERROR", "", instanceID); dbErr != nil {
+					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after resume failure")
+				}
 			}
 		}()
 	}
@@ -377,9 +385,11 @@ func (svc *Service) resizeInstance(c *gin.Context, instanceID, projectID, flavor
 		}
 		ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 		defer cancel()
-		database.DB.Exec(ctx,
+		if _, err := database.DB.Exec(ctx,
 			"UPDATE instances SET status = $1, task_state = $2 WHERE id = $3",
-			"ACTIVE", "", instanceID)
+			"ACTIVE", "", instanceID); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to auto-confirm resize")
+		}
 	}()
 
 	c.Status(http.StatusAccepted)
@@ -575,15 +585,19 @@ func (svc *Service) MigrateInstance(c *gin.Context) {
 		defer cancel()
 
 		// Clear task_state and mark migration as complete
-		database.DB.Exec(ctx, `
+		if _, err := database.DB.Exec(ctx, `
 			UPDATE instances SET task_state = NULL, updated_at = $1
 			WHERE id = $2
-		`, time.Now(), instanceID)
+		`, time.Now(), instanceID); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to clear task_state after migration")
+		}
 
-		database.DB.Exec(ctx, `
+		if _, err := database.DB.Exec(ctx, `
 			UPDATE server_migrations SET status = 'completed', updated_at = $1
 			WHERE id = $2
-		`, time.Now(), migrationID)
+		`, time.Now(), migrationID); err != nil {
+			log.Error().Err(err).Str("migration_id", migrationID).Msg("failed to mark migration as completed")
+		}
 	}()
 
 	c.Status(http.StatusAccepted)
@@ -1021,10 +1035,14 @@ func (svc *Service) CreateBackupAction(c *gin.Context) {
 		return
 	}
 
-	// Add tags to identify this as a backup
-	database.DB.Exec(c.Request.Context(), `
+	// Add tags to identify this as a backup. Failures are logged but
+	// don't abort: the backup image already exists and is usable;
+	// missing tags only break rotation, not the snapshot itself.
+	if _, err := database.DB.Exec(c.Request.Context(), `
 		INSERT INTO image_tags (image_id, tag) VALUES ($1, 'backup'), ($1, $2), ($1, $3)
-	`, backupImageID, fmt.Sprintf("backup_type:%s", backupType), fmt.Sprintf("source_server:%s", instanceID))
+	`, backupImageID, fmt.Sprintf("backup_type:%s", backupType), fmt.Sprintf("source_server:%s", instanceID)); err != nil {
+		log.Warn().Err(err).Str("image_id", backupImageID).Msg("failed to tag backup image; rotation may not work")
+	}
 
 	// Implement rotation: delete old backups of same type for this server
 	// Query all backup images for this server with same backup_type
@@ -1045,18 +1063,25 @@ func (svc *Service) CreateBackupAction(c *gin.Context) {
 		for rows.Next() {
 			var id string
 			var createdAt time.Time
-			rows.Scan(&id, &createdAt)
+			if err := rows.Scan(&id, &createdAt); err != nil {
+				log.Warn().Err(err).Msg("failed to scan backup image row; skipping")
+				continue
+			}
 			backupIDs = append(backupIDs, id)
 		}
 		if err := rows.Err(); err != nil {
 			log.Error().Err(err).Msg("rows iteration error")
 		}
 
-		// Delete backups beyond rotation limit
+		// Delete backups beyond rotation limit. A failed delete leaves a
+		// stale image row; logged but not fatal — the new backup still
+		// succeeded.
 		if len(backupIDs) > int(rotation) {
 			oldBackups := backupIDs[int(rotation):]
 			for _, oldID := range oldBackups {
-				database.DB.Exec(c.Request.Context(), "DELETE FROM images WHERE id = $1", oldID)
+				if _, err := database.DB.Exec(c.Request.Context(), "DELETE FROM images WHERE id = $1", oldID); err != nil {
+					log.Warn().Err(err).Str("image_id", oldID).Msg("failed to delete rotated backup image")
+				}
 			}
 		}
 	}
@@ -1120,12 +1145,16 @@ func (svc *Service) ResetStateAction(c *gin.Context) {
 		return
 	}
 
-	// Update instance state (convert lowercase to uppercase)
-	statusUpper := fmt.Sprintf("%s", state)
-	if state == "error" {
+	// Map known lowercase states to canonical uppercase; pass anything
+	// else through unchanged.
+	var statusUpper string
+	switch state {
+	case "error":
 		statusUpper = "ERROR"
-	} else if state == "active" {
+	case "active":
 		statusUpper = "ACTIVE"
+	default:
+		statusUpper = state
 	}
 
 	_, err = database.DB.Exec(c.Request.Context(), `

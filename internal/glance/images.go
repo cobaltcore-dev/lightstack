@@ -1,21 +1,21 @@
 package glance
 
 import (
-	"errors"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/storage"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // Service handles Glance API endpoints
@@ -31,8 +31,17 @@ type Service struct {
 	cache       *cache.Cache
 }
 
-// NewService creates a new Glance service
-func NewService(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string, cacheInstance *cache.Cache) *Service {
+// NewService creates a new Glance service.
+//
+// Returns an error if the configured storage backend fails to initialize
+// in a way that cannot be served by a hybrid fallback (e.g. mode == "s3"
+// with no AWS credentials). See storage.NewImageStore for the per-mode
+// failure policy.
+func NewService(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string, cacheInstance *cache.Cache) (*Service, error) {
+	imageStore, err := storage.NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize Glance image store: %w", err)
+	}
 	return &Service{
 		mode:        mode,
 		storageMode: mode, // storageMode same as mode for backward compatibility
@@ -41,9 +50,9 @@ func NewService(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string,
 		s3Bucket:    s3Bucket,
 		s3Region:    s3Region,
 		s3Endpoint:  s3Endpoint,
-		imageStore:  storage.NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint),
+		imageStore:  imageStore,
 		cache:       cacheInstance,
-	}
+	}, nil
 }
 
 // RegisterRoutes registers Glance routes (excluding version discovery which is handled separately)
@@ -117,13 +126,13 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 // CreateImageRequest represents an image creation request
 type CreateImageRequest struct {
-	Name            string  `json:"name"`
-	DiskFormat      string  `json:"disk_format"`
-	ContainerFormat string  `json:"container_format"`
-	Visibility      string  `json:"visibility"`
-	MinDisk         int     `json:"min_disk"`
-	MinRAM          int     `json:"min_ram"`
-	Protected       bool    `json:"protected"`
+	Name            string   `json:"name"`
+	DiskFormat      string   `json:"disk_format"`
+	ContainerFormat string   `json:"container_format"`
+	Visibility      string   `json:"visibility"`
+	MinDisk         int      `json:"min_disk"`
+	MinRAM          int      `json:"min_ram"`
+	Protected       bool     `json:"protected"`
 	Tags            []string `json:"tags"`
 }
 
@@ -136,8 +145,11 @@ func (svc *Service) GetVersions(c *gin.Context) {
 				"status": "CURRENT",
 				"links": []gin.H{
 					{
-						"rel":  "self",
-						"href": fmt.Sprintf("%s/", common.BaseURL(c, 9292)),
+						"rel": "self",
+						// Must include the /v2/ path: clients do version discovery
+						// against the unversioned catalog endpoint and use this href
+						// as the base, so omitting it sends requests to /images (404).
+						"href": fmt.Sprintf("%s/v2/", common.BaseURL(c, 9292)),
 					},
 				},
 			},
@@ -154,7 +166,7 @@ func (svc *Service) GetVersionV2(c *gin.Context) {
 			"links": []gin.H{
 				{
 					"rel":  "self",
-					"href": fmt.Sprintf("%s/", common.BaseURL(c, 9292)),
+					"href": fmt.Sprintf("%s/v2/", common.BaseURL(c, 9292)),
 				},
 			},
 		},
@@ -202,21 +214,21 @@ func (svc *Service) CreateImage(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":                imageID,
-		"name":              req.Name,
-		"status":            "queued",
-		"visibility":        visibility,
-		"disk_format":       diskFormat,
-		"container_format":  containerFormat,
-		"min_disk":          req.MinDisk,
-		"min_ram":           req.MinRAM,
-		"protected":         req.Protected,
-		"tags":              req.Tags,
-		"created_at":        now.Format(time.RFC3339),
-		"updated_at":        now.Format(time.RFC3339),
-		"self":              fmt.Sprintf("/v2/images/%s", imageID),
-		"file":              fmt.Sprintf("/v2/images/%s/file", imageID),
-		"schema":            "/v2/schemas/image",
+		"id":               imageID,
+		"name":             req.Name,
+		"status":           "queued",
+		"visibility":       visibility,
+		"disk_format":      diskFormat,
+		"container_format": containerFormat,
+		"min_disk":         req.MinDisk,
+		"min_ram":          req.MinRAM,
+		"protected":        req.Protected,
+		"tags":             req.Tags,
+		"created_at":       now.Format(time.RFC3339),
+		"updated_at":       now.Format(time.RFC3339),
+		"self":             fmt.Sprintf("/v2/images/%s", imageID),
+		"file":             fmt.Sprintf("/v2/images/%s/file", imageID),
+		"schema":           "/v2/schemas/image",
 	})
 }
 
@@ -286,19 +298,19 @@ func (svc *Service) ListImages(c *gin.Context) {
 		}
 
 		image := gin.H{
-			"id":                id,
-			"name":              name,
-			"status":            status,
-			"visibility":        visibility,
-			"disk_format":       diskFormat,
-			"container_format":  containerFormat,
-			"min_disk":          minDisk,
-			"min_ram":           minRAM,
-			"created_at":        createdAt.Format(time.RFC3339),
-			"updated_at":        updatedAt.Format(time.RFC3339),
-			"self":              fmt.Sprintf("/v2/images/%s", id),
-			"file":              fmt.Sprintf("/v2/images/%s/file", id),
-			"schema":            "/v2/schemas/image",
+			"id":               id,
+			"name":             name,
+			"status":           status,
+			"visibility":       visibility,
+			"disk_format":      diskFormat,
+			"container_format": containerFormat,
+			"min_disk":         minDisk,
+			"min_ram":          minRAM,
+			"created_at":       createdAt.Format(time.RFC3339),
+			"updated_at":       updatedAt.Format(time.RFC3339),
+			"self":             fmt.Sprintf("/v2/images/%s", id),
+			"file":             fmt.Sprintf("/v2/images/%s/file", id),
+			"schema":           "/v2/schemas/image",
 		}
 
 		if sizeBytes.Valid {
@@ -319,8 +331,8 @@ func (svc *Service) ListImages(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"images": images,
-		"schema":  "/v2/schemas/images",
-		"first":   "/v2/images",
+		"schema": "/v2/schemas/images",
+		"first":  "/v2/images",
 	})
 }
 
@@ -367,19 +379,19 @@ func (svc *Service) GetImage(c *gin.Context) {
 	}
 
 	image := gin.H{
-		"id":                id,
-		"name":              name,
-		"status":            status,
-		"visibility":        visibility,
-		"disk_format":       diskFormat,
-		"container_format":  containerFormat,
-		"min_disk":          minDisk,
-		"min_ram":           minRAM,
-		"created_at":        createdAt.Format(time.RFC3339),
-		"updated_at":        updatedAt.Format(time.RFC3339),
-		"self":              fmt.Sprintf("/v2/images/%s", id),
-		"file":              fmt.Sprintf("/v2/images/%s/file", id),
-		"schema":            "/v2/schemas/image",
+		"id":               id,
+		"name":             name,
+		"status":           status,
+		"visibility":       visibility,
+		"disk_format":      diskFormat,
+		"container_format": containerFormat,
+		"min_disk":         minDisk,
+		"min_ram":          minRAM,
+		"created_at":       createdAt.Format(time.RFC3339),
+		"updated_at":       updatedAt.Format(time.RFC3339),
+		"self":             fmt.Sprintf("/v2/images/%s", id),
+		"file":             fmt.Sprintf("/v2/images/%s/file", id),
+		"schema":           "/v2/schemas/image",
 	}
 
 	if sizeBytes.Valid {
@@ -415,7 +427,7 @@ func (svc *Service) GetImage(c *gin.Context) {
 
 	// Store in cache (1h TTL per config)
 	if svc.cache != nil {
-		svc.cache.Set(ctx, "image:"+id, image, 1*time.Hour)
+		svc.cache.TrySet(ctx, "image:"+id, image, 1*time.Hour)
 	}
 
 	c.JSON(http.StatusOK, image)
@@ -459,8 +471,8 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 
 	// Invalidate cache
 	if svc.cache != nil {
-		svc.cache.Delete(ctx, "image:"+imageID)
-		svc.cache.DeletePattern(ctx, "images:*")
+		svc.cache.TryDelete(ctx, "image:"+imageID)
+		svc.cache.TryDeletePattern(ctx, "images:*")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -509,7 +521,9 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 			}
 			// field is now a validated column name from the allowlist
 			query := fmt.Sprintf("UPDATE images SET %s = $1, updated_at = $2 WHERE id = $3 AND project_id = $4", field)
-			database.DB.Exec(c.Request.Context(), query, value, time.Now(), imageID, projectID)
+			if _, err := database.DB.Exec(c.Request.Context(), query, value, time.Now(), imageID, projectID); err != nil {
+				log.Warn().Err(err).Str("image_id", imageID).Str("field", field).Msg("failed to apply image patch op; continuing")
+			}
 		}
 	}
 
@@ -540,25 +554,33 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	}
 
 	// Update status to saving
-	database.DB.Exec(c.Request.Context(),
+	if _, err := database.DB.Exec(c.Request.Context(),
 		"UPDATE images SET status = $1, updated_at = $2 WHERE id = $3",
-		"saving", time.Now(), imageID)
+		"saving", time.Now(), imageID); err != nil {
+		log.Warn().Err(err).Str("image_id", imageID).Msg("failed to mark image as saving")
+	}
 
 	// Upload to storage
 	size, err := svc.imageStore.UploadImage(c.Request.Context(), imageID, c.Request.Body)
 	if err != nil {
-		database.DB.Exec(c.Request.Context(),
+		// Revert status to queued (best-effort; the upload error is the
+		// user-facing one)
+		if _, revertErr := database.DB.Exec(c.Request.Context(),
 			"UPDATE images SET status = $1 WHERE id = $2",
-			"queued", imageID)
+			"queued", imageID); revertErr != nil {
+			log.Warn().Err(revertErr).Str("image_id", imageID).Msg("rollback: failed to revert image status to queued after upload failure")
+		}
 		log.Error().Err(err).Str("operation", "upload_image").Str("image_id", imageID).Msg("failed to upload image to storage")
 		common.SendError(c, common.NewServiceUnavailableError("failed to upload image"))
 		return
 	}
 
 	// Update status to active and set size
-	database.DB.Exec(c.Request.Context(),
+	if _, err := database.DB.Exec(c.Request.Context(),
 		"UPDATE images SET status = $1, size_bytes = $2, updated_at = $3 WHERE id = $4",
-		"active", size, time.Now(), imageID)
+		"active", size, time.Now(), imageID); err != nil {
+		log.Error().Err(err).Str("image_id", imageID).Msg("failed to mark image as active after successful upload")
+	}
 
 	c.Status(http.StatusNoContent)
 }
@@ -604,19 +626,19 @@ func (svc *Service) DownloadImageData(c *gin.Context) {
 // GetImageSchema returns the image schema
 func (svc *Service) GetImageSchema(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"name":       "image",
+		"name": "image",
 		"properties": gin.H{
-			"id":                gin.H{"type": "string"},
-			"name":              gin.H{"type": "string"},
-			"status":            gin.H{"type": "string"},
-			"visibility":        gin.H{"type": "string"},
-			"size":              gin.H{"type": "integer"},
-			"disk_format":       gin.H{"type": "string"},
-			"container_format":  gin.H{"type": "string"},
-			"min_disk":          gin.H{"type": "integer"},
-			"min_ram":           gin.H{"type": "integer"},
-			"created_at":        gin.H{"type": "string"},
-			"updated_at":        gin.H{"type": "string"},
+			"id":               gin.H{"type": "string"},
+			"name":             gin.H{"type": "string"},
+			"status":           gin.H{"type": "string"},
+			"visibility":       gin.H{"type": "string"},
+			"size":             gin.H{"type": "integer"},
+			"disk_format":      gin.H{"type": "string"},
+			"container_format": gin.H{"type": "string"},
+			"min_disk":         gin.H{"type": "integer"},
+			"min_ram":          gin.H{"type": "integer"},
+			"created_at":       gin.H{"type": "string"},
+			"updated_at":       gin.H{"type": "string"},
 		},
 	})
 }

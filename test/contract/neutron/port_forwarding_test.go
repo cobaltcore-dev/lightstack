@@ -3,6 +3,7 @@ package neutron_test
 import (
 	"testing"
 
+	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +13,7 @@ import (
 func TestPortForwardingLifecycle_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	// Create test network for port forwarding
 	network, subnet, port, router, floatingIP := setupPortForwardingPrerequisites(t, client)
@@ -132,7 +133,7 @@ func TestPortForwardingLifecycle_Contract(t *testing.T) {
 func TestPortForwardingValidation_Contract(t *testing.T) {
 	skipIfO3KNotRunning(t)
 
-	client := setupNeutronClient(t)
+	client := contract.SetupNeutronClient(t)
 
 	network, subnet, port, router, floatingIP := setupPortForwardingPrerequisites(t, client)
 	defer cleanupPortForwardingPrerequisites(t, client, network.ID, subnet.ID, port.ID, router.ID, floatingIP.ID)
@@ -178,7 +179,7 @@ func TestPortForwardingValidation_Contract(t *testing.T) {
 	createOpts["port_forwarding"].(map[string]interface{})["external_port"] = 8080
 
 	// First create should succeed
-	resp, err = client.Post(
+	_, err = client.Post(
 		client.ServiceURL("floatingips", floatingIP.ID, "port_forwardings"),
 		createOpts,
 		nil,

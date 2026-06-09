@@ -13,6 +13,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 )
+
 // UpdateQuotaRequest represents a quota update request
 type UpdateQuotaRequest struct {
 	QuotaSet map[string]int `json:"quota_set"`
@@ -49,19 +50,19 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 
 	// Default values if not in database
 	defaults := map[string]int{
-		"instances":             10,
-		"cores":                 20,
-		"ram":                   51200,
-		"volumes":               10,
-		"gigabytes":             1000,
-		"snapshots":             10,
-		"networks":              10,
-		"subnets":               10,
-		"ports":                 50,
-		"routers":               10,
-		"floatingip":            10,
-		"security_groups":       10,
-		"security_group_rules":  100,
+		"instances":            10,
+		"cores":                20,
+		"ram":                  51200,
+		"volumes":              10,
+		"gigabytes":            1000,
+		"snapshots":            10,
+		"networks":             10,
+		"subnets":              10,
+		"ports":                50,
+		"routers":              10,
+		"floatingip":           10,
+		"security_groups":      10,
+		"security_group_rules": 100,
 	}
 
 	// Load limits from database
@@ -87,39 +88,56 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 		}
 	}
 
-	// Calculate usage
+	// Calculate usage. Scan failures degrade to zero usage (the quota
+	// response still ships) and are logged for diagnosis.
 	var instanceCount, coreCount, ramCount int
-	database.DB.QueryRow(c.Request.Context(), `
+	if err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT COUNT(*), COALESCE(SUM(f.vcpus), 0), COALESCE(SUM(f.ram_mb), 0)
 		FROM instances i
 		LEFT JOIN flavors f ON i.flavor_id = f.id
 		WHERE i.project_id = $1
-	`, projectID).Scan(&instanceCount, &coreCount, &ramCount)
+	`, projectID).Scan(&instanceCount, &coreCount, &ramCount); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to calculate quota usage")
+	}
 
 	// Add usage information (OpenStack includes these as separate keys)
 	quotaSet["instances_used"] = instanceCount
 	quotaSet["cores_used"] = coreCount
 	quotaSet["ram_used"] = ramCount
 
-	// Volume usage
+	// Volume usage. Scan failures degrade to zero (the quota response
+	// still ships) and are logged for diagnosis.
 	var volumeCount, gigabyteCount int
-	database.DB.QueryRow(c.Request.Context(), `
+	if err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT COUNT(*), COALESCE(SUM(size_gb), 0)
 		FROM volumes
 		WHERE project_id = $1
-	`, projectID).Scan(&volumeCount, &gigabyteCount)
+	`, projectID).Scan(&volumeCount, &gigabyteCount); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query volume usage")
+	}
 
 	quotaSet["volumes_used"] = volumeCount
 	quotaSet["gigabytes_used"] = gigabyteCount
 
-	// Network resource usage
+	// Network resource usage. Same fall-back behavior as above.
 	var networkCount, subnetCount, portCount, routerCount, floatingipCount, sgCount int
-	database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM networks WHERE project_id = $1`, projectID).Scan(&networkCount)
-	database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM subnets WHERE project_id = $1`, projectID).Scan(&subnetCount)
-	database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM ports WHERE project_id = $1`, projectID).Scan(&portCount)
-	database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM routers WHERE project_id = $1`, projectID).Scan(&routerCount)
-	database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM floating_ips WHERE project_id = $1`, projectID).Scan(&floatingipCount)
-	database.DB.QueryRow(c.Request.Context(), `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, projectID).Scan(&sgCount)
+	networkUsageQueries := []struct {
+		label string
+		sql   string
+		dst   *int
+	}{
+		{"networks", `SELECT COUNT(*) FROM networks WHERE project_id = $1`, &networkCount},
+		{"subnets", `SELECT COUNT(*) FROM subnets WHERE project_id = $1`, &subnetCount},
+		{"ports", `SELECT COUNT(*) FROM ports WHERE project_id = $1`, &portCount},
+		{"routers", `SELECT COUNT(*) FROM routers WHERE project_id = $1`, &routerCount},
+		{"floating_ips", `SELECT COUNT(*) FROM floating_ips WHERE project_id = $1`, &floatingipCount},
+		{"security_groups", `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, &sgCount},
+	}
+	for _, q := range networkUsageQueries {
+		if err := database.DB.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
+			log.Warn().Err(err).Str("resource", q.label).Str("project_id", projectID).Msg("failed to query network resource usage")
+		}
+	}
 
 	quotaSet["networks_used"] = networkCount
 	quotaSet["subnets_used"] = subnetCount
@@ -187,20 +205,20 @@ func (svc *Service) GetQuotaSetDefaults(c *gin.Context) {
 	projectID := c.Param("id")
 
 	quotaSet := gin.H{
-		"id":                    projectID,
-		"instances":             10,
-		"cores":                 20,
-		"ram":                   51200,
-		"volumes":               10,
-		"gigabytes":             1000,
-		"snapshots":             10,
-		"networks":              10,
-		"subnets":               10,
-		"ports":                 50,
-		"routers":               10,
-		"floatingip":            10,
-		"security_groups":       10,
-		"security_group_rules":  100,
+		"id":                   projectID,
+		"instances":            10,
+		"cores":                20,
+		"ram":                  51200,
+		"volumes":              10,
+		"gigabytes":            1000,
+		"snapshots":            10,
+		"networks":             10,
+		"subnets":              10,
+		"ports":                50,
+		"routers":              10,
+		"floatingip":           10,
+		"security_groups":      10,
+		"security_group_rules": 100,
 	}
 
 	c.JSON(http.StatusOK, gin.H{"quota_set": quotaSet})

@@ -1,20 +1,20 @@
 package keystone
 
 import (
-	"errors"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
-	"github.com/rs/zerolog/log"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -67,7 +67,6 @@ func (s *ScopeField) UnmarshalJSON(data []byte) error {
 	}
 
 	// Otherwise unmarshal as object
-	type scopeAlias ScopeField
 	var temp struct {
 		Project *struct {
 			Name   string `json:"name"`
@@ -110,12 +109,12 @@ type AuthRequest struct {
 // AuthResponse represents an authentication response
 type AuthResponse struct {
 	Token struct {
-		ExpiresAt string                 `json:"expires_at"`
-		IssuedAt  string                 `json:"issued_at"`
-		Methods   []string               `json:"methods"`
-		User      map[string]any `json:"user"`
-		Catalog   []CatalogEntry         `json:"catalog,omitempty"`
-		Project   *map[string]any `json:"project,omitempty"`
+		ExpiresAt string           `json:"expires_at"`
+		IssuedAt  string           `json:"issued_at"`
+		Methods   []string         `json:"methods"`
+		User      map[string]any   `json:"user"`
+		Catalog   []CatalogEntry   `json:"catalog,omitempty"`
+		Project   *map[string]any  `json:"project,omitempty"`
 		Roles     []map[string]any `json:"roles,omitempty"`
 	} `json:"token"`
 }
@@ -638,7 +637,7 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache) []Catalog
 
 	// Store in cache (24h TTL per config)
 	if cacheInstance != nil {
-		cacheInstance.Set(ctx, "service_catalog:"+projectID, catalog, 24*time.Hour)
+		cacheInstance.TrySet(ctx, "service_catalog:"+projectID, catalog, 24*time.Hour)
 	}
 
 	return catalog
@@ -647,13 +646,13 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache) []Catalog
 // substituteURLTemplates replaces template placeholders in endpoint URLs
 func substituteURLTemplates(url, projectID string) string {
 	// Replace {project_id} placeholder
-	url = strings.Replace(url, "{project_id}", projectID, -1)
+	url = strings.ReplaceAll(url, "{project_id}", projectID)
 	// Also handle $(project_id)s format (OpenStack convention)
-	url = strings.Replace(url, "$(project_id)s", projectID, -1)
+	url = strings.ReplaceAll(url, "$(project_id)s", projectID)
 	// Also handle %(project_id)s format (Python string formatting)
-	url = strings.Replace(url, "%(project_id)s", projectID, -1)
+	url = strings.ReplaceAll(url, "%(project_id)s", projectID)
 	// Also handle plain %s format (legacy)
-	url = strings.Replace(url, "%s", projectID, -1)
+	url = strings.ReplaceAll(url, "%s", projectID)
 
 	// Replace hostname based on O3K_ENDPOINT_HOST environment variable
 	// This allows using 'localhost' in CI and 'o3k' in docker-compose
@@ -662,9 +661,9 @@ func substituteURLTemplates(url, projectID string) string {
 		baseHost = "localhost"
 	}
 	// Replace http://o3k: with the configured host
-	url = strings.Replace(url, "http://o3k:", "http://"+baseHost+":", -1)
+	url = strings.ReplaceAll(url, "http://o3k:", "http://"+baseHost+":")
 	// Also handle https://o3k: for future SSL support
-	url = strings.Replace(url, "https://o3k:", "https://"+baseHost+":", -1)
+	url = strings.ReplaceAll(url, "https://o3k:", "https://"+baseHost+":")
 
 	return url
 }

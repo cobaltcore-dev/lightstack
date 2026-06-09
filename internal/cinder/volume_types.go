@@ -1,8 +1,8 @@
 package cinder
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -49,11 +49,11 @@ func (svc *Service) CreateVolumeType(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"volume_type": map[string]any{
-			"id":                               typeID,
-			"name":                             req.VolumeType.Name,
-			"description":                      req.VolumeType.Description,
-			"os-volume-type-access:is_public":  isPublic,
-			"extra_specs":                      map[string]string{},
+			"id":                              typeID,
+			"name":                            req.VolumeType.Name,
+			"description":                     req.VolumeType.Description,
+			"os-volume-type-access:is_public": isPublic,
+			"extra_specs":                     map[string]string{},
 		},
 	})
 }
@@ -182,7 +182,7 @@ func (svc *Service) ListVolumeTypeExtraSpecs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"extra_specs": extraSpecs})
 }
 
-// CreateVolumeTypeExtraSpecs handles POST /v3/:project_id/types/:id/extra_specs
+// CreateVolumeTypeExtraSpecs handles POST /v3/types/:id/extra_specs
 func (svc *Service) CreateVolumeTypeExtraSpecs(c *gin.Context) {
 	typeID := c.Param("id")
 
@@ -215,7 +215,7 @@ func (svc *Service) CreateVolumeTypeExtraSpecs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"extra_specs": req.ExtraSpecs})
 }
 
-// GetVolumeTypeExtraSpecKey handles GET /v3/:project_id/types/:id/extra_specs/:key
+// GetVolumeTypeExtraSpecKey handles GET /v3/types/:id/extra_specs/:key
 func (svc *Service) GetVolumeTypeExtraSpecKey(c *gin.Context) {
 	typeID := c.Param("id")
 	key := c.Param("key")
@@ -245,7 +245,7 @@ func (svc *Service) GetVolumeTypeExtraSpecKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{key: value})
 }
 
-// UpdateVolumeTypeExtraSpecKey handles PUT /v3/:project_id/types/:id/extra_specs/:key
+// UpdateVolumeTypeExtraSpecKey handles PUT /v3/types/:id/extra_specs/:key
 func (svc *Service) UpdateVolumeTypeExtraSpecKey(c *gin.Context) {
 	typeID := c.Param("id")
 	key := c.Param("key")
@@ -307,7 +307,7 @@ func (svc *Service) UpdateVolumeTypeExtraSpecKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{key: value})
 }
 
-// DeleteVolumeTypeExtraSpecKey handles DELETE /v3/:project_id/types/:id/extra_specs/:key
+// DeleteVolumeTypeExtraSpecKey handles DELETE /v3/types/:id/extra_specs/:key
 func (svc *Service) DeleteVolumeTypeExtraSpecKey(c *gin.Context) {
 	typeID := c.Param("id")
 	key := c.Param("key")

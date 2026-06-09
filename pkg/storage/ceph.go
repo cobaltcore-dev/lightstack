@@ -13,15 +13,15 @@ import (
 
 // CephClient manages storage operations (RBD, local, or both)
 type CephClient struct {
-	mode     string // "stub", "rbd", "local", or "local,rbd"
-	pool     string
-	confFile string
-	timeout  time.Duration
-	mu       sync.Mutex
+	mode        string // "stub", "rbd", "local", or "local,rbd"
+	pool        string
+	confFile    string
+	timeout     time.Duration
+	mu          sync.Mutex
 	stubVolumes map[string]*stubVolume // For stub mode
 	localPath   string                 // For local mode
-	conn        any            // Ceph RADOS connection (type depends on build tags)
-	ioctx       any            // RADOS IO context for pool (type depends on build tags)
+	conn        any                    //nolint:unused // Ceph RADOS connection — used by the ceph build tag
+	ioctx       any                    //nolint:unused // RADOS IO context for pool — used by the ceph build tag
 }
 
 // stubVolume represents a simulated volume
@@ -61,7 +61,6 @@ func NewCephClient(mode, pool, confFile string) *CephClient {
 	return client
 }
 
-
 // CreateVolume creates a storage volume
 func (c *CephClient) CreateVolume(ctx context.Context, volumeID string, sizeGB int) error {
 	switch c.mode {
@@ -77,8 +76,11 @@ func (c *CephClient) CreateVolume(ctx context.Context, volumeID string, sizeGB i
 			return fmt.Errorf("failed to create local volume: %w", err)
 		}
 		if err := c.createVolumeRBD(ctx, volumeID, sizeGB); err != nil {
-			// Rollback local creation
-			c.deleteVolumeLocal(ctx, volumeID)
+			// Rollback local creation (best-effort; the RBD error is
+			// the user-facing one)
+			if rbErr := c.deleteVolumeLocal(ctx, volumeID); rbErr != nil {
+				log.Warn().Err(rbErr).Str("volume_id", volumeID).Msg("rollback: failed to delete local volume after RBD create failure")
+			}
 			return fmt.Errorf("failed to create RBD volume: %w", err)
 		}
 		return nil
@@ -121,7 +123,11 @@ func (c *CephClient) createVolumeLocal(ctx context.Context, volumeID string, siz
 	if err != nil {
 		return fmt.Errorf("failed to create volume file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Warn().Err(err).Str("path", volumePath).Msg("failed to close volume file")
+		}
+	}()
 
 	// Write size metadata (in real implementation, qemu-img would handle this)
 	// Truncate to reserve space (sparse file)
@@ -131,7 +137,6 @@ func (c *CephClient) createVolumeLocal(ctx context.Context, volumeID string, siz
 
 	return nil
 }
-
 
 // deleteVolumeLocal deletes a local volume
 func (c *CephClient) deleteVolumeLocal(ctx context.Context, volumeID string) error {
@@ -173,7 +178,6 @@ func (c *CephClient) deleteVolumeStub(volumeID string) error {
 	delete(c.stubVolumes, volumeID)
 	return nil
 }
-
 
 // CreateSnapshot creates a snapshot of a volume
 func (c *CephClient) CreateSnapshot(ctx context.Context, volumeID, snapshotID string) error {

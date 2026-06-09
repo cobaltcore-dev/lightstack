@@ -1,11 +1,11 @@
 package neutron
 
 import (
-	"errors"
 	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -13,13 +13,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/networking"
 )
 
 // CreatePortRequest represents a port creation request
@@ -142,8 +142,11 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		).Scan(&exists)
 
 		if err != nil || !exists {
-			// Clean up port on failure
-			database.DB.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID)
+			// Clean up port on failure (best-effort; the lookup error is
+			// the user-facing one)
+			if _, cleanupErr := database.DB.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID); cleanupErr != nil {
+				log.Warn().Err(cleanupErr).Str("port_id", portID).Msg("rollback: failed to delete port after security-group lookup failure")
+			}
 			common.SendError(c, common.NewNotFoundError(fmt.Sprintf("security group %s", sgID)))
 			return
 		}
@@ -153,8 +156,11 @@ func (svc *Service) CreatePort(c *gin.Context) {
 			portID, sgID,
 		)
 		if err != nil {
-			// Clean up port on failure
-			database.DB.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID)
+			// Clean up port on failure (best-effort; the insert error
+			// is the user-facing one)
+			if _, cleanupErr := database.DB.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID); cleanupErr != nil {
+				log.Warn().Err(cleanupErr).Str("port_id", portID).Msg("rollback: failed to delete port after security-group association failure")
+			}
 			log.Error().Err(err).Str("operation", "associate_security_group").Str("sg_id", sgID).Msg("failed to associate security group")
 			common.SendError(c, common.NewInternalServerError("failed to associate security group"))
 			return
@@ -288,7 +294,9 @@ func (svc *Service) ListPorts(c *gin.Context) {
 		}
 
 		var fixedIPs []map[string]any
-		json.Unmarshal(fixedIPsJSON, &fixedIPs)
+		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil {
+			log.Warn().Err(err).Str("port_id", id).Msg("failed to unmarshal port fixed_ips; treating as empty")
+		}
 
 		// Fetch associated security groups for this port
 		securityGroups := []string{}
@@ -365,7 +373,9 @@ func (svc *Service) GetPort(c *gin.Context) {
 	}
 
 	var fixedIPs []map[string]any
-	json.Unmarshal(fixedIPsJSON, &fixedIPs)
+	if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil {
+		log.Warn().Err(err).Str("port_id", portID).Msg("failed to unmarshal port fixed_ips; treating as empty")
+	}
 
 	// Fetch associated security groups
 	securityGroups := []string{}
@@ -416,22 +426,32 @@ func (svc *Service) DeletePort(c *gin.Context) {
 			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to detach XDP program from interface")
 		}
 
-		// Remove port from eBPF maps (need MAC address)
+		// Remove port from eBPF maps (need MAC address). A scan failure
+		// leaves macAddress empty, which skips the eBPF cleanup below —
+		// safe degradation; a leftover map entry will be reconciled on
+		// the next sync.
 		var macAddress string
-		database.DB.QueryRow(c.Request.Context(),
+		if err := database.DB.QueryRow(c.Request.Context(),
 			"SELECT mac_address FROM ports WHERE id = $1",
 			portID,
-		).Scan(&macAddress)
+		).Scan(&macAddress); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Msg("failed to resolve port MAC during teardown")
+		}
 
 		if macAddress != "" {
 			if mac, err := net.ParseMAC(macAddress); err == nil {
-				svc.sgManager.RemoveSecurityGroupFromPort(portID, mac)
+				if err := svc.sgManager.RemoveSecurityGroupFromPort(portID, mac); err != nil {
+					log.Warn().Err(err).Str("port_id", portID).Str("mac", mac.String()).Msg("failed to remove security group from port")
+				}
 			}
 		}
 	}
 
-	// Delete TAP device
-	svc.tapManager.DeleteTAPDevice(tapName, true, nsName)
+	// Delete TAP device (best-effort: a leftover TAP is hygiene, not
+	// correctness — the port row is about to be deleted).
+	if err := svc.tapManager.DeleteTAPDevice(tapName, true, nsName); err != nil {
+		log.Warn().Err(err).Str("tap", tapName).Str("namespace", nsName).Msg("failed to delete TAP device")
+	}
 
 	// Remove FDB entry if VXLAN is enabled
 	if svc.vxlanCoordinator != nil {
@@ -763,9 +783,12 @@ func (svc *Service) DeleteSecurityGroup(c *gin.Context) {
 	sgID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Delete iptables chain
+	// Delete iptables chain (best-effort: a leftover chain is hygiene,
+	// not correctness — the security group row is about to be deleted).
 	if svc.sgManager != nil {
-		svc.sgManager.DeleteSecurityGroupChain(sgID)
+		if err := svc.sgManager.DeleteSecurityGroupChain(sgID); err != nil {
+			log.Warn().Err(err).Str("sg_id", sgID).Msg("failed to delete security group iptables chain")
+		}
 	}
 
 	// Delete from database
@@ -842,7 +865,6 @@ func (svc *Service) UpdateSecurityGroup(c *gin.Context) {
 		},
 	})
 }
-
 
 // CreateSecurityGroupRuleRequest represents a security group rule creation request
 type CreateSecurityGroupRuleRequest struct {
@@ -939,16 +961,16 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"security_group_rule": gin.H{
-			"id":                 ruleID,
-			"security_group_id":  req.SecurityGroupRule.SecurityGroupID,
-			"direction":          req.SecurityGroupRule.Direction,
-			"ethertype":          etherType,
-			"protocol":           protocol,
-			"port_range_min":     portMin,
-			"port_range_max":     portMax,
-			"remote_ip_prefix":   remoteIP,
-			"remote_group_id":    remoteGroup,
-			"created_at":         now.Format(time.RFC3339),
+			"id":                ruleID,
+			"security_group_id": req.SecurityGroupRule.SecurityGroupID,
+			"direction":         req.SecurityGroupRule.Direction,
+			"ethertype":         etherType,
+			"protocol":          protocol,
+			"port_range_min":    portMin,
+			"port_range_max":    portMax,
+			"remote_ip_prefix":  remoteIP,
+			"remote_group_id":   remoteGroup,
+			"created_at":        now.Format(time.RFC3339),
 		},
 	})
 }
@@ -1049,7 +1071,9 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 			RemoteGroupID:  remoteGroup.String,
 		}
 
-		svc.sgManager.RemoveRule(sgID, rule)
+		if err := svc.sgManager.RemoveRule(sgID, rule); err != nil {
+			log.Warn().Err(err).Str("sg_id", sgID).Str("rule_id", rule.ID).Msg("failed to remove security group iptables rule")
+		}
 	}
 
 	// Delete from database
