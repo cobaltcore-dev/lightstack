@@ -113,10 +113,10 @@
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T032 [P] Docs: OpenShift SCC equivalent for privileged real mode, and the MetalLB / routed-subnet floating-IP recipe (FR-009c, FR-012d).
-- [ ] T033 [P] Flag/correct the product config divergence: note in `docs/CONFIGURATION.md` that only `O3K_DB_URL`/`O3K_JWT_SECRET`/`O3K_ENDPOINT_HOST`/`O3K_ENDPOINT_SCHEME` are honored as env (chart uses a Secret-backed `o3k.yaml`); file a product issue to wire a real env layer or fix the docs (research R2).
-- [ ] T034 Run `quickstart.md` end-to-end for the single-node-stub MVP (+ optional TLS).
-- [ ] T035 Final gate: `helm lint` + `helm template` over all mode permutations render clean; `helm unittest` green; record which suites are **[DEFERRED #52]** so coverage isn't overstated.
+- [X] T032 [P] Docs: OpenShift SCC equivalent for privileged real mode, and the MetalLB / routed-subnet floating-IP recipe (FR-009c, FR-012d).
+- [X] T033 [P] Flag/correct the product config divergence: note in `docs/CONFIGURATION.md` that only `O3K_DB_URL`/`O3K_JWT_SECRET`/`O3K_ENDPOINT_HOST`/`O3K_ENDPOINT_SCHEME` are honored as env (chart uses a Secret-backed `o3k.yaml`); file a product issue to wire a real env layer or fix the docs (research R2). *(Resolved by fixing the docs directly — all env-var sections rewritten to the four honored vars.)*
+- [ ] T034 Run `quickstart.md` end-to-end for the single-node-stub MVP (+ optional TLS). *(Requires a cluster + Postgres + O3K image — see chart README → Testing.)*
+- [X] T035 Final gate: `helm lint` + `helm template` over all mode permutations render clean; `helm unittest` green; record which suites are **[DEFERRED #52]** so coverage isn't overstated. *(Done 2026-06-12: lint + 17/17 permutation matrix PASSED — 11 renders, 6 gate rejections — and `helm unittest` GREEN: 6 suites / 24 tests. The first unittest run caught a real wart — an empty `env:` key rendered when neither endpointHost nor TLS was set — fixed in `_helpers.tpl`. Deferred suites: `test/helm_multinode_test.sh` (SC-003/004, gated off) and real-VM e2e — issue #52.)*
 
 ---
 

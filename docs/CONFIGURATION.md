@@ -123,52 +123,31 @@ logging:
 
 ## Environment Variables
 
-All configuration options can be overridden via environment variables.
+> **Correction (SPEC-008).** Earlier versions of this page documented a generic
+> `O3K_<SECTION>_<KEY>` convention (e.g. `O3K_DATABASE_URL`, `O3K_KEYSTONE_ADMIN_PASSWORD`,
+> `O3K_NOVA_LIBVIRT_MODE`). **The binary does not implement that layer** — those variables
+> are silently ignored. Everything else (admin password, service modes, VXLAN, cache,
+> logging, ports, …) takes effect **only from the YAML config file** passed via `--config`.
 
-### Naming Convention
+The binary honors exactly **four** environment variables:
 
-- Prefix: `O3K_`
-- Nested keys: joined with `_`
-- Example: `database.url` → `O3K_DATABASE_URL`
-
-### Common Environment Variables
+| Variable | Overrides / controls | Where it is read |
+|----------|----------------------|------------------|
+| `O3K_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
+| `O3K_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
+| `O3K_ENDPOINT_HOST` | advertised catalog / self-link host | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
+| `O3K_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
 
 ```bash
-# Database
-export O3K_DATABASE_URL="postgres://user:pass@host/db"
-export O3K_DATABASE_MAX_CONNECTIONS="20"
-
-# Keystone
-export O3K_KEYSTONE_PORT="35357"
-export O3K_KEYSTONE_JWT_SECRET="your-secret-here"
-export O3K_KEYSTONE_TOKEN_TTL="24h"
-export O3K_KEYSTONE_ADMIN_USER="admin"
-export O3K_KEYSTONE_ADMIN_PASSWORD="secret"
-
-# Nova
-export O3K_NOVA_PORT="8774"
-export O3K_NOVA_LIBVIRT_URI="qemu:///system"
-export O3K_NOVA_LIBVIRT_MODE="real"
-
-# Neutron
-export O3K_NEUTRON_PORT="9696"
-export O3K_NEUTRON_NETWORKING_MODE="iptables"
-export O3K_NEUTRON_VXLAN_ENABLED="true"
-
-# Cinder
-export O3K_CINDER_PORT="8776"
-export O3K_CINDER_STORAGE_MODE="rbd"
-export O3K_CINDER_CEPH_POOL="volumes"
-
-# Glance
-export O3K_GLANCE_PORT="9292"
-export O3K_GLANCE_STORAGE_MODE="rbd"
-export O3K_GLANCE_CEPH_POOL="images"
-
-# Logging
-export O3K_LOGGING_LEVEL="debug"
-export O3K_LOGGING_FORMAT="text"
+export O3K_DB_URL="postgres://user:pass@host/db?sslmode=disable"
+export O3K_JWT_SECRET="your-secret-here"
+export O3K_ENDPOINT_HOST="o3k.example.com"
+export O3K_ENDPOINT_SCHEME="https"   # only when TLS is terminated in front of O3K
 ```
+
+To change anything else, edit (or mount) the config file. The Helm chart, for example,
+renders the full `o3k.yaml` — including `keystone.admin_password` — into a Kubernetes
+**Secret** mounted at the `--config` path, precisely because no per-key env override exists.
 
 ### Docker Compose Example
 
@@ -177,11 +156,11 @@ services:
   o3k:
     image: o3k:latest
     environment:
-      O3K_DATABASE_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
-      O3K_KEYSTONE_JWT_SECRET: "${JWT_SECRET}"
-      O3K_LOGGING_LEVEL: "info"
-      O3K_NOVA_LIBVIRT_MODE: "real"
-      O3K_NEUTRON_NETWORKING_MODE: "iptables"
+      O3K_DB_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
+      O3K_JWT_SECRET: "${JWT_SECRET}"
+    volumes:
+      # everything else (service modes, admin password, logging, ...) comes from the file:
+      - ./config/o3k.yaml:/app/config/o3k.yaml:ro
 ```
 
 ---
@@ -426,11 +405,16 @@ keystone:
 
 **⚠️ CRITICAL: Change these in production!**
 
-**Change via environment:**
-```bash
-export O3K_KEYSTONE_ADMIN_USER="myadmin"
-export O3K_KEYSTONE_ADMIN_PASSWORD="$(openssl rand -hex 16)"
+**Change via the config file** (there is no env override for these — see
+[Environment Variables](#environment-variables)):
+```yaml
+keystone:
+  admin_user: myadmin            # optional; disables the seeded `admin` when changed
+  admin_password: "<generate a strong password>"
 ```
+The configured password is a **first-boot seed** (SPEC-007): applied only while the
+account still carries the default; rotate afterwards via the Identity API
+(`openstack user password set`), not by changing config.
 
 ### Database Security
 
@@ -721,12 +705,16 @@ rate_limiting:
 3. **When limit exceeded**: Returns HTTP 429 with `Retry-After` header and OpenStack-compatible error body.
 4. **Overflow behavior**: When 10,000+ unique IPs/projects are tracked, new entries are allowed through without limiting. A warning is logged.
 
-### Environment Variable Override
+### Changing Limits
 
-```bash
-O3K_RATE_LIMITING_ENABLED=true
-O3K_RATE_LIMITING_AUTH_RATE=50
-O3K_RATE_LIMITING_API_RATE=200
+Rate limiting is configured **only via the config file** (no env override — see
+[Environment Variables](#environment-variables)):
+
+```yaml
+rate_limiting:
+  enabled: true
+  auth_rate: 50
+  api_rate: 200
 ```
 
 ### Monitoring

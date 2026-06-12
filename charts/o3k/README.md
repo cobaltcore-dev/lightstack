@@ -147,6 +147,49 @@ documents intent; clean node-local data manually when `delete`.
 All resources are release-prefixed (`<release>-o3k-*`), so multiple releases coexist in one
 cluster without collision (FR-016).
 
+## OpenShift (real mode)
+
+OpenShift enforces SecurityContextConstraints instead of plain PodSecurity labels.
+`podSecurity.applyPrivilegedNamespaceLabel` has no effect there; grant the release's
+service account the `privileged` SCC on the target namespace (FR-012d):
+
+```bash
+oc adm policy add-scc-to-user privileged -z default -n <namespace>
+```
+
+Stub mode needs nothing — it runs under the default `restricted-v2` SCC.
+
+## Floating-IP ingress (real mode, deferred — #52)
+
+Floating IPs stay real, API-compatible OpenStack IP objects: O3K programs the DNAT on the
+node hosting the VM (FR-009c). Your job as operator is only to **route the pool to the
+nodes** (`realMode.floatingIpPool`, e.g. `192.0.2.128/25`):
+
+- **MetalLB (cloud / bare metal):** announce the pool from the O3K nodes in L2 mode —
+
+  ```yaml
+  apiVersion: metallb.io/v1beta1
+  kind: IPAddressPool
+  metadata: { name: o3k-floating, namespace: metallb-system }
+  spec:
+    addresses: ["192.0.2.128/25"]
+  ---
+  apiVersion: metallb.io/v1beta1
+  kind: L2Advertisement
+  metadata: { name: o3k-floating, namespace: metallb-system }
+  spec:
+    ipAddressPools: ["o3k-floating"]
+    nodeSelectors:
+      - matchLabels: { o3k.io/compute: "true" }
+  ```
+
+- **Routed / L2 subnet (datacenter, lab):** point a static route for the pool at the
+  node uplinks (or place the pool in the nodes' L2 segment). No MetalLB needed.
+
+The chart installs neither MetalLB nor host routes; it only carries the pool value and
+this documentation. End-to-end floating-IP traffic additionally requires the product
+post-condition WS-5 (issue #52).
+
 ## Testing
 
 ```bash
