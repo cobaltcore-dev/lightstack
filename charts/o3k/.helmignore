@@ -1,0 +1,10 @@
+# Patterns to ignore when packaging the chart.
+.git/
+.gitignore
+.DS_Store
+*.tmp
+*.swp
+*.bak
+# helm-unittest specs live at the chart root under /tests (not templates/tests).
+/tests/
+ci/

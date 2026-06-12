@@ -1,0 +1,35 @@
+# helm-unittest specs for the single-node stub render (T009, contracts C2).
+suite: single-node stub render
+templates:
+  - templates/deployment.yaml
+set:
+  image.repository: ghcr.io/o3k/o3k
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://o3k@db/o3k
+tests:
+  - it: renders a single-node Deployment
+    asserts:
+      - isKind:
+          of: Deployment
+  - it: is unprivileged in stub mode (restricted-PSA-clean)
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].securityContext
+      - notExists:
+          path: spec.template.spec.hostNetwork
+  - it: mounts the config Secret at the --config path
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: config
+            mountPath: /app/config
+            readOnly: true
+  - it: stub replicas are configurable
+    set:
+      replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3

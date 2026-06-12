@@ -1,0 +1,45 @@
+{{- if .Values.ingress.enabled }}
+{{- /*
+  Optional external exposure. NOTE: O3K serves each service on its own port; full
+  HTTPS for the catalog requires per-service-port TLS termination (research R5 /
+  SPEC-007 WS-3) — typically a LoadBalancer per service or an L4 LB with TLS per
+  port. This Ingress is the HTTP(S) front door for the identity service; extend per
+  service/port as your ingress controller supports. tls.enabled also sets
+  O3K_ENDPOINT_SCHEME=https so the catalog advertises https URLs (FR-008b).
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "o3k.fullname" . }}
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.tls.enabled }}
+  tls:
+    - hosts:
+        {{- if .Values.endpointHost }}
+        - {{ .Values.endpointHost | quote }}
+        {{- end }}
+      secretName: {{ .Values.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: {{ .path | default "/" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "o3k.fullname" $ }}
+                port:
+                  name: identity
+    {{- end }}
+{{- end }}

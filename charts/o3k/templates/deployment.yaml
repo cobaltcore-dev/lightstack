@@ -1,0 +1,108 @@
+{{- if eq .Values.deploymentMode "single-node" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "o3k.fullname" . }}
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+spec:
+  # Real mode pins one replica (privileged + hostNetwork + host ports cannot overlap);
+  # stub mode may scale (all state in the DB). FR-003b.
+  replicas: {{ if .Values.realMode.enabled }}1{{ else }}{{ .Values.replicaCount }}{{ end }}
+  {{- if .Values.realMode.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "o3k.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "o3k.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pod when the rendered config changes.
+        checksum/config: {{ include "o3k.config" . | sha256sum }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.realMode.enabled }}
+      hostNetwork: {{ .Values.realMode.hostNetwork }}
+      {{- end }}
+      containers:
+        - name: o3k
+          image: {{ include "o3k.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/app/config/o3k.yaml"]
+          {{- if .Values.realMode.enabled }}
+          securityContext:
+            privileged: {{ .Values.realMode.privileged }}
+          {{- end }}
+          env:
+            {{- if .Values.endpointHost }}
+            - name: O3K_ENDPOINT_HOST
+              value: {{ .Values.endpointHost | quote }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: O3K_ENDPOINT_SCHEME
+              value: "https"
+            {{- end }}
+          ports:
+            - { name: identity, containerPort: 35357 }
+            - { name: compute, containerPort: 8774 }
+            - { name: placement, containerPort: 8778 }
+            - { name: network, containerPort: 9696 }
+            - { name: blockstorage, containerPort: 8776 }
+            - { name: image, containerPort: 9292 }
+            - { name: metadata, containerPort: 8775 }
+          livenessProbe:
+            httpGet: { path: /v3, port: identity }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /v3, port: identity }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            {{- if .Values.realMode.enabled }}
+            - name: libvirt-sock
+              mountPath: {{ .Values.realMode.libvirtSocketPath }}
+            - name: host-storage
+              mountPath: {{ .Values.realMode.hostStoragePath }}
+            {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ include "o3k.configSecretName" . }}
+        {{- if .Values.realMode.enabled }}
+        - name: libvirt-sock
+          hostPath:
+            path: {{ .Values.realMode.libvirtSocketPath }}
+            type: Socket
+        - name: host-storage
+          hostPath:
+            path: {{ .Values.realMode.hostStoragePath }}
+            type: DirectoryOrCreate
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

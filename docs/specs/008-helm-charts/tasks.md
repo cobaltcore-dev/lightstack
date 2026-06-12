@@ -18,10 +18,10 @@
 
 **Purpose**: Scaffold the chart and its test tooling.
 
-- [ ] T001 [P] Scaffold `charts/o3k/Chart.yaml` (name `o3k`, chart + appVersion, `kubeVersion: ">=1.25.0-0"` per research R3) and `charts/o3k/.helmignore`.
-- [ ] T002 [P] Create `charts/o3k/values.yaml` with documented defaults (single-node, stub) for every value in data-model.md — `image.repository` empty (no default), `deploymentMode: single-node`, all service modes `stub`, cache off (`cache.enabled: false`, empty `cache.redisUrl`), TLS off.
-- [ ] T003 [P] Create `charts/o3k/values.schema.json` enforcing types/enums + required-value presence (image, secrets, database) per contracts C1.
-- [ ] T004 [P] Set up chart test tooling: helm-unittest layout `charts/o3k/tests/`, a kind/k3s CI config, and `Makefile`/CI targets for `helm lint`, `helm template`, `helm unittest` (research R14).
+- [X] T001 [P] Scaffold `charts/o3k/Chart.yaml` (name `o3k`, chart + appVersion, `kubeVersion: ">=1.25.0-0"` per research R3) and `charts/o3k/.helmignore`.
+- [X] T002 [P] Create `charts/o3k/values.yaml` with documented defaults (single-node, stub) for every value in data-model.md — `image.repository` empty (no default), `deploymentMode: single-node`, all service modes `stub`, cache off (`cache.enabled: false`, empty `cache.redisUrl`), TLS off.
+- [X] T003 [P] Create `charts/o3k/values.schema.json` enforcing types/enums + required-value presence (image, secrets, database) per contracts C1.
+- [X] T004 [P] Set up chart test tooling: helm-unittest layout `charts/o3k/tests/`, a kind/k3s CI config, and `Makefile`/CI targets for `helm lint`, `helm template`, `helm unittest` (research R14).
 
 ---
 
@@ -31,10 +31,10 @@
 
 **⚠️ CRITICAL**: No user-story work begins until this phase is complete.
 
-- [ ] T005 [P] helm-unittest gate specs in `charts/o3k/tests/gates_test.yaml` (write FIRST, confirm RED): install `fail`s when `image.repository`, token secret, admin password, or database URL is missing (value or `existingSecret`); **`cache.enabled=true` with an empty `redisUrl` also `fail`s** (FR-006a); minimal valid values render (FR-007/007a/018, contracts C1).
-- [ ] T006 Implement `charts/o3k/templates/_helpers.tpl`: release-prefixed names/labels (FR-016), `deploymentMode` guards, the install-time fail-gates from T005 (incl. `cache.enabled ⇒ redisUrl` required — FR-006a), per-service probe partial (FR-013), and the config-render + secret-resolution helpers.
-- [ ] T007 Implement `charts/o3k/templates/secret.yaml`: render the **full** `o3k.yaml` from values into a **Secret** (incl. `keystone.jwt_secret`, `keystone.admin_password`, `database.url`), or reference `existingSecret`; mount at the binary's `--config` path. Wire env `O3K_DB_URL`/`O3K_JWT_SECRET` (from Secret) + `O3K_ENDPOINT_HOST` (research R2 — no generic env layer; Secret-backed file). The rendered file includes `cache.*` (off by default); enabling cache makes Redis a **fail-fast boot dependency** — `pkg/cache.NewCache` Pings Redis at startup and the instance won't start if it is unreachable, so health-gate Redis before O3K (FR-006a).
-- [ ] T008 Implement `charts/o3k/templates/service.yaml`: a front-door Service for the six API services — identity 35357, compute 8774, placement 8778, network 9696, block storage 8776, image 9292 — `ClusterIP` default (FR-008). **Metadata (8775) is excluded from the load-balanced front-door** (FR-009d); VMs reach it node-locally via the link-local address (FR-009a), so expose it per-node, not via this Service.
+- [X] T005 [P] helm-unittest gate specs in `charts/o3k/tests/gates_test.yaml` (write FIRST, confirm RED): install `fail`s when `image.repository`, token secret, admin password, or database URL is missing (value or `existingSecret`); **`cache.enabled=true` with an empty `redisUrl` also `fail`s** (FR-006a); minimal valid values render (FR-007/007a/018, contracts C1).
+- [X] T006 Implement `charts/o3k/templates/_helpers.tpl`: release-prefixed names/labels (FR-016), `deploymentMode` guards, the install-time fail-gates from T005 (incl. `cache.enabled ⇒ redisUrl` required — FR-006a), per-service probe partial (FR-013), and the config-render + secret-resolution helpers.
+- [X] T007 Implement `charts/o3k/templates/secret.yaml`: render the **full** `o3k.yaml` from values into a **Secret** (incl. `keystone.jwt_secret`, `keystone.admin_password`, `database.url`), or reference `existingSecret`; mount at the binary's `--config` path. Wire env `O3K_DB_URL`/`O3K_JWT_SECRET` (from Secret) + `O3K_ENDPOINT_HOST` (research R2 — no generic env layer; Secret-backed file). The rendered file includes `cache.*` (off by default); enabling cache makes Redis a **fail-fast boot dependency** — `pkg/cache.NewCache` Pings Redis at startup and the instance won't start if it is unreachable, so health-gate Redis before O3K (FR-006a).
+- [X] T008 Implement `charts/o3k/templates/service.yaml`: a front-door Service for the six API services — identity 35357, compute 8774, placement 8778, network 9696, block storage 8776, image 9292 — `ClusterIP` default (FR-008). **Metadata (8775) is excluded from the load-balanced front-door** (FR-009d); VMs reach it node-locally via the link-local address (FR-009a), so expose it per-node, not via this Service.
 
 **Checkpoint**: chart renders a minimal valid release; gates enforce fail-fast.
 
@@ -48,18 +48,18 @@
 
 ### Tests for User Story 1 (write first — confirm RED) ⚠️
 
-- [ ] T009 [P] [US1] helm-unittest `charts/o3k/tests/singlenode_stub_test.yaml`: single-node stub renders a **Deployment** (unprivileged, no hostNetwork/hostPath → `restricted`-PSA-clean), the config Secret, the Service (7 ports), and the helm-test hook; no privileged/hostPath objects (contracts C2).
-- [ ] T010 [P] [US1] helm-unittest `charts/o3k/tests/tls_test.yaml`: with `tls.enabled=true`, an Ingress renders and `O3K_ENDPOINT_SCHEME=https` is set (FR-008b); fails when no cert/issuer is supplied.
-- [ ] T011 [P] [US1] kind/k3s smoke `test/helm_singlenode_stub_test.sh`: install single-node stub → `openstack token issue` works with the configured password and rejects `secret` → `server create/list/delete` (stub) → `helm test` green (SC-001/002 subset, FR-015).
+- [X] T009 [P] [US1] helm-unittest `charts/o3k/tests/singlenode_stub_test.yaml`: single-node stub renders a **Deployment** (unprivileged, no hostNetwork/hostPath → `restricted`-PSA-clean), the config Secret, the Service (7 ports), and the helm-test hook; no privileged/hostPath objects (contracts C2).
+- [X] T010 [P] [US1] helm-unittest `charts/o3k/tests/tls_test.yaml`: with `tls.enabled=true`, an Ingress renders and `O3K_ENDPOINT_SCHEME=https` is set (FR-008b); fails when no cert/issuer is supplied.
+- [X] T011 [P] [US1] kind/k3s smoke `test/helm_singlenode_stub_test.sh`: install single-node stub → `openstack token issue` works with the configured password and rejects `secret` → `server create/list/delete` (stub) → `helm test` green (SC-001/002 subset, FR-015).
 
 ### Implementation for User Story 1
 
-- [ ] T012 [US1] Implement `charts/o3k/templates/deployment.yaml`: single-node Deployment; stub = configurable `replicaCount`, unprivileged; real = `replicas=1` + `strategy: Recreate` gated by `realMode.enabled` (FR-003/003a/003b). Mount the config Secret (T007); attach probes (T006). Rely on the binary's startup migration (golang-migrate lock) — **add no migration Job** (FR-012b); readiness gates traffic until the schema is current.
-- [ ] T013 [US1] Implement `charts/o3k/templates/ingress.yaml` + TLS wiring: optional, per-service-port termination referencing an operator/cert-manager cert; sets `O3K_ENDPOINT_SCHEME=https` (FR-008a/008b, research R5). (depends on T012)
-- [ ] T014 [P] [US1] Implement `charts/o3k/templates/tests/identity-check.yaml`: `helm test` Job that hits the identity endpoint `/v3` and asserts success (FR-015, contracts C3).
-- [ ] T015 [P] [US1] Implement `charts/o3k/templates/NOTES.txt`: post-install endpoints, auth hint, `helm test` pointer.
-- [ ] T016 [US1] Author the real-mode partials in `_helpers.tpl` + `deployment.yaml`: privileged securityContext, `hostNetwork`, hostPath mounts for the host libvirt socket and `hostStoragePath`, and the `privileged` PodSecurity namespace label toggle (`charts/o3k/templates/psa-namespace.yaml`) — FR-012a/012c/012d. **[DEFERRED #52]** real-VM e2e (login/floating-IP/restart) validated only once WS-4/5/6 land.
-- [ ] T017 [US1] FR-012f packaging: add `dnsmasq` to `build/package/Dockerfile` (keep `iptables`/`iproute2`/`ipset`) so real-mode DHCP works; the chart references the image by tag only.
+- [X] T012 [US1] Implement `charts/o3k/templates/deployment.yaml`: single-node Deployment; stub = configurable `replicaCount`, unprivileged; real = `replicas=1` + `strategy: Recreate` gated by `realMode.enabled` (FR-003/003a/003b). Mount the config Secret (T007); attach probes (T006). Rely on the binary's startup migration (golang-migrate lock) — **add no migration Job** (FR-012b); readiness gates traffic until the schema is current.
+- [X] T013 [US1] Implement `charts/o3k/templates/ingress.yaml` + TLS wiring: optional, per-service-port termination referencing an operator/cert-manager cert; sets `O3K_ENDPOINT_SCHEME=https` (FR-008a/008b, research R5). (depends on T012)
+- [X] T014 [P] [US1] Implement `charts/o3k/templates/tests/identity-check.yaml`: `helm test` Job that hits the identity endpoint `/v3` and asserts success (FR-015, contracts C3).
+- [X] T015 [P] [US1] Implement `charts/o3k/templates/NOTES.txt`: post-install endpoints, auth hint, `helm test` pointer.
+- [X] T016 [US1] Author the real-mode partials in `_helpers.tpl` + `deployment.yaml`: privileged securityContext, `hostNetwork`, hostPath mounts for the host libvirt socket and `hostStoragePath`, and the `privileged` PodSecurity namespace label toggle (`charts/o3k/templates/psa-namespace.yaml`) — FR-012a/012c/012d. **[DEFERRED #52]** real-VM e2e (login/floating-IP/restart) validated only once WS-4/5/6 land.
+- [X] T017 [US1] FR-012f packaging: add `dnsmasq` to `build/package/Dockerfile` (keep `iptables`/`iproute2`/`ipset`) so real-mode DHCP works; the chart references the image by tag only.
 
 **Checkpoint**: single-node stub (+ optional TLS) is the **validated MVP**; single-node real is authored (e2e deferred).
 

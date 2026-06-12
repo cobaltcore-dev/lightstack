@@ -36,7 +36,8 @@ RUN apk add --no-cache \
     tzdata \
     iproute2 \
     iptables \
-    ipset
+    ipset \
+    dnsmasq
 
 # Create non-root user (but will run as root in privileged mode for networking)
 RUN addgroup -g 1000 o3k && \

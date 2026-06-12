@@ -1,0 +1,9 @@
+# Minimal valid values for chart lint/template in CI (not for production).
+image:
+  repository: ghcr.io/o3k/o3k
+  tag: v0.7.0
+secrets:
+  jwtSecret: ci-test-jwt
+  adminPassword: Ci-Test-Admin-1
+database:
+  url: "postgres://o3k:ci@db:5432/o3k?sslmode=disable"

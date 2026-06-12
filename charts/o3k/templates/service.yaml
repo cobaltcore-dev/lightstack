@@ -1,0 +1,25 @@
+{{- /* Run install-time validation gates once (this template always renders). */ -}}
+{{- include "o3k.validate" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "o3k.fullname" . }}
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "o3k.selectorLabels" . | nindent 4 }}
+  # Six API services. Metadata (8775) is excluded from the front-door — it is reached
+  # node-locally via the link-local address (FR-008/FR-009d/FR-009a).
+  ports:
+    - { name: identity, port: 35357, targetPort: 35357, protocol: TCP }
+    - { name: compute, port: 8774, targetPort: 8774, protocol: TCP }
+    - { name: placement, port: 8778, targetPort: 8778, protocol: TCP }
+    - { name: network, port: 9696, targetPort: 9696, protocol: TCP }
+    - { name: blockstorage, port: 8776, targetPort: 8776, protocol: TCP }
+    - { name: image, port: 9292, targetPort: 9292, protocol: TCP }
