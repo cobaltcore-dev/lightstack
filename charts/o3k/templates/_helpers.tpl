@@ -116,3 +116,104 @@ cache:
   enabled: {{ .Values.cache.enabled }}
   redis_url: {{ .Values.cache.redisUrl | quote }}
 {{- end -}}
+
+{{/*
+Shared pod spec (spec.template.spec) for both the single-node Deployment and the
+multi-node DaemonSet, so the container, config mount, probes, and real-mode host
+access stay identical across modes. Include with: {{- include "o3k.podSpec" . | nindent 6 }}
+*/}}
+{{- define "o3k.podSpec" -}}
+{{- $kv := splitn "=" 2 .Values.multiNode.nodeSelectorLabel -}}
+{{- with .Values.image.pullSecrets }}
+imagePullSecrets:
+{{- toYaml . | nindent 2 }}
+{{- end }}
+{{- if .Values.realMode.enabled }}
+hostNetwork: {{ .Values.realMode.hostNetwork }}
+{{- end }}
+{{- if eq .Values.deploymentMode "multi-node" }}
+nodeSelector:
+  {{ $kv._0 }}: {{ $kv._1 | quote }}
+  {{- with .Values.nodeSelector }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- else if .Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml .Values.nodeSelector | nindent 2 }}
+{{- end }}
+containers:
+  - name: o3k
+    image: {{ include "o3k.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    # Full command, not args: the image declares only a CMD (no ENTRYPOINT), so bare
+    # args would be exec'd directly. The binary migrates the DB itself on startup
+    # (FR-012b), so the image's `o3k-migrate &&` wrapper CMD is not needed here.
+    command: ["/app/o3k", "--config", "/app/config/o3k.yaml"]
+    {{- if .Values.realMode.enabled }}
+    securityContext:
+      privileged: {{ .Values.realMode.privileged }}
+    {{- end }}
+    {{- if or .Values.endpointHost .Values.tls.enabled }}
+    env:
+      {{- if .Values.endpointHost }}
+      - name: O3K_ENDPOINT_HOST
+        value: {{ .Values.endpointHost | quote }}
+      {{- end }}
+      {{- if .Values.tls.enabled }}
+      - name: O3K_ENDPOINT_SCHEME
+        value: "https"
+      {{- end }}
+    {{- end }}
+    ports:
+      - { name: identity, containerPort: 35357 }
+      - { name: compute, containerPort: 8774 }
+      - { name: placement, containerPort: 8778 }
+      - { name: network, containerPort: 9696 }
+      - { name: blockstorage, containerPort: 8776 }
+      - { name: image, containerPort: 9292 }
+      - { name: metadata, containerPort: 8775 }
+    livenessProbe:
+      httpGet: { path: /v3, port: identity }
+      initialDelaySeconds: 15
+      periodSeconds: 20
+    readinessProbe:
+      httpGet: { path: /v3, port: identity }
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    volumeMounts:
+      - name: config
+        mountPath: /app/config
+        readOnly: true
+      {{- if .Values.realMode.enabled }}
+      - name: libvirt-sock
+        mountPath: {{ .Values.realMode.libvirtSocketPath }}
+      - name: host-storage
+        mountPath: {{ .Values.realMode.hostStoragePath }}
+      {{- end }}
+    {{- with .Values.resources }}
+    resources:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+volumes:
+  - name: config
+    secret:
+      secretName: {{ include "o3k.configSecretName" . }}
+  {{- if .Values.realMode.enabled }}
+  - name: libvirt-sock
+    hostPath:
+      path: {{ .Values.realMode.libvirtSocketPath }}
+      type: Socket
+  - name: host-storage
+    hostPath:
+      path: {{ .Values.realMode.hostStoragePath }}
+      type: DirectoryOrCreate
+  {{- end }}
+{{- with .Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}

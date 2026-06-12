@@ -24,6 +24,19 @@ Authenticate (port-forward example):
 WARNING (FR-006a): multi-node + cache enabled — cache.redisUrl MUST point at a SINGLE
 SHARED Redis. A per-pod Redis breaks cross-node cache invalidation and serves stale reads.
 {{- end }}
+{{- if eq .Values.deploymentMode "multi-node" }}
+
+Multi-node: instances self-register via the shared DB. Add capacity by labeling nodes:
+  kubectl label node <node> {{ .Values.multiNode.nodeSelectorLabel }}
+{{- if .Values.multiNode.minProductVersion }}
+Requires a product image >= {{ .Values.multiNode.minProductVersion }} (FR-010).
+{{- end }}
+{{- end }}
+{{- if and .Values.realMode.enabled .Values.realMode.floatingIpPool }}
+
+Floating-IP pool "{{ .Values.realMode.floatingIpPool }}" must be routed to the nodes
+via MetalLB or a routed/L2 subnet (FR-009c — see chart README).
+{{- end }}
 {{- if or .Values.realMode.enabled (eq .Values.deploymentMode "multi-node") }}
 
 NOTE (deferred — issue #52): real-mode and multi-node runtime behavior (VM cloud-init/login,

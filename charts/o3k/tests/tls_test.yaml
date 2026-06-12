@@ -18,10 +18,21 @@ tests:
           content:
             name: O3K_ENDPOINT_SCHEME
             value: "https"
-  - it: does not set the https scheme by default
+  - it: emits no env block at all by default (no empty env key)
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env
+  - it: does not set the https scheme when only the endpoint host is configured
+    set:
+      endpointHost: o3k.example.com
     asserts:
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: O3K_ENDPOINT_SCHEME
             value: "https"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: O3K_ENDPOINT_HOST
+            value: "o3k.example.com"

@@ -18,6 +18,11 @@ tests:
           path: spec.template.spec.containers[0].securityContext
       - notExists:
           path: spec.template.spec.hostNetwork
+  - it: execs the binary directly (image has CMD but no ENTRYPOINT)
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value: ["/app/o3k", "--config", "/app/config/o3k.yaml"]
   - it: mounts the config Secret at the --config path
     asserts:
       - contains:

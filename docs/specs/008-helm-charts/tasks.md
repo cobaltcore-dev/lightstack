@@ -73,17 +73,17 @@
 
 ### Tests for User Story 2 (write first — confirm RED) ⚠️
 
-- [ ] T018 [P] [US2] helm-unittest `charts/o3k/tests/multinode_test.yaml`: `deploymentMode=multi-node` renders a **DaemonSet** (nodeSelector = designation label), no Deployment; single front-door Service; `neutron.vxlan_enabled: true` in the rendered config (FR-004/005a/009/009d).
-- [ ] T019 [P] [US2] helm-unittest `charts/o3k/tests/multinode_storage_cache_gate_test.yaml`: multi-node + real + local Glance/Cinder backend → install `fail`/hard-warn, `rbd`/`s3` passes (FR-012e); and multi-node + `cache.enabled` (with `redisUrl` set) → render warns the Redis must be a single shared instance (FR-006a).
-- [ ] T020 [P] [US2] **[DEFERRED #52]** e2e suite hookup `test/vxlan_multinode_test.sh` against a chart deployment (SC-003 N-active <60s, SC-004 cross-node traffic) — kept skipped/gated until WS-1 ships; documented as deferred.
+- [X] T018 [P] [US2] helm-unittest `charts/o3k/tests/multinode_test.yaml`: `deploymentMode=multi-node` renders a **DaemonSet** (nodeSelector = designation label), no Deployment; single front-door Service; `neutron.vxlan_enabled: true` in the rendered config (FR-004/005a/009/009d).
+- [X] T019 [P] [US2] helm-unittest `charts/o3k/tests/multinode_storage_cache_gate_test.yaml`: multi-node + real + local Glance/Cinder backend → install `fail`/hard-warn, `rbd`/`s3` passes (FR-012e); and multi-node + `cache.enabled` (with `redisUrl` set) → render warns the Redis must be a single shared instance (FR-006a).
+- [X] T020 [P] [US2] **[DEFERRED #52]** e2e suite hookup `test/vxlan_multinode_test.sh` against a chart deployment (SC-003 N-active <60s, SC-004 cross-node traffic) — kept skipped/gated until WS-1 ships; documented as deferred.
 
 ### Implementation for User Story 2
 
-- [ ] T021 [US2] Implement `charts/o3k/templates/daemonset.yaml`: multi-node DaemonSet with `nodeSelector` on `multiNode.nodeSelectorLabel`; reuse the real-mode partials (T016); label add/remove starts/evicts without chart upgrade (FR-004/005/005a).
-- [ ] T022 [US2] Multi-node config: set `neutron.vxlan_enabled: true` + `compute.vxlan_port` in the rendered config; document node-to-node UDP 4789 reachability (FR-009, research R11).
-- [ ] T023 [US2] Front-door Service for multi-node (load-balances the API services across all instances, relies on WS-1 any-instance-serves; **metadata excluded — node-local per FR-009a/009d**) and `multiNode.minProductVersion` value + docs (FR-009d, FR-010). **[DEFERRED #52]** correct cross-node lifecycle needs WS-1; node-local metadata reachability (169.254 redirect) needs WS-4.
-- [ ] T024 [US2] Storage + cache validation gate in `_helpers.tpl` (the rules T019 covers): require Glance `rbd|s3` + Cinder `rbd` in multi-node real, reject/warn local (FR-012e); and when `cache.enabled` in multi-node, **warn that `redisUrl` must point at a single shared Redis** — invalidation is delete-on-write against the shared keystore (`pkg/cache` `Delete`/`DeletePattern`, no pub/sub), so a per-pod Redis serves stale cross-node reads (FR-006a).
-- [ ] T025 [US2] `realMode.floatingIpPool` value + MetalLB/routed-subnet documentation for north-south ingress (FR-009c). **[DEFERRED #52]** live floating-IP reachability needs WS-5.
+- [X] T021 [US2] Implement `charts/o3k/templates/daemonset.yaml`: multi-node DaemonSet with `nodeSelector` on `multiNode.nodeSelectorLabel`; reuse the real-mode partials (T016); label add/remove starts/evicts without chart upgrade (FR-004/005/005a).
+- [X] T022 [US2] Multi-node config: set `neutron.vxlan_enabled: true` + `compute.vxlan_port` in the rendered config; document node-to-node UDP 4789 reachability (FR-009, research R11).
+- [X] T023 [US2] Front-door Service for multi-node (load-balances the API services across all instances, relies on WS-1 any-instance-serves; **metadata excluded — node-local per FR-009a/009d**) and `multiNode.minProductVersion` value + docs (FR-009d, FR-010). **[DEFERRED #52]** correct cross-node lifecycle needs WS-1; node-local metadata reachability (169.254 redirect) needs WS-4.
+- [X] T024 [US2] Storage + cache validation gate in `_helpers.tpl` (the rules T019 covers): require Glance `rbd|s3` + Cinder `rbd` in multi-node real, reject/warn local (FR-012e); and when `cache.enabled` in multi-node, **warn that `redisUrl` must point at a single shared Redis** — invalidation is delete-on-write against the shared keystore (`pkg/cache` `Delete`/`DeletePattern`, no pub/sub), so a per-pod Redis serves stale cross-node reads (FR-006a).
+- [X] T025 [US2] `realMode.floatingIpPool` value + MetalLB/routed-subnet documentation for north-south ingress (FR-009c). **[DEFERRED #52]** live floating-IP reachability needs WS-5.
 
 **Checkpoint**: multi-node renders/lints/unittests clean; live multi-node/real e2e gated on #52.
 
