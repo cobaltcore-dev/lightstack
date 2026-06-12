@@ -97,15 +97,15 @@
 
 ### Tests for User Story 3 (write first — confirm RED) ⚠️
 
-- [ ] T026 [P] [US3] helm-unittest `charts/o3k/tests/release_isolation_test.yaml`: all resources are release-prefixed; two releases render without name collisions (FR-016).
-- [ ] T027 [P] [US3] Scenario test `test/helm_upgrade_uninstall_test.sh`: value change + `helm upgrade` (single-node stub) takes effect; `helm uninstall` removes all release workloads; data-retention flag honored (SC-005/006, FR-014).
+- [X] T026 [P] [US3] helm-unittest `charts/o3k/tests/release_isolation_test.yaml`: all resources are release-prefixed; two releases render without name collisions (FR-016).
+- [X] T027 [P] [US3] Scenario test `test/helm_upgrade_uninstall_test.sh`: value change + `helm upgrade` (single-node stub) takes effect; `helm uninstall` removes all release workloads; data-retention flag honored (SC-005/006, FR-014).
 
 ### Implementation for User Story 3
 
-- [ ] T028 [US3] Upgrade behavior: single-node real `Recreate`, multi-node DaemonSet rolling update; ensure external DB + networked/host storage untouched on upgrade (FR-014).
-- [ ] T029 [US3] Uninstall + `dataRetentionPolicy` value (retain|delete for hostPath/PVC node-local data); document the external-DB/backends are operator-owned (FR-014).
-- [ ] T030 [US3] Multi-release isolation pass — verify every resource/name/registration is release-scoped (FR-016).
-- [ ] T031 [P] [US3] Write `charts/o3k/README.md`: complete values reference — purpose, default, and applicable mode(s) for every value (FR-017, SC-007).
+- [X] T028 [US3] Upgrade behavior: single-node real `Recreate`, multi-node DaemonSet rolling update; ensure external DB + networked/host storage untouched on upgrade (FR-014).
+- [X] T029 [US3] Uninstall + `dataRetentionPolicy` value (retain|delete for hostPath/PVC node-local data); document the external-DB/backends are operator-owned (FR-014).
+- [X] T030 [US3] Multi-release isolation pass — verify every resource/name/registration is release-scoped (FR-016).
+- [X] T031 [P] [US3] Write `charts/o3k/README.md`: complete values reference — purpose, default, and applicable mode(s) for every value (FR-017, SC-007).
 
 **Checkpoint**: all three user stories independently functional (US2/real e2e per #52).
 

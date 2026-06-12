@@ -1,0 +1,38 @@
+# helm-unittest specs for multi-release isolation (T026, FR-016).
+suite: multi-release isolation
+release:
+  name: alpha
+set:
+  image.repository: ghcr.io/o3k/o3k
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://o3k@db/o3k
+tests:
+  - it: Service is release-prefixed
+    templates:
+      - templates/service.yaml
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: "^alpha-o3k"
+  - it: Deployment is release-prefixed
+    templates:
+      - templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: "^alpha-o3k"
+  - it: config Secret is release-prefixed
+    templates:
+      - templates/secret.yaml
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: "^alpha-o3k-config$"
+  - it: carries the instance label for selector scoping
+    templates:
+      - templates/deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/instance"]
+          value: alpha
