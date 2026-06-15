@@ -87,7 +87,11 @@ cache:
   redisUrl: ""
 
 # -- Uninstall data retention for node-local hostPath/PVC data (FR-014).
-dataRetentionPolicy: retain   # retain | delete
+#    NOTE: only "retain" is active today — `helm uninstall` removes the release's
+#    Kubernetes objects and leaves persisted/runtime state untouched. The "delete"
+#    purge (blocking pre-delete hook: netns/routes, libvirt domains, orphaned
+#    storage, PVCs) is implemented in issue #53.
+dataRetentionPolicy: retain   # retain | delete  (delete: see issue #53)
 
 # -- Observability (FR-013a).
 logging:
