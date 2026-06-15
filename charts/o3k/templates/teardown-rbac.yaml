@@ -1,0 +1,59 @@
+{{- /*
+Teardown RBAC (SPEC-009 / issue #53). Renders ONLY under dataRetentionPolicy=delete.
+Least-privilege (FR-011 / R7), namespaced, scoped to this release; used by the
+quiesce/PVC-delete hook Job. Pre-delete hook-weight -20 so it exists before the
+hook Jobs (-10, 0) run. The privileged o3k purge Job needs NO Kubernetes RBAC —
+it talks to the host and database, not the API (R1).
+*/ -}}
+{{- if eq .Values.dataRetentionPolicy "delete" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "o3k.teardown.fullname" . }}
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "o3k.teardown.fullname" . }}
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]   # scale the workload to 0 (quiesce, C6)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]            # wait for termination
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "delete"]  # delete release PVCs (FR-005)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "o3k.teardown.fullname" . }}
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "o3k.teardown.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "o3k.teardown.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

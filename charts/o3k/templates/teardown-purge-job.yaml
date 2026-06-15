@@ -1,0 +1,68 @@
+{{- /*
+Teardown purge hook (SPEC-009 / issue #53) — the blocking, fail-closed gate.
+Renders ONLY under dataRetentionPolicy=delete. Pre-delete hook-weight 0: runs
+after quiesce (-10). Runs `o3k cleanup` in a pod with the SAME host access as a
+real-mode instance (privileged + host libvirt socket + host-storage [+ hostNetwork])
+so it reaches host libvirtd and node-local storage. activeDeadlineSeconds bounds it
+(FR-016); backoffLimit:0 = no silent retries; a non-zero exit fails the hook and
+halts `helm uninstall` (FR-001). In stub mode it resets the DB and is a host no-op.
+Full real-mode network-namespace purge depends on the host-shared networking model
+tracked in issue #52; compute (host libvirtd) and node-local storage purge here.
+*/ -}}
+{{- if eq .Values.dataRetentionPolicy "delete" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "o3k.teardown.fullname" . }}-purge
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.teardown.timeoutSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "o3k.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- if and .Values.realMode.enabled .Values.realMode.hostNetwork }}
+      hostNetwork: true
+      {{- end }}
+      containers:
+        - name: purge
+          image: {{ include "o3k.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/o3k", "cleanup", "--config", "/app/config/o3k.yaml"]
+          {{- if .Values.realMode.enabled }}
+          securityContext:
+            privileged: {{ .Values.realMode.privileged }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            {{- if .Values.realMode.enabled }}
+            - name: libvirt-sock
+              mountPath: {{ .Values.realMode.libvirtSocketPath }}
+            - name: host-storage
+              mountPath: {{ .Values.realMode.hostStoragePath }}
+            {{- end }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ include "o3k.configSecretName" . }}
+        {{- if .Values.realMode.enabled }}
+        - name: libvirt-sock
+          hostPath:
+            path: {{ .Values.realMode.libvirtSocketPath }}
+            type: Socket
+        - name: host-storage
+          hostPath:
+            path: {{ .Values.realMode.hostStoragePath }}
+            type: DirectoryOrCreate
+        {{- end }}
+{{- end }}

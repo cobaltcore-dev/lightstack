@@ -1,0 +1,96 @@
+# helm-unittest: SPEC-009 teardown hooks (T007). Render-gating + RBAC least-privilege
+# + the purge Job's blocking/bounded spec. Defaults (retain) must render nothing.
+suite: teardown hooks
+release:
+  name: rel
+set:
+  image.repository: ghcr.io/o3k/o3k
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://o3k@db/o3k
+tests:
+  - it: retain (default) renders NO teardown resources (SC-004 — no regression)
+    set:
+      dataRetentionPolicy: retain
+    asserts:
+      - hasDocuments: { count: 0 }
+        template: templates/teardown-rbac.yaml
+      - hasDocuments: { count: 0 }
+        template: templates/teardown-quiesce-job.yaml
+      - hasDocuments: { count: 0 }
+        template: templates/teardown-purge-job.yaml
+
+  - it: delete renders RBAC (SA+Role+RoleBinding) as pre-delete hooks at weight -20
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+    template: templates/teardown-rbac.yaml
+    asserts:
+      - hasDocuments: { count: 3 }
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-delete
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-20"
+
+  - it: RBAC Role grants exactly the least-privilege verb set (R7/FR-011)
+    documentIndex: 1
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+    template: templates/teardown-rbac.yaml
+    asserts:
+      - equal:
+          path: rules[0].resources
+          value: ["deployments"]
+      - equal:
+          path: rules[0].verbs
+          value: ["get", "list", "patch"]
+      - equal:
+          path: rules[1].verbs
+          value: ["get", "list"]
+      - equal:
+          path: rules[2].resources
+          value: ["persistentvolumeclaims"]
+      - equal:
+          path: rules[2].verbs
+          value: ["get", "list", "delete"]
+
+  - it: quiesce Job is a pre-delete hook at weight -10
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+    template: templates/teardown-quiesce-job.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-10"
+
+  - it: purge Job runs `o3k cleanup`, blocking (weight 0), bounded, non-retrying
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+      teardown.timeoutSeconds: 600
+    template: templates/teardown-purge-job.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "0"
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value: ["/app/o3k", "cleanup", "--config", "/app/config/o3k.yaml"]
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+      - equal:
+          path: spec.backoffLimit
+          value: 0
+
+  - it: delete without teardown.kubectlImage fails to render (FR-018)
+    set:
+      dataRetentionPolicy: delete
+    template: templates/teardown-quiesce-job.yaml
+    asserts:
+      - failedTemplate:
+          errorMessage: "teardown.kubectlImage is required when dataRetentionPolicy=delete (no implicit image pull; FR-018 / issue #53)."
