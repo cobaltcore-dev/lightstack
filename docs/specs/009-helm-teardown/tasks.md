@@ -33,7 +33,7 @@
 
 - [X] T003 [P] RED test: `pkg/storage/ceph_test.go` — assert the Cinder local-volume path resolves under the configured base (`<hostStoragePath>/volumes`), mirroring Glance's `<hostStoragePath>/images`; must FAIL against current code (FR-020; research R6)
 - [X] T004 Fix `pkg/storage/ceph.go` (`NewCephClient`): local volumes under `<hostStoragePath>/volumes` (configurable base, `~/.o3k/volumes` fallback) — makes T003 pass (FR-020)
-- [ ] T005 Add the `cleanup` subcommand to `cmd/o3k/main.go` (`os.Args[1] == "cleanup"` → run teardown and exit, before the server path) and scaffold `internal/teardown/teardown.go` (config load, DB-connect-or-fallback, exit-code contract 0/1/2, `--dry-run` flag) (FR-010; contracts/cli-cleanup.md)
+- [X] T005 Add the `cleanup` subcommand to `cmd/o3k/main.go` (`os.Args[1] == "cleanup"` → run teardown and exit, before the server path) and scaffold `internal/teardown/teardown.go` (config load, DB-connect-or-fallback, exit-code contract 0/1/2, `--dry-run` flag) (FR-010; contracts/cli-cleanup.md)
 
 **Checkpoint**: Cinder data lands on the mount; `o3k cleanup` is invokable. User stories can begin.
 
@@ -47,18 +47,18 @@
 
 ### Tests for User Story 1 (write FIRST — confirm RED) ⚠️
 
-- [ ] T006 [P] [US1] `internal/teardown/teardown_test.go` (stub mode): enumeration maps DB records → the correct delete calls; dependency-safe order (compute → network → storage → DB-reset-last); idempotency (not-found = success); DB-unreachable host-prefix fallback (research R3/R9; data-model §2)
+- [X] T006 [P] [US1] `internal/teardown/teardown_test.go` (stub mode): enumeration maps DB records → the correct delete calls; dependency-safe order (compute → network → storage → DB-reset-last); idempotency (not-found = success); DB-unreachable host-prefix fallback (research R3/R9; data-model §2)
 - [ ] T007 [P] [US1] `charts/o3k/tests/teardown_test.yaml` (helm-unittest): RBAC + both Jobs render **iff** `dataRetentionPolicy: delete` and are **absent** under `retain`; Role rules == the least-privilege set (R7); purge Job has `command:[o3k,cleanup]`, `activeDeadlineSeconds`, `backoffLimit:0`, real-mode host mounts; `kubectlImage:""` under `delete` → render fails (contracts/teardown-hooks.md)
 - [ ] T008 [P] [US1] `test/helm_teardown_test.sh` (scaffold + US1 assertions): single-node stub install → create resources → `helm uninstall` (delete) → assert uninstall **blocks** on the hook, then zero residue (no workloads/PVCs/domains/netns/local-storage; DB schema empty) (SC-001/003)
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] `internal/teardown`: enumerate release state from the DB (`instances.libvirt_domain_id` → domains; `networks`/`routers` → `light-ns-`/`qrouter-` netns; `ports` → bridges/TAP; `volumes`/`images` → local files) + DB-unreachable host-prefix fallback (R3; data-model §2)
-- [ ] T010 [US1] `internal/teardown`: compute purge — `VMManager.DeleteVM(uuid)` (destroy + undefine) per enumerated domain (FR-003)
-- [ ] T011 [US1] `internal/teardown`: network purge — `DeleteNamespace`/`DeleteRouterNamespace` + bridges/TAP/iptables/VXLAN per enumerated id (FR-004)
-- [ ] T012 [US1] `internal/teardown`: storage purge — delete node-local volume/image files under `hostStoragePath`; bounded orphan sweep within that tree (single-release per FR-003b) (FR-005/006; depends on T004)
-- [ ] T013 [US1] `internal/teardown`: DB reset via `database.MigrateReset()` **last**; skip if DB unreachable (FR-013; C8/C9)
-- [ ] T014 [US1] `internal/teardown`: fail-closed roll-up over required classes + idempotency + structured-JSON audit logging + exit codes — makes T006 pass (FR-008/012/016; R9)
+- [X] T009 [US1] `internal/teardown`: enumerate release state from the DB (`instances.libvirt_domain_id` → domains; `networks`/`routers` → `light-ns-`/`qrouter-` netns; `ports` → bridges/TAP; `volumes`/`images` → local files) + DB-unreachable host-prefix fallback (R3; data-model §2)
+- [X] T010 [US1] `internal/teardown`: compute purge — `VMManager.DeleteVM(uuid)` (destroy + undefine) per enumerated domain (FR-003)
+- [X] T011 [US1] `internal/teardown`: network purge — `DeleteNamespace`/`DeleteRouterNamespace` + bridges/TAP/iptables/VXLAN per enumerated id (FR-004)
+- [X] T012 [US1] `internal/teardown`: storage purge — delete node-local volume/image files under `hostStoragePath`; bounded orphan sweep within that tree (single-release per FR-003b) (FR-005/006; depends on T004)
+- [X] T013 [US1] `internal/teardown`: DB reset via `database.MigrateReset()` **last**; skip if DB unreachable (FR-013; C8/C9)
+- [X] T014 [US1] `internal/teardown`: fail-closed roll-up over required classes + idempotency + structured-JSON audit logging + exit codes — makes T006 pass (FR-008/012/016; R9)
 - [ ] T015 [P] [US1] `charts/o3k/templates/teardown-rbac.yaml`: ServiceAccount + namespaced Role + RoleBinding (pre-delete, hook-weight `-20`, gated on `delete`); verbs = deployments get/list/patch, pods get/list, pvc get/list/delete (FR-011; R7)
 - [ ] T016 [P] [US1] `charts/o3k/templates/teardown-quiesce-job.yaml`: kubectl Job (hook-weight `-10`) — scale Deployment→0, `wait --for=delete pod`, then delete release PVCs if `deletePVCs`; `backoffLimit:0` (FR-019/005; quiesce-first per C6)
 - [ ] T017 [US1] `charts/o3k/templates/teardown-purge-job.yaml`: privileged `o3k cleanup` Job (hook-weight `0`) with real-mode host mounts + config Secret; `activeDeadlineSeconds: {{ .Values.teardown.timeoutSeconds }}`, `backoffLimit:0`, `restartPolicy:Never` — the blocking, fail-closed gate; makes T007 pass (FR-001/003/016)
