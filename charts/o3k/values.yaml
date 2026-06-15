@@ -89,12 +89,26 @@ cache:
   enabled: false
   redisUrl: ""
 
-# -- Uninstall data retention for node-local hostPath/PVC data (FR-014).
-#    NOTE: only "retain" is active today — `helm uninstall` removes the release's
-#    Kubernetes objects and leaves persisted/runtime state untouched. The "delete"
-#    purge (blocking pre-delete hook: netns/routes, libvirt domains, orphaned
-#    storage, PVCs) is implemented in issue #53.
-dataRetentionPolicy: retain   # retain | delete  (delete: see issue #53)
+# -- Uninstall behavior (FR-002/013/014; issue #53).
+#    retain (default): `helm uninstall` removes only the release's Kubernetes
+#    workloads, leaving ALL persisted/runtime state untouched (SPEC-008 SC-006).
+#    delete: run the blocking pre-delete teardown — quiesce, purge libvirt domains
+#    + network namespaces/routes + node-local hostPath storage + release PVCs,
+#    then RESET the configured database schema. IRREVERSIBLE. Single-node only
+#    today; multi-node host purge is tracked in issue #52. Networked backends
+#    (Ceph RBD / S3) are operator-owned and NOT purged.
+dataRetentionPolicy: retain   # retain | delete
+
+# -- Teardown hook settings. Effective ONLY when dataRetentionPolicy: delete (SPEC-009).
+teardown:
+  # -- REQUIRED when delete. kubectl image for the quiesce/PVC-delete hook Job
+  #    (scale the Deployment to 0, delete release PVCs). No implicit pull —
+  #    install/uninstall fails fast if empty under delete (FR-018, R1).
+  kubectlImage: ""            # e.g. registry.example.com/kubectl:1.31
+  # -- Blocking-hook bound: purge Job activeDeadlineSeconds (FR-016).
+  timeoutSeconds: 600
+  # -- Delete release-owned PVCs during teardown, if any exist (FR-005).
+  deletePVCs: true
 
 # -- Observability (FR-013a).
 logging:

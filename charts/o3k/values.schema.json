@@ -59,6 +59,15 @@
       "properties": { "enabled": { "type": "boolean" } }
     },
     "dataRetentionPolicy": { "type": "string", "enum": ["retain", "delete"] },
+    "teardown": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kubectlImage": { "type": "string" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "deletePVCs": { "type": "boolean" }
+      }
+    },
     "logging": {
       "type": "object",
       "properties": {

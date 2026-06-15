@@ -20,8 +20,8 @@
 
 **Purpose**: the teardown configuration surface every hook keys off. Backward-compatible — defaults reproduce SPEC-008 exactly.
 
-- [ ] T001 Add the `teardown.*` block (`kubectlImage`, `timeoutSeconds: 600`, `deletePVCs: true`) and expand the `dataRetentionPolicy` doc in `charts/o3k/values.yaml`; add their schema to `charts/o3k/values.schema.json` (FR-002/016/018; contracts/values.md)
-- [ ] T002 [P] Add teardown helpers to `charts/o3k/templates/_helpers.tpl`: name/label helpers (`o3k.fullname`-prefixed `-teardown*`), a kubectl-image helper, and the `dataRetentionPolicy == "delete" && teardown.kubectlImage == ""` → `fail` gate (FR-018; R1)
+- [X] T001 Add the `teardown.*` block (`kubectlImage`, `timeoutSeconds: 600`, `deletePVCs: true`) and expand the `dataRetentionPolicy` doc in `charts/o3k/values.yaml`; add their schema to `charts/o3k/values.schema.json` (FR-002/016/018; contracts/values.md)
+- [X] T002 [P] Add teardown helpers to `charts/o3k/templates/_helpers.tpl`: name/label helpers (`o3k.fullname`-prefixed `-teardown*`), a kubectl-image helper, and the `dataRetentionPolicy == "delete" && teardown.kubectlImage == ""` → `fail` gate (FR-018; R1)
 
 ---
 
@@ -31,8 +31,8 @@
 
 **⚠️ CRITICAL**: no user-story work begins until this phase is complete.
 
-- [ ] T003 [P] RED test: `pkg/storage/ceph_test.go` — assert the Cinder local-volume path resolves under the configured base (`<hostStoragePath>/volumes`), mirroring Glance's `<hostStoragePath>/images`; must FAIL against current code (FR-020; research R6)
-- [ ] T004 Fix `pkg/storage/ceph.go` (`NewCephClient`): local volumes under `<hostStoragePath>/volumes` (configurable base, `~/.o3k/volumes` fallback) — makes T003 pass (FR-020)
+- [X] T003 [P] RED test: `pkg/storage/ceph_test.go` — assert the Cinder local-volume path resolves under the configured base (`<hostStoragePath>/volumes`), mirroring Glance's `<hostStoragePath>/images`; must FAIL against current code (FR-020; research R6)
+- [X] T004 Fix `pkg/storage/ceph.go` (`NewCephClient`): local volumes under `<hostStoragePath>/volumes` (configurable base, `~/.o3k/volumes` fallback) — makes T003 pass (FR-020)
 - [ ] T005 Add the `cleanup` subcommand to `cmd/o3k/main.go` (`os.Args[1] == "cleanup"` → run teardown and exit, before the server path) and scaffold `internal/teardown/teardown.go` (config load, DB-connect-or-fallback, exit-code contract 0/1/2, `--dry-run` flag) (FR-010; contracts/cli-cleanup.md)
 
 **Checkpoint**: Cinder data lands on the mount; `o3k cleanup` is invokable. User stories can begin.
