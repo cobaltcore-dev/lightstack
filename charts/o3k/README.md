@@ -164,12 +164,41 @@ database and any networked/host storage are untouched — **no data loss** (FR-0
 ```bash
 helm uninstall o3k
 ```
-Removes all release-owned resources (Deployment/DaemonSet, Service, Secret, Ingress) — no
-orphans (SC-006). **Not** removed: the external database, networked backends (RBD/S3), and
-**node-local `hostPath` data** on each node (not Helm-managed). Today only
-`dataRetentionPolicy: retain` is active; the active `delete` purge (DB reset, namespaces,
-libvirt domains, node-local data) is deferred to [issue #53](https://github.com/cobaltcore-dev/o3k/issues/53).
-Until then, clean node-local data manually.
+With the default `dataRetentionPolicy: retain`, this removes all release-owned Kubernetes
+resources (Deployment/DaemonSet, Service, Secret, Ingress) — no orphans (SC-006) — and leaves
+**all persisted/runtime state untouched**: the external database, networked backends (RBD/S3),
+and node-local `hostPath` data on each node.
+
+### Destructive teardown — `dataRetentionPolicy: delete` (SPEC-009 / issue #53)
+
+Set `dataRetentionPolicy: delete` (and supply `teardown.kubectlImage`) to make `helm uninstall`
+run a **blocking pre-delete purge** before the release is removed:
+
+```bash
+helm upgrade o3k ./charts/o3k --reuse-values \
+  --set dataRetentionPolicy=delete \
+  --set teardown.kubectlImage=registry.example.com/kubectl:1.31
+helm uninstall o3k          # blocks on the purge hooks until they succeed
+```
+
+The hooks run in order: **quiesce** (scale the Deployment to 0, then delete the release's PVCs —
+which `helm uninstall` does *not* remove by default), then **purge** (`o3k cleanup`: destroy
+libvirt domains, remove network namespaces/routes and node-local storage, then **reset the
+database schema**). The purge is blocking and fail-closed — if it cannot complete, `helm uninstall`
+aborts; inspect `kubectl logs job/<release>-o3k-teardown-purge`.
+
+- **Irreversible.** `delete` destroys this database's O3K data and the node's local VM/volume/image data.
+- **Operator-owned, NOT purged:** networked backends (Ceph RBD / S3). Reclaim those yourself if desired.
+- **Escape hatch:** `helm uninstall o3k --no-hooks` removes the release *without* purging (e.g. the
+  hosting node is gone). You are then responsible for any orphaned host state.
+- **Single-node only** today; multi-node DaemonSet host purge is tracked in issue #52.
+
+| value | default | applies | purpose |
+|-------|---------|---------|---------|
+| `dataRetentionPolicy` | `retain` | all | `retain` keeps all state; `delete` runs the irreversible purge above |
+| `teardown.kubectlImage` | `""` | `delete` | **required** under `delete`: kubectl image for the quiesce/PVC-delete Job (no implicit pull) |
+| `teardown.timeoutSeconds` | `600` | `delete` | blocking-hook bound (purge Job `activeDeadlineSeconds`) |
+| `teardown.deletePVCs` | `true` | `delete` | delete release-owned PVCs during teardown |
 
 ## Multiple releases
 

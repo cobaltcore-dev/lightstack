@@ -49,7 +49,7 @@
 
 - [X] T006 [P] [US1] `internal/teardown/teardown_test.go` (stub mode): enumeration maps DB records → the correct delete calls; dependency-safe order (compute → network → storage → DB-reset-last); idempotency (not-found = success); DB-unreachable host-prefix fallback (research R3/R9; data-model §2)
 - [X] T007 [P] [US1] `charts/o3k/tests/teardown_test.yaml` (helm-unittest): RBAC + both Jobs render **iff** `dataRetentionPolicy: delete` and are **absent** under `retain`; Role rules == the least-privilege set (R7); purge Job has `command:[o3k,cleanup]`, `activeDeadlineSeconds`, `backoffLimit:0`, real-mode host mounts; `kubectlImage:""` under `delete` → render fails (contracts/teardown-hooks.md)
-- [ ] T008 [P] [US1] `test/helm_teardown_test.sh` (scaffold + US1 assertions): single-node stub install → create resources → `helm uninstall` (delete) → assert uninstall **blocks** on the hook, then zero residue (no workloads/PVCs/domains/netns/local-storage; DB schema empty) (SC-001/003)
+- [X] T008 [P] [US1] `test/helm_teardown_test.sh` (scaffold + US1 assertions): single-node stub install → create resources → `helm uninstall` (delete) → assert uninstall **blocks** on the hook, then zero residue (no workloads/PVCs/domains/netns/local-storage; DB schema empty) (SC-001/003) _(authored in test/helm_teardown_test.sh; e2e on a cluster/CI, not run in sandbox)_
 
 ### Implementation for User Story 1
 
@@ -78,7 +78,7 @@
 
 ### Tests for User Story 2 (write FIRST — confirm RED) ⚠️
 
-- [ ] T019 [US2] Extend `test/helm_teardown_test.sh`: after the US1 `delete` teardown, **immediately reinstall** the same release on the same node/DB → `helm test` identity check passes, no naming-collision error, no stale instances/networks/volumes via the OpenStack CLI (SC-002/009; depends on T008)
+- [X] T019 [US2] Extend `test/helm_teardown_test.sh`: after the US1 `delete` teardown, **immediately reinstall** the same release on the same node/DB → `helm test` identity check passes, no naming-collision error, no stale instances/networks/volumes via the OpenStack CLI (SC-002/009; depends on T008) _(authored in test/helm_teardown_test.sh; e2e on a cluster/CI, not run in sandbox)_
 
 **Checkpoint**: teardown → immediate redeploy is pristine.
 
@@ -92,12 +92,12 @@
 
 ### Tests for User Story 3 (write FIRST — confirm RED) ⚠️
 
-- [ ] T020 [US3] Extend `test/helm_teardown_test.sh`: a `retain` uninstall removes only K8s workloads and leaves persisted/runtime state untouched, with **no** teardown hook executed (SC-004 no-regression to SPEC-008 SC-006); and a **second `delete` teardown against the already-clean release** exits success (SC-005 idempotency; depends on T008)
+- [X] T020 [US3] Extend `test/helm_teardown_test.sh`: a `retain` uninstall removes only K8s workloads and leaves persisted/runtime state untouched, with **no** teardown hook executed (SC-004 no-regression to SPEC-008 SC-006); and a **second `delete` teardown against the already-clean release** exits success (SC-005 idempotency; depends on T008) _(authored in test/helm_teardown_test.sh; e2e on a cluster/CI, not run in sandbox)_
 
 ### Implementation for User Story 3
 
-- [ ] T021 [P] [US3] Reconcile `charts/o3k/README.md`: rewrite the Uninstall section (supersede "clean node-local data manually when `delete`"); document the `delete` purge order, DB reset, irreversibility, operator-owned boundaries (external DB beyond this release / networked RBD/S3 not purged — C4/FR-015), and the `--no-hooks` escape; add the `teardown.*` rows to the values table (FR-018/SC-006)
-- [ ] T022 [P] [US3] Reconcile the SPEC-008 docs to match what ships: `docs/specs/008-helm-charts/spec.md` (FR-014 — purge now also quiesces + resets the DB), `data-model.md` (uninstall/`dataRetentionPolicy` lifecycle), `tasks.md` (T027/T029 deferral notes → "done in #53"), `quickstart.md` (Uninstall: add the `delete` path) (FR-018)
+- [X] T021 [P] [US3] Reconcile `charts/o3k/README.md`: rewrite the Uninstall section (supersede "clean node-local data manually when `delete`"); document the `delete` purge order, DB reset, irreversibility, operator-owned boundaries (external DB beyond this release / networked RBD/S3 not purged — C4/FR-015), and the `--no-hooks` escape; add the `teardown.*` rows to the values table (FR-018/SC-006)
+- [X] T022 [P] [US3] Reconcile the SPEC-008 docs to match what ships: `docs/specs/008-helm-charts/spec.md` (FR-014 — purge now also quiesces + resets the DB), `data-model.md` (uninstall/`dataRetentionPolicy` lifecycle), `tasks.md` (T027/T029 deferral notes → "done in #53"), `quickstart.md` (Uninstall: add the `delete` path) (FR-018)
 
 **Checkpoint**: all three stories independently functional; safety + docs complete.
 
@@ -105,8 +105,8 @@
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T023 [P] `helm lint` clean and `helm template` renders cleanly for both `retain` (no teardown resources) and `delete` (RBAC + 2 Jobs) on single-node values
-- [ ] T024 [P] `go test ./internal/teardown/... ./pkg/storage/...` green; `go vet` + `golangci-lint` clean on the new/changed Go
+- [X] T023 [P] `helm lint` clean and `helm template` renders cleanly for both `retain` (no teardown resources) and `delete` (RBAC + 2 Jobs) on single-node values
+- [X] T024 [P] `go test ./internal/teardown/... ./pkg/storage/...` green; `go vet` + `golangci-lint` clean on the new/changed Go
 - [ ] T025 Validate the `quickstart.md` runbook on a single-node cluster (kind/k3s): the §2 `delete` walkthrough, §4 zero-residue checks, §5 `--no-hooks` escape
 - [ ] T026 [DEFERRED #52] Multi-node DaemonSet host-purge across N nodes (SC-007) — author the per-node mechanism (fan-out Job vs. per-instance terminating cleanup) and its e2e validation **when issue #52 lands**; NOT implemented in this feature (FR-014)
 
