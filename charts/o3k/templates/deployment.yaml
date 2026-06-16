@@ -20,8 +20,13 @@ spec:
     metadata:
       labels:
         {{- include "o3k.selectorLabels" . | nindent 8 }}
+      {{- if not .Values.secrets.existingSecret }}
       annotations:
+        # Roll the pod when the chart-rendered config changes. Omitted when an
+        # external Secret is used — the chart can't hash a Secret it doesn't render,
+        # so rollout on change is the operator's responsibility there.
         checksum/config: {{ include "o3k.config" . | sha256sum }}
+      {{- end }}
     spec:
       {{- include "o3k.podSpec" . | nindent 6 }}
 {{- end }}

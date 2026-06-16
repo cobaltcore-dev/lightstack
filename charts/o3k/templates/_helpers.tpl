@@ -81,7 +81,7 @@ admin password — is carried in the --config file, kept out of plaintext via a 
 */}}
 {{- define "o3k.config" -}}
 database:
-  url: {{ .Values.database.url | default "postgres://o3k@REPLACE_ME/o3k" | quote }}
+  url: {{ .Values.database.url | quote }}
   max_connections: 50
 keystone:
   port: 35357
@@ -124,6 +124,8 @@ access stay identical across modes. Include with: {{- include "o3k.podSpec" . | 
 */}}
 {{- define "o3k.podSpec" -}}
 {{- $kv := splitn "=" 2 .Values.multiNode.nodeSelectorLabel -}}
+# O3K never calls the Kubernetes API — don't mount a ServiceAccount token (FR-009c; reduces attack surface).
+automountServiceAccountToken: false
 {{- with .Values.image.pullSecrets }}
 imagePullSecrets:
 {{- toYaml . | nindent 2 }}
@@ -153,8 +155,15 @@ containers:
     securityContext:
       privileged: {{ .Values.realMode.privileged }}
     {{- end }}
-    {{- if or .Values.endpointHost .Values.tls.enabled }}
+    {{- if or .Values.endpointHost .Values.tls.enabled .Values.database.existingSecret }}
     env:
+      {{- if .Values.database.existingSecret }}
+      - name: O3K_DB_URL
+        valueFrom:
+          secretKeyRef:
+            name: {{ .Values.database.existingSecret }}
+            key: {{ .Values.database.existingSecretKey | default "url" }}
+      {{- end }}
       {{- if .Values.endpointHost }}
       - name: O3K_ENDPOINT_HOST
         value: {{ .Values.endpointHost | quote }}

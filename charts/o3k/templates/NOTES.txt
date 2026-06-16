@@ -10,7 +10,11 @@ Advertised catalog host: {{ if .Values.tls.enabled }}https{{ else }}http{{ end }
 {{- end }}
 
 Verify the deployment:
+  {{- if eq .Values.deploymentMode "multi-node" }}
+  kubectl rollout status ds/{{ include "o3k.fullname" . }}
+  {{- else }}
   kubectl rollout status deploy/{{ include "o3k.fullname" . }}
+  {{- end }}
   helm test {{ .Release.Name }}
 
 Authenticate (port-forward example):

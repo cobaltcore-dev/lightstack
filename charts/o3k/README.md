@@ -52,7 +52,8 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | Key | Default | Mode | Purpose |
 |-----|---------|------|---------|
 | `database.url` | `""` **(required)** | all | external PostgreSQL URL |
-| `database.existingSecret` | `""` | all | Secret providing the DB URL instead |
+| `database.existingSecret` | `""` | all | Secret holding the DB URL (alternative to `database.url`); injected as `O3K_DB_URL` |
+| `database.existingSecretKey` | `url` | all | key within `database.existingSecret` that holds the URL |
 | `secrets.jwtSecret` | `""` **(required)** | all | token signing secret |
 | `secrets.adminUser` | `admin` | all | admin account name |
 | `secrets.adminPassword` | `""` **(required)** | all | admin password (no `admin/secret`) |
@@ -60,7 +61,8 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 
 > Config (including credentials) is rendered into a **Secret** mounted at the binary's
 > `--config` path — the binary has no per-key env override for most settings, so they are
-> not injectable via individual env vars.
+> not injectable via individual env vars. The pod also sets
+> `automountServiceAccountToken: false` (O3K never calls the Kubernetes API).
 
 ### Exposure & TLS
 | Key | Default | Mode | Purpose |
@@ -70,7 +72,9 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | `service.annotations` | `{}` | all | e.g. LoadBalancer annotations |
 | `ingress.enabled` / `className` / `annotations` / `hosts` | `false` / … | all | external Ingress |
 | `tls.enabled` | `false` | all | per-service-port TLS; sets the `https` catalog scheme |
-| `tls.secretName` / `tls.certManagerIssuer` | `""` | all | operator/cert-manager cert (chart generates none) |
+| `tls.secretName` | `""` → `<release>-o3k-tls` | all | cert Secret; defaults to `<release>-o3k-tls` when unset |
+| `tls.certManagerIssuer` | `""` | all | cert-manager (Cluster)Issuer name; chart emits the annotation so the cert is provisioned |
+| `tls.certManagerKind` | `ClusterIssuer` | all | which cert-manager annotation: `ClusterIssuer` or `Issuer` |
 
 ### Service modes
 | Key | Default | Mode | Purpose |
@@ -104,7 +108,7 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 |-----|---------|------|---------|
 | `cache.enabled` | `false` | all | opt-in Redis cache |
 | `cache.redisUrl` | `""` | all | **single shared** Redis in multi-node (FR-006a) |
-| `dataRetentionPolicy` | `retain` | all | `retain`/`delete` node-local data on uninstall |
+| `dataRetentionPolicy` | `retain` | all | only `retain` is active; the `delete` purge is deferred to issue #53 |
 | `logging.level` / `logging.format` | `info` / `json` | all | structured logs (FR-013a) |
 | `resources` / `nodeSelector` / `tolerations` / `affinity` | `{}`/… | all | pod scheduling |
 
@@ -119,17 +123,23 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 
 ## TLS
 
-Set `tls.enabled=true` with `ingress.enabled=true` and a cert (`tls.secretName` or
-`tls.certManagerIssuer`). The chart advertises `https://` catalog/self-link URLs
-(`O3K_ENDPOINT_SCHEME=https`). TLS terminates per service port; the chart generates no certs.
+Set `tls.enabled=true` with `ingress.enabled=true`, then either supply your own cert Secret
+(`tls.secretName`) or name a cert-manager issuer (`tls.certManagerIssuer`). With an issuer,
+the chart emits the matching annotation — `cert-manager.io/cluster-issuer` by default, or
+`cert-manager.io/issuer` when `tls.certManagerKind: Issuer` — and points it at `tls.secretName`
+(defaulting to `<release>-o3k-tls`), so cert-manager provisions the cert. The chart never
+generates certs itself. Either way it advertises `https://` catalog/self-link URLs
+(`O3K_ENDPOINT_SCHEME=https`); TLS terminates per service port.
 
 ## Upgrade
 
 ```bash
 helm upgrade o3k ./charts/o3k --reuse-values --set logging.level=debug
 ```
-Config changes roll the pod (a config checksum annotation). Single-node real upgrades use
-`Recreate` (brief downtime); multi-node uses a DaemonSet rolling update. The external
+Config changes roll the pod (a config checksum annotation) — except with
+`secrets.existingSecret`, where the chart can't hash a Secret it doesn't render, so roll the
+pod yourself (`kubectl rollout restart`, or a tool like Reloader). Single-node real upgrades
+use `Recreate` (brief downtime); multi-node uses a DaemonSet rolling update. The external
 database and any networked/host storage are untouched — **no data loss** (FR-014, SC-005).
 
 ## Uninstall & data retention
@@ -139,8 +149,10 @@ helm uninstall o3k
 ```
 Removes all release-owned resources (Deployment/DaemonSet, Service, Secret, Ingress) — no
 orphans (SC-006). **Not** removed: the external database, networked backends (RBD/S3), and
-**node-local `hostPath` data** on each node (not Helm-managed). `dataRetentionPolicy`
-documents intent; clean node-local data manually when `delete`.
+**node-local `hostPath` data** on each node (not Helm-managed). Today only
+`dataRetentionPolicy: retain` is active; the active `delete` purge (DB reset, namespaces,
+libvirt domains, node-local data) is deferred to [issue #53](https://github.com/cobaltcore-dev/o3k/issues/53).
+Until then, clean node-local data manually.
 
 ## Multiple releases
 

@@ -31,7 +31,10 @@
     "ingress": { "type": "object" },
     "tls": {
       "type": "object",
-      "properties": { "enabled": { "type": "boolean" } }
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "certManagerKind": { "type": "string", "enum": ["ClusterIssuer", "Issuer"] }
+      }
     },
     "nova": {
       "type": "object",
