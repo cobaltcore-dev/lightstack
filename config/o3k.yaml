@@ -10,8 +10,17 @@ keystone:
   port: 35357
   jwt_secret: "change-me-in-production"
   token_ttl: 24h
+  # Admin account, applied at startup as a FIRST-BOOT SEED (SPEC-007 WS-2):
+  #   - admin_password is written only when the account is absent or still
+  #     carries the well-known default `secret`; once changed it is never
+  #     overwritten (rotate via the OpenStack Identity API, not config).
+  #   - If admin_user is set to a name other than `admin`, the seeded `admin`
+  #     account is disabled. CHANGE admin_password for any exposed deployment.
   admin_user: admin
   admin_password: secret
+  # Advertised service-catalog / self-link scheme is set via the
+  # O3K_ENDPOINT_SCHEME environment variable (http|https, default http),
+  # alongside O3K_ENDPOINT_HOST — see .env.example.
 
 compute:
   # Node identifier - auto-generates UUID if set to "auto"

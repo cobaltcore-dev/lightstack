@@ -88,6 +88,12 @@ func main() {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
+	// Bootstrap the admin account from configuration (SPEC-007 WS-2). Fail-soft:
+	// the install-blocking gate is owned by the Helm chart, not the binary.
+	if err := keystone.BootstrapAdmin(ctx, cfg.Keystone); err != nil {
+		log.Printf("WARNING: admin bootstrap failed: %v", err)
+	}
+
 	// Initialize cache
 	var cacheInstance *cache.Cache
 	if cfg.Cache.Enabled {

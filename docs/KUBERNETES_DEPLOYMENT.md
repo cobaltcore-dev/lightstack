@@ -432,6 +432,19 @@ spec:
                   name: glance
 ```
 
+### TLS and the advertised catalog scheme
+
+The Keystone service catalog advertises one URL per service, **including its port**
+(e.g. `https://<host>:9292`). To make those URLs `https`, set the `O3K_ENDPOINT_SCHEME=https`
+environment variable (default `http`) alongside `O3K_ENDPOINT_HOST`; this rewrites the
+scheme of every catalog endpoint and resource self-link at presentation time.
+
+Because the advertised URLs keep their per-service ports, TLS must be terminated
+**per service port** — use **Option B (port-based)** below with TLS on each port (one
+host/wildcard certificate covers them all). A single-`:443` path-based ingress (Option A)
+is *not* compatible with `O3K_ENDPOINT_SCHEME=https`, since the catalog would still point
+clients at `https://<host>:<service-port>` rather than `https://<host>/<service-path>`.
+
 ### Option B: Port-based routing (separate LoadBalancer services)
 
 The simpler approach when you can allocate multiple external IPs or use a cloud load balancer:
