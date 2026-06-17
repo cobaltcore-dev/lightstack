@@ -1,4 +1,4 @@
-.PHONY: build run test clean install-deps migrate db-up db-down build-ebpf bench bench-quick
+.PHONY: build run test chart-test clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick
 
 # Build variables
 BINARY_NAME=o3k
@@ -82,8 +82,15 @@ test-errors:
 	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running." && exit 1)
 	@bash test/error_handling_test.sh
 
-# Run all tests (unit + contract + integration + performance)
-test-all: test test-contract test-integration test-multi-tenant test-errors test-performance
+# Run Helm chart tests (helm lint + template + unittest; no cluster or running O3K needed)
+chart-test:
+	@echo "Running Helm chart tests (lint + template + unittest)..."
+	@command -v helm >/dev/null 2>&1 || (echo "ERROR: helm not found. Run 'make install-tools' first." && exit 1)
+	@helm plugin list 2>/dev/null | grep -q '^unittest' || (echo "ERROR: helm-unittest plugin not found. Run 'make install-tools' first." && exit 1)
+	@bash charts/o3k/ci/run-tests.sh
+
+# Run all tests (unit + chart + contract + integration + performance)
+test-all: test chart-test test-contract test-integration test-multi-tenant test-errors test-performance
 	@echo ""
 	@echo "All tests completed!"
 
@@ -146,11 +153,24 @@ lint:
 	@echo "Linting code..."
 	go tool golangci-lint run ./...
 
-# Install development tools
+# Install development tools (Go tools + Helm + the helm-unittest plugin for chart tests)
 install-tools:
 	@echo "Installing development tools..."
 	go install github.com/air-verse/air@latest
 	go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+	@echo "Checking Helm CLI..."
+	@if command -v helm >/dev/null 2>&1; then \
+		echo "  helm present: $$(helm version --short)"; \
+	else \
+		echo "  helm not found - installing via the official get-helm-3 script (may prompt for sudo)..."; \
+		curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash; \
+	fi
+	@echo "Installing/updating the helm-unittest plugin (for 'helm unittest charts/o3k')..."
+	@if helm plugin list 2>/dev/null | grep -q '^unittest'; then \
+		helm plugin update unittest; \
+	else \
+		helm plugin install https://github.com/helm-unittest/helm-unittest; \
+	fi
 
 # Install eBPF development tools (Linux only)
 install-ebpf-tools:
@@ -178,6 +198,7 @@ help:
 	@echo "  test-multi-tenant - Run multi-tenancy isolation tests"
 	@echo "  test-performance - Run performance and load tests"
 	@echo "  test-errors      - Run error handling tests"
+	@echo "  chart-test       - Run Helm chart tests (lint + template + unittest; no cluster)"
 	@echo "  test-all         - Run all test suites"
 	@echo "  clean            - Remove build artifacts"
 	@echo "  install-deps     - Install Go dependencies"
@@ -187,5 +208,5 @@ help:
 	@echo "  dev            - Run with hot reload (requires air)"
 	@echo "  fmt            - Format code"
 	@echo "  lint           - Lint code"
-	@echo "  install-tools  - Install development tools"
+	@echo "  install-tools  - Install dev tools (Go tools + Helm + helm-unittest plugin)"
 	@echo "  install-ebpf-tools - Install eBPF development tools (Linux only)"
