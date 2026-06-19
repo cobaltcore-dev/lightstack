@@ -1,0 +1,46 @@
+# helm-unittest specs for the Ingress + cert-manager TLS wiring (review comment #5, FR-008b).
+suite: ingress / tls cert-manager
+templates:
+  - templates/ingress.yaml
+set:
+  image.repository: ghcr.io/o3k/o3k
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://o3k@db/o3k
+  ingress.enabled: true
+  tls.enabled: true
+tests:
+  - it: ClusterIssuer (default) — emits the cluster-issuer annotation and derives the secret name
+    set:
+      tls.certManagerIssuer: letsencrypt
+      endpointHost: o3k.example.com
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/cluster-issuer"]
+          value: letsencrypt
+      - equal:
+          path: spec.tls[0].secretName
+          value: RELEASE-NAME-o3k-tls
+  - it: Issuer kind — emits the namespaced issuer annotation and honors an explicit secretName
+    set:
+      tls.certManagerIssuer: my-issuer
+      tls.certManagerKind: Issuer
+      tls.secretName: my-cert
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/issuer"]
+          value: my-issuer
+      - notExists:
+          path: metadata.annotations["cert-manager.io/cluster-issuer"]
+      - equal:
+          path: spec.tls[0].secretName
+          value: my-cert
+  - it: operator-supplied secretName without cert-manager — no cert-manager annotation, never an empty name
+    set:
+      tls.secretName: o3k-cert
+    asserts:
+      - equal:
+          path: spec.tls[0].secretName
+          value: o3k-cert
+      - notExists:
+          path: metadata.annotations["cert-manager.io/cluster-issuer"]

@@ -1,0 +1,228 @@
+{{/* Chart name. */}}
+{{- define "o3k.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/* Release-prefixed fullname (FR-016: multi-release isolation). */}}
+{{- define "o3k.fullname" -}}
+{{- printf "%s-%s" .Release.Name (include "o3k.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "o3k.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "o3k.labels" -}}
+helm.sh/chart: {{ include "o3k.chart" . }}
+{{ include "o3k.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{- define "o3k.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "o3k.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/* Image reference; repository is REQUIRED (FR-018). */}}
+{{- define "o3k.image" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- printf "%s:%s" (required "image.repository is required — the chart pulls no implicit image (FR-018)." .Values.image.repository) $tag -}}
+{{- end -}}
+
+{{/* Name of the Secret holding the rendered o3k.yaml. */}}
+{{- define "o3k.configSecretName" -}}
+{{- .Values.secrets.existingSecret | default (printf "%s-config" (include "o3k.fullname" .)) -}}
+{{- end -}}
+
+{{/*
+Install-time validation gates (fail-fast). Invoked once from service.yaml (always rendered).
+FR-006/006a/007/007a/008b/012e/018.
+*/}}
+{{- define "o3k.validate" -}}
+{{- if not .Values.image.repository -}}
+{{- fail "\n\nimage.repository is required (FR-018): the chart pulls no implicit image.\nSet --set image.repository=<registry>/o3k\n" -}}
+{{- end -}}
+{{- if not .Values.secrets.existingSecret -}}
+{{-   if not .Values.secrets.jwtSecret -}}
+{{- fail "\n\nsecrets.jwtSecret is required (FR-007): no insecure default. Set it, or supply secrets.existingSecret.\n" -}}
+{{-   end -}}
+{{-   if not .Values.secrets.adminPassword -}}
+{{- fail "\n\nsecrets.adminPassword is required (FR-007a): no deployment may run with admin/secret. Set it, or supply secrets.existingSecret.\n" -}}
+{{-   end -}}
+{{-   if and (not .Values.database.url) (not .Values.database.existingSecret) -}}
+{{- fail "\n\ndatabase.url is required (FR-006): the chart deploys no database — provide a reachable external one.\n" -}}
+{{-   end -}}
+{{- end -}}
+{{- if .Values.tls.enabled -}}
+{{-   if and (not .Values.tls.secretName) (not .Values.tls.certManagerIssuer) -}}
+{{- fail "\n\ntls.enabled requires tls.secretName or tls.certManagerIssuer (the chart generates no certificates).\n" -}}
+{{-   end -}}
+{{- end -}}
+{{- if and (eq .Values.deploymentMode "multi-node") .Values.realMode.enabled -}}
+{{-   if not (or (eq .Values.glance.storageMode "rbd") (eq .Values.glance.storageMode "s3")) -}}
+{{- fail "\n\nmulti-node real mode requires glance.storageMode=rbd or s3 (FR-012e): local image storage is node-local.\n" -}}
+{{-   end -}}
+{{-   if not (eq .Values.cinder.storageMode "rbd") -}}
+{{- fail "\n\nmulti-node real mode requires cinder.storageMode=rbd (FR-012e): local volume storage is node-local.\n" -}}
+{{-   end -}}
+{{- end -}}
+{{- if .Values.cache.enabled -}}
+{{-   if and (not .Values.cache.redisUrl) (not .Values.secrets.existingSecret) -}}
+{{- fail "\n\ncache.enabled requires cache.redisUrl (FR-006a): the chart deploys no Redis.\n" -}}
+{{-   end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Render the product o3k.yaml from values. Embedded into a Secret (research R2:
+the binary has no generic O3K_<SECTION>_<KEY> env layer, so config — including the
+admin password — is carried in the --config file, kept out of plaintext via a Secret).
+*/}}
+{{- define "o3k.config" -}}
+database:
+  url: {{ .Values.database.url | quote }}
+  max_connections: 50
+keystone:
+  port: 35357
+  jwt_secret: {{ .Values.secrets.jwtSecret | quote }}
+  token_ttl: 24h
+  admin_user: {{ .Values.secrets.adminUser | default "admin" | quote }}
+  admin_password: {{ .Values.secrets.adminPassword | quote }}
+compute:
+  node_id: auto
+  tunnel_ip: auto
+  vxlan_port: {{ .Values.multiNode.vxlanPort }}
+  heartbeat_interval: 30s
+nova:
+  port: 8774
+  libvirt_uri: "qemu:///system"
+  libvirt_mode: {{ .Values.nova.libvirtMode | quote }}
+neutron:
+  port: 9696
+  networking_mode: {{ .Values.neutron.networkingMode | quote }}
+  security_group_mode: {{ .Values.neutron.securityGroupMode | quote }}
+  vxlan_enabled: {{ if eq .Values.deploymentMode "multi-node" }}{{ .Values.multiNode.vxlanEnabled }}{{ else }}false{{ end }}
+cinder:
+  port: 8776
+  storage_mode: {{ .Values.cinder.storageMode | quote }}
+glance:
+  port: 9292
+  storage_mode: {{ .Values.glance.storageMode | quote }}
+logging:
+  level: {{ .Values.logging.level | quote }}
+  format: {{ .Values.logging.format | quote }}
+cache:
+  enabled: {{ .Values.cache.enabled }}
+  redis_url: {{ .Values.cache.redisUrl | quote }}
+{{- end -}}
+
+{{/*
+Shared pod spec (spec.template.spec) for both the single-node Deployment and the
+multi-node DaemonSet, so the container, config mount, probes, and real-mode host
+access stay identical across modes. Include with: {{- include "o3k.podSpec" . | nindent 6 }}
+*/}}
+{{- define "o3k.podSpec" -}}
+{{- $kv := splitn "=" 2 .Values.multiNode.nodeSelectorLabel -}}
+# O3K never calls the Kubernetes API — don't mount a ServiceAccount token (FR-009c; reduces attack surface).
+automountServiceAccountToken: false
+{{- with .Values.image.pullSecrets }}
+imagePullSecrets:
+{{- toYaml . | nindent 2 }}
+{{- end }}
+{{- if .Values.realMode.enabled }}
+hostNetwork: {{ .Values.realMode.hostNetwork }}
+{{- end }}
+{{- if eq .Values.deploymentMode "multi-node" }}
+nodeSelector:
+  {{ $kv._0 }}: {{ $kv._1 | quote }}
+  {{- with .Values.nodeSelector }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- else if .Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml .Values.nodeSelector | nindent 2 }}
+{{- end }}
+containers:
+  - name: o3k
+    image: {{ include "o3k.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    # Full command, not args: the image declares only a CMD (no ENTRYPOINT), so bare
+    # args would be exec'd directly. The binary migrates the DB itself on startup
+    # (FR-012b), so the image's `o3k-migrate &&` wrapper CMD is not needed here.
+    command: ["/app/o3k", "--config", "/app/config/o3k.yaml"]
+    {{- if .Values.realMode.enabled }}
+    securityContext:
+      privileged: {{ .Values.realMode.privileged }}
+    {{- end }}
+    {{- if or .Values.endpointHost .Values.tls.enabled .Values.database.existingSecret }}
+    env:
+      {{- if .Values.database.existingSecret }}
+      - name: O3K_DB_URL
+        valueFrom:
+          secretKeyRef:
+            name: {{ .Values.database.existingSecret }}
+            key: {{ .Values.database.existingSecretKey | default "url" }}
+      {{- end }}
+      {{- if .Values.endpointHost }}
+      - name: O3K_ENDPOINT_HOST
+        value: {{ .Values.endpointHost | quote }}
+      {{- end }}
+      {{- if .Values.tls.enabled }}
+      - name: O3K_ENDPOINT_SCHEME
+        value: "https"
+      {{- end }}
+    {{- end }}
+    ports:
+      - { name: identity, containerPort: 35357 }
+      - { name: compute, containerPort: 8774 }
+      - { name: placement, containerPort: 8778 }
+      - { name: network, containerPort: 9696 }
+      - { name: blockstorage, containerPort: 8776 }
+      - { name: image, containerPort: 9292 }
+      - { name: metadata, containerPort: 8775 }
+    livenessProbe:
+      httpGet: { path: /v3, port: identity }
+      initialDelaySeconds: 15
+      periodSeconds: 20
+    readinessProbe:
+      httpGet: { path: /v3, port: identity }
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    volumeMounts:
+      - name: config
+        mountPath: /app/config
+        readOnly: true
+      {{- if .Values.realMode.enabled }}
+      - name: libvirt-sock
+        mountPath: {{ .Values.realMode.libvirtSocketPath }}
+      - name: host-storage
+        mountPath: {{ .Values.realMode.hostStoragePath }}
+      {{- end }}
+    {{- with .Values.resources }}
+    resources:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+volumes:
+  - name: config
+    secret:
+      secretName: {{ include "o3k.configSecretName" . }}
+  {{- if .Values.realMode.enabled }}
+  - name: libvirt-sock
+    hostPath:
+      path: {{ .Values.realMode.libvirtSocketPath }}
+      type: Socket
+  - name: host-storage
+    hostPath:
+      path: {{ .Values.realMode.hostStoragePath }}
+      type: DirectoryOrCreate
+  {{- end }}
+{{- with .Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}

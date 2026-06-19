@@ -1,0 +1,108 @@
+# Default values for the O3K chart.
+# Defaults target the validated MVP: single-node, stub mode, no TLS.
+# Every value is documented in docs/specs/008-helm-charts/data-model.md (FR-017).
+
+# -- REQUIRED. Container image. The chart pulls no implicit image (FR-018):
+#    installation fails fast if image.repository is empty.
+image:
+  repository: ""              # e.g. ghcr.io/your-org/o3k  (REQUIRED)
+  tag: ""                     # defaults to Chart.appVersion when empty
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# -- Deployment mode: "single-node" (Deployment) or "multi-node" (DaemonSet). FR-002.
+deploymentMode: single-node
+
+# -- Single-node stub replicas (all state in the DB). Real mode forces 1. FR-003b.
+replicaCount: 1
+
+# -- External database (REQUIRED — the chart deploys no DB). FR-006.
+database:
+  url: ""                     # postgres://user:pass@host:5432/o3k?sslmode=disable
+  existingSecret: ""          # name of a Secret holding the DB URL (alternative to database.url);
+                              # injected as the O3K_DB_URL env var, which overrides the config file
+  existingSecretKey: url      # key within database.existingSecret that holds the URL
+
+# -- Sensitive values. Required unless secrets.existingSecret is supplied. FR-007/007a/007b.
+secrets:
+  jwtSecret: ""               # REQUIRED — token signing secret (no insecure default)
+  adminUser: admin
+  adminPassword: ""           # REQUIRED — no deployment runs with admin/secret
+  existingSecret: ""          # operator-pre-rendered Secret with an "o3k.yaml" key (GitOps)
+
+# -- Advertised endpoint host for the service catalog (FR-008a). Empty = in-cluster only.
+endpointHost: ""
+
+# -- Front-door Service (the six API services; metadata is node-local, FR-009d).
+service:
+  type: ClusterIP             # ClusterIP | NodePort | LoadBalancer
+  annotations: {}
+
+# -- Optional Ingress (external exposure).
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+
+# -- Optional TLS at the exposure layer (FR-008b). Sets the catalog scheme to https.
+tls:
+  enabled: false
+  secretName: ""              # operator-supplied cert Secret (default: <release>-o3k-tls)
+  certManagerIssuer: ""       # OR a cert-manager (Cluster)Issuer name to auto-provision the cert
+  certManagerKind: ClusterIssuer   # which cert-manager annotation to emit: ClusterIssuer | Issuer
+
+# -- Per-service modes (FR-011/012). All set in the rendered o3k.yaml.
+nova:
+  libvirtMode: stub           # stub | real
+neutron:
+  networkingMode: stub        # stub | iptables | ebpf
+  securityGroupMode: stub     # stub | iptables | ebpf
+cinder:
+  storageMode: stub           # stub | local | rbd | local,rbd
+glance:
+  storageMode: stub           # stub | local | rbd | s3 | local,rbd | local,s3 | rbd,s3
+
+# -- Real mode (privileged libvirt + host access). Off by default (FR-012). Authored;
+#    real-mode VM e2e is gated on the post-conditions (issue #52).
+realMode:
+  enabled: false
+  privileged: false
+  hostNetwork: false
+  libvirtSocketPath: /var/run/libvirt/libvirt-sock
+  hostStoragePath: /var/lib/o3k
+  floatingIpPool: ""          # operator-supplied pool routed to nodes (FR-009c)
+
+podSecurity:
+  applyPrivilegedNamespaceLabel: false   # real mode only (FR-012d)
+
+# -- Multi-node (DaemonSet) — authored; cross-node behavior gated on issue #52.
+multiNode:
+  nodeSelectorLabel: "o3k.io/compute=true"
+  vxlanEnabled: true
+  vxlanPort: 4789
+  minProductVersion: ""       # FR-010 — set when the placement post-condition (WS-1) ships
+
+# -- Optional cache (off by default; opt-in Redis). FR-006a.
+#    In multi-node, redisUrl MUST point at a single shared Redis (cross-node invalidation).
+cache:
+  enabled: false
+  redisUrl: ""
+
+# -- Uninstall data retention for node-local hostPath/PVC data (FR-014).
+#    NOTE: only "retain" is active today — `helm uninstall` removes the release's
+#    Kubernetes objects and leaves persisted/runtime state untouched. The "delete"
+#    purge (blocking pre-delete hook: netns/routes, libvirt domains, orphaned
+#    storage, PVCs) is implemented in issue #53.
+dataRetentionPolicy: retain   # retain | delete  (delete: see issue #53)
+
+# -- Observability (FR-013a).
+logging:
+  level: info                 # debug | info | warn | error
+  format: json                # json | text
+
+# -- Pod resources / scheduling.
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

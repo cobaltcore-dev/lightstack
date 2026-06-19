@@ -1,0 +1,41 @@
+# helm-unittest specs for the config-checksum rollout annotation (PR #54 review C2/C3).
+# checksum/config rolls the pod on chart-rendered config changes, but is OMITTED when an
+# external Secret is used — the chart can't hash a Secret it doesn't render.
+suite: config checksum annotation
+set:
+  image.repository: ghcr.io/o3k/o3k
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://o3k@db/o3k
+tests:
+  - it: single-node Deployment carries checksum/config by default
+    templates:
+      - templates/deployment.yaml
+    asserts:
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+  - it: single-node Deployment omits checksum/config with an external Secret
+    templates:
+      - templates/deployment.yaml
+    set:
+      secrets.existingSecret: my-o3k-secret
+    asserts:
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/config"]
+  - it: multi-node DaemonSet carries checksum/config by default
+    templates:
+      - templates/daemonset.yaml
+    set:
+      deploymentMode: multi-node
+    asserts:
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+  - it: multi-node DaemonSet omits checksum/config with an external Secret
+    templates:
+      - templates/daemonset.yaml
+    set:
+      deploymentMode: multi-node
+      secrets.existingSecret: my-o3k-secret
+    asserts:
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/config"]

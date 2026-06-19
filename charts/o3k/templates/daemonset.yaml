@@ -1,0 +1,34 @@
+{{- if eq .Values.deploymentMode "multi-node" }}
+{{- /*
+  Multi-node: one identical O3K instance per designation-labeled node (FR-004/005a).
+  Instances self-register and coordinate only through the shared DB. Applying/removing
+  the node label starts/evicts an instance with no chart upgrade.
+  NOTE (issue #52): correct cross-node VM lifecycle relies on the WS-1 post-condition;
+  the DaemonSet deploys now, full multi-node function lands with the post-conditions.
+*/ -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "o3k.fullname" . }}
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "o3k.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "o3k.selectorLabels" . | nindent 8 }}
+      {{- if not .Values.secrets.existingSecret }}
+      annotations:
+        # Roll the pod when the chart-rendered config changes. Omitted when an
+        # external Secret is used — the chart can't hash a Secret it doesn't render,
+        # so rollout on change is the operator's responsibility there.
+        checksum/config: {{ include "o3k.config" . | sha256sum }}
+      {{- end }}
+    spec:
+      {{- include "o3k.podSpec" . | nindent 6 }}
+{{- end }}

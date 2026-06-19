@@ -1,0 +1,62 @@
+# helm-unittest specs for the install-time fail-fast gates (T005).
+# Run with: helm plugin install https://github.com/helm-unittest/helm-unittest && helm unittest charts/o3k
+suite: install-time fail-fast gates
+templates:
+  - templates/service.yaml
+tests:
+  - it: fails when jwtSecret is missing (FR-007)
+    set:
+      image.repository: ghcr.io/o3k/o3k
+      secrets.adminPassword: pw
+      database.url: postgres://o3k@db/o3k
+    asserts:
+      - failedTemplate:
+          errorPattern: "jwtSecret is required"
+  - it: fails when adminPassword is missing (FR-007a)
+    set:
+      image.repository: ghcr.io/o3k/o3k
+      secrets.jwtSecret: jwt
+      database.url: postgres://o3k@db/o3k
+    asserts:
+      - failedTemplate:
+          errorPattern: "adminPassword is required"
+  - it: fails when database.url is missing (FR-006)
+    set:
+      image.repository: ghcr.io/o3k/o3k
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+    asserts:
+      - failedTemplate:
+          errorPattern: "database.url is required"
+  - it: multi-node real rejects local glance/cinder backends (FR-012e)
+    set:
+      image.repository: ghcr.io/o3k/o3k
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://o3k@db/o3k
+      deploymentMode: multi-node
+      realMode.enabled: true
+      glance.storageMode: local
+      cinder.storageMode: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "FR-012e"
+  - it: cache.enabled requires redisUrl (FR-006a)
+    set:
+      image.repository: ghcr.io/o3k/o3k
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://o3k@db/o3k
+      cache.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "cache.enabled requires cache.redisUrl"
+  - it: renders with minimal valid values
+    set:
+      image.repository: ghcr.io/o3k/o3k
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://o3k@db/o3k
+    asserts:
+      - hasDocuments:
+          count: 1

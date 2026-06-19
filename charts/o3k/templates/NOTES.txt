@@ -1,0 +1,49 @@
+O3K ({{ .Values.deploymentMode }} / {{ if .Values.realMode.enabled }}real{{ else }}stub{{ end }} mode) installed as release "{{ .Release.Name }}".
+
+In-cluster service endpoints:
+  identity      http://{{ include "o3k.fullname" . }}:35357/v3
+  compute :8774   placement :8778   network :9696   block storage :8776   image :9292
+  (metadata :8775 is node-local — reached by VMs via the link-local address, not the Service)
+{{- if .Values.endpointHost }}
+
+Advertised catalog host: {{ if .Values.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.endpointHost }}
+{{- end }}
+
+Verify the deployment:
+  {{- if eq .Values.deploymentMode "multi-node" }}
+  kubectl rollout status ds/{{ include "o3k.fullname" . }}
+  {{- else }}
+  kubectl rollout status deploy/{{ include "o3k.fullname" . }}
+  {{- end }}
+  helm test {{ .Release.Name }}
+
+Authenticate (port-forward example):
+  kubectl port-forward svc/{{ include "o3k.fullname" . }} 35357:35357
+  export OS_AUTH_URL=http://localhost:35357/v3
+  export OS_USERNAME={{ .Values.secrets.adminUser | default "admin" }} OS_PASSWORD=<your admin password>
+  export OS_PROJECT_NAME=default OS_USER_DOMAIN_NAME=Default OS_PROJECT_DOMAIN_NAME=Default
+  openstack token issue
+{{- if and (eq .Values.deploymentMode "multi-node") .Values.cache.enabled }}
+
+WARNING (FR-006a): multi-node + cache enabled — cache.redisUrl MUST point at a SINGLE
+SHARED Redis. A per-pod Redis breaks cross-node cache invalidation and serves stale reads.
+{{- end }}
+{{- if eq .Values.deploymentMode "multi-node" }}
+
+Multi-node: instances self-register via the shared DB. Add capacity by labeling nodes:
+  kubectl label node <node> {{ .Values.multiNode.nodeSelectorLabel }}
+{{- if .Values.multiNode.minProductVersion }}
+Requires a product image >= {{ .Values.multiNode.minProductVersion }} (FR-010).
+{{- end }}
+{{- end }}
+{{- if and .Values.realMode.enabled .Values.realMode.floatingIpPool }}
+
+Floating-IP pool "{{ .Values.realMode.floatingIpPool }}" must be routed to the nodes
+via MetalLB or a routed/L2 subnet (FR-009c — see chart README).
+{{- end }}
+{{- if or .Values.realMode.enabled (eq .Values.deploymentMode "multi-node") }}
+
+NOTE (deferred — issue #52): real-mode and multi-node runtime behavior (VM cloud-init/login,
+floating IPs, cross-node traffic, networking surviving restarts) depends on product
+post-conditions WS-1/4/5/6. The templates deploy now; full end-to-end function lands with those.
+{{- end }}

@@ -1,0 +1,18 @@
+{{- if and .Values.realMode.enabled .Values.podSecurity.applyPrivilegedNamespaceLabel }}
+{{- /*
+  Apply the 'privileged' PodSecurity level so real-mode privileged pods are admitted
+  (FR-012d). This works only if Helm owns the namespace (helm install --create-namespace).
+  Otherwise apply it manually:
+    kubectl label --overwrite ns {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=privileged
+  On OpenShift, grant the equivalent SCC instead.
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged
+{{- end }}
