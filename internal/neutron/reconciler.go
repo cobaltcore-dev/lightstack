@@ -289,6 +289,81 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 
 // dhcpReservations builds MAC->IP dnsmasq reservations from the network's ports
 // so dnsmasq hands each VM the exact fixed IP neutron allocated to its port
+||||||| parent of d29c106 (feat(realmode): SPEC-009 US3 — metadata reachability + cloud-init key/user_data (WS-4))
+// portReservations builds MAC->IP dnsmasq reservations from the network's ports
+// so a (re)started dnsmasq hands each VM the same IP its port already holds
+=======
+// applyDHCPForNetwork (re)asserts the bridge gateway IP, the metadata DNAT, and
+// the dnsmasq server (with MAC->IP reservations from the DB) for a network's
+// DHCP-enabled subnet. With restart=true it reloads dnsmasq so a newly allocated
+// port's reservation takes effect *before* its VM boots — dnsmasq must hand out
+// the exact fixed IP neutron assigned the port, or OpenStack's view and the
+// guest disagree (breaks metadata identity). This is the synchronous path called
+// from port allocation and subnet create (Constitution II). With restart=false
+// (the reconciler) it only starts dnsmasq if it is not already running, but
+// always re-asserts the bridge IP and metadata redirect. Best-effort.
+func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, restart bool) {
+	if svc.mode == "stub" {
+		return
+	}
+	var cidr, gatewayIP string
+	var dns []string
+	if err := database.DB.QueryRow(ctx, `
+		SELECT cidr, gateway_ip, dns_nameservers FROM subnets
+		WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns); err != nil {
+		return // no DHCP-enabled subnet for this network — nothing to do
+	}
+	_, ipNet, perr := net.ParseCIDR(cidr)
+	if perr != nil {
+		log.Warn().Err(perr).Str("network_id", networkID).Str("cidr", cidr).Msg("dhcp apply: bad subnet CIDR; skipping")
+		return
+	}
+	bridgeName := "br-" + networkID[:8]
+	// Bridge is in the default namespace; give it the gateway IP (so dnsmasq has
+	// an address in the subnet to serve) and the 169.254.169.254 DNAT.
+	ones, _ := ipNet.Mask.Size()
+	if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", gatewayIP, ones)); err != nil {
+		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: bridge IP ensure")
+	}
+	if err := svc.mdRedirect.Ensure(bridgeName, gatewayIP); err != nil {
+		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: metadata redirect ensure")
+	}
+
+	if !restart && svc.dhcpManager.IsRunning(networkID) {
+		return // already serving — idempotent
+	}
+
+	dhcpStart, dhcpEnd := dhcpRange(ipNet)
+	cfg := networking.DHCPConfig{
+		NetworkID:        networkID,
+		BridgeName:       bridgeName,
+		SubnetCIDR:       cidr,
+		GatewayIP:        gatewayIP,
+		DNSServers:       dns,
+		DHCPRangeStart:   dhcpStart,
+		DHCPRangeEnd:     dhcpEnd,
+		LeaseTime:        "24h",
+		HostReservations: svc.dhcpReservations(ctx, networkID),
+	}
+	// restart=true reloads to pick up a newly allocated port's reservation: kill
+	// and respawn dnsmasq WITHOUT dropping leases, serialized so concurrent boots
+	// on this network can't interleave the kill/start (SPEC-009 WS-2).
+	var dhcpErr error
+	if restart {
+		dhcpErr = svc.dhcpManager.RestartDHCP(cfg, "")
+	} else {
+		dhcpErr = svc.dhcpManager.StartDHCP(cfg, "")
+	}
+	if dhcpErr != nil {
+		log.Warn().Err(dhcpErr).Str("network_id", networkID).Msg("dhcp apply: failed to (re)start DHCP")
+	} else {
+		log.Info().Str("network_id", networkID).Int("reservations", len(cfg.HostReservations)).Bool("restart", restart).Msg("dhcp apply: server (re)started from DB state")
+	}
+}
+
+// dhcpReservations builds MAC->IP dnsmasq reservations from the network's ports
+// so dnsmasq hands each VM the exact fixed IP neutron allocated to its port
+>>>>>>> d29c106 (feat(realmode): SPEC-009 US3 — metadata reachability + cloud-init key/user_data (WS-4))
 // (SPEC-009 WS-2 / FR-006). The port's fixed_ip in the DB is authoritative.
 func (svc *Service) dhcpReservations(ctx context.Context, networkID string) []networking.DHCPHostReservation {
 	rows, err := database.DB.Query(ctx,

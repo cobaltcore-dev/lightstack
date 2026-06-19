@@ -128,15 +128,10 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 	return nil
 }
 
-// killProcess terminates EVERY dnsmasq bound to a network's config (not just the
-// one named in the pid-file) and clears its tracked PID, leaving the lease file
-// intact so a later StartDHCP preserves existing leases. Killing all of them
-// stops orphans from a previous o3k accumulating into multiple dnsmasq on one
-// bridge (SPEC-009 WS-2).
+// killProcess terminates the running dnsmasq for a network (best-effort) and
+// clears its tracked PID, leaving the lease file intact so a later StartDHCP
+// preserves existing leases.
 func (m *DHCPManager) killProcess(networkID string) {
-	// pkill -f matches the config path in the cmdline → catches untracked orphans
-	// the pid-file no longer points at.
-	_ = exec.Command("pkill", "-f", filepath.Join(m.configPath, networkID+".conf")).Run()
 	pidFile := filepath.Join(m.pidPath, networkID+".pid")
 	if pidData, err := os.ReadFile(pidFile); err == nil {
 		var pid int
@@ -228,6 +223,24 @@ func (m *DHCPManager) PruneDHCP(active map[string]bool) {
 	}
 }
 
+||||||| parent of d29c106 (feat(realmode): SPEC-009 US3 — metadata reachability + cloud-init key/user_data (WS-4))
+=======
+// RestartDHCP reloads dnsmasq for a network with a fresh config WITHOUT dropping
+// existing leases: it kills the running process (keeping the lease file) and
+// starts a new one. The whole kill+start is serialized so concurrent port
+// allocations on the same network can't interleave and leave dnsmasq dead
+// (SPEC-009 WS-2).
+func (m *DHCPManager) RestartDHCP(config DHCPConfig, nsName string) error {
+	if m.mode == "stub" {
+		return m.StartDHCP(config, nsName)
+	}
+	m.restartMu.Lock()
+	defer m.restartMu.Unlock()
+	m.killProcess(config.NetworkID) // keep the lease file so leases survive the reload
+	return m.StartDHCP(config, nsName)
+}
+
+>>>>>>> d29c106 (feat(realmode): SPEC-009 US3 — metadata reachability + cloud-init key/user_data (WS-4))
 // writeDNSMasqConfig writes dnsmasq configuration file
 func (m *DHCPManager) writeDNSMasqConfig(configFile string, config DHCPConfig) error {
 	tmpl := `# dnsmasq configuration for network {{ .NetworkID }}

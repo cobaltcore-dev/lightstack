@@ -18,35 +18,16 @@ docker --version ; go version    # docker (dev Postgres) + Go 1.26+
 
 ## 1. Clean recreate  (**stop o3k first** — Ctrl-C in T1)
 ```bash
-# VMs — destroy AND undefine (libvirt domains are persistent, survive reboot)
-for d in $(sudo virsh list --all --name 2>/dev/null | grep .); do
-  sudo virsh destroy "$d" 2>/dev/null; sudo virsh undefine "$d" --nvram 2>/dev/null || sudo virsh undefine "$d" 2>/dev/null
-done
-# o3k dnsmasq + stale bridges (they otherwise keep a duplicate 10.x gateway IP
-# and split host routing)
-sudo pkill -f 'var/lib/o3k/dhcp' 2>/dev/null || true
-for b in $(ip -br link show type bridge 2>/dev/null | awk '{print $1}' | grep '^br-'); do sudo ip link del "$b"; done
-# o3k netns + the north-south iptables rules left by earlier runs
-for n in $(ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^q(router|dhcp)-'); do sudo ip netns del "$n"; done
-sudo iptables -t nat -S 2>/dev/null | grep -E '169\.254\.169\.254|10\.0\.0\.|172\.24\.4\.' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables -t nat ${r}"; done
-sudo iptables -S FORWARD 2>/dev/null | grep -E '10\.0\.0\.|O3K-NSI' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
-for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'O3K-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
-# stale floating-IP /32s left on the uplink (the FIP pool range)
-UP=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
-[ -n "$UP" ] && ip -4 -o addr show dev "$UP" 2>/dev/null | awk '/172\.24\.4\./{print $4}' | while read -r a; do sudo ip addr del "$a" dev "$UP"; done
-# node-local data: disks, images, cloud-init ISOs, volumes, dhcp state
-sudo rm -rf /var/lib/o3k/*
 sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
-# Postgres container — works whether it runs under docker OR podman (rootless/rootful)
-docker rm -f o3k-postgres 2>/dev/null; podman rm -f o3k-postgres 2>/dev/null; sudo podman rm -f o3k-postgres 2>/dev/null; true
+# clear leftovers from previous runs (o3k must be stopped first):
+sudo pkill -f 'var/lib/o3k/dhcp' 2>/dev/null || true
+sudo virsh list --name 2>/dev/null | xargs -r -n1 sudo virsh destroy 2>/dev/null || true
+# delete stale o3k bridges — they otherwise linger with a duplicate 10.x gateway
+# IP and split host routing across bridges (only `make db-down` won't remove them):
+for b in $(ip -br link show type bridge 2>/dev/null | awk '{print $1}' | grep '^br-'); do sudo ip link del "$b"; done
 ```
-> A host **reboot** is the simplest way to clear the kernel networking (bridges /
-> taps / netns / iptables / `ip_forward`); then you only need the VM-undefine,
-> `rm -rf /var/lib/o3k/*`, and the Postgres-container removal above. The full
-> teardown + what persists is detailed in the **Cleanup — full reset** section.
-> **podman note:** the Makefile's `db-up`/`db-down` shell out to `docker`; if you
-> run podman without a `docker` shim, start/stop Postgres with `podman` directly
-> (`podman run … --name o3k-postgres …` / `podman rm -f o3k-postgres`).
+> With the SPEC-009 fix, `openstack network delete` now removes its bridge; this
+> sweep is only for bridges left by earlier runs / `make db-down`.
 
 ## 2. Build
 ```bash
@@ -152,6 +133,7 @@ openstack console log show vm1 | tail                   # real boot output
 openstack image delete cirros                           # 409 while vm1 exists
 ```
 
+<<<<<<< HEAD
 ## 11. US3 / WS-4 — metadata + cloud-init  (**rebuild + restart o3k first**)
 Stop o3k (T1), `make build`, restart (§6) so the metadata DNAT + the dnsmasq
 classless-static-route option are active. Then in T2:
@@ -355,63 +337,57 @@ DID=$(...); ls /var/lib/o3k/volumes/volume-<bootvol2-id>.qcow2 2>&1   # → No s
 flagged volume is gone (DB 404 + backing file removed). RBD delete-on-termination cleanup of
 the backing image routes through Cinder (local backing is what's removed here).
 
-## Expected NOT to work yet (later phases)
-- **RBD/Ceph backends** — validated separately under the `ceph` build tag; the single-node default is `local`. (RBD delete-on-termination removes the DB row but not the RBD image — a Cinder follow-up.)
-
-## Cleanup — full reset between runs (what persists vs. what a reboot clears)
-**Only three things survive a host reboot** and must be cleared explicitly:
-
-| Persistent | Where | Cleared by |
-|---|---|---|
-| DB rows (instances, networks, ports, routers, volumes, images, keypairs) | `o3k-postgres` container (no volume) | `docker`/`podman rm -f o3k-postgres` |
-| libvirt VM definitions | `virsh list --all` (O3K uses `DomainDefineXML` → persistent) | `virsh undefine` |
-| On-disk files | `/var/lib/o3k/{instances,images,cloud-init,volumes,dhcp}` | `rm -rf` |
-
-Everything else is **runtime kernel state a reboot wipes for free**: bridges `br-*` (+ gateway IPs),
-taps (`tap-*`, `vnet*`), netns (`qrouter-*`), iptables rules (metadata DNAT `169.254.169.254`, egress
-`MASQUERADE`, `FORWARD` ACCEPT), and `ip_forward`.
-
-### Full reset without rebooting — stop o3k first (Ctrl-C in T1), then in T2:
+||||||| parent of d29c106 (feat(realmode): SPEC-009 US3 — metadata reachability + cloud-init key/user_data (WS-4))
+=======
+## 11. US3 / WS-4 — metadata + cloud-init  (**rebuild + restart o3k first**)
+Stop o3k (T1), `make build`, restart (§6) so the metadata DNAT + the dnsmasq
+classless-static-route option are active. Then in T2:
 ```bash
-# 1. libvirt VMs — destroy AND undefine (definitions are persistent, survive reboot)
-for d in $(sudo virsh list --all --name | grep .); do
-  sudo virsh destroy "$d" 2>/dev/null
-  sudo virsh undefine "$d" --nvram 2>/dev/null || sudo virsh undefine "$d" 2>/dev/null
-done
-sudo virsh list --all                        # expect: empty
+# a keypair (once) → SSH login for the VM
+[ -f ~/.ssh/id_rsa.pub ] || ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa
+openstack keypair show k1 >/dev/null 2>&1 || openstack keypair create --public-key ~/.ssh/id_rsa.pub k1
 
-# 2. o3k dnsmasq
-sudo pkill -f 'var/lib/o3k/dhcp' 2>/dev/null
+# user_data: a shell script (cirros runs #!/bin/sh user-data reliably)
+cat > /tmp/ud.sh <<'EOF'
+#!/bin/sh
+echo "ws4 user_data applied" > /var/tmp/o3k-userdata-ok
+EOF
 
-# 3. bridges + leftover taps (default ns)
-for b in $(ip -br link show type bridge | awk '{print $1}' | grep '^br-'); do sudo ip link del "$b"; done
-for t in $(ip -br link | awk '{print $1}' | grep -E '^(tap-|vnet)'); do sudo ip link del "$t" 2>/dev/null; done
-
-# 4. router/project netns (o3k-prefixed only — leaves other tools' netns alone)
-for n in $(ip netns list | awk '{print $1}' | grep -E '^q(router|dhcp)-'); do sudo ip netns del "$n"; done
-
-# 5. o3k iptables rules — scoped to o3k's own addresses (metadata 169.254.169.254,
-#    tenant 10.0.0.x, FIP 172.24.4.x) so the container runtime's 172.17.x rules stay
-sudo iptables -t nat -S | grep -E '169\.254\.169\.254|10\.0\.0\.|172\.24\.4\.' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables -t nat ${r}"; done
-sudo iptables -S FORWARD  | grep -E '10\.0\.0\.|O3K-NSI'          | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
-for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'O3K-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
-
-# 6. on-disk data + fresh DB
-sudo rm -rf /var/lib/o3k/*
-sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
-# remove the Postgres container under docker OR podman (rootless/rootful), then recreate it
-docker rm -f o3k-postgres 2>/dev/null; podman rm -f o3k-postgres 2>/dev/null; sudo podman rm -f o3k-postgres 2>/dev/null; true
-make db-up      # docker; with podman-without-a-docker-shim, `podman run … --name o3k-postgres …` instead
+openstack server create --image cirros --flavor m1.small --network net1 \
+  --key-name k1 --user-data /tmp/ud.sh vm-md --wait
+VMIP=$(openstack server show vm-md -f value -c addresses | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1); echo "VM IP: $VMIP"
 ```
-Then restart o3k (§6) and rebuild from §7.
 
-### Simplest alternative — reboot
-A host reboot clears all the kernel networking (steps 2–5 + `ip_forward`) for free; you then only
-need step **1** (undefine VMs) and step **6** (`rm -rf /var/lib/o3k/*` + `make db-down && make db-up`).
+### 11a. Host side — the redirect + route are programmed
+```bash
+sudo iptables -t nat -S PREROUTING | grep 169.254.169.254     # -i br-… -d 169.254.169.254 … DNAT --to <gw>:8775
+grep dhcp-option=121 /var/lib/o3k/dhcp/configs/*.conf          # 169.254.169.254/32,<gw>,0.0.0.0/0,<gw>
+```
 
-> The iptables rules are harmless to leave anyway — O3K re-asserts them idempotently (`-C` checks)
-> and interface-scoped DNAT rules go inert once their bridge is deleted; step 5 is only for a spotless
-> `iptables-save`.
+### 11b. Guest side — console login (`cirros` / `gocubsgo` — the exact password the login banner prints)
+```bash
+DOM=$(sudo virsh list --name | grep -i "$(openstack server show vm-md -f value -c id | cut -c1-8)" | head -1)
+sudo virsh console "$DOM"      # ENTER for prompt; Ctrl-] to exit
+#   $ curl -s http://169.254.169.254/openstack/latest/meta_data.json   # JSON with THIS vm's uuid/hostname
+#   $ curl -s http://169.254.169.254/2009-04-04/meta-data/instance-id  # this vm's id
+#   $ curl -s http://169.254.169.254/openstack/latest/user_data        # the #!/bin/sh above
+#   $ cat /var/tmp/o3k-userdata-ok                                     # "ws4 user_data applied" (cloud-init ran it)
+#   $ cat ~/.ssh/authorized_keys                                       # your key (injected)
+```
+
+### 11c. SSH — config-drive path (works even if 169.254 is unreachable)
+```bash
+ssh -o StrictHostKeyChecking=no cirros@$VMIP      # logs in with k1 (key via the config-drive ISO)
+```
+**Pass** = metadata returns *this* VM's data, `user_data` is served (and applied), and SSH with `k1` works.
+If `169.254.169.254` times out in the guest but SSH works, the config-drive path is fine and the
+DNAT/route is the host-iterated piece — paste §11a output + the guest's `ip route` and I'll chase it (like WS-2).
+
+>>>>>>> d29c106 (feat(realmode): SPEC-009 US3 — metadata reachability + cloud-init key/user_data (WS-4))
+## Expected NOT to work yet (later phases)
+- **Internet / floating IPs** — the VM cannot reach the internet and is not reachable
+  via a floating IP yet. That's **US4 / WS-3** (north-south / NAT).
+- **Block storage** — volume attach and boot-from-volume are **US5 / WS-5**.
 
 ## Troubleshooting
 - **`OS_AUTH_URL: ... source your OpenStack env`** → `source ~/.o3k-env` in T2.
