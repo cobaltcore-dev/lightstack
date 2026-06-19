@@ -1185,6 +1185,11 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		}
 	}
 
+	// Apply the dnsmasq reservation for this new port now (synchronously) so the
+	// VM about to boot leases its neutron-assigned fixed IP, not a dynamic one
+	// (SPEC-009 WS-2/WS-4 — keeps OpenStack's view and the guest in agreement).
+	svc.applyDHCPForNetwork(ctx, networkID, true)
+
 	return &PortInfo{
 		ID:        portID,
 		NetworkID: networkID,

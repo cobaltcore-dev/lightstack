@@ -19,10 +19,15 @@ docker --version ; go version    # docker (dev Postgres) + Go 1.26+
 ## 1. Clean recreate
 ```bash
 sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
-# clear any leftovers from a previous run:
+# clear leftovers from previous runs (o3k must be stopped first):
 sudo pkill -f 'var/lib/o3k/dhcp' 2>/dev/null || true
-for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do :; done   # inspect; delete o3k netns if present
+sudo virsh list --name 2>/dev/null | xargs -r -n1 sudo virsh destroy 2>/dev/null || true
+# delete stale o3k bridges — they otherwise linger with a duplicate 10.x gateway
+# IP and split host routing across bridges (only `make db-down` won't remove them):
+for b in $(ip -br link show type bridge 2>/dev/null | awk '{print $1}' | grep '^br-'); do sudo ip link del "$b"; done
 ```
+> With the SPEC-009 fix, `openstack network delete` now removes its bridge; this
+> sweep is only for bridges left by earlier runs / `make db-down`.
 
 ## 2. Build
 ```bash
@@ -127,11 +132,54 @@ openstack console log show vm1 | tail                   # real boot output
 openstack image delete cirros                           # 409 while vm1 exists
 ```
 
+## 11. US3 / WS-4 — metadata + cloud-init  (**rebuild + restart o3k first**)
+Stop o3k (T1), `make build`, restart (§6) so the metadata DNAT + the dnsmasq
+classless-static-route option are active. Then in T2:
+```bash
+# a keypair (once) → SSH login for the VM
+[ -f ~/.ssh/id_rsa.pub ] || ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa
+openstack keypair show k1 >/dev/null 2>&1 || openstack keypair create --public-key ~/.ssh/id_rsa.pub k1
+
+# user_data: a shell script (cirros runs #!/bin/sh user-data reliably)
+cat > /tmp/ud.sh <<'EOF'
+#!/bin/sh
+echo "ws4 user_data applied" > /var/tmp/o3k-userdata-ok
+EOF
+
+openstack server create --image cirros --flavor m1.small --network net1 \
+  --key-name k1 --user-data /tmp/ud.sh vm-md --wait
+VMIP=$(openstack server show vm-md -f value -c addresses | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1); echo "VM IP: $VMIP"
+```
+
+### 11a. Host side — the redirect + route are programmed
+```bash
+sudo iptables -t nat -S PREROUTING | grep 169.254.169.254     # -i br-… -d 169.254.169.254 … DNAT --to <gw>:8775
+grep dhcp-option=121 /var/lib/o3k/dhcp/configs/*.conf          # 169.254.169.254/32,<gw>,0.0.0.0/0,<gw>
+```
+
+### 11b. Guest side — console login (`cirros` / `gocubsgo` — the exact password the login banner prints)
+```bash
+DOM=$(sudo virsh list --name | grep -i "$(openstack server show vm-md -f value -c id | cut -c1-8)" | head -1)
+sudo virsh console "$DOM"      # ENTER for prompt; Ctrl-] to exit
+#   $ curl -s http://169.254.169.254/openstack/latest/meta_data.json   # JSON with THIS vm's uuid/hostname
+#   $ curl -s http://169.254.169.254/2009-04-04/meta-data/instance-id  # this vm's id
+#   $ curl -s http://169.254.169.254/openstack/latest/user_data        # the #!/bin/sh above
+#   $ cat /var/tmp/o3k-userdata-ok                                     # "ws4 user_data applied" (cloud-init ran it)
+#   $ cat ~/.ssh/authorized_keys                                       # your key (injected)
+```
+
+### 11c. SSH — config-drive path (works even if 169.254 is unreachable)
+```bash
+ssh -o StrictHostKeyChecking=no cirros@$VMIP      # logs in with k1 (key via the config-drive ISO)
+```
+**Pass** = metadata returns *this* VM's data, `user_data` is served (and applied), and SSH with `k1` works.
+If `169.254.169.254` times out in the guest but SSH works, the config-drive path is fine and the
+DNAT/route is the host-iterated piece — paste §11a output + the guest's `ip route` and I'll chase it (like WS-2).
+
 ## Expected NOT to work yet (later phases)
-- The guest's `169.254.169.254` metadata fetch still fails and the NIC may show
-  "no carrier" — that's **WS-4 (metadata)** and full L2/L3, not yet implemented.
-  US2 only guarantees the **IP survives a control-plane restart**; it does not make
-  metadata answer or give the VM internet. SSH-into-VM comes with WS-4.
+- **Internet / floating IPs** — the VM cannot reach the internet and is not reachable
+  via a floating IP yet. That's **US4 / WS-3** (north-south / NAT).
+- **Block storage** — volume attach and boot-from-volume are **US5 / WS-5**.
 
 ## Troubleshooting
 - **`OS_AUTH_URL: ... source your OpenStack env`** → `source ~/.o3k-env` in T2.

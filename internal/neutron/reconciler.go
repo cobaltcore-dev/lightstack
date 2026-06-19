@@ -95,78 +95,111 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 	}
 }
 
-// reconcileSubnets re-spawns the DHCP server for each DHCP-enabled subnet that
-// is not currently running — this is the part that does not survive a pod
-// restart, and the IsRunning guard makes the periodic pass idempotent while
-// still self-healing a dnsmasq that was killed out-of-band (SC-010).
+// reconcileSubnets re-applies DHCP for every network that has a DHCP-enabled
+// subnet but is not currently serving — the part that does not survive a pod
+// restart. It delegates to applyDHCPForNetwork(restart=false), which is
+// idempotent (IsRunning guard) while still self-healing a dnsmasq that was
+// killed out-of-band (SC-010) and re-asserting the bridge IP + metadata DNAT
+// every pass (SPEC-009 WS-4 / T029).
 func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
-	rows, err := database.DB.Query(ctx, `
-		SELECT network_id, project_id, cidr, gateway_ip, dns_nameservers
-		FROM subnets WHERE enable_dhcp = true`)
+	rows, err := database.DB.Query(ctx,
+		`SELECT DISTINCT network_id FROM subnets WHERE enable_dhcp = true`)
 	if err != nil {
 		log.Error().Err(err).Msg("reconcile: failed to query subnets")
 		return
 	}
-
-	type subnetRow struct {
-		networkID, projectID, cidr, gatewayIP string
-		dns                                   []string
-	}
-	var subnets []subnetRow
+	var networkIDs []string
 	for rows.Next() {
-		var s subnetRow
-		if err := rows.Scan(&s.networkID, &s.projectID, &s.cidr, &s.gatewayIP, &s.dns); err == nil {
-			subnets = append(subnets, s)
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			networkIDs = append(networkIDs, id)
 		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("reconcile: subnets rows error")
 	}
-
-	for _, s := range subnets {
-		if r.svc.dhcpManager.IsRunning(s.networkID) {
-			continue // already serving — idempotent
-		}
-		_, ipNet, perr := net.ParseCIDR(s.cidr)
-		if perr != nil {
-			log.Warn().Err(perr).Str("network_id", s.networkID).Str("cidr", s.cidr).Msg("reconcile: bad subnet CIDR; skipping")
-			continue
-		}
-		bridgeName := "br-" + s.networkID[:8]
-		// Bridge is in the default namespace; give it the gateway IP and run
-		// dnsmasq there too so it has an address in the subnet to serve.
-		ones, _ := ipNet.Mask.Size()
-		if err := r.svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", s.gatewayIP, ones)); err != nil {
-			log.Debug().Err(err).Str("bridge", bridgeName).Msg("reconcile: bridge IP ensure")
-		}
-		cfg := networking.DHCPConfig{
-			NetworkID:      s.networkID,
-			BridgeName:     bridgeName,
-			SubnetCIDR:     s.cidr,
-			GatewayIP:      s.gatewayIP,
-			DNSServers:     s.dns,
-			DHCPRangeStart: incrementIP(ipNet.IP, 10).String(),
-			DHCPRangeEnd:   incrementIP(ipNet.IP, 250).String(),
-			LeaseTime:      "24h",
-		}
-		cfg.HostReservations = r.portReservations(ctx, s.networkID)
-		if err := r.svc.dhcpManager.StartDHCP(cfg, ""); err != nil {
-			log.Warn().Err(err).Str("network_id", s.networkID).Msg("reconcile: failed to (re)start DHCP")
-		} else {
-			log.Info().Str("network_id", s.networkID).Int("reservations", len(cfg.HostReservations)).Msg("reconcile: DHCP (re)started from DB state")
-		}
+	for _, networkID := range networkIDs {
+		r.svc.applyDHCPForNetwork(ctx, networkID, false)
 	}
 }
 
-// portReservations builds MAC->IP dnsmasq reservations from the network's ports
-// so a (re)started dnsmasq hands each VM the same IP its port already holds
+// applyDHCPForNetwork (re)asserts the bridge gateway IP, the metadata DNAT, and
+// the dnsmasq server (with MAC->IP reservations from the DB) for a network's
+// DHCP-enabled subnet. With restart=true it reloads dnsmasq so a newly allocated
+// port's reservation takes effect *before* its VM boots — dnsmasq must hand out
+// the exact fixed IP neutron assigned the port, or OpenStack's view and the
+// guest disagree (breaks metadata identity). This is the synchronous path called
+// from port allocation and subnet create (Constitution II). With restart=false
+// (the reconciler) it only starts dnsmasq if it is not already running, but
+// always re-asserts the bridge IP and metadata redirect. Best-effort.
+func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, restart bool) {
+	if svc.mode == "stub" {
+		return
+	}
+	var cidr, gatewayIP string
+	var dns []string
+	if err := database.DB.QueryRow(ctx, `
+		SELECT cidr, gateway_ip, dns_nameservers FROM subnets
+		WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns); err != nil {
+		return // no DHCP-enabled subnet for this network — nothing to do
+	}
+	_, ipNet, perr := net.ParseCIDR(cidr)
+	if perr != nil {
+		log.Warn().Err(perr).Str("network_id", networkID).Str("cidr", cidr).Msg("dhcp apply: bad subnet CIDR; skipping")
+		return
+	}
+	bridgeName := "br-" + networkID[:8]
+	// Bridge is in the default namespace; give it the gateway IP (so dnsmasq has
+	// an address in the subnet to serve) and the 169.254.169.254 DNAT.
+	ones, _ := ipNet.Mask.Size()
+	if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", gatewayIP, ones)); err != nil {
+		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: bridge IP ensure")
+	}
+	if err := svc.mdRedirect.Ensure(bridgeName, gatewayIP); err != nil {
+		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: metadata redirect ensure")
+	}
+
+	if !restart && svc.dhcpManager.IsRunning(networkID) {
+		return // already serving — idempotent
+	}
+
+	dhcpStart, dhcpEnd := dhcpRange(ipNet)
+	cfg := networking.DHCPConfig{
+		NetworkID:        networkID,
+		BridgeName:       bridgeName,
+		SubnetCIDR:       cidr,
+		GatewayIP:        gatewayIP,
+		DNSServers:       dns,
+		DHCPRangeStart:   dhcpStart,
+		DHCPRangeEnd:     dhcpEnd,
+		LeaseTime:        "24h",
+		HostReservations: svc.dhcpReservations(ctx, networkID),
+	}
+	// restart=true reloads to pick up a newly allocated port's reservation: kill
+	// and respawn dnsmasq WITHOUT dropping leases, serialized so concurrent boots
+	// on this network can't interleave the kill/start (SPEC-009 WS-2).
+	var dhcpErr error
+	if restart {
+		dhcpErr = svc.dhcpManager.RestartDHCP(cfg, "")
+	} else {
+		dhcpErr = svc.dhcpManager.StartDHCP(cfg, "")
+	}
+	if dhcpErr != nil {
+		log.Warn().Err(dhcpErr).Str("network_id", networkID).Msg("dhcp apply: failed to (re)start DHCP")
+	} else {
+		log.Info().Str("network_id", networkID).Int("reservations", len(cfg.HostReservations)).Bool("restart", restart).Msg("dhcp apply: server (re)started from DB state")
+	}
+}
+
+// dhcpReservations builds MAC->IP dnsmasq reservations from the network's ports
+// so dnsmasq hands each VM the exact fixed IP neutron allocated to its port
 // (SPEC-009 WS-2 / FR-006). The port's fixed_ip in the DB is authoritative.
-func (r *NetworkReconciler) portReservations(ctx context.Context, networkID string) []networking.DHCPHostReservation {
+func (svc *Service) dhcpReservations(ctx context.Context, networkID string) []networking.DHCPHostReservation {
 	rows, err := database.DB.Query(ctx,
 		`SELECT mac_address, fixed_ips FROM ports WHERE network_id = $1 AND mac_address <> ''`, networkID)
 	if err != nil {
-		log.Warn().Err(err).Str("network_id", networkID).Msg("reconcile: failed to query ports for DHCP reservations")
+		log.Warn().Err(err).Str("network_id", networkID).Msg("dhcp reservations: query ports failed")
 		return nil
 	}
 	defer rows.Close()
@@ -192,7 +225,26 @@ func (r *NetworkReconciler) portReservations(ctx context.Context, networkID stri
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Warn().Err(err).Str("network_id", networkID).Msg("reconcile: ports rows error")
+		log.Warn().Err(err).Str("network_id", networkID).Msg("dhcp reservations: ports rows error")
 	}
 	return res
+}
+
+// dhcpRange returns a DHCP pool [start,end] that always stays inside the subnet.
+// It preserves the conventional .10–.250 window for a /24 and clamps to fit
+// smaller prefixes: the start falls back past the network and gateway addresses
+// when .10 doesn't fit, and the end is capped at the last usable address
+// (broadcast-1). Without this a non-/24 subnet produced a range outside the
+// subnet (e.g. .250 in a /26), which dnsmasq rejects (SPEC-009 WS-2).
+func dhcpRange(ipNet *net.IPNet) (string, string) {
+	last := decrementIP(broadcast(ipNet), 1) // last usable address (broadcast - 1)
+	start := incrementIP(ipNet.IP, 10)
+	if !ipNet.Contains(start) {
+		start = incrementIP(ipNet.IP, 2) // tiny subnet: skip network (.0) and gateway (.1)
+	}
+	end := incrementIP(ipNet.IP, 250)
+	if !ipNet.Contains(end) {
+		end = last
+	}
+	return start.String(), end.String()
 }

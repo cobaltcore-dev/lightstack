@@ -29,6 +29,7 @@ type Service struct {
 	dhcpManager      *networking.DHCPManager
 	sgManager        *networking.SecurityGroupManager
 	routerManager    *networking.RouterManager
+	mdRedirect       *networking.MetadataRedirect
 	vxlanCoordinator *VXLANCoordinator
 	cache            *cache.Cache
 }
@@ -47,6 +48,7 @@ func NewService(mode string, cacheInstance *cache.Cache) *Service {
 		dhcpManager:   networking.NewDHCPManager(mode),
 		sgManager:     sgManager,
 		routerManager: networking.NewRouterManager(mode),
+		mdRedirect:    networking.NewMetadataRedirect(mode),
 		cache:         cacheInstance,
 	}
 }
@@ -636,12 +638,13 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 	}
 
 	bridgeName := "br-" + networkID[:8]
-	nsName := svc.nsManager.GetNamespaceName(projectID)
 
-	// Delete bridge (best-effort: a leftover bridge is hygiene, not
-	// correctness — the network row is about to be deleted).
-	if err := svc.brManager.DeleteBridge(bridgeName, true, nsName); err != nil {
-		log.Warn().Err(err).Str("bridge", bridgeName).Str("namespace", nsName).Msg("failed to delete network bridge")
+	// Delete the bridge from the DEFAULT namespace, where it was created (real
+	// mode). Deleting it also drops its gateway IP — leaving it behind would
+	// leak a duplicate 10.x gateway onto the host and split routing across stale
+	// bridges (SPEC-009). Best-effort: the network row is about to be deleted.
+	if err := svc.brManager.DeleteBridge(bridgeName, false, ""); err != nil {
+		log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to delete network bridge")
 	}
 
 	// Delete from database
@@ -782,33 +785,11 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 		return
 	}
 
-	// Start DHCP server if enabled
+	// Start DHCP server (+ bridge gateway IP + metadata DNAT) if enabled. The
+	// shared path also applies any existing port reservations and runs dnsmasq in
+	// the bridge's default namespace (SPEC-009 WS-2/WS-4).
 	if enableDHCP {
-		bridgeName := "br-" + req.Subnet.NetworkID[:8]
-		// The bridge lives in the default namespace (for libvirt access), so the
-		// gateway IP must sit on it and dnsmasq must run there too — otherwise it
-		// has no address in the subnet to serve (SPEC-009 WS-2).
-		ones, _ := ipNet.Mask.Size()
-		if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", gatewayIP, ones)); err != nil {
-			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to assign gateway IP to bridge")
-		}
-
-		dhcpConfig := networking.DHCPConfig{
-			NetworkID:      req.Subnet.NetworkID,
-			BridgeName:     bridgeName,
-			SubnetCIDR:     req.Subnet.CIDR,
-			GatewayIP:      gatewayIP,
-			DNSServers:     req.Subnet.DNSNameservers,
-			DHCPRangeStart: incrementIP(ipNet.IP, 10).String(),
-			DHCPRangeEnd:   incrementIP(ipNet.IP, 250).String(),
-			LeaseTime:      "24h",
-		}
-
-		go func() {
-			if err := svc.dhcpManager.StartDHCP(dhcpConfig, ""); err != nil {
-				log.Warn().Err(err).Str("network_id", dhcpConfig.NetworkID).Msg("failed to start DHCP server for subnet")
-			}
-		}()
+		svc.applyDHCPForNetwork(c.Request.Context(), req.Subnet.NetworkID, true)
 	}
 
 	// OpenStack clients format these as lists and fail on JSON null, so

@@ -3,6 +3,7 @@ package nova
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -241,7 +242,8 @@ type CreateServerRequest struct {
 		Networks  []struct {
 			UUID string `json:"uuid"`
 		} `json:"networks"`
-		KeyName string `json:"key_name"`
+		KeyName  string `json:"key_name"`
+		UserData string `json:"user_data"`
 	} `json:"server"`
 }
 
@@ -259,6 +261,16 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 	projectID := c.GetString("project_id")
 	userID := c.GetString("user_id")
+
+	// Decode user_data once (OpenStack/Terraform send it base64-encoded). Reused
+	// for both the metadata service (T027) and config-drive (T028). Fall back to
+	// the raw string if it is not valid base64.
+	decodedUserData := req.Server.UserData
+	if decodedUserData != "" {
+		if decoded, derr := base64.StdEncoding.DecodeString(decodedUserData); derr == nil {
+			decodedUserData = string(decoded)
+		}
+	}
 
 	middleware.LogOperationStart(c, "create", "server", req.Server.Name)
 
@@ -349,6 +361,17 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 	logger.Info().Str("instance_id", instanceID).Str("flavor", flavor.Name).Msg("Instance record created")
 
+	// Persist cloud-init user_data so the metadata service serves it raw to
+	// cloud-init (SPEC-009 WS-4 / T027).
+	if decodedUserData != "" {
+		if _, err := database.DB.Exec(c.Request.Context(),
+			`INSERT INTO instance_userdata (instance_id, userdata) VALUES ($1, $2)
+			 ON CONFLICT (instance_id) DO UPDATE SET userdata = EXCLUDED.userdata`,
+			instanceID, decodedUserData); err != nil {
+			logger.Warn().Err(err).Str("instance_id", instanceID).Msg("failed to persist user_data")
+		}
+	}
+
 	// Log instance action
 	requestID := uuid.New().String()
 	if _, err := database.DB.Exec(c.Request.Context(), `
@@ -409,37 +432,34 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				}
 			}
 
-			// Generate cloud-init configuration if SSH key is provided
+			// Build a config-drive (cloud-init ISO) when a key and/or user_data is
+			// supplied, so the VM is provisioned even without metadata-service
+			// reachability (SPEC-009 WS-4 / T028).
 			var cloudInit *hypervisor.CloudInitConfig
+			var sshKey string
 			if req.Server.KeyName != "" {
-				// Fetch SSH public key from database
-				var publicKey string
-				err := database.DB.QueryRow(ctx,
+				if err := database.DB.QueryRow(ctx,
 					"SELECT public_key FROM keypairs WHERE user_id = $1 AND name = $2",
 					userID, req.Server.KeyName,
-				).Scan(&publicKey)
-
-				if err == nil {
-					// Generate cloud-init config with SSH key
-					cloudInit = hypervisor.DefaultCloudInitConfig(req.Server.Name, publicKey)
-
-					// Generate cloud-init ISO
-					isoPath, err := hypervisor.GenerateCloudInitISO(instanceID, cloudInit)
-					if err != nil {
-						logger.Error().Err(err).
-							Str("instance_id", instanceID).
-							Msg("Failed to generate cloud-init ISO")
-						// Continue without cloud-init rather than failing
-					} else {
-						logger.Info().
-							Str("instance_id", instanceID).
-							Str("iso_path", isoPath).
-							Msg("Cloud-init ISO generated successfully")
-					}
-				} else {
+				).Scan(&sshKey); err != nil {
 					logger.Warn().Err(err).
 						Str("key_name", req.Server.KeyName).
 						Msg("Failed to fetch SSH key for cloud-init")
+				}
+			}
+			if sshKey != "" || decodedUserData != "" {
+				cloudInit = hypervisor.NewCloudInitConfig(req.Server.Name, sshKey, decodedUserData)
+				isoPath, err := hypervisor.GenerateCloudInitISO(instanceID, cloudInit)
+				if err != nil {
+					logger.Error().Err(err).
+						Str("instance_id", instanceID).
+						Msg("Failed to generate cloud-init ISO")
+					// Continue without cloud-init rather than failing
+				} else {
+					logger.Info().
+						Str("instance_id", instanceID).
+						Str("iso_path", isoPath).
+						Msg("Cloud-init ISO generated successfully")
 				}
 			}
 

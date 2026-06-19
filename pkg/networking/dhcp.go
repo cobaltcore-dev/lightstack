@@ -17,6 +17,7 @@ type DHCPManager struct {
 	configPath  string
 	pidPath     string
 	mu          sync.Mutex
+	restartMu   sync.Mutex      // serializes dnsmasq reloads so concurrent port allocs don't interleave kill/start
 	runningPIDs map[string]int  // networkID -> PID
 	stubDHCP    map[string]bool // For stub mode
 }
@@ -125,7 +126,27 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 	return nil
 }
 
-// StopDHCP stops a DHCP server
+// killProcess terminates the running dnsmasq for a network (best-effort) and
+// clears its tracked PID, leaving the lease file intact so a later StartDHCP
+// preserves existing leases.
+func (m *DHCPManager) killProcess(networkID string) {
+	pidFile := filepath.Join(m.pidPath, networkID+".pid")
+	if pidData, err := os.ReadFile(pidFile); err == nil {
+		var pid int
+		_, _ = fmt.Sscanf(string(pidData), "%d", &pid)
+		if pid > 0 {
+			if proc, ferr := os.FindProcess(pid); ferr == nil {
+				_ = proc.Kill()
+			}
+		}
+		_ = os.Remove(pidFile)
+	}
+	m.mu.Lock()
+	delete(m.runningPIDs, networkID)
+	m.mu.Unlock()
+}
+
+// StopDHCP stops a DHCP server and removes its lease/config (a full teardown).
 func (m *DHCPManager) StopDHCP(networkID string) error {
 	if m.mode == "stub" {
 		m.mu.Lock()
@@ -133,35 +154,25 @@ func (m *DHCPManager) StopDHCP(networkID string) error {
 		delete(m.stubDHCP, networkID)
 		return nil
 	}
-
-	pidFile := filepath.Join(m.pidPath, networkID+".pid")
-
-	// Read PID from file
-	pidData, err := os.ReadFile(pidFile)
-	if err != nil {
-		return nil // Already stopped
-	}
-
-	var pid int
-	_, _ = fmt.Sscanf(string(pidData), "%d", &pid)
-
-	// Kill process
-	if pid > 0 {
-		proc, err := os.FindProcess(pid)
-		if err == nil {
-			_ = proc.Kill()
-		}
-	}
-
-	// Clean up files
-	_ = os.Remove(pidFile)
+	m.killProcess(networkID)
 	_ = os.Remove(filepath.Join(m.leasePath, networkID+".leases"))
 	_ = os.Remove(filepath.Join(m.configPath, networkID+".conf"))
-
-	m.mu.Lock()
-	delete(m.runningPIDs, networkID)
-	m.mu.Unlock()
 	return nil
+}
+
+// RestartDHCP reloads dnsmasq for a network with a fresh config WITHOUT dropping
+// existing leases: it kills the running process (keeping the lease file) and
+// starts a new one. The whole kill+start is serialized so concurrent port
+// allocations on the same network can't interleave and leave dnsmasq dead
+// (SPEC-009 WS-2).
+func (m *DHCPManager) RestartDHCP(config DHCPConfig, nsName string) error {
+	if m.mode == "stub" {
+		return m.StartDHCP(config, nsName)
+	}
+	m.restartMu.Lock()
+	defer m.restartMu.Unlock()
+	m.killProcess(config.NetworkID) // keep the lease file so leases survive the reload
+	return m.StartDHCP(config, nsName)
 }
 
 // writeDNSMasqConfig writes dnsmasq configuration file
@@ -173,7 +184,8 @@ port=0
 dhcp-range={{ .DHCPRangeStart }},{{ .DHCPRangeEnd }},{{ .LeaseTime }}
 dhcp-leasefile={{ .LeaseFile }}
 pid-file={{ .PIDFile }}
-{{ if .GatewayIP }}dhcp-option=3,{{ .GatewayIP }}{{ end }}
+{{ if .GatewayIP }}dhcp-option=3,{{ .GatewayIP }}
+dhcp-option=121,169.254.169.254/32,{{ .GatewayIP }},0.0.0.0/0,{{ .GatewayIP }}{{ end }}
 {{ range .DNSServers }}dhcp-option=6,{{ . }}
 {{ end }}
 {{ range .HostReservations }}dhcp-host={{ .MAC }},{{ .IP }}

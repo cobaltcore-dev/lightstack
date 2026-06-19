@@ -223,9 +223,15 @@ func main() {
 	}
 	log.Printf("Glance initialized in %s mode", glanceStorageMode)
 
-	// Initialize metadata service
-	metadataService := metadata.NewService("localhost:8775")
-	log.Println("Metadata service initialized")
+	// Initialize metadata service. It must bind a VM-reachable address (all
+	// interfaces by default) so the per-bridge 169.254.169.254 DNAT can reach it
+	// in real mode (SPEC-009 WS-4).
+	mdBind := cfg.Metadata.BindAddress
+	if mdBind == "" {
+		mdBind = ":8775"
+	}
+	metadataService := metadata.NewService(mdBind)
+	log.Printf("Metadata service initialized (bind %s)", mdBind)
 
 	// Initialize placement service
 	placementService := placement.NewService()
@@ -475,7 +481,7 @@ func createMetadataServer(svc *metadata.Service) *http.Server {
 	svc.RegisterRoutes(r.Group(""))
 
 	return &http.Server{
-		Addr:              ":8775",
+		Addr:              svc.BindAddr(),
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

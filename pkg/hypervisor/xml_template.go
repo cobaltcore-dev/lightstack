@@ -250,6 +250,24 @@ func GenerateCloudInitISO(uuid string, config *CloudInitConfig) (string, error) 
 	return isoPath, nil
 }
 
+// NewCloudInitConfig builds a config-drive payload from an SSH key and/or the
+// instance's user_data (SPEC-009 WS-4 / T028). With no user_data it preserves
+// the proven default (#cloud-config carrying the key). With user_data it uses
+// that verbatim as the user-data and carries the SSH key via the OpenStack-
+// standard meta-data public-keys, so a script-style user_data does not drop the
+// key. Either input may be empty.
+func NewCloudInitConfig(hostname, sshKey, userData string) *CloudInitConfig {
+	if userData == "" {
+		return DefaultCloudInitConfig(hostname, sshKey)
+	}
+	var meta strings.Builder
+	fmt.Fprintf(&meta, "instance-id: %s\nlocal-hostname: %s\n", hostname, hostname)
+	if sshKey != "" {
+		fmt.Fprintf(&meta, "public-keys:\n  0: |\n    %s\n", sshKey)
+	}
+	return &CloudInitConfig{MetaData: meta.String(), UserData: userData}
+}
+
 // DefaultCloudInitConfig returns default cloud-init configuration
 func DefaultCloudInitConfig(hostname, sshKey string) *CloudInitConfig {
 	metaData := fmt.Sprintf(`instance-id: %s
