@@ -146,15 +146,18 @@ func GenerateVMXML(spec VMSpec) string {
 `, net.MACAddress, net.BridgeName)
 	}
 
-	// Serial console
-	sb.WriteString(`
+	// Serial console — capture output to a per-instance log file so
+	// os-getConsoleOutput / `openstack console log show` returns real boot
+	// output (SPEC-009 WS-0).
+	fmt.Fprintf(&sb, `
     <serial type='pty'>
+      <log file='/var/lib/o3k/instances/%s/console.log' append='off'/>
       <target port='0'/>
     </serial>
     <console type='pty'>
       <target type='serial' port='0'/>
     </console>
-`)
+`, spec.UUID)
 
 	// VNC graphics
 	sb.WriteString(`

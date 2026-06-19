@@ -17,6 +17,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/neutron"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
+	"github.com/cobaltcore-dev/o3k/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -456,13 +457,32 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				return
 			}
 			imageUUID := parsedImageUUID.String()
+
+			// Root disk: in real mode, stage a per-instance qcow2 overlay backed
+			// by the image's raw base so each VM is isolated (SPEC-009 WS-0). In
+			// stub mode the path is unused (CreateVM is faked).
+			imagePath := storage.LocalImagePath(imageUUID)
+			if svc.libvirtMode == "real" {
+				overlay, stageErr := hypervisor.StageOverlay(instanceID, storage.LocalImagePath(imageUUID))
+				if stageErr != nil {
+					log.Error().Err(stageErr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to stage per-instance disk overlay")
+					if _, dbErr := database.DB.Exec(svc.ctx,
+						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
+						"ERROR", time.Now(), instanceID); dbErr != nil {
+						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after overlay staging failure")
+					}
+					return
+				}
+				imagePath = overlay
+			}
+
 			spec := hypervisor.VMSpec{
 				UUID:      instanceID,
 				Name:      fmt.Sprintf("instance-%s", instanceID[:8]),
 				VCPUs:     flavor.VCPUs,
 				MemoryMB:  flavor.RAMMB,
 				DiskGB:    flavor.DiskGB,
-				ImagePath: fmt.Sprintf("/var/lib/o3k/images/%s.qcow2", imageUUID),
+				ImagePath: imagePath,
 				Networks:  networks,
 				CloudInit: cloudInit,
 			}
@@ -847,13 +867,14 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 
 	middleware.LogOperationStart(c, "delete", "server", instanceID)
 
-	// Get libvirt domain ID (support lookup by ID or name)
+	// Get the instance UUID + libvirt domain ID (support lookup by ID or name)
+	var instanceUUID string
 	var libvirtDomainID sql.NullString
 	queryStart := time.Now()
 	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
+		"SELECT id, libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
-	).Scan(&libvirtDomainID)
+	).Scan(&instanceUUID, &libvirtDomainID)
 	middleware.LogDatabaseQuery(c, "SELECT libvirt_domain_id", time.Since(queryStart), err)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -895,6 +916,12 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		log.Error().Err(err).Str("operation", "delete_instance").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete server"))
 		return
+	}
+
+	// Remove the per-instance disk overlay directory (best-effort; a missing
+	// directory is fine — e.g. stub mode never staged one). SPEC-009 WS-0/FR-005.
+	if rmErr := hypervisor.RemoveInstanceDir(instanceUUID); rmErr != nil {
+		logger.Warn().Err(rmErr).Str("instance_id", instanceUUID).Msg("failed to remove per-instance disk directory")
 	}
 
 	logger.Info().Str("instance_id", instanceID).Msg("Instance deleted successfully")

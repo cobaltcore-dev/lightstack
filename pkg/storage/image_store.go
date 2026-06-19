@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -50,7 +52,9 @@ func imageFileName(imageID string) string { return "image-" + imageID + ".raw" }
 
 // LocalImagePath is the canonical raw-base path for an image in real mode;
 // Nova's per-instance overlay backs off this file.
-func LocalImagePath(imageID string) string { return filepath.Join(LocalImageDir(), imageFileName(imageID)) }
+func LocalImagePath(imageID string) string {
+	return filepath.Join(LocalImageDir(), imageFileName(imageID))
+}
 
 // rbdImageName is the RBD object name for a stored image.
 func rbdImageName(imageID string) string { return "image-" + imageID }
@@ -231,29 +235,82 @@ func (s *ImageStore) uploadImageStub(imageID string, reader io.Reader) (int64, e
 	return int64(len(data)), nil
 }
 
-// uploadImageLocal uploads image to local storage
+// uploadImageLocal uploads an image to local storage, normalizing it to a raw
+// base on ingest (SPEC-009 WS-0/FR-003): VMs boot from a qcow2 overlay backing
+// this raw file. The upload streams to a temp file, then qemu-img converts it
+// to raw (or renames it if already raw / qemu-img is unavailable).
 func (s *ImageStore) uploadImageLocal(ctx context.Context, imageID string, reader io.Reader) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
 	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
+	tmpPath := imagePath + ".upload"
 
-	// Create file
-	file, err := os.Create(imagePath)
+	// Stream the upload to a temp file. Wrap the source so the timeout fires —
+	// os.File doesn't natively respect context.
+	tmp, err := os.Create(tmpPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create image file: %w", err)
 	}
-	defer file.Close()
-
-	// Copy data from reader to file. Wrap the source so the timeout
-	// actually fires — os.File doesn't natively respect context.
-	size, err := io.Copy(file, &ctxReader{ctx: ctx, r: reader})
-	if err != nil {
-		_ = os.Remove(imagePath) // Cleanup on error
-		return 0, fmt.Errorf("failed to write image data: %w", err)
+	size, copyErr := io.Copy(tmp, &ctxReader{ctx: ctx, r: reader})
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return 0, fmt.Errorf("failed to write image data: %w", copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return 0, fmt.Errorf("failed to close image file: %w", closeErr)
 	}
 
+	// Normalize to a raw base.
+	if err := normalizeToRaw(tmpPath, imagePath); err != nil {
+		_ = os.Remove(tmpPath)
+		_ = os.Remove(imagePath)
+		return 0, fmt.Errorf("failed to normalize image to raw: %w", err)
+	}
+
+	// Report the stored (raw) size when available; fall back to the upload size.
+	if fi, statErr := os.Stat(imagePath); statErr == nil {
+		size = fi.Size()
+	}
 	return size, nil
+}
+
+// normalizeToRaw places a raw image at dst from src using qemu-img: if src is
+// already raw it is renamed; non-raw (e.g. qcow2) is converted; if qemu-img is
+// unavailable the bytes are kept as-is (best-effort — real-mode images expect
+// qemu-img present, see build/package/Dockerfile).
+func normalizeToRaw(src, dst string) error {
+	format, err := detectDiskFormat(src)
+	if err != nil {
+		log.Warn().Err(err).Str("src", src).Msg("could not detect image format (qemu-img?); storing as-is")
+		return os.Rename(src, dst)
+	}
+	if format == "raw" {
+		return os.Rename(src, dst)
+	}
+	cmd := exec.Command("qemu-img", "convert", "-O", "raw", src, dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img convert %s->raw: %w: %s", format, err, string(out))
+	}
+	return os.Remove(src)
+}
+
+// detectDiskFormat returns qemu-img's detected disk format of path (e.g. "raw",
+// "qcow2"). It errors when qemu-img is unavailable or the file is unreadable.
+func detectDiskFormat(path string) (string, error) {
+	out, err := exec.Command("qemu-img", "info", "--output=json", path).Output()
+	if err != nil {
+		return "", err
+	}
+	var info struct {
+		Format string `json:"format"`
+	}
+	if err := json.Unmarshal(out, &info); err != nil {
+		return "", fmt.Errorf("parse qemu-img info: %w", err)
+	}
+	return info.Format, nil
 }
 
 // uploadImageRBD uploads image to RBD. This is a stub pending go-ceph

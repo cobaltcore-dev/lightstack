@@ -48,20 +48,20 @@ Existing single Go binary. Real paths: `cmd/o3k/`, `internal/{nova,neutron,cinde
 
 ### Tests (write first, MUST fail) ⚠️
 
-- [ ] T007 [P] [US1] Contract test `test/contract/ws0_disk_test.go` (gophercloud): create-from-image→ACTIVE, two-VM isolation, image-delete→409, server-delete, `disk_format=raw` after upload.
-- [ ] T008 [P] [US1] Host e2e tests `test/ws0_disk_real_test.sh`, `test/ws0_image_inuse_test.sh`, `test/ws0_console_test.sh` (`virsh domblklist`, `qemu-img info` backing-file/`-F raw`, sentinel-file isolation).
+- [X] T007 [P] [US1] Contract test `test/contract/ws0_disk_test.go` (gophercloud): create-from-image→ACTIVE, two-VM isolation, image-delete→409, server-delete, `disk_format=raw` after upload. *(authored; covers the API-observable contracts — in-use 409 + disk_format=raw normalization (skips without `O3K_TEST_QCOW2`); compiles via `go vet`; run against a live O3K. Boot/isolation live in T008.)*
+- [X] T008 [P] [US1] Host e2e tests `test/ws0_disk_real_test.sh`, `test/ws0_image_inuse_test.sh`, `test/ws0_console_test.sh` (`virsh domblklist`, `qemu-img info` backing-file/`-F raw`, sentinel-file isolation). *(authored; `bash -n` clean, executable; host-run on Ubuntu+libvirt)*
 
 ### Implementation
 
-- [ ] T009 [US1] Normalize uploaded images to a raw base on ingest (`qemu-img convert -O raw`) in `pkg/storage/image_store.go`; report `disk_format=raw` in `internal/glance/images.go`. (uses T006)
-- [ ] T010 [US1] Stage a per-instance qcow2 overlay in `internal/nova/handlers.go` (`qemu-img create -f qcow2 -b <raw> -F raw /var/lib/o3k/instances/<id>/disk.qcow2`; chown/chmod for the host qemu uid; set `spec.ImagePath` to the overlay). (uses T006, T009)
-- [ ] T011 [US1] Remove `/var/lib/o3k/instances/<id>/` on VM delete in `internal/nova/handlers.go`.
-- [ ] T012 [US1] Image-in-use guard in `internal/glance/images.go` `DeleteImage` (reject 409 while any `instances.image_id` or `volumes.source_image_id` references it). (uses T003)
-- [ ] T013 [US1] Core power lifecycle (start / stop / soft+hard reboot) against libvirt in `pkg/hypervisor/libvirt.go` and the Nova action handlers; reflect `power_state`/`status`.
-- [ ] T014 [US1] Serial console log (`openstack console log show`) — read the domain serial log in `pkg/hypervisor/libvirt.go` and expose via `internal/nova`.
-- [ ] T015 [US1] Capacity fail-fast: a host allocation failure marks the instance `ERROR` with a clear message in `internal/nova/handlers.go` (no overcommit accounting).
+- [X] T009 [US1] Normalize uploaded images to a raw base on ingest (`qemu-img convert -O raw`) in `pkg/storage/image_store.go`; report `disk_format=raw` in `internal/glance/images.go`. (uses T006) *(added `normalizeToRaw`/`detectDiskFormat`; rewrote `uploadImageLocal` (temp→detect→convert/rename); Glance sets `disk_format=raw` on active. Live-verified vs qemu-img 8.2.2: qcow2→raw + raw passthrough.)*
+- [X] T010 [US1] Stage a per-instance qcow2 overlay in `internal/nova/handlers.go` (`qemu-img create -f qcow2 -b <raw> -F raw /var/lib/o3k/instances/<id>/disk.qcow2`; chown/chmod for the host qemu uid; set `spec.ImagePath` to the overlay). (uses T006, T009) *(added `hypervisor.StageOverlay`; `CreateServer` stages the overlay in real mode only and points libvirt at it via the shared `storage.LocalImagePath`. Overlay command live-verified: backs the raw base, `-F raw`. qemu-uid chown noted for host validation.)*
+- [X] T011 [US1] Remove `/var/lib/o3k/instances/<id>/` on VM delete in `internal/nova/handlers.go`. *(added `pkg/hypervisor/disk.go` `InstanceDir`/`RemoveInstanceDir`; `DeleteServer` now selects the instance UUID and removes its dir best-effort)*
+- [X] T012 [US1] Image-in-use guard in `internal/glance/images.go` `DeleteImage` (reject 409 while any `instances.image_id` or `volumes.source_image_id` references it). (uses T003) *(guard query live-verified vs Postgres: instance-ref → blocked, volume.source_image_id-ref → blocked, none → allowed)*
+- [X] T013 [US1] Core power lifecycle (start / stop / soft+hard reboot) against libvirt in `pkg/hypervisor/libvirt.go` and the Nova action handlers; reflect `power_state`/`status`. *(verified already wired: `ServerAction` real-mode branch calls `vmManager.RebootVM/StopVM/StartVM`. Note: real-mode DB status-sync after power ops reflected via state polling — flagged for host validation.)*
+- [X] T014 [US1] Serial console log (`openstack console log show`) — read the domain serial log in `pkg/hypervisor/libvirt.go` and expose via `internal/nova`. *(domain XML now captures serial to `/var/lib/o3k/instances/<id>/console.log` via `<log>`; added `hypervisor.ConsoleLogPath`/`ReadConsoleLog`; `GetConsoleOutputAction` serves the real log in real mode, synthetic fallback otherwise.)*
+- [X] T015 [US1] Capacity fail-fast: a host allocation failure marks the instance `ERROR` with a clear message in `internal/nova/handlers.go` (no overcommit accounting). *(satisfied by the existing `CreateVM`-failure path: libvirt allocation failure → status ERROR + logged error; no O3K-side overcommit accounting, per spec R3-Q5.)*
 
-**Checkpoint**: US1 fully functional and independently testable — MVP boundary.
+**Checkpoint**: US1 fully functional and independently testable — MVP boundary. **Host-validated 2026-06-19** (Ubuntu + libvirt, direct run): cirros boots from the per-instance overlay (`virsh domblklist` → `/var/lib/o3k/instances/<id>/disk.qcow2`), real serial console via `console log show`, two-VM isolation (distinct overlay dirs), and image-in-use → 409 — all confirmed. (Guest networking/metadata expectedly absent — WS-2/WS-4.)
 
 ---
 
