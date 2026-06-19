@@ -29,7 +29,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # Runtime stage - automatically uses target platform
 FROM alpine:3.24
 
-# Install runtime dependencies
+# Install runtime dependencies.
+# qemu-img: per-instance qcow2 overlay staging (WS-0); cdrkit: genisoimage for
+# config-drive cloud-init ISOs (WS-4); dnsmasq: VM DHCP; iproute2/iptables/ipset:
+# real-mode networking.
 RUN apk add --no-cache \
     ca-certificates \
     curl \
@@ -37,7 +40,9 @@ RUN apk add --no-cache \
     iproute2 \
     iptables \
     ipset \
-    dnsmasq
+    dnsmasq \
+    qemu-img \
+    cdrkit
 
 # Create non-root user (but will run as root in privileged mode for networking)
 RUN addgroup -g 1000 o3k && \
@@ -56,8 +61,10 @@ COPY migrations /app/migrations
 # Copy default config
 COPY config/o3k.yaml /app/config/o3k.yaml
 
-# Create storage directories for local mode
-RUN mkdir -p /var/lib/o3k/images /var/lib/o3k/volumes && \
+# Create node-local storage directories (persistent hostPath in real mode):
+# images (raw bases), volumes (local volumes), instances (per-instance overlays),
+# cloud-init (config-drive ISOs).
+RUN mkdir -p /var/lib/o3k/images /var/lib/o3k/volumes /var/lib/o3k/instances /var/lib/o3k/cloud-init && \
     chown -R o3k:o3k /var/lib/o3k
 
 # Change ownership

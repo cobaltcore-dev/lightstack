@@ -22,8 +22,8 @@ Existing single Go binary. Real paths: `cmd/o3k/`, `internal/{nova,neutron,cinde
 
 **Purpose**: harness + config plumbing the stories rely on.
 
-- [ ] T001 [P] Scaffold the contract-test harness: create `test/contract/` (Go package + gophercloud auth/helpers against a running O3K) and `test/terraform/` (OpenStack provider config pointing at O3K) with a smoke test.
-- [ ] T002 [P] Add config fields in `internal/common/config.go` and `config/o3k.yaml`: `neutron.reconcile_interval` (default `30s`) and a metadata bind address (default a VM-reachable value, not `localhost`).
+- [X] T001 [P] Scaffold the contract-test harness: create `test/contract/` (Go package + gophercloud auth/helpers against a running O3K) and `test/terraform/` (OpenStack provider config pointing at O3K) with a smoke test. *(contract harness already existed in `test/contract/`; added `test/terraform/` README + `provider.tf.example` + `.gitignore`)*
+- [X] T002 [P] Add config fields in `internal/common/config.go` and `config/o3k.yaml`: `neutron.reconcile_interval` (default `30s`) and a metadata bind address (default a VM-reachable value, not `localhost`). *(added `NeutronConfig.ReconcileInterval` + new `MetadataConfig.BindAddress`; round-trip verified)*
 
 ---
 
@@ -31,10 +31,10 @@ Existing single Go binary. Real paths: `cmd/o3k/`, `internal/{nova,neutron,cinde
 
 **⚠️ CRITICAL**: blocks all user stories.
 
-- [ ] T003 [P] Add migration `migrations/060_add_volume_source_image.up.sql` / `.down.sql` (`volumes.source_image_id UUID` + index, reversible) and add `SourceImageID` to the Volume struct in `internal/database/models.go`.
-- [ ] T004 [P] Add `qemu-img` (qemu-utils) and `genisoimage` to the runtime packages in `build/package/Dockerfile` (`dnsmasq` already present).
-- [ ] T005 [P] Fix the Cinder local-volume base path from `~/.o3k/volumes` to `/var/lib/o3k/volumes` via a `resolveLocalPath`/`LocalVolumeDir` helper in `pkg/storage/ceph.go` (+ unit test in `pkg/storage/ceph_test.go`). NOTE: an identical fix exists on `feature/53` (`80de929`) — reuse/cherry-pick to avoid a merge conflict.
-- [ ] T006 [P] Add a shared image-path helper (raw base path keyed off backend) in `pkg/storage/image_store.go`; make Nova's read site (`internal/nova/handlers.go`) and Glance's write sites call it so they cannot diverge.
+- [X] T003 [P] Add migration `migrations/060_add_volume_source_image.up.sql` / `.down.sql` (`volumes.source_image_id UUID` + index, reversible) and add `SourceImageID` to the Volume struct in `internal/database/models.go`. *(up/down live-verified via `make db-up` + `o3k-migrate`: 0→60 clean, `source_image_id`+index present, reverses cleanly)*
+- [X] T004 [P] Add `qemu-img` (qemu-utils) and `genisoimage` to the runtime packages in `build/package/Dockerfile` (`dnsmasq` already present). *(Alpine pkgs `qemu-img` + `cdrkit` (provides genisoimage); also pre-creates `instances/` + `cloud-init/` dirs; image build validated on host)*
+- [X] T005 [P] Fix the Cinder local-volume base path from `~/.o3k/volumes` to `/var/lib/o3k/volumes` via a `resolveLocalPath`/`LocalVolumeDir` helper in `pkg/storage/ceph.go` (+ unit test in `pkg/storage/ceph_test.go`). NOTE: an identical fix exists on `feature/53` (`80de929`) — reuse/cherry-pick to avoid a merge conflict. *(added `LocalVolumeDir()`; 2 unit tests pass)*
+- [X] T006 [P] Add a shared image-path helper (raw base path keyed off backend) in `pkg/storage/image_store.go`; make Nova's read site (`internal/nova/handlers.go`) and Glance's write sites call it so they cannot diverge. *(added `LocalImageDir`/`LocalImagePath`/`imageFileName`/`rbdImageName`/`s3ImageKey`; refactored all 17 Glance sites; Nova's read site adopts `LocalImagePath` in T010/US1)*
 
 **Checkpoint**: schema, image tooling, persistent storage path, and the shared path helper are ready — stories can begin.
 

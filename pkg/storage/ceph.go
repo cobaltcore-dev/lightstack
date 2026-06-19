@@ -31,11 +31,15 @@ type stubVolume struct {
 	createdAt time.Time
 }
 
+// LocalVolumeDir is the node-local directory for local-mode volumes — the
+// chart's persistent hostPath. Previously ~/.o3k/volumes, which lives outside
+// the mount and so did not survive pod restarts (SPEC-009 FR-006a). NOTE:
+// feature/53 adds an equivalent helper to this file; coordinate on merge.
+func LocalVolumeDir() string { return "/var/lib/o3k/volumes" }
+
 // NewCephClient creates a new storage client
 func NewCephClient(mode, pool, confFile string) *CephClient {
-	// Use ~/.o3k/volumes for local storage (more portable than /var/lib)
-	homeDir, _ := os.UserHomeDir()
-	localPath := filepath.Join(homeDir, ".o3k", "volumes")
+	localPath := LocalVolumeDir()
 
 	client := &CephClient{
 		mode:        mode,

@@ -55,6 +55,11 @@ neutron:
   coordination_poll_interval: 1s
   vxlan_mtu: 1450
 
+  # Real-mode network-state reconciler (WS-2): resync interval for rebuilding
+  # DHCP/namespaces/bridges/security-group rules from the database on startup
+  # and periodically (self-heals drift). Only runs when networking_mode != stub.
+  reconcile_interval: 30s
+
 cinder:
   port: 8776
   ceph_pool: volumes
@@ -69,6 +74,12 @@ glance:
   s3_bucket: ""       # S3 bucket name (required for s3 mode)
   s3_region: us-east-1  # S3 region
   s3_endpoint: ""     # Custom S3 endpoint (for MinIO, Ceph RGW, etc.)
+
+metadata:
+  # Address the metadata service binds. In real mode it must be reachable from
+  # tenant network namespaces (the per-namespace 169.254.169.254 DNAT targets
+  # it); localhost is dev/stub only.
+  bind_address: "0.0.0.0:8775"
 
 server:
   cors_allowed_origins:
