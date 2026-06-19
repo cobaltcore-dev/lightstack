@@ -57,6 +57,15 @@ type DHCPConfig struct {
 	DHCPRangeStart string
 	DHCPRangeEnd   string
 	LeaseTime      string
+	// HostReservations pins MAC->IP so a respawned dnsmasq hands each VM the
+	// same IP its port already has (SPEC-009 WS-2: stable IP across restart).
+	HostReservations []DHCPHostReservation
+}
+
+// DHCPHostReservation pins a MAC address to a fixed IP (dnsmasq dhcp-host).
+type DHCPHostReservation struct {
+	MAC string
+	IP  string
 }
 
 // StartDHCP starts a DHCP server for a network
@@ -96,6 +105,11 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 		cmd = exec.Command("dnsmasq", args...)
 	}
 
+	// Surface dnsmasq's own log/errors (it logs to stderr via --log-facility=-)
+	// so a failed launch is not silent.
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
 	// Start in background
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start dnsmasq for network %s: %w", config.NetworkID, err)
@@ -104,6 +118,10 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 	m.mu.Lock()
 	m.runningPIDs[config.NetworkID] = cmd.Process.Pid
 	m.mu.Unlock()
+
+	// Reap the process when it exits (killed/crashed) so it doesn't become a
+	// zombie; the reconciler restarts it on the next pass if it died (WS-2).
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 
@@ -151,11 +169,14 @@ func (m *DHCPManager) writeDNSMasqConfig(configFile string, config DHCPConfig) e
 	tmpl := `# dnsmasq configuration for network {{ .NetworkID }}
 interface={{ .BridgeName }}
 bind-interfaces
+port=0
 dhcp-range={{ .DHCPRangeStart }},{{ .DHCPRangeEnd }},{{ .LeaseTime }}
 dhcp-leasefile={{ .LeaseFile }}
 pid-file={{ .PIDFile }}
 {{ if .GatewayIP }}dhcp-option=3,{{ .GatewayIP }}{{ end }}
 {{ range .DNSServers }}dhcp-option=6,{{ . }}
+{{ end }}
+{{ range .HostReservations }}dhcp-host={{ .MAC }},{{ .IP }}
 {{ end }}
 `
 

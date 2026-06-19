@@ -187,6 +187,16 @@ func main() {
 		log.Printf("VXLAN overlay networking enabled (VNI range: %d-%d)", cfg.Neutron.VNIRangeStart, cfg.Neutron.VNIRangeEnd)
 	}
 
+	// Real-mode network-state reconciler (SPEC-009 WS-2): on startup + periodically,
+	// re-spawn DHCP (dnsmasq dies with the pod) and ensure bridges from the DB so VM
+	// networking survives a control-plane restart. Real networking modes only.
+	var networkReconciler *neutron.NetworkReconciler
+	if networkingMode != "stub" {
+		networkReconciler = neutron.NewNetworkReconciler(neutronService, cfg.Neutron.ReconcileInterval)
+		go networkReconciler.Start(ctx)
+		log.Printf("Real-mode network reconciler started (interval: %s)", cfg.Neutron.ReconcileInterval)
+	}
+
 	// Set default storage mode if not specified
 	cinderStorageMode := cfg.Cinder.StorageMode
 	if cinderStorageMode == "" {
@@ -273,6 +283,10 @@ func main() {
 	if nodeRegistry != nil {
 		nodeRegistry.StopHeartbeat()
 		log.Println("Node heartbeat stopped")
+	}
+	if networkReconciler != nil {
+		networkReconciler.Stop()
+		log.Println("Network reconciler stopped")
 	}
 
 	// Graceful shutdown

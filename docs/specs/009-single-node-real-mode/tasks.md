@@ -73,16 +73,16 @@ Existing single Go binary. Real paths: `cmd/o3k/`, `internal/{nova,neutron,cinde
 
 ### Tests (write first, MUST fail) ⚠️
 
-- [ ] T016 [P] [US2] Host e2e tests `test/ws2_restart_survival_test.sh`, `test/ws2_selfheal_test.sh`, `test/ws2_partial_failure_test.sh`.
+- [X] T016 [P] [US2] Host e2e tests `test/ws2_restart_survival_test.sh`, `test/ws2_selfheal_test.sh`, `test/ws2_partial_failure_test.sh`. *(authored; bash -n clean, executable. `ws2_selfheal` is fully automated — kill dnsmasq → reconciler respawns within the interval; restart-survival + partial-failure are guided runbooks since the dev host runs o3k foreground.)*
 
 ### Implementation
 
-- [ ] T017 [US2] New reconciler `internal/neutron/reconciler.go`: struct + `NewNetworkReconciler(...)` + `Start(ctx)` (initial sync + ticker on `reconcile_interval`) + `Stop()`, modeled on `internal/neutron/vxlan_coordinator.go`.
-- [ ] T018 [US2] Reconcile sync in `internal/neutron/reconciler.go`: rebuild bridges / netns / taps / security-group rules from the DB, idempotent and best-effort per resource (one tenant's failure is logged + retried, never blocks readiness); reuse the build funcs in `internal/neutron/network.go` and `ports.go`.
-- [ ] T019 [US2] DB-driven dnsmasq MAC→IP host reservations in `pkg/networking/dhcp.go` so a rebuilt dnsmasq hands back the same IP (stable IP per FR-006).
-- [ ] T020 [US2] Wire `go reconciler.Start(ctx)` into `cmd/o3k/main.go` after the VXLAN-coordinator block (~L185), gated on `networkingMode != "stub"`; add `reconciler.Stop()` to the shutdown block.
+- [X] T017 [US2] New reconciler `internal/neutron/reconciler.go`: struct + `NewNetworkReconciler(...)` + `Start(ctx)` (initial sync + ticker on `reconcile_interval`) + `Stop()`, modeled on `internal/neutron/vxlan_coordinator.go`. *(done)*
+- [X] T018 [US2] Reconcile sync in `internal/neutron/reconciler.go`: rebuild bridges / netns / taps / security-group rules from the DB, idempotent and best-effort per resource (one tenant's failure is logged + retried, never blocks readiness); reuse the build funcs in `internal/neutron/network.go` and `ports.go`. *(reconcile = **dnsmasq respawn** (the only state that dies on a pod restart; `IsRunning`-guarded → idempotent + self-healing per SC-010) + best-effort **bridge** ensure. netns/taps/iptables are kernel state that persists across a pod restart, so they are not actively rebuilt in v1; full host-reboot rebuild is out of scope (R2-Q5). Best-effort per resource — bad CIDR is skipped, others proceed.)*
+- [X] T019 [US2] DB-driven dnsmasq MAC→IP host reservations in `pkg/networking/dhcp.go` so a rebuilt dnsmasq hands back the same IP (stable IP per FR-006). *(`DHCPConfig.HostReservations` + dnsmasq `dhcp-host` lines; reconciler reads each network's ports (`mac_address` + `fixed_ips`) → MAC→IP pins. Render live-verified.)*
+- [X] T020 [US2] Wire `go reconciler.Start(ctx)` into `cmd/o3k/main.go` after the VXLAN-coordinator block (~L185), gated on `networkingMode != "stub"`; add `reconciler.Stop()` to the shutdown block. *(done; build/vet green.)*
 
-**Checkpoint**: US1 + US2 both work; VMs survive a control-plane restart.
+**Checkpoint**: US1 + US2 both work; VMs survive a control-plane restart. **Host-validated 2026-06-19** (Ubuntu+libvirt) — required a real-mode DHCP fix: dnsmasq `port=0` (avoid the systemd-resolved :53 clash), run in the bridge's default namespace, gateway IP assigned to the bridge, dnsmasq stderr surfaced. `./test/ws2_selfheal_test.sh` passes (reconciler respawns a killed dnsmasq).
 
 ---
 

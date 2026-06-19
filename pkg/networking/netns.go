@@ -267,6 +267,28 @@ func (m *BridgeManager) createBridgeReal(bridgeName string, inNamespace bool, ns
 	return nil
 }
 
+// EnsureBridgeIP assigns addrCIDR (e.g. "10.0.0.1/24") to the bridge in the
+// default namespace; idempotent (an existing address is fine). dnsmasq with
+// bind-interfaces needs the bridge to carry an address in the subnet it serves
+// (SPEC-009 WS-2). The bridge also acts as the tenant subnet's L3 gateway.
+func (m *BridgeManager) EnsureBridgeIP(bridgeName, addrCIDR string) error {
+	if m.mode == "stub" {
+		return nil
+	}
+	link, err := netlink.LinkByName(bridgeName)
+	if err != nil {
+		return fmt.Errorf("bridge %s not found: %w", bridgeName, err)
+	}
+	addr, err := netlink.ParseAddr(addrCIDR)
+	if err != nil {
+		return fmt.Errorf("parse bridge addr %s: %w", addrCIDR, err)
+	}
+	if err := netlink.AddrAdd(link, addr); err != nil && !strings.Contains(err.Error(), "exists") {
+		return fmt.Errorf("assign %s to bridge %s: %w", addrCIDR, bridgeName, err)
+	}
+	return nil
+}
+
 // DeleteBridge deletes a bridge
 func (m *BridgeManager) DeleteBridge(bridgeName string, inNamespace bool, nsName string) error {
 	if m.mode == "stub" {
