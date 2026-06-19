@@ -823,7 +823,31 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 	// shared path also applies any existing port reservations and runs dnsmasq in
 	// the bridge's default namespace (SPEC-009 WS-2/WS-4).
 	if enableDHCP {
-		svc.applyDHCPForNetwork(c.Request.Context(), req.Subnet.NetworkID, true)
+		bridgeName := "br-" + req.Subnet.NetworkID[:8]
+		// The bridge lives in the default namespace (for libvirt access), so the
+		// gateway IP must sit on it and dnsmasq must run there too — otherwise it
+		// has no address in the subnet to serve (SPEC-009 WS-2).
+		ones, _ := ipNet.Mask.Size()
+		if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", gatewayIP, ones)); err != nil {
+			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to assign gateway IP to bridge")
+		}
+
+		dhcpConfig := networking.DHCPConfig{
+			NetworkID:      req.Subnet.NetworkID,
+			BridgeName:     bridgeName,
+			SubnetCIDR:     req.Subnet.CIDR,
+			GatewayIP:      gatewayIP,
+			DNSServers:     req.Subnet.DNSNameservers,
+			DHCPRangeStart: incrementIP(ipNet.IP, 10).String(),
+			DHCPRangeEnd:   incrementIP(ipNet.IP, 250).String(),
+			LeaseTime:      "24h",
+		}
+
+		go func() {
+			if err := svc.dhcpManager.StartDHCP(dhcpConfig, ""); err != nil {
+				log.Warn().Err(err).Str("network_id", dhcpConfig.NetworkID).Msg("failed to start DHCP server for subnet")
+			}
+		}()
 	}
 
 	// OpenStack clients format these as lists and fail on JSON null, so
