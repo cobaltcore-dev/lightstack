@@ -4,11 +4,13 @@ Deploy [O3K](https://github.com/cobaltcore-dev/o3k) — a lightweight, OpenStack
 cloud in a single binary — on Kubernetes, in **single-node** or **multi-node** mode from
 one chart.
 
-> **Scope.** The validated deliverable is **single-node, stub mode (plus optional TLS)** —
-> the MVP. Real-mode and multi-node templates are authored and render/lint-clean, but their
-> end-to-end behavior (VM login, floating IPs, cross-node traffic, networking surviving
-> restarts) depends on product post-conditions tracked in
-> [issue #52](https://github.com/cobaltcore-dev/o3k/issues/52) and is **not yet functional**.
+> **Scope.** **Single-node real mode is host-validated** (SPEC-009, 2026-06-22): VM
+> boot/login, metadata + cloud-init, networking surviving restarts, north-south (egress,
+> floating IPs, security groups), and block storage all work end-to-end on Linux +
+> libvirt — see `docs/specs/009-single-node-real-mode/HOST-TESTING.md`. **Multi-node**
+> (cross-node traffic) and routing a floating-IP **pool** to a *hosting* node remain the
+> v2 ticket ([issue #52](https://github.com/cobaltcore-dev/o3k/issues/52) Part B). Stub
+> mode (plus optional TLS) remains the zero-dependency default.
 
 ## Prerequisites
 
@@ -85,7 +87,7 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | `cinder.storageMode` | `stub` | all | `stub` / `local` / `rbd` / `local,rbd` |
 | `glance.storageMode` | `stub` | all | `stub` / `local` / `rbd` / `s3` / hybrids |
 
-### Real mode (privileged; e2e deferred — #52)
+### Real mode (privileged; single-node host-validated — SPEC-009)
 | Key | Default | Mode | Purpose |
 |-----|---------|------|---------|
 | `realMode.enabled` | `false` | real | gate privileged pod + host mounts |
@@ -94,6 +96,21 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | `realMode.hostStoragePath` | `/var/lib/o3k` | real | node-local VM/volume/image data (hostPath) |
 | `realMode.floatingIpPool` | `""` | real | operator pool routed to nodes (FR-009c) |
 | `podSecurity.applyPrivilegedNamespaceLabel` | `false` | real | label the namespace `privileged` (FR-012d) |
+
+**Single-node real-mode recipe.** Needs a Linux node with a running host `libvirtd` +
+qemu/KVM and an o3k image carrying `qemu-img` + `genisoimage` + `dnsmasq` (the reference
+Dockerfile does). Node-local data lives under `/var/lib/o3k` (hostPath):
+```bash
+helm install o3k charts/o3k \
+  --set image.repository=<your-o3k-image> \
+  --set database.url='postgres://o3k:<pw>@<host>:5432/o3k?sslmode=disable' \
+  --set realMode.enabled=true \
+  --set realMode.privileged=true --set realMode.hostNetwork=true \
+  --set podSecurity.applyPrivilegedNamespaceLabel=true
+```
+Then walk `docs/specs/009-single-node-real-mode/HOST-TESTING.md`: create a network, boot a
+cirros VM, and exercise metadata/keyless-SSH, egress, floating IPs, security groups, and
+volumes (attach, volume-from-image, boot-from-volume).
 
 ### Multi-node (e2e deferred — #52)
 | Key | Default | Mode | Purpose |

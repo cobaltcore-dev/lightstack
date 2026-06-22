@@ -4,6 +4,13 @@
 **Version**: v0.6.0
 **Current Coverage**: 104% (342/330 endpoints) ✅
 
+> **SPEC-009 (2026-06-22): single-node real mode implemented + host-validated.** The
+> real-mode workstreams of o3k#52 Part A — VM disk (WS-0), startup network
+> reconciliation (WS-2), metadata/cloud-init (WS-4), single-node north-south (WS-3) —
+> plus block storage (WS-5: attach, volume-from-image, boot-from-volume, delete
+> semantics) now work end-to-end on Linux + libvirt. Multi-node (WS-1) remains the
+> v2 ticket (o3k#52 Part B). See `docs/specs/009-single-node-real-mode/`.
+
 ---
 
 ## Resolved in v0.6.0

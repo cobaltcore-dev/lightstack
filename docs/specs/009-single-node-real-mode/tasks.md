@@ -94,7 +94,7 @@ Existing single Go binary. Real paths: `cmd/o3k/`, `internal/{nova,neutron,cinde
 
 ### Tests (write first, MUST fail) ⚠️
 
-- [ ] T021 [P] [US3] Contract test `test/contract/ws4_userdata_test.go` (gophercloud): create with `UserData`+`KeyName`, read back `instance_userdata`.
+- [X] T021 [P] [US3] Contract test `test/contract/ws4_userdata_test.go` (gophercloud): create with `UserData`+`KeyName`, assert the metadata service serves instance-id + `user_data` (round-trip) + a key on the EC2 public-keys subtree, via the `X-Instance-ID` test header. **Green in stub mode 2026-06-22.** Surfaced a compat gap: `publicKeysForInstance` returns all the owner's keypairs (`ORDER BY name`), not the instance's `key_name`.
 - [ ] T022 [P] [US3] Host/guest tests `test/ws4_metadata_test.sh`, `test/ws4_isolation_test.sh`, `test/ws4_configdrive_test.sh` and `test/terraform/ws4/`.
 
 ### Implementation
@@ -142,8 +142,8 @@ Existing single Go binary. Real paths: `cmd/o3k/`, `internal/{nova,neutron,cinde
 
 ### Tests (write first, MUST fail) ⚠️
 
-- [ ] T037 [P] [US5] Contract test `test/contract/ws5_volume_test.go` (gophercloud): create/attach/detach/delete, assert synchronous attach + status transitions. **Deferred** (like T030) — host-validated manually via HOST-TESTING.md §15.
-- [ ] T038 [P] [US5] Host tests `test/ws5_attach_real_test.sh`, `test/ws5_boot_from_volume_test.sh`, `test/ws5_volume_from_image_test.sh` and `test/terraform/ws5/`. **Deferred** — covered by HOST-TESTING.md §15 (§15a attach+persistence, §15b volume-from-image, §15c boot-from-volume), host-validated 2026-06-22.
+- [X] T037 [P] [US5] Contract test `test/contract/ws5_volume_test.go` (gophercloud): create→available, attach→in-use, detach→available, delete. **Green in stub mode 2026-06-22.** Surfaced a compat gap: the attach response `id` is a row UUID, not the volume id (Nova convention `id == volumeId`; detach keys off the volume id, so the test detaches by volume id).
+- [X] T038 [P] [US5] Host tests `test/ws5_attach_real_test.sh`, `test/ws5_boot_from_volume_test.sh`, `test/ws5_volume_from_image_test.sh` — **written** (bash -n clean; mirror HOST-TESTING.md §15a/b/c + §15d delete semantics, host-validated 2026-06-22). `test/terraform/ws5/` deferred.
 
 ### Implementation
 
@@ -157,8 +157,8 @@ Existing single Go binary. Real paths: `cmd/o3k/`, `internal/{nova,neutron,cinde
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-- [ ] T042 [P] Stub-mode unit tests for the new logic (image-path helper, overlay-staging guards, reconciler sync funcs, metadata identity) alongside the sources as `*_test.go`.
-- [ ] T043 [P] Reconcile the over-claiming status docs to reflect the closed real-mode gaps: `docs/STUB_PLACEHOLDERS.md`, `docs/WHATS_LEFT.md`, `docs/REAL_MODE_TESTING.md`; add a real-mode single-node recipe to `charts/o3k/README.md`.
+- [X] T042 [P] Unit tests for the new pure logic: `bootVolumeID` (8 cases incl. the `json.Number` boot_index regression, decoded via `UseNumber` to mirror gin; delete_on_termination; source_type/boot_index filtering) in `internal/nova/boot_from_volume_test.go`; node-local path contracts + `RemoveLocalVolume` tolerance in `pkg/storage/paths_test.go`; `InstanceDir`/`ConsoleLogPath` in `pkg/hypervisor/disk_test.go`. DB-bound logic (reconciler sync, metadata identity) stays covered by the host tests.
+- [X] T043 [P] Reconciled the over-claiming status docs with dated SPEC-009 banners (`docs/REAL_MODE_TESTING.md`, `docs/STUB_PLACEHOLDERS.md`, `docs/WHATS_LEFT.md`) + a single-node real-mode recipe and scope correction in `charts/o3k/README.md`.
 - [ ] T044 Run the `quickstart.md` e2e on the Ubuntu + libvirt + single-node k3s host (cirros) and confirm SC-001…SC-010.
 
 ---

@@ -4,6 +4,14 @@
 **Updated**: 2026-03-16 (Sprint 70-73 fixes applied)
 **Status**: 🟢 **COMPLETE** - All stub placeholders resolved
 
+> **SPEC-009 update (2026-06-22).** The 2026-03 "complete" claim covered the
+> **stub-mode API surface**. It did *not* cover real-mode execution gaps later found
+> and closed by SPEC-009 (single-node real mode): the local volume backing was a
+> no-op stub (now real `qemu-img create`/`convert`), there was no per-instance disk
+> overlay, no startup network reconciliation, no metadata reachability, and no
+> single-node north-south wiring. These are implemented and host-validated — see
+> `docs/specs/009-single-node-real-mode/` (HOST-TESTING.md §1–§15).
+
 ---
 
 ## Executive Summary

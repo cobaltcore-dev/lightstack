@@ -1,5 +1,15 @@
 # Real Mode Testing Guide
 
+> **SPEC-009 single-node real mode — VALIDATED on Linux + libvirt/KVM (2026-06-22).**
+> Real mode now runs end-to-end on a single node: VM boot from a per-instance qcow2
+> overlay, network reconciliation across restarts, metadata + cloud-init (keyless
+> SSH), north-south (egress, floating IPs, security groups), and block storage
+> (volume attach, volume-from-image, boot-from-volume, and release/delete-on-termination).
+> The full host procedure is `docs/specs/009-single-node-real-mode/HOST-TESTING.md`
+> (§1–§15); acceptance criteria are in that feature's `quickstart.md`. The macOS
+> result below is the expected **stub-fallback** on a non-Linux dev box — not the
+> real-mode result.
+
 ## Test Results Summary
 
 ### Environment: macOS (Development Machine)
