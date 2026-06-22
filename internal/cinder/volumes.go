@@ -254,47 +254,42 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 		return
 	}
 
-	// Create RBD volume in Ceph
-	if err := svc.cephClient.CreateVolume(c.Request.Context(), volumeID, req.Volume.Size); err != nil {
-		log.Error().Err(err).Str("operation", "create_volume_ceph").Msg("failed to create volume in Ceph")
-		common.SendError(c, common.NewServiceUnavailableError("failed to create volume in Ceph"))
+	// Provision the backing store synchronously (Constitution II) so the volume
+	// is usable as soon as the API returns — required for boot-from-volume. With
+	// an imageRef, create a bootable volume from the (raw) base image; otherwise
+	// an empty volume (SPEC-009 WS-5 / T040).
+	var sourceImageID any
+	bootable := false
+	if req.Volume.ImageRef != "" {
+		if err := svc.cephClient.CreateVolumeFromImage(c.Request.Context(), volumeID, storage.LocalImagePath(req.Volume.ImageRef), req.Volume.Size); err != nil {
+			log.Error().Err(err).Str("operation", "create_volume_from_image").Str("image", req.Volume.ImageRef).Msg("failed to create volume from image")
+			common.SendError(c, common.NewServiceUnavailableError("failed to create volume from image"))
+			return
+		}
+		sourceImageID = req.Volume.ImageRef
+		bootable = true
+	} else if err := svc.cephClient.CreateVolume(c.Request.Context(), volumeID, req.Volume.Size); err != nil {
+		log.Error().Err(err).Str("operation", "create_volume_backing").Msg("failed to create volume backing")
+		common.SendError(c, common.NewServiceUnavailableError("failed to create volume backing"))
 		return
 	}
 
-	// Insert into database
+	// Insert into database (status available — backing is already provisioned)
 	now := time.Now()
 	_, err := database.DB.Exec(c.Request.Context(), `
-		INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, rbd_pool, rbd_image, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, volumeID, req.Volume.Name, projectID, userID, req.Volume.Size, "creating", false, svc.cephPool, "volume-"+volumeID, now, now)
+		INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, source_image_id, rbd_pool, rbd_image, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, volumeID, req.Volume.Name, projectID, userID, req.Volume.Size, "available", bootable, sourceImageID, svc.cephPool, "volume-"+volumeID, now, now)
 
 	if err != nil {
-		// Rollback: delete from Ceph (best-effort; the DB error is the user-facing one)
+		// Rollback: delete the backing (best-effort; the DB error is user-facing)
 		if cephErr := svc.cephClient.DeleteVolume(c.Request.Context(), volumeID); cephErr != nil {
-			log.Warn().Err(cephErr).Str("volume_id", volumeID).Msg("rollback: failed to delete volume from Ceph after DB insert failure")
+			log.Warn().Err(cephErr).Str("volume_id", volumeID).Msg("rollback: failed to delete volume backing after DB insert failure")
 		}
 		log.Error().Err(err).Str("operation", "create_volume_db").Msg("failed to insert volume into database")
 		common.SendError(c, common.NewInternalServerError("failed to create volume"))
 		return
 	}
-
-	// Update status to available in background
-	svc.wg.Add(1)
-	go func() {
-		defer svc.wg.Done()
-		select {
-		case <-time.After(100 * time.Millisecond):
-		case <-svc.ctx.Done():
-			return
-		}
-		ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
-		defer cancel()
-		if _, err := database.DB.Exec(ctx,
-			"UPDATE volumes SET status = $1, updated_at = $2 WHERE id = $3",
-			"available", time.Now(), volumeID); err != nil {
-			log.Error().Err(err).Str("volume_id", volumeID).Msg("failed to update volume status to available")
-		}
-	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"volume": gin.H{
@@ -303,8 +298,8 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 			"tenant_id":   projectID,
 			"user_id":     userID,
 			"size":        req.Volume.Size,
-			"status":      "creating",
-			"bootable":    "false",
+			"status":      "available",
+			"bootable":    fmt.Sprintf("%t", bootable),
 			"created_at":  now.Format("2006-01-02T15:04:05.000000"),
 			"updated_at":  now.Format("2006-01-02T15:04:05.000000"),
 			"metadata":    gin.H{},

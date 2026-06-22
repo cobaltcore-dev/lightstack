@@ -242,9 +242,36 @@ type CreateServerRequest struct {
 		Networks  []struct {
 			UUID string `json:"uuid"`
 		} `json:"networks"`
-		KeyName  string `json:"key_name"`
-		UserData string `json:"user_data"`
+		KeyName              string `json:"key_name"`
+		UserData             string `json:"user_data"`
+		BlockDeviceMappingV2 []struct {
+			BootIndex           any    `json:"boot_index"`
+			UUID                string `json:"uuid"`
+			SourceType          string `json:"source_type"`
+			DestinationType     string `json:"destination_type"`
+			DeleteOnTermination bool   `json:"delete_on_termination"`
+		} `json:"block_device_mapping_v2"`
 	} `json:"server"`
+}
+
+// bootVolumeID returns the root boot-from-volume id and its delete-on-termination
+// flag from a block_device_mapping_v2 (source_type=volume at boot_index 0), or
+// ("", false) if the VM boots from an image (SPEC-009 WS-5 / T041, FR-023).
+func bootVolumeID(req *CreateServerRequest) (string, bool) {
+	for _, bdm := range req.Server.BlockDeviceMappingV2 {
+		if bdm.SourceType != "volume" || bdm.UUID == "" {
+			continue
+		}
+		// boot_index 0 (or unset) marks the root disk. Normalize across the
+		// representations the JSON decoder yields: gin sets
+		// EnableDecoderUseNumber, so a numeric 0 arrives as json.Number, not
+		// float64 — match on the rendered value to cover number/string/nil.
+		switch fmt.Sprintf("%v", bdm.BootIndex) {
+		case "0", "<nil>", "":
+			return bdm.UUID, bdm.DeleteOnTermination
+		}
+	}
+	return "", false
 }
 
 // CreateServer creates a new server instance
@@ -465,35 +492,61 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 			// Generate VM XML
 			log.Debug().Str("instance_id", instanceID).Msg("Generating VM XML")
-			// Validate imageRef is a well-formed UUID before constructing file path
-			parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
-			if err != nil {
-				log.Error().Err(err).Str("image_ref", req.Server.ImageRef).Str("instance_id", instanceID).Msg("Invalid imageRef — not a valid UUID")
-				if _, dbErr := database.DB.Exec(svc.ctx,
-					"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-					"ERROR", time.Now(), instanceID); dbErr != nil {
-					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after invalid imageRef")
-				}
-				return
-			}
-			imageUUID := parsedImageUUID.String()
-
-			// Root disk: in real mode, stage a per-instance qcow2 overlay backed
-			// by the image's raw base so each VM is isolated (SPEC-009 WS-0). In
-			// stub mode the path is unused (CreateVM is faked).
-			imagePath := storage.LocalImagePath(imageUUID)
-			if svc.libvirtMode == "real" {
-				overlay, stageErr := hypervisor.StageOverlay(instanceID, storage.LocalImagePath(imageUUID))
-				if stageErr != nil {
-					log.Error().Err(stageErr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to stage per-instance disk overlay")
+			// Root disk: boot-from-volume (the bootable volume's backing IS the
+			// root disk) or, for an image boot, a per-instance qcow2 overlay over
+			// the image's raw base so each VM is isolated (SPEC-009 WS-0/WS-5).
+			var imagePath string
+			if rootVol, rootDOT := bootVolumeID(&req); rootVol != "" {
+				imagePath = storage.LocalVolumePath(rootVol)
+				// boot-from-volume skips StageOverlay, so create the per-instance
+				// directory the serial console.log lives in — otherwise libvirt
+				// fails to start the domain (SPEC-009 WS-5).
+				if err := hypervisor.EnsureInstanceDir(instanceID); err != nil {
+					log.Error().Err(err).Str("instance_id", instanceID).Msg("boot-from-volume: failed to create instance dir")
 					if _, dbErr := database.DB.Exec(svc.ctx,
 						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
 						"ERROR", time.Now(), instanceID); dbErr != nil {
-						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after overlay staging failure")
+						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after instance-dir failure")
 					}
 					return
 				}
-				imagePath = overlay
+				bvNow := time.Now()
+				if _, e := database.DB.Exec(ctx,
+					"UPDATE volumes SET attached_to_instance_id = $1, status = 'in-use', updated_at = $2 WHERE id = $3",
+					instanceID, bvNow, rootVol); e != nil {
+					log.Warn().Err(e).Str("volume_id", rootVol).Msg("boot-from-volume: failed to mark volume in-use")
+				}
+				if _, e := database.DB.Exec(ctx,
+					"INSERT INTO volume_attachments (id, volume_id, instance_id, device, delete_on_termination, attached_at) VALUES ($1, $2, $3, $4, $5, $6)",
+					uuid.New().String(), rootVol, instanceID, "/dev/vda", rootDOT, bvNow); e != nil {
+					log.Warn().Err(e).Str("volume_id", rootVol).Msg("boot-from-volume: failed to record root attachment")
+				}
+			} else {
+				parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
+				if err != nil {
+					log.Error().Err(err).Str("image_ref", req.Server.ImageRef).Str("instance_id", instanceID).Msg("Invalid imageRef — not a valid UUID")
+					if _, dbErr := database.DB.Exec(svc.ctx,
+						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
+						"ERROR", time.Now(), instanceID); dbErr != nil {
+						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after invalid imageRef")
+					}
+					return
+				}
+				imageUUID := parsedImageUUID.String()
+				imagePath = storage.LocalImagePath(imageUUID)
+				if svc.libvirtMode == "real" {
+					overlay, stageErr := hypervisor.StageOverlay(instanceID, storage.LocalImagePath(imageUUID))
+					if stageErr != nil {
+						log.Error().Err(stageErr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to stage per-instance disk overlay")
+						if _, dbErr := database.DB.Exec(svc.ctx,
+							"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
+							"ERROR", time.Now(), instanceID); dbErr != nil {
+							log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after overlay staging failure")
+						}
+						return
+					}
+					imagePath = overlay
+				}
 			}
 
 			spec := hypervisor.VMSpec{
@@ -920,6 +973,48 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		}
 		middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(libvirtStart), nil)
 		logger.Info().Str("libvirt_domain_id", libvirtDomainID.String).Msg("VM deleted from libvirt")
+	}
+
+	// SPEC-009 FR-023: release (or, for delete-on-termination, delete) the
+	// volumes attached to this instance. Done BEFORE the instance row is removed
+	// so an ON DELETE CASCADE can't drop the attachment rows first.
+	if rows, vaErr := database.DB.Query(c.Request.Context(),
+		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1", instanceUUID); vaErr != nil {
+		logger.Warn().Err(vaErr).Str("instance_id", instanceUUID).Msg("failed to query volume attachments on delete")
+	} else {
+		type attachedVol struct {
+			id  string
+			dot bool
+		}
+		var attached []attachedVol
+		for rows.Next() {
+			var a attachedVol
+			if scanErr := rows.Scan(&a.id, &a.dot); scanErr == nil {
+				attached = append(attached, a)
+			}
+		}
+		rows.Close()
+		for _, a := range attached {
+			if a.dot {
+				// delete-on-termination: drop the volume (DB row + local backing).
+				if _, e := database.DB.Exec(c.Request.Context(), "DELETE FROM volumes WHERE id = $1", a.id); e != nil {
+					logger.Warn().Err(e).Str("volume_id", a.id).Msg("failed to delete volume on termination")
+				}
+				if e := storage.RemoveLocalVolume(a.id); e != nil {
+					logger.Warn().Err(e).Str("volume_id", a.id).Msg("failed to remove local volume backing on termination")
+				}
+			} else {
+				// release: detach and return the volume to available.
+				if _, e := database.DB.Exec(c.Request.Context(),
+					"UPDATE volumes SET status = 'available', attached_to_instance_id = NULL, updated_at = $1 WHERE id = $2",
+					time.Now(), a.id); e != nil {
+					logger.Warn().Err(e).Str("volume_id", a.id).Msg("failed to release volume on delete")
+				}
+			}
+		}
+		if _, e := database.DB.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE instance_id = $1", instanceUUID); e != nil {
+			logger.Warn().Err(e).Str("instance_id", instanceUUID).Msg("failed to remove volume attachments on delete")
+		}
 	}
 
 	// Delete from database (support lookup by ID or name)

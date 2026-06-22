@@ -142,16 +142,16 @@ Existing single Go binary. Real paths: `cmd/o3k/`, `internal/{nova,neutron,cinde
 
 ### Tests (write first, MUST fail) ⚠️
 
-- [ ] T037 [P] [US5] Contract test `test/contract/ws5_volume_test.go` (gophercloud): create/attach/detach/delete, assert synchronous attach + status transitions.
-- [ ] T038 [P] [US5] Host tests `test/ws5_attach_real_test.sh`, `test/ws5_boot_from_volume_test.sh`, `test/ws5_volume_from_image_test.sh` and `test/terraform/ws5/`.
+- [ ] T037 [P] [US5] Contract test `test/contract/ws5_volume_test.go` (gophercloud): create/attach/detach/delete, assert synchronous attach + status transitions. **Deferred** (like T030) — host-validated manually via HOST-TESTING.md §15.
+- [ ] T038 [P] [US5] Host tests `test/ws5_attach_real_test.sh`, `test/ws5_boot_from_volume_test.sh`, `test/ws5_volume_from_image_test.sh` and `test/terraform/ws5/`. **Deferred** — covered by HOST-TESTING.md §15 (§15a attach+persistence, §15b volume-from-image, §15c boot-from-volume), host-validated 2026-06-22.
 
 ### Implementation
 
-- [ ] T039 [US5] Make volume attach synchronous + fail-fast in `internal/nova/volume_attachment.go`: fold the libvirt `AttachDevice` call into the request path, revert the DB attachment on libvirt failure, remove the background goroutine.
-- [ ] T040 [US5] Volume-from-image: honor `ImageRef` in `internal/cinder/volumes.go` (local copy of the raw base / RBD CoW clone via `pkg/storage/ceph.go`); set `volumes.source_image_id` and `bootable=true`. (uses T003, T006)
-- [ ] T041 [US5] Boot-from-volume: parse `block_device_mapping_v2` in `CreateServerRequest` and populate `VMSpec.Volumes` (root = the volume) in `internal/nova/handlers.go`; honor `delete_on_termination` on server delete.
+- [X] T039 [US5] Make volume attach synchronous + fail-fast in `internal/nova/volume_attachment.go`: fold the libvirt `AttachDevice` call into the request path, revert the DB attachment on libvirt failure, remove the background goroutine. **Done + host-validated 2026-06-22** (§15a: guest sees `/dev/vdb`, block-level write survives detach/re-attach).
+- [X] T040 [US5] Volume-from-image: honor `ImageRef` in `internal/cinder/volumes.go` (local copy of the raw base / RBD CoW clone via `pkg/storage/ceph.go`); set `volumes.source_image_id` and `bootable=true`. (uses T003, T006) **Done + host-validated 2026-06-22** (§15b: `bootable=True`, real 1 GiB qcow2 via `qemu-img convert -f raw` + resize; `createVolumeLocal` was a no-op stub, now real `qemu-img create`).
+- [X] T041 [US5] Boot-from-volume: parse `block_device_mapping_v2` in `CreateServerRequest` and use the volume's qcow2 as the root disk (no image overlay) in `internal/nova/handlers.go`. **Done + host-validated 2026-06-22** (§15c: `vm-bfv` ACTIVE, root `vda`=1 GiB volume, SSH in). Two fixes en route: boot_index arrives as `json.Number` (gin `EnableDecoderUseNumber`), and boot-from-volume must `EnsureInstanceDir` since it skips `StageOverlay` (else libvirt can't open `console.log`). **FR-023 delete semantics done** (migration 061 adds `volume_attachments.delete_on_termination`; `DeleteServer` releases attached volumes → `available`, or deletes them + local backing when the flag is set; host-validated §15d). RBD delete-on-termination backing cleanup routes through Cinder (follow-up).
 
-**Checkpoint**: all five stories independently functional.
+**Checkpoint**: all five stories independently functional. **US5 / WS-5 complete + host-validated 2026-06-22.**
 
 ---
 

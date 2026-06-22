@@ -17,6 +17,15 @@ func InstanceDir(instanceID string) string {
 	return filepath.Join(instancesBaseDir, instanceID)
 }
 
+// EnsureInstanceDir creates the per-instance directory (idempotent). The domain
+// XML writes the serial console to <InstanceDir>/console.log, so this directory
+// must exist before the domain starts. Image boots get it as a side effect of
+// StageOverlay; boot-from-volume skips StageOverlay and must create it
+// explicitly (SPEC-009 WS-5).
+func EnsureInstanceDir(instanceID string) error {
+	return os.MkdirAll(InstanceDir(instanceID), 0o755)
+}
+
 // RemoveInstanceDir removes an instance's per-instance disk directory and its
 // contents (the overlay). Best-effort: a missing directory is not an error, so
 // it is safe to call in stub mode where no overlay was ever staged.
@@ -30,11 +39,10 @@ func RemoveInstanceDir(instanceID string) error {
 // pinned to raw (-F raw) so a later Glance delete cannot silently break the
 // chain; the image-in-use guard (FR-004) blocks that delete anyway.
 func StageOverlay(instanceID, rawBasePath string) (string, error) {
-	dir := InstanceDir(instanceID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := EnsureInstanceDir(instanceID); err != nil {
 		return "", fmt.Errorf("create instance dir: %w", err)
 	}
-	overlay := filepath.Join(dir, "disk.qcow2")
+	overlay := filepath.Join(InstanceDir(instanceID), "disk.qcow2")
 	// qemu-img create -f qcow2 -b <raw base> -F raw <overlay>
 	cmd := exec.Command("qemu-img", "create", "-f", "qcow2", "-b", rawBasePath, "-F", "raw", overlay)
 	if out, err := cmd.CombinedOutput(); err != nil {

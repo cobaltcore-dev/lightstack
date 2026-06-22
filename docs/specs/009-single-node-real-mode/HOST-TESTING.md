@@ -301,8 +301,62 @@ rule, and loses it when you remove it — with the default `DROP` throughout. (A
 would come from another machine on the uplink LAN — its SYN transits `FORWARD`/`O3K-NSI`; SSH *from
 this host* bypasses the chain via `OUTPUT`, so it isn't a valid probe.)
 
+## 15. US5 / WS-5 — block storage  (**rebuild + restart o3k first**)
+Volumes are real local qcow2 files under `/var/lib/o3k/volumes`. Needs `net1`/`sub1`
++ a keyed VM. Rebuild + restart o3k (§6), recreate `net1`/`sub1` (§7), then in T2:
+
+### 15a. Volume attach (synchronous) — guest sees the device, data persists
+```bash
+openstack server create --image cirros --flavor m1.small --network net1 --key-name k1 vm-vol --wait
+VMIP=$(openstack server show vm-vol -f value -c addresses | grep -oE '10\.0\.0\.[0-9]+' | head -1)
+openstack volume create --size 1 datavol          # status should be 'available' immediately
+openstack server add volume vm-vol datavol         # synchronous: returns only after libvirt attached it
+ssh cirros@$VMIP 'lsblk | grep vdb; sudo mkfs.ext2 -q /dev/vdb && sudo mount /dev/vdb /mnt && echo hi | sudo tee /mnt/f && sudo umount /mnt'
+openstack server remove volume vm-vol datavol
+openstack server add volume vm-vol datavol
+ssh cirros@$VMIP 'sudo mount /dev/vdb /mnt && cat /mnt/f && sudo umount /mnt'   # → "hi" (persisted)
+```
+**Pass** = the guest sees `/dev/vdb`, and the file survives detach/re-attach. (Attach is synchronous: a libvirt failure returns an error and reverts, never a false success.)
+
+### 15b. Volume-from-image (bootable)
+```bash
+openstack volume create --size 1 --image cirros bootvol
+openstack volume show bootvol -f value -c bootable -c status   # → True  available
+```
+
+### 15c. Boot-from-volume
+```bash
+openstack server create --flavor m1.small --volume bootvol --network net1 --key-name k1 vm-bfv --wait
+BFVIP=$(openstack server show vm-bfv -f value -c addresses | grep -oE '10\.0\.0\.[0-9]+' | head -1)
+ssh cirros@$BFVIP 'echo "booted from volume on $(hostname)"'    # logs in → booted off the volume
+```
+**Pass** = `vm-bfv` boots off the volume (its root disk is the volume's qcow2, no image overlay).
+
+### 15d. Delete semantics — release vs. delete-on-termination (FR-023)
+Deleting a server releases its attached volumes (`available`), or **deletes** them when
+the attachment is `delete_on_termination=true` (e.g. boot-from-volume created with that flag).
+```bash
+# (a) release: deleting vm-bfv frees bootvol (NOT deleted — file persists)
+openstack server delete vm-bfv
+openstack volume show bootvol -f value -c status          # → available (was in-use)
+BVID=$(openstack volume show bootvol -f value -c id); ls /var/lib/o3k/volumes/volume-$BVID.qcow2   # still there
+# (b) release of a data volume: delete vm-vol → datavol freed
+openstack server delete vm-vol
+openstack volume show datavol -f value -c status          # → available
+# (c) delete-on-termination: boot a VM whose root volume is flagged, delete it → volume gone
+openstack volume create --size 1 --image cirros bootvol2
+openstack server create --flavor m1.small --network net1 --key-name k1 \
+  --block-device uuid=bootvol2,source_type=volume,boot_index=0,delete_on_termination=true vm-dot --wait
+openstack server delete vm-dot
+openstack volume show bootvol2                            # → No Volume found (deleted)
+DID=$(...); ls /var/lib/o3k/volumes/volume-<bootvol2-id>.qcow2 2>&1   # → No such file
+```
+**Pass** = (a)/(b) the volume returns to `available` and its backing file survives; (c) the
+flagged volume is gone (DB 404 + backing file removed). RBD delete-on-termination cleanup of
+the backing image routes through Cinder (local backing is what's removed here).
+
 ## Expected NOT to work yet (later phases)
-- **Block storage** — volume attach and boot-from-volume are **US5 / WS-5**.
+- **RBD/Ceph backends** — validated separately under the `ceph` build tag; the single-node default is `local`. (RBD delete-on-termination removes the DB row but not the RBD image — a Cinder follow-up.)
 
 ## Cleanup — full reset between runs (what persists vs. what a reboot clears)
 **Only three things survive a host reboot** and must be cleared explicitly:

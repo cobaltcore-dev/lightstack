@@ -5,16 +5,32 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
+	"github.com/cobaltcore-dev/o3k/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
+
+// volumeDiskXML builds the libvirt disk XML for a volume: a local-mode volume is
+// a file (its backing qcow2 lives on the node), otherwise an RBD network disk
+// (SPEC-009 WS-5).
+func volumeDiskXML(volumeID, device, rbdPool, rbdImage string) string {
+	if path := storage.LocalVolumePath(volumeID); fileExists(path) {
+		return hypervisor.GenerateDiskXML(hypervisor.DiskSpec{Device: device, Type: "file", Source: path})
+	}
+	return hypervisor.GenerateDiskXML(hypervisor.DiskSpec{
+		Device: device, Type: "network", Source: rbdPool + "/" + rbdImage, Protocol: "rbd",
+	})
+}
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // VolumeAttachment represents a volume attached to an instance
 type VolumeAttachment struct {
@@ -123,47 +139,31 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		return
 	}
 
-	// Attach volume to VM if hypervisor is available
+	// Attach the volume to the running VM synchronously (fold the libvirt call
+	// into the request path, fail-fast): on libvirt failure, revert the DB
+	// attachment so the API never reports a success libvirt did not perform
+	// (SPEC-009 WS-5 / T039).
 	if svc.vmManager != nil && libvirtDomainID != "" {
-		svc.wg.Add(1)
-		go func() {
-			defer svc.wg.Done()
-			ctx, cancel := context.WithTimeout(svc.ctx, 10*time.Second)
-			defer cancel()
-
-			// Get volume details
-			var sizeGB int
-			var rbdPool, rbdImage string
-			err := database.DB.QueryRow(ctx,
-				"SELECT size_gb, rbd_pool, rbd_image FROM volumes WHERE id = $1",
-				req.VolumeAttachment.VolumeID,
-			).Scan(&sizeGB, &rbdPool, &rbdImage)
-
-			if err != nil {
-				return
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		var rbdPool, rbdImage string
+		_ = database.DB.QueryRow(ctx,
+			"SELECT rbd_pool, rbd_image FROM volumes WHERE id = $1",
+			req.VolumeAttachment.VolumeID).Scan(&rbdPool, &rbdImage)
+		diskXML := volumeDiskXML(req.VolumeAttachment.VolumeID, device, rbdPool, rbdImage)
+		if err := svc.vmManager.AttachDevice(ctx, libvirtDomainID, diskXML); err != nil {
+			log.Error().Err(err).Str("volume_id", req.VolumeAttachment.VolumeID).Str("libvirt_domain", libvirtDomainID).Msg("failed to attach volume to VM; reverting")
+			if _, e := database.DB.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID); e != nil {
+				log.Warn().Err(e).Str("attachment_id", attachmentID).Msg("revert: delete attachment")
 			}
-
-			// Attach disk to VM
-			diskXML := hypervisor.GenerateDiskXML(hypervisor.DiskSpec{
-				Device:   device,
-				Type:     "network", // or "file" for local
-				Source:   fmt.Sprintf("%s/%s", rbdPool, rbdImage),
-				Protocol: "rbd",
-			})
-
-			if err := svc.vmManager.AttachDevice(ctx, libvirtDomainID, diskXML); err != nil {
-				// Update attachment status to error (don't delete, admin
-				// can retry). A failed update leaves the attachment row
-				// claiming success when libvirt actually failed —
-				// logged so an operator can reconcile.
-				log.Error().Err(err).Str("attachment_id", attachmentID).Str("libvirt_domain", libvirtDomainID).Msg("failed to attach volume to VM")
-				if _, dbErr := database.DB.Exec(ctx,
-					"UPDATE volume_attachments SET device = $1 WHERE id = $2",
-					device+"(error)", attachmentID); dbErr != nil {
-					log.Error().Err(dbErr).Str("attachment_id", attachmentID).Msg("failed to mark attachment error status")
-				}
+			if _, e := database.DB.Exec(c.Request.Context(),
+				"UPDATE volumes SET attached_to_instance_id = NULL, status = 'available', updated_at = $1 WHERE id = $2",
+				time.Now(), req.VolumeAttachment.VolumeID); e != nil {
+				log.Warn().Err(e).Str("volume_id", req.VolumeAttachment.VolumeID).Msg("revert: reset volume status")
 			}
-		}()
+			common.SendError(c, common.NewInternalServerError("failed to attach volume to the instance"))
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -220,12 +220,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 		).Scan(&rbdPool, &rbdImage)
 
 		if err == nil {
-			diskXML := hypervisor.GenerateDiskXML(hypervisor.DiskSpec{
-				Device:   device,
-				Type:     "network",
-				Source:   fmt.Sprintf("%s/%s", rbdPool, rbdImage),
-				Protocol: "rbd",
-			})
+			diskXML := volumeDiskXML(volumeID, device, rbdPool, rbdImage)
 
 			if err := svc.vmManager.DetachDevice(ctx, libvirtDomainID, diskXML); err != nil {
 				log.Error().Err(err).Str("operation", "detach_disk_libvirt").Msg("libvirt error")
