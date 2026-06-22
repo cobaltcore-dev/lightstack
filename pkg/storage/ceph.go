@@ -54,6 +54,21 @@ func RemoveLocalVolume(volumeID string) error {
 	return nil
 }
 
+// LocalVolumePath is the backing file for a local-mode volume (SPEC-009 WS-5).
+func LocalVolumePath(volumeID string) string {
+	return filepath.Join(LocalVolumeDir(), "volume-"+volumeID+".qcow2")
+}
+
+// RemoveLocalVolume deletes a local-mode volume's backing file, tolerant of an
+// already-absent file. Used by the Nova delete path for delete-on-termination
+// volumes (SPEC-009 WS-5 / FR-023); RBD backing cleanup routes through Cinder.
+func RemoveLocalVolume(volumeID string) error {
+	if err := os.Remove(LocalVolumePath(volumeID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // NewCephClient creates a new storage client
 func NewCephClient(mode, pool, confFile string) *CephClient {
 	localPath := LocalVolumeDir()

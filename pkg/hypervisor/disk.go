@@ -30,6 +30,15 @@ func EnsureInstanceDir(instanceID string) error {
 	return os.MkdirAll(InstanceDir(instanceID), 0o755)
 }
 
+// EnsureInstanceDir creates the per-instance directory (idempotent). The domain
+// XML writes the serial console to <InstanceDir>/console.log, so this directory
+// must exist before the domain starts. Image boots get it as a side effect of
+// StageOverlay; boot-from-volume skips StageOverlay and must create it
+// explicitly (SPEC-009 WS-5).
+func EnsureInstanceDir(instanceID string) error {
+	return os.MkdirAll(InstanceDir(instanceID), 0o755)
+}
+
 // RemoveInstanceDir removes an instance's per-instance disk directory and its
 // contents (the overlay). Best-effort: a missing directory is not an error, so
 // it is safe to call in stub mode where no overlay was ever staged.
