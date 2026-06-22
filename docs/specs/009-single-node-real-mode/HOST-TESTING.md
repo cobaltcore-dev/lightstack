@@ -18,16 +18,35 @@ docker --version ; go version    # docker (dev Postgres) + Go 1.26+
 
 ## 1. Clean recreate  (**stop o3k first** — Ctrl-C in T1)
 ```bash
-sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
-# clear leftovers from previous runs (o3k must be stopped first):
+# VMs — destroy AND undefine (libvirt domains are persistent, survive reboot)
+for d in $(sudo virsh list --all --name 2>/dev/null | grep .); do
+  sudo virsh destroy "$d" 2>/dev/null; sudo virsh undefine "$d" --nvram 2>/dev/null || sudo virsh undefine "$d" 2>/dev/null
+done
+# o3k dnsmasq + stale bridges (they otherwise keep a duplicate 10.x gateway IP
+# and split host routing)
 sudo pkill -f 'var/lib/o3k/dhcp' 2>/dev/null || true
-sudo virsh list --name 2>/dev/null | xargs -r -n1 sudo virsh destroy 2>/dev/null || true
-# delete stale o3k bridges — they otherwise linger with a duplicate 10.x gateway
-# IP and split host routing across bridges (only `make db-down` won't remove them):
 for b in $(ip -br link show type bridge 2>/dev/null | awk '{print $1}' | grep '^br-'); do sudo ip link del "$b"; done
+# o3k netns + the north-south iptables rules left by earlier runs
+for n in $(ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^q(router|dhcp)-'); do sudo ip netns del "$n"; done
+sudo iptables -t nat -S 2>/dev/null | grep -E '169\.254\.169\.254|10\.0\.0\.|172\.24\.4\.' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables -t nat ${r}"; done
+sudo iptables -S FORWARD 2>/dev/null | grep -E '10\.0\.0\.|O3K-NSI' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
+for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'O3K-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
+# stale floating-IP /32s left on the uplink (the FIP pool range)
+UP=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$UP" ] && ip -4 -o addr show dev "$UP" 2>/dev/null | awk '/172\.24\.4\./{print $4}' | while read -r a; do sudo ip addr del "$a" dev "$UP"; done
+# node-local data: disks, images, cloud-init ISOs, volumes, dhcp state
+sudo rm -rf /var/lib/o3k/*
+sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
+# Postgres container — works whether it runs under docker OR podman (rootless/rootful)
+docker rm -f o3k-postgres 2>/dev/null; podman rm -f o3k-postgres 2>/dev/null; sudo podman rm -f o3k-postgres 2>/dev/null; true
 ```
-> With the SPEC-009 fix, `openstack network delete` now removes its bridge; this
-> sweep is only for bridges left by earlier runs / `make db-down`.
+> A host **reboot** is the simplest way to clear the kernel networking (bridges /
+> taps / netns / iptables / `ip_forward`); then you only need the VM-undefine,
+> `rm -rf /var/lib/o3k/*`, and the Postgres-container removal above. The full
+> teardown + what persists is detailed in the **Cleanup — full reset** section.
+> **podman note:** the Makefile's `db-up`/`db-down` shell out to `docker`; if you
+> run podman without a `docker` shim, start/stop Postgres with `podman` directly
+> (`podman run … --name o3k-postgres …` / `podman rm -f o3k-postgres`).
 
 ## 2. Build
 ```bash
@@ -388,6 +407,61 @@ DNAT/route is the host-iterated piece — paste §11a output + the guest's `ip r
 - **Internet / floating IPs** — the VM cannot reach the internet and is not reachable
   via a floating IP yet. That's **US4 / WS-3** (north-south / NAT).
 - **Block storage** — volume attach and boot-from-volume are **US5 / WS-5**.
+
+## Cleanup — full reset between runs (what persists vs. what a reboot clears)
+**Only three things survive a host reboot** and must be cleared explicitly:
+
+| Persistent | Where | Cleared by |
+|---|---|---|
+| DB rows (instances, networks, ports, routers, volumes, images, keypairs) | `o3k-postgres` container (no volume) | `docker`/`podman rm -f o3k-postgres` |
+| libvirt VM definitions | `virsh list --all` (O3K uses `DomainDefineXML` → persistent) | `virsh undefine` |
+| On-disk files | `/var/lib/o3k/{instances,images,cloud-init,volumes,dhcp}` | `rm -rf` |
+
+Everything else is **runtime kernel state a reboot wipes for free**: bridges `br-*` (+ gateway IPs),
+taps (`tap-*`, `vnet*`), netns (`qrouter-*`), iptables rules (metadata DNAT `169.254.169.254`, egress
+`MASQUERADE`, `FORWARD` ACCEPT), and `ip_forward`.
+
+### Full reset without rebooting — stop o3k first (Ctrl-C in T1), then in T2:
+```bash
+# 1. libvirt VMs — destroy AND undefine (definitions are persistent, survive reboot)
+for d in $(sudo virsh list --all --name | grep .); do
+  sudo virsh destroy "$d" 2>/dev/null
+  sudo virsh undefine "$d" --nvram 2>/dev/null || sudo virsh undefine "$d" 2>/dev/null
+done
+sudo virsh list --all                        # expect: empty
+
+# 2. o3k dnsmasq
+sudo pkill -f 'var/lib/o3k/dhcp' 2>/dev/null
+
+# 3. bridges + leftover taps (default ns)
+for b in $(ip -br link show type bridge | awk '{print $1}' | grep '^br-'); do sudo ip link del "$b"; done
+for t in $(ip -br link | awk '{print $1}' | grep -E '^(tap-|vnet)'); do sudo ip link del "$t" 2>/dev/null; done
+
+# 4. router/project netns (o3k-prefixed only — leaves other tools' netns alone)
+for n in $(ip netns list | awk '{print $1}' | grep -E '^q(router|dhcp)-'); do sudo ip netns del "$n"; done
+
+# 5. o3k iptables rules — scoped to o3k's own addresses (metadata 169.254.169.254,
+#    tenant 10.0.0.x, FIP 172.24.4.x) so the container runtime's 172.17.x rules stay
+sudo iptables -t nat -S | grep -E '169\.254\.169\.254|10\.0\.0\.|172\.24\.4\.' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables -t nat ${r}"; done
+sudo iptables -S FORWARD  | grep -E '10\.0\.0\.|O3K-NSI'          | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
+for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'O3K-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
+
+# 6. on-disk data + fresh DB
+sudo rm -rf /var/lib/o3k/*
+sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
+# remove the Postgres container under docker OR podman (rootless/rootful), then recreate it
+docker rm -f o3k-postgres 2>/dev/null; podman rm -f o3k-postgres 2>/dev/null; sudo podman rm -f o3k-postgres 2>/dev/null; true
+make db-up      # docker; with podman-without-a-docker-shim, `podman run … --name o3k-postgres …` instead
+```
+Then restart o3k (§6) and rebuild from §7.
+
+### Simplest alternative — reboot
+A host reboot clears all the kernel networking (steps 2–5 + `ip_forward`) for free; you then only
+need step **1** (undefine VMs) and step **6** (`rm -rf /var/lib/o3k/*` + `make db-down && make db-up`).
+
+> The iptables rules are harmless to leave anyway — O3K re-asserts them idempotently (`-C` checks)
+> and interface-scoped DNAT rules go inert once their bridge is deleted; step 5 is only for a spotless
+> `iptables-save`.
 
 ## Troubleshooting
 - **`OS_AUTH_URL: ... source your OpenStack env`** → `source ~/.o3k-env` in T2.
