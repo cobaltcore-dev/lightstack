@@ -16,22 +16,41 @@ docker --version ; go version    # docker (dev Postgres) + Go 1.26+
 # OpenStack client in T2: pipx install python-openstackclient  (or apt)
 ```
 
-## 1. Clean recreate
+## 1. Clean recreate  (**stop o3k first** — Ctrl-C in T1)
 ```bash
-sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
-# clear leftovers from previous runs (o3k must be stopped first):
+# VMs — destroy AND undefine (libvirt domains are persistent, survive reboot)
+for d in $(sudo virsh list --all --name 2>/dev/null | grep .); do
+  sudo virsh destroy "$d" 2>/dev/null; sudo virsh undefine "$d" --nvram 2>/dev/null || sudo virsh undefine "$d" 2>/dev/null
+done
+# o3k dnsmasq + stale bridges (they otherwise keep a duplicate 10.x gateway IP
+# and split host routing)
 sudo pkill -f 'var/lib/o3k/dhcp' 2>/dev/null || true
-sudo virsh list --name 2>/dev/null | xargs -r -n1 sudo virsh destroy 2>/dev/null || true
-# delete stale o3k bridges — they otherwise linger with a duplicate 10.x gateway
-# IP and split host routing across bridges (only `make db-down` won't remove them):
 for b in $(ip -br link show type bridge 2>/dev/null | awk '{print $1}' | grep '^br-'); do sudo ip link del "$b"; done
+# o3k netns + the north-south iptables rules left by earlier runs
+for n in $(ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^q(router|dhcp)-'); do sudo ip netns del "$n"; done
+sudo iptables -t nat -S 2>/dev/null | grep -E '169\.254\.169\.254|10\.0\.0\.|172\.24\.4\.' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables -t nat ${r}"; done
+sudo iptables -S FORWARD 2>/dev/null | grep -E '10\.0\.0\.|O3K-NSI' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
+for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'O3K-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
+# stale floating-IP /32s left on the uplink (the FIP pool range)
+UP=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$UP" ] && ip -4 -o addr show dev "$UP" 2>/dev/null | awk '/172\.24\.4\./{print $4}' | while read -r a; do sudo ip addr del "$a" dev "$UP"; done
+# node-local data: disks, images, cloud-init ISOs, volumes, dhcp state
+sudo rm -rf /var/lib/o3k/*
+sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
+# Postgres container — works whether it runs under docker OR podman (rootless/rootful)
+docker rm -f o3k-postgres 2>/dev/null; podman rm -f o3k-postgres 2>/dev/null; sudo podman rm -f o3k-postgres 2>/dev/null; true
 ```
-> With the SPEC-009 fix, `openstack network delete` now removes its bridge; this
-> sweep is only for bridges left by earlier runs / `make db-down`.
+> A host **reboot** is the simplest way to clear the kernel networking (bridges /
+> taps / netns / iptables / `ip_forward`); then you only need the VM-undefine,
+> `rm -rf /var/lib/o3k/*`, and the Postgres-container removal above. The full
+> teardown + what persists is detailed in the **Cleanup — full reset** section.
+> **podman note:** the Makefile's `db-up`/`db-down` shell out to `docker`; if you
+> run podman without a `docker` shim, start/stop Postgres with `podman` directly
+> (`podman run … --name o3k-postgres …` / `podman rm -f o3k-postgres`).
 
 ## 2. Build
 ```bash
-cd /home/fnk/code/sap/ora/o3k/bugfix/503
+cd /path/to/o3k                               # ← your local o3k checkout (repo root)
 make build                                    # -> bin/o3k
 go build -o bin/o3k-migrate ./cmd/o3k-migrate
 ```
@@ -115,10 +134,11 @@ ip netns list
 # self-heal (automated): kill dnsmasq, reconciler respawns it within one interval
 ./test/ws2_selfheal_test.sh
 
-# restart-survival (guided — o3k runs foreground):
-./test/ws2_restart_survival_test.sh record vm1          # prints the addresses
+# restart-survival (guided — o3k runs foreground; record writes the addresses to
+# a file, so verify needs no copy/paste):
+./test/ws2_restart_survival_test.sh record vm1
 #   …in T1: Ctrl-C o3k, then re-run the §6 command…
-./test/ws2_restart_survival_test.sh verify vm1 '<addresses-from-record>'
+./test/ws2_restart_survival_test.sh verify vm1
 ```
 Pass = dnsmasq respawns after a kill, and `vm1` keeps the **same** IP across the
 o3k restart (the reconciler re-spawns dnsmasq with the MAC→IP reservation).
@@ -176,10 +196,168 @@ ssh -o StrictHostKeyChecking=no cirros@$VMIP      # logs in with k1 (key via the
 If `169.254.169.254` times out in the guest but SSH works, the config-drive path is fine and the
 DNAT/route is the host-iterated piece — paste §11a output + the guest's `ip route` and I'll chase it (like WS-2).
 
+## 12. US4 / WS-3 — egress to the internet  (**rebuild + restart o3k first**)
+A VM reaches the internet once it's on a tenant network attached to a router with
+an external gateway. O3K masquerades it out the node's **uplink** (default-route
+iface) — no operator `br-ex`/NIC. Rebuild + restart o3k (§6), then in T2:
+```bash
+# external network + subnet (the gateway target; CIDR is nominal on single node)
+openstack network show ext-net >/dev/null 2>&1 || openstack network create ext-net
+openstack subnet show ext-sub >/dev/null 2>&1 || \
+  openstack subnet create ext-sub --network ext-net --subnet-range 172.24.4.0/24 --no-dhcp
+
+# router: external gateway + attach the tenant subnet (sub1 on net1)
+openstack router show r1 >/dev/null 2>&1 || openstack router create r1
+openstack router set r1 --external-gateway ext-net
+openstack router add subnet r1 sub1
+```
+### 12a. Host side — egress NAT is programmed
+```bash
+UP=$(ip route show default | awk '{print $5; exit}'); echo "uplink: $UP"
+cat /proc/sys/net/ipv4/ip_forward                                  # 1
+sudo iptables -t nat -S POSTROUTING | grep MASQUERADE              # -s 10.0.0.0/24 -o $UP -j MASQUERADE
+sudo iptables -S FORWARD | grep '10.0.0.0/24'                      # the two ACCEPT rules
+```
+### 12b. Guest side — reach the internet (existing VM is fine; no rebuild needed)
+```bash
+ssh -o StrictHostKeyChecking=no cirros@$VMIP        # or virsh console
+#  inside the VM:
+#   $ ping -c3 1.1.1.1        # ICMP egress works (masqueraded out the uplink)
+#   $ curl -sI http://1.1.1.1 | head -1   # TCP egress (DNS may be unset — use an IP)
+```
+**Pass** = `ping 1.1.1.1` from the guest succeeds and `POSTROUTING` shows the MASQUERADE.
+If ping fails but the MASQUERADE rule is present, paste `sudo iptables -S FORWARD | head` and the
+guest's `ip route` — it's usually the host FORWARD policy (Docker) and I'll adjust the rule ordering.
+
+## 13. US4 / WS-3 — floating IP (inbound reachability)  (**rebuild + restart o3k first**)
+Allocate a floating IP from the external network and associate it to the VM; O3K
+hosts the FIP as a `/32` on the uplink and DNATs it to the VM's fixed IP. Rebuild
++ restart o3k (§6), then in T2 (uses the `ext-net`/`r1`/`sub1` topology from §12):
+```bash
+FIP=$(openstack floating ip create ext-net -f value -c floating_ip_address); echo "FIP: $FIP"
+openstack server add floating ip vm-md "$FIP"          # use your VM's name
+```
+### 13a. Host side — the FIP is hosted + DNAT'd
+```bash
+ip -br addr show enp1s0 | tr ' ' '\n' | grep "$FIP"     # FIP/32 on the uplink
+sudo iptables -t nat -S | grep "$FIP"                   # PREROUTING + OUTPUT DNAT -> 10.0.0.x
+```
+### 13b. Reach the VM **at the floating IP**, from the host (host-local via the OUTPUT DNAT)
+```bash
+ssh -o StrictHostKeyChecking=no cirros@"$FIP"           # logs into the VM through its FIP
+```
+### 13c. Disassociate → access stops, rules removed
+```bash
+openstack server remove floating ip vm-md "$FIP"
+sudo iptables -t nat -S | grep "$FIP" || echo "FIP NAT removed"
+```
+**Pass** = `ssh cirros@$FIP` reaches the VM, and after disassociate the DNAT/address are gone.
+- Tested **from the host** (host-local) so it works regardless of LAN routing. To reach the FIP
+  from **another machine** — and for the VM's egress to appear *as* the FIP — the external subnet
+  must be your **real uplink LAN** with a free address (an operator-supplied routable pool, T036),
+  not the nominal `172.24.4.0/24`. v1 single-node FIP = inbound reachability; egress stays on the
+  node's shared SNAT.
+- Inbound is currently allowed on **all ports** — security-group gating (default-deny, open per
+  rule) is the next slice (**T034**).
+
+## 14. US4 / WS-3 — security groups on north-south  (**rebuild + restart o3k first**)
+A floating IP is **default-deny** inbound: external traffic to it is gated by the
+VM's per-instance ingress chain `O3K-NSI-<fixed-ip>` (conntrack-established + one
+ACCEPT per SG ingress rule + default DROP). Needs a **fresh VM** — the default SG
+is attached at port creation. Rebuild + restart o3k (§6), then in T2:
+```bash
+openstack server create --image cirros --flavor m1.small --network net1 --key-name k1 vm-sg --wait
+FIP2=$(openstack floating ip create ext-net -f value -c floating_ip_address); echo "FIP2: $FIP2"
+openstack server add floating ip vm-sg "$FIP2"
+CH="O3K-NSI-$(openstack server show vm-sg -f value -c addresses | grep -oE '10\.0\.0\.[0-9]+' | head -1 | tr . -)"; echo "chain: $CH"
+```
+> **Why we verify the chain, not SSH-from-here:** security groups gate **forwarded**
+> traffic (external client → uplink → `FORWARD` → `O3K-NSI`). SSH *from this host*
+> to the FIP takes the `OUTPUT`/host-local path (the host is the hypervisor — its
+> own access isn't SG-gated), so it **bypasses the chain** and is not a valid probe.
+> The chain content below is the enforcement a real external client hits.
+
+### 14a. Default SG already permits its seeded ingress (tcp/22)
+```bash
+sudo iptables -S "$CH"     # -p tcp --dport 22 -j ACCEPT (from the seeded default-SG rule)
+                           #   + conntrack RELATED,ESTABLISHED -j ACCEPT  then  -j DROP
+```
+The default SG seeds a `tcp/22` ingress rule (migration 002), so SSH is open by default and
+**everything else is denied** — that DROP is the default-deny.
+
+### 14b. Open a *non-seeded* port (8080) → the ACCEPT appears immediately
+```bash
+openstack security group rule create --proto tcp --dst-port 8080 --remote-ip 0.0.0.0/0 default
+sudo iptables -S "$CH"     # now also: -p tcp --dport 8080 -j ACCEPT  (before the DROP)
+```
+### 14c. Remove the rule → the 8080 ACCEPT disappears (22 stays — it's seeded)
+```bash
+RID=$(openstack security group rule list default -f value -c ID -c "Port Range" | awk '$2 ~ /8080/{print $1; exit}')
+openstack security group rule delete "$RID"
+sudo iptables -S "$CH"     # back to :22 + conntrack + DROP (no :8080)
+```
+**Pass** = the chain carries the seeded `:22`, gains `--dport 8080 -j ACCEPT` the instant you add the
+rule, and loses it when you remove it — with the default `DROP` throughout. (A real end-to-end probe
+would come from another machine on the uplink LAN — its SYN transits `FORWARD`/`O3K-NSI`; SSH *from
+this host* bypasses the chain via `OUTPUT`, so it isn't a valid probe.)
+
 ## Expected NOT to work yet (later phases)
-- **Internet / floating IPs** — the VM cannot reach the internet and is not reachable
-  via a floating IP yet. That's **US4 / WS-3** (north-south / NAT).
 - **Block storage** — volume attach and boot-from-volume are **US5 / WS-5**.
+
+## Cleanup — full reset between runs (what persists vs. what a reboot clears)
+**Only three things survive a host reboot** and must be cleared explicitly:
+
+| Persistent | Where | Cleared by |
+|---|---|---|
+| DB rows (instances, networks, ports, routers, volumes, images, keypairs) | `o3k-postgres` container (no volume) | `docker`/`podman rm -f o3k-postgres` |
+| libvirt VM definitions | `virsh list --all` (O3K uses `DomainDefineXML` → persistent) | `virsh undefine` |
+| On-disk files | `/var/lib/o3k/{instances,images,cloud-init,volumes,dhcp}` | `rm -rf` |
+
+Everything else is **runtime kernel state a reboot wipes for free**: bridges `br-*` (+ gateway IPs),
+taps (`tap-*`, `vnet*`), netns (`qrouter-*`), iptables rules (metadata DNAT `169.254.169.254`, egress
+`MASQUERADE`, `FORWARD` ACCEPT), and `ip_forward`.
+
+### Full reset without rebooting — stop o3k first (Ctrl-C in T1), then in T2:
+```bash
+# 1. libvirt VMs — destroy AND undefine (definitions are persistent, survive reboot)
+for d in $(sudo virsh list --all --name | grep .); do
+  sudo virsh destroy "$d" 2>/dev/null
+  sudo virsh undefine "$d" --nvram 2>/dev/null || sudo virsh undefine "$d" 2>/dev/null
+done
+sudo virsh list --all                        # expect: empty
+
+# 2. o3k dnsmasq
+sudo pkill -f 'var/lib/o3k/dhcp' 2>/dev/null
+
+# 3. bridges + leftover taps (default ns)
+for b in $(ip -br link show type bridge | awk '{print $1}' | grep '^br-'); do sudo ip link del "$b"; done
+for t in $(ip -br link | awk '{print $1}' | grep -E '^(tap-|vnet)'); do sudo ip link del "$t" 2>/dev/null; done
+
+# 4. router/project netns (o3k-prefixed only — leaves other tools' netns alone)
+for n in $(ip netns list | awk '{print $1}' | grep -E '^q(router|dhcp)-'); do sudo ip netns del "$n"; done
+
+# 5. o3k iptables rules — scoped to o3k's own addresses (metadata 169.254.169.254,
+#    tenant 10.0.0.x, FIP 172.24.4.x) so the container runtime's 172.17.x rules stay
+sudo iptables -t nat -S | grep -E '169\.254\.169\.254|10\.0\.0\.|172\.24\.4\.' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables -t nat ${r}"; done
+sudo iptables -S FORWARD  | grep -E '10\.0\.0\.|O3K-NSI'          | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
+for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'O3K-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
+
+# 6. on-disk data + fresh DB
+sudo rm -rf /var/lib/o3k/*
+sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init}
+# remove the Postgres container under docker OR podman (rootless/rootful), then recreate it
+docker rm -f o3k-postgres 2>/dev/null; podman rm -f o3k-postgres 2>/dev/null; sudo podman rm -f o3k-postgres 2>/dev/null; true
+make db-up      # docker; with podman-without-a-docker-shim, `podman run … --name o3k-postgres …` instead
+```
+Then restart o3k (§6) and rebuild from §7.
+
+### Simplest alternative — reboot
+A host reboot clears all the kernel networking (steps 2–5 + `ip_forward`) for free; you then only
+need step **1** (undefine VMs) and step **6** (`rm -rf /var/lib/o3k/*` + `make db-down && make db-up`).
+
+> The iptables rules are harmless to leave anyway — O3K re-asserts them idempotently (`-C` checks)
+> and interface-scoped DNAT rules go inert once their bridge is deleted; step 5 is only for a spotless
+> `iptables-save`.
 
 ## Troubleshooting
 - **`OS_AUTH_URL: ... source your OpenStack env`** → `source ~/.o3k-env` in T2.
@@ -187,5 +365,5 @@ DNAT/route is the host-iterated piece — paste §11a output + the guest's `ip r
 - **libvirt can't read the disk** → `sudo chmod -R a+rX /var/lib/o3k/images /var/lib/o3k/instances`.
 - **`/var/lib/o3k/images` missing at startup** → Glance falls back to `~/.o3k/images`
   and the overlay backing won't match; recreate the dir (§1) **before** starting o3k.
-- **Reset everything** → `make db-down` (Postgres) + Ctrl-C o3k + `sudo rm -rf /var/lib/o3k/*`
-  + `sudo pkill -f var/lib/o3k/dhcp`.
+- **Reset everything** → see **Cleanup — full reset** above (undefine VMs + bridges/netns/iptables +
+  `rm -rf /var/lib/o3k/*` + `make db-down`), or just reboot the host then clear those three.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -256,11 +257,15 @@ func (svc *Service) GetRouter(c *gin.Context) {
 	var r Router
 	var gatewayInfo sql.NullString
 
+	// id::text comparison resolves by UUID or name without crashing on a
+	// non-UUID identifier — the CLI looks a router up by name this way
+	// (consistent with GetNetwork/GetSubnet).
 	err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
 		       distributed, ha, created_at, updated_at
 		FROM routers
-		WHERE id = $1 AND project_id = $2
+		WHERE (id::text = $1 OR name = $1) AND project_id = $2
+		LIMIT 1
 	`, routerID, projectID).Scan(&r.ID, &r.Name, &r.ProjectID, &r.AdminStateUp, &r.Status,
 		&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt)
 
@@ -489,6 +494,26 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		return
 	}
 
+	// WS-3: if this router already has an external gateway, masquerade the
+	// just-attached subnet's egress out the uplink now (real mode), so egress
+	// works whether the gateway was set before or after this interface.
+	if svc.mode != "stub" {
+		var gwRaw []byte
+		if err := database.DB.QueryRow(c.Request.Context(),
+			"SELECT external_gateway_info FROM routers WHERE id = $1", routerID).Scan(&gwRaw); err == nil &&
+			len(gwRaw) > 0 && string(gwRaw) != "null" {
+			if uplink, uerr := networking.DefaultUplinkInterface(); uerr == nil {
+				if err := svc.routerManager.EnsureEgressSNAT(cidr, uplink); err != nil {
+					log.Warn().Err(err).Str("router_id", routerID).Str("cidr", cidr).Msg("WS-3: egress SNAT on interface attach failed")
+				} else {
+					log.Info().Str("router_id", routerID).Str("cidr", cidr).Str("uplink", uplink).Msg("WS-3: egress SNAT enabled")
+				}
+			} else {
+				log.Warn().Err(uerr).Msg("WS-3: cannot detect uplink for egress SNAT on attach")
+			}
+		}
+	}
+
 	// Attach interface to router namespace
 	interfaceName := "qg-" + portID[:10]
 	_, ipNet, _ := net.ParseCIDR(cidr)
@@ -608,18 +633,23 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 	}
 	defer rows.Close()
 
-	externalInterface := "qg-ext-" + routerID[:7]
-
-	// Enable SNAT for each internal subnet
-	if enableSNAT {
+	// Single-node WS-3: masquerade each internal subnet out the node's real
+	// uplink in the default namespace, where the VMs and their gateway bridge
+	// live (the multi-node per-router-netns SNAT never sees this traffic).
+	// enable_snat=false (a transparent router) skips it.
+	if enableSNAT && svc.mode != "stub" {
+		uplink, uerr := networking.DefaultUplinkInterface()
+		if uerr != nil {
+			log.Warn().Err(uerr).Str("router_id", routerID).Msg("WS-3: cannot detect node uplink; egress SNAT not programmed")
+			return nil
+		}
 		for rows.Next() {
 			var internalCIDR string
 			if err := rows.Scan(&internalCIDR); err != nil {
 				continue
 			}
-
-			if err := svc.routerManager.EnableSNAT(routerID, externalInterface, internalCIDR); err != nil {
-				log.Warn().Err(err).Str("router_id", routerID).Str("cidr", internalCIDR).Msg("failed to enable SNAT")
+			if err := svc.routerManager.EnsureEgressSNAT(internalCIDR, uplink); err != nil {
+				log.Warn().Err(err).Str("router_id", routerID).Str("cidr", internalCIDR).Msg("WS-3: failed to enable egress SNAT")
 			}
 		}
 		if err := rows.Err(); err != nil {

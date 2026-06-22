@@ -1,24 +1,36 @@
 #!/usr/bin/env bash
 # SPEC-009 WS-2 (T016 / SC-003): a VM keeps its IP across an O3K control-plane
 # restart. The dev host runs o3k in the foreground, so the restart is manual;
-# this two-phase script records the before-state and verifies the after-state.
+# this two-phase script records the before-state to a file and verifies the
+# after-state — no need to copy/paste the (quote-laden) addresses string.
 #   1) ./test/ws2_restart_survival_test.sh record <server>
-#   2) restart the o3k process (Ctrl-C, then re-run it)
-#   3) ./test/ws2_restart_survival_test.sh verify <server> '<addresses-from-step-1>'
+#   2) restart the o3k process (Ctrl-C in T1, then re-run it)
+#   3) ./test/ws2_restart_survival_test.sh verify <server>
 set -euo pipefail
 : "${OS_AUTH_URL:?source your OpenStack env first}"
 cmd="${1:-record}"; vm="${2:-vm1}"
+statefile="${TMPDIR:-/tmp}/ws2-${vm}.addr"
 
 case "$cmd" in
   record)
     ip=$(openstack server show "$vm" -f value -c addresses)
+    printf '%s' "$ip" > "$statefile"
     echo "[ws2] $vm addresses before restart: $ip"
-    echo "Now restart o3k, then run: $0 verify $vm '$ip'"
+    echo "[ws2] recorded to $statefile"
+    echo "Now restart o3k (Ctrl-C in T1, then re-run §6), then run: $0 verify $vm"
     ;;
   verify)
-    want="${3:?expected addresses string from the record step}"
+    # Default to the recorded file; an explicit 3rd arg overrides it.
+    if [ -n "${3:-}" ]; then
+      want="$3"
+    elif [ -f "$statefile" ]; then
+      want=$(cat "$statefile")
+    else
+      echo "FAIL: no recorded state at $statefile — run '$0 record $vm' first"; exit 1
+    fi
     got=$(openstack server show "$vm" -f value -c addresses)
-    echo "[ws2] $vm addresses after restart: $got"
+    echo "[ws2] $vm addresses before restart: $want"
+    echo "[ws2] $vm addresses after  restart: $got"
     if [ "$got" = "$want" ]; then
       echo "PASS: same IP retained across the control-plane restart"
     else
@@ -30,5 +42,5 @@ case "$cmd" in
       echo "WARN: no o3k dnsmasq found after restart"
     fi
     ;;
-  *) echo "usage: $0 record|verify <server> [expected-addresses]"; exit 1 ;;
+  *) echo "usage: $0 record|verify <server>"; exit 1 ;;
 esac

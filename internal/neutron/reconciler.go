@@ -64,6 +64,73 @@ func (r *NetworkReconciler) Stop() { close(r.stopChan) }
 func (r *NetworkReconciler) reconcile(ctx context.Context) {
 	r.reconcileNetworks(ctx)
 	r.reconcileSubnets(ctx)
+	r.reconcileNAT(ctx)
+}
+
+// reconcileNAT re-asserts egress SNAT for every router with an external gateway
+// (per attached internal subnet) and re-asserts every associated floating IP's
+// NAT — so VM internet access and floating-IP reachability survive an O3K
+// control-plane restart (SPEC-009 WS-3 / T035). Idempotent.
+func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
+	// Egress: internal subnets behind a router that has an external gateway.
+	var cidrs []string
+	if rows, err := database.DB.Query(ctx, `
+		SELECT DISTINCT s.cidr
+		FROM routers rt
+		JOIN router_interfaces ri ON ri.router_id = rt.id
+		JOIN subnets s ON s.id = ri.subnet_id
+		WHERE rt.external_gateway_info IS NOT NULL
+		  AND rt.external_gateway_info::text <> 'null'`); err == nil {
+		for rows.Next() {
+			var cidr string
+			if err := rows.Scan(&cidr); err == nil {
+				cidrs = append(cidrs, cidr)
+			}
+		}
+		rows.Close()
+	} else {
+		log.Error().Err(err).Msg("reconcile: failed to query NAT subnets")
+	}
+
+	// Floating IPs currently associated to a port.
+	type fipRow struct{ floating, fixed, port string }
+	var fips []fipRow
+	if rows, err := database.DB.Query(ctx, `
+		SELECT floating_ip_address, fixed_ip_address, port_id
+		FROM floating_ips
+		WHERE port_id IS NOT NULL AND fixed_ip_address IS NOT NULL`); err == nil {
+		for rows.Next() {
+			var f fipRow
+			if err := rows.Scan(&f.floating, &f.fixed, &f.port); err == nil && f.floating != "" && f.fixed != "" {
+				fips = append(fips, f)
+			}
+		}
+		rows.Close()
+	} else {
+		log.Error().Err(err).Msg("reconcile: failed to query floating IPs")
+	}
+
+	if len(cidrs) == 0 && len(fips) == 0 {
+		return
+	}
+	uplink, err := networking.DefaultUplinkInterface()
+	if err != nil {
+		log.Debug().Err(err).Msg("reconcile: no uplink for north-south NAT")
+		return
+	}
+	for _, cidr := range cidrs {
+		if err := r.svc.routerManager.EnsureEgressSNAT(cidr, uplink); err != nil {
+			log.Debug().Err(err).Str("cidr", cidr).Msg("reconcile: egress SNAT")
+		}
+	}
+	for _, f := range fips {
+		if err := r.svc.routerManager.EnsureFloatingIP(f.floating, f.fixed, uplink); err != nil {
+			log.Debug().Err(err).Str("floating_ip", f.floating).Msg("reconcile: floating IP")
+		}
+		if err := r.svc.routerManager.EnsureIngressFilter(f.fixed, uplink, r.svc.portIngressRules(ctx, f.port)); err != nil {
+			log.Debug().Err(err).Str("fixed_ip", f.fixed).Msg("reconcile: ingress filter")
+		}
+	}
 }
 
 // reconcileNetworks ensures each network's bridge exists. Best-effort: bridges

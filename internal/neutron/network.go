@@ -130,6 +130,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Security Group Rules
 		v2.GET("/security-group-rules", svc.ListSecurityGroupRules)
+		v2.GET("/security-group-rules/:id", svc.GetSecurityGroupRule)
 		v2.POST("/security-group-rules", svc.CreateSecurityGroupRule)
 		v2.DELETE("/security-group-rules/:id", svc.DeleteSecurityGroupRule)
 
