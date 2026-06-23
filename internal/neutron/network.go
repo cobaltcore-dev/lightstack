@@ -56,6 +56,7 @@ func NewService(mode string, cacheInstance *cache.Cache) *Service {
 // RegisterRoutes registers Neutron routes
 func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// Version discovery
+	r.GET("/", svc.ListVersions)
 	r.GET("/v2.0", svc.GetVersion)
 
 	v2 := r.Group("/v2.0")
@@ -245,6 +246,23 @@ func (svc *Service) GetVersion(c *gin.Context) {
 			"status": "CURRENT",
 			"links": []gin.H{
 				{"rel": "self", "href": "/v2.0"},
+			},
+		},
+	})
+}
+
+// ListVersions serves the neutron version list at the root ("/") for version
+// discovery — standard neutron behavior (Keystone/Nova/Glance already serve theirs;
+// neutron previously 404'd at "/"). SPEC-009.
+func (svc *Service) ListVersions(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"versions": []gin.H{
+			{
+				"id":     "v2.0",
+				"status": "CURRENT",
+				"links": []gin.H{
+					{"rel": "self", "href": fmt.Sprintf("%s/v2.0", common.BaseURL(c, 9696))},
+				},
 			},
 		},
 	})
