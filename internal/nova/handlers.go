@@ -176,6 +176,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Volume attachments
 		v21.GET("/servers/:id/os-volume_attachments", svc.ListVolumeAttachments)
+		v21.GET("/servers/:id/os-volume_attachments/:volume_id", svc.GetVolumeAttachment)
 		v21.POST("/servers/:id/os-volume_attachments", svc.AttachVolume)
 		v21.DELETE("/servers/:id/os-volume_attachments/:volume_id", svc.DetachVolume)
 
@@ -272,6 +273,17 @@ func bootVolumeID(req *CreateServerRequest) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// markInstanceError flags an instance ERROR (best-effort), used from the
+// VM-creation goroutine's failure paths. Uses svc.ctx so it still runs even if
+// the request context was cancelled.
+func (svc *Service) markInstanceError(instanceID string) {
+	if _, err := database.DB.Exec(svc.ctx,
+		"UPDATE instances SET status = 'ERROR', updated_at = $1 WHERE id = $2",
+		time.Now(), instanceID); err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ERROR")
+	}
 }
 
 // CreateServer creates a new server instance
@@ -497,6 +509,26 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			// the image's raw base so each VM is isolated (SPEC-009 WS-0/WS-5).
 			var imagePath string
 			if rootVol, rootDOT := bootVolumeID(&req); rootVol != "" {
+				// Validate the boot volume before using it as the root disk: it must
+				// exist, belong to this project, and be available + bootable
+				// (SPEC-009 WS-5) — otherwise the VM would boot against an
+				// unvalidated/foreign volume or a missing backing file.
+				var volStatus, volProject, volAttached string
+				var volBootable bool
+				if err := database.DB.QueryRow(ctx,
+					"SELECT status, COALESCE(bootable, false), project_id, COALESCE(attached_to_instance_id::text, '') FROM volumes WHERE id = $1",
+					rootVol).Scan(&volStatus, &volBootable, &volProject, &volAttached); err != nil {
+					log.Error().Err(err).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: root volume not found")
+					svc.markInstanceError(instanceID)
+					return
+				}
+				if volProject != projectID || volStatus != "available" || !volBootable || volAttached != "" {
+					log.Error().Str("instance_id", instanceID).Str("volume_id", rootVol).
+						Str("status", volStatus).Bool("bootable", volBootable).Bool("owned", volProject == projectID).
+						Msg("boot-from-volume: root volume not eligible (need available + bootable + owned + unattached)")
+					svc.markInstanceError(instanceID)
+					return
+				}
 				imagePath = storage.LocalVolumePath(rootVol)
 				// boot-from-volume skips StageOverlay, so create the per-instance
 				// directory the serial console.log lives in — otherwise libvirt
@@ -510,16 +542,24 @@ func (svc *Service) CreateServer(c *gin.Context) {
 					}
 					return
 				}
+				// Record the attachment first, then mark the volume in-use. Both must
+				// succeed: a half-write means the VM boots but the DB is inconsistent
+				// (no attachment row → FR-023 can't release/delete the volume on
+				// server delete), so treat any failure as fatal.
 				bvNow := time.Now()
-				if _, e := database.DB.Exec(ctx,
-					"UPDATE volumes SET attached_to_instance_id = $1, status = 'in-use', updated_at = $2 WHERE id = $3",
-					instanceID, bvNow, rootVol); e != nil {
-					log.Warn().Err(e).Str("volume_id", rootVol).Msg("boot-from-volume: failed to mark volume in-use")
-				}
 				if _, e := database.DB.Exec(ctx,
 					"INSERT INTO volume_attachments (id, volume_id, instance_id, device, delete_on_termination, attached_at) VALUES ($1, $2, $3, $4, $5, $6)",
 					uuid.New().String(), rootVol, instanceID, "/dev/vda", rootDOT, bvNow); e != nil {
-					log.Warn().Err(e).Str("volume_id", rootVol).Msg("boot-from-volume: failed to record root attachment")
+					log.Error().Err(e).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: failed to record root attachment")
+					svc.markInstanceError(instanceID)
+					return
+				}
+				if _, e := database.DB.Exec(ctx,
+					"UPDATE volumes SET attached_to_instance_id = $1, status = 'in-use', updated_at = $2 WHERE id = $3",
+					instanceID, bvNow, rootVol); e != nil {
+					log.Error().Err(e).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: failed to mark volume in-use")
+					svc.markInstanceError(instanceID)
+					return
 				}
 			} else {
 				parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
@@ -975,66 +1015,115 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		logger.Info().Str("libvirt_domain_id", libvirtDomainID.String).Msg("VM deleted from libvirt")
 	}
 
-	// SPEC-009 FR-023: release (or, for delete-on-termination, delete) the
-	// volumes attached to this instance. Done BEFORE the instance row is removed
-	// so an ON DELETE CASCADE can't drop the attachment rows first.
-	if rows, vaErr := database.DB.Query(c.Request.Context(),
-		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1", instanceUUID); vaErr != nil {
-		logger.Warn().Err(vaErr).Str("instance_id", instanceUUID).Msg("failed to query volume attachments on delete")
-	} else {
-		type attachedVol struct {
-			id  string
-			dot bool
-		}
-		var attached []attachedVol
-		for rows.Next() {
-			var a attachedVol
-			if scanErr := rows.Scan(&a.id, &a.dot); scanErr == nil {
-				attached = append(attached, a)
-			}
-		}
-		rows.Close()
-		for _, a := range attached {
-			if a.dot {
-				// delete-on-termination: drop the volume (DB row + local backing).
-				if _, e := database.DB.Exec(c.Request.Context(), "DELETE FROM volumes WHERE id = $1", a.id); e != nil {
-					logger.Warn().Err(e).Str("volume_id", a.id).Msg("failed to delete volume on termination")
-				}
-				if e := storage.RemoveLocalVolume(a.id); e != nil {
-					logger.Warn().Err(e).Str("volume_id", a.id).Msg("failed to remove local volume backing on termination")
-				}
-			} else {
-				// release: detach and return the volume to available.
-				if _, e := database.DB.Exec(c.Request.Context(),
-					"UPDATE volumes SET status = 'available', attached_to_instance_id = NULL, updated_at = $1 WHERE id = $2",
-					time.Now(), a.id); e != nil {
-					logger.Warn().Err(e).Str("volume_id", a.id).Msg("failed to release volume on delete")
-				}
-			}
-		}
-		if _, e := database.DB.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE instance_id = $1", instanceUUID); e != nil {
-			logger.Warn().Err(e).Str("instance_id", instanceUUID).Msg("failed to remove volume attachments on delete")
+	// SPEC-009 FR-023: release (or, for delete-on-termination, delete) the volumes
+	// attached to this instance, drop its auto-allocated neutron ports, and delete
+	// the instance row — all in ONE transaction so a mid-sequence failure can't
+	// leave split state (e.g. a volume deleted while the server still exists). The
+	// attachment rows are read+resolved before the instance delete so the cascade
+	// can't drop them first. Filesystem cleanup (volume backing, overlay dir) is
+	// best-effort and runs only after the transaction commits.
+	ctx := c.Request.Context()
+	tx, txErr := database.DB.Begin(ctx)
+	if txErr != nil {
+		logger.Error().Err(txErr).Str("instance_id", instanceUUID).Msg("delete: begin tx failed")
+		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), txErr)
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+	defer tx.Rollback(ctx) // no-op once committed
+
+	rows, vaErr := tx.Query(ctx,
+		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1", instanceUUID)
+	if vaErr != nil {
+		logger.Error().Err(vaErr).Str("instance_id", instanceUUID).Msg("delete: query volume attachments failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+	type attachedVol struct {
+		id  string
+		dot bool
+	}
+	var attached []attachedVol
+	for rows.Next() {
+		var a attachedVol
+		if scanErr := rows.Scan(&a.id, &a.dot); scanErr == nil {
+			attached = append(attached, a)
 		}
 	}
+	rows.Close()
+	if rErr := rows.Err(); rErr != nil {
+		logger.Error().Err(rErr).Str("instance_id", instanceUUID).Msg("delete: iterate volume attachments failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
 
-	// Delete from database (support lookup by ID or name)
+	// Resolve each attachment in the tx; collect delete-on-termination volume ids
+	// so their backing files are removed after commit (filesystem ops can't be
+	// transactional).
+	var dotVolumes []string
+	for _, a := range attached {
+		if a.dot {
+			if _, e := tx.Exec(ctx, "DELETE FROM volumes WHERE id = $1", a.id); e != nil {
+				logger.Error().Err(e).Str("volume_id", a.id).Msg("delete: drop delete-on-termination volume failed")
+				common.SendError(c, common.NewInternalServerError("failed to delete server"))
+				return
+			}
+			dotVolumes = append(dotVolumes, a.id)
+		} else {
+			if _, e := tx.Exec(ctx,
+				"UPDATE volumes SET status = 'available', attached_to_instance_id = NULL, updated_at = $1 WHERE id = $2",
+				time.Now(), a.id); e != nil {
+				logger.Error().Err(e).Str("volume_id", a.id).Msg("delete: release volume failed")
+				common.SendError(c, common.NewInternalServerError("failed to delete server"))
+				return
+			}
+		}
+	}
+	if _, e := tx.Exec(ctx, "DELETE FROM volume_attachments WHERE instance_id = $1", instanceUUID); e != nil {
+		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: remove volume attachments failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+
+	// Delete the instance's auto-allocated neutron ports (Nova owns them). Without
+	// this the port lingers after the server is gone, and deleting its network then
+	// fails with "network has active ports" — which breaks `terraform destroy`
+	// (SPEC-009 / SC-007) and leaks ports.
+	if _, e := tx.Exec(ctx, "DELETE FROM ports WHERE device_id = $1", instanceUUID); e != nil {
+		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: remove instance ports failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+
+	// Delete the instance row (support lookup by ID or name).
 	queryStart = time.Now()
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = tx.Exec(ctx,
 		"DELETE FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
 	)
 	middleware.LogDatabaseQuery(c, "DELETE instance", time.Since(queryStart), err)
-
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to delete instance from database")
-		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
 		log.Error().Err(err).Str("operation", "delete_instance").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete server"))
 		return
 	}
 
-	// Remove the per-instance disk overlay directory (best-effort; a missing
-	// directory is fine — e.g. stub mode never staged one). SPEC-009 WS-0/FR-005.
+	if err := tx.Commit(ctx); err != nil {
+		logger.Error().Err(err).Str("instance_id", instanceUUID).Msg("delete: commit failed")
+		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+
+	// Post-commit, best-effort filesystem cleanup: delete-on-termination volume
+	// backings and the per-instance overlay directory (a missing dir is fine — e.g.
+	// stub mode never staged one). SPEC-009 WS-0/WS-5/FR-005/FR-023.
+	for _, id := range dotVolumes {
+		if e := storage.RemoveLocalVolume(id); e != nil {
+			logger.Warn().Err(e).Str("volume_id", id).Msg("delete: remove local volume backing (post-commit)")
+		}
+	}
 	if rmErr := hypervisor.RemoveInstanceDir(instanceUUID); rmErr != nil {
 		logger.Warn().Err(rmErr).Str("instance_id", instanceUUID).Msg("failed to remove per-instance disk directory")
 	}

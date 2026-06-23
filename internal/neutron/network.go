@@ -493,15 +493,30 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		}
 	}
 
+	// Honor the neutron list filters the Terraform provider + CLI use to resolve a
+	// network by id or name; without these a by-id lookup returns every network and
+	// the provider fails with "More than one network found" (SPEC-009 / SC-007).
+	var filterCondition string
+	if idParam := c.Query("id"); idParam != "" {
+		filterCondition += fmt.Sprintf(" AND id::text = $%d", argIdx)
+		queryArgs = append(queryArgs, idParam)
+		argIdx++
+	}
+	if nameParam := c.Query("name"); nameParam != "" {
+		filterCondition += fmt.Sprintf(" AND name = $%d", argIdx)
+		queryArgs = append(queryArgs, nameParam)
+		argIdx++
+	}
+
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at
 		FROM networks
-		WHERE (project_id = $1 OR shared = true)%s
+		WHERE (project_id = $1 OR shared = true)%s%s
 		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+	`, markerCondition, filterCondition, argIdx, argIdx+1), queryArgs...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_networks").Msg("database error")

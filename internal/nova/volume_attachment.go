@@ -168,11 +168,57 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"volumeAttachment": gin.H{
-			"id":         attachmentID,
+			// Nova convention: the attachment id IS the volume id — clients (CLI,
+			// gophercloud, Terraform) read back and detach by this id. The internal
+			// row uuid stays in the DB (SPEC-009 / SC-007).
+			"id":         req.VolumeAttachment.VolumeID,
 			"volumeId":   req.VolumeAttachment.VolumeID,
 			"serverId":   instanceID,
 			"device":     device,
 			"attachedAt": now.Format(time.RFC3339),
+		},
+	})
+}
+
+// GetVolumeAttachment returns a single volume attachment. Per the Nova API the
+// attachment id IS the volume id; the Terraform provider reads the attachment
+// back by that id after create (SPEC-009 / SC-007).
+func (svc *Service) GetVolumeAttachment(c *gin.Context) {
+	instanceID := c.Param("id")
+	volumeID := c.Param("volume_id")
+	projectID := c.GetString("project_id")
+
+	var exists bool
+	if err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
+		instanceID, projectID).Scan(&exists); err != nil || !exists {
+		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+
+	var device string
+	var attachedAt time.Time
+	err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT device, attached_at FROM volume_attachments WHERE volume_id = $1 AND instance_id = $2",
+		volumeID, instanceID,
+	).Scan(&device, &attachedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("volume attachment"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "get_volume_attachment").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to get volume attachment"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"volumeAttachment": gin.H{
+			"id":         volumeID,
+			"volumeId":   volumeID,
+			"serverId":   instanceID,
+			"device":     device,
+			"attachedAt": attachedAt.Format(time.RFC3339),
 		},
 	})
 }
@@ -278,7 +324,7 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 
 	// List attachments
 	rows, err := database.DB.Query(c.Request.Context(), `
-		SELECT id, volume_id, device, attached_at
+		SELECT volume_id, device, attached_at
 		FROM volume_attachments
 		WHERE instance_id = $1
 		ORDER BY attached_at
@@ -293,15 +339,15 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 
 	var attachments []gin.H
 	for rows.Next() {
-		var id, volumeID, device string
+		var volumeID, device string
 		var attachedAt time.Time
 
-		if err := rows.Scan(&id, &volumeID, &device, &attachedAt); err != nil {
+		if err := rows.Scan(&volumeID, &device, &attachedAt); err != nil {
 			continue
 		}
 
 		attachments = append(attachments, gin.H{
-			"id":         id,
+			"id":         volumeID,
 			"volumeId":   volumeID,
 			"serverId":   instanceID,
 			"device":     device,
