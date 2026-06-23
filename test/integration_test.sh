@@ -2,7 +2,9 @@
 # O3K Integration Test Suite
 # Tests all OpenStack API endpoints and Horizon compatibility
 
-set -e
+# NOT using 'set -e': this suite tracks pass/fail counts itself, and bash's
+# ((counter++)) returns exit status 1 when the counter was 0 — under set -e that
+# aborts the whole run right after the first PASS (same reason quick_test.sh skips it).
 
 # Colors for output
 RED='\033[0;31m'
@@ -272,7 +274,7 @@ test_cinder_volumes() {
     # Extract project ID from token
     PROJECT_ID=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${O3K_URL}/v3/auth/projects" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
-    response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "http://localhost:8776/v3/${PROJECT_ID}/volumes")
+    response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "http://localhost:8776/v3/volumes")
 
     if echo "$response" | grep -q "volumes"; then
         print_pass "Volume list retrieved"
@@ -286,7 +288,7 @@ test_cinder_volumes() {
     VOLUME_NAME="test-volume-$$"
     response=$(curl -s -X POST -H "X-Auth-Token: $OS_TOKEN" \
         -H "Content-Type: application/json" \
-        "http://localhost:8776/v3/${PROJECT_ID}/volumes" \
+        "http://localhost:8776/v3/volumes" \
         -d '{
             "volume": {
                 "name": "'$VOLUME_NAME'",
@@ -305,7 +307,7 @@ test_cinder_volumes() {
 
     print_test "Cinder: List volume types"
 
-    response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "http://localhost:8776/v3/${PROJECT_ID}/types")
+    response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "http://localhost:8776/v3/types")
 
     if echo "$response" | grep -q "volume_types"; then
         print_pass "Volume type list retrieved"
@@ -420,7 +422,7 @@ test_cross_service() {
         }')
 
     if echo "$response" | grep -q "$SERVER_NAME"; then
-        SERVER_ID=$(echo "$response" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        SERVER_ID=$(echo "$response" | jq -r '.server.id')
         export SERVER_ID
         print_pass "Server created: $SERVER_ID"
 
@@ -430,7 +432,7 @@ test_cross_service() {
             sleep 2
             status=$(curl -s -H "X-Auth-Token: $OS_TOKEN" \
                 "http://localhost:8774/v2.1/servers/${SERVER_ID}" | \
-                grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+                jq -r '.server.status')
 
             if [ "$status" = "ACTIVE" ] || [ "$status" = "ERROR" ]; then
                 break
@@ -470,7 +472,7 @@ test_cleanup() {
     if [ -n "$VOLUME_ID" ]; then
         PROJECT_ID=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${O3K_URL}/v3/auth/projects" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
         curl -s -X DELETE -H "X-Auth-Token: $OS_TOKEN" \
-            "http://localhost:8776/v3/${PROJECT_ID}/volumes/${VOLUME_ID}" > /dev/null
+            "http://localhost:8776/v3/volumes/${VOLUME_ID}" > /dev/null
         print_info "Deleted volume: $VOLUME_ID"
     fi
 
