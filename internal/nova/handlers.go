@@ -513,11 +513,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// exist, belong to this project, and be available + bootable
 				// (SPEC-009 WS-5) — otherwise the VM would boot against an
 				// unvalidated/foreign volume or a missing backing file.
-				var volStatus, volProject, volAttached string
+				var volStatus, volProject, volAttached, rbdPool, rbdImage string
 				var volBootable bool
 				if err := database.DB.QueryRow(ctx,
-					"SELECT status, COALESCE(bootable, false), project_id, COALESCE(attached_to_instance_id::text, '') FROM volumes WHERE id = $1",
-					rootVol).Scan(&volStatus, &volBootable, &volProject, &volAttached); err != nil {
+					"SELECT status, COALESCE(bootable, false), project_id, COALESCE(attached_to_instance_id::text, ''), COALESCE(rbd_pool, ''), COALESCE(rbd_image, '') FROM volumes WHERE id = $1",
+					rootVol).Scan(&volStatus, &volBootable, &volProject, &volAttached, &rbdPool, &rbdImage); err != nil {
 					log.Error().Err(err).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: root volume not found")
 					svc.markInstanceError(instanceID)
 					return
@@ -529,7 +529,18 @@ func (svc *Service) CreateServer(c *gin.Context) {
 					svc.markInstanceError(instanceID)
 					return
 				}
-				imagePath = storage.LocalVolumePath(rootVol)
+				// Root disk = the bootable volume's backing, selected exactly like the
+				// attach path (volumeDiskXML): if the node-local qcow2 exists it's a
+				// local volume; otherwise it's RBD (rbd:pool/image, which GenerateVMXML
+				// renders as a network disk). Do NOT key off rbd_pool/rbd_image — o3k
+				// sets those defaults on every volume, local ones included, so they
+				// can't distinguish the backend (SPEC-009 WS-5). Local is the validated
+				// v1 mode; the RBD branch shares the (Ceph-untested) attach RBD path.
+				if localPath := storage.LocalVolumePath(rootVol); fileExists(localPath) {
+					imagePath = localPath
+				} else {
+					imagePath = "rbd:" + rbdPool + "/" + rbdImage
+				}
 				// boot-from-volume skips StageOverlay, so create the per-instance
 				// directory the serial console.log lives in — otherwise libvirt
 				// fails to start the domain (SPEC-009 WS-5).
@@ -1030,7 +1041,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to delete server"))
 		return
 	}
-	defer tx.Rollback(ctx) // no-op once committed
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
 
 	rows, vaErr := tx.Query(ctx,
 		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1", instanceUUID)

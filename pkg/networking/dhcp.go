@@ -8,6 +8,8 @@ import (
 	"sync"
 	"syscall"
 	"text/template"
+
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 )
 
 // DHCPManager manages DHCP servers (dnsmasq)
@@ -32,7 +34,7 @@ func NewDHCPManager(mode string) *DHCPManager {
 
 	if mode != "stub" {
 		// Both iptables and eBPF use real DHCP
-		baseDir := "/var/lib/o3k/dhcp"
+		baseDir := paths.DHCPDir()
 		_ = os.MkdirAll(baseDir, 0755)
 		_ = os.MkdirAll(filepath.Join(baseDir, "leases"), 0755)
 		_ = os.MkdirAll(filepath.Join(baseDir, "configs"), 0755)
@@ -126,10 +128,15 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 	return nil
 }
 
-// killProcess terminates the running dnsmasq for a network (best-effort) and
-// clears its tracked PID, leaving the lease file intact so a later StartDHCP
-// preserves existing leases.
+// killProcess terminates EVERY dnsmasq bound to a network's config (not just the
+// one named in the pid-file) and clears its tracked PID, leaving the lease file
+// intact so a later StartDHCP preserves existing leases. Killing all of them
+// stops orphans from a previous o3k accumulating into multiple dnsmasq on one
+// bridge (SPEC-009 WS-2).
 func (m *DHCPManager) killProcess(networkID string) {
+	// pkill -f matches the config path in the cmdline → catches untracked orphans
+	// the pid-file no longer points at.
+	_ = exec.Command("pkill", "-f", filepath.Join(m.configPath, networkID+".conf")).Run()
 	pidFile := filepath.Join(m.pidPath, networkID+".pid")
 	if pidData, err := os.ReadFile(pidFile); err == nil {
 		var pid int
@@ -173,6 +180,52 @@ func (m *DHCPManager) RestartDHCP(config DHCPConfig, nsName string) error {
 	defer m.restartMu.Unlock()
 	m.killProcess(config.NetworkID) // keep the lease file so leases survive the reload
 	return m.StartDHCP(config, nsName)
+}
+
+// EnsureDHCP guarantees exactly one dnsmasq serves the network without
+// double-starting. If one is already tracked as running it is a no-op; otherwise
+// it first kills any process named in the persisted pid-file — an orphan left by
+// a previous o3k instance, since pid-files live on the hostPath and survive a
+// control-plane restart — then starts a fresh one. Serialized against RestartDHCP
+// (and itself) via restartMu so a periodic reconcile and a concurrent
+// port-allocation reload can't each spawn a dnsmasq on the same bridge
+// (SPEC-009 WS-2).
+func (m *DHCPManager) EnsureDHCP(config DHCPConfig, nsName string) error {
+	if m.mode == "stub" {
+		return m.StartDHCP(config, nsName)
+	}
+	m.restartMu.Lock()
+	defer m.restartMu.Unlock()
+	if m.IsRunning(config.NetworkID) {
+		return nil // already serving and tracked — idempotent
+	}
+	m.killProcess(config.NetworkID) // reap a stale orphan from a previous o3k before starting
+	return m.StartDHCP(config, nsName)
+}
+
+// PruneDHCP stops any tracked dnsmasq whose network is no longer active (its DB
+// row was deleted). Best-effort; complements EnsureDHCP, which only (re)starts
+// dnsmasq for networks that still exist (SPEC-009 WS-2).
+func (m *DHCPManager) PruneDHCP(active map[string]bool) {
+	m.mu.Lock()
+	var stale []string
+	if m.mode == "stub" {
+		for nid := range m.stubDHCP {
+			if !active[nid] {
+				stale = append(stale, nid)
+			}
+		}
+	} else {
+		for nid := range m.runningPIDs {
+			if !active[nid] {
+				stale = append(stale, nid)
+			}
+		}
+	}
+	m.mu.Unlock()
+	for _, nid := range stale {
+		_ = m.StopDHCP(nid)
+	}
 }
 
 // writeDNSMasqConfig writes dnsmasq configuration file

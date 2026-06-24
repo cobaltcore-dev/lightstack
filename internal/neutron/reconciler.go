@@ -160,6 +160,34 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 			log.Debug().Err(err).Str("network_id", networkID).Str("bridge", bridgeName).Msg("reconcile: bridge ensure (likely already present)")
 		}
 	}
+
+	// Prune real-mode state for networks that no longer exist: a deleted network's
+	// bridge persists in the kernel and keeps claiming its subnet gateway IP,
+	// colliding with a later network on the same CIDR (the recurring single-node
+	// stale-bridge problem). Delete those bridges and stop their dnsmasq.
+	active := make(map[string]bool, len(ids))
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		active[id] = true
+		if len(id) >= 8 {
+			want["br-"+id[:8]] = true
+		}
+	}
+	if bridges, err := r.svc.brManager.ListManagedBridges(); err != nil {
+		log.Debug().Err(err).Msg("reconcile: list bridges for prune")
+	} else {
+		for _, b := range bridges {
+			if want[b] {
+				continue
+			}
+			if err := r.svc.brManager.DeleteBridge(b, false, ""); err != nil {
+				log.Debug().Err(err).Str("bridge", b).Msg("reconcile: prune stale bridge")
+			} else {
+				log.Info().Str("bridge", b).Msg("reconcile: pruned stale bridge (network deleted)")
+			}
+		}
+	}
+	r.svc.dhcpManager.PruneDHCP(active)
 }
 
 // reconcileSubnets re-applies DHCP for every network that has a DHCP-enabled
@@ -250,7 +278,7 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 	if restart {
 		dhcpErr = svc.dhcpManager.RestartDHCP(cfg, "")
 	} else {
-		dhcpErr = svc.dhcpManager.StartDHCP(cfg, "")
+		dhcpErr = svc.dhcpManager.EnsureDHCP(cfg, "")
 	}
 	if dhcpErr != nil {
 		log.Warn().Err(dhcpErr).Str("network_id", networkID).Msg("dhcp apply: failed to (re)start DHCP")
