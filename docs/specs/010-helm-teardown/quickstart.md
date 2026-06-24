@@ -1,6 +1,6 @@
 # Quickstart: Clean teardown & pristine redeploy
 
-**Feature**: SPEC-009 | **Refs**: spec.md (US1/US2/US3), SC-001/002/003/004
+**Feature**: SPEC-010 | **Refs**: spec.md (US1/US2/US3), SC-001/002/003/004
 
 How an operator tears a release down with **no state leakage** and redeploys onto a pristine baseline. Single-node (the validated scope); multi-node host purge is tracked in [#52](https://github.com/cobaltcore-dev/o3k/issues/52).
 

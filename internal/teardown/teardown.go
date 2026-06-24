@@ -1,5 +1,5 @@
 // Package teardown implements o3k's release-scoped cleanup: the purge the Helm
-// pre-delete hook runs on `dataRetentionPolicy: delete` (SPEC-009 / issue #53).
+// pre-delete hook runs on `dataRetentionPolicy: delete` (SPEC-010 / issue #53).
 //
 // It enumerates release state from the database (the source of truth), purges it
 // in dependency-safe order — compute (libvirt domains) → network (namespaces,

@@ -1,6 +1,6 @@
 # Research: Teardown via Helm Pre-Delete Hooks (Phase 0)
 
-**Feature**: SPEC-009 | **Date**: 2026-06-15 | **Input**: [spec.md](./spec.md), [plan.md](./plan.md)
+**Feature**: SPEC-010 | **Date**: 2026-06-15 | **Input**: [spec.md](./spec.md), [plan.md](./plan.md)
 
 The spec's 9 clarifications (3 rounds) already resolved the policy questions (DB reset, multi-node deferral, PVC/hostPath, backend ownership, fail-closed, quiesce). This document resolves the remaining **design/technical** unknowns the plan must commit to. All codebase facts below were verified against the tree on 2026-06-15 (round-3 audit).
 

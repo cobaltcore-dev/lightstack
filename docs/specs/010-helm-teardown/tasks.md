@@ -1,6 +1,6 @@
 # Tasks: Teardown via Helm Pre-Delete Hooks (Clean, No State Leakage)
 
-**Input**: Design documents from `docs/specs/009-helm-teardown/`
+**Input**: Design documents from `docs/specs/010-helm-teardown/`
 **Prerequisites**: plan.md, spec.md, research.md (R1–R9), data-model.md, contracts/ (cli-cleanup, teardown-hooks, values), quickstart.md
 **Tracking issue**: [#53](https://github.com/cobaltcore-dev/o3k/issues/53)
 

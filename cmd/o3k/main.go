@@ -35,7 +35,7 @@ var (
 )
 
 func main() {
-	// Subcommand dispatch: `o3k cleanup` runs the SPEC-009 teardown and exits,
+	// Subcommand dispatch: `o3k cleanup` runs the SPEC-010 teardown and exits,
 	// before flag.Parse (which would otherwise treat the subcommand as a positional).
 	if len(os.Args) > 1 && os.Args[1] == "cleanup" {
 		runCleanup(os.Args[2:])
@@ -317,7 +317,7 @@ func main() {
 	log.Println("O3K stopped")
 }
 
-// runCleanup executes the `o3k cleanup` subcommand: the SPEC-009 release teardown
+// runCleanup executes the `o3k cleanup` subcommand: the SPEC-010 release teardown
 // (issue #53). Exit codes: 0 success, 1 a required class could not be purged
 // (fail-closed — the blocking pre-delete hook then aborts uninstall), 2 usage or
 // config error.

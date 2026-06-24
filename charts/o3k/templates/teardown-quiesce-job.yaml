@@ -1,5 +1,5 @@
 {{- /*
-Teardown quiesce + PVC-delete hook (SPEC-009 / issue #53). Renders ONLY under
+Teardown quiesce + PVC-delete hook (SPEC-010 / issue #53). Renders ONLY under
 dataRetentionPolicy=delete. Pre-delete hook-weight -10: runs after RBAC (-20) and
 before the o3k purge Job (0). Uses an operator-supplied kubectl image (no implicit
 pull, FR-018/R1) to scale the single-node Deployment to 0 (quiesce, FR-019/C6) so

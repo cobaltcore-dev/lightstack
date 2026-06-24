@@ -85,8 +85,8 @@ helm uninstall o3k     # removes all release workloads/Services
 # Persisted data (external DB, hostPath node-local data, networked backends) is retained
 # unless you remove it explicitly per the documented retention choice (FR-014).
 # With dataRetentionPolicy=delete, a blocking pre-delete hook purges host state, node-local
-# storage, and release PVCs, then resets the DB schema (SPEC-009 / issue #53); RBD/S3 stay
-# operator-owned. See docs/specs/009-helm-teardown/quickstart.md.
+# storage, and release PVCs, then resets the DB schema (SPEC-010 / issue #53); RBD/S3 stay
+# operator-owned. See docs/specs/010-helm-teardown/quickstart.md.
 ```
 
 ## Regression gate

@@ -1,6 +1,6 @@
 # Data Model: Teardown via Helm Pre-Delete Hooks (Phase 1)
 
-**Feature**: SPEC-009 | **Date**: 2026-06-15 | **Input**: [spec.md](./spec.md), [research.md](./research.md)
+**Feature**: SPEC-010 | **Date**: 2026-06-15 | **Input**: [spec.md](./spec.md), [research.md](./research.md)
 
 This feature adds no database tables. Its "data model" is three things: (1) the new/extended **configuration values**, (2) the **entities the cleanup enumerates and purges**, and (3) the **Kubernetes resources the chart renders** for teardown.
 

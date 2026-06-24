@@ -1,6 +1,6 @@
 # Contract: rendered teardown hook resources
 
-**Feature**: SPEC-009 | **Surface**: Helm chart (`charts/o3k/templates/teardown-*.yaml`) | **Refs**: FR-001/005/007/011/016, R1/R4/R7
+**Feature**: SPEC-010 | **Surface**: Helm chart (`charts/o3k/templates/teardown-*.yaml`) | **Refs**: FR-001/005/007/011/016, R1/R4/R7
 
 Defines what the chart MUST render so the teardown is blocking, ordered, least-privileged, and gated. **All resources render iff `dataRetentionPolicy == "delete"`.** Under `retain`, none render (SC-004).
 

@@ -1,6 +1,6 @@
 # Contract: `o3k cleanup` command
 
-**Feature**: SPEC-009 | **Surface**: product CLI (the existing single binary) | **Refs**: FR-003/004/005/006/008/010/012/013, R2/R3/R5/R9
+**Feature**: SPEC-010 | **Surface**: product CLI (the existing single binary) | **Refs**: FR-003/004/005/006/008/010/012/013, R2/R3/R5/R9
 
 The blocking pre-delete hook's purge Job invokes this. It also runs standalone (Compose/bare-metal) for host+DB teardown.
 

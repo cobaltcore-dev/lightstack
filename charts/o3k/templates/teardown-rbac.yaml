@@ -1,5 +1,5 @@
 {{- /*
-Teardown RBAC (SPEC-009 / issue #53). Renders ONLY under dataRetentionPolicy=delete.
+Teardown RBAC (SPEC-010 / issue #53). Renders ONLY under dataRetentionPolicy=delete.
 Least-privilege (FR-011 / R7), namespaced, scoped to this release; used by the
 quiesce/PVC-delete hook Job. Pre-delete hook-weight -20 so it exists before the
 hook Jobs (-10, 0) run. The privileged o3k purge Job needs NO Kubernetes RBAC —

@@ -1,6 +1,6 @@
 # Contract: teardown configuration values
 
-**Feature**: SPEC-009 | **Surface**: `charts/o3k/values.yaml` + `values.schema.json` | **Refs**: FR-002/005/016/018, R1
+**Feature**: SPEC-010 | **Surface**: `charts/o3k/values.yaml` + `values.schema.json` | **Refs**: FR-002/005/016/018, R1
 
 The operator-facing config contract this feature adds/finalizes. Backward compatible: defaults reproduce SPEC-008 behavior exactly.
 

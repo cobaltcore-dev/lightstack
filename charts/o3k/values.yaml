@@ -99,7 +99,7 @@ cache:
 #    (Ceph RBD / S3) are operator-owned and NOT purged.
 dataRetentionPolicy: retain   # retain | delete
 
-# -- Teardown hook settings. Effective ONLY when dataRetentionPolicy: delete (SPEC-009).
+# -- Teardown hook settings. Effective ONLY when dataRetentionPolicy: delete (SPEC-010).
 teardown:
   # -- REQUIRED when delete. kubectl image for the quiesce/PVC-delete hook Job
   #    (scale the Deployment to 0, delete release PVCs). No implicit pull —

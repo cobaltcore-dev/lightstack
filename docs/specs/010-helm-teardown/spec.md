@@ -1,6 +1,6 @@
 # Feature Specification: Teardown via Helm Pre-Delete Hooks (Clean, No State Leakage)
 
-**Feature Branch**: `009-helm-teardown` (work branch: `feature/53-teardown-via-helm-pre-delete-hooks-clean-no-state-leakage`)
+**Feature Branch**: `010-helm-teardown` (work branch: `feature/53-teardown-via-helm-pre-delete-hooks-clean-no-state-leakage`)
 **Created**: 2026-06-15
 **Status**: Draft — **9 clarifications resolved via `/clarify` (3 rounds, 2026-06-15); ready for `/plan`**
 **Tracking Issue**: [#53 — Teardown via Helm pre-delete hooks (clean, no state leakage)](https://github.com/cobaltcore-dev/o3k/issues/53)

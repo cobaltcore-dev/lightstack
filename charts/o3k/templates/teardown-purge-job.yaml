@@ -1,5 +1,5 @@
 {{- /*
-Teardown purge hook (SPEC-009 / issue #53) — the blocking, fail-closed gate.
+Teardown purge hook (SPEC-010 / issue #53) — the blocking, fail-closed gate.
 Renders ONLY under dataRetentionPolicy=delete. Pre-delete hook-weight 0: runs
 after quiesce (-10). Runs `o3k cleanup` in a pod with the SAME host access as a
 real-mode instance (privileged + host libvirt socket + host-storage [+ hostNetwork])

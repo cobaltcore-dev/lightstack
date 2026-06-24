@@ -169,7 +169,7 @@ resources (Deployment/DaemonSet, Service, Secret, Ingress) — no orphans (SC-00
 **all persisted/runtime state untouched**: the external database, networked backends (RBD/S3),
 and node-local `hostPath` data on each node.
 
-### Destructive teardown — `dataRetentionPolicy: delete` (SPEC-009 / issue #53)
+### Destructive teardown — `dataRetentionPolicy: delete` (SPEC-010 / issue #53)
 
 Set `dataRetentionPolicy: delete` (and supply `teardown.kubectlImage`) to make `helm uninstall`
 run a **blocking pre-delete purge** before the release is removed:

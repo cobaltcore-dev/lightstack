@@ -1,7 +1,7 @@
 # Implementation Plan: Teardown via Helm Pre-Delete Hooks (Clean, No State Leakage)
 
-**Branch**: `009-helm-teardown` (work branch: `feature/53-teardown-via-helm-pre-delete-hooks-clean-no-state-leakage`) | **Date**: 2026-06-15 | **Spec**: [spec.md](./spec.md)
-**Input**: Feature specification from `docs/specs/009-helm-teardown/spec.md`
+**Branch**: `010-helm-teardown` (work branch: `feature/53-teardown-via-helm-pre-delete-hooks-clean-no-state-leakage`) | **Date**: 2026-06-15 | **Spec**: [spec.md](./spec.md)
+**Input**: Feature specification from `docs/specs/010-helm-teardown/spec.md`
 **Tracking issue**: [#53](https://github.com/cobaltcore-dev/o3k/issues/53)
 
 ## Summary
@@ -53,7 +53,7 @@ Unlike SPEC-008 (a chart with *no* product code changes), this feature has **two
 ### Documentation (this feature)
 
 ```text
-docs/specs/009-helm-teardown/
+docs/specs/010-helm-teardown/
 ├── spec.md              # Feature spec (9 clarifications, 3 rounds, 20 FRs)
 ├── plan.md              # This file
 ├── research.md          # Phase 0 — the design decisions (R1–R9)

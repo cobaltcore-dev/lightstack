@@ -35,7 +35,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- .Values.secrets.existingSecret | default (printf "%s-config" (include "o3k.fullname" .)) -}}
 {{- end -}}
 
-{{/* Teardown (pre-delete hook) resource name prefix (SPEC-009). */}}
+{{/* Teardown (pre-delete hook) resource name prefix (SPEC-010). */}}
 {{- define "o3k.teardown.fullname" -}}
 {{- printf "%s-teardown" (include "o3k.fullname" .) -}}
 {{- end -}}
@@ -84,7 +84,7 @@ FR-006/006a/007/007a/008b/012e/018.
 {{- end -}}
 {{- if eq .Values.dataRetentionPolicy "delete" -}}
 {{-   if not .Values.teardown.kubectlImage -}}
-{{- fail "\n\ndataRetentionPolicy=delete requires teardown.kubectlImage (SPEC-009 / issue #53): the chart pulls no implicit image (FR-018).\nSet --set teardown.kubectlImage=<registry>/kubectl:<tag>\n" -}}
+{{- fail "\n\ndataRetentionPolicy=delete requires teardown.kubectlImage (SPEC-010 / issue #53): the chart pulls no implicit image (FR-018).\nSet --set teardown.kubectlImage=<registry>/kubectl:<tag>\n" -}}
 {{-   end -}}
 {{- end -}}
 {{- end -}}

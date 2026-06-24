@@ -108,7 +108,7 @@ install  → render manifests from values → apply; instances migrate on startu
 upgrade  → values/image change re-renders; external DB + networked/host storage untouched (no data loss);
            single-node real = Recreate (brief downtime); multi-node = DaemonSet rolling update
 uninstall→ all release workloads/Services removed; persisted data (external DB, hostPath/PVC, networked
-           backends) retained (default) — or, under dataRetentionPolicy=delete, the SPEC-009 blocking
+           backends) retained (default) — or, under dataRetentionPolicy=delete, the SPEC-010 blocking
            pre-delete hook quiesces, purges host + node-local storage + release PVCs, and resets the
            DB schema (RBD/S3 stay operator-owned; issue #53)
 ```

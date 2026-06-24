@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPEC-009 (issue #53) — teardown scenario: dataRetentionPolicy=delete, single-node stub.
+# SPEC-010 (issue #53) — teardown scenario: dataRetentionPolicy=delete, single-node stub.
 #
 # Requires a real cluster — NOT runnable in CI sandboxes without one:
 #   a Kubernetes cluster (kind/k3s), kubectl, helm, an external PostgreSQL, an O3K

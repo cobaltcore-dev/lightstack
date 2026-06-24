@@ -1,4 +1,4 @@
-# helm-unittest: SPEC-009 teardown hooks (T007). Render-gating + RBAC least-privilege
+# helm-unittest: SPEC-010 teardown hooks (T007). Render-gating + RBAC least-privilege
 # + the purge Job's blocking/bounded spec. Defaults (retain) must render nothing.
 suite: teardown hooks
 release:
