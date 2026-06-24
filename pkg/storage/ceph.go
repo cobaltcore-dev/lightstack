@@ -33,23 +33,25 @@ type stubVolume struct {
 	createdAt time.Time
 }
 
-// resolveLocalPath returns the node-local storage directory for subdir (e.g.
-// "volumes"). It prefers the host storage path (/var/lib/o3k — the chart's
-// hostPath mount) and falls back to ~/.o3k for non-containerized runs, mirroring
-// pkg/storage/image_store.go (FR-020 / SPEC-009). Co-locating Cinder and Glance
-// node-local data under the same base keeps it persistent across pod restarts
-// (SPEC-008 FR-012a) and reachable by the teardown storage purge (SPEC-009 FR-005).
-func resolveLocalPath(subdir string) string {
-	return resolveLocalPathWithBase("/var/lib/o3k", subdir)
+// LocalVolumeDir is the node-local directory for local-mode volumes — the
+// chart's persistent hostPath. Previously ~/.o3k/volumes, which lives outside
+// the mount and so did not survive pod restarts (SPEC-009 FR-006a). NOTE:
+// feature/53 adds an equivalent helper to this file; coordinate on merge.
+func LocalVolumeDir() string { return paths.VolumesDir() }
+
+// LocalVolumePath is the backing file for a local-mode volume (SPEC-009 WS-5).
+func LocalVolumePath(volumeID string) string {
+	return filepath.Join(LocalVolumeDir(), "volume-"+volumeID+".qcow2")
 }
 
-// resolveLocalPathWithBase is the testable core of resolveLocalPath.
-func resolveLocalPathWithBase(base, subdir string) string {
-	if fi, err := os.Stat(base); err == nil && fi.IsDir() {
-		return filepath.Join(base, subdir)
+// RemoveLocalVolume deletes a local-mode volume's backing file, tolerant of an
+// already-absent file. Used by the Nova delete path for delete-on-termination
+// volumes (SPEC-009 WS-5 / FR-023); RBD backing cleanup routes through Cinder.
+func RemoveLocalVolume(volumeID string) error {
+	if err := os.Remove(LocalVolumePath(volumeID)); err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".o3k", subdir)
+	return nil
 }
 
 // LocalVolumePath is the backing file for a local-mode volume (SPEC-009 WS-5).
@@ -69,9 +71,7 @@ func RemoveLocalVolume(volumeID string) error {
 
 // NewCephClient creates a new storage client
 func NewCephClient(mode, pool, confFile string) *CephClient {
-	// Node-local volumes live under the host storage path (mirroring Glance),
-	// not a bare ~/.o3k, so they persist and the teardown purge can find them.
-	localPath := resolveLocalPath("volumes")
+	localPath := LocalVolumeDir()
 
 	client := &CephClient{
 		mode:        mode,
