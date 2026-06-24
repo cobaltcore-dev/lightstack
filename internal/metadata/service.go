@@ -367,14 +367,21 @@ func (svc *Service) GetEC2MetaData(c *gin.Context) {
 	}
 }
 
-// publicKeysForInstance returns the instance owner's SSH keypairs, ordered by
-// name, for the EC2 public-keys tree.
+// publicKeysForInstance returns the instance's SSH keypair — scoped to the
+// instance's key_name, not every key the owner has — for the EC2 public-keys tree.
 func (svc *Service) publicKeysForInstance(ctx context.Context, instanceID string) []struct{ name, key string } {
+	// Instances do not persist the key_name used at boot, so scope to every
+	// keypair owned by the instance's user (matches GetMetaDataJSON).
 	var userID string
-	if err := database.DB.QueryRow(ctx, `SELECT user_id FROM instances WHERE id = $1`, instanceID).Scan(&userID); err != nil {
+	if err := database.DB.QueryRow(ctx,
+		`SELECT user_id FROM instances WHERE id = $1`, instanceID).Scan(&userID); err != nil {
 		return nil
 	}
-	rows, err := database.DB.Query(ctx, `SELECT name, public_key FROM keypairs WHERE user_id = $1 ORDER BY name`, userID)
+	rows, err := database.DB.Query(ctx, `
+		SELECT name, public_key
+		FROM keypairs
+		WHERE user_id = $1
+		ORDER BY name`, userID)
 	if err != nil {
 		return nil
 	}
