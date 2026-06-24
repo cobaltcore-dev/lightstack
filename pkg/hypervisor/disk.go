@@ -5,16 +5,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-)
 
-// instancesBaseDir is the node-local root for per-instance disk artifacts (the
-// chart's persistent hostPath). Each instance gets its own InstanceDir.
-const instancesBaseDir = "/var/lib/o3k/instances"
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
+)
 
 // InstanceDir returns the per-instance directory that holds an instance's
 // qcow2 overlay disk (SPEC-009 WS-0).
 func InstanceDir(instanceID string) string {
-	return filepath.Join(instancesBaseDir, instanceID)
+	return filepath.Join(paths.InstancesDir(), instanceID)
+}
+
+// CloudInitISOPath returns the per-instance cloud-init config-drive ISO path
+// (SPEC-009 WS-4).
+func CloudInitISOPath(instanceID string) string {
+	return filepath.Join(paths.CloudInitDir(), instanceID+".iso")
 }
 
 // EnsureInstanceDir creates the per-instance directory (idempotent). The domain

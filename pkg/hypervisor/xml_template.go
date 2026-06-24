@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -151,13 +152,13 @@ func GenerateVMXML(spec VMSpec) string {
 	// output (SPEC-009 WS-0).
 	fmt.Fprintf(&sb, `
     <serial type='pty'>
-      <log file='/var/lib/o3k/instances/%s/console.log' append='off'/>
+      <log file='%s' append='off'/>
       <target port='0'/>
     </serial>
     <console type='pty'>
       <target type='serial' port='0'/>
     </console>
-`, spec.UUID)
+`, ConsoleLogPath(spec.UUID))
 
 	// VNC graphics
 	sb.WriteString(`
@@ -171,11 +172,11 @@ func GenerateVMXML(spec VMSpec) string {
 		fmt.Fprintf(&sb, `
     <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
-      <source file='/var/lib/o3k/cloud-init/%s.iso'/>
+      <source file='%s'/>
       <target dev='hdc' bus='ide'/>
       <readonly/>
     </disk>
-`, spec.UUID)
+`, CloudInitISOPath(spec.UUID))
 	}
 
 	// Close devices and domain
@@ -192,8 +193,8 @@ func GenerateCloudInitISO(uuid string, config *CloudInitConfig) (string, error) 
 		return "", nil // No cloud-init requested
 	}
 
-	isoDir := "/var/lib/o3k/cloud-init"
-	isoPath := fmt.Sprintf("%s/%s.iso", isoDir, uuid)
+	isoDir := paths.CloudInitDir()
+	isoPath := CloudInitISOPath(uuid)
 
 	// Create directory if it doesn't exist
 	if err := os.MkdirAll(isoDir, 0755); err != nil {

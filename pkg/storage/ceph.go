@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -36,7 +37,7 @@ type stubVolume struct {
 // chart's persistent hostPath. Previously ~/.o3k/volumes, which lives outside
 // the mount and so did not survive pod restarts (SPEC-009 FR-006a). NOTE:
 // feature/53 adds an equivalent helper to this file; coordinate on merge.
-func LocalVolumeDir() string { return "/var/lib/o3k/volumes" }
+func LocalVolumeDir() string { return paths.VolumesDir() }
 
 // LocalVolumePath is the backing file for a local-mode volume (SPEC-009 WS-5).
 func LocalVolumePath(volumeID string) string {

@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -45,7 +46,7 @@ type stubImage struct {
 
 // LocalImageDir is the node-local directory for raw image bases in real mode
 // (the chart's persistent hostPath).
-func LocalImageDir() string { return "/var/lib/o3k/images" }
+func LocalImageDir() string { return paths.ImagesDir() }
 
 // imageFileName is the on-disk filename for a stored image (raw base).
 func imageFileName(imageID string) string { return "image-" + imageID + ".raw" }
