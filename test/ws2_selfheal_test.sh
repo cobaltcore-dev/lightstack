@@ -9,7 +9,7 @@ INTERVAL="${O3K_RECONCILE_INTERVAL:-35}"   # reconcile_interval (default 30s) + 
 count() { pgrep -fa dnsmasq 2>/dev/null | grep -c "var/lib/o3k/dhcp" || true; }
 
 before=$(count)
-[ "$before" -ge 1 ] || { echo "SKIP: no o3k dnsmasq running — create a DHCP network/subnet + VM first"; exit 0; }
+[ "$before" -ge 1 ] || { echo "FAIL: no o3k dnsmasq running — a real-mode network+subnet+VM must exist (the reconciler serves it) before self-heal can be tested"; exit 1; }
 
 echo "[ws2-selfheal] $before o3k dnsmasq running; killing them..."
 sudo pkill -f "var/lib/o3k/dhcp" || true
