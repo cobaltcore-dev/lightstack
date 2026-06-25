@@ -4,7 +4,7 @@
 
 How an operator tears a release down with **no state leakage** and redeploys onto a pristine baseline. Single-node (the validated scope); multi-node host purge is tracked in [#52](https://github.com/cobaltcore-dev/o3k/issues/52).
 
-> ⚠️ **`dataRetentionPolicy: delete` is irreversible.** It destroys this release's libvirt VMs, networks, node-local storage, PVCs, **and resets the configured database's O3K schema**. It does **not** touch networked backends (Ceph RBD / S3) — those stay operator-owned. The default `retain` keeps everything.
+> ⚠️ **`dataRetentionPolicy: delete` is irreversible.** It destroys this release's libvirt VMs, all host network state, all node-local storage under the host storage path, and release PVCs. It does **not** touch the **database** (operator-owned — read to enumerate, never reset) or networked backends (Ceph RBD / S3). The default `retain` keeps everything.
 
 ## 1. Default uninstall (retain) — unchanged
 
@@ -27,7 +27,7 @@ helm uninstall my-o3k -n o3k        # blocks on the pre-delete hooks
 
 What happens, in order (you can watch the hook Jobs):
 1. **Quiesce** — the Deployment scales to 0; pods terminate (VMs survive — they're host processes). Release PVCs are deleted.
-2. **Purge** (blocking) — `o3k cleanup` destroys/undefines libvirt domains, removes `light-ns-*`/`qrouter-*` namespaces + routes/bridges/TAP/iptables/VXLAN, deletes node-local volume/image files under the host storage path, then **resets the database schema** last.
+2. **Purge** (blocking) — `o3k cleanup` reads the operator-owned DB read-only to enumerate, then: destroys + undefines the libvirt domains; removes **all host network state** (egress SNAT, floating-IP DNAT + the `/32` on the uplink, ingress security-group filters, `O3K-SG-*` chains, metadata DNAT, dnsmasq, host bridges, router + tenant namespaces); and `RemoveAll`s **every node-local tree** under the host storage path (`instances/`, `cloud-init/`, `images/`, `volumes/`, `dhcp/`). The **database is never written** — it is operator-owned.
 3. Only after the purge **succeeds** does Helm remove the release. If it fails, **uninstall aborts** with the Job's error (FR-001) — inspect:
    ```bash
    kubectl logs -n o3k job/my-o3k-o3k-teardown-purge
@@ -38,19 +38,26 @@ What happens, in order (you can watch the hook Jobs):
 ```bash
 helm install my-o3k charts/o3k -n o3k -f my-values.yaml   # same name/node/DB
 helm test my-o3k -n o3k                                   # identity check passes
-openstack server list                                     # empty — no stale resources
 ```
-No name collisions, no leftover namespaces, no resurrected networks (the DB was reset).
+The control plane comes up healthy with no name/port collisions and no leftover Kubernetes objects or host state (SC-002).
+
+> **Resource pristineness needs a clean database.** Teardown leaves the operator-owned DB intact, so the redeployed services still *list* the prior VMs/networks while their host disks and domains are gone. For a truly empty `openstack server list`, reset the database yourself before reinstalling (it is the operator's lifecycle, not teardown's):
+> ```bash
+> psql "$O3K_DB_URL" -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'   # o3k re-migrates on next start
+> ```
 
 ## 4. Verify zero residue (SC-001)
 
 On the node and in the cluster, all should be empty for the release:
 ```bash
-kubectl get all,pvc -n o3k -l app.kubernetes.io/instance=my-o3k   # nothing
-sudo ip netns list | grep -E 'light-ns-|qrouter-'                  # nothing (for this release)
+kubectl get all,pvc -n o3k -l app.kubernetes.io/instance=my-o3k    # nothing
 sudo virsh list --all                                              # no release domains
-sudo ls /var/lib/o3k/volumes /var/lib/o3k/images                   # empty
+sudo ip netns list | grep -E 'light-ns-|qrouter-'                  # nothing
+ip -br link show type bridge | grep '^br-'                         # no o3k bridges
+sudo iptables -S | grep 'O3K-'                                     # no o3k chains
+sudo ls /var/lib/o3k/{instances,volumes,images,cloud-init,dhcp}    # removed (RemoveAll'd)
 ```
+(The **database** is intentionally **not** in this list — it is operator-owned and deliberately retained.)
 
 ## 5. Escape hatch — cleanup is impossible (C5)
 
@@ -64,5 +71,5 @@ You are then responsible for any orphaned host state. (`helm uninstall` takes no
 
 - **Multi-node**: in DaemonSet mode the purge only covers the node the hook lands on; full multi-node host purge is **deferred to #52**. Don't rely on `delete` for multi-node cleanup yet.
 - **Networked backends**: RBD/S3 volumes/images are **not** deleted (operator-owned, C4). Reclaim them yourself if desired.
-- **Stub mode**: `delete` still resets the DB and removes workloads/PVCs; there's no host state to purge.
+- **Stub mode**: `delete` removes workloads/PVCs and runs `o3k cleanup` as a host no-op (nothing to purge); the DB is read-only enumerated, never reset.
 - **Idempotent**: re-running a teardown (retry, partial prior run) is safe — already-absent artifacts are treated as success.

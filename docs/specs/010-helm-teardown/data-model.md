@@ -30,7 +30,7 @@ This feature adds no database tables. Its "data model" is three things: (1) the 
 
 ## 2. Enumerated entities (what `o3k cleanup` purges)
 
-The cleanup reads these from the database (source of truth), maps each to its host artifact, and deletes via the existing per-resource functions. Names/locations are the product's verified conventions.
+The cleanup reads these from the database (source of truth) and removes the host artifact — compute/network via the existing per-resource functions, node-local storage by wholesale tree removal. The operator-owned database is read to enumerate but **never reset** (FR-013, revised 2026-06-24). Names/locations are the product's verified conventions.
 
 | Entity | DB source | Host artifact / locator | Delete via | Class |
 |--------|-----------|-------------------------|------------|-------|
@@ -38,14 +38,19 @@ The cleanup reads these from the database (source of truth), maps each to its ho
 | **Project namespace** | `networks.project_id` | netns `light-ns-<project_id>` | `NetworkNamespaceManager.DeleteNamespace` | network |
 | **Router namespace** | `routers.id` | netns `qrouter-<router_id[:11]>` | `RouterManager.DeleteRouterNamespace` | network |
 | **Bridge / TAP** | `ports` / network records | host/in-ns links | `BridgeManager.DeleteBridge`, `TAPDeviceManager.DeleteTAPDevice` | network |
-| **Routes / iptables / VXLAN** | router/SNAT/FIP/VXLAN records | host netfilter & overlay ifaces | existing router/VXLAN teardown calls | network |
-| **Local volume file** | `volumes` (local-backed) | `<hostStoragePath>/volumes/volume-<id>.qcow2` (FR-020) | file delete (`CephClient.DeleteVolume` local path) | storage |
-| **Local image file** | `images` (local-backed) | `<hostStoragePath>/images/<id>` | file delete (`ImageStore.DeleteImage` local path) | storage |
-| **Orphaned storage** | *absence* of a DB record | file under `<hostStoragePath>/{volumes,images}` with no matching row | file delete (FR-006) | storage |
+| **NAT / iptables / SG chains** | floating-IP / SNAT / SG / metadata records | host netfilter (DNAT, MASQUERADE, `O3K-NSI-*`/`O3K-SG-*` chains, the `/32` on the uplink) | `WithdrawFloatingIP`, `RemoveEgressSNAT`, `RemoveIngressFilter`, `DeleteSecurityGroupChain`, `mdRedirect.Remove` | network |
+| **VM disk overlays** | `instances` | `<hostStoragePath>/instances/` | `os.RemoveAll` (whole tree) | storage |
+| **Config-drive ISOs** | per-instance | `<hostStoragePath>/cloud-init/` | `os.RemoveAll` (whole tree) | storage |
+| **Local image files** | `images` (local-backed) | `<hostStoragePath>/images/` | `os.RemoveAll` (whole tree) | storage |
+| **Local volume files** | `volumes` (local-backed) | `<hostStoragePath>/volumes/` | `os.RemoveAll` (whole tree) | storage |
+| **dnsmasq state** | per-subnet | `<hostStoragePath>/dhcp/` | `os.RemoveAll` (whole tree) | storage |
+| **Orphaned storage** | *absence* of a DB record | any file under the trees above with no matching row | covered by the wholesale `RemoveAll` (FR-006) | storage |
 | **Release PVC** | n/a (K8s) | PVCs labeled `app.kubernetes.io/instance=<release>` | kubectl Job `delete pvc -l …` | storage (K8s) |
-| **DB schema** | n/a | the release's configured database | `database.MigrateReset` (last) | database |
+| **DB schema** | n/a | the release's configured database | **not purged** — operator-owned; read-only enumeration, never reset (FR-013) | — |
 
-**Release scoping (FR-007)**: each release owns its database, so "everything in this DB" *is* this release's set; netns/domain names derive from that DB's project/router ids. The purge never wildcards across a co-resident release (R3); the node-local storage tree under `hostStoragePath` is single-release by FR-003b (real releases can't co-reside on a node; stub has no `hostPath`), so its orphan sweep is release-safe. DB-unreachable fallback enumerates host artifacts by the `light-ns-`/`qrouter-` prefixes, the libvirt domain list, and a wholesale purge of `hostStoragePath/{volumes,images}` (C9).
+> The **network** class is orchestrated by `neutron.PurgeRealModeNetworkState` (the inverse of the #503 reconciler); the **storage** class is a wholesale `os.RemoveAll` of each node-local tree (never the mode-aware `DeleteVolume`/`DeleteImage`, which would also delete networked RBD/S3 — C4/FR-015).
+
+**Release scoping (FR-007)**: each release owns its database, so "everything in this DB" *is* this release's set; netns/domain names derive from that DB's project/router ids. The purge never wildcards across a co-resident release (R3); the node-local storage tree under `hostStoragePath` is single-release by FR-003b (real releases can't co-reside on a node; stub has no `hostPath`), so its orphan sweep is release-safe. DB-unreachable fallback enumerates host artifacts by the `light-ns-`/`qrouter-` prefixes, the libvirt domain list, and a wholesale `RemoveAll` of every `hostStoragePath/{instances,cloud-init,images,volumes,dhcp}` tree (C9).
 
 ---
 
