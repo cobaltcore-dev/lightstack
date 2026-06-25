@@ -324,7 +324,6 @@ func main() {
 func runCleanup(args []string) {
 	fs := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config/o3k.yaml", "Path to configuration file")
-	migPath := fs.String("migrations", "migrations", "Path to migrations directory")
 	dryRun := fs.Bool("dry-run", false, "Enumerate and log what would be purged; delete nothing")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -340,10 +339,7 @@ func runCleanup(args []string) {
 	}
 	middleware.InitLogger(&cfg.Logging)
 
-	if err := teardown.Run(context.Background(), cfg, teardown.Options{
-		MigrationsPath: *migPath,
-		DryRun:         *dryRun,
-	}); err != nil {
+	if err := teardown.Run(context.Background(), cfg, teardown.Options{DryRun: *dryRun}); err != nil {
 		fmt.Fprintf(os.Stderr, "cleanup failed: %v\n", err)
 		os.Exit(1)
 	}

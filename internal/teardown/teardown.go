@@ -1,19 +1,24 @@
 // Package teardown implements o3k's release-scoped cleanup: the purge the Helm
-// pre-delete hook runs on `dataRetentionPolicy: delete` (SPEC-010 / issue #53).
+// pre-delete hook runs on `dataRetentionPolicy: delete` (SPEC-010 / issue #53,
+// cloud-storage#472).
 //
-// It enumerates release state from the database (the source of truth), purges it
-// in dependency-safe order — compute (libvirt domains) → network (namespaces,
-// routes) → node-local storage — then resets the database schema LAST, so the
-// enumeration source survives until host purge completes (research R3, FR-019).
-// The purge is best-effort and idempotent per artifact (a missing artifact is
-// success, FR-008) but fail-closed overall: it returns an error if any required
-// class could not be purged, so the blocking hook fails and uninstall halts
-// (FR-001/016). An unreachable database is ignored, not fatal (C9): host state is
-// then purged best-effort by prefix-scanning network namespaces.
+// It removes everything o3k generated on the node and leaves the database to its
+// operator (the DB is read to enumerate what to purge, but never reset). Order:
+//   - compute: destroy + undefine the release's libvirt domains
+//   - network: remove all host network state (egress SNAT, floating-IP DNAT + the
+//     /32 on the uplink, security-group filters, metadata DNAT, dnsmasq, bridges,
+//     namespaces) — delegated to neutron.PurgeRealModeNetworkState
+//   - storage: remove every node-local tree under /var/lib/o3k (images, volumes,
+//     instances [VM disks], cloud-init ISOs, dhcp)
 //
-// It is Kubernetes-API-free (research R1): scaling the workload and deleting PVCs
-// are the chart's kubectl hook Job, not this command. It runs in the existing
-// single binary as `o3k cleanup` (FR-010) and is stub-safe (Constitution IV).
+// Best-effort and idempotent per artifact (a missing artifact is success, FR-008)
+// but fail-closed overall: it returns an error if any required class could not be
+// purged, so the blocking hook fails and uninstall halts (FR-001/016). An
+// unreachable database is ignored, not fatal (C9): host state is then purged
+// best-effort (storage trees + a netns prefix scan). It runs in the existing single
+// binary as `o3k cleanup` (FR-010), is Kubernetes-API-free (research R1), and is
+// stub-safe (Constitution IV). Networked backends (RBD/S3) and the global
+// net.ipv4.ip_forward sysctl are deliberately left alone (operator-owned / host-wide).
 package teardown
 
 import (
@@ -25,45 +30,36 @@ import (
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/internal/neutron"
 	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
-	"github.com/cobaltcore-dev/o3k/pkg/storage"
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
 // Options controls a teardown run.
 type Options struct {
-	MigrationsPath string // for the schema reset (golang-migrate)
-	DryRun         bool   // enumerate and log only; delete nothing
+	DryRun bool // enumerate and log only; delete nothing
 }
 
-// Inventory is the release-scoped set of artifacts to purge, gathered by an
-// enumerator (from the database, or from the host when the DB is unreachable).
+// Inventory is the release-scoped compute set. Network purge self-enumerates (via
+// the neutron service); storage purge is wholesale by directory.
 type Inventory struct {
-	DomainIDs  []string // libvirt domain UUIDs (instances.libvirt_domain_id)
-	ProjectIDs []string // tenant network namespaces (light-ns-<project_id>)
-	RouterIDs  []string // router namespaces (qrouter-<router_id[:11]>)
+	DomainIDs []string // libvirt domain UUIDs (instances.libvirt_domain_id)
 }
 
 // deps are the side-effecting operations execute() drives. Run wires them to the
 // real managers; tests replace them with fakes (stub-safe, Constitution IV).
 type deps struct {
-	deleteDomain  func(ctx context.Context, id string) error
-	deleteProject func(projectID string) error
-	deleteRouter  func(routerID string) error
-	purgeStorage  func() error // remove node-local hostPath trees (never RBD/S3 — C4/FR-015)
-	resetDB       func() error // nil when the DB is unreachable → reset is skipped (C9)
+	deleteDomain func(ctx context.Context, id string) error
+	purgeNetwork func() error // remove all host network state (DB-driven, or netns-prefix fallback)
+	purgeStorage func() error // RemoveAll the node-local /var/lib/o3k trees (never RBD/S3 — C4/FR-015)
 }
 
-// Run wires the real managers from cfg, enumerates the release's state, and
-// purges it. This is the entrypoint the `o3k cleanup` subcommand invokes.
+// Run wires the real managers from cfg, enumerates the release's state, and purges
+// it. This is the entrypoint the `o3k cleanup` subcommand invokes.
 func Run(ctx context.Context, cfg *common.Config, opts Options) error {
-	if opts.MigrationsPath == "" {
-		opts.MigrationsPath = "migrations"
-	}
-
-	// Host managers. Stub mode → no-ops (safe in CI / non-Linux). Real mode →
-	// NewVMManager connects to the host libvirtd via the mounted socket.
+	// Host hypervisor. Stub mode → no-op; real mode → connects to host libvirtd.
 	vmMgr, err := hypervisor.NewVMManager(cfg.Nova.LibvirtURI, orStub(cfg.Nova.LibvirtMode))
 	if err != nil {
 		return fmt.Errorf("teardown: connect hypervisor: %w", err)
@@ -71,45 +67,48 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 	defer vmMgr.Close()
 
 	netMode := orStub(cfg.Neutron.NetworkingMode)
-	nsMgr := networking.NewNetworkNamespaceManager(netMode)
-	routerMgr := networking.NewRouterManager(netMode)
-
 	d := deps{
-		deleteDomain:  vmMgr.DeleteVM,
-		deleteProject: nsMgr.DeleteNamespace,
-		deleteRouter:  routerMgr.DeleteRouterNamespace,
-		// Purge ONLY node-local storage; never RBD/S3 (operator-owned, C4/FR-015).
+		deleteDomain: vmMgr.DeleteVM,
 		purgeStorage: purgeLocalStorage,
 	}
 
-	// Enumerate from the DB (source of truth). If the DB is unreachable, ignore
-	// it (C9): no enumeration from / reset of the DB; purge host state by prefix.
+	// The DB is operator-owned: read it to enumerate, never reset it. If it is
+	// unreachable, ignore it (C9) and fall back to host-only cleanup.
 	var inv Inventory
 	if connErr := database.Connect(ctx, cfg.Database.URL, database.DefaultPoolConfig()); connErr != nil {
-		log.Warn().Err(connErr).Msg("teardown: database unreachable — ignoring it (no DB enumeration or reset); purging host state best-effort (C9)")
-		inv = enumerateFromHost()
+		log.Warn().Err(connErr).Msg("teardown: database unreachable — ignoring it (operator-owned); host cleanup is best-effort (C9)")
+		nsMgr := networking.NewNetworkNamespaceManager(netMode)
+		routerMgr := networking.NewRouterManager(netMode)
+		d.purgeNetwork = func() error { return purgeNamespacesByPrefix(nsMgr, routerMgr) }
+		// DomainIDs stay empty: without the DB we can't enumerate domains.
 	} else {
-		var enumErr error
-		inv, enumErr = enumerateFromDB(ctx)
-		database.Close() // the pool is only needed for enumeration; close it before the schema reset
-		if enumErr != nil {
-			return fmt.Errorf("teardown: enumerate from database: %w", enumErr)
-		}
-		d.resetDB = func() error { return database.MigrateReset(cfg.Database.URL, opts.MigrationsPath) }
+		defer database.Close()
+		inv.DomainIDs = enumerateDomainIDs(ctx)
+		neutronSvc := neutron.NewService(netMode, nil)
+		d.purgeNetwork = func() error { return neutronSvc.PurgeRealModeNetworkState(ctx) }
 	}
 
 	return execute(ctx, d, inv, opts)
 }
 
-// execute purges the inventory in dependency-safe order and resets the DB last.
-// Best-effort + idempotent per artifact; fail-closed overall (research R3/R9).
+// execute purges compute → network → storage. Best-effort + idempotent per
+// artifact; fail-closed overall (research R3/R9). No database reset (operator-owned).
 func execute(ctx context.Context, d deps, inv Inventory, opts Options) error {
 	compute := runDeletes(inv.DomainIDs, opts.DryRun, func(id string) error { return d.deleteDomain(ctx, id) })
 	compute.name = "compute"
 
 	network := classResult{name: "network"}
-	network.add(runDeletes(inv.ProjectIDs, opts.DryRun, d.deleteProject))
-	network.add(runDeletes(inv.RouterIDs, opts.DryRun, d.deleteRouter))
+	switch {
+	case opts.DryRun:
+		log.Info().Msg("teardown: would purge host network state (dry-run)")
+	default:
+		if err := d.purgeNetwork(); err != nil {
+			network.failed++
+			log.Error().Err(err).Msg("teardown: network purge failed")
+		} else {
+			network.purged++
+		}
+	}
 
 	stor := classResult{name: "storage"}
 	switch {
@@ -124,23 +123,8 @@ func execute(ctx context.Context, d deps, inv Inventory, opts Options) error {
 		}
 	}
 
-	db := classResult{name: "database"}
-	switch {
-	case opts.DryRun:
-		log.Info().Msg("teardown: would reset database schema (dry-run)")
-	case d.resetDB == nil:
-		log.Warn().Msg("teardown: database unreachable — skipping schema reset (C9)")
-	default:
-		if err := d.resetDB(); err != nil {
-			db.failed++
-			log.Error().Err(err).Msg("teardown: database reset failed")
-		} else {
-			db.purged++
-		}
-	}
-
 	var failed []string
-	for _, r := range []classResult{compute, network, stor, db} {
+	for _, r := range []classResult{compute, network, stor} {
 		log.Info().Str("class", r.name).Int("purged", r.purged).Int("absent", r.absent).Int("failed", r.failed).Msg("teardown: class summary")
 		if r.failed > 0 {
 			failed = append(failed, r.name)
@@ -149,7 +133,7 @@ func execute(ctx context.Context, d deps, inv Inventory, opts Options) error {
 	if len(failed) > 0 {
 		return fmt.Errorf("teardown incomplete: failed to purge %s", strings.Join(failed, ", "))
 	}
-	log.Info().Msg("teardown: complete — no release state remaining")
+	log.Info().Msg("teardown: complete — no o3k-generated host state remaining (database left to its operator)")
 	return nil
 }
 
@@ -159,14 +143,8 @@ type classResult struct {
 	purged, absent, failed int
 }
 
-func (r *classResult) add(o classResult) {
-	r.purged += o.purged
-	r.absent += o.absent
-	r.failed += o.failed
-}
-
-// runDeletes applies del to each id. A not-found / already-absent result is
-// success (idempotency, FR-008); any other error is a class failure.
+// runDeletes applies del to each id. A not-found / already-absent result is success
+// (idempotency, FR-008); any other error is a class failure.
 func runDeletes(ids []string, dryRun bool, del func(id string) error) classResult {
 	var r classResult
 	for _, id := range ids {
@@ -208,13 +186,16 @@ func orStub(mode string) string {
 	return mode
 }
 
-// purgeLocalStorage removes the node-local Cinder/Glance storage trees under the
-// host storage path. It deletes ONLY local hostPath data — never networked RBD/S3
-// backends (operator-owned, C4/FR-015). Wholesale removal covers both DB-tracked
-// and orphaned files (FR-006) and needs no database (C9); the trees are
-// single-release per node (FR-003b). Idempotent — removing an absent dir is nil.
+// purgeLocalStorage removes every node-local storage tree under /var/lib/o3k — VM
+// disk overlays (instances/), config-drive ISOs (cloud-init/), local Glance images
+// (images/), local Cinder volumes (volumes/), and dnsmasq state (dhcp/). It removes
+// ONLY local hostPath data — never networked RBD/S3 backends (operator-owned,
+// C4/FR-015). Covers DB-tracked and orphaned files (FR-006) and needs no database
+// (C9); the trees are single-release per node (FR-003b). Removing an absent dir is nil.
 func purgeLocalStorage() error {
-	for _, dir := range []string{storage.LocalVolumeDir(), storage.LocalImageDir()} {
+	for _, dir := range []string{
+		paths.ImagesDir(), paths.VolumesDir(), paths.InstancesDir(), paths.CloudInitDir(), paths.DHCPDir(),
+	} {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove %s: %w", dir, err)
 		}
@@ -222,53 +203,49 @@ func purgeLocalStorage() error {
 	return nil
 }
 
-// enumerateFromDB reads the release's resources from the database. Each release
-// owns its database, so "everything in this DB" is this release's set (FR-007).
-func enumerateFromDB(ctx context.Context) (Inventory, error) {
-	var inv Inventory
-	var err error
-	if inv.DomainIDs, err = queryStrings(ctx, `SELECT libvirt_domain_id FROM instances WHERE libvirt_domain_id IS NOT NULL AND libvirt_domain_id <> ''`); err != nil {
-		return inv, err
-	}
-	if inv.ProjectIDs, err = queryStrings(ctx, `SELECT DISTINCT project_id::text FROM networks WHERE project_id IS NOT NULL`); err != nil {
-		return inv, err
-	}
-	if inv.RouterIDs, err = queryStrings(ctx, `SELECT id::text FROM routers`); err != nil {
-		return inv, err
-	}
-	// Node-local volumes/images are purged wholesale by directory (purgeLocalStorage),
-	// not per-id — so they need no DB enumeration, and the purge covers orphans
-	// (FR-006) and works when the DB is unreachable (C9).
-	return inv, nil
-}
-
-func queryStrings(ctx context.Context, sql string) ([]string, error) {
-	rows, err := database.DB.Query(ctx, sql)
+// enumerateDomainIDs returns the libvirt domain UUIDs the release created.
+func enumerateDomainIDs(ctx context.Context) []string {
+	rows, err := database.DB.Query(ctx,
+		`SELECT libvirt_domain_id FROM instances WHERE libvirt_domain_id IS NOT NULL AND libvirt_domain_id <> ''`)
 	if err != nil {
-		return nil, err
+		log.Error().Err(err).Msg("teardown: enumerate domains")
+		return nil
 	}
 	defer rows.Close()
-	var out []string
+	var ids []string
 	for rows.Next() {
 		var s string
-		if err := rows.Scan(&s); err != nil {
-			return nil, err
+		if rows.Scan(&s) == nil && s != "" {
+			ids = append(ids, s)
 		}
-		out = append(out, s)
 	}
-	return out, rows.Err()
+	return ids
 }
 
-// enumerateFromHost is the DB-unreachable fallback (C9): it recovers network
-// namespaces by their well-known prefixes. Libvirt domains and node-local
-// storage are not enumerable without the database; they are reported and left to
-// the next run, since the node's storage tree is single-release (FR-003b) and the
-// blocking hook will have failed loudly.
-func enumerateFromHost() Inventory {
-	inv := classifyNetns(parseNetnsList(runIPNetnsList()))
-	log.Warn().Int("project_ns", len(inv.ProjectIDs)).Int("router_ns", len(inv.RouterIDs)).
-		Msg("teardown: DB-unreachable fallback — purging network namespaces by prefix; libvirt domains and node-local storage cannot be enumerated without the database")
-	return inv
+// purgeNamespacesByPrefix is the DB-unreachable network fallback (C9): it deletes
+// o3k network namespaces by their well-known prefixes. Host bridges and iptables
+// can't be precisely enumerated without the DB and are left for the operator (logged).
+func purgeNamespacesByPrefix(nsMgr *networking.NetworkNamespaceManager, routerMgr *networking.RouterManager) error {
+	failures := 0
+	for _, n := range parseNetnsList(runIPNetnsList()) {
+		switch {
+		case strings.HasPrefix(n, "light-ns-"):
+			if err := nsMgr.DeleteNamespace(strings.TrimPrefix(n, "light-ns-")); err != nil {
+				failures++
+				log.Warn().Err(err).Str("ns", n).Msg("teardown: delete namespace (fallback)")
+			}
+		case strings.HasPrefix(n, "qrouter-"):
+			if err := routerMgr.DeleteRouterNamespace(strings.TrimPrefix(n, "qrouter-")); err != nil {
+				failures++
+				log.Warn().Err(err).Str("ns", n).Msg("teardown: delete router namespace (fallback)")
+			}
+		}
+	}
+	log.Warn().Msg("teardown: DB-unreachable fallback purged namespaces by prefix; host bridges + iptables not enumerable without the DB")
+	if failures > 0 {
+		return fmt.Errorf("namespace fallback: %d delete(s) failed", failures)
+	}
+	return nil
 }
 
 func runIPNetnsList() string {
@@ -279,8 +256,8 @@ func runIPNetnsList() string {
 	return string(out)
 }
 
-// parseNetnsList extracts namespace names from `ip netns list` output (each line
-// is "<name>" or "<name> (id: N)").
+// parseNetnsList extracts namespace names from `ip netns list` output (each line is
+// "<name>" or "<name> (id: N)").
 func parseNetnsList(out string) []string {
 	var names []string
 	for line := range strings.SplitSeq(out, "\n") {
@@ -289,21 +266,4 @@ func parseNetnsList(out string) []string {
 		}
 	}
 	return names
-}
-
-// classifyNetns maps o3k-managed namespace names back to the project/router ids
-// the delete methods expect (DeleteNamespace prepends light-ns-; DeleteRouter-
-// Namespace prepends qrouter- and truncates to 11 chars, so the truncated id
-// round-trips).
-func classifyNetns(names []string) Inventory {
-	var inv Inventory
-	for _, n := range names {
-		switch {
-		case strings.HasPrefix(n, "light-ns-"):
-			inv.ProjectIDs = append(inv.ProjectIDs, strings.TrimPrefix(n, "light-ns-"))
-		case strings.HasPrefix(n, "qrouter-"):
-			inv.RouterIDs = append(inv.RouterIDs, strings.TrimPrefix(n, "qrouter-"))
-		}
-	}
-	return inv
 }
