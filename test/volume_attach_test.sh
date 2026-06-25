@@ -17,8 +17,8 @@ OS_AUTH_URL="http://localhost:35357/v3"
 OS_USERNAME="admin"
 OS_PASSWORD="secret"
 OS_PROJECT_NAME="default"
-OS_USER_DOMAIN_NAME="default"
-OS_PROJECT_DOMAIN_NAME="default"
+OS_USER_DOMAIN_NAME="Default"
+OS_PROJECT_DOMAIN_NAME="Default"
 
 # Test counters
 TESTS_PASSED=0

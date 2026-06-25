@@ -9,7 +9,7 @@ NC='\033[0m' # No Color
 # Get token
 TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
     -H "Content-Type: application/json" \
-    -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"admin","password":"secret","domain":{"name":"default"}}}},"scope":{"project":{"name":"default","domain":{"name":"default"}}}}}' \
+    -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"admin","password":"secret","domain":{"name":"Default"}}}},"scope":{"project":{"name":"default","domain":{"name":"Default"}}}}}' \
     | grep -i "X-Subject-Token:" | awk '{print $2}' | tr -d '\r')
 
 echo "✓ Got auth token"

@@ -187,6 +187,16 @@ func main() {
 		log.Printf("VXLAN overlay networking enabled (VNI range: %d-%d)", cfg.Neutron.VNIRangeStart, cfg.Neutron.VNIRangeEnd)
 	}
 
+	// Real-mode network-state reconciler (SPEC-009 WS-2): on startup + periodically,
+	// re-spawn DHCP (dnsmasq dies with the pod) and ensure bridges from the DB so VM
+	// networking survives a control-plane restart. Real networking modes only.
+	var networkReconciler *neutron.NetworkReconciler
+	if networkingMode != "stub" {
+		networkReconciler = neutron.NewNetworkReconciler(neutronService, cfg.Neutron.ReconcileInterval)
+		go networkReconciler.Start(ctx)
+		log.Printf("Real-mode network reconciler started (interval: %s)", cfg.Neutron.ReconcileInterval)
+	}
+
 	// Set default storage mode if not specified
 	cinderStorageMode := cfg.Cinder.StorageMode
 	if cinderStorageMode == "" {
@@ -213,9 +223,15 @@ func main() {
 	}
 	log.Printf("Glance initialized in %s mode", glanceStorageMode)
 
-	// Initialize metadata service
-	metadataService := metadata.NewService("localhost:8775")
-	log.Println("Metadata service initialized")
+	// Initialize metadata service. It must bind a VM-reachable address (all
+	// interfaces by default) so the per-bridge 169.254.169.254 DNAT can reach it
+	// in real mode (SPEC-009 WS-4).
+	mdBind := cfg.Metadata.BindAddress
+	if mdBind == "" {
+		mdBind = ":8775"
+	}
+	metadataService := metadata.NewService(mdBind)
+	log.Printf("Metadata service initialized (bind %s)", mdBind)
 
 	// Initialize placement service
 	placementService := placement.NewService()
@@ -273,6 +289,10 @@ func main() {
 	if nodeRegistry != nil {
 		nodeRegistry.StopHeartbeat()
 		log.Println("Node heartbeat stopped")
+	}
+	if networkReconciler != nil {
+		networkReconciler.Stop()
+		log.Println("Network reconciler stopped")
 	}
 
 	// Graceful shutdown
@@ -461,7 +481,7 @@ func createMetadataServer(svc *metadata.Service) *http.Server {
 	svc.RegisterRoutes(r.Group(""))
 
 	return &http.Server{
-		Addr:              ":8775",
+		Addr:              svc.BindAddr(),
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

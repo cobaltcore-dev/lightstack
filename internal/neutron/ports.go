@@ -261,16 +261,35 @@ func (svc *Service) ListPorts(c *gin.Context) {
 		}
 	}
 
+	// Standard Neutron port filters. Notably ?device_id=<server> is how
+	// `openstack server add floating ip` finds a server's port — without it the
+	// client gets every port on the network and may grab the wrong one (e.g. the
+	// router interface), associating the FIP to the gateway instead of the VM.
+	var filterCondition string
+	for _, f := range []struct{ col, val string }{
+		{"p.device_id", c.Query("device_id")},
+		{"p.network_id", c.Query("network_id")},
+		{"p.device_owner", c.Query("device_owner")},
+		{"p.mac_address", c.Query("mac_address")},
+		{"p.id", c.Query("id")},
+	} {
+		if f.val != "" {
+			filterCondition += fmt.Sprintf(" AND %s = $%d", f.col, argIdx)
+			queryArgs = append(queryArgs, f.val)
+			argIdx++
+		}
+	}
+
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
-		WHERE (p.project_id = $1 OR n.shared = true)%s
+		WHERE (p.project_id = $1 OR n.shared = true)%s%s
 		ORDER BY p.created_at DESC
 		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+	`, markerCondition, filterCondition, argIdx, argIdx+1), queryArgs...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_ports").Msg("database error")
@@ -685,10 +704,13 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 	var id, name, description string
 	var createdAt, updatedAt time.Time
 
+	// id::text resolves by UUID or name without crashing on a non-UUID
+	// identifier — the CLI looks an SG up by name (e.g. `... rule create ... default`).
 	err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, created_at, updated_at
 		FROM security_groups
-		WHERE id = $1 AND project_id = $2
+		WHERE (id::text = $1 OR name = $1) AND project_id = $2
+		LIMIT 1
 	`, sgID, projectID).Scan(&id, &name, &description, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -701,13 +723,14 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 		return
 	}
 
-	// Fetch associated rules
+	// Fetch associated rules — keyed by the resolved UUID (id), not the
+	// possibly-by-name request param (sgID).
 	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT id, direction, ethertype, protocol, port_range_min, port_range_max,
 		       remote_ip_prefix, remote_group_id, created_at
 		FROM security_group_rules
 		WHERE security_group_id = $1
-	`, sgID)
+	`, id)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_sg_rules").Str("sg_id", sgID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get security group rules"))
@@ -731,7 +754,7 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 
 		rule := gin.H{
 			"id":                ruleID,
-			"security_group_id": sgID,
+			"security_group_id": id,
 			"direction":         direction,
 			"ethertype":         ethertype,
 			"created_at":        ruleCreatedAt.Format(time.RFC3339),
@@ -933,6 +956,12 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 			RemoteGroupID:  remoteGroup,
 		}
 
+		// A seeded SG (e.g. the project default SG, created via migration rather
+		// than the API) has no iptables chain yet — ensure it idempotently so
+		// AddRule doesn't fail on a missing chain.
+		if err := svc.sgManager.CreateSecurityGroupChain(req.SecurityGroupRule.SecurityGroupID); err != nil {
+			log.Warn().Err(err).Str("sg_id", req.SecurityGroupRule.SecurityGroupID).Msg("ensure security group chain")
+		}
 		if err := svc.sgManager.AddRule(req.SecurityGroupRule.SecurityGroupID, rule); err != nil {
 			log.Error().Err(err).Str("operation", "add_sg_rule").Msg("failed to add iptables rule")
 			common.SendError(c, common.NewInternalServerError("failed to add security group rule"))
@@ -958,6 +987,10 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to create security group rule"))
 		return
 	}
+
+	// Re-apply north-south ingress filters for any floating-IP'd port using this
+	// SG, so the new rule takes effect immediately (SPEC-009 WS-3 / T034).
+	svc.refreshIngressFiltersForSG(c.Request.Context(), req.SecurityGroupRule.SecurityGroupID)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"security_group_rule": gin.H{
@@ -1044,6 +1077,59 @@ func (svc *Service) ListSecurityGroupRules(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"security_group_rules": rules})
 }
 
+// GetSecurityGroupRule returns a single security group rule (the CLI GETs the
+// rule before deleting it).
+func (svc *Service) GetSecurityGroupRule(c *gin.Context) {
+	ruleID := c.Param("id")
+
+	var id, sgID, direction, ethertype string
+	var protocol, remoteIPPrefix, remoteGroupID *string
+	var portRangeMin, portRangeMax *int
+	var createdAt time.Time
+
+	err := database.DB.QueryRow(c.Request.Context(), `
+		SELECT id, security_group_id, direction, ethertype, protocol,
+		       port_range_min, port_range_max, remote_ip_prefix, remote_group_id, created_at
+		FROM security_group_rules
+		WHERE id = $1
+	`, ruleID).Scan(&id, &sgID, &direction, &ethertype, &protocol, &portRangeMin, &portRangeMax,
+		&remoteIPPrefix, &remoteGroupID, &createdAt)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("security group rule"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "get_sg_rule").Str("rule_id", ruleID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to get security group rule"))
+		return
+	}
+
+	rule := gin.H{
+		"id":                id,
+		"security_group_id": sgID,
+		"direction":         direction,
+		"ethertype":         ethertype,
+		"created_at":        createdAt.Format(time.RFC3339),
+	}
+	if protocol != nil {
+		rule["protocol"] = *protocol
+	}
+	if portRangeMin != nil {
+		rule["port_range_min"] = *portRangeMin
+	}
+	if portRangeMax != nil {
+		rule["port_range_max"] = *portRangeMax
+	}
+	if remoteIPPrefix != nil {
+		rule["remote_ip_prefix"] = *remoteIPPrefix
+	}
+	if remoteGroupID != nil {
+		rule["remote_group_id"] = *remoteGroupID
+	}
+	c.JSON(http.StatusOK, gin.H{"security_group_rule": rule})
+}
+
 // DeleteSecurityGroupRule deletes a security group rule
 func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 	ruleID := c.Param("id")
@@ -1086,6 +1172,10 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to delete security group rule"))
 		return
 	}
+
+	// Re-apply north-south ingress filters so the removed rule stops applying
+	// immediately (SPEC-009 WS-3 / T034).
+	svc.refreshIngressFiltersForSG(c.Request.Context(), sgID)
 
 	c.Status(http.StatusNoContent)
 }
@@ -1177,6 +1267,19 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		return nil, fmt.Errorf("failed to insert port into database: %w", err)
 	}
 
+	// Associate the project's default security group (OpenStack: an instance's
+	// port gets the default SG unless overridden), so security-group rules apply
+	// to the VM's north-south traffic (SPEC-009 WS-3 / T034).
+	var defaultSG string
+	if err := database.DB.QueryRow(ctx,
+		"SELECT id FROM security_groups WHERE project_id = $1 AND name = 'default' LIMIT 1", projectID).Scan(&defaultSG); err == nil {
+		if _, err := database.DB.Exec(ctx,
+			"INSERT INTO port_security_groups (port_id, security_group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+			portID, defaultSG); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Msg("failed to associate default security group with port")
+		}
+	}
+
 	// Distribute FDB entry if VXLAN is enabled
 	if svc.vxlanCoordinator != nil {
 		if err := svc.vxlanCoordinator.DistributeFDBEntry(ctx, networkID, portID, macAddress); err != nil {
@@ -1184,6 +1287,11 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 			log.Warn().Err(err).Str("port_id", portID).Str("network_id", networkID).Msg("failed to distribute FDB entry")
 		}
 	}
+
+	// Apply the dnsmasq reservation for this new port now (synchronously) so the
+	// VM about to boot leases its neutron-assigned fixed IP, not a dynamic one
+	// (SPEC-009 WS-2/WS-4 — keeps OpenStack's view and the guest in agreement).
+	svc.applyDHCPForNetwork(ctx, networkID, true)
 
 	return &PortInfo{
 		ID:        portID,

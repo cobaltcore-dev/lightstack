@@ -29,6 +29,7 @@ type Service struct {
 	dhcpManager      *networking.DHCPManager
 	sgManager        *networking.SecurityGroupManager
 	routerManager    *networking.RouterManager
+	mdRedirect       *networking.MetadataRedirect
 	vxlanCoordinator *VXLANCoordinator
 	cache            *cache.Cache
 }
@@ -47,6 +48,7 @@ func NewService(mode string, cacheInstance *cache.Cache) *Service {
 		dhcpManager:   networking.NewDHCPManager(mode),
 		sgManager:     sgManager,
 		routerManager: networking.NewRouterManager(mode),
+		mdRedirect:    networking.NewMetadataRedirect(mode),
 		cache:         cacheInstance,
 	}
 }
@@ -54,6 +56,7 @@ func NewService(mode string, cacheInstance *cache.Cache) *Service {
 // RegisterRoutes registers Neutron routes
 func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// Version discovery
+	r.GET("/", svc.ListVersions)
 	r.GET("/v2.0", svc.GetVersion)
 
 	v2 := r.Group("/v2.0")
@@ -128,6 +131,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Security Group Rules
 		v2.GET("/security-group-rules", svc.ListSecurityGroupRules)
+		v2.GET("/security-group-rules/:id", svc.GetSecurityGroupRule)
 		v2.POST("/security-group-rules", svc.CreateSecurityGroupRule)
 		v2.DELETE("/security-group-rules/:id", svc.DeleteSecurityGroupRule)
 
@@ -242,6 +246,23 @@ func (svc *Service) GetVersion(c *gin.Context) {
 			"status": "CURRENT",
 			"links": []gin.H{
 				{"rel": "self", "href": "/v2.0"},
+			},
+		},
+	})
+}
+
+// ListVersions serves the neutron version list at the root ("/") for version
+// discovery — standard neutron behavior (Keystone/Nova/Glance already serve theirs;
+// neutron previously 404'd at "/"). SPEC-009.
+func (svc *Service) ListVersions(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"versions": []gin.H{
+			{
+				"id":     "v2.0",
+				"status": "CURRENT",
+				"links": []gin.H{
+					{"rel": "self", "href": fmt.Sprintf("%s/v2.0", common.BaseURL(c, 9696))},
+				},
 			},
 		},
 	})
@@ -490,15 +511,30 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		}
 	}
 
+	// Honor the neutron list filters the Terraform provider + CLI use to resolve a
+	// network by id or name; without these a by-id lookup returns every network and
+	// the provider fails with "More than one network found" (SPEC-009 / SC-007).
+	var filterCondition string
+	if idParam := c.Query("id"); idParam != "" {
+		filterCondition += fmt.Sprintf(" AND id::text = $%d", argIdx)
+		queryArgs = append(queryArgs, idParam)
+		argIdx++
+	}
+	if nameParam := c.Query("name"); nameParam != "" {
+		filterCondition += fmt.Sprintf(" AND name = $%d", argIdx)
+		queryArgs = append(queryArgs, nameParam)
+		argIdx++
+	}
+
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at
 		FROM networks
-		WHERE (project_id = $1 OR shared = true)%s
+		WHERE (project_id = $1 OR shared = true)%s%s
 		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+	`, markerCondition, filterCondition, argIdx, argIdx+1), queryArgs...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_networks").Msg("database error")
@@ -636,12 +672,13 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 	}
 
 	bridgeName := "br-" + networkID[:8]
-	nsName := svc.nsManager.GetNamespaceName(projectID)
 
-	// Delete bridge (best-effort: a leftover bridge is hygiene, not
-	// correctness — the network row is about to be deleted).
-	if err := svc.brManager.DeleteBridge(bridgeName, true, nsName); err != nil {
-		log.Warn().Err(err).Str("bridge", bridgeName).Str("namespace", nsName).Msg("failed to delete network bridge")
+	// Delete the bridge from the DEFAULT namespace, where it was created (real
+	// mode). Deleting it also drops its gateway IP — leaving it behind would
+	// leak a duplicate 10.x gateway onto the host and split routing across stale
+	// bridges (SPEC-009). Best-effort: the network row is about to be deleted.
+	if err := svc.brManager.DeleteBridge(bridgeName, false, ""); err != nil {
+		log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to delete network bridge")
 	}
 
 	// Delete from database
@@ -782,27 +819,11 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 		return
 	}
 
-	// Start DHCP server if enabled
+	// Start DHCP server (+ bridge gateway IP + metadata DNAT) if enabled. The
+	// shared path also applies any existing port reservations and runs dnsmasq in
+	// the bridge's default namespace (SPEC-009 WS-2/WS-4).
 	if enableDHCP {
-		bridgeName := "br-" + req.Subnet.NetworkID[:8]
-		nsName := svc.nsManager.GetNamespaceName(projectID)
-
-		dhcpConfig := networking.DHCPConfig{
-			NetworkID:      req.Subnet.NetworkID,
-			BridgeName:     bridgeName,
-			SubnetCIDR:     req.Subnet.CIDR,
-			GatewayIP:      gatewayIP,
-			DNSServers:     req.Subnet.DNSNameservers,
-			DHCPRangeStart: incrementIP(ipNet.IP, 10).String(),
-			DHCPRangeEnd:   incrementIP(ipNet.IP, 250).String(),
-			LeaseTime:      "24h",
-		}
-
-		go func() {
-			if err := svc.dhcpManager.StartDHCP(dhcpConfig, nsName); err != nil {
-				log.Warn().Err(err).Str("namespace", nsName).Str("network_id", dhcpConfig.NetworkID).Msg("failed to start DHCP server for subnet")
-			}
-		}()
+		svc.applyDHCPForNetwork(c.Request.Context(), req.Subnet.NetworkID, true)
 	}
 
 	// OpenStack clients format these as lists and fail on JSON null, so

@@ -12,6 +12,7 @@ import (
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
@@ -245,7 +246,16 @@ func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput any) {
 		}
 	}
 
-	// In stub mode or without actual libvirt connection, return fake console output
+	// In real mode, return the VM's captured serial console log (SPEC-009 WS-0).
+	if svc.libvirtMode == "real" {
+		if out, rerr := hypervisor.ReadConsoleLog(id, length); rerr == nil {
+			c.JSON(http.StatusOK, gin.H{"output": out})
+			return
+		}
+		// No console captured yet (VM still booting) — fall through to a placeholder.
+	}
+
+	// Stub mode (or no console captured yet): synthetic console output.
 	output := fmt.Sprintf("Console output for instance %s\n", instanceID)
 	output += "Booting from Hard Disk...\n"
 	output += "Cloud-init v. 22.1-14 running 'init-local' at Wed, 11 Mar 2026 10:00:00 +0000\n"

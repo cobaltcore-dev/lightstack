@@ -267,6 +267,28 @@ func (m *BridgeManager) createBridgeReal(bridgeName string, inNamespace bool, ns
 	return nil
 }
 
+// EnsureBridgeIP assigns addrCIDR (e.g. "10.0.0.1/24") to the bridge in the
+// default namespace; idempotent (an existing address is fine). dnsmasq with
+// bind-interfaces needs the bridge to carry an address in the subnet it serves
+// (SPEC-009 WS-2). The bridge also acts as the tenant subnet's L3 gateway.
+func (m *BridgeManager) EnsureBridgeIP(bridgeName, addrCIDR string) error {
+	if m.mode == "stub" {
+		return nil
+	}
+	link, err := netlink.LinkByName(bridgeName)
+	if err != nil {
+		return fmt.Errorf("bridge %s not found: %w", bridgeName, err)
+	}
+	addr, err := netlink.ParseAddr(addrCIDR)
+	if err != nil {
+		return fmt.Errorf("parse bridge addr %s: %w", addrCIDR, err)
+	}
+	if err := netlink.AddrAdd(link, addr); err != nil && !strings.Contains(err.Error(), "exists") {
+		return fmt.Errorf("assign %s to bridge %s: %w", addrCIDR, bridgeName, err)
+	}
+	return nil
+}
+
 // DeleteBridge deletes a bridge
 func (m *BridgeManager) DeleteBridge(bridgeName string, inNamespace bool, nsName string) error {
 	if m.mode == "stub" {
@@ -287,6 +309,50 @@ func (m *BridgeManager) DeleteBridge(bridgeName string, inNamespace bool, nsName
 	}
 
 	return netlink.LinkDel(link)
+}
+
+// isManagedBridge reports whether name is an o3k per-network bridge: "br-" plus
+// the first 8 hex chars of a network UUID (neutron builds "br-"+networkID[:8]).
+// The strict shape ensures the reconciler never prunes a foreign bridge (docker
+// uses br-<12hex>, libvirt uses virbrN).
+func isManagedBridge(name string) bool {
+	if !strings.HasPrefix(name, "br-") || len(name) != 11 {
+		return false
+	}
+	for _, c := range name[3:] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ListManagedBridges returns the names of all o3k-managed bridges (br-<id8>)
+// present in the default namespace, so the reconciler can prune the ones whose
+// network was deleted (SPEC-009 WS-2).
+func (m *BridgeManager) ListManagedBridges() ([]string, error) {
+	if m.mode == "stub" {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		var names []string
+		for b := range m.stubBridges {
+			if isManagedBridge(b) {
+				names = append(names, b)
+			}
+		}
+		return names, nil
+	}
+	links, err := netlink.LinkList()
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, l := range links {
+		if l.Type() == "bridge" && isManagedBridge(l.Attrs().Name) {
+			names = append(names, l.Attrs().Name)
+		}
+	}
+	return names, nil
 }
 
 // AttachToBridge attaches an interface to a bridge

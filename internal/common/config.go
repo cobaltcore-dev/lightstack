@@ -16,6 +16,7 @@ type Config struct {
 	Neutron  NeutronConfig  `yaml:"neutron"`
 	Cinder   CinderConfig   `yaml:"cinder"`
 	Glance   GlanceConfig   `yaml:"glance"`
+	Metadata MetadataConfig `yaml:"metadata"`
 	Logging  LoggingConfig  `yaml:"logging"`
 	Cache    CacheConfig    `yaml:"cache"`
 	Server   ServerConfig   `yaml:"server"`
@@ -66,6 +67,10 @@ type NeutronConfig struct {
 	VNIRangeEnd              int           `yaml:"vni_range_end"`
 	CoordinationPollInterval time.Duration `yaml:"coordination_poll_interval"`
 	VXLANMTU                 int           `yaml:"vxlan_mtu"`
+	// ReconcileInterval is the resync period for the real-mode network-state
+	// reconciler (WS-2). Zero means consumers apply a default (30s). Only used
+	// when NetworkingMode != "stub".
+	ReconcileInterval time.Duration `yaml:"reconcile_interval"`
 }
 
 type CinderConfig struct {
@@ -83,6 +88,15 @@ type GlanceConfig struct {
 	S3Bucket    string `yaml:"s3_bucket"`    // S3 bucket name
 	S3Region    string `yaml:"s3_region"`    // S3 region
 	S3Endpoint  string `yaml:"s3_endpoint"`  // Custom S3 endpoint (for MinIO, Ceph RGW, etc.)
+}
+
+// MetadataConfig configures the EC2/OpenStack metadata service (WS-4).
+type MetadataConfig struct {
+	// BindAddress is the host address the metadata server listens on. In real
+	// mode it MUST be reachable from tenant network namespaces (not localhost);
+	// the per-namespace 169.254.169.254 DNAT redirects to it. Zero means
+	// consumers apply a default ("0.0.0.0:8775").
+	BindAddress string `yaml:"bind_address"`
 }
 
 type LoggingConfig struct {

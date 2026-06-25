@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -146,15 +147,18 @@ func GenerateVMXML(spec VMSpec) string {
 `, net.MACAddress, net.BridgeName)
 	}
 
-	// Serial console
-	sb.WriteString(`
+	// Serial console — capture output to a per-instance log file so
+	// os-getConsoleOutput / `openstack console log show` returns real boot
+	// output (SPEC-009 WS-0).
+	fmt.Fprintf(&sb, `
     <serial type='pty'>
+      <log file='%s' append='off'/>
       <target port='0'/>
     </serial>
     <console type='pty'>
       <target type='serial' port='0'/>
     </console>
-`)
+`, ConsoleLogPath(spec.UUID))
 
 	// VNC graphics
 	sb.WriteString(`
@@ -168,11 +172,11 @@ func GenerateVMXML(spec VMSpec) string {
 		fmt.Fprintf(&sb, `
     <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
-      <source file='/var/lib/o3k/cloud-init/%s.iso'/>
+      <source file='%s'/>
       <target dev='hdc' bus='ide'/>
       <readonly/>
     </disk>
-`, spec.UUID)
+`, CloudInitISOPath(spec.UUID))
 	}
 
 	// Close devices and domain
@@ -189,8 +193,8 @@ func GenerateCloudInitISO(uuid string, config *CloudInitConfig) (string, error) 
 		return "", nil // No cloud-init requested
 	}
 
-	isoDir := "/var/lib/o3k/cloud-init"
-	isoPath := fmt.Sprintf("%s/%s.iso", isoDir, uuid)
+	isoDir := paths.CloudInitDir()
+	isoPath := CloudInitISOPath(uuid)
 
 	// Create directory if it doesn't exist
 	if err := os.MkdirAll(isoDir, 0755); err != nil {
@@ -245,6 +249,24 @@ func GenerateCloudInitISO(uuid string, config *CloudInitConfig) (string, error) 
 	}
 
 	return isoPath, nil
+}
+
+// NewCloudInitConfig builds a config-drive payload from an SSH key and/or the
+// instance's user_data (SPEC-009 WS-4 / T028). With no user_data it preserves
+// the proven default (#cloud-config carrying the key). With user_data it uses
+// that verbatim as the user-data and carries the SSH key via the OpenStack-
+// standard meta-data public-keys, so a script-style user_data does not drop the
+// key. Either input may be empty.
+func NewCloudInitConfig(hostname, sshKey, userData string) *CloudInitConfig {
+	if userData == "" {
+		return DefaultCloudInitConfig(hostname, sshKey)
+	}
+	var meta strings.Builder
+	fmt.Fprintf(&meta, "instance-id: %s\nlocal-hostname: %s\n", hostname, hostname)
+	if sshKey != "" {
+		fmt.Fprintf(&meta, "public-keys:\n  0: |\n    %s\n", sshKey)
+	}
+	return &CloudInitConfig{MetaData: meta.String(), UserData: userData}
 }
 
 // DefaultCloudInitConfig returns default cloud-init configuration

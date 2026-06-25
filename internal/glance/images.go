@@ -455,6 +455,27 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 		return
 	}
 
+	// Block deletion while any dependent disk references the image: an instance
+	// booted from it (instances.image_id) or a copy-on-write volume cloned from
+	// it (volumes.source_image_id). Independent local copies do not set
+	// source_image_id and so do not pin. OpenStack-standard 409. (SPEC-009 FR-004)
+	var inUse bool
+	if err := database.DB.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM instances WHERE image_id = $1
+			UNION ALL
+			SELECT 1 FROM volumes WHERE source_image_id = $1)`,
+		imageID,
+	).Scan(&inUse); err != nil {
+		log.Error().Err(err).Str("operation", "delete_image_inuse_check").Str("image_id", imageID).Msg("failed to check image usage")
+		common.SendError(c, common.NewInternalServerError("failed to delete image"))
+		return
+	}
+	if inUse {
+		common.SendError(c, common.NewConflictError("image is in use by one or more instances or volumes"))
+		return
+	}
+
 	// Delete from database first
 	_, err = database.DB.Exec(ctx,
 		"DELETE FROM images WHERE id = $1 AND project_id = $2",
@@ -575,10 +596,12 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 		return
 	}
 
-	// Update status to active and set size
+	// Update status to active, set size, and report disk_format=raw — uploads
+	// are normalized to a raw base on ingest (SPEC-009 WS-0/FR-003). Applies to
+	// the local/RBD real-mode backends; S3-as-Glance-backend is out of WS-0 scope.
 	if _, err := database.DB.Exec(c.Request.Context(),
-		"UPDATE images SET status = $1, size_bytes = $2, updated_at = $3 WHERE id = $4",
-		"active", size, time.Now(), imageID); err != nil {
+		"UPDATE images SET status = $1, size_bytes = $2, disk_format = $3, updated_at = $4 WHERE id = $5",
+		"active", size, "raw", time.Now(), imageID); err != nil {
 		log.Error().Err(err).Str("image_id", imageID).Msg("failed to mark image as active after successful upload")
 	}
 

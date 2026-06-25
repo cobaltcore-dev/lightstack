@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -37,6 +40,29 @@ type stubImage struct {
 	createdAt time.Time
 }
 
+// --- Image artifact naming: single source of truth (SPEC-009 FR-003) ---
+// Shared by Glance's write sites here and Nova's read site (the per-instance
+// overlay's backing file), so the write and boot locations never diverge.
+
+// LocalImageDir is the node-local directory for raw image bases in real mode
+// (the chart's persistent hostPath).
+func LocalImageDir() string { return paths.ImagesDir() }
+
+// imageFileName is the on-disk filename for a stored image (raw base).
+func imageFileName(imageID string) string { return "image-" + imageID + ".raw" }
+
+// LocalImagePath is the canonical raw-base path for an image in real mode;
+// Nova's per-instance overlay backs off this file.
+func LocalImagePath(imageID string) string {
+	return filepath.Join(LocalImageDir(), imageFileName(imageID))
+}
+
+// rbdImageName is the RBD object name for a stored image.
+func rbdImageName(imageID string) string { return "image-" + imageID }
+
+// s3ImageKey is the S3 object key for a stored image.
+func s3ImageKey(imageID string) string { return "images/" + imageFileName(imageID) }
+
 // NewImageStore creates a new image store.
 //
 // Failure policy follows the project's "Fail-Fast Design" principle
@@ -50,9 +76,9 @@ type stubImage struct {
 //     primary backend serve traffic; S3 operations will surface
 //     "S3 client not initialized" until the config is corrected.
 func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string) (*ImageStore, error) {
-	// Use /var/lib/o3k/images for local storage (Docker-friendly)
-	// Falls back to ~/.o3k/images for non-containerized deployments
-	localPath := "/var/lib/o3k/images"
+	// Use the canonical image dir for local storage (Docker-friendly);
+	// falls back to ~/.o3k/images for non-containerized deployments.
+	localPath := LocalImageDir()
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
 		homeDir, _ := os.UserHomeDir()
 		localPath = filepath.Join(homeDir, ".o3k", "images")
@@ -210,36 +236,89 @@ func (s *ImageStore) uploadImageStub(imageID string, reader io.Reader) (int64, e
 	return int64(len(data)), nil
 }
 
-// uploadImageLocal uploads image to local storage
+// uploadImageLocal uploads an image to local storage, normalizing it to a raw
+// base on ingest (SPEC-009 WS-0/FR-003): VMs boot from a qcow2 overlay backing
+// this raw file. The upload streams to a temp file, then qemu-img converts it
+// to raw (or renames it if already raw / qemu-img is unavailable).
 func (s *ImageStore) uploadImageLocal(ctx context.Context, imageID string, reader io.Reader) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	imagePath := filepath.Join(s.localPath, "image-"+imageID+".raw")
+	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
+	tmpPath := imagePath + ".upload"
 
-	// Create file
-	file, err := os.Create(imagePath)
+	// Stream the upload to a temp file. Wrap the source so the timeout fires —
+	// os.File doesn't natively respect context.
+	tmp, err := os.Create(tmpPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create image file: %w", err)
 	}
-	defer file.Close()
-
-	// Copy data from reader to file. Wrap the source so the timeout
-	// actually fires — os.File doesn't natively respect context.
-	size, err := io.Copy(file, &ctxReader{ctx: ctx, r: reader})
-	if err != nil {
-		_ = os.Remove(imagePath) // Cleanup on error
-		return 0, fmt.Errorf("failed to write image data: %w", err)
+	size, copyErr := io.Copy(tmp, &ctxReader{ctx: ctx, r: reader})
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return 0, fmt.Errorf("failed to write image data: %w", copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return 0, fmt.Errorf("failed to close image file: %w", closeErr)
 	}
 
+	// Normalize to a raw base.
+	if err := normalizeToRaw(tmpPath, imagePath); err != nil {
+		_ = os.Remove(tmpPath)
+		_ = os.Remove(imagePath)
+		return 0, fmt.Errorf("failed to normalize image to raw: %w", err)
+	}
+
+	// Report the stored (raw) size when available; fall back to the upload size.
+	if fi, statErr := os.Stat(imagePath); statErr == nil {
+		size = fi.Size()
+	}
 	return size, nil
+}
+
+// normalizeToRaw places a raw image at dst from src using qemu-img: if src is
+// already raw it is renamed; non-raw (e.g. qcow2) is converted; if qemu-img is
+// unavailable the bytes are kept as-is (best-effort — real-mode images expect
+// qemu-img present, see build/package/Dockerfile).
+func normalizeToRaw(src, dst string) error {
+	format, err := detectDiskFormat(src)
+	if err != nil {
+		log.Warn().Err(err).Str("src", src).Msg("could not detect image format (qemu-img?); storing as-is")
+		return os.Rename(src, dst)
+	}
+	if format == "raw" {
+		return os.Rename(src, dst)
+	}
+	cmd := exec.Command("qemu-img", "convert", "-O", "raw", src, dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img convert %s->raw: %w: %s", format, err, string(out))
+	}
+	return os.Remove(src)
+}
+
+// detectDiskFormat returns qemu-img's detected disk format of path (e.g. "raw",
+// "qcow2"). It errors when qemu-img is unavailable or the file is unreadable.
+func detectDiskFormat(path string) (string, error) {
+	out, err := exec.Command("qemu-img", "info", "--output=json", path).Output()
+	if err != nil {
+		return "", err
+	}
+	var info struct {
+		Format string `json:"format"`
+	}
+	if err := json.Unmarshal(out, &info); err != nil {
+		return "", fmt.Errorf("parse qemu-img info: %w", err)
+	}
+	return info.Format, nil
 }
 
 // uploadImageRBD uploads image to RBD. This is a stub pending go-ceph
 // integration; once wired up, restore the WithTimeout(ctx, s.timeout)
 // guard around the exec.CommandContext call.
 func (s *ImageStore) uploadImageRBD(_ context.Context, imageID string, _ io.Reader) (int64, error) {
-	imageName := "image-" + imageID
+	imageName := rbdImageName(imageID)
 
 	// TODO: Use go-ceph to write to RBD
 	// ctx, cancel := context.WithTimeout(ctx, s.timeout); defer cancel()
@@ -259,7 +338,7 @@ func (s *ImageStore) uploadImageS3(ctx context.Context, imageID string, reader i
 		return 0, fmt.Errorf("S3 client not initialized")
 	}
 
-	objectKey := "images/image-" + imageID + ".raw"
+	objectKey := s3ImageKey(imageID)
 
 	// Stream to a temp file so we can provide an io.ReadSeeker to the S3 SDK
 	// without buffering the entire image in memory.
@@ -294,7 +373,7 @@ func (s *ImageStore) uploadImageS3(ctx context.Context, imageID string, reader i
 
 // uploadLocalToS3 uploads an image from local storage to S3
 func (s *ImageStore) uploadLocalToS3(ctx context.Context, imageID string) error {
-	imagePath := filepath.Join(s.localPath, "image-"+imageID+".raw")
+	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
 
 	file, err := os.Open(imagePath)
 	if err != nil {
@@ -302,7 +381,7 @@ func (s *ImageStore) uploadLocalToS3(ctx context.Context, imageID string) error 
 	}
 	defer file.Close()
 
-	objectKey := "images/image-" + imageID + ".raw"
+	objectKey := s3ImageKey(imageID)
 
 	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.s3Bucket),
@@ -374,7 +453,7 @@ func (s *ImageStore) downloadImageLocal(ctx context.Context, imageID string, wri
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	imagePath := filepath.Join(s.localPath, "image-"+imageID+".raw")
+	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
 
 	file, err := os.Open(imagePath)
 	if err != nil {
@@ -392,7 +471,7 @@ func (s *ImageStore) downloadImageLocal(ctx context.Context, imageID string, wri
 // integration; once wired up, restore the WithTimeout(ctx, s.timeout)
 // guard around the exec.CommandContext call.
 func (s *ImageStore) downloadImageRBD(_ context.Context, imageID string, _ io.Writer) error {
-	imageName := "image-" + imageID
+	imageName := rbdImageName(imageID)
 
 	// TODO: Use go-ceph
 	// ctx, cancel := context.WithTimeout(ctx, s.timeout); defer cancel()
@@ -412,7 +491,7 @@ func (s *ImageStore) downloadImageS3(ctx context.Context, imageID string, writer
 		return fmt.Errorf("S3 client not initialized")
 	}
 
-	objectKey := "images/image-" + imageID + ".raw"
+	objectKey := s3ImageKey(imageID)
 
 	result, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.s3Bucket),
@@ -479,7 +558,7 @@ func (s *ImageStore) deleteImageStub(imageID string) error {
 
 // deleteImageLocal deletes from local storage
 func (s *ImageStore) deleteImageLocal(ctx context.Context, imageID string) error {
-	imagePath := filepath.Join(s.localPath, "image-"+imageID+".raw")
+	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
 	err := os.Remove(imagePath)
 	if err != nil && os.IsNotExist(err) {
 		// Idempotent delete - not found is success
@@ -492,7 +571,7 @@ func (s *ImageStore) deleteImageLocal(ctx context.Context, imageID string) error
 // integration; once wired up, restore the WithTimeout(ctx, s.timeout)
 // guard around the exec.CommandContext call.
 func (s *ImageStore) deleteImageRBD(_ context.Context, imageID string) error {
-	imageName := "image-" + imageID
+	imageName := rbdImageName(imageID)
 
 	// TODO: Use go-ceph
 	// ctx, cancel := context.WithTimeout(ctx, s.timeout); defer cancel()
@@ -511,7 +590,7 @@ func (s *ImageStore) deleteImageS3(ctx context.Context, imageID string) error {
 		return fmt.Errorf("S3 client not initialized")
 	}
 
-	objectKey := "images/image-" + imageID + ".raw"
+	objectKey := s3ImageKey(imageID)
 
 	_, err := s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.s3Bucket),
@@ -560,7 +639,7 @@ func (s *ImageStore) ImageExists(ctx context.Context, imageID string) (bool, err
 
 // imageExistsLocal checks if image exists locally
 func (s *ImageStore) imageExistsLocal(imageID string) (bool, error) {
-	imagePath := filepath.Join(s.localPath, "image-"+imageID+".raw")
+	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
 	_, err := os.Stat(imagePath)
 	if err == nil {
 		return true, nil
@@ -576,7 +655,7 @@ func (s *ImageStore) imageExistsLocal(imageID string) (bool, error) {
 // WithTimeout(ctx, s.timeout) guard around the exec.CommandContext
 // call.
 func (s *ImageStore) imageExistsRBD(_ context.Context, imageID string) (bool, error) {
-	imageName := "image-" + imageID
+	imageName := rbdImageName(imageID)
 
 	// TODO: Use go-ceph
 	// ctx, cancel := context.WithTimeout(ctx, s.timeout); defer cancel()
@@ -596,7 +675,7 @@ func (s *ImageStore) imageExistsS3(ctx context.Context, imageID string) (bool, e
 		return false, fmt.Errorf("S3 client not initialized")
 	}
 
-	objectKey := "images/image-" + imageID + ".raw"
+	objectKey := s3ImageKey(imageID)
 
 	_, err := s.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.s3Bucket),
@@ -625,7 +704,7 @@ func (s *ImageStore) GetImageSize(ctx context.Context, imageID string) (int64, e
 		}
 		return 0, fmt.Errorf("image %s not found", imageID)
 	case "local":
-		imagePath := filepath.Join(s.localPath, "image-"+imageID+".raw")
+		imagePath := filepath.Join(s.localPath, imageFileName(imageID))
 		info, err := os.Stat(imagePath)
 		if err != nil {
 			return 0, err
@@ -635,7 +714,7 @@ func (s *ImageStore) GetImageSize(ctx context.Context, imageID string) (int64, e
 		return s.getImageSizeS3(ctx, imageID)
 	case "local,s3":
 		// Try local first (faster), fall back to S3
-		localPath := filepath.Join(s.localPath, "image-"+imageID+".raw")
+		localPath := filepath.Join(s.localPath, imageFileName(imageID))
 		if info, err := os.Stat(localPath); err == nil {
 			return info.Size(), nil
 		}
@@ -657,7 +736,7 @@ func (s *ImageStore) getImageSizeS3(ctx context.Context, imageID string) (int64,
 		return 0, fmt.Errorf("S3 client not initialized")
 	}
 
-	objectKey := "images/image-" + imageID + ".raw"
+	objectKey := s3ImageKey(imageID)
 
 	result, err := s.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.s3Bucket),

@@ -13,6 +13,7 @@ import (
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -264,10 +265,18 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 		if err == nil {
 			routerID = &rID
 
-			// Configure DNAT/SNAT rules for floating IP
-			externalInterface := "qg-ext-" + rID[:7]
-			if err := svc.routerManager.AddFloatingIP(rID, floatingIP, *fixedIP, externalInterface); err != nil {
-				log.Warn().Err(err).Str("router_id", rID).Str("floating_ip", floatingIP).Msg("failed to configure floating IP NAT")
+			// Program the floating-IP NAT in the default namespace, out the node
+			// uplink (single-node WS-3; the per-router-netns path never sees
+			// flat-ns VM traffic).
+			if uplink, uerr := networking.DefaultUplinkInterface(); uerr == nil {
+				if err := svc.routerManager.EnsureFloatingIP(floatingIP, *fixedIP, uplink); err != nil {
+					log.Warn().Err(err).Str("floating_ip", floatingIP).Msg("failed to configure floating IP NAT")
+				}
+				if err := svc.routerManager.EnsureIngressFilter(*fixedIP, uplink, svc.portIngressRules(c.Request.Context(), req.FloatingIP.PortID)); err != nil {
+					log.Warn().Err(err).Str("fixed_ip", *fixedIP).Msg("WS-3: failed to program ingress filter")
+				}
+			} else {
+				log.Warn().Err(uerr).Msg("WS-3: cannot detect uplink for floating IP NAT")
 			}
 		}
 	}
@@ -326,12 +335,16 @@ func (svc *Service) GetFloatingIP(c *gin.Context) {
 	var fip FloatingIP
 	var fixedIP, portID, routerID, description sql.NullString
 
+	// id::text comparison resolves by UUID or floating-IP address without
+	// crashing on a non-UUID identifier — the CLI looks a FIP up by its address
+	// (e.g. `server add floating ip <vm> <address>`).
 	err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT id, project_id, floating_network_id, floating_ip_address,
 		       fixed_ip_address, port_id, router_id, status, description,
 		       created_at, updated_at
 		FROM floating_ips
-		WHERE id = $1 AND project_id = $2
+		WHERE (id::text = $1 OR floating_ip_address = $1) AND project_id = $2
+		LIMIT 1
 	`, floatingIPID, projectID).Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
 		&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
 
@@ -422,10 +435,12 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 			// Best-effort: the new association/disassociation still
 			// proceeds even if cleanup fails — leftover NAT rules will be
 			// overwritten or pruned, not duplicated.
-			if currentPortID.Valid && currentFixedIP.Valid && currentRouterID.Valid {
-				externalInterface := "qg-ext-" + currentRouterID.String[:7]
-				if err := svc.routerManager.RemoveFloatingIP(currentRouterID.String, currentFloatingIP.String, currentFixedIP.String, externalInterface); err != nil {
-					log.Warn().Err(err).Str("router_id", currentRouterID.String).Str("floating_ip", currentFloatingIP.String).Msg("failed to remove previous floating IP NAT rules")
+			if currentPortID.Valid && currentFixedIP.Valid {
+				if uplink, uerr := networking.DefaultUplinkInterface(); uerr == nil {
+					if err := svc.routerManager.WithdrawFloatingIP(currentFloatingIP.String, currentFixedIP.String, uplink); err != nil {
+						log.Warn().Err(err).Str("floating_ip", currentFloatingIP.String).Msg("failed to remove previous floating IP NAT rules")
+					}
+					_ = svc.routerManager.RemoveIngressFilter(currentFixedIP.String, uplink)
 				}
 			}
 
@@ -482,20 +497,37 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 					return
 				}
 
-				// Get fixed IP
+				// Resolve the fixed IP: explicit request value, else the port's
+				// primary fixed IP from the DB (the bogus hard-coded default
+				// never matched a real VM).
 				var fixedIP string
 				if fixedIPAddr, ok := floatingIPData["fixed_ip_address"]; ok && fixedIPAddr != nil {
 					fixedIP, _ = fixedIPAddr.(string)
-				} else {
-					fixedIP = "10.0.1.10" // Default, should parse from port
+				}
+				if fixedIP == "" {
+					fixedIP = svc.portPrimaryFixedIP(c.Request.Context(), newPortID)
+				}
+				if fixedIP == "" {
+					common.SendError(c, common.NewBadRequestError("could not determine the port's fixed IP"))
+					return
 				}
 
-				// Configure NAT rules
-				externalInterface := "qg-ext-" + routerID[:7]
-				if err := svc.routerManager.AddFloatingIP(routerID, currentFloatingIP.String, fixedIP, externalInterface); err != nil {
-					log.Error().Err(err).Str("operation", "configure_nat").Msg("failed to configure NAT rules")
+				// Program the floating-IP NAT in the default namespace, out the
+				// node uplink (single-node WS-3).
+				uplink, uerr := networking.DefaultUplinkInterface()
+				if uerr != nil {
+					log.Error().Err(uerr).Msg("WS-3: cannot detect uplink for floating IP NAT")
 					common.SendError(c, common.NewInternalServerError("failed to configure NAT"))
 					return
+				}
+				if err := svc.routerManager.EnsureFloatingIP(currentFloatingIP.String, fixedIP, uplink); err != nil {
+					log.Error().Err(err).Str("operation", "configure_fip_nat").Msg("failed to configure NAT rules")
+					common.SendError(c, common.NewInternalServerError("failed to configure NAT"))
+					return
+				}
+				// Default-deny inbound, open per the port's SG ingress rules (T034).
+				if err := svc.routerManager.EnsureIngressFilter(fixedIP, uplink, svc.portIngressRules(c.Request.Context(), newPortID)); err != nil {
+					log.Warn().Err(err).Str("fixed_ip", fixedIP).Msg("WS-3: failed to program ingress filter")
 				}
 
 				updates = append(updates, fmt.Sprintf("port_id = $%d", argID))
@@ -571,10 +603,12 @@ func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 	}
 
 	// Remove NAT rules if associated
-	if portID.Valid && fixedIP.Valid && routerID.Valid {
-		externalInterface := "qg-ext-" + routerID.String[:7]
-		if err := svc.routerManager.RemoveFloatingIP(routerID.String, floatingIP.String, fixedIP.String, externalInterface); err != nil {
-			log.Warn().Err(err).Str("floatingip_id", floatingIPID).Str("router_id", routerID.String).Msg("failed to remove floating IP NAT rules")
+	if portID.Valid && fixedIP.Valid {
+		if uplink, uerr := networking.DefaultUplinkInterface(); uerr == nil {
+			if err := svc.routerManager.WithdrawFloatingIP(floatingIP.String, fixedIP.String, uplink); err != nil {
+				log.Warn().Err(err).Str("floatingip_id", floatingIPID).Str("floating_ip", floatingIP.String).Msg("failed to remove floating IP NAT rules")
+			}
+			_ = svc.routerManager.RemoveIngressFilter(fixedIP.String, uplink)
 		}
 	}
 
@@ -590,6 +624,101 @@ func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// portPrimaryFixedIP returns a port's primary fixed IP (first entry of the
+// fixed_ips JSONB array), or "" if unavailable — used to DNAT a floating IP to
+// the right VM address.
+func (svc *Service) portPrimaryFixedIP(ctx context.Context, portID string) string {
+	var raw []byte
+	if err := database.DB.QueryRow(ctx, `SELECT fixed_ips FROM ports WHERE id = $1`, portID).Scan(&raw); err != nil {
+		return ""
+	}
+	var fixedIPs []struct {
+		IPAddress string `json:"ip_address"`
+	}
+	if err := json.Unmarshal(raw, &fixedIPs); err != nil {
+		return ""
+	}
+	for _, f := range fixedIPs {
+		if f.IPAddress != "" {
+			return f.IPAddress
+		}
+	}
+	return ""
+}
+
+// portIngressRules returns the IP-based ingress rules of a port's security
+// groups (skipping same-group / remote_group_id rules, which are east-west) —
+// what the north-south ingress filter enforces for a floating IP (T034).
+func (svc *Service) portIngressRules(ctx context.Context, portID string) []networking.IngressRule {
+	rows, err := database.DB.Query(ctx, `
+		SELECT r.protocol, r.port_range_min, r.port_range_max, r.remote_ip_prefix
+		FROM security_group_rules r
+		JOIN port_security_groups psg ON psg.security_group_id = r.security_group_id
+		WHERE psg.port_id = $1 AND r.direction = 'ingress'
+		  AND (r.ethertype = 'IPv4' OR r.ethertype IS NULL)
+		  AND r.remote_group_id IS NULL`, portID)
+	if err != nil {
+		log.Warn().Err(err).Str("port_id", portID).Msg("WS-3: failed to query ingress rules")
+		return nil
+	}
+	defer rows.Close()
+	var out []networking.IngressRule
+	for rows.Next() {
+		var proto, remote sql.NullString
+		var pmin, pmax sql.NullInt32
+		if err := rows.Scan(&proto, &pmin, &pmax, &remote); err != nil {
+			continue
+		}
+		out = append(out, networking.IngressRule{
+			Protocol: proto.String,
+			PortMin:  int(pmin.Int32),
+			PortMax:  int(pmax.Int32),
+			Remote:   remote.String,
+		})
+	}
+	return out
+}
+
+// refreshIngressFiltersForSG rebuilds the north-south ingress filter for every
+// floating-IP'd port that uses the given security group, so an SG rule change
+// takes effect immediately (T034).
+func (svc *Service) refreshIngressFiltersForSG(ctx context.Context, sgID string) {
+	if svc.mode == "stub" {
+		return
+	}
+	rows, err := database.DB.Query(ctx, `
+		SELECT f.fixed_ip_address, f.port_id
+		FROM floating_ips f
+		JOIN port_security_groups psg ON psg.port_id = f.port_id
+		WHERE psg.security_group_id = $1 AND f.port_id IS NOT NULL AND f.fixed_ip_address IS NOT NULL`, sgID)
+	if err != nil {
+		log.Warn().Err(err).Str("sg_id", sgID).Msg("WS-3: failed to query FIPs for SG refresh")
+		return
+	}
+	type target struct{ fixed, port string }
+	var targets []target
+	for rows.Next() {
+		var t target
+		if err := rows.Scan(&t.fixed, &t.port); err == nil {
+			targets = append(targets, t)
+		}
+	}
+	rows.Close()
+	if len(targets) == 0 {
+		return
+	}
+	uplink, err := networking.DefaultUplinkInterface()
+	if err != nil {
+		log.Warn().Err(err).Msg("WS-3: no uplink for SG ingress refresh")
+		return
+	}
+	for _, t := range targets {
+		if err := svc.routerManager.EnsureIngressFilter(t.fixed, uplink, svc.portIngressRules(ctx, t.port)); err != nil {
+			log.Warn().Err(err).Str("fixed_ip", t.fixed).Msg("WS-3: ingress filter refresh failed")
+		}
+	}
 }
 
 // Helper function to allocate a floating IP from subnet

@@ -3,6 +3,7 @@ package nova
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/neutron"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
+	"github.com/cobaltcore-dev/o3k/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -174,6 +176,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Volume attachments
 		v21.GET("/servers/:id/os-volume_attachments", svc.ListVolumeAttachments)
+		v21.GET("/servers/:id/os-volume_attachments/:volume_id", svc.GetVolumeAttachment)
 		v21.POST("/servers/:id/os-volume_attachments", svc.AttachVolume)
 		v21.DELETE("/servers/:id/os-volume_attachments/:volume_id", svc.DetachVolume)
 
@@ -240,8 +243,47 @@ type CreateServerRequest struct {
 		Networks  []struct {
 			UUID string `json:"uuid"`
 		} `json:"networks"`
-		KeyName string `json:"key_name"`
+		KeyName              string `json:"key_name"`
+		UserData             string `json:"user_data"`
+		BlockDeviceMappingV2 []struct {
+			BootIndex           any    `json:"boot_index"`
+			UUID                string `json:"uuid"`
+			SourceType          string `json:"source_type"`
+			DestinationType     string `json:"destination_type"`
+			DeleteOnTermination bool   `json:"delete_on_termination"`
+		} `json:"block_device_mapping_v2"`
 	} `json:"server"`
+}
+
+// bootVolumeID returns the root boot-from-volume id and its delete-on-termination
+// flag from a block_device_mapping_v2 (source_type=volume at boot_index 0), or
+// ("", false) if the VM boots from an image (SPEC-009 WS-5 / T041, FR-023).
+func bootVolumeID(req *CreateServerRequest) (string, bool) {
+	for _, bdm := range req.Server.BlockDeviceMappingV2 {
+		if bdm.SourceType != "volume" || bdm.UUID == "" {
+			continue
+		}
+		// boot_index 0 (or unset) marks the root disk. Normalize across the
+		// representations the JSON decoder yields: gin sets
+		// EnableDecoderUseNumber, so a numeric 0 arrives as json.Number, not
+		// float64 — match on the rendered value to cover number/string/nil.
+		switch fmt.Sprintf("%v", bdm.BootIndex) {
+		case "0", "<nil>", "":
+			return bdm.UUID, bdm.DeleteOnTermination
+		}
+	}
+	return "", false
+}
+
+// markInstanceError flags an instance ERROR (best-effort), used from the
+// VM-creation goroutine's failure paths. Uses svc.ctx so it still runs even if
+// the request context was cancelled.
+func (svc *Service) markInstanceError(instanceID string) {
+	if _, err := database.DB.Exec(svc.ctx,
+		"UPDATE instances SET status = 'ERROR', updated_at = $1 WHERE id = $2",
+		time.Now(), instanceID); err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ERROR")
+	}
 }
 
 // CreateServer creates a new server instance
@@ -258,6 +300,16 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 	projectID := c.GetString("project_id")
 	userID := c.GetString("user_id")
+
+	// Decode user_data once (OpenStack/Terraform send it base64-encoded). Reused
+	// for both the metadata service (T027) and config-drive (T028). Fall back to
+	// the raw string if it is not valid base64.
+	decodedUserData := req.Server.UserData
+	if decodedUserData != "" {
+		if decoded, derr := base64.StdEncoding.DecodeString(decodedUserData); derr == nil {
+			decodedUserData = string(decoded)
+		}
+	}
 
 	middleware.LogOperationStart(c, "create", "server", req.Server.Name)
 
@@ -348,6 +400,17 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 	logger.Info().Str("instance_id", instanceID).Str("flavor", flavor.Name).Msg("Instance record created")
 
+	// Persist cloud-init user_data so the metadata service serves it raw to
+	// cloud-init (SPEC-009 WS-4 / T027).
+	if decodedUserData != "" {
+		if _, err := database.DB.Exec(c.Request.Context(),
+			`INSERT INTO instance_userdata (instance_id, userdata) VALUES ($1, $2)
+			 ON CONFLICT (instance_id) DO UPDATE SET userdata = EXCLUDED.userdata`,
+			instanceID, decodedUserData); err != nil {
+			logger.Warn().Err(err).Str("instance_id", instanceID).Msg("failed to persist user_data")
+		}
+	}
+
 	// Log instance action
 	requestID := uuid.New().String()
 	if _, err := database.DB.Exec(c.Request.Context(), `
@@ -408,61 +471,142 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				}
 			}
 
-			// Generate cloud-init configuration if SSH key is provided
+			// Build a config-drive (cloud-init ISO) when a key and/or user_data is
+			// supplied, so the VM is provisioned even without metadata-service
+			// reachability (SPEC-009 WS-4 / T028).
 			var cloudInit *hypervisor.CloudInitConfig
+			var sshKey string
 			if req.Server.KeyName != "" {
-				// Fetch SSH public key from database
-				var publicKey string
-				err := database.DB.QueryRow(ctx,
+				if err := database.DB.QueryRow(ctx,
 					"SELECT public_key FROM keypairs WHERE user_id = $1 AND name = $2",
 					userID, req.Server.KeyName,
-				).Scan(&publicKey)
-
-				if err == nil {
-					// Generate cloud-init config with SSH key
-					cloudInit = hypervisor.DefaultCloudInitConfig(req.Server.Name, publicKey)
-
-					// Generate cloud-init ISO
-					isoPath, err := hypervisor.GenerateCloudInitISO(instanceID, cloudInit)
-					if err != nil {
-						logger.Error().Err(err).
-							Str("instance_id", instanceID).
-							Msg("Failed to generate cloud-init ISO")
-						// Continue without cloud-init rather than failing
-					} else {
-						logger.Info().
-							Str("instance_id", instanceID).
-							Str("iso_path", isoPath).
-							Msg("Cloud-init ISO generated successfully")
-					}
-				} else {
+				).Scan(&sshKey); err != nil {
 					logger.Warn().Err(err).
 						Str("key_name", req.Server.KeyName).
 						Msg("Failed to fetch SSH key for cloud-init")
 				}
 			}
+			if sshKey != "" || decodedUserData != "" {
+				cloudInit = hypervisor.NewCloudInitConfig(req.Server.Name, sshKey, decodedUserData)
+				isoPath, err := hypervisor.GenerateCloudInitISO(instanceID, cloudInit)
+				if err != nil {
+					logger.Error().Err(err).
+						Str("instance_id", instanceID).
+						Msg("Failed to generate cloud-init ISO")
+					// Continue without cloud-init rather than failing
+				} else {
+					logger.Info().
+						Str("instance_id", instanceID).
+						Str("iso_path", isoPath).
+						Msg("Cloud-init ISO generated successfully")
+				}
+			}
 
 			// Generate VM XML
 			log.Debug().Str("instance_id", instanceID).Msg("Generating VM XML")
-			// Validate imageRef is a well-formed UUID before constructing file path
-			parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
-			if err != nil {
-				log.Error().Err(err).Str("image_ref", req.Server.ImageRef).Str("instance_id", instanceID).Msg("Invalid imageRef — not a valid UUID")
-				if _, dbErr := database.DB.Exec(svc.ctx,
-					"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-					"ERROR", time.Now(), instanceID); dbErr != nil {
-					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after invalid imageRef")
+			// Root disk: boot-from-volume (the bootable volume's backing IS the
+			// root disk) or, for an image boot, a per-instance qcow2 overlay over
+			// the image's raw base so each VM is isolated (SPEC-009 WS-0/WS-5).
+			var imagePath string
+			if rootVol, rootDOT := bootVolumeID(&req); rootVol != "" {
+				// Validate the boot volume before using it as the root disk: it must
+				// exist, belong to this project, and be available + bootable
+				// (SPEC-009 WS-5) — otherwise the VM would boot against an
+				// unvalidated/foreign volume or a missing backing file.
+				var volStatus, volProject, volAttached, rbdPool, rbdImage string
+				var volBootable bool
+				if err := database.DB.QueryRow(ctx,
+					"SELECT status, COALESCE(bootable, false), project_id, COALESCE(attached_to_instance_id::text, ''), COALESCE(rbd_pool, ''), COALESCE(rbd_image, '') FROM volumes WHERE id = $1",
+					rootVol).Scan(&volStatus, &volBootable, &volProject, &volAttached, &rbdPool, &rbdImage); err != nil {
+					log.Error().Err(err).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: root volume not found")
+					svc.markInstanceError(instanceID)
+					return
 				}
-				return
+				if volProject != projectID || volStatus != "available" || !volBootable || volAttached != "" {
+					log.Error().Str("instance_id", instanceID).Str("volume_id", rootVol).
+						Str("status", volStatus).Bool("bootable", volBootable).Bool("owned", volProject == projectID).
+						Msg("boot-from-volume: root volume not eligible (need available + bootable + owned + unattached)")
+					svc.markInstanceError(instanceID)
+					return
+				}
+				// Root disk = the bootable volume's backing, selected exactly like the
+				// attach path (volumeDiskXML): if the node-local qcow2 exists it's a
+				// local volume; otherwise it's RBD (rbd:pool/image, which GenerateVMXML
+				// renders as a network disk). Do NOT key off rbd_pool/rbd_image — o3k
+				// sets those defaults on every volume, local ones included, so they
+				// can't distinguish the backend (SPEC-009 WS-5). Local is the validated
+				// v1 mode; the RBD branch shares the (Ceph-untested) attach RBD path.
+				if localPath := storage.LocalVolumePath(rootVol); fileExists(localPath) {
+					imagePath = localPath
+				} else {
+					imagePath = "rbd:" + rbdPool + "/" + rbdImage
+				}
+				// boot-from-volume skips StageOverlay, so create the per-instance
+				// directory the serial console.log lives in — otherwise libvirt
+				// fails to start the domain (SPEC-009 WS-5).
+				if err := hypervisor.EnsureInstanceDir(instanceID); err != nil {
+					log.Error().Err(err).Str("instance_id", instanceID).Msg("boot-from-volume: failed to create instance dir")
+					if _, dbErr := database.DB.Exec(svc.ctx,
+						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
+						"ERROR", time.Now(), instanceID); dbErr != nil {
+						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after instance-dir failure")
+					}
+					return
+				}
+				// Record the attachment first, then mark the volume in-use. Both must
+				// succeed: a half-write means the VM boots but the DB is inconsistent
+				// (no attachment row → FR-023 can't release/delete the volume on
+				// server delete), so treat any failure as fatal.
+				bvNow := time.Now()
+				if _, e := database.DB.Exec(ctx,
+					"INSERT INTO volume_attachments (id, volume_id, instance_id, device, delete_on_termination, attached_at) VALUES ($1, $2, $3, $4, $5, $6)",
+					uuid.New().String(), rootVol, instanceID, "/dev/vda", rootDOT, bvNow); e != nil {
+					log.Error().Err(e).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: failed to record root attachment")
+					svc.markInstanceError(instanceID)
+					return
+				}
+				if _, e := database.DB.Exec(ctx,
+					"UPDATE volumes SET attached_to_instance_id = $1, status = 'in-use', updated_at = $2 WHERE id = $3",
+					instanceID, bvNow, rootVol); e != nil {
+					log.Error().Err(e).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: failed to mark volume in-use")
+					svc.markInstanceError(instanceID)
+					return
+				}
+			} else {
+				parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
+				if err != nil {
+					log.Error().Err(err).Str("image_ref", req.Server.ImageRef).Str("instance_id", instanceID).Msg("Invalid imageRef — not a valid UUID")
+					if _, dbErr := database.DB.Exec(svc.ctx,
+						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
+						"ERROR", time.Now(), instanceID); dbErr != nil {
+						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after invalid imageRef")
+					}
+					return
+				}
+				imageUUID := parsedImageUUID.String()
+				imagePath = storage.LocalImagePath(imageUUID)
+				if svc.libvirtMode == "real" {
+					overlay, stageErr := hypervisor.StageOverlay(instanceID, storage.LocalImagePath(imageUUID))
+					if stageErr != nil {
+						log.Error().Err(stageErr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to stage per-instance disk overlay")
+						if _, dbErr := database.DB.Exec(svc.ctx,
+							"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
+							"ERROR", time.Now(), instanceID); dbErr != nil {
+							log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after overlay staging failure")
+						}
+						return
+					}
+					imagePath = overlay
+				}
 			}
-			imageUUID := parsedImageUUID.String()
+
 			spec := hypervisor.VMSpec{
 				UUID:      instanceID,
 				Name:      fmt.Sprintf("instance-%s", instanceID[:8]),
 				VCPUs:     flavor.VCPUs,
 				MemoryMB:  flavor.RAMMB,
 				DiskGB:    flavor.DiskGB,
-				ImagePath: fmt.Sprintf("/var/lib/o3k/images/%s.qcow2", imageUUID),
+				ImagePath: imagePath,
 				Networks:  networks,
 				CloudInit: cloudInit,
 			}
@@ -847,13 +991,14 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 
 	middleware.LogOperationStart(c, "delete", "server", instanceID)
 
-	// Get libvirt domain ID (support lookup by ID or name)
+	// Get the instance UUID + libvirt domain ID (support lookup by ID or name)
+	var instanceUUID string
 	var libvirtDomainID sql.NullString
 	queryStart := time.Now()
 	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
+		"SELECT id, libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
-	).Scan(&libvirtDomainID)
+	).Scan(&instanceUUID, &libvirtDomainID)
 	middleware.LogDatabaseQuery(c, "SELECT libvirt_domain_id", time.Since(queryStart), err)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -881,20 +1026,117 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		logger.Info().Str("libvirt_domain_id", libvirtDomainID.String).Msg("VM deleted from libvirt")
 	}
 
-	// Delete from database (support lookup by ID or name)
+	// SPEC-009 FR-023: release (or, for delete-on-termination, delete) the volumes
+	// attached to this instance, drop its auto-allocated neutron ports, and delete
+	// the instance row — all in ONE transaction so a mid-sequence failure can't
+	// leave split state (e.g. a volume deleted while the server still exists). The
+	// attachment rows are read+resolved before the instance delete so the cascade
+	// can't drop them first. Filesystem cleanup (volume backing, overlay dir) is
+	// best-effort and runs only after the transaction commits.
+	ctx := c.Request.Context()
+	tx, txErr := database.DB.Begin(ctx)
+	if txErr != nil {
+		logger.Error().Err(txErr).Str("instance_id", instanceUUID).Msg("delete: begin tx failed")
+		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), txErr)
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	rows, vaErr := tx.Query(ctx,
+		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1", instanceUUID)
+	if vaErr != nil {
+		logger.Error().Err(vaErr).Str("instance_id", instanceUUID).Msg("delete: query volume attachments failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+	type attachedVol struct {
+		id  string
+		dot bool
+	}
+	var attached []attachedVol
+	for rows.Next() {
+		var a attachedVol
+		if scanErr := rows.Scan(&a.id, &a.dot); scanErr == nil {
+			attached = append(attached, a)
+		}
+	}
+	rows.Close()
+	if rErr := rows.Err(); rErr != nil {
+		logger.Error().Err(rErr).Str("instance_id", instanceUUID).Msg("delete: iterate volume attachments failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+
+	// Resolve each attachment in the tx; collect delete-on-termination volume ids
+	// so their backing files are removed after commit (filesystem ops can't be
+	// transactional).
+	var dotVolumes []string
+	for _, a := range attached {
+		if a.dot {
+			if _, e := tx.Exec(ctx, "DELETE FROM volumes WHERE id = $1", a.id); e != nil {
+				logger.Error().Err(e).Str("volume_id", a.id).Msg("delete: drop delete-on-termination volume failed")
+				common.SendError(c, common.NewInternalServerError("failed to delete server"))
+				return
+			}
+			dotVolumes = append(dotVolumes, a.id)
+		} else {
+			if _, e := tx.Exec(ctx,
+				"UPDATE volumes SET status = 'available', attached_to_instance_id = NULL, updated_at = $1 WHERE id = $2",
+				time.Now(), a.id); e != nil {
+				logger.Error().Err(e).Str("volume_id", a.id).Msg("delete: release volume failed")
+				common.SendError(c, common.NewInternalServerError("failed to delete server"))
+				return
+			}
+		}
+	}
+	if _, e := tx.Exec(ctx, "DELETE FROM volume_attachments WHERE instance_id = $1", instanceUUID); e != nil {
+		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: remove volume attachments failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+
+	// Delete the instance's auto-allocated neutron ports (Nova owns them). Without
+	// this the port lingers after the server is gone, and deleting its network then
+	// fails with "network has active ports" — which breaks `terraform destroy`
+	// (SPEC-009 / SC-007) and leaks ports.
+	if _, e := tx.Exec(ctx, "DELETE FROM ports WHERE device_id = $1", instanceUUID); e != nil {
+		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: remove instance ports failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+
+	// Delete the instance row (support lookup by ID or name).
 	queryStart = time.Now()
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = tx.Exec(ctx,
 		"DELETE FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
 	)
 	middleware.LogDatabaseQuery(c, "DELETE instance", time.Since(queryStart), err)
-
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to delete instance from database")
-		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
 		log.Error().Err(err).Str("operation", "delete_instance").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete server"))
 		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		logger.Error().Err(err).Str("instance_id", instanceUUID).Msg("delete: commit failed")
+		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+
+	// Post-commit, best-effort filesystem cleanup: delete-on-termination volume
+	// backings and the per-instance overlay directory (a missing dir is fine — e.g.
+	// stub mode never staged one). SPEC-009 WS-0/WS-5/FR-005/FR-023.
+	for _, id := range dotVolumes {
+		if e := storage.RemoveLocalVolume(id); e != nil {
+			logger.Warn().Err(e).Str("volume_id", id).Msg("delete: remove local volume backing (post-commit)")
+		}
+	}
+	if rmErr := hypervisor.RemoveInstanceDir(instanceUUID); rmErr != nil {
+		logger.Warn().Err(rmErr).Str("instance_id", instanceUUID).Msg("failed to remove per-instance disk directory")
 	}
 
 	logger.Info().Str("instance_id", instanceID).Msg("Instance deleted successfully")

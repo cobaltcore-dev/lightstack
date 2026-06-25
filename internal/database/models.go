@@ -160,6 +160,7 @@ type Volume struct {
 	AttachedToInstanceID *string   `json:"attachments"`
 	RBDPool              string    `json:"-"`
 	RBDImage             string    `json:"-"`
+	SourceImageID        *string   `json:"-"` // image this volume was created from (CoW clones pin it); SPEC-009
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }

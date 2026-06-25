@@ -1,0 +1,17 @@
+# Copy into each test/terraform/wsN/ directory as provider.tf, then
+# `terraform init && terraform apply`. Credentials come from the standard
+# OpenStack environment variables (source ~/.o3k-env) — no edits needed.
+
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    openstack = {
+      source  = "terraform-provider-openstack/openstack"
+      version = "~> 3.0"
+    }
+  }
+}
+
+# Auth (auth_url / user_name / password / tenant_name / region / domain) is read
+# from the OS_* environment variables, exactly as with python-openstackclient.
+provider "openstack" {}

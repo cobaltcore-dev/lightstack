@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -196,7 +197,7 @@ func (svc *Service) GetStoresInfo(c *gin.Context) {
 			"properties": gin.H{
 				"chunk_size":               65536,
 				"store_type":               "file",
-				"filesystem_store_datadir": "/var/lib/o3k/images",
+				"filesystem_store_datadir": paths.ImagesDir(),
 			},
 		},
 	}

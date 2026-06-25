@@ -1,10 +1,12 @@
 package metadata
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -28,6 +30,11 @@ func NewService(bindAddr string) *Service {
 	}
 }
 
+// BindAddr returns the configured listen address for the metadata server.
+func (svc *Service) BindAddr() string {
+	return svc.bindAddr
+}
+
 // RegisterRoutes registers metadata service routes
 func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// EC2-compatible metadata API (OpenStack follows this format)
@@ -44,11 +51,12 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		openstack.GET("/latest/vendor_data.json", svc.GetVendorDataJSON)
 	}
 
-	// EC2-style metadata (for compatibility)
-	ec2 := r.Group("/2009-04-04")
-	{
-		ec2.GET("/meta-data/", svc.GetMetaDataRoot)
-		ec2.GET("/meta-data/:key", svc.GetMetaDataKey)
+	// EC2-style metadata (the datasource cirros and most cloud images use). A
+	// wildcard handles the public-keys subtree (…/public-keys/0/openssh-key) that
+	// injects the SSH key. Registered under both the dated version and "latest".
+	for _, ver := range []string{"/2009-04-04", "/latest"} {
+		ec2 := r.Group(ver)
+		ec2.GET("/meta-data/*path", svc.GetEC2MetaData)
 		ec2.GET("/user-data", svc.GetUserData)
 	}
 
@@ -70,10 +78,23 @@ func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
 	// to look up which port (and therefore instance) is making the request.
 	clientIP := c.ClientIP()
 	if net.ParseIP(clientIP) != nil {
+		// ports stores device_id (the attached instance) and fixed_ips as a JSONB
+		// array of {subnet_id, ip_address}; match the source IP against it.
+		//
+		// SPEC-009 v1 LIMITATION (single-node, #503): identity is matched by source
+		// IP alone, NOT scoped to the request's network. With non-overlapping tenant
+		// CIDRs the fixed IP is unique, so this is correct. Two tenants sharing a CIDR
+		// (e.g. both 10.0.0.0/24, each with a VM at 10.0.0.5) would cross-identify
+		// here — but that case is already unsupported at L2 in the flat single-node
+		// model (bridges share the gateway IP), so it is deferred to multi-node v2
+		// (#504), where per-tenant network namespaces + network-scoped metadata
+		// identity belong.
 		var instanceID string
 		err := database.DB.QueryRow(c.Request.Context(),
-			"SELECT instance_id FROM ports WHERE fixed_ip = $1 AND instance_id IS NOT NULL LIMIT 1",
-			clientIP,
+			`SELECT device_id FROM ports
+			 WHERE device_id IS NOT NULL AND fixed_ips @> $1::jsonb
+			 LIMIT 1`,
+			fmt.Sprintf(`[{"ip_address":%q}]`, clientIP),
 		).Scan(&instanceID)
 		if err == nil && instanceID != "" {
 			return instanceID, nil
@@ -144,7 +165,8 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 		}
 	}
 
-	// Fetch SSH keys
+	// Fetch SSH keys (all keypairs owned by the instance's user; instances do not
+	// persist which key_name was used at boot, so we cannot scope tighter here).
 	keyRows, err := database.DB.Query(c.Request.Context(), `
 		SELECT k.name, k.public_key
 		FROM keypairs k
@@ -177,7 +199,7 @@ func (svc *Service) GetUserData(c *gin.Context) {
 
 	var userData string
 	err = database.DB.QueryRow(c.Request.Context(), `
-		SELECT user_data
+		SELECT userdata
 		FROM instance_userdata
 		WHERE instance_id = $1
 	`, instanceID).Scan(&userData)
@@ -278,66 +300,100 @@ func (svc *Service) GetVendorDataJSON(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// GetMetaDataRoot returns list of available metadata keys (EC2 style)
-func (svc *Service) GetMetaDataRoot(c *gin.Context) {
-	keys := []string{
-		"hostname",
-		"instance-id",
-		"instance-type",
-		"local-ipv4",
-		"public-keys/",
-	}
-	c.String(http.StatusOK, strings.Join(keys, "\n"))
-}
-
-// GetMetaDataKey returns a specific metadata key (EC2 style)
-func (svc *Service) GetMetaDataKey(c *gin.Context) {
-	key := c.Param("key")
+// GetEC2MetaData serves the EC2-style metadata tree — the datasource cirros and
+// most cloud images use — including the public-keys subtree that injects the SSH
+// key (SPEC-009 WS-4 / T026). Dispatches on the wildcard path.
+func (svc *Service) GetEC2MetaData(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
 		c.String(http.StatusNotFound, "")
 		return
 	}
+	ctx := c.Request.Context()
+	path := strings.Trim(c.Param("path"), "/")
 
-	switch key {
-	case "instance-id":
+	switch {
+	case path == "":
+		c.String(http.StatusOK, strings.Join([]string{
+			"hostname", "instance-id", "instance-type", "local-ipv4", "public-keys/",
+		}, "\n"))
+	case path == "instance-id":
 		c.String(http.StatusOK, instanceID)
-	case "hostname":
+	case path == "hostname":
 		var hostname string
-		err := database.DB.QueryRow(c.Request.Context(), `
-			SELECT name FROM instances WHERE id = $1
-		`, instanceID).Scan(&hostname)
-		if err == nil {
+		if err := database.DB.QueryRow(ctx, `SELECT name FROM instances WHERE id = $1`, instanceID).Scan(&hostname); err == nil {
 			c.String(http.StatusOK, hostname)
 		} else {
 			c.String(http.StatusNotFound, "")
 		}
-	case "instance-type":
+	case path == "instance-type":
 		var flavorName string
-		err := database.DB.QueryRow(c.Request.Context(), `
-			SELECT f.name
-			FROM instances i
-			JOIN flavors f ON i.flavor_id = f.id
-			WHERE i.id = $1
-		`, instanceID).Scan(&flavorName)
-		if err == nil {
+		if err := database.DB.QueryRow(ctx, `
+			SELECT f.name FROM instances i JOIN flavors f ON i.flavor_id = f.id WHERE i.id = $1
+		`, instanceID).Scan(&flavorName); err == nil {
 			c.String(http.StatusOK, flavorName)
 		} else {
 			c.String(http.StatusNotFound, "")
 		}
-	case "local-ipv4":
-		var ip string
-		err := database.DB.QueryRow(c.Request.Context(), `
-			SELECT fixed_ip FROM ports WHERE device_id = $1 LIMIT 1
-		`, instanceID).Scan(&ip)
-		if err == nil {
-			c.String(http.StatusOK, ip)
-		} else {
+	case path == "local-ipv4":
+		// The request's source IP is the instance's fixed IP.
+		c.String(http.StatusOK, c.ClientIP())
+	case path == "public-keys" || path == "public-keys/":
+		keys := svc.publicKeysForInstance(ctx, instanceID)
+		lines := make([]string, 0, len(keys))
+		for i, k := range keys {
+			lines = append(lines, fmt.Sprintf("%d=%s", i, k.name))
+		}
+		c.String(http.StatusOK, strings.Join(lines, "\n"))
+	case strings.HasPrefix(path, "public-keys/"):
+		// public-keys/<index> -> "openssh-key"; public-keys/<index>/openssh-key -> the key
+		parts := strings.Split(strings.TrimPrefix(path, "public-keys/"), "/")
+		idx, perr := strconv.Atoi(parts[0])
+		keys := svc.publicKeysForInstance(ctx, instanceID)
+		if perr != nil || idx < 0 || idx >= len(keys) {
+			c.String(http.StatusNotFound, "")
+			return
+		}
+		switch {
+		case len(parts) == 1 || parts[1] == "":
+			c.String(http.StatusOK, "openssh-key")
+		case parts[1] == "openssh-key":
+			c.String(http.StatusOK, keys[idx].key)
+		default:
 			c.String(http.StatusNotFound, "")
 		}
 	default:
 		c.String(http.StatusNotFound, "")
 	}
+}
+
+// publicKeysForInstance returns the instance's SSH keypair — scoped to the
+// instance's key_name, not every key the owner has — for the EC2 public-keys tree.
+func (svc *Service) publicKeysForInstance(ctx context.Context, instanceID string) []struct{ name, key string } {
+	// Instances do not persist the key_name used at boot, so scope to every
+	// keypair owned by the instance's user (matches GetMetaDataJSON).
+	var userID string
+	if err := database.DB.QueryRow(ctx,
+		`SELECT user_id FROM instances WHERE id = $1`, instanceID).Scan(&userID); err != nil {
+		return nil
+	}
+	rows, err := database.DB.Query(ctx, `
+		SELECT name, public_key
+		FROM keypairs
+		WHERE user_id = $1
+		ORDER BY name`, userID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []struct{ name, key string }
+	for rows.Next() {
+		var n, k string
+		if err := rows.Scan(&n, &k); err == nil {
+			out = append(out, struct{ name, key string }{n, k})
+		}
+	}
+	return out
 }
 
 // ListVersions returns available metadata API versions

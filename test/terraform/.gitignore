@@ -1,0 +1,7 @@
+# Terraform working state (never commit)
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log

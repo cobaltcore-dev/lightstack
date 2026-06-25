@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -31,11 +33,30 @@ type stubVolume struct {
 	createdAt time.Time
 }
 
+// LocalVolumeDir is the node-local directory for local-mode volumes — the
+// chart's persistent hostPath. Previously ~/.o3k/volumes, which lives outside
+// the mount and so did not survive pod restarts (SPEC-009 FR-006a). NOTE:
+// feature/53 adds an equivalent helper to this file; coordinate on merge.
+func LocalVolumeDir() string { return paths.VolumesDir() }
+
+// LocalVolumePath is the backing file for a local-mode volume (SPEC-009 WS-5).
+func LocalVolumePath(volumeID string) string {
+	return filepath.Join(LocalVolumeDir(), "volume-"+volumeID+".qcow2")
+}
+
+// RemoveLocalVolume deletes a local-mode volume's backing file, tolerant of an
+// already-absent file. Used by the Nova delete path for delete-on-termination
+// volumes (SPEC-009 WS-5 / FR-023); RBD backing cleanup routes through Cinder.
+func RemoveLocalVolume(volumeID string) error {
+	if err := os.Remove(LocalVolumePath(volumeID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // NewCephClient creates a new storage client
 func NewCephClient(mode, pool, confFile string) *CephClient {
-	// Use ~/.o3k/volumes for local storage (more portable than /var/lib)
-	homeDir, _ := os.UserHomeDir()
-	localPath := filepath.Join(homeDir, ".o3k", "volumes")
+	localPath := LocalVolumeDir()
 
 	client := &CephClient{
 		mode:        mode,
@@ -107,41 +128,62 @@ func (c *CephClient) createVolumeStub(volumeID string, sizeGB int) error {
 	return nil
 }
 
-// createVolumeLocal creates a local qcow2 volume
+// createVolumeLocal creates a real local qcow2 volume backing file via qemu-img
+// (SPEC-009 WS-5). A previous stub only truncated a sparse file, which libvirt
+// could not attach as a qcow2 disk.
 func (c *CephClient) createVolumeLocal(ctx context.Context, volumeID string, sizeGB int) error {
-	volumePath := filepath.Join(c.localPath, "volume-"+volumeID+".qcow2")
-
-	// Check if already exists
+	volumePath := LocalVolumePath(volumeID)
 	if _, err := os.Stat(volumePath); err == nil {
 		return fmt.Errorf("volume %s already exists", volumeID)
 	}
-
-	// Create qcow2 image using qemu-img
-	// In real implementation: cmd := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", volumePath, fmt.Sprintf("%dG", sizeGB))
-	// For now, create empty file to simulate
-	file, err := os.Create(volumePath)
-	if err != nil {
-		return fmt.Errorf("failed to create volume file: %w", err)
+	cmd := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", volumePath, fmt.Sprintf("%dG", sizeGB))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img create %s (%dG): %w, output: %s", volumePath, sizeGB, err, out)
 	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Warn().Err(err).Str("path", volumePath).Msg("failed to close volume file")
-		}
-	}()
-
-	// Write size metadata (in real implementation, qemu-img would handle this)
-	// Truncate to reserve space (sparse file)
-	if err := file.Truncate(int64(sizeGB) * 1024 * 1024 * 1024); err != nil {
-		return fmt.Errorf("failed to allocate volume space: %w", err)
-	}
-
 	return nil
 }
 
-// deleteVolumeLocal deletes a local volume
+// CreateVolumeFromImage provisions a bootable volume from a (raw) base image.
+// Local mode copies the base into the volume's qcow2 and grows it to sizeGB;
+// pure-RBD CoW clone is validated separately under the ceph build tag (SPEC-009
+// WS-5 / T040).
+func (c *CephClient) CreateVolumeFromImage(ctx context.Context, volumeID, imageRawPath string, sizeGB int) error {
+	switch c.mode {
+	case "stub":
+		return nil
+	case "local", "local,rbd":
+		return c.createVolumeFromImageLocal(ctx, volumeID, imageRawPath, sizeGB)
+	case "rbd":
+		return fmt.Errorf("volume-from-image on pure RBD requires the ceph build tag; use storage_mode local or local,rbd")
+	default:
+		return fmt.Errorf("unsupported storage mode: %s", c.mode)
+	}
+}
+
+func (c *CephClient) createVolumeFromImageLocal(ctx context.Context, volumeID, imageRawPath string, sizeGB int) error {
+	volumePath := LocalVolumePath(volumeID)
+	if _, err := os.Stat(volumePath); err == nil {
+		return fmt.Errorf("volume %s already exists", volumeID)
+	}
+	if _, err := os.Stat(imageRawPath); err != nil {
+		return fmt.Errorf("source image %s not found: %w", imageRawPath, err)
+	}
+	// Copy the raw base into a qcow2 volume, then grow to the requested size.
+	if out, err := exec.CommandContext(ctx, "qemu-img", "convert", "-f", "raw", "-O", "qcow2", imageRawPath, volumePath).CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img convert %s -> %s: %w, output: %s", imageRawPath, volumePath, err, out)
+	}
+	if out, err := exec.CommandContext(ctx, "qemu-img", "resize", volumePath, fmt.Sprintf("%dG", sizeGB)).CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img resize %s %dG: %w, output: %s", volumePath, sizeGB, err, out)
+	}
+	return nil
+}
+
+// deleteVolumeLocal deletes a local volume (tolerant of an already-absent file).
 func (c *CephClient) deleteVolumeLocal(ctx context.Context, volumeID string) error {
-	volumePath := filepath.Join(c.localPath, "volume-"+volumeID+".qcow2")
-	return os.Remove(volumePath)
+	if err := os.Remove(LocalVolumePath(volumeID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // DeleteVolume deletes a storage volume
