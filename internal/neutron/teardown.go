@@ -17,6 +17,7 @@ import (
 //
 //  1. floating-IP DNAT (+ the /32 on the uplink) and per-VM ingress SG filters
 //  2. egress SNAT for internal subnets behind an external-gateway router
+//     2b. per-security-group iptables chains (O3K-SG-*), best-effort
 //  3. per network: stop dnsmasq, remove the 169.254.169.254 DNAT, delete the bridge
 //  4. router namespaces, then tenant/project namespaces
 //
@@ -87,6 +88,30 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 			}
 		} else {
 			fail(err, "query egress subnets")
+		}
+	}
+
+	// 2b. Per-security-group iptables chains (O3K-SG-*, east-west SG in iptables mode).
+	// Best-effort: a chain that was never materialized (stub/ebpf) or is still
+	// referenced by a port jump is logged, NOT counted — it must not abort the
+	// teardown (issue #53 topic 3 / option b). A DB query failure IS a real error.
+	if svc.sgManager != nil {
+		if rows, err := database.DB.Query(ctx, `SELECT id FROM security_groups`); err == nil {
+			var sgs []string
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil && id != "" {
+					sgs = append(sgs, id)
+				}
+			}
+			rows.Close()
+			for _, id := range sgs {
+				if e := svc.sgManager.DeleteSecurityGroupChain(id); e != nil {
+					log.Debug().Err(e).Str("sg", id).Msg("teardown network: SG chain absent or still referenced (best-effort)")
+				}
+			}
+		} else {
+			fail(err, "query security groups")
 		}
 	}
 
