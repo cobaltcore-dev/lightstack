@@ -9,10 +9,12 @@ The operator-facing config contract this feature adds/finalizes. Backward compat
 ```yaml
 # -- Uninstall behavior. retain (default) = remove only the release's Kubernetes
 #    workloads, leave ALL persisted/runtime state (SPEC-008 SC-006, unchanged).
-#    delete = run the blocking pre-delete teardown: quiesce, purge libvirt domains +
-#    network namespaces/routes + node-local hostPath storage + release PVCs, then
-#    RESET the configured database schema. IRREVERSIBLE. Single-node only today;
-#    multi-node host purge is tracked in issue #52. (FR-002/013/014; issue #53)
+#    delete = run the blocking pre-delete teardown: quiesce, then purge libvirt
+#    domains + ALL host network state (bridges, SNAT/FIP/SG/metadata iptables,
+#    dnsmasq, namespaces) + ALL node-local storage under /var/lib/o3k + release PVCs.
+#    IRREVERSIBLE on the node. The external DATABASE is operator-owned and is NOT
+#    touched. Single-node only today; multi-node host purge is tracked in issue #52.
+#    (FR-002/013/014; issue #53; scope revised 2026-06-24)
 dataRetentionPolicy: retain   # retain | delete
 
 # -- Teardown hook settings. Effective ONLY when dataRetentionPolicy: delete.

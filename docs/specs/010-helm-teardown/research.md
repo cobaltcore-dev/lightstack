@@ -4,6 +4,8 @@
 
 The spec's 9 clarifications (3 rounds) already resolved the policy questions (DB reset, multi-node deferral, PVC/hostPath, backend ownership, fail-closed, quiesce). This document resolves the remaining **design/technical** unknowns the plan must commit to. All codebase facts below were verified against the tree on 2026-06-15 (round-3 audit).
 
+> **Superseded in part by the 2026-06-24 scope change** (see `spec.md` scope note): R5's DB-schema-reset decision (`database.MigrateReset`) is **obsolete** — the database is operator-owned and is never reset; teardown reads it read-only to enumerate. The purge scope was also widened to all `/var/lib/o3k` trees + full host network state. This file is point-in-time design; `spec.md` is authoritative.
+
 ---
 
 ## R1 — Where do the Kubernetes-API steps (scale, PVC delete) run?

@@ -5,7 +5,8 @@ after quiesce (-10). Runs `o3k cleanup` in a pod with the SAME host access as a
 real-mode instance (privileged + host libvirt socket + host-storage [+ hostNetwork])
 so it reaches host libvirtd and node-local storage. activeDeadlineSeconds bounds it
 (FR-016); backoffLimit:0 = no silent retries; a non-zero exit fails the hook and
-halts `helm uninstall` (FR-001). In stub mode it resets the DB and is a host no-op.
+halts `helm uninstall` (FR-001). In stub mode it is a host no-op (nothing to purge).
+The database is operator-owned and is never reset by teardown — only read to enumerate.
 Full real-mode network-namespace purge depends on the host-shared networking model
 tracked in issue #52; compute (host libvirtd) and node-local storage purge here.
 */ -}}

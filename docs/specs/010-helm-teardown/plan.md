@@ -4,6 +4,8 @@
 **Input**: Feature specification from `docs/specs/010-helm-teardown/spec.md`
 **Tracking issue**: [#53](https://github.com/cobaltcore-dev/o3k/issues/53)
 
+> **Superseded in part by the 2026-06-24 scope change** (see `spec.md` → Clarifications scope note): the **DB reset was dropped** (database is operator-owned; never reset — `MigrateReset`/`--migrations` references below are obsolete), and the storage/network purge was **widened to the full host inventory** (all `/var/lib/o3k` trees; full host network state via `neutron.PurgeRealModeNetworkState`). This file is the point-in-time design; `spec.md` is authoritative.
+
 ## Summary
 
 The destructive half of SPEC-008's uninstall, gated behind the existing `dataRetentionPolicy: delete` value. When `delete` is selected, `helm uninstall` runs a **blocking pre-delete hook** that purges everything the release created and leaves a **pristine baseline** for an immediate redeploy. `retain` (default) is unchanged — Helm removes only the Kubernetes workloads.

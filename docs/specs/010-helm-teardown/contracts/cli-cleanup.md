@@ -2,31 +2,32 @@
 
 **Feature**: SPEC-010 | **Surface**: product CLI (the existing single binary) | **Refs**: FR-003/004/005/006/008/010/012/013, R2/R3/R5/R9
 
-The blocking pre-delete hook's purge Job invokes this. It also runs standalone (Compose/bare-metal) for host+DB teardown.
+The blocking pre-delete hook's purge Job invokes this. It also runs standalone (Compose/bare-metal) for host teardown.
 
 ## Invocation
 
 ```
-o3k cleanup [--config <path>] [--migrations <path>] [--dry-run]
+o3k cleanup [--config <path>] [--dry-run]
 ```
 
 - Dispatched in `cmd/o3k/main.go` from `os.Args[1] == "cleanup"`, **before** the server path; the process performs the teardown and exits (it does **not** start HTTP servers).
-- `--config` / `--migrations`: same flags/defaults as the server (`config/o3k.yaml`, `migrations`).
+- `--config`: same flag/default as the server (`config/o3k.yaml`).
 - `--dry-run`: enumerate and log what *would* be purged; delete nothing; exit 0.
+- **No `--migrations` and no DB write** — the database is operator-owned and is never reset (FR-013, revised 2026-06-24).
 - **No Kubernetes flags/clients** — quiesce, PVC delete, and Deployment scaling are the chart's kubectl Job, not this command (R1).
 
-## Behavior (order — R3)
+## Behavior (order — R3; revised 2026-06-24: no DB reset)
 
-1. Load config; connect to the DB (fail-fast like the server **unless** unreachable → see DB-unreachable).
-2. **Enumerate** release state from the DB.
-3. **Compute**: destroy + undefine each enumerated libvirt domain (`VMManager.DeleteVM`).
-4. **Network**: delete each enumerated project/router namespace and its bridges/TAP/iptables/VXLAN.
-5. **Storage**: delete node-local volume/image files under the host storage path; sweep orphans (FR-006).
-6. **DB reset**: `database.MigrateReset()` — **last** (skipped only if the DB is unreachable).
+1. Load config; connect to the operator-owned DB **read-only** to enumerate. If unreachable, ignore it (C9) and fall back to host-only cleanup.
+2. **Compute**: destroy + undefine each enumerated libvirt domain (`VMManager.DeleteVM`).
+3. **Network**: `neutron.PurgeRealModeNetworkState` — remove all host network state (egress SNAT, floating-IP DNAT + the `/32` on the uplink, ingress SG filters, metadata DNAT, dnsmasq, host bridges, router + tenant namespaces).
+4. **Storage**: `os.RemoveAll` every node-local tree under `/var/lib/o3k` (`instances/`, `cloud-init/`, `images/`, `volumes/`, `dhcp/`); covers orphans (FR-006).
+
+The **database is never written** (operator-owned, FR-013); the global `net.ipv4.ip_forward` sysctl is left as-is.
 
 ## Modes (Constitution IV)
 
-- **stub**: no host managers wired → steps 3–5 are no-ops; performs the DB reset only. CI-runnable, unprivileged.
+- **stub**: no host managers wired → a no-op (nothing to purge); the DB is only read to enumerate. CI-runnable, unprivileged.
 - **real**: full host purge via the privileged managers (needs the host libvirt socket + host mounts + privileges — the purge Job provides them).
 
 ## Idempotency & failure (FR-008/016, R9)

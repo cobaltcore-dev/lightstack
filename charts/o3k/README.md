@@ -183,11 +183,12 @@ helm uninstall o3k          # blocks on the purge hooks until they succeed
 
 The hooks run in order: **quiesce** (scale the Deployment to 0, then delete the release's PVCs —
 which `helm uninstall` does *not* remove by default), then **purge** (`o3k cleanup`: destroy
-libvirt domains, remove network namespaces/routes and node-local storage, then **reset the
-database schema**). The purge is blocking and fail-closed — if it cannot complete, `helm uninstall`
-aborts; inspect `kubectl logs job/<release>-o3k-teardown-purge`.
+libvirt domains; remove all host network state — bridges, SNAT / floating-IP / security-group /
+metadata iptables, dnsmasq, namespaces; and remove all node-local storage under `/var/lib/o3k`).
+The purge is blocking and fail-closed — if it cannot complete, `helm uninstall` aborts; inspect
+`kubectl logs job/<release>-o3k-teardown-purge`.
 
-- **Irreversible.** `delete` destroys this database's O3K data and the node's local VM/volume/image data.
+- **Irreversible on the node.** `delete` destroys the node's local VM disks / images / volumes / ISOs. The external **database is operator-owned and is NOT touched** (read-only for enumeration) — a pristine redeploy requires the operator to provide a clean database.
 - **Operator-owned, NOT purged:** networked backends (Ceph RBD / S3). Reclaim those yourself if desired.
 - **Escape hatch:** `helm uninstall o3k --no-hooks` removes the release *without* purging (e.g. the
   hosting node is gone). You are then responsible for any orphaned host state.

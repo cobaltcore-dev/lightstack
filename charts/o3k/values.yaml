@@ -92,11 +92,13 @@ cache:
 # -- Uninstall behavior (FR-002/013/014; issue #53).
 #    retain (default): `helm uninstall` removes only the release's Kubernetes
 #    workloads, leaving ALL persisted/runtime state untouched (SPEC-008 SC-006).
-#    delete: run the blocking pre-delete teardown — quiesce, purge libvirt domains
-#    + network namespaces/routes + node-local hostPath storage + release PVCs,
-#    then RESET the configured database schema. IRREVERSIBLE. Single-node only
-#    today; multi-node host purge is tracked in issue #52. Networked backends
-#    (Ceph RBD / S3) are operator-owned and NOT purged.
+#    delete: run the blocking pre-delete teardown — quiesce, then purge libvirt
+#    domains + ALL host network state (bridges, SNAT / floating-IP / security-group /
+#    metadata iptables, dnsmasq, namespaces) + ALL node-local storage under
+#    /var/lib/o3k (VM disks, config-drive ISOs, images, volumes) + release PVCs.
+#    IRREVERSIBLE on the node. Single-node only today; multi-node host purge is
+#    tracked in issue #52. The external DATABASE is operator-owned — read to
+#    enumerate, NEVER reset; networked backends (Ceph RBD / S3) are NOT purged.
 dataRetentionPolicy: retain   # retain | delete
 
 # -- Teardown hook settings. Effective ONLY when dataRetentionPolicy: delete (SPEC-010).
