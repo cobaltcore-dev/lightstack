@@ -77,8 +77,8 @@ helm uninstall (dataRetentionPolicy: delete)
 [-20] RBAC created
 [-10] quiesce Job:  scale Deployment→0 ─► wait pods gone ─► delete release PVCs
 [  0] purge Job (o3k cleanup, blocking):
-          enumerate from DB ─► compute ─► network ─► storage ─► DB reset (last)
-          (DB unreachable → ignore DB; host-prefix enumeration + wholesale hostStoragePath purge; skip reset)
+          enumerate from DB (read-only) ─► compute ─► network ─► storage   (DB never reset — operator-owned)
+          (DB unreachable → skip DB enumeration; netns-prefix scan + wholesale storage purge; domains/bridges/iptables left to operator)
           success ─────────────► hook passes
           any required class fails / timeout ─► non-zero ─► uninstall ABORTS (FR-001)
         ▼  (all pre-delete hooks succeeded)

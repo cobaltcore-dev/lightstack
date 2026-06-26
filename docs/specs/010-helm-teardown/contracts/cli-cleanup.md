@@ -33,8 +33,8 @@ The **database is never written** (operator-owned, FR-013); the global `net.ipv4
 ## Idempotency & failure (FR-008/016, R9)
 
 - Not-found / already-absent at any step ⇒ **success** for that artifact (idempotent; re-runs are safe).
-- **Fail-closed**: exit **non-zero** if a *required class* could not be completed — **compute**, **network**, **node-local storage**, or the **DB reset** (when the DB is reachable). Per-artifact errors within a class are logged but roll up to a class failure.
-- **DB unreachable**: **ignore** it — do **not** fail on that account; skip enumeration-from-DB and the reset; purge host state best-effort via host-level enumeration (`light-ns-*`/`qrouter-*` netns, libvirt `ListAllDomains`). (C9)
+- **Fail-closed**: exit **non-zero** if a *required class* could not be completed — **compute**, **network**, or **node-local storage**. Per-artifact errors within a class are logged but roll up to a class failure. (The operator-owned database is read-only here — never reset — so it is not a purge class; FR-013.)
+- **DB unreachable**: **ignore** it — do **not** fail on that account; skip DB enumeration entirely and purge host state best-effort: wholesale removal of the node-local storage trees + deletion of `light-ns-*`/`qrouter-*` namespaces by prefix. Libvirt domains and host bridges/iptables cannot be enumerated without the DB and are left for the operator (logged). (C9)
 - Bounded externally by the Job's `activeDeadlineSeconds` (FR-016); the command itself runs to completion or error and does not retry-loop (Constitution III).
 
 ## Exit codes

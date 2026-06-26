@@ -41,15 +41,15 @@
 
 ## Phase 3: User Story 1 - One-command clean teardown, nothing left behind (Priority: P1) 🎯 MVP
 
-**Goal**: `helm uninstall` with `dataRetentionPolicy: delete` runs a blocking pre-delete hook that purges all release state (compute, network, node-local storage, PVCs, DB schema) before the release is removed.
+**Goal**: `helm uninstall` with `dataRetentionPolicy: delete` runs a blocking pre-delete hook that purges all node-local release state (compute, network, node-local storage, PVCs) before the release is removed. The operator-owned database is read-only — never reset (scope change 2026-06-24; FR-013).
 
-**Independent Test**: single-node stub install → create resources → `helm uninstall` (delete) → uninstall **blocks** on the hook, then **zero** release-owned artifacts remain (no workloads/PVCs/domains/netns/local-storage; DB schema empty). (SC-001, SC-003; issue #53 criteria 1–2)
+**Independent Test**: single-node stub install → create resources → `helm uninstall` (delete) → uninstall **blocks** on the hook, then **zero** release-owned host artifacts remain (no workloads/PVCs/domains/netns/local-storage). The operator-owned DB is left intact (never reset). (SC-001, SC-003; issue #53 criteria 1–2)
 
 ### Tests for User Story 1 (write FIRST — confirm RED) ⚠️
 
-- [X] T006 [P] [US1] `internal/teardown/teardown_test.go` (stub mode): enumeration maps DB records → the correct delete calls; dependency-safe order (compute → network → storage → DB-reset-last); idempotency (not-found = success); DB-unreachable host-prefix fallback (research R3/R9; data-model §2)
+- [X] T006 [P] [US1] `internal/teardown/teardown_test.go` (stub mode): enumeration maps DB records → the correct delete calls; dependency-safe order (compute → network → storage; DB read-only, never reset); idempotency (not-found = success); DB-unreachable host-prefix fallback (research R3/R9; data-model §2)
 - [X] T007 [P] [US1] `charts/o3k/tests/teardown_test.yaml` (helm-unittest): RBAC + both Jobs render **iff** `dataRetentionPolicy: delete` and are **absent** under `retain`; Role rules == the least-privilege set (R7); purge Job has `command:[o3k,cleanup]`, `activeDeadlineSeconds`, `backoffLimit:0`, real-mode host mounts; `kubectlImage:""` under `delete` → render fails (contracts/teardown-hooks.md)
-- [X] T008 [P] [US1] `test/helm_teardown_test.sh` (scaffold + US1 assertions): single-node stub install → create resources → `helm uninstall` (delete) → assert uninstall **blocks** on the hook, then zero residue (no workloads/PVCs/domains/netns/local-storage; DB schema empty) (SC-001/003) _(authored in test/helm_teardown_test.sh; e2e on a cluster/CI, not run in sandbox)_
+- [X] T008 [P] [US1] `test/helm_teardown_test.sh` (scaffold + US1 assertions): single-node stub install → create resources → `helm uninstall` (delete) → assert uninstall **blocks** on the hook, then zero residue (no workloads/PVCs/domains/netns/local-storage; DB left intact — operator-owned) (SC-001/003) _(authored in test/helm_teardown_test.sh; e2e on a cluster/CI, not run in sandbox)_
 
 ### Implementation for User Story 1
 
@@ -57,7 +57,7 @@
 - [X] T010 [US1] `internal/teardown`: compute purge — `VMManager.DeleteVM(uuid)` (destroy + undefine) per enumerated domain (FR-003)
 - [X] T011 [US1] `internal/teardown`: network purge — `DeleteNamespace`/`DeleteRouterNamespace` + bridges/TAP/iptables/VXLAN per enumerated id (FR-004)
 - [X] T012 [US1] `internal/teardown`: storage purge — delete node-local volume/image files under `hostStoragePath`; bounded orphan sweep within that tree (single-release per FR-003b) (FR-005/006; depends on T004)
-- [X] T013 [US1] `internal/teardown`: DB reset via `database.MigrateReset()` **last**; skip if DB unreachable (FR-013; C8/C9)
+- [~] T013 [US1] ~~DB reset via `database.MigrateReset()` last~~ — **DROPPED (scope change 2026-06-24)**: the database is operator-owned and is never reset; `o3k cleanup` only reads it read-only to enumerate (FR-013, revised)
 - [X] T014 [US1] `internal/teardown`: fail-closed roll-up over required classes + idempotency + structured-JSON audit logging + exit codes — makes T006 pass (FR-008/012/016; R9)
 - [X] T015 [P] [US1] `charts/o3k/templates/teardown-rbac.yaml`: ServiceAccount + namespaced Role + RoleBinding (pre-delete, hook-weight `-20`, gated on `delete`); verbs = deployments get/list/patch, pods get/list, pvc get/list/delete (FR-011; R7)
 - [X] T016 [P] [US1] `charts/o3k/templates/teardown-quiesce-job.yaml`: kubectl Job (hook-weight `-10`) — scale Deployment→0, `wait --for=delete pod`, then delete release PVCs if `deletePVCs`; `backoffLimit:0` (FR-019/005; quiesce-first per C6)
@@ -72,9 +72,9 @@
 
 **Goal**: an install issued immediately after a `delete` teardown (same release name/node/DB) comes up healthy with no naming collisions or residual-state errors.
 
-**Independent Test**: run a `delete` teardown (US1), then immediately reinstall → identity check passes within the first-install budget; `openstack server list` etc. show no stale resources. (SC-002; issue #53 criterion 3)
+**Independent Test**: run a `delete` teardown (US1), then immediately reinstall → identity check passes within the first-install budget (SC-002). A resource-pristine view (`openstack server list` empty) requires the operator to reset their DB — out of teardown scope (DB is operator-owned). (issue #53 criterion 3)
 
-> Implementation is delivered by US1's DB schema reset (T013) + the chart's release-scoped naming; this phase **validates** the pristine-baseline contract.
+> Delivered by the chart's release-scoped naming; the DB is operator-owned (not reset by teardown), so a resource-pristine redeploy is the operator's DB responsibility. This phase **validates** control-plane health on redeploy.
 
 ### Tests for User Story 2 (write FIRST — confirm RED) ⚠️
 
@@ -97,7 +97,7 @@
 ### Implementation for User Story 3
 
 - [X] T021 [P] [US3] Reconcile `charts/o3k/README.md`: rewrite the Uninstall section (supersede "clean node-local data manually when `delete`"); document the `delete` purge order, DB reset, irreversibility, operator-owned boundaries (external DB beyond this release / networked RBD/S3 not purged — C4/FR-015), and the `--no-hooks` escape; add the `teardown.*` rows to the values table (FR-018/SC-006)
-- [X] T022 [P] [US3] Reconcile the SPEC-008 docs to match what ships: `docs/specs/008-helm-charts/spec.md` (FR-014 — purge now also quiesces + resets the DB), `data-model.md` (uninstall/`dataRetentionPolicy` lifecycle), `tasks.md` (T027/T029 deferral notes → "done in #53"), `quickstart.md` (Uninstall: add the `delete` path) (FR-018)
+- [X] T022 [P] [US3] Reconcile the SPEC-008 docs to match what ships: `docs/specs/008-helm-charts/spec.md` (FR-014 — purge quiesces; DB operator-owned, never reset), `data-model.md` (uninstall/`dataRetentionPolicy` lifecycle), `tasks.md` (T027/T029 deferral notes → "done in #53"), `quickstart.md` (Uninstall: add the `delete` path) (FR-018)
 
 **Checkpoint**: all three stories independently functional; safety + docs complete.
 

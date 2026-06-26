@@ -109,8 +109,8 @@ upgrade  → values/image change re-renders; external DB + networked/host storag
            single-node real = Recreate (brief downtime); multi-node = DaemonSet rolling update
 uninstall→ all release workloads/Services removed; persisted data (external DB, hostPath/PVC, networked
            backends) retained (default) — or, under dataRetentionPolicy=delete, the SPEC-010 blocking
-           pre-delete hook quiesces, purges host + node-local storage + release PVCs, and resets the
-           DB schema (RBD/S3 stay operator-owned; issue #53)
+           pre-delete hook quiesces, then purges host + node-local storage + release PVCs; the
+           operator-owned DB is read-only (never reset) and RBD/S3 stay operator-owned (issue #53)
 ```
 
 ## Validation rules (template-enforced)
