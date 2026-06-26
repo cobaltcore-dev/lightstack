@@ -48,13 +48,22 @@ tests:
           path: rules[0].verbs
           value: ["get", "list", "patch"]
       - equal:
+          path: rules[1].resources
+          value: ["deployments/scale"]
+      - equal:
           path: rules[1].verbs
-          value: ["get", "list"]
+          value: ["get", "patch", "update"]
       - equal:
           path: rules[2].resources
-          value: ["persistentvolumeclaims"]
+          value: ["pods"]
       - equal:
           path: rules[2].verbs
+          value: ["get", "list"]
+      - equal:
+          path: rules[3].resources
+          value: ["persistentvolumeclaims"]
+      - equal:
+          path: rules[3].verbs
           value: ["get", "list", "delete"]
 
   - it: quiesce Job is a pre-delete hook at weight -10

@@ -30,7 +30,10 @@ metadata:
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "patch"]   # scale the workload to 0 (quiesce, C6)
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]   # `kubectl scale` patches the scale subresource, not the deployment (quiesce, C6)
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]            # wait for termination
