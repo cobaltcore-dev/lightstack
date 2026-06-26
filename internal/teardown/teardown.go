@@ -46,6 +46,7 @@ type Options struct {
 // the neutron service); storage purge is wholesale by directory.
 type Inventory struct {
 	DomainIDs []string // libvirt domain UUIDs (instances.libvirt_domain_id)
+	enumErr   error    // domain-enumeration error (DB reachable but the query failed) → fail the compute class
 }
 
 // deps are the side-effecting operations execute() drives. Run wires them to the
@@ -75,6 +76,7 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 	// The DB is operator-owned: read it to enumerate, never reset it. If it is
 	// unreachable, ignore it (C9) and fall back to host-only cleanup.
 	var inv Inventory
+	dbReachable := false
 	if connErr := database.Connect(ctx, cfg.Database.URL, database.DefaultPoolConfig()); connErr != nil {
 		log.Warn().Err(connErr).Msg("teardown: database unreachable — ignoring it (operator-owned); host cleanup is best-effort (C9)")
 		nsMgr := networking.NewNetworkNamespaceManager(netMode)
@@ -82,20 +84,29 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 		d.purgeNetwork = func() error { return purgeNamespacesByPrefix(nsMgr, routerMgr) }
 		// DomainIDs stay empty: without the DB we can't enumerate domains.
 	} else {
+		dbReachable = true
 		defer database.Close()
-		inv.DomainIDs = enumerateDomainIDs(ctx)
+		inv.DomainIDs, inv.enumErr = enumerateDomainIDs(ctx)
 		neutronSvc := neutron.NewService(netMode, nil)
 		d.purgeNetwork = func() error { return neutronSvc.PurgeRealModeNetworkState(ctx) }
 	}
 
-	return execute(ctx, d, inv, opts)
+	return execute(ctx, d, inv, opts, dbReachable)
 }
 
 // execute purges compute → network → storage. Best-effort + idempotent per
 // artifact; fail-closed overall (research R3/R9). No database reset (operator-owned).
-func execute(ctx context.Context, d deps, inv Inventory, opts Options) error {
+// dbReachable reflects whether the DB could be enumerated: on the false (C9) path
+// only storage + prefixed namespaces are purged, so the closing message is qualified.
+func execute(ctx context.Context, d deps, inv Inventory, opts Options, dbReachable bool) error {
 	compute := runDeletes(inv.DomainIDs, opts.DryRun, func(id string) error { return d.deleteDomain(ctx, id) })
 	compute.name = "compute"
+	if inv.enumErr != nil {
+		// DB was reachable but the domain-enumeration query failed: compute could not
+		// be completed, so fail the class (fail-closed) rather than report success.
+		compute.failed++
+		log.Error().Err(inv.enumErr).Msg("teardown: compute enumeration failed")
+	}
 
 	network := classResult{name: "network"}
 	switch {
@@ -133,7 +144,11 @@ func execute(ctx context.Context, d deps, inv Inventory, opts Options) error {
 	if len(failed) > 0 {
 		return fmt.Errorf("teardown incomplete: failed to purge %s", strings.Join(failed, ", "))
 	}
-	log.Info().Msg("teardown: complete — no o3k-generated host state remaining (database left to its operator)")
+	if dbReachable {
+		log.Info().Msg("teardown: complete — no o3k-generated host state remaining (database left to its operator)")
+	} else {
+		log.Warn().Msg("teardown: complete (best-effort) — DB unreachable, so storage + prefixed namespaces were purged; host bridges/iptables/domains could not be enumerated and may remain (C9)")
+	}
 	return nil
 }
 
@@ -203,13 +218,15 @@ func purgeLocalStorage() error {
 	return nil
 }
 
-// enumerateDomainIDs returns the libvirt domain UUIDs the release created.
-func enumerateDomainIDs(ctx context.Context) []string {
+// enumerateDomainIDs returns the libvirt domain UUIDs the release created. A query
+// or iteration error is returned (not swallowed) so the caller fails the compute
+// class: the DB is reachable here, so a failed enumeration means compute could not
+// be completed (fail-closed, FR-001/016).
+func enumerateDomainIDs(ctx context.Context) ([]string, error) {
 	rows, err := database.DB.Query(ctx,
 		`SELECT libvirt_domain_id FROM instances WHERE libvirt_domain_id IS NOT NULL AND libvirt_domain_id <> ''`)
 	if err != nil {
-		log.Error().Err(err).Msg("teardown: enumerate domains")
-		return nil
+		return nil, fmt.Errorf("enumerate domains: %w", err)
 	}
 	defer rows.Close()
 	var ids []string
@@ -219,7 +236,7 @@ func enumerateDomainIDs(ctx context.Context) []string {
 			ids = append(ids, s)
 		}
 	}
-	return ids
+	return ids, rows.Err()
 }
 
 // purgeNamespacesByPrefix is the DB-unreachable network fallback (C9): it deletes

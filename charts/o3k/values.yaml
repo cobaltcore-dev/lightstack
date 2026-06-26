@@ -106,7 +106,9 @@ teardown:
   # -- REQUIRED when delete. kubectl image for the quiesce/PVC-delete hook Job
   #    (scale the Deployment to 0, delete release PVCs). No implicit pull —
   #    install/uninstall fails fast if empty under delete (FR-018, R1).
-  kubectlImage: ""            # e.g. registry.example.com/kubectl:1.31
+  #    MUST contain /bin/sh (the hook runs a shell script) — distroless images
+  #    such as rancher/kubectl fail with StartError; use e.g. alpine/k8s:1.31.0.
+  kubectlImage: ""            # e.g. alpine/k8s:1.31.0  (must ship /bin/sh + kubectl)
   # -- Blocking-hook bound: purge Job activeDeadlineSeconds (FR-016).
   timeoutSeconds: 600
   # -- Delete release-owned PVCs during teardown, if any exist (FR-005).

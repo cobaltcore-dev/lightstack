@@ -24,7 +24,7 @@ func TestExecute_PurgesInOrder(t *testing.T) {
 		purgeNetwork: func() error { order = append(order, "network"); return nil },
 		purgeStorage: func() error { order = append(order, "storage"); return nil },
 	}
-	if err := execute(context.Background(), d, Inventory{DomainIDs: []string{"d1"}}, Options{}); err != nil {
+	if err := execute(context.Background(), d, Inventory{DomainIDs: []string{"d1"}}, Options{}, true); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	want := []string{"compute:d1", "network", "storage"}
@@ -37,7 +37,7 @@ func TestExecute_PurgesInOrder(t *testing.T) {
 func TestExecute_AbsentDomainIsSuccess(t *testing.T) {
 	d := okDeps()
 	d.deleteDomain = func(context.Context, string) error { return errors.New("domain not found") }
-	if err := execute(context.Background(), d, Inventory{DomainIDs: []string{"gone"}}, Options{}); err != nil {
+	if err := execute(context.Background(), d, Inventory{DomainIDs: []string{"gone"}}, Options{}, true); err != nil {
 		t.Fatalf("absent domain must not fail teardown: %v", err)
 	}
 }
@@ -46,7 +46,7 @@ func TestExecute_AbsentDomainIsSuccess(t *testing.T) {
 func TestExecute_FailClosedOnNetworkError(t *testing.T) {
 	d := okDeps()
 	d.purgeNetwork = func() error { return errors.New("iptables: permission denied") }
-	err := execute(context.Background(), d, Inventory{}, Options{})
+	err := execute(context.Background(), d, Inventory{}, Options{}, true)
 	if err == nil || !strings.Contains(err.Error(), "network") {
 		t.Fatalf("expected fail-closed error naming the network class, got %v", err)
 	}
@@ -55,9 +55,20 @@ func TestExecute_FailClosedOnNetworkError(t *testing.T) {
 func TestExecute_FailClosedOnStorageError(t *testing.T) {
 	d := okDeps()
 	d.purgeStorage = func() error { return errors.New("read-only file system") }
-	err := execute(context.Background(), d, Inventory{}, Options{})
+	err := execute(context.Background(), d, Inventory{}, Options{}, true)
 	if err == nil || !strings.Contains(err.Error(), "storage") {
 		t.Fatalf("expected fail-closed error naming the storage class, got %v", err)
+	}
+}
+
+// A domain-enumeration failure (DB reachable, query errored) fails the compute class
+// rather than reporting a false "complete" (fail-closed).
+func TestExecute_FailClosedOnEnumError(t *testing.T) {
+	d := okDeps()
+	inv := Inventory{enumErr: errors.New(`query: relation "instances" does not exist`)}
+	err := execute(context.Background(), d, inv, Options{}, true)
+	if err == nil || !strings.Contains(err.Error(), "compute") {
+		t.Fatalf("expected fail-closed error naming the compute class, got %v", err)
 	}
 }
 
@@ -69,7 +80,7 @@ func TestExecute_DryRunDoesNothing(t *testing.T) {
 		purgeNetwork: func() error { touched = true; return nil },
 		purgeStorage: func() error { touched = true; return nil },
 	}
-	if err := execute(context.Background(), d, Inventory{DomainIDs: []string{"d1"}}, Options{DryRun: true}); err != nil {
+	if err := execute(context.Background(), d, Inventory{DomainIDs: []string{"d1"}}, Options{DryRun: true}, true); err != nil {
 		t.Fatalf("dry-run: %v", err)
 	}
 	if touched {
