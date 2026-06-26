@@ -236,8 +236,14 @@ func enumerateDomainIDs(ctx context.Context) ([]string, error) {
 // o3k network namespaces by their well-known prefixes. Host bridges and iptables
 // can't be precisely enumerated without the DB and are left for the operator (logged).
 func purgeNamespacesByPrefix(nsMgr *networking.NetworkNamespaceManager, routerMgr *networking.RouterManager) error {
+	out, err := runIPNetnsList()
+	if err != nil {
+		// Can't enumerate host namespaces → can't run the fallback; fail the network
+		// class (fail-closed) rather than silently report a clean purge.
+		return fmt.Errorf("namespace fallback: %w", err)
+	}
 	failures := 0
-	for _, n := range parseNetnsList(runIPNetnsList()) {
+	for _, n := range parseNetnsList(out) {
 		switch {
 		case strings.HasPrefix(n, "light-ns-"):
 			if err := nsMgr.DeleteNamespace(strings.TrimPrefix(n, "light-ns-")); err != nil {
@@ -258,12 +264,12 @@ func purgeNamespacesByPrefix(nsMgr *networking.NetworkNamespaceManager, routerMg
 	return nil
 }
 
-func runIPNetnsList() string {
+func runIPNetnsList() (string, error) {
 	out, err := exec.Command("ip", "netns", "list").Output()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("ip netns list: %w", err)
 	}
-	return string(out)
+	return string(out), nil
 }
 
 // parseNetnsList extracts namespace names from `ip netns list` output (each line is

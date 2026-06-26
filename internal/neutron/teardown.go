@@ -2,10 +2,12 @@ package neutron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -58,6 +60,9 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 					fips = append(fips, f)
 				}
 			}
+			if e := rows.Err(); e != nil {
+				fail(e, "iterate floating IPs")
+			}
 			rows.Close()
 			for _, f := range fips {
 				fail(svc.routerManager.WithdrawFloatingIP(f.floating, f.fixed, uplink), "withdraw floating IP")
@@ -82,6 +87,9 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 					cidrs = append(cidrs, c)
 				}
 			}
+			if e := rows.Err(); e != nil {
+				fail(e, "iterate egress subnets")
+			}
 			rows.Close()
 			for _, c := range cidrs {
 				fail(svc.routerManager.RemoveEgressSNAT(c, uplink), "remove egress SNAT")
@@ -104,6 +112,9 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 					sgs = append(sgs, id)
 				}
 			}
+			if e := rows.Err(); e != nil {
+				fail(e, "iterate security groups")
+			}
 			rows.Close()
 			for _, id := range sgs {
 				if e := svc.sgManager.DeleteSecurityGroupChain(id); e != nil {
@@ -124,15 +135,19 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 				netIDs = append(netIDs, id)
 			}
 		}
+		if e := rows.Err(); e != nil {
+			fail(e, "iterate networks")
+		}
 		rows.Close()
 		for _, id := range netIDs {
 			fail(svc.dhcpManager.StopDHCP(id), "stop dnsmasq")
 			if len(id) >= 8 {
 				bridge := "br-" + id[:8]
 				var gw string
-				_ = database.DB.QueryRow(ctx,
-					`SELECT gateway_ip FROM subnets WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, id).Scan(&gw)
-				if gw != "" {
+				if e := database.DB.QueryRow(ctx,
+					`SELECT gateway_ip FROM subnets WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, id).Scan(&gw); e != nil && !errors.Is(e, pgx.ErrNoRows) {
+					fail(e, "query gateway_ip")
+				} else if gw != "" {
 					fail(svc.mdRedirect.Remove(bridge, gw), "remove metadata DNAT")
 				}
 				fail(svc.brManager.DeleteBridge(bridge, false, ""), "delete bridge")
@@ -151,6 +166,9 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 				ids = append(ids, id)
 			}
 		}
+		if e := rows.Err(); e != nil {
+			fail(e, "iterate routers")
+		}
 		rows.Close()
 		for _, id := range ids {
 			fail(svc.routerManager.DeleteRouterNamespace(id), "delete router namespace")
@@ -165,6 +183,9 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 			if rows.Scan(&pid) == nil && pid != "" {
 				pids = append(pids, pid)
 			}
+		}
+		if e := rows.Err(); e != nil {
+			fail(e, "iterate project namespaces")
 		}
 		rows.Close()
 		for _, pid := range pids {

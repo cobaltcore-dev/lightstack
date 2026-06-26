@@ -45,7 +45,7 @@ helm test "$REL" -n "$NS"
 helm uninstall "$REL" -n "$NS"
 
 sleep 3
-LEFT="$(kubectl -n "$NS" get deploy,svc,secret,pvc,job -l "app.kubernetes.io/instance=${REL}" -o name 2>/dev/null || true)"
+LEFT="$(kubectl -n "$NS" get deploy,svc,secret,pvc,job,sa,role,rolebinding -l "app.kubernetes.io/instance=${REL}" -o name 2>/dev/null || true)"
 [ -z "$LEFT" ] && echo "PASS: no release residue after delete teardown (SC-001/006)" \
   || { echo "FAIL: residue remains: $LEFT"; exit 1; }
 # NOTE: the operator-owned DATABASE is intentionally NOT reset by teardown. Real-mode
