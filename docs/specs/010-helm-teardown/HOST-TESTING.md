@@ -376,19 +376,20 @@ kubectl exec -n o3k deploy/o3k-rt-o3k -- /app/o3k cleanup --config /app/config/o
 ```bash
 helm upgrade o3k-rt charts/o3k -n o3k --reuse-values \
   --set dataRetentionPolicy=delete \
-  --set teardown.kubectlImage=rancher/kubectl:v1.31.0      # a tag that EXISTS (no rolling v1.31); or alpine/kubectl:1.31
+  --set teardown.kubectlImage=alpine/k8s:1.31.0      # MUST ship /bin/sh — rancher/kubectl is shell-less → StartError
 ```
-> Use the exact tag you verified/imported in §4. If you imported it into k3s with podman
-> (`localhost/…`), pass that name here too — the quiesce Job uses `image.pullPolicy`-less
-> defaults, so a registry-pullable tag (e.g. `rancher/kubectl:v1.31.0`) is simplest.
+> ⚠️ The quiesce hook runs `/bin/sh -c …`, so `teardown.kubectlImage` **must contain a
+> shell**. `rancher/kubectl` is distroless (no `/bin/sh`) — do not use it. `alpine/k8s:1.31.0`
+> and `dtzar/helm-kubectl:3.16` both ship `sh`+`kubectl`. k3s pulls the tag at hook time
+> (`IfNotPresent`); `sudo k3s ctr images import` it first if you'd rather not pull.
 
 ### 9b. Uninstall — it BLOCKS on the pre-delete hooks (SC-003)
 Run the uninstall in **T1** and watch the hook Jobs in **T2**:
 ```bash
-# T2 — watch the hooks fire in weight order (-20 RBAC, -10 quiesce, 0 purge):
-kubectl get sa,role,rolebinding,job,pod -n o3k -w &
-# T2 — tail the purge audit log the moment its pod appears (hook-succeeded deletes it after):
-kubectl logs -n o3k -f job/o3k-rt-o3k-teardown-purge 2>/dev/null &
+# T2 — watch the hook pods appear (single type — `kubectl get -w` can't watch multiple types):
+kubectl get pods -n o3k -w &
+# T2 — when the *-teardown-purge pod shows up above, tail its audit log (deleted on success):
+#   kubectl logs -n o3k -f job/o3k-rt-o3k-teardown-purge
 
 # T1 — this returns only after the blocking purge SUCCEEDS:
 helm uninstall o3k-rt -n o3k
@@ -445,12 +446,19 @@ pristine redeploy is therefore the operator's DB responsibility — see §12.
 ---
 
 ## 10. `retain` (default) runs NO teardown hooks (SC-004 / SC-006)
+> This is a **stub-mode** install (no `realMode` flags) → the pod is **not** `hostNetwork`,
+> so `127.0.0.1` is the pod, not the host, and `postgres://…@127.0.0.1` is unreachable
+> (CrashLoop). Point the DB at the **node IP** where the host's postgres is published.
+> (§6 used `127.0.0.1` only because real-mode hostNetwork makes the pod's localhost the
+> host.) The pod's health is incidental here — the test is only that `uninstall` runs no
+> teardown hooks, which render solely under `delete`.
 ```bash
-helm install o3k-ret charts/o3k -n o3k \
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+helm install o3k-ret charts/o3k -n o3k --create-namespace \
   --set image.repository=o3k --set image.tag=dev --set image.pullPolicy=Never \
-  --set database.url='postgres://o3k:secret@127.0.0.1:5432/o3k?sslmode=disable' \
+  --set database.url="postgres://o3k:secret@${NODE_IP}:5432/o3k?sslmode=disable" \
   --set secrets.jwtSecret="$(openssl rand -hex 16)" --set secrets.adminPassword='Teardown-Admin-1'
-kubectl -n o3k rollout status deploy/o3k-ret-o3k --timeout=300s
+kubectl -n o3k rollout status deploy/o3k-ret-o3k --timeout=120s
 helm uninstall o3k-ret -n o3k
 sleep 3
 kubectl get jobs -n o3k | grep teardown && echo "FAIL: hooks ran under retain" || echo "PASS: retain ran NO teardown hooks (SC-004)"
@@ -472,8 +480,11 @@ is the on-cluster confirmation that a retry after a partial run doesn't error.
 ---
 
 ## 12. Immediate redeploy (SC-002)
+`--create-namespace` is required: §9's teardown deleted the chart-owned namespace
+(`psa-namespace.yaml`), so it must be recreated. (Real mode → hostNetwork, so `127.0.0.1`
+in the DB URL is correct here.)
 ```bash
-helm install o3k-rt charts/o3k -n o3k \
+helm install o3k-rt charts/o3k -n o3k --create-namespace \
   --set image.repository=o3k --set image.tag=dev --set image.pullPolicy=Never \
   --set database.url='postgres://o3k:secret@127.0.0.1:5432/o3k?sslmode=disable' \
   --set secrets.jwtSecret="$(openssl rand -hex 16)" --set secrets.adminPassword='Teardown-Admin-1' \
