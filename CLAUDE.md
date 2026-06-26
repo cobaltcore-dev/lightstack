@@ -422,8 +422,10 @@ if requestedVersion == "" {
 - PostgreSQL 18 (primary database) (002-horizon-full-compatibility)
 - 007-helm-prereqs-bootstrap-catalog: admin-password bootstrap (bcrypt, `internal/keystone`) + `O3K_ENDPOINT_SCHEME` catalog scheme — no new dependencies, no schema change
 - 009-single-node-real-mode: real-mode single node — per-instance qcow2 overlay over a raw base, startup+periodic network reconciler, metadata/cloud-init reachability + `user_data`, north-south (reuse router NAT), block storage (sync attach + boot-from-volume). No new Go deps; image adds `qemu-img`+`genisoimage`; migration 060 (`volumes.source_image_id`); node-local data under `/var/lib/o3k`.
+- 011-ensure-storage-subdirs: real-mode node-local storage subdirs guaranteed to exist — Glance creates its canonical `/var/lib/o3k/images` (drops the `~/.o3k` fallback; matches `ceph.go`) + chart initContainer pre-creates all subdirs on the `host-storage` hostPath. No new Go/chart deps, no schema change.
 
 ## Recent Changes
+- 011-ensure-storage-subdirs: fix real-mode storage-subdir gap (cloud-storage#510) — Glance no longer falls back to `~/.o3k`; chart initContainer pre-creates node-local subdirs (SPEC-011 plan)
 - v0.7.0 planning: Database DI (ADR-001), rate limiting (ADR-002), Terraform conformance, CI linting, Cinder route redirect, pagination standardization (SPEC-006)
 - 002-horizon-full-compatibility: Added Go 1.26 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking)
 - 009-single-node-real-mode: real-mode VM disk/network/metadata/north-south + block storage on a single node (SPEC-009 plan)

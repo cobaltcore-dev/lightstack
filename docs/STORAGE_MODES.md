@@ -6,13 +6,13 @@ O3K supports multiple storage backends for both Cinder (block storage) and Glanc
 
 ### Cinder Storage Modes
 - **stub**: Simulated storage (no actual storage operations)
-- **local**: Local qcow2 files on libvirt host (`~/.o3k/volumes/`)
+- **local**: Local qcow2 files on libvirt host (`/var/lib/o3k/volumes/`)
 - **rbd**: Ceph RBD volumes (shared storage cluster)
 - **local,rbd**: Hybrid mode (local + RBD for performance + redundancy)
 
 ### Glance Storage Modes
 - **stub**: Simulated storage (no actual storage operations)
-- **local**: Local raw files (`~/.o3k/images/`)
+- **local**: Local raw files (`/var/lib/o3k/images/`)
 - **rbd**: Ceph RBD images (shared storage cluster)
 - **s3**: S3-compatible object storage (AWS S3, MinIO, Ceph RGW)
 - **local,rbd**: Hybrid mode (local cache + RBD backing)
@@ -71,8 +71,8 @@ storage_mode: local
 ```
 
 **Storage Locations**:
-- Cinder volumes: `~/.o3k/volumes/volume-{uuid}.qcow2`
-- Glance images: `~/.o3k/images/image-{uuid}.raw`
+- Cinder volumes: `/var/lib/o3k/volumes/volume-{uuid}.qcow2`
+- Glance images: `/var/lib/o3k/images/image-{uuid}.raw`
 
 **Characteristics**:
 - Fast (local disk I/O)
@@ -84,7 +84,7 @@ storage_mode: local
 **Example**:
 ```bash
 # After creating a volume, check the file:
-ls -lh ~/.o3k/volumes/
+ls -lh /var/lib/o3k/volumes/
 # -rw-r--r-- 1 user user 10G Jan 15 10:30 volume-abc-123.qcow2
 ```
 
@@ -335,7 +335,7 @@ glance:
 **Characteristics**:
 - Zero external dependencies
 - Fast local disk I/O
-- Data in `~/.o3k/`
+- Data in `/var/lib/o3k/`
 - Single-node only
 
 ### 2. Production Single-Node
@@ -476,14 +476,15 @@ glance:
 
 **Check**:
 ```bash
-ls -ld ~/.o3k/volumes/
-ls -ld ~/.o3k/images/
+ls -ld /var/lib/o3k/volumes/
+ls -ld /var/lib/o3k/images/
 ```
 
-**Solution**:
+**Solution**: o3k creates these on startup (SPEC-011 / cloud-storage#510); `permission denied`
+means the o3k process cannot write `/var/lib/o3k`. In real mode o3k runs privileged/root and
+creates them automatically. For a non-root install, grant ownership of the base directory once:
 ```bash
-mkdir -p ~/.o3k/{volumes,images}
-chmod 755 ~/.o3k/{volumes,images}
+sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/o3k
 ```
 
 ### Hybrid Mode Replication Failures
@@ -500,7 +501,7 @@ chmod 755 ~/.o3k/{volumes,images}
 - Check S3 connectivity
 - Manual sync if needed:
   ```bash
-  aws s3 sync ~/.o3k/images/ s3://my-bucket/images/ --exclude "*" --include "image-*.raw"
+  aws s3 sync /var/lib/o3k/images/ s3://my-bucket/images/ --exclude "*" --include "image-*.raw"
   ```
 
 ## Best Practices
@@ -548,14 +549,14 @@ No migration needed - stub data is ephemeral.
 ```bash
 # For each volume:
 qemu-img convert -f qcow2 -O raw \
-  ~/.o3k/volumes/volume-{uuid}.qcow2 \
+  /var/lib/o3k/volumes/volume-{uuid}.qcow2 \
   rbd:volumes/volume-{uuid}
 ```
 
 **Glance Images**:
 ```bash
 # For each image:
-rbd import ~/.o3k/images/image-{uuid}.raw \
+rbd import /var/lib/o3k/images/image-{uuid}.raw \
   images/image-{uuid}
 ```
 
@@ -564,7 +565,7 @@ rbd import ~/.o3k/images/image-{uuid}.raw \
 **Glance Images**:
 ```bash
 # Bulk upload:
-aws s3 sync ~/.o3k/images/ s3://my-bucket/images/ \
+aws s3 sync /var/lib/o3k/images/ s3://my-bucket/images/ \
   --exclude "*" --include "image-*.raw"
 ```
 
@@ -584,7 +585,7 @@ done
 ### Metrics to Track
 
 1. **Storage Usage**:
-   - Local: `du -sh ~/.o3k/volumes ~/.o3k/images`
+   - Local: `du -sh /var/lib/o3k/volumes /var/lib/o3k/images`
    - RBD: `rbd du volumes` / `rbd du images`
    - S3: AWS CloudWatch metrics
 
@@ -606,7 +607,7 @@ done
 ### Alerting
 
 1. **Local storage**:
-   - Alert if `~/.o3k/` > 80% disk capacity
+   - Alert if `/var/lib/o3k/` > 80% disk capacity
 
 2. **Ceph**:
    - Alert on Ceph cluster warnings

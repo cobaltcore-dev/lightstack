@@ -319,15 +319,18 @@ sed -i 's/your-secure-password/YourActualPassword/g' /opt/o3k/config/o3k.yaml
 sed -i 's/192.168.1.100/YOUR_HOST_IP/g' /opt/o3k/config/o3k.yaml  # Replace YOUR_HOST_IP
 ```
 
-### Step 8: Create Storage Directories
+### Step 8: Storage Directory (auto-created)
+
+o3k creates its node-local storage subdirs (`images/ volumes/ instances/ cloud-init/ dhcp/`
+under `/var/lib/o3k`) on startup — per-service `MkdirAll`, plus the Helm chart's initContainer
+when deployed via the chart (SPEC-011 / cloud-storage#510). No manual subdirectory creation is
+required.
+
+Only if o3k runs as a non-root user that cannot create `/var/lib/o3k`, create the base directory
+once and grant it ownership:
 
 ```bash
-# Create directories for volumes and images
-sudo mkdir -p /var/lib/o3k/{volumes,images,instances}
-sudo chown -R $USER:$USER /var/lib/o3k
-sudo chmod 755 /var/lib/o3k/{volumes,images,instances}
-
-# Verify
+sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/o3k
 ls -la /var/lib/o3k/
 ```
 
