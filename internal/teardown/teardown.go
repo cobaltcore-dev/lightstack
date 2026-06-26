@@ -99,8 +99,7 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 // dbReachable reflects whether the DB could be enumerated: on the false (C9) path
 // only storage + prefixed namespaces are purged, so the closing message is qualified.
 func execute(ctx context.Context, d deps, inv Inventory, opts Options, dbReachable bool) error {
-	compute := runDeletes(inv.DomainIDs, opts.DryRun, func(id string) error { return d.deleteDomain(ctx, id) })
-	compute.name = "compute"
+	compute := runDeletes("compute", inv.DomainIDs, opts.DryRun, func(id string) error { return d.deleteDomain(ctx, id) })
 	if inv.enumErr != nil {
 		// DB was reachable but the domain-enumeration query failed: compute could not
 		// be completed, so fail the class (fail-closed) rather than report success.
@@ -109,29 +108,23 @@ func execute(ctx context.Context, d deps, inv Inventory, opts Options, dbReachab
 	}
 
 	network := classResult{name: "network"}
-	switch {
-	case opts.DryRun:
+	if opts.DryRun {
 		log.Info().Msg("teardown: would purge host network state (dry-run)")
-	default:
-		if err := d.purgeNetwork(); err != nil {
-			network.failed++
-			log.Error().Err(err).Msg("teardown: network purge failed")
-		} else {
-			network.purged++
-		}
+	} else if err := d.purgeNetwork(); err != nil {
+		network.failed++
+		log.Error().Err(err).Msg("teardown: network purge failed")
+	} else {
+		network.purged++
 	}
 
 	stor := classResult{name: "storage"}
-	switch {
-	case opts.DryRun:
+	if opts.DryRun {
 		log.Info().Msg("teardown: would purge node-local storage trees (dry-run)")
-	default:
-		if err := d.purgeStorage(); err != nil {
-			stor.failed++
-			log.Error().Err(err).Msg("teardown: node-local storage purge failed")
-		} else {
-			stor.purged++
-		}
+	} else if err := d.purgeStorage(); err != nil {
+		stor.failed++
+		log.Error().Err(err).Msg("teardown: node-local storage purge failed")
+	} else {
+		stor.purged++
 	}
 
 	var failed []string
@@ -160,8 +153,8 @@ type classResult struct {
 
 // runDeletes applies del to each id. A not-found / already-absent result is success
 // (idempotency, FR-008); any other error is a class failure.
-func runDeletes(ids []string, dryRun bool, del func(id string) error) classResult {
-	var r classResult
+func runDeletes(name string, ids []string, dryRun bool, del func(id string) error) classResult {
+	r := classResult{name: name}
 	for _, id := range ids {
 		if id == "" {
 			continue
