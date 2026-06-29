@@ -22,6 +22,7 @@
 package teardown
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -49,8 +50,11 @@ type Inventory struct {
 	enumErr   error    // domain-enumeration error (DB reachable but the query failed) → fail the compute class
 }
 
-// deps are the side-effecting operations execute() drives. Run wires them to the
-// real managers; tests replace them with fakes (stub-safe, Constitution IV).
+// deps are the side-effecting operations execute() drives. They are function fields,
+// not concrete managers, for two reasons: purgeNetwork has two real implementations
+// (neutron.PurgeRealModeNetworkState when the DB is reachable; the netns-prefix
+// fallback when it is not, C9), and tests replace all three with fakes so execute()
+// runs without libvirt/netlink/DB (the deliberate test seam, Constitution IV).
 type deps struct {
 	deleteDomain func(ctx context.Context, id string) error
 	purgeNetwork func() error // remove all host network state (DB-driven, or netns-prefix fallback)
@@ -61,13 +65,13 @@ type deps struct {
 // it. This is the entrypoint the `o3k cleanup` subcommand invokes.
 func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 	// Host hypervisor. Stub mode → no-op; real mode → connects to host libvirtd.
-	vmMgr, err := hypervisor.NewVMManager(cfg.Nova.LibvirtURI, orStub(cfg.Nova.LibvirtMode))
+	vmMgr, err := hypervisor.NewVMManager(cfg.Nova.LibvirtURI, cmp.Or(cfg.Nova.LibvirtMode, "stub"))
 	if err != nil {
 		return fmt.Errorf("teardown: connect hypervisor: %w", err)
 	}
 	defer vmMgr.Close()
 
-	netMode := orStub(cfg.Neutron.NetworkingMode)
+	netMode := cmp.Or(cfg.Neutron.NetworkingMode, "stub")
 	d := deps{
 		deleteDomain: vmMgr.DeleteVM,
 		purgeStorage: purgeLocalStorage,
@@ -82,7 +86,9 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 		nsMgr := networking.NewNetworkNamespaceManager(netMode)
 		routerMgr := networking.NewRouterManager(netMode)
 		d.purgeNetwork = func() error { return purgeNamespacesByPrefix(nsMgr, routerMgr) }
-		// DomainIDs stay empty: without the DB we can't enumerate domains.
+		// DomainIDs stay empty: without the DB we can't enumerate domains, so compute
+		// (libvirt domains) is NOT purged on this path — they are left for the operator
+		// (C9, accepted limitation). Storage trees + a netns-prefix scan still run.
 	} else {
 		dbReachable = true
 		defer database.Close()
@@ -187,13 +193,6 @@ func isAbsent(err error) bool {
 		strings.Contains(s, "already")
 }
 
-func orStub(mode string) string {
-	if mode == "" {
-		return "stub"
-	}
-	return mode
-}
-
 // purgeLocalStorage removes every node-local storage tree under /var/lib/o3k — VM
 // disk overlays (instances/), config-drive ISOs (cloud-init/), local Glance images
 // (images/), local Cinder volumes (volumes/), and dnsmasq state (dhcp/). It removes
@@ -225,7 +224,10 @@ func enumerateDomainIDs(ctx context.Context) ([]string, error) {
 	var ids []string
 	for rows.Next() {
 		var s string
-		if rows.Scan(&s) == nil && s != "" {
+		if e := rows.Scan(&s); e != nil {
+			return nil, fmt.Errorf("scan domain id: %w", e)
+		}
+		if s != "" {
 			ids = append(ids, s)
 		}
 	}
@@ -236,14 +238,14 @@ func enumerateDomainIDs(ctx context.Context) ([]string, error) {
 // o3k network namespaces by their well-known prefixes. Host bridges and iptables
 // can't be precisely enumerated without the DB and are left for the operator (logged).
 func purgeNamespacesByPrefix(nsMgr *networking.NetworkNamespaceManager, routerMgr *networking.RouterManager) error {
-	out, err := runIPNetnsList()
+	out, err := exec.Command("ip", "netns", "list").Output()
 	if err != nil {
 		// Can't enumerate host namespaces → can't run the fallback; fail the network
 		// class (fail-closed) rather than silently report a clean purge.
-		return fmt.Errorf("namespace fallback: %w", err)
+		return fmt.Errorf("namespace fallback: ip netns list: %w", err)
 	}
 	failures := 0
-	for _, n := range parseNetnsList(out) {
+	for _, n := range parseNetnsList(string(out)) {
 		switch {
 		case strings.HasPrefix(n, "light-ns-"):
 			if err := nsMgr.DeleteNamespace(strings.TrimPrefix(n, "light-ns-")); err != nil {
@@ -262,14 +264,6 @@ func purgeNamespacesByPrefix(nsMgr *networking.NetworkNamespaceManager, routerMg
 		return fmt.Errorf("namespace fallback: %d delete(s) failed", failures)
 	}
 	return nil
-}
-
-func runIPNetnsList() (string, error) {
-	out, err := exec.Command("ip", "netns", "list").Output()
-	if err != nil {
-		return "", fmt.Errorf("ip netns list: %w", err)
-	}
-	return string(out), nil
 }
 
 // parseNetnsList extracts namespace names from `ip netns list` output (each line is

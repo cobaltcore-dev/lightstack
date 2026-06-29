@@ -73,29 +73,18 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 		}
 
 		// 2. Egress SNAT per internal subnet behind an external-gateway router.
-		if rows, err := database.DB.Query(ctx, `
+		if cidrs, err := queryStrings(ctx, `
 			SELECT DISTINCT s.cidr
 			FROM routers rt
 			JOIN router_interfaces ri ON ri.router_id = rt.id
 			JOIN subnets s ON s.id = ri.subnet_id
 			WHERE rt.external_gateway_info IS NOT NULL
-			  AND rt.external_gateway_info::text <> 'null'`); err == nil {
-			var cidrs []string
-			for rows.Next() {
-				var c string
-				if rows.Scan(&c) == nil && c != "" {
-					cidrs = append(cidrs, c)
-				}
-			}
-			if e := rows.Err(); e != nil {
-				fail(e, "iterate egress subnets")
-			}
-			rows.Close()
+			  AND rt.external_gateway_info::text <> 'null'`); err != nil {
+			fail(err, "enumerate egress subnets")
+		} else {
 			for _, c := range cidrs {
 				fail(svc.routerManager.RemoveEgressSNAT(c, uplink), "remove egress SNAT")
 			}
-		} else {
-			fail(err, "query egress subnets")
 		}
 	}
 
@@ -104,41 +93,21 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 	// referenced by a port jump is logged, NOT counted — it must not abort the
 	// teardown (issue #53 topic 3 / option b). A DB query failure IS a real error.
 	if svc.sgManager != nil {
-		if rows, err := database.DB.Query(ctx, `SELECT id FROM security_groups`); err == nil {
-			var sgs []string
-			for rows.Next() {
-				var id string
-				if rows.Scan(&id) == nil && id != "" {
-					sgs = append(sgs, id)
-				}
-			}
-			if e := rows.Err(); e != nil {
-				fail(e, "iterate security groups")
-			}
-			rows.Close()
+		if sgs, err := queryStrings(ctx, `SELECT id FROM security_groups`); err != nil {
+			fail(err, "enumerate security groups")
+		} else {
 			for _, id := range sgs {
 				if e := svc.sgManager.DeleteSecurityGroupChain(id); e != nil {
 					log.Debug().Err(e).Str("sg", id).Msg("teardown network: SG chain absent or still referenced (best-effort)")
 				}
 			}
-		} else {
-			fail(err, "query security groups")
 		}
 	}
 
 	// 3. Per network: stop dnsmasq, remove the metadata DNAT, delete the host bridge.
-	if rows, err := database.DB.Query(ctx, `SELECT id FROM networks`); err == nil {
-		var netIDs []string
-		for rows.Next() {
-			var id string
-			if rows.Scan(&id) == nil && id != "" {
-				netIDs = append(netIDs, id)
-			}
-		}
-		if e := rows.Err(); e != nil {
-			fail(e, "iterate networks")
-		}
-		rows.Close()
+	if netIDs, err := queryStrings(ctx, `SELECT id FROM networks`); err != nil {
+		fail(err, "enumerate networks")
+	} else {
 		for _, id := range netIDs {
 			fail(svc.dhcpManager.StopDHCP(id), "stop dnsmasq")
 			if len(id) >= 8 {
@@ -153,50 +122,48 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 				fail(svc.brManager.DeleteBridge(bridge, false, ""), "delete bridge")
 			}
 		}
-	} else {
-		fail(err, "query networks")
 	}
 
 	// 4. Router namespaces, then tenant/project namespaces.
-	if rows, err := database.DB.Query(ctx, `SELECT id FROM routers`); err == nil {
-		var ids []string
-		for rows.Next() {
-			var id string
-			if rows.Scan(&id) == nil && id != "" {
-				ids = append(ids, id)
-			}
-		}
-		if e := rows.Err(); e != nil {
-			fail(e, "iterate routers")
-		}
-		rows.Close()
+	if ids, err := queryStrings(ctx, `SELECT id FROM routers`); err != nil {
+		fail(err, "enumerate routers")
+	} else {
 		for _, id := range ids {
 			fail(svc.routerManager.DeleteRouterNamespace(id), "delete router namespace")
 		}
-	} else {
-		fail(err, "query routers")
 	}
-	if rows, err := database.DB.Query(ctx, `SELECT DISTINCT project_id::text FROM networks WHERE project_id IS NOT NULL`); err == nil {
-		var pids []string
-		for rows.Next() {
-			var pid string
-			if rows.Scan(&pid) == nil && pid != "" {
-				pids = append(pids, pid)
-			}
-		}
-		if e := rows.Err(); e != nil {
-			fail(e, "iterate project namespaces")
-		}
-		rows.Close()
+	if pids, err := queryStrings(ctx, `SELECT DISTINCT project_id::text FROM networks WHERE project_id IS NOT NULL`); err != nil {
+		fail(err, "enumerate project namespaces")
+	} else {
 		for _, pid := range pids {
 			fail(svc.nsManager.DeleteNamespace(pid), "delete project namespace")
 		}
-	} else {
-		fail(err, "query project namespaces")
 	}
 
 	if failures > 0 {
 		return fmt.Errorf("network purge: %d removal(s) failed", failures)
 	}
 	return nil
+}
+
+// queryStrings runs a single-column query and returns its non-empty string values.
+// A query, scan, or iteration error is returned so the caller can fail-close
+// (FR-001/016). The DB is read-only here (operator-owned, never reset by teardown).
+func queryStrings(ctx context.Context, query string) ([]string, error) {
+	rows, err := database.DB.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out, rows.Err()
 }

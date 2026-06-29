@@ -1,9 +1,6 @@
 {{- /*
-Teardown RBAC (SPEC-010 / issue #53). Renders ONLY under dataRetentionPolicy=delete.
-Least-privilege (FR-011 / R7), namespaced, scoped to this release; used by the
-quiesce/PVC-delete hook Job. Pre-delete hook-weight -20 so it exists before the
-hook Jobs (-10, 0) run. The privileged o3k purge Job needs NO Kubernetes RBAC —
-it talks to the host and database, not the API (R1).
+Teardown RBAC (SPEC-010): least-privilege, release-scoped SA+Role+RoleBinding for the
+quiesce/PVC hook (hook-weight -20, before the Jobs). The purge Job needs none — host+DB only.
 */ -}}
 {{- if eq .Values.dataRetentionPolicy "delete" }}
 apiVersion: v1

@@ -1,15 +1,6 @@
 {{- /*
-Teardown purge hook (SPEC-010 / issue #53) — the blocking, fail-closed gate.
-Renders ONLY under dataRetentionPolicy=delete. Pre-delete hook-weight 0: runs
-after quiesce (-10). Runs `o3k cleanup` in a pod with the SAME host access as a
-real-mode instance (privileged + host libvirt socket + host-storage [+ hostNetwork])
-so it reaches host libvirtd and node-local storage. activeDeadlineSeconds bounds it
-(FR-016); backoffLimit:0 = no silent retries; a non-zero exit fails the hook and
-halts `helm uninstall` (FR-001). In stub mode it is a host no-op (nothing to purge).
-The database is operator-owned and is never reset by teardown — only read to enumerate.
-Compute (host libvirtd), full host network state (neutron.PurgeRealModeNetworkState),
-and node-local storage are all purged here (host-validated on single-node real mode).
-Only multi-node cross-node netns/placement is deferred to issue #52.
+Teardown purge hook (SPEC-010): the blocking, fail-closed gate — runs `o3k cleanup`
+with real-mode host access; a non-zero exit halts uninstall. hook-weight 0, after quiesce.
 */ -}}
 {{- if eq .Values.dataRetentionPolicy "delete" }}
 apiVersion: batch/v1
