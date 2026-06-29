@@ -12,6 +12,12 @@ one chart.
 > v2 ticket ([issue #52](https://github.com/cobaltcore-dev/o3k/issues/52) Part B). Stub
 > mode (plus optional TLS) remains the zero-dependency default.
 
+## Integration contract (sci-in-a-box)
+
+An orchestrator drives o3k's lifecycle through this chart — **not** a CRD. The input schema, the
+Provisioning/Ready/Failed status conventions, and identity-anchored endpoint resolution are
+specified in **[CONTRACT.md](./CONTRACT.md)**.
+
 ## Prerequisites
 
 - Kubernetes **≥ 1.25** (PodSecurity Admission GA) or k3s; Helm **≥ 3.12**.

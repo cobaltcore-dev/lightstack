@@ -1,0 +1,7 @@
+# INVALID: database supplied as a string instead of the structured object. MUST be rejected by type.
+image:
+  repository: ghcr.io/o3k/o3k
+secrets:
+  jwtSecret: x
+  adminPassword: x
+database: "postgres://o3k@db/o3k"
