@@ -425,6 +425,8 @@ if requestedVersion == "" {
 - 011-ensure-storage-subdirs: real-mode node-local storage subdirs guaranteed to exist — Glance creates its canonical `/var/lib/o3k/images` (drops the `~/.o3k` fallback; matches `ceph.go`) + chart initContainer pre-creates all subdirs on the `host-storage` hostPath. No new Go/chart deps, no schema change.
 - Helm 3.12+ chart (Go `text/template`); JSON Schema **draft-07**; Markdown docs. No Go code changes. + Helm's built-in `values.schema.json` validation + release-status/pod-readiness reporting; the **helm-unittest** plugin (existing harness). No new Go modules, no chart dependencies. (012-integration-contract)
 - N/A — the external PostgreSQL is the product's and is untouched; this feature adds no schema or migration. (012-integration-contract)
+- Go 1.26 + Gin (HTTP), pgx/pgxpool (existing `database.HealthCheck`). **No new Go modules.** Chart: Helm 3.12+, JSON Schema draft-07, helm-unittest (existing harness) — no new chart deps. (013-readiness-liveness-probes)
+- External PostgreSQL — **no schema, no migration, no persisted data** (readiness is a live `Ping`). (013-readiness-liveness-probes)
 
 ## Recent Changes
 - 011-ensure-storage-subdirs: fix real-mode storage-subdir gap (cloud-storage#510) — Glance no longer falls back to `~/.o3k`; chart initContainer pre-creates node-local subdirs (SPEC-011 plan)
