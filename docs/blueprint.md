@@ -81,12 +81,12 @@ Reported **separately** (not part of the five-service OpenStack API count): Plac
 
 | Service | Raw routes registered | Functional operations | Notes |
 |---|---:|---:|---|
-| Keystone | 60 | **60** | discovery roots live in `main.go` |
+| Keystone | 60 | **59** | −1 discovery (`GET /v3`); `GET /` on identity port lives in `main.go` |
 | Nova | 74 | **71** | −2 discovery, −1 PUT/PATCH alias |
 | Neutron | 100 | **94** | −2 discovery, −4 PUT/PATCH aliases |
 | Cinder | 116 | **67** | −2 discovery, −2 PUT/PATCH, −45 project-scoped aliases |
 | Glance | 38 | **38** | discovery roots live in `main.go` |
-| **Five-service total** | **388** | **330** | |
+| **Five-service total** | **388** | **329** | |
 | Placement (stub) | 5 | 3 | resource_providers / resource_classes / traits — empty lists |
 | Metadata | 7 | 7 | EC2 + OpenStack formats, unauthenticated |
 | Health | 4 | 3 | `/livez`, `/readyz`, `/healthcheck` (GET+HEAD) |
@@ -103,9 +103,75 @@ the honest figure behind the "330 baseline"; the previous "342 / 104%" came from
 
 ## 3. Compatibility matrix
 
-*In progress — next section.* Per service: each OpenStack api-ref resource group mapped to o3k status
-(✅ implemented · ⚠️ partial · ❌ missing · 🅢 stub), with contract-test pass rates from
-`test/contract/` and the OPENSTACK_COMPATIBILITY_REPORT appendix.
+Per service, each canonical OpenStack **api-ref** resource group (2025.2) is mapped to o3k's
+implementation status, derived from the route registrations in `internal/<service>/`. Status legend:
+
+- ✅ **Implemented** — operation(s) present, exercised by tests or clients
+- ⚠️ **Partial** — group present but some operations or semantics missing
+- ❌ **Missing** — not implemented
+- 🅢 **Stub** — route exists but returns canned/empty data
+
+Contract-test figures come from `test/contract/<service>/` (gophercloud) and the
+[OPENSTACK_COMPATIBILITY_REPORT](compatibility/OPENSTACK_COMPATIBILITY_REPORT.md) appendix.
+**Caveat:** contract tests are *not* CI-gated (they need a live instance), so pass counts are
+point-in-time, and a few report claims overstate the current code — flagged inline.
+
+### 3.1 Keystone — Identity v3 (59 functional operations)
+
+Canonical group list from the OpenStack Identity v3 api-ref (core operations + CURRENT extensions).
+
+| Canonical group (Identity v3) | o3k | Notes |
+|---|:--:|---|
+| Authentication & token mgmt | ⚠️ | `POST`/`GET`/`DELETE /v3/auth/tokens` + `GET /v3/auth/projects`. Missing `HEAD /auth/tokens` (check), `GET /auth/catalog`, `GET /auth/system`/`domains`, MFA auth-receipts |
+| Users | ✅ | CRUD + `password` + `/users/:id/projects` + `/users/:id/groups` |
+| Application credentials | ✅ | create / list / get / delete (+ `GET /application_credentials/:id`) |
+| Credentials | ✅ | full CRUD |
+| Groups | ✅ | CRUD + membership (`/groups/:id/users`, add/remove) |
+| Projects | ✅ | CRUD |
+| Project tags | ❌ | — |
+| Domains | ✅ | CRUD |
+| Domain configuration | ⚠️ | `GET /domains/:id/config` only (no set/delete, no group/option granularity) |
+| Roles | ✅ | CRUD |
+| Role assignments | ⚠️ | project↔user assign/unassign/list/check + `GET /role_assignments`. Missing group & domain-scoped assignments, role inferences/implied roles |
+| System role assignments | ❌ | — |
+| Service catalog & endpoints | ⚠️ | services CRUD; endpoints list/create/delete (no `GET`/`PATCH /endpoints/:id`). **Known bug:** catalog URL-template substitution (3 contract-test failures) |
+| Policies | ❌ | — |
+| Regions | ❌ | — |
+| Unified limits (registered_limits / limits) | ❌ | — |
+| OS-INHERIT | ❌ | — |
+| OS-FEDERATION / OS-OAUTH1 / OS-OAUTH2 / OS-TRUST | ❌ | enterprise SSO / delegation |
+| OS-EP-FILTER / OS-ENDPOINT-POLICY / OS-REVOKE | ❌ | — |
+| OS-EC2 (ec2 credentials) | ❌ | **Doc drift:** the compat report lists 5 EC2-credential endpoints, but none are registered in `internal/keystone/handlers.go` |
+| OS-PKI / OS-SIMPLE-CERT | ❌ | deprecated upstream |
+
+**Contract tests** (`test/contract/keystone/`, 11 files): report records **52 pass / 3 fail (94.5%)**; the
+3 failures are the catalog URL-substitution bug. Not CI-gated.
+
+**Doc-vs-code discrepancies found:** the compat report also lists `HEAD /v3/auth/tokens` and
+`GET /v3/auth/catalog` as implemented; neither is registered in the current code. The status column
+above reflects the code, not the report.
+
+**Validation verdict:** o3k implements the full **core IAM surface** that Terraform, Horizon, and the
+OpenStack CLI exercise — token auth, users, projects, domains, groups, roles, project role-assignments,
+service catalog, credentials, application credentials. Every ❌ above is an enterprise
+SSO / delegation / policy / limits feature **outside the sci-in-a-box validation scope** — the one
+in-scope defect is the catalog URL-substitution bug (see [§8](#8-known-gaps--limitations)).
+
+### 3.2 Nova — Compute v2.1
+
+*Next step.*
+
+### 3.3 Neutron — Network v2.0
+
+*To do.*
+
+### 3.4 Cinder — Block Storage v3
+
+*To do.*
+
+### 3.5 Glance — Image v2
+
+*To do.*
 
 ## 4. Storage backends
 
@@ -128,5 +194,42 @@ probes; remaining integration gaps.
 
 ## 8. Known gaps & limitations
 
-*To do.* Swift/object-store absent; Cinder contract coverage; Ceph build-tag packaging; multi-node Helm
-deferred (#52); contract/Terraform tests not CI-gated; Placement stubbed; reconciliation of "104%" vs "~70%".
+This section collects (a) cross-cutting limitations and (b) per-service lists of canonical OpenStack
+endpoints o3k does not implement.
+
+*Cross-cutting gaps — to do:* Swift/object-store absent; Cinder contract coverage; Ceph build-tag
+packaging; multi-node Helm deferred (#52); contract/Terraform tests not CI-gated; Placement stubbed;
+reconciliation of "104%" vs "~70%".
+
+### 8.1 Keystone — not-implemented endpoints
+
+> **Scope note.** None of the endpoints below are on the sci-in-a-box / Terraform / Horizon validation
+> path — they are enterprise SSO, delegation, policy, quota-limit, and tagging features. They are listed
+> for completeness against the OpenStack Identity v3 api-ref (2025.2). The one *in-scope* Keystone defect
+> is a **bug**, not a missing endpoint: catalog URL-template substitution (see §3.1).
+
+The table lists every canonical Identity v3 operation o3k does not implement, with **Impl.**
+(⚠️ group partially implemented · ❌ group absent) and the reason it is unimplemented. Multiple
+endpoints per group are separated by a line break (`<br>`).
+
+| Identity v3 group | Impl. | Not-implemented endpoint(s) | Justification |
+|---|:--:|---|---|
+| Authentication & token mgmt | ⚠️ | `HEAD /v3/auth/tokens`<br>`GET /v3/auth/catalog`<br>`GET /v3/auth/domains`<br>`GET /v3/auth/system`<br>`GET, HEAD /v3/auth/receipts` | o3k validates tokens via `GET /v3/auth/tokens` and embeds the catalog in the token-issue response; the separate check / catalog / domains / system discovery calls aren't required by Horizon, Terraform, or the CLI against o3k. MFA receipts assume a multi-step auth-plugin chain the single HMAC-JWT issuer doesn't model. |
+| Service catalog & endpoints | ⚠️ | `GET /v3/endpoints/{endpoint_id}`<br>`PATCH /v3/endpoints/{endpoint_id}` | The catalog is seeded at bootstrap and read through the token; per-endpoint show/update is an admin catalog-editing convenience the validation clients never call. |
+| Domain configuration | ⚠️ | `PUT, PATCH, DELETE /v3/domains/{id}/config`<br>`GET /v3/domains/config/default`<br>`…/config/{group}` (GET / PATCH / DELETE)<br>`…/config/{group}/{option}` (GET / PATCH / DELETE) | Per-domain config drives multi-backend Keystone (per-domain LDAP / identity drivers). o3k is single-backend (PostgreSQL + HMAC-JWT), so writable domain config has no effect; the read-only `GET …/config` exists only for Horizon's identity panel. |
+| Role assignments (advanced) | ⚠️ | `HEAD /v3/projects/{pid}/users/{uid}/roles/{rid}` (check)<br>group-on-project, user/group-on-domain (assign / list / check)<br>implied roles `…/roles/{id}/implies/{id}`, `GET /v3/role_inferences` | o3k's RBAC is the project-scoped user→role model Terraform / Horizon / CLI use. Group- and domain-scoped grants and role-inference trees are advanced RBAC the validation scenarios don't exercise. |
+| Project tags | ❌ | `GET, PUT, DELETE /v3/projects/{pid}/tags`<br>`GET, PUT, DELETE /v3/projects/{pid}/tags/{value}` | Project tagging is a metadata / search convenience; no validation scenario filters projects by tag. |
+| Regions | ❌ | `GET, POST /v3/regions`<br>`GET, PUT, PATCH, DELETE /v3/regions/{id}` | o3k is a single-region deployment; multi-region catalog topology is out of scope. |
+| Policies | ❌ | `GET, POST /v3/policies`<br>`GET, PATCH, DELETE /v3/policies/{id}` | The policy API stores / distributes RBAC policy blobs; o3k enforces authorization in-code (role checks in middleware), so there is no policy document to serve. De-emphasized upstream. |
+| System role assignments | ❌ | `GET, PUT, HEAD, DELETE /v3/system/users/{uid}/roles/{rid}` (+ list)<br>`…/system/groups/{gid}/roles/{rid}` (+ list) | System-scoped roles govern deployment-wide cloud-admin operations; o3k has no system scope — it uses project / admin role checks. |
+| Unified limits | ❌ | `GET, POST /v3/registered_limits`, `GET, PATCH, DELETE /v3/registered_limits/{id}`<br>`GET, POST /v3/limits`, `GET, PATCH, DELETE /v3/limits/{id}`, `GET /v3/limits/model` | o3k enforces quotas per-service (Nova / Cinder / Neutron `quota-sets`), not via Keystone's centralized unified-limits model; the validation path uses the per-service quota APIs. |
+| OS-INHERIT | ❌ | `PUT, HEAD, DELETE …/roles/{rid}/inherited_to_projects` (+ `GET …/roles/inherited_to_projects`; domain- & project-scoped, user & group) | Inherited (domain→project) role assignments are an advanced RBAC convenience; o3k's flat project-scoped model has no inheritance. |
+| OS-EC2 credentials | ❌ | `GET, POST /v3/users/{uid}/credentials/OS-EC2`<br>`GET, DELETE …/OS-EC2/{credential_id}` | EC2-style HMAC credentials target the EC2 / S3 path; o3k exposes no EC2 / object surface and the validation clients use Keystone tokens / app-creds. **The compat report wrongly lists these as implemented.** |
+| OS-TRUST | ❌ | `GET, POST /v3/OS-TRUST/trusts`<br>`GET, DELETE /v3/OS-TRUST/trusts/{id}` (+ trust-roles) | Trusts delegate roles for unattended / Heat-style workflows; not used by the validation scenarios. |
+| OS-FEDERATION | ❌ | identity providers · protocols · mappings · service providers · `GET /v3/OS-FEDERATION/projects` · `/domains` · SAML2/ECP auth (entire extension) | Federated identity (external IdPs / SAML / OIDC) is enterprise SSO; o3k authenticates locally against its own user store. |
+| OS-OAUTH1 / OS-OAUTH2 | ❌ | consumers, request / access tokens, authorization; OAuth2 token + discovery (entire extensions) | OAuth delegation flows are enterprise integrations outside the validation scope. |
+| OS-EP-FILTER | ❌ | endpoint groups CRUD + project↔endpoint / project↔endpoint-group associations | Endpoint filtering tailors the catalog per project; o3k serves a single flat catalog. |
+| OS-ENDPOINT-POLICY | ❌ | policy↔endpoint / policy↔service associations | Associates policy blobs with endpoints; depends on the (absent) policy API. |
+| OS-REVOKE | ❌ | `GET /v3/OS-REVOKE/events` | Revocation-event lists invalidate cached tokens; o3k tokens are stateless short-TTL JWTs validated by signature, so there is no revocation list to publish (`DELETE /v3/auth/tokens` still works locally). |
+| OS-SIMPLE-CERT *(deprecated)* | ❌ | `GET /v3/OS-SIMPLE-CERT/ca`<br>`GET /v3/OS-SIMPLE-CERT/certificates` | Served signing certs for the deprecated PKI token format; obsolete — o3k uses HMAC-JWT. |
+| OS-PKI *(deprecated)* | ❌ | revoked-token list | Deprecated PKI token revocation list; obsolete. |
