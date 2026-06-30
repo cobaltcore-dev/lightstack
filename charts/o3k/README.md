@@ -18,6 +18,32 @@ An orchestrator drives o3k's lifecycle through this chart — **not** a CRD. The
 Provisioning/Ready/Failed status conventions, and identity-anchored endpoint resolution are
 specified in **[CONTRACT.md](./CONTRACT.md)**.
 
+## Health, readiness & probes (SPEC-013)
+
+o3k exposes three **unauthenticated** endpoints on the identity port (35357):
+
+| Path | Purpose | Behavior |
+|------|---------|----------|
+| `GET /readyz` | readiness | `200` only when the database is reachable **and** all HTTP listeners are bound; `503` + a short reason (e.g. `database unavailable`) otherwise. |
+| `GET /livez` | liveness | `200` while the process is up; **never** touches the database — a DB outage must not restart the pod. |
+| `GET\|HEAD /healthcheck` | OpenStack/oslo alias | alias of `/readyz`; content-negotiates `text/plain` (default) and `application/json`. |
+
+The chart wires `readinessProbe`/`startupProbe` → `/readyz` and `livenessProbe` → `/livez` (identically on the single-node Deployment and the multi-node DaemonSet). Tune timing/thresholds under `probes:` — paths are fixed. Defaults: ~150 s startup grace, ~30 s readiness-failure detection, ~60 s liveness-failure restart.
+
+**Check health the k8s-native way (no custom protocol):**
+
+```bash
+helm install o3k charts/o3k -f values.yaml --wait      # blocks until the Pod is Ready
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=o3k --timeout=180s
+o3k healthcheck --ready                                 # CLI probe; exit 0 = ready, 1 = not
+```
+
+The machine-readable signal is the **Pod `Ready` condition** and its roll-ups (`Deployment` Available, `--wait`). There is no o3k metrics endpoint — scrape readiness via `kube-state-metrics` (`kube_pod_status_ready`).
+
+**Zero-downtime rollouts:** set `drainSeconds` > 0 so o3k reports not-ready and waits for endpoint deregistration before stopping; keep `terminationGracePeriodSeconds` above it.
+
+**Security:** these endpoints are unauthenticated. If the identity port is exposed externally, restrict `/readyz`, `/livez`, and `/healthcheck` at your load balancer / Ingress (per OpenStack guidance). They reveal only coarse status + a short reason — never error detail.
+
 ## Prerequisites
 
 - Kubernetes **≥ 1.25** (PodSecurity Admission GA) or k3s; Helm **≥ 3.12**.
