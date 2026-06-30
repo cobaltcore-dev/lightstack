@@ -58,6 +58,14 @@ func InitLogger(config *common.LoggingConfig) {
 // LoggingMiddleware logs HTTP requests with structured logging
 func LoggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Kubernetes polls the health endpoints every few seconds; serve them
+		// without flooding the access log (SPEC-013).
+		switch c.Request.URL.Path {
+		case "/readyz", "/livez", "/healthcheck":
+			c.Next()
+			return
+		}
+
 		// Generate request ID
 		requestID := uuid.New().String()
 		c.Set("request_id", requestID)

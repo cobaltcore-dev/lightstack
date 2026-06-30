@@ -5,10 +5,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/compute"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/internal/glance"
+	"github.com/cobaltcore-dev/o3k/internal/health"
 	"github.com/cobaltcore-dev/o3k/internal/keystone"
 	"github.com/cobaltcore-dev/o3k/internal/metadata"
 	"github.com/cobaltcore-dev/o3k/internal/middleware"
@@ -27,6 +32,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
 	"github.com/gin-gonic/gin"
+	zlog "github.com/rs/zerolog/log"
 )
 
 var (
@@ -40,6 +46,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "cleanup" {
 		runCleanup(os.Args[2:])
 		return
+	}
+
+	// `o3k healthcheck` probes this node's identity-port health endpoints and
+	// exits 0/1 — a local diagnosis / exec-probe alternative (SPEC-013 FR-011).
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck(os.Args[2:]))
 	}
 
 	flag.Parse()
@@ -90,6 +102,10 @@ func main() {
 	defer database.Close()
 
 	log.Printf("Database connection established (pool: max=%d, min=%d)", poolConfig.MaxConns, poolConfig.MinConns)
+
+	// Health checker for the Kubernetes probes (SPEC-013): readiness gates on the
+	// database being reachable + all listeners bound; liveness is dependency-free.
+	healthChecker := health.New(zlog.Logger, health.DatabaseCheck())
 
 	// Run migrations
 	log.Println("Running database migrations...")
@@ -248,7 +264,7 @@ func main() {
 
 	// Create HTTP servers for each service
 	servers := []*http.Server{
-		createKeystoneServer(cfg, keystoneService, authService),
+		createKeystoneServer(cfg, keystoneService, authService, healthChecker),
 		createNovaServer(cfg, novaService, authService),
 		createNeutronServer(cfg, neutronService, authService),
 		createCinderServer(cfg, cinderService, authService),
@@ -257,12 +273,25 @@ func main() {
 		createMetadataServer(metadataService),
 	}
 
+	// Bind all listeners up-front so readiness can honestly report "all HTTP
+	// listeners are up" only once every bind has succeeded (SPEC-013 FR-001).
+	// net.Listen binds synchronously and fails fast on a port clash.
+	listeners := make([]net.Listener, len(servers))
+	for i, srv := range servers {
+		ln, err := net.Listen("tcp", srv.Addr)
+		if err != nil {
+			log.Fatalf("Failed to bind %s: %v", srv.Addr, err)
+		}
+		listeners[i] = ln
+	}
+	healthChecker.MarkStarted()
+
 	// Start all servers
-	for _, srv := range servers {
-		srv := srv // capture loop variable
+	for i, srv := range servers {
+		srv, ln := srv, listeners[i] // capture loop variables
 		go func() {
 			log.Printf("Starting server on %s", srv.Addr)
-			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("Server failed: %v", err)
 			}
 		}()
@@ -283,6 +312,15 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down servers...")
+
+	// Flip readiness to not-ready first so the pod leaves the Service before we
+	// stop serving (SPEC-013 FR-009). The chart's preStop/terminationGracePeriod
+	// governs how long the platform waits for endpoint deregistration.
+	healthChecker.MarkDraining()
+	if d := drainDelay(); d > 0 {
+		log.Printf("Draining: reporting not-ready for %s before shutdown", d)
+		time.Sleep(d)
+	}
 
 	// Stop service background goroutines before closing HTTP servers
 	novaService.Shutdown()
@@ -345,7 +383,54 @@ func runCleanup(args []string) {
 	}
 }
 
-func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService *keystone.AuthService) *http.Server {
+// runHealthcheck implements the `o3k healthcheck` subcommand (SPEC-013 FR-011):
+// a local probe of this node's identity-port endpoints, usable as an exec-probe
+// alternative or for host-side diagnosis. Exit codes: 0 ready/live, 1 not-ready
+// or unreachable, 2 usage error.
+func runHealthcheck(args []string) int {
+	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	live := fs.Bool("live", false, "query /livez instead of /readyz")
+	fs.Bool("ready", false, "query /readyz (the default)")
+	addr := fs.String("addr", "http://localhost:35357", "base URL of the identity listener")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+
+	path := "/readyz"
+	if *live {
+		path = "/livez"
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(strings.TrimRight(*addr, "/") + path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("%s %d %s\n", path, resp.StatusCode, strings.TrimSpace(string(body)))
+	if resp.StatusCode == http.StatusOK {
+		return 0
+	}
+	return 1
+}
+
+// drainDelay returns the graceful-shutdown drain pause from O3K_DRAIN_SECONDS
+// (whole seconds; default 0 = no pause). The chart sets it so the pod is removed
+// from the Service before the process stops serving (SPEC-013 FR-009). Done in
+// the app (not a preStop `sleep`) so it works on minimal/distroless images too.
+func drainDelay() time.Duration {
+	n, err := strconv.Atoi(os.Getenv("O3K_DRAIN_SECONDS"))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
+}
+
+func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService *keystone.AuthService, checker *health.Checker) *http.Server {
 	r := gin.New()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
@@ -354,6 +439,10 @@ func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService
 	r.NoRoute(middleware.NotFoundHandler())
 	r.HandleMethodNotAllowed = true
 	r.NoMethod(middleware.MethodNotAllowedHandler())
+
+	// Unauthenticated k8s health probes + OpenStack /healthcheck alias (SPEC-013),
+	// mounted on the identity engine beside the root version route (no auth group).
+	checker.Register(r)
 
 	// Root version discovery
 	r.GET("/", func(c *gin.Context) {
