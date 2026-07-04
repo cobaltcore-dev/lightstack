@@ -143,6 +143,29 @@ nodeSelector:
 nodeSelector:
   {{- toYaml .Values.nodeSelector | nindent 2 }}
 {{- end }}
+{{- if .Values.realMode.enabled }}
+# Real-mode node-local storage: the host-storage hostPath is DirectoryOrCreate, so it
+# materializes only the base dir and shadows the image's pre-created subdirs. Pre-create
+# the per-service subdirs here (before o3k starts) so a fresh deploy boots a VM with no
+# manual mkdir (SPEC-011 / cloud-storage#510). Subdir list mirrors pkg/paths/paths.go.
+initContainers:
+  - name: init-host-storage
+    image: {{ include "o3k.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        mkdir -p
+        "{{ .Values.realMode.hostStoragePath }}/images"
+        "{{ .Values.realMode.hostStoragePath }}/volumes"
+        "{{ .Values.realMode.hostStoragePath }}/instances"
+        "{{ .Values.realMode.hostStoragePath }}/cloud-init"
+        "{{ .Values.realMode.hostStoragePath }}/dhcp"
+    volumeMounts:
+      - name: host-storage
+        mountPath: {{ .Values.realMode.hostStoragePath }}
+{{- end }}
 containers:
   - name: o3k
     image: {{ include "o3k.image" . }}

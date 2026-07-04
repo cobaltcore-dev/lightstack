@@ -12,10 +12,10 @@ This deployment configuration runs O3K in a Docker container with access to the 
    ```
 3. **Docker and Docker Compose** installed
 4. **PostgreSQL 18** running on host (for database)
-5. **Storage directories** created:
+5. **Storage base directory** — subdirs are auto-created by o3k on startup (SPEC-011 / #510);
+   this is needed only if o3k runs as a non-root user that cannot create `/var/lib/o3k`:
    ```bash
-   sudo mkdir -p /var/lib/o3k/{volumes,images,instances}
-   sudo chmod 755 /var/lib/o3k/{volumes,images,instances}
+   sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/o3k
    ```
 6. **Configuration file** at `/opt/o3k/config/o3k.yaml`
 

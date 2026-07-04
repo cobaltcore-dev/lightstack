@@ -76,13 +76,14 @@ func s3ImageKey(imageID string) string { return "images/" + imageFileName(imageI
 //     primary backend serve traffic; S3 operations will surface
 //     "S3 client not initialized" until the config is corrected.
 func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string) (*ImageStore, error) {
-	// Use the canonical image dir for local storage (Docker-friendly);
-	// falls back to ~/.o3k/images for non-containerized deployments.
+	// Always resolve to the canonical node-local image dir (the chart's
+	// persistent hostPath). SPEC-011 / cloud-storage#510: Glance previously fell
+	// back to ~/.o3k/images when this dir was absent at startup, but Nova always
+	// reads LocalImagePath() under /var/lib/o3k/images — so the fallback silently
+	// diverged the write and read locations and VMs booted to ERROR. Mirror the
+	// other local-storage services (see ceph.go): resolve unconditionally and
+	// create it (below); never relocate.
 	localPath := LocalImageDir()
-	if _, err := os.Stat(localPath); os.IsNotExist(err) {
-		homeDir, _ := os.UserHomeDir()
-		localPath = filepath.Join(homeDir, ".o3k", "images")
-	}
 
 	store := &ImageStore{
 		mode:       mode,
@@ -96,9 +97,13 @@ func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint stri
 		stubImages: make(map[string]*stubImage),
 	}
 
-	// Create local storage directory if needed
+	// Create local storage directory if needed. Surface a failure (FR-008) rather
+	// than masking it by writing image data to an unread location.
 	if mode == "local" || containsMode(mode, "local") {
-		_ = os.MkdirAll(store.localPath, 0755)
+		if err := os.MkdirAll(store.localPath, 0755); err != nil {
+			log.Error().Err(err).Str("path", store.localPath).
+				Msg("failed to create local image directory")
+		}
 	}
 
 	// Initialize S3 client if needed
