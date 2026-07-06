@@ -300,9 +300,42 @@ export/import, attachments API, migrate) as ⚠️ registered-but-thin.
 surface is registered-but-thin (see [§8.4](#84-cinder--not-implemented-endpoints)) and off the validation
 path.
 
-### 3.5 Glance — Image v2
+### 3.5 Glance — Image v2 (38 functional operations)
 
-*To do.*
+o3k advertises **v2.9**. Version discovery (`GET /`, `GET /v2`) is in `main.go`; the service registers
+routes without the `/v2` prefix (gophercloud appends it). Core image lifecycle is solid; the coverage gap
+is concentrated in the metadefs sub-resources.
+
+| Glance v2 group | o3k | Notes |
+|---|:--:|---|
+| Images (CRUD) | ✅ | list / create / show / update (PATCH) / delete |
+| Image data | ✅ | `PUT /images/{id}/file` (upload) · `GET …/file` (download) — **validation-critical for #422 (RGW/S3 backend)** |
+| Image import | ✅ | stage / import / get-import-info (web-download, glance-direct) |
+| Image members (sharing) | ✅ | create / list / show / update / delete |
+| Image tags | ✅ | add / delete |
+| Image actions | ✅ | deactivate / reactivate |
+| Schemas | ✅ | image / images / member / members |
+| Tasks | ✅ | create / list / show |
+| Info / stores | ✅ | `GET /stores`, `/stores/info` (o3k paths; canonical is `/v2/info/stores` + `/v2/info/import`) |
+| Cache | ✅ | list / queue (prefetch) / delete / clear |
+| Metadefs | ⚠️ | namespaces CRUD + global `resource_types` list only — **no properties / objects / tags / namespace-RT associations** (~15 ops) |
+| Multi-store data ops · metadefs sub-resources | ❌ | see §8.5 |
+
+**Contract tests** (`test/contract/glance/`, 6 files): README reports **27/29 (93%)** — "image service fully
+functional." Not CI-gated. This is a high contract signal despite the 72% *coverage* figure — i.e. what's
+implemented works; what's missing is the metadefs catalog.
+
+**Backends (richest of the five):** local, **RBD** (behind the `ceph` build tag), and **S3 — AWS / MinIO /
+Ceph RGW** via `s3_endpoint` (path-style) — plus hybrids `local,rbd` / `local,s3` / `rbd,s3`. The S3/RGW
+backend is validation-critical for **#422**; details in §4.
+
+**Doc-vs-code:** the compat report's **38/53 (~72%)** matches the route-derived functional count (**38**) and
+honestly names the metadefs-advanced gap — the most accurate of the five service sections in that report.
+
+**Validation verdict:** the validation-critical surface is ✅ — image create + upload (`PUT …/file`) +
+download (`GET …/file`) + list + delete, which is exactly what **#422** exercises against Ceph RGW/S3 and
+what Nova consumes for boot-from-image. Metadefs sub-resources and multi-store operations
+(see [§8.5](#85-glance--not-implemented-endpoints)) are off the validation path.
 
 ## 4. Storage backends
 
@@ -435,3 +468,16 @@ endpoints per group are separated by a line break (`<br>`).
 | Messages | ❌ | `GET, DELETE /messages` | Async user-facing fault messages; o3k is synchronous — errors are returned inline. |
 | Clusters / Workers | ❌ | `/clusters` · `/workers/cleanup` | Active/active HA service-cluster management; single-node. |
 | Quota class sets · resource filters · manageable snapshots · extensions | ❌ | `/os-quota-class-sets/{id}` · `/resource_filters` · `/manageable_snapshots` · `/extensions` | Class-default quotas (per-project quota-sets used instead), filterable-attribute discovery, adopt-existing-snapshot listing, legacy extension list — niche. |
+
+### 8.5 Glance — not-implemented endpoints
+
+> **Scope note.** Core image lifecycle (create, upload, download, list, delete, members, tags, actions) is
+> ✅ in §3.5 and contract-verified (README 27/29). #422's image upload/download against Ceph RGW/S3 is
+> covered. The gaps are the metadefs catalog and multi-store operations. Multiple endpoints per group are
+> separated by `<br>`.
+
+| Glance v2 group | Impl. | Not-implemented endpoint(s) | Justification |
+|---|:--:|---|---|
+| Metadefs | ⚠️ | `/metadefs/namespaces/{ns}/properties` (CRUD)<br>`/metadefs/namespaces/{ns}/objects` (CRUD)<br>`/metadefs/namespaces/{ns}/tags` (CRUD)<br>`/metadefs/namespaces/{ns}/resource_types` (associate / disassociate) | Namespaces + the global `resource_types` list are present; the property / object / tag sub-resources are a metadata-schema catalog (<5% upstream adoption) that no validation scenario reads. |
+| Multi-store data ops | ❌ | `POST /images/{id}/import` with `copy-image` + `stores`<br>`DELETE /stores/{store_id}/{image_id}` (delete-from-store) | Per-store placement / copy / delete for multi-store Glance; o3k uses a single active backend (or hybrid failover), so per-store operations don't apply. |
+| Info discovery paths | ⚠️ | canonical `GET /v2/info/stores`<br>`GET /v2/info/import` | o3k serves the same data at `GET /stores` + `/stores/info`; only the path differs (clients hard-coding `/v2/info/…` won't find it). |
