@@ -339,8 +339,45 @@ what Nova consumes for boot-from-image. Metadefs sub-resources and multi-store o
 
 ## 4. Storage backends
 
-*To do.* Per-service backend support (local / Ceph RBD / S3-RGW-MinIO), the `//go:build ceph` packaging
-caveat, hybrid failover semantics.
+o3k persists two kinds of data through pluggable backends selected per service by `storage_mode`
+(both default to `local`). The epic (#413) advertises "Ceph RBD, S3, and MinIO"; the honest per-service
+reality — from `pkg/storage/image_store.go` (Glance) and `pkg/storage/ceph.go` + `ceph_rbd.go` (Cinder) — is:
+
+| Backend | Glance (images) | Cinder (volumes) | Notes |
+|---|:--:|:--:|---|
+| `stub` | ✅ | ✅ | in-memory, no I/O — dev / unit tests |
+| `local` | ✅ | ✅ | Glance: raw at `/var/lib/o3k/images`; Cinder: qcow2 at `/var/lib/o3k/volumes` |
+| `rbd` (Ceph) | ⚠️ placeholder | ✅ *(build-tag)* | Cinder: real `go-ceph` (`ceph_rbd.go`, `//go:build ceph`); Glance: the `rbd` case exists but replication is log-only / not wired |
+| `s3` (AWS / MinIO / Ceph RGW) | ✅ | ❌ | **Glance only** — AWS SDK v2, `s3_endpoint` + path-style for MinIO/RGW |
+| hybrid | `local,s3` ✅ · `local,rbd` ⚠️ · `rbd,s3` ⚠️ | `local,rbd` ✅ | first backend = primary, rest = fallback/replica |
+
+**The Ceph build-tag caveat — critical for #422.** RBD support lives in `pkg/storage/ceph_rbd.go` behind
+`//go:build ceph`. **Neither `make build` (`Makefile:19`) nor the container image
+(`build/package/Dockerfile:23`) passes `-tags ceph`** — so the **stock binary and stock chart image are
+Ceph-less**, and a `storage_mode: rbd`/`local,rbd` config against them will not do real RBD I/O. Cinder-on-RBD
+(a hard dependency of #422) therefore requires a **custom `go build -tags ceph`** with `librados`/`librbd`
+present — and note the image is Alpine/musl, where cgo + go-ceph is notoriously fiddly. **Action item for
+#422: ship a Ceph-enabled image variant.**
+
+**Glance hybrid nuance.** Only `local` and `s3` (and `local,s3`, which replicates local→S3) are fully wired.
+`local,rbd` uploads locally and merely *logs* the intended RBD copy; `rbd,s3` skips S3 (the reader is already
+consumed). For #422's "Glance on Ceph RGW", use `storage_mode: s3` (or `local,s3`) with `s3_endpoint` = the
+RGW endpoint — that path is real.
+
+**Fail-fast timeouts** (consistent with §5): Cinder Ceph/RBD **1 s** (`ceph.go:65`); Glance S3 **5 s**
+(`image_store.go:95`). A slow or unreachable backend errors quickly rather than hanging the synchronous
+request.
+
+**Mapping to #422 (Ceph RGW + RBD).**
+- **Glance on Ceph RGW / MinIO** → `storage_mode: s3` (+ `s3_endpoint`, path-style). **Real, works today.**
+- **Cinder on Ceph RBD** → `storage_mode: rbd` / `local,rbd`. **Real go-ceph, but only in a `ceph`-tagged build.**
+- **Swift object read/write** (also named in #422's scope) → **not applicable**: o3k exposes no Swift/object API;
+  S3/RGW here is a *Glance image backend driver*, not a tenant-facing object store (see §7 and [§8](#8-known-gaps--limitations)).
+
+**VM disks (Nova).** Not a Cinder backend, but storage-adjacent: each instance gets a per-instance qcow2
+**overlay over a shared raw base** under `/var/lib/o3k` (SPEC-009); boot-from-volume instead routes the root
+disk to a Cinder volume. Node-local storage (a `hostPath`, with subdirectories pre-created by the chart
+initContainer per SPEC-011) — so local-disk instances are not live-migratable across nodes.
 
 ## 5. Synchronous architecture & trade-offs
 
