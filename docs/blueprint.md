@@ -423,7 +423,50 @@ are acceptable for a single-node (or small multi-node) validation cloud, which i
 
 ## 6. Terraform coverage
 
-*To do.* Per-resource matrix from `test/terraform/sc007/`; the port-id deviation; what is / isn't CI-gated.
+o3k's headline claim is "100 % Terraform compatible." The evidence is one curated module,
+`test/terraform/sc007/main.tf` (SPEC-009 SC-007 / FR-018), which stands up a full single-node topology with
+the **unmodified** OpenStack provider and asserts `terraform apply` + `destroy` both succeed. It exercises
+**10 resource types + 2 data sources** (14 blocks):
+
+| Terraform type | sc007 | Backing o3k API |
+|---|:--:|---|
+| `openstack_images_image_v2` *(data)* | ✅ | Glance |
+| `openstack_networking_network_v2` / `subnet_v2` | ✅ | Neutron (tenant + external) |
+| `openstack_networking_router_v2` / `router_interface_v2` | ✅ | Neutron L3 |
+| `openstack_networking_floatingip_v2` / `floatingip_associate_v2` | ✅ | Neutron FIP |
+| `openstack_networking_port_v2` *(data)* | ✅ | Neutron (port lookup — see deviation) |
+| `openstack_compute_keypair_v2` | ✅ | Nova |
+| `openstack_compute_instance_v2` | ✅ | Nova (+ `user_data` / cloud-init) |
+| `openstack_compute_volume_attach_v2` | ✅ | Nova volume-attach |
+| `openstack_blockstorage_volume_v3` | ✅ | Cinder |
+
+**Documented deviation (the "100 %" asterisk).** o3k's server detail **doesn't populate the per-interface
+`port` id**, so the idiomatic `openstack_compute_instance_v2.network[0].port` is `null`. sc007 works around
+it by resolving the port through a `data "openstack_networking_port_v2"` (filtered by `device_id`) and
+feeding that into the floating-IP association (`main.tf:83-93`). So FIP-to-instance is **compatible with a
+one-line workaround**, not literally zero-modification — worth stating plainly against the "unchanged
+scripts" promise.
+
+**What's tested, and what isn't.**
+- **Real-mode only, not CI-gated** — sc007 runs against a live o3k on a Linux/k3s host (`test/terraform/README.md`), never in the pipeline. (That README also still lists `ws3/ws4/ws5` module dirs that no longer exist — only `sc007/` remains; stale.)
+- It is a **smoke test of one topology**, not exhaustive coverage of the `openstack_*` provider.
+
+**Coverage vs. #423's required smoke set.** #423 asks Terraform to cover *compute instances, networks,
+security groups, volumes, object storage*:
+
+| #423 category | Covered by sc007? | Note |
+|---|:--:|---|
+| Compute instances | ✅ | instance + keypair + volume-attach |
+| Networks | ✅ | network / subnet / router / FIP |
+| Volumes | ✅ | `blockstorage_volume_v3` (core Cinder) |
+| Security groups | ❌ | **not in sc007** — the Neutron secgroup API exists (§3.3) but no `openstack_networking_secgroup_v2` is exercised |
+| Object storage | ❌ | **no Swift/object API in o3k** — `openstack_objectstorage_*` cannot work (§7, §8) |
+
+**Verdict.** For the compute + network + volume + image resources it covers, the drop-in Terraform claim
+holds (modulo the port-id workaround), and it's validated end-to-end in real mode. But "100 %" is
+overstated: two of #423's five smoke categories are unmet — **security groups** (API present, not yet
+Terraform-tested → add an `openstack_networking_secgroup_v2` case) and **object storage** (no API → will
+fail; drop it or track against the Swift decision, §7). Neither is CI-gated yet.
 
 ## 7. sci-in-a-box integration surface
 
