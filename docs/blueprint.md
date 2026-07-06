@@ -39,7 +39,7 @@ is the single source of truth for *"what does o3k implement, and what doesn't it
 
 ## 1. Service map
 
-o3k runs as a single Go binary (~35 MB) that starts independent HTTP servers, one per OpenStack service,
+o3k runs as a single Go binary that starts independent HTTP servers, one per OpenStack service,
 plus a metadata server and Kubernetes health endpoints. All share one PostgreSQL pool and one stateless
 JWT auth path.
 
@@ -266,7 +266,7 @@ quotas are read-only, so quota seeding goes through Nova.
 | Cinder v3 group | o3k | Notes |
 |---|:--:|---|
 | Volumes (CRUD) | ✅ | list / detail / create / show / update (PUT + PATCH) / delete — **core lifecycle host-validated in real mode** |
-| Volume actions (`/volumes/{id}/action`) | ⚠️ | attach / detach / extend / retype / reset-status / readonly wired; migrate / revert-to-snapshot / upload-to-image / reimage / force-detach not confirmed |
+| Volume actions (`/volumes/{id}/action`) | ⚠️ | attach / detach / extend / retype / reset-status / readonly / reimage / force-detach wired (verified in the dispatcher); migrate / revert-to-snapshot / upload-to-image / set-bootable absent |
 | Volume metadata | ✅ | get / set + per-key get / update / delete |
 | Snapshots | ✅ | list / detail / create / show / update / delete |
 | Snapshot metadata | ✅ | get / set + per-key |
@@ -518,12 +518,28 @@ teardown hooks (blocking purge of host + network state) — **already in `main` 
 
 ## 8. Known gaps & limitations
 
-This section collects (a) cross-cutting limitations and (b) per-service lists of canonical OpenStack
-endpoints o3k does not implement.
+This section collects (a) the **cross-cutting limitations** that shape whether o3k fits the validation use
+case, and (b) per-service lists of canonical OpenStack endpoints o3k does not implement (§8.1–§8.5).
 
-*Cross-cutting gaps — to do:* Swift/object-store absent; Cinder contract coverage; Ceph build-tag
-packaging; multi-node Helm deferred (#52); contract/Terraform tests not CI-gated; Placement stubbed;
-reconciliation of "104%" vs "~70%".
+### Cross-cutting limitations
+
+| Limitation | Detail | Impact / tracked |
+|---|---|---|
+| **No Swift / object-store API** | the Keystone catalog advertises only `identity / compute / placement / network / volumev3 / image`; S3 / RGW / MinIO is a *Glance image-backend driver*, not a tenant object store | #422 / #424 object read/write scenarios are unservable; path decision in o3k#15 |
+| **Ceph behind a build tag** | `pkg/storage/ceph_rbd.go` is `//go:build ceph`; neither `make build` nor `build/package/Dockerfile` pass `-tags ceph`, so the stock binary/image are Ceph-less | Cinder-on-RBD (#422) needs a custom Ceph-enabled image (§4) |
+| **Cinder advanced surface is thin** | ~96 % of routes registered but only ~18 % pass contract tests; groups / QoS specs / transfers / backup export-import are registered-but-thin | core volume ops are ✅ and host-validated; advanced ops unverified (§3.4) |
+| **Multi-node Helm deferred** | the VXLAN overlay + node registry exist, but the chart deploys single-node only | #52; #421's multi-node configuration is unmet |
+| **Tests not CI-gated** | the 308 gophercloud contract tests and the sc007 Terraform module need a live instance and don't run in CI | coverage figures are point-in-time; #423 asks for a CI smoke |
+| **Placement is stub-only** | returns empty lists so Horizon's panels load; no resource-provider / allocation logic | adequate for validation; not a real scheduler |
+| **Terraform "100 %" is qualified** | one topology (sc007), real-mode / not-CI, plus the port-id workaround; security groups untested and object storage impossible | §6; two of #423's five smoke categories unmet |
+| **SPEC-012 / 013 not yet in `main`** | the Helm integration contract (`CONTRACT.md`, `values.schema.json`) and the honest `/readyz` land via #474 / #475 | §7 references them as forward-refs |
+
+**On the headline numbers.** o3k implements **~329 functional operations** across the five core services
+(§2). The repo's "104 % (342/330)" counted *raw routes* — URL aliases + version-discovery — against a
+self-selected 330-endpoint baseline; the epic's "~70 % complete" (#413) is a holistic assessment weighted by
+the thin Cinder advanced surface, the absent Swift API, and the metadefs/extension gaps. Both are true of
+what they measure — this blueprint reports honest per-resource coverage and the gaps above rather than a
+single percentage.
 
 ### 8.1 Keystone — not-implemented endpoints
 
@@ -615,7 +631,7 @@ endpoints per group are separated by a line break (`<br>`).
 
 | Cinder v3 group | Impl. | Not-implemented endpoint(s) | Justification |
 |---|:--:|---|---|
-| Volume actions | ⚠️ | `os-migrate_volume`<br>`os-migrate_volume_completion`<br>`os-force_detach`<br>`revert` (revert-to-snapshot)<br>`os-reimage`<br>`os-volume_upload_image`<br>`os-set_bootable` | Core attach / detach / extend / retype / reset-status are wired; migration, revert, reimage and upload-to-image target multi-backend or image-pipeline flows off the validation path. |
+| Volume actions | ⚠️ | `os-migrate_volume`<br>`os-migrate_volume_completion`<br>`revert` (revert-to-snapshot)<br>`os-volume_upload_image`<br>`os-set_bootable` | Core attach / detach / extend / retype / reset-status / readonly / reimage / force-detach are wired; migration, revert-to-snapshot, upload-to-image and set-bootable target multi-backend or image-pipeline flows off the validation path. |
 | Volume groups | ⚠️ | `POST /groups/{id}/action` (+ group replication) | `/groups` CRUD is registered but the README flags groups as needing implementation; consistency-group actions are absent. |
 | Backups | ⚠️ | `GET /backups/{id}/export_record`<br>`POST /backups/import_record` | Backup-metadata export/import for DR portability; the validation path doesn't back up volumes. |
 | Services | ⚠️ | `PUT /os-services/{enable,disable}` | Single-node has no storage-service fleet to enable/disable. |

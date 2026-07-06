@@ -70,7 +70,7 @@ Choose your deployment strategy based on your use case.
 O3K provides 100% compatibility with OpenStack Horizon dashboard.
 
 - **[HORIZON_FULL_COMPATIBILITY_REPORT](HORIZON_FULL_COMPATIBILITY_REPORT.md)** ⭐ **NEW** - Complete 100% compatibility verification
-  - All 342 API endpoints tested with Horizon
+  - All core API endpoints tested with Horizon
   - Dashboard page compatibility matrix
   - Authentication and authorization flow
   - Performance benchmarks and optimization
@@ -301,7 +301,7 @@ Analysis of dashboard compatibility and integration options.
 - GitHub: https://github.com/cobaltcore-dev/o3k
 - License: Apache 2.0
 - Current Version: v0.6.0 (Production Ready)
-- API Coverage: 104% (342/330 endpoints)
+- API Coverage: ~329 functional operations across 5 core services (see [BLUEPRINT](blueprint.md))
 
 ---
 
