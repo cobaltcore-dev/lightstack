@@ -253,9 +253,52 @@ fully supported. Gaps are advanced networking extensions and partial quota/agent
 (see [§8.3](#83-neutron--not-implemented-endpoints)); none block validation — note only that Neutron
 quotas are read-only, so quota seeding goes through Nova.
 
-### 3.4 Cinder — Block Storage v3
+### 3.4 Cinder — Block Storage v3 (67 functional operations)
 
-*To do.*
+> **Surface breadth ≠ tested depth — read this before the matrix.** Two in-repo sources disagree sharply:
+> the compat report claims **65/68 (~96%)** by *code analysis* (route existence), while the README's own
+> *contract-test* result is **4/22 (18%)** — *"Basic volumes work, groups need implementation."* Both are
+> accurate for what they measure. o3k **registers** a broad Cinder surface (67 functional ops), but working,
+> contract-verified behaviour is concentrated in **core volume / snapshot / type** operations. The core
+> volume lifecycle *is* real and host-validated (SPEC-009: create, attach, detach, delete, boot-from-volume,
+> volume-from-image, on local **and** RBD). Read the 96% as "routes present," not "features working."
+
+| Cinder v3 group | o3k | Notes |
+|---|:--:|---|
+| Volumes (CRUD) | ✅ | list / detail / create / show / update (PUT + PATCH) / delete — **core lifecycle host-validated in real mode** |
+| Volume actions (`/volumes/{id}/action`) | ⚠️ | attach / detach / extend / retype / reset-status / readonly wired; migrate / revert-to-snapshot / upload-to-image / reimage / force-detach not confirmed |
+| Volume metadata | ✅ | get / set + per-key get / update / delete |
+| Snapshots | ✅ | list / detail / create / show / update / delete |
+| Snapshot metadata | ✅ | get / set + per-key |
+| Volume types | ✅ | CRUD + `default` + action (add/remove access) |
+| Volume type extra-specs | ✅ | per-key CRUD |
+| Volume type access | ✅ | list (+ add/remove via type action) |
+| Quotas | ✅ | quota-sets get / update / delete |
+| Limits | ✅ | `GET /limits` |
+| Availability zones | ✅ | `GET /os-availability-zone` |
+| QoS specs | ⚠️ | CRUD registered; low contract coverage |
+| Volume groups | ⚠️ | `/groups` CRUD registered, but README flags **"groups need implementation"**; no group_snapshots / group_types / group action |
+| Backups | ⚠️ | CRUD + action registered; no `export_record` / `import_record` |
+| Volume transfers | ⚠️ | list / create / show / accept / delete registered; low contract coverage |
+| Manage / unmanage | ⚠️ | `os-volume-manage`, `manageable_volumes`, `os-snapshot-manage` |
+| Services | ⚠️ | `GET` list only |
+| Attachments API (`/attachments`) · group_snapshots · group_types · default-types · capabilities · messages · clusters · snapshot actions · … | ❌ | see §8.4 |
+
+**Contract tests** (`test/contract/cinder/`, ~18 files): README reports **4/22 (18%)** — the lowest per-service
+signal in o3k. Not CI-gated. Core volume/attach paths are separately covered by SPEC-009 host tests
+(`ws5_attach_real`, `ws5_boot_from_volume`, `ws5_volume_from_image`) and `test/volume_attach_test.sh`.
+
+**Doc-vs-code reconciliation:** the compat report's **65/68 (~96%)** counts *registered routes*; the README's
+**4/22 (18%)** counts *passing contract tests*. This blueprint treats core volume + snapshot + type ops as
+✅ (they work and are host-validated) and the advanced surface (groups, QoS specs, transfers, backups
+export/import, attachments API, migrate) as ⚠️ registered-but-thin.
+
+**Validation verdict:** the validation-critical surface is ✅ — `openstack_blockstorage_volume_v3` create
+(sc007) and `openstack_compute_volume_attach_v2` attach (via Nova), plus the **#422 RBD volume lifecycle**
+(create / attach / detach / delete), all host-validated in real mode. Backends: **local (qcow2)** and **RBD**
+(behind the `ceph` build tag) + hybrid `local,rbd`; **no S3 backend for Cinder** (see §4). The advanced
+surface is registered-but-thin (see [§8.4](#84-cinder--not-implemented-endpoints)) and off the validation
+path.
 
 ### 3.5 Glance — Image v2
 
@@ -369,3 +412,26 @@ endpoints per group are separated by a line break (`<br>`).
 | Tap-as-a-Service | ❌ | `/taas/tap_services` · `/taas/tap_flows` | Port mirroring for IDS / monitoring; out of scope. |
 | Neutron flavors + service profiles | ❌ | `/flavors` · `/service_profiles` | The Neutron flavor framework selects pluggable L3 / LB service drivers; o3k ships a single built-in L3 implementation. |
 | Local IPs · NDP proxies · conntrack helpers · port bindings · address groups · default SG rules · L2 gateway | ❌ | `/local_ips` · `/ndp_proxies` · `/ports/{id}/conntrack_helpers` · `/ports/{id}/bindings` · `/address-groups` · `/default-security-group-rules` · `/l2-gateways` | Niche / newer extensions (node-local IP, IPv6 NDP proxy, ALG helpers, multi-binding for live-migration, named CIDR groups, SG-rule templates, VXLAN↔VLAN bridging); none on the validation path. |
+
+### 8.4 Cinder — not-implemented endpoints
+
+> **Scope note.** Core volume + snapshot + type operations are ✅ in §3.4 and host-validated (SPEC-009);
+> the validation path (`openstack_blockstorage_volume_v3` + Nova-side attach, and the #422 RBD lifecycle)
+> is fully covered. Below are the ⚠️ registered-but-thin surfaces and ❌ missing groups behind the low
+> contract signal (README 4/22). Multiple endpoints per group are separated by `<br>`.
+
+| Cinder v3 group | Impl. | Not-implemented endpoint(s) | Justification |
+|---|:--:|---|---|
+| Volume actions | ⚠️ | `os-migrate_volume`<br>`os-migrate_volume_completion`<br>`os-force_detach`<br>`revert` (revert-to-snapshot)<br>`os-reimage`<br>`os-volume_upload_image`<br>`os-set_bootable` | Core attach / detach / extend / retype / reset-status are wired; migration, revert, reimage and upload-to-image target multi-backend or image-pipeline flows off the validation path. |
+| Volume groups | ⚠️ | `POST /groups/{id}/action` (+ group replication) | `/groups` CRUD is registered but the README flags groups as needing implementation; consistency-group actions are absent. |
+| Backups | ⚠️ | `GET /backups/{id}/export_record`<br>`POST /backups/import_record` | Backup-metadata export/import for DR portability; the validation path doesn't back up volumes. |
+| Services | ⚠️ | `PUT /os-services/{enable,disable}` | Single-node has no storage-service fleet to enable/disable. |
+| Attachments API *(v3.27+)* | ❌ | `GET, POST /attachments`<br>`GET, PUT, DELETE /attachments/{id}`<br>`POST /attachments/{id}/action` | The microversioned Cinder attachments resource; o3k attaches volumes through Nova's `os-volume_attachments` (✅), which is what Terraform and Horizon use. |
+| Group snapshots | ❌ | `/group_snapshots` (+ action) | Consistency-group snapshots; the volume-groups feature itself is thin. |
+| Group types | ❌ | `/group_types`<br>`/group_types/{id}/group_specs` | Types for volume groups; groups are thin. |
+| Default volume types | ❌ | `GET, PUT, DELETE /default-types` | Per-project default-type override (3.62+); o3k uses a single default type. |
+| Snapshot actions | ❌ | `POST /snapshots/{id}/action` | reset-status / force-delete / update-status admin actions; core snapshot CRUD suffices. |
+| Capabilities | ❌ | `GET /capabilities/{host}` | Backend capability discovery for the scheduler; single-backend deployment. |
+| Messages | ❌ | `GET, DELETE /messages` | Async user-facing fault messages; o3k is synchronous — errors are returned inline. |
+| Clusters / Workers | ❌ | `/clusters` · `/workers/cleanup` | Active/active HA service-cluster management; single-node. |
+| Quota class sets · resource filters · manageable snapshots · extensions | ❌ | `/os-quota-class-sets/{id}` · `/resource_filters` · `/manageable_snapshots` · `/extensions` | Class-default quotas (per-project quota-sets used instead), filterable-attribute discovery, adopt-existing-snapshot listing, legacy extension list — niche. |
