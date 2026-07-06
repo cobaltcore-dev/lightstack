@@ -1,7 +1,10 @@
 O3K ({{ .Values.deploymentMode }} / {{ if .Values.realMode.enabled }}real{{ else }}stub{{ end }} mode) installed as release "{{ .Release.Name }}".
 
-In-cluster service endpoints:
-  identity      http://{{ include "o3k.fullname" . }}:35357/v3
+Integration entry point — authenticate to Keystone, then read the OpenStack service catalog for
+all other services (compute/placement/network/volumev3/image). See this chart's CONTRACT.md.
+  identity (Keystone)   http://{{ include "o3k.fullname" . }}:35357/v3
+  In-cluster ports below are NON-AUTHORITATIVE (debugging convenience) — the service catalog is
+  the source of truth for service URLs:
   compute :8774   placement :8778   network :9696   block storage :8776   image :9292
   (metadata :8775 is node-local — reached by VMs via the link-local address, not the Service)
 {{- if .Values.endpointHost }}

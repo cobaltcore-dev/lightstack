@@ -24,3 +24,11 @@ tests:
           pattern: "rollout status ds/"
       - notMatchRegexRaw:
           pattern: "rollout status deploy/"
+  - it: documents the Keystone integration entry point + non-authoritative caveat (US2 / FR-012)
+    asserts:
+      - matchRegexRaw:
+          pattern: "identity \\(Keystone\\)"
+      - matchRegexRaw:
+          pattern: "NON-AUTHORITATIVE"
+      - matchRegexRaw:
+          pattern: "CONTRACT\\.md"

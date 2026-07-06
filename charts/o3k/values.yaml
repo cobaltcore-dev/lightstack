@@ -10,6 +10,9 @@ image:
   pullPolicy: IfNotPresent
   pullSecrets: []
 
+# -- Override the chart name used in resource names (default: the chart name).
+nameOverride: ""
+
 # -- Deployment mode: "single-node" (Deployment) or "multi-node" (DaemonSet). FR-002.
 deploymentMode: single-node
 
