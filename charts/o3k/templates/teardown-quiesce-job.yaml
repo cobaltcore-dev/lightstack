@@ -1,0 +1,59 @@
+{{- /*
+Teardown quiesce hook (SPEC-010): scale the Deployment to 0 (nothing serves/reconciles
+during the purge), then delete release PVCs. hook-weight -10, after RBAC, before purge.
+*/ -}}
+{{- if eq .Values.dataRetentionPolicy "delete" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "o3k.teardown.fullname" . }}-quiesce
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.teardown.timeoutSeconds }}
+  template:
+    metadata:
+      labels:
+        # Deliberately NOT o3k.selectorLabels: the workload-termination wait below
+        # selects on app.kubernetes.io/name=o3k, and this hook pod must be excluded
+        # or `kubectl wait --for=delete` would wait for itself (self-deadlock).
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: teardown-quiesce
+    spec:
+      serviceAccountName: {{ include "o3k.teardown.fullname" . }}
+      restartPolicy: Never
+      containers:
+        - name: quiesce
+          image: {{ include "o3k.teardown.kubectlImage" . }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "teardown: quiescing {{ include "o3k.fullname" . }} (scale Deployment to 0)…"
+              # `kubectl scale` has no --ignore-not-found; guard with a get so a missing
+              # Deployment is tolerated (the scale subresource still needs RBAC — see Role).
+              if kubectl get deployment {{ include "o3k.fullname" . }} --namespace {{ .Release.Namespace }} >/dev/null 2>&1; then
+                kubectl scale deployment {{ include "o3k.fullname" . }} \
+                  --replicas=0 --namespace {{ .Release.Namespace }}
+              fi
+              echo "teardown: waiting for pods to terminate…"
+              # `|| true` is intentional: the scale-to-0 above is the actual quiesce; this
+              # wait is best-effort and also tolerates "no matching pods". The whole Job is
+              # bounded by activeDeadlineSeconds, so a stuck wait can't hang uninstall.
+              kubectl wait --for=delete pod \
+                --selector app.kubernetes.io/name={{ include "o3k.name" . }},app.kubernetes.io/instance={{ .Release.Name }} \
+                --namespace {{ .Release.Namespace }} \
+                --timeout={{ .Values.teardown.timeoutSeconds }}s || true
+              {{- if .Values.teardown.deletePVCs }}
+              echo "teardown: deleting release PVCs (Helm does not, FR-005)…"
+              kubectl delete pvc \
+                --selector app.kubernetes.io/instance={{ .Release.Name }} \
+                --namespace {{ .Release.Namespace }} --ignore-not-found
+              {{- end }}
+{{- end }}

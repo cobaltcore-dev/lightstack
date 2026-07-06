@@ -84,6 +84,9 @@ The DaemonSet schedules one instance per labeled node and they self-register. **
 helm uninstall o3k     # removes all release workloads/Services
 # Persisted data (external DB, hostPath node-local data, networked backends) is retained
 # unless you remove it explicitly per the documented retention choice (FR-014).
+# With dataRetentionPolicy=delete, a blocking pre-delete hook purges host state, node-local
+# storage, and release PVCs (SPEC-010 / issue #53); the external DB and RBD/S3 stay
+# operator-owned (the DB is read-only — never reset). See docs/specs/010-helm-teardown/quickstart.md.
 ```
 
 ## Regression gate

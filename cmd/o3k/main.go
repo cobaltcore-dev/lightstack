@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/neutron"
 	"github.com/cobaltcore-dev/o3k/internal/nova"
 	"github.com/cobaltcore-dev/o3k/internal/placement"
+	"github.com/cobaltcore-dev/o3k/internal/teardown"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
 	"github.com/gin-gonic/gin"
@@ -33,6 +35,13 @@ var (
 )
 
 func main() {
+	// Subcommand dispatch: `o3k cleanup` runs the SPEC-010 teardown and exits,
+	// before flag.Parse (which would otherwise treat the subcommand as a positional).
+	if len(os.Args) > 1 && os.Args[1] == "cleanup" {
+		runCleanup(os.Args[2:])
+		return
+	}
+
 	flag.Parse()
 
 	// Load configuration
@@ -306,6 +315,34 @@ func main() {
 	}
 
 	log.Println("O3K stopped")
+}
+
+// runCleanup executes the `o3k cleanup` subcommand: the SPEC-010 release teardown
+// (issue #53). Exit codes: 0 success, 1 a required class could not be purged
+// (fail-closed — the blocking pre-delete hook then aborts uninstall), 2 usage or
+// config error.
+func runCleanup(args []string) {
+	fs := flag.NewFlagSet("cleanup", flag.ContinueOnError)
+	cfgPath := fs.String("config", "config/o3k.yaml", "Path to configuration file")
+	dryRun := fs.Bool("dry-run", false, "Enumerate and log what would be purged; delete nothing")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(2)
+	}
+
+	cfg, err := common.LoadConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup: failed to load config: %v\n", err)
+		os.Exit(2)
+	}
+	middleware.InitLogger(&cfg.Logging)
+
+	if err := teardown.Run(context.Background(), cfg, teardown.Options{DryRun: *dryRun}); err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup failed: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService *keystone.AuthService) *http.Server {

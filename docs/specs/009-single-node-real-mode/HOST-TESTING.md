@@ -356,7 +356,9 @@ flagged volume is gone (DB 404 + backing file removed). RBD delete-on-terminatio
 the backing image routes through Cinder (local backing is what's removed here).
 
 ## Expected NOT to work yet (later phases)
-- **RBD/Ceph backends** — validated separately under the `ceph` build tag; the single-node default is `local`. (RBD delete-on-termination removes the DB row but not the RBD image — a Cinder follow-up.)
+- **Internet / floating IPs** — the VM cannot reach the internet and is not reachable
+  via a floating IP yet. That's **US4 / WS-3** (north-south / NAT).
+- **Block storage** — volume attach and boot-from-volume are **US5 / WS-5**.
 
 ## Cleanup — full reset between runs (what persists vs. what a reboot clears)
 **Only three things survive a host reboot** and must be cleared explicitly:

@@ -6,7 +6,7 @@
 
 **Delivery scope (spec round-8, 2026-06-11)**: the validated done-line is **single-node stub mode (+ optional TLS)** — that's the MVP (US1). Real-mode and multi-node templates are **authored and render/lint/unittest-clean now**, but their end-to-end success criteria — **SC-003, SC-004, and real-VM login/floating-IP/restart** — are **DEFERRED until the product post-conditions (WS-1/4/5/6, issue [#52](https://github.com/cobaltcore-dev/o3k/issues/52)) ship**. Tasks below tagged **[DEFERRED #52]** author/validate-by-render now; their live e2e validation waits on #52.
 
-**Teardown scope (2026-06-15)**: `helm uninstall` removing deployed workloads (SC-006) and the default `dataRetentionPolicy: retain` path are in scope. The active **purge** on uninstall — the blocking pre-delete cleanup hook that removes network namespaces/routes, libvirt domains, orphaned storage, and PVCs (the `dataRetentionPolicy: delete` behavior) — is **DEFERRED to issue [#53](https://github.com/cobaltcore-dev/o3k/issues/53)**. Tasks below tagged **[DEFERRED #53]** ship the value/docs now; the purge implementation lands in #53.
+**Teardown scope (2026-06-15)**: `helm uninstall` removing deployed workloads (SC-006) and the default `dataRetentionPolicy: retain` path are in scope. The active **purge** on uninstall — the blocking pre-delete cleanup hook that removes network namespaces/routes, libvirt domains, orphaned storage, and PVCs (the `dataRetentionPolicy: delete` behavior) — is **DEFERRED to issue [#53](https://github.com/cobaltcore-dev/o3k/issues/53)**. Tasks below tagged **[DEFERRED #53]** ship the value/docs now; the purge implementation landed in SPEC-010 (`docs/specs/010-helm-teardown/`) — which also quiesces the workload; the operator-owned database is read-only (never reset).
 
 ## Format: `[ID] [P?] [Story?] Description`
 
@@ -105,7 +105,7 @@
 ### Implementation for User Story 3
 
 - [X] T028 [US3] Upgrade behavior: single-node real `Recreate`, multi-node DaemonSet rolling update; ensure external DB + networked/host storage untouched on upgrade (FR-014).
-- [X] T029 [US3] [DEFERRED #53] Uninstall: the `dataRetentionPolicy` value (retain|delete for hostPath/PVC node-local data) and docs ship now; document the external-DB/backends are operator-owned (FR-014). The **delete** purge itself — the blocking pre-delete cleanup hook (netns/routes, libvirt domains, orphaned storage, PVCs) — is implemented in issue [#53](https://github.com/cobaltcore-dev/o3k/issues/53). Default `retain` makes `helm uninstall` a clean K8s-object removal today.
+- [X] T029 [US3] [DEFERRED #53] Uninstall: the `dataRetentionPolicy` value (retain|delete for hostPath/PVC node-local data) and docs ship now; document the external-DB/backends are operator-owned (FR-014). The **delete** purge itself — the blocking pre-delete cleanup hook (netns/routes, libvirt domains, orphaned storage, PVCs) — is implemented in SPEC-010 (`docs/specs/010-helm-teardown/`; also quiesces the workload; the operator-owned DB is never reset). Default `retain` makes `helm uninstall` a clean K8s-object removal today.
 - [X] T030 [US3] Multi-release isolation pass — verify every resource/name/registration is release-scoped (FR-016).
 - [X] T031 [P] [US3] Write `charts/o3k/README.md`: complete values reference — purpose, default, and applicable mode(s) for every value (FR-017, SC-007).
 
