@@ -157,9 +157,55 @@ service catalog, credentials, application credentials. Every ❌ above is an ent
 SSO / delegation / policy / limits feature **outside the sci-in-a-box validation scope** — the one
 in-scope defect is the catalog URL-substitution bug (see [§8](#8-known-gaps--limitations)).
 
-### 3.2 Nova — Compute v2.1
+### 3.2 Nova — Compute v2.1 (71 functional operations)
 
-*Next step.*
+Microversion negotiation: advertises **min 2.1 / max 2.90** (`novaMinVersion` / `novaCurrentVersion`
+in `handlers.go`) via `OpenStack-API-Version: compute …` (and legacy `X-OpenStack-Nova-API-Version`).
+The bulk of compute behaviour rides on `POST /servers/{id}/action`, a single route that dispatches the
+full action set (below).
+
+| Compute v2.1 group | o3k | Notes |
+|---|:--:|---|
+| Servers (CRUD) | ✅ | list / detail / create / show / update (PUT + PATCH) / delete |
+| Server actions (`/servers/{id}/action`) | ✅ | start, stop, reboot, pause/unpause, suspend/resume, shelve/shelveOffload/unshelve, lock/unlock, resize/confirmResize/revertResize, rebuild, **rescue** (no unrescue), evacuate, migrate, live-migrate, createImage (snapshot), createBackup, restore, changePassword, add/removeSecurityGroup, forceDelete, os-resetState, os-resetNetwork, + 5 console actions |
+| Server metadata | ✅ | get / set / replace |
+| Server tags | ✅ | list / replace / delete-all / add / delete |
+| Server diagnostics | ✅ | `GET /servers/{id}/diagnostics` |
+| Instance actions (os-instance-actions) | ✅ | list / show |
+| Remote consoles | ✅ | `POST /remote-consoles` + legacy `os-get*Console` actions (noVNC, SPICE, serial, RDP) |
+| Volume attachments | ⚠️ | list / show / attach / detach — no `PUT` (swap/update) |
+| Interface attachments | ⚠️ | list / attach / detach — no show-one `GET …/os-interface/{port_id}` |
+| Server migrations | ✅ | `os-migrations` list; per-server list / show / delete (abort) / action |
+| Flavors (CRUD) | ✅ | list / detail / create / show / delete |
+| Flavor extra-specs | ✅ | full CRUD |
+| Flavor access (os-flavor-access) | ✅ | list + add/removeTenantAccess (via flavor action) |
+| Keypairs | ✅ | list / create / show / delete |
+| Limits | ✅ | `GET /limits` |
+| Quota sets (os-quota-sets) | ✅ | get / update / defaults |
+| Usage (os-simple-tenant-usage) | ✅ | list / show |
+| Availability zones | ✅ | list / detail |
+| Hypervisors (os-hypervisors) | ✅ | list / detail / statistics (synthetic in stub mode) |
+| Aggregates (os-aggregates) | ✅ | CRUD + action |
+| Server groups (os-server-groups) | ✅ | list / create / show / delete |
+| Images (Nova → Glance proxy) | ✅ | `GET /images`, `/images/detail` (for Horizon) |
+| Services (os-services) | ⚠️ | `GET` list only — no enable / disable / force-down |
+| Server password / Server IPs / Server topology | ❌ | see §8.2 |
+| Quota class sets / Extensions / Assisted volume snapshots | ❌ | see §8.2 |
+| External events / os-agents / audit-log / os-hosts | ❌ | see §8.2 |
+| Nova-network proxies (os-networks, os-floating-ips, os-fixed-ips, os-security-groups) | ❌ | deprecated — superseded by Neutron (§8.2) |
+
+**Contract tests** (`test/contract/nova/`, 26 files): README reports **77/82 (~94%)** passing; not CI-gated;
+the RBAC test ships as `.broken`.
+
+**Doc-vs-code discrepancies found:** the compat report states a microversion ceiling of **2.103** — the
+code constant is **2.90**; and it lists **unrescue** as implemented — only **rescue** is wired. Its
+"70/76" is a code-review estimate; the route-derived functional count is **71** (§2).
+
+**Validation verdict:** Nova covers the entire compute surface the validation path exercises — full server
+lifecycle and action set, flavors, keypairs, metadata, volume & interface attach, console, quotas, AZ,
+server groups, aggregates, migrations. The sc007 Terraform scenario (boot a server with keypair + user-data,
+attach a volume, associate a floating IP) is fully supported. Every ❌/⚠️ is admin / legacy / enterprise
+(see [§8.2](#82-nova--not-implemented-endpoints)); none block validation.
 
 ### 3.3 Neutron — Network v2.0
 
@@ -233,3 +279,28 @@ endpoints per group are separated by a line break (`<br>`).
 | OS-REVOKE | ❌ | `GET /v3/OS-REVOKE/events` | Revocation-event lists invalidate cached tokens; o3k tokens are stateless short-TTL JWTs validated by signature, so there is no revocation list to publish (`DELETE /v3/auth/tokens` still works locally). |
 | OS-SIMPLE-CERT *(deprecated)* | ❌ | `GET /v3/OS-SIMPLE-CERT/ca`<br>`GET /v3/OS-SIMPLE-CERT/certificates` | Served signing certs for the deprecated PKI token format; obsolete — o3k uses HMAC-JWT. |
 | OS-PKI *(deprecated)* | ❌ | revoked-token list | Deprecated PKI token revocation list; obsolete. |
+
+### 8.2 Nova — not-implemented endpoints
+
+> **Scope note.** None of the below are on the validation path. The sc007 Terraform scenario and Horizon
+> exercise the server lifecycle + action set, flavors, keypairs, metadata, volume/interface attach,
+> console, quotas and AZ — all ✅ in §3.2. The gaps are admin, legacy nova-network, or enterprise features.
+> Multiple endpoints per group are separated by `<br>`.
+
+| Compute v2.1 group | Impl. | Not-implemented endpoint(s) | Justification |
+|---|:--:|---|---|
+| Server actions | ⚠️ | `trigger_crash_dump`<br>`injectNetworkInfo`<br>`unrescue`<br>legacy `addFloatingIp` / `removeFloatingIp` / `addFixedIp` / `removeFixedIp` | The action route covers the full lifecycle; crash-dump and network-info inject are admin/debug, `unrescue` is unwired (rescue works), and the floating/fixed-IP actions are deprecated nova-network proxies superseded by Neutron. |
+| Volume attachments | ⚠️ | `PUT /servers/{id}/os-volume_attachments/{id}` | Volume swap/update is an advanced (live-migration-adjacent) op; attach + detach cover the validation workflow. |
+| Interface attachments | ⚠️ | `GET /servers/{id}/os-interface/{port_id}` | List + attach + detach cover the workflow; per-port show is a minor convenience. |
+| Services management | ⚠️ | `PUT /os-services/{enable,disable,force-down}` | Single-node has no compute-service fleet to enable/disable; `GET /os-services` (list) suffices. |
+| Server password | ❌ | `GET, DELETE /servers/{id}/os-server-password` | Returns the encrypted admin password set at boot (Windows get-password flow); o3k injects SSH keys via cloud-init and the validation path uses keypairs, not password retrieval. |
+| Server IPs | ❌ | `GET /servers/{id}/ips`<br>`GET /servers/{id}/ips/{network}` | Addresses are already returned inline in server show/detail; the standalone IPs sub-resource is redundant. |
+| Server topology | ❌ | `GET /servers/{id}/topology` | NUMA / CPU-pinning introspection for perf tuning; out of scope for single-node validation. |
+| Quota class sets | ❌ | `GET, PUT /os-quota-class-sets/{id}` | Class-level default quotas across projects; o3k sets per-project quotas via `os-quota-sets`. |
+| Extensions | ❌ | `GET /extensions`<br>`GET /extensions/{alias}` | Legacy extension-discovery list; modern clients negotiate via microversions. Horizon tolerates its absence. |
+| Assisted volume snapshots | ❌ | `POST, DELETE /os-assisted-volume-snapshots` | Cinder-orchestrated snapshot assist for specific backends; not used by the validation path. |
+| Server external events | ❌ | `POST /os-server-external-events` | Lets Neutron notify Nova of port/network status; o3k's synchronous in-process model updates state directly, so no callback channel is needed. |
+| os-agents | ❌ | `GET, POST, PUT, DELETE /os-agents` | Guest-agent build registry (xen-era); unused. |
+| Instance usage audit log | ❌ | `GET /os-instance_usage_audit_log` | Billing / audit-log aggregation; out of scope. |
+| os-hosts *(deprecated)* | ❌ | `GET, PUT /os-hosts/{host}` | Deprecated host power / maintenance management. |
+| Nova-network proxies *(deprecated)* | ❌ | `os-networks` · `os-floating-ips` · `os-floating-ip-pools` · `os-fixed-ips` · `os-security-groups` | Deprecated Nova proxies to the old nova-network; superseded by Neutron, which o3k implements directly. |
