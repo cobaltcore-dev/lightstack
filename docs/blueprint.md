@@ -381,8 +381,45 @@ initContainer per SPEC-011) — so local-disk instances are not live-migratable 
 
 ## 5. Synchronous architecture & trade-offs
 
-*To do.* Single binary, no message queue, fail-fast timeouts, stateless JWT, PostgreSQL-only coordination;
-trade-offs vs. RabbitMQ/oslo.messaging OpenStack.
+o3k is a **single Go binary, one process**: `cmd/o3k/main.go` starts one `http.Server` per service
+(Keystone, Nova, Neutron, Cinder, Glance, Placement, Metadata, + health) as goroutines on distinct ports,
+all sharing one `pgxpool` connection pool and one JWT auth middleware, with graceful shutdown. There is
+**no message queue** — grep confirms no AMQP / RabbitMQ / oslo.messaging dependency in `go.mod`. Services
+call each other in-process; cross-node coordination is done through PostgreSQL, not RPC.
+
+**Synchronous by default — with one deliberate exception.** Volume create/attach, network/port/subnet
+create, image upload, and floating-IP association all complete **in the request** (SPEC-009 made
+block-storage attach synchronous per the constitution), so a `2xx` means the resource is usable — no task
+to poll. The exception is **real-mode VM boot**: `CreateServer` inserts the instance as `BUILD`, spawns a
+`WaitGroup`-tracked goroutine to do the libvirt define/create + network wiring, and returns `BUILD`
+immediately; the goroutine flips it to `ACTIVE`/`ERROR` (`handlers.go:427`). This matches OpenStack's async
+server-create contract that Terraform and the CLI already poll on — but it's an **in-process goroutine, not
+a conductor + queue** (the `WaitGroup` lets graceful drain wait for in-flight boots — SPEC-013).
+
+**Coordination via PostgreSQL, not RPC.** Multi-node networking uses a DB-polling VXLAN coordinator (~1 s)
+and a node registry with heartbeats (~30 s) instead of agent RPC. Auth is **stateless HMAC-SHA256 JWT**
+(24 h TTL, no token store). **Fail-fast timeouts** keep the synchronous path honest: Ceph/RBD 1 s, S3 5 s,
+libvirt ~2 s connect / ~30 s boot, DB health-check 30 s — a slow dependency errors quickly rather than
+hanging a request.
+
+### Trade-offs vs. traditional (RabbitMQ/oslo.messaging) OpenStack
+
+| Concern | Traditional OpenStack | o3k | Consequence |
+|---|---|---|---|
+| Messaging | RabbitMQ + oslo.messaging | none — in-process calls | no broker to operate; no distributed RPC layer |
+| Task orchestration | Nova conductor / scheduler, cast+call | synchronous; one goroutine for VM boot | far simpler; **no retry/backoff, no task queue** |
+| Neutron agents | separate L2 / L3 / DHCP agents over RPC | in-process netlink / iptables + DB-poll VXLAN | fewer moving parts; **no agent-level HA** |
+| Cinder volume manager | `c-vol` over RPC | synchronous provisioning in-request | volume usable on return; **long ops block the call** |
+| Identity tokens | Fernet / UUID + revocation events | stateless HMAC-JWT, short TTL | no token DB; **no revocation list** (§8.1) |
+| Scale-out | scale each service independently | monolith; scale = more nodes (VXLAN) | **can't scale one service alone**; multi-node Helm deferred (#52) |
+| Control-plane HA | N API workers behind a load balancer | single process | HA delegated to Kubernetes restart + readiness probes (SPEC-013) |
+| Failure handling | async retry, eventual consistency | fail-fast (1–5 s), errors returned inline | **deterministic and testable**; no automatic retry |
+
+**Why this suits the validation use case.** For sci-in-a-box, determinism beats scale: a synchronous API
+means a test runner sees success/failure immediately (no polling task state, no broker flakiness), the
+whole control plane is one restartable pod, and a clean deploy/destroy cycle (#421) has no queue state to
+leak. The costs — no independent per-service scaling, no async retry, VM boot as the sole background step —
+are acceptable for a single-node (or small multi-node) validation cloud, which is exactly o3k's target.
 
 ## 6. Terraform coverage
 
