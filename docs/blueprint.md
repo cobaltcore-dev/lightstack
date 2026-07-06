@@ -470,8 +470,51 @@ fail; drop it or track against the Swift decision, §7). Neither is CI-gated yet
 
 ## 7. sci-in-a-box integration surface
 
-*To do.* References `charts/o3k/CONTRACT.md` + SPEC-012 (Helm lifecycle contract) and SPEC-013 health
-probes; remaining integration gaps.
+**sci-in-a-box** is o3k's primary consumer: it drives an instance's lifecycle **through Helm — not a CRD**.
+The interface is a two-half contract, defined by the chart's `CONTRACT.md` + `values.schema.json` and the
+SPEC-013 health endpoints.
+
+> **Forward reference.** These artifacts live on **feature/475** (SPEC-013) and **feature/474** (SPEC-012),
+> not yet on `main`, so the paths below resolve once #474/#475 merge. This blueprint (a `main`-based,
+> docs-only branch — see the note in §0) summarizes that surface deliberately as forward references.
+
+**Input contract — `values.schema.json` (SPEC-012 / #474).** Every value is typed, bounded, and described,
+and Helm validates it on `install` / `upgrade` / `lint` / `template`, **rejecting structurally invalid input
+before any workload is created**. Unknown keys are rejected (`additionalProperties: false`), with Kubernetes
+passthrough maps (`annotations`, `resources`, `nodeSelector`, `tolerations`, `affinity`) left open;
+`image.repository` is required; render-time guards fail fast when `database.url` / `jwtSecret` /
+`adminPassword` are absent without an `existingSecret`, or `teardown.kubectlImage` is unset under
+`dataRetentionPolicy: delete`; unsafe cross-field combos (multi-node + real mode with `local` backends) are
+rejected while benign capacity/topology preferences are advisory.
+
+**Output / status contract (SPEC-012 / #474).** The orchestrator derives exactly one of
+**Provisioning / Ready / Failed** from Helm release status + pod readiness (a documented deterministic
+recipe: `helm status`, `kubectl rollout`/DaemonSet readiness, and terminal-failure detection like
+`CrashLoopBackOff` / `ImagePullBackOff`), owning the bounded wait itself. Endpoints are resolved
+Keystone-first, then discovered from the service catalog.
+
+**Health signal (SPEC-013 / #475).** o3k exposes three unauthenticated endpoints on the identity listener
+(`:35357`): `GET /livez` (liveness — process only, never touches the DB), `GET /readyz` (readiness — `200`
+only when all listeners are bound, the DB `Ping` succeeds, and the pod isn't draining; `503` with a short
+curated reason otherwise, bounded to <1 s), and `GET|HEAD /healthcheck` (an OpenStack-compatible,
+content-negotiated alias of `/readyz`). The **machine-readable signal sci-in-a-box consumes is the
+Kubernetes Pod `Ready` condition** (the aggregate of the readiness probe and its roll-ups) — *not* a bespoke
+o3k status protocol. The chart wires `liveness`/`readiness`/`startup` probes accordingly.
+
+**Lifecycle automation (#421).** Maps onto this contract directly: **deploy** = `helm install` with
+schema-validated values → wait on Pod `Ready`; **populate** = seed users / projects / quotas (the binary
+first-boot seed + the SPEC-012 seed hook, #473); **destroy** = `helm uninstall` + the SPEC-010 pre-delete
+teardown hooks (blocking purge of host + network state) — **already in `main` via `#67`**.
+
+### Remaining gaps for sci-in-a-box integration
+
+| Gap | Impact | Lands / tracked via |
+|---|---|---|
+| Contract artifacts not yet in `main` | `CONTRACT.md`, `values.schema.json`, honest `/readyz` live on feature/474+475 | #474 (SPEC-012), #475 (SPEC-013) |
+| **No Swift / object-store API** | object read/write scenarios (#422/#424) are unservable; S3/RGW is a Glance *backend*, not a tenant object API | o3k#15 decision (§8) |
+| No CI wiring o3k ↔ orchestrator | integration is validated manually / out-of-tree; contract + Terraform tests aren't CI-gated | #421 / #424 |
+| Multi-node Helm deferred | only single-node deploys today; #421's multi-node configuration is unmet | #52 |
+| Ceph-less stock image | Cinder-on-RBD (#422) needs a custom `-tags ceph` image variant | #422 (§4) |
 
 ## 8. Known gaps & limitations
 
