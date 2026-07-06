@@ -207,9 +207,51 @@ server groups, aggregates, migrations. The sc007 Terraform scenario (boot a serv
 attach a volume, associate a floating IP) is fully supported. Every ❌/⚠️ is admin / legacy / enterprise
 (see [§8.2](#82-nova--not-implemented-endpoints)); none block validation.
 
-### 3.3 Neutron — Network v2.0
+### 3.3 Neutron — Network v2.0 (94 functional operations)
 
-*To do.*
+o3k covers the full L2/L3 + security surface plus many common extensions; the gaps are advanced /
+enterprise networking extensions and some partial management surfaces.
+
+| Neutron v2.0 group | o3k | Notes |
+|---|:--:|---|
+| Networks | ✅ | CRUD (PUT + PATCH) |
+| Subnets | ✅ | CRUD (PUT + PATCH) |
+| Ports | ✅ | CRUD (PUT + PATCH) |
+| Security groups | ✅ | CRUD |
+| Security group rules | ✅ | list / create / show / delete (rules are immutable upstream — no update, correct) |
+| Routers | ✅ | CRUD + `add_router_interface` / `remove_router_interface` |
+| Floating IPs | ✅ | CRUD |
+| FIP port forwarding | ✅ | CRUD (nested under `/floatingips/{id}/port_forwardings`) |
+| Subnet pools | ✅ | CRUD |
+| Address scopes | ✅ | CRUD |
+| RBAC policies | ✅ | CRUD |
+| Trunks | ✅ | CRUD + `add_subports` / `remove_subports` |
+| QoS policies | ✅ | CRUD |
+| QoS rules | ⚠️ | **bandwidth-limit only** — no dscp-marking / minimum-bandwidth / minimum-packet-rate; no `GET /qos/rule-types` |
+| Quotas | ⚠️ | **read-only**: `GET /quotas/{id}` + `/details` — no update / reset / list / default (network quotas are set via Nova `os-quota-sets`) |
+| Agents | ⚠️ | list / show + L3-agent-on-router (list, add) — no enable/disable, delete, remove-L3-agent, or DHCP-agent scheduling |
+| Auto-allocated topology | ✅ | get / create / delete |
+| Network IP availability | ✅ | list / show |
+| Availability zones | ✅ | `GET /availability_zones` |
+| Extensions | ✅ | `GET /extensions` |
+| Service providers | ✅ | `GET /service-providers` |
+| Metering (labels + rules) | ✅ | labels list/create/show/delete + label-rules list/create/delete |
+| FWaaS v2 · VPNaaS · BGP · SFC · segments · logging · TaaS · flavors · … | ❌ | advanced / enterprise extensions — see §8.3 |
+
+**Contract tests** (`test/contract/neutron/`, ~16 files): README reports **49/58 (~84%)** passing; not CI-gated.
+
+**Doc-vs-code discrepancies found:** the compat report's **"92/94 (~98%)"** is measured against a narrow core
+baseline — the route-derived functional count is **94**, but Neutron's *full* api-ref surface spans 40+
+resource families (FWaaS, VPNaaS, BGP, SFC, segments, …), so real coverage of all of Neutron is far below
+98%. The report also lists QoS **DSCP-marking** (code has only bandwidth-limit rules) and router
+**extra-route add/update endpoints** (routes are set via the router `PUT`, no `add_extraroutes`).
+
+**Validation verdict:** the entire networking surface the validation path exercises is ✅ — networks,
+subnets, ports, security groups + rules, routers + interfaces, floating IPs, port forwarding. The sc007
+Terraform scenario (network / subnet / router / router-interface / port / floating-IP + association) is
+fully supported. Gaps are advanced networking extensions and partial quota/agent/QoS-rule management
+(see [§8.3](#83-neutron--not-implemented-endpoints)); none block validation — note only that Neutron
+quotas are read-only, so quota seeding goes through Nova.
 
 ### 3.4 Cinder — Block Storage v3
 
@@ -304,3 +346,26 @@ endpoints per group are separated by a line break (`<br>`).
 | Instance usage audit log | ❌ | `GET /os-instance_usage_audit_log` | Billing / audit-log aggregation; out of scope. |
 | os-hosts *(deprecated)* | ❌ | `GET, PUT /os-hosts/{host}` | Deprecated host power / maintenance management. |
 | Nova-network proxies *(deprecated)* | ❌ | `os-networks` · `os-floating-ips` · `os-floating-ip-pools` · `os-fixed-ips` · `os-security-groups` | Deprecated Nova proxies to the old nova-network; superseded by Neutron, which o3k implements directly. |
+
+### 8.3 Neutron — not-implemented endpoints
+
+> **Scope note.** The core L2/L3 + security surface (networks, subnets, ports, security groups + rules,
+> routers, floating IPs, port forwarding) is fully ✅ in §3.3 and covers the sc007 Terraform scenario and
+> Horizon networking. Below are partial management surfaces (⚠️) and advanced / enterprise extensions (❌).
+> Multiple endpoints per group are separated by `<br>`.
+
+| Neutron v2.0 group | Impl. | Not-implemented endpoint(s) | Justification |
+|---|:--:|---|---|
+| QoS rules | ⚠️ | `dscp_marking_rules`<br>`minimum_bandwidth_rules`<br>`minimum_packet_rate_rules`<br>`GET /qos/rule-types` | Only bandwidth-limit shaping is wired; the other rule types target DSCP marking / SR-IOV min-bandwidth / packet-rate QoS, none used by the validation scenarios. |
+| Quotas | ⚠️ | `PUT /quotas/{id}` (update)<br>`DELETE /quotas/{id}` (reset)<br>`GET /quotas` (list)<br>`GET /quotas/{id}/default` | Neutron quota is read-only in o3k; network quotas are set through Nova `os-quota-sets` (which covers networks / subnets / ports / routers / floatingips), so the Neutron write endpoints are redundant. |
+| Agents | ⚠️ | `PUT /agents/{id}` (enable/disable)<br>`DELETE /agents/{id}`<br>`DELETE /routers/{id}/l3-agents/{agent_id}`<br>DHCP-agent scheduling (`/agents/{id}/dhcp-networks`, `/networks/{id}/dhcp-agents`) | Single-node has no agent fleet to schedule or drain; list + show + L3-agent-add satisfy Horizon's agent panel. |
+| Routers | ⚠️ | `PUT /routers/{id}/add_extraroutes`<br>`PUT /routers/{id}/remove_extraroutes` | Extra routes are set via the router `PUT` (`routes` attribute); the atomic add/remove is a concurrency convenience. |
+| FWaaS v2 | ❌ | `/fwaas/firewall_groups`<br>`/fwaas/firewall_policies`<br>`/fwaas/firewall_rules` | Firewall-as-a-Service; tenant traffic filtering is handled by security groups (✅), which is what the validation path uses. |
+| VPNaaS | ❌ | `/vpn/vpnservices` · `/ikepolicies` · `/ipsecpolicies` · `/ipsec-site-connections` · `/endpoint-groups` | Site-to-site IPsec VPN; not used by the validation scenarios. |
+| BGP / BGP-VPN | ❌ | `/bgp-speakers` · `/bgp-peers` · `/bgpvpn/*` | Dynamic routing / L3VPN for multi-site fabrics; out of scope for single-node. |
+| Service Function Chaining | ❌ | `/sfc/port_chains` · `/port_pair_groups` · `/port_pairs` · `/flow_classifiers` | NFV traffic steering; enterprise-only. |
+| Network segments | ❌ | `/segments` | Multi-segment (routed / L2) provider networks; o3k uses flat + VXLAN tenant networks. |
+| Logging | ❌ | `/log/logs` · `/log/loggable-resources` | Security-group / FWaaS packet-flow logging; not used. |
+| Tap-as-a-Service | ❌ | `/taas/tap_services` · `/taas/tap_flows` | Port mirroring for IDS / monitoring; out of scope. |
+| Neutron flavors + service profiles | ❌ | `/flavors` · `/service_profiles` | The Neutron flavor framework selects pluggable L3 / LB service drivers; o3k ships a single built-in L3 implementation. |
+| Local IPs · NDP proxies · conntrack helpers · port bindings · address groups · default SG rules · L2 gateway | ❌ | `/local_ips` · `/ndp_proxies` · `/ports/{id}/conntrack_helpers` · `/ports/{id}/bindings` · `/address-groups` · `/default-security-group-rules` · `/l2-gateways` | Niche / newer extensions (node-local IP, IPv6 NDP proxy, ALG helpers, multi-binding for live-migration, named CIDR groups, SG-rule templates, VXLAN↔VLAN bridging); none on the validation path. |
