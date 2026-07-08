@@ -127,6 +127,13 @@ cinder:
 glance:
   port: 9292
   storage_mode: {{ .Values.glance.storageMode | quote }}
+  {{- with .Values.glance.s3 }}
+  s3_endpoint: {{ .endpoint | quote }}
+  s3_bucket: {{ .bucket | quote }}
+  s3_region: {{ .region | quote }}
+  s3_ca_bundle: {{ .caBundle | quote }}
+  s3_insecure_skip_verify: {{ .insecureSkipVerify }}
+  {{- end }}
 logging:
   level: {{ .Values.logging.level | quote }}
   format: {{ .Values.logging.format | quote }}
@@ -197,7 +204,7 @@ containers:
     securityContext:
       privileged: {{ .Values.realMode.privileged }}
     {{- end }}
-    {{- if or .Values.endpointHost .Values.tls.enabled .Values.database.existingSecret (gt (int .Values.drainSeconds) 0) }}
+    {{- if or .Values.endpointHost .Values.tls.enabled .Values.database.existingSecret (gt (int .Values.drainSeconds) 0) .Values.extraEnv }}
     env:
       {{- if gt (int .Values.drainSeconds) 0 }}
       - name: O3K_DRAIN_SECONDS
@@ -217,6 +224,9 @@ containers:
       {{- if .Values.tls.enabled }}
       - name: O3K_ENDPOINT_SCHEME
         value: "https"
+      {{- end }}
+      {{- with .Values.extraEnv }}
+      {{- toYaml . | nindent 6 }}
       {{- end }}
     {{- end }}
     ports:

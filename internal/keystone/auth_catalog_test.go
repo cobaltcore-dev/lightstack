@@ -34,9 +34,9 @@ func setSchemeEnv(t *testing.T, scheme string) {
 // (FR-010/011/013, SC-006). No DB required.
 func TestHardcodedCatalogScheme(t *testing.T) {
 	setSchemeEnv(t, "")
-	httpCat := buildHardcodedCatalog("proj1")
+	httpCat := buildHardcodedCatalog("proj1", "")
 	setSchemeEnv(t, "https")
-	httpsCat := buildHardcodedCatalog("proj1")
+	httpsCat := buildHardcodedCatalog("proj1", "")
 
 	for _, e := range httpsCat {
 		for _, ep := range e.Endpoints {
@@ -82,7 +82,7 @@ func TestHardcodedCatalogScheme(t *testing.T) {
 func TestBuildServiceCatalogScheme(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "https")
-	cat := BuildServiceCatalog("proj1", nil)
+	cat := BuildServiceCatalog("proj1", nil, "")
 	if len(cat) == 0 {
 		t.Fatal("empty catalog")
 	}
@@ -92,5 +92,75 @@ func TestBuildServiceCatalogScheme(t *testing.T) {
 				t.Errorf("%s/%s URL not https: %s", e.Type, ep.Interface, ep.URL)
 			}
 		}
+	}
+}
+
+// TestBuildServiceCatalogS3EndpointFromConfig: the DB-backed catalog must advertise
+// the resolved RGW endpoint (cfg.Glance.S3Endpoint, wired via SetGlanceS3Endpoint —
+// the Helm chart populates it from YAML, NOT the env), never migration 062's seeded
+// http://localhost:7480 placeholder (PR #73 r3558646680). DB required — the harness
+// migrates 062, which seeds the s3 service+endpoint.
+func TestBuildServiceCatalogS3EndpointFromConfig(t *testing.T) {
+	requireDB(t)
+	const rgw = "http://rgw.example.test:8080"
+	t.Setenv("O3K_GLANCE_S3_ENDPOINT", "") // Helm-style: value comes from config, not env
+
+	var got string
+	for _, e := range BuildServiceCatalog("proj-s3", nil, rgw) { // nil cache => fresh; rgw = cfg value
+		if e.Type != "s3" {
+			continue
+		}
+		for _, ep := range e.Endpoints {
+			if ep.Interface == "public" {
+				got = ep.URL
+			}
+		}
+	}
+	if got != rgw {
+		t.Fatalf("s3 catalog endpoint = %q, want %q (seeded localhost:7480 must be overridden by the config value)", got, rgw)
+	}
+}
+
+// TestBuildServiceCatalogOmitsS3WhenUnconfigured: with RGW unconfigured, the
+// DB-backed catalog must omit the `s3` service entirely — migration 062's seeded
+// placeholder (http://localhost:7480) must never reach a client, on any service
+// (PR #73 review r3710751586). DB required: the harness migrates 062, which seeds it.
+func TestBuildServiceCatalogOmitsS3WhenUnconfigured(t *testing.T) {
+	requireDB(t)
+	t.Setenv("O3K_GLANCE_S3_ENDPOINT", "") // unconfigured deployment
+
+	cat := BuildServiceCatalog("proj-unconf", nil, "") // "" = cfg.Glance.S3Endpoint unset
+	if len(cat) == 0 {
+		t.Fatal("empty catalog")
+	}
+	for _, e := range cat {
+		if e.Type == "s3" {
+			t.Errorf("unconfigured: catalog must omit the s3 service, got %+v", e)
+		}
+		for _, ep := range e.Endpoints {
+			if strings.Contains(ep.URL, "localhost:7480") {
+				t.Errorf("%s/%s advertises migration 062's placeholder: %s", e.Type, ep.Interface, ep.URL)
+			}
+		}
+	}
+}
+
+// TestHardcodedCatalogS3FromConfig: the fallback catalog advertises `s3` only when
+// the resolved config endpoint is set, and with that URL (no DB, no env).
+func TestHardcodedCatalogS3FromConfig(t *testing.T) {
+	s3URL := func(cat []CatalogEntry) (string, bool) {
+		for _, e := range cat {
+			if e.Type == "s3" && len(e.Endpoints) > 0 {
+				return e.Endpoints[0].URL, true
+			}
+		}
+		return "", false
+	}
+
+	if url, ok := s3URL(buildHardcodedCatalog("p", "http://rgw.example.test:8080")); !ok || url != "http://rgw.example.test:8080" {
+		t.Fatalf("configured: fallback s3 endpoint = %q ok=%v; want the RGW URL", url, ok)
+	}
+	if _, ok := s3URL(buildHardcodedCatalog("p", "")); ok {
+		t.Fatal("unconfigured: fallback must not advertise an s3 endpoint")
 	}
 }

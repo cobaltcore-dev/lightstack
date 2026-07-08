@@ -79,6 +79,19 @@ func NewResourceNotFoundError(resourceType, resourceID string) *OpenStackError {
 	}
 }
 
+// NewProjectNotFoundError returns a 404 whose message matches Keystone's
+// ProjectNotFound verbatim ("Could not find project: <id>."), so identity
+// endpoints that reference a project by id don't diverge from Keystone's message
+// text. Only the message + status are Keystone-exact; the envelope stays o3k's
+// Nova-style form (that envelope divergence is tracked in cloud-storage#518).
+func NewProjectNotFoundError(projectID string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode: http.StatusNotFound,
+		Code:       "itemNotFound",
+		Message:    fmt.Sprintf("Could not find project: %s.", projectID),
+	}
+}
+
 func NewConflictError(message string) *OpenStackError {
 	return &OpenStackError{
 		StatusCode: http.StatusConflict,

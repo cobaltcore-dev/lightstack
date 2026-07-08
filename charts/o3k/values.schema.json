@@ -160,7 +160,19 @@
       "additionalProperties": false,
       "description": "Image service mode.",
       "properties": {
-        "storageMode": { "type": "string", "enum": ["stub", "local", "rbd", "s3", "local,rbd", "local,s3", "rbd,s3"], "description": "Storage backend (primary,fallback comma-separated)." }
+        "storageMode": { "type": "string", "enum": ["stub", "local", "rbd", "s3", "local,rbd", "local,s3"], "description": "Storage backend (primary,fallback comma-separated). rbd,s3 is unsupported: Glance has no RBD backend, so the S3 replica would never be written — use local,s3." },
+        "s3": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "S3 / Ceph RGW backend (when storageMode includes s3). Credentials via AWS_* env, not here.",
+          "properties": {
+            "endpoint": { "type": "string", "description": "RGW S3 endpoint URL." },
+            "bucket": { "type": "string", "description": "Pre-created bucket for image data." },
+            "region": { "type": "string", "description": "S3 region (RGW zonegroup)." },
+            "caBundle": { "type": "string", "description": "In-container path to a PEM CA bundle for an internal-CA HTTPS RGW." },
+            "insecureSkipVerify": { "type": "boolean", "description": "Skip TLS verification (test-only; never true in production)." }
+          }
+        }
       }
     },
     "realMode": {
@@ -239,6 +251,18 @@
     "tolerations": {
       "type": "array",
       "description": "Free-form pod tolerations (Kubernetes passthrough)."
+    },
+    "extraEnv": {
+      "type": "array",
+      "description": "Extra environment variables for the o3k container (e.g. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for the Glance s3 backend). Standard k8s env entries.",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      }
     },
     "affinity": {
       "type": "object",

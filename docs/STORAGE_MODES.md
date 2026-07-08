@@ -17,7 +17,14 @@ O3K supports multiple storage backends for both Cinder (block storage) and Glanc
 - **s3**: S3-compatible object storage (AWS S3, MinIO, Ceph RGW)
 - **local,rbd**: Hybrid mode (local cache + RBD backing)
 - **local,s3**: Hybrid mode (local cache + S3 backing)
-- **rbd,s3**: Dual backend (RBD primary, S3 fallback)
+- ~~**rbd,s3**~~: **not supported** — rejected at startup (Glance has no RBD backend; see below)
+
+> **Ceph RGW (S3) is validated** (SPEC-014). In `s3` mode, image transfers stream
+> to completion (no total-op timeout), HTTPS with an internal CA is supported, and
+> a VM can boot from an RGW-backed image on any node — o3k lazily fetches + verifies
+> the base on demand. See [S3_CONFIGURATION.md](./S3_CONFIGURATION.md) for the
+> backend recipe/quirks and [OBJECT_STORAGE_S3.md](./OBJECT_STORAGE_S3.md) for
+> tenant-facing object storage.
 
 ## Configuration
 
@@ -38,7 +45,7 @@ glance:
   port: 9292
   ceph_pool: images
   ceph_conf: /etc/ceph/ceph.conf
-  storage_mode: local,s3  # "stub", "local", "rbd", "s3", "local,rbd", "local,s3", "rbd,s3"
+  storage_mode: local,s3  # "stub", "local", "rbd", "s3", "local,rbd", "local,s3"
   s3_bucket: my-glance-images
   s3_region: us-east-1
   s3_endpoint: ""  # Optional: Custom S3 endpoint (for MinIO, Ceph RGW, etc.)
@@ -264,25 +271,15 @@ $ time openstack image download freebsd-13 -f value -c size
 # Real: 3.2s (S3 download)
 ```
 
-#### rbd,s3 (RBD Primary + S3 Fallback)
+#### rbd,s3 — NOT SUPPORTED (rejected at startup)
 
-**Use Case**: Multi-site deployments with RBD in primary datacenter
-**Behavior**:
-- **Upload**: Write to RBD, optionally replicate to S3
-- **Download**: Read from RBD, fallback to S3 if unavailable
-- **Delete**: Remove from both
+Glance's RBD backend is a placeholder in **every** build (unlike Cinder, there is no
+`-tags ceph` variant for images), so this mode could never write the S3 replica that
+its own download-fallback reads — an upload would report success with only one backend
+written. o3k therefore **refuses to start** with `glance.storage_mode: rbd,s3`, and the
+chart's `values.schema.json` rejects it at render time.
 
-```yaml
-storage_mode: rbd,s3
-ceph_pool: images
-ceph_conf: /etc/ceph/ceph.conf
-s3_bucket: dr-images
-s3_region: us-west-2
-```
-
-**Characteristics**:
-- RBD performance in primary site
-- S3 disaster recovery
+**Use `local,s3` instead** (local primary + S3 replica), or plain `s3`.
 - Cross-region redundancy
 - Automatic failover
 
@@ -385,8 +382,7 @@ cinder:
   storage_mode: rbd
   ceph_pool: volumes
 glance:
-  storage_mode: rbd,s3
-  ceph_pool: images
+  storage_mode: local,s3   # rbd,s3 is unsupported for Glance (no RBD image backend)
   s3_bucket: cloud-backup-images
   s3_region: us-east-1
 ```
@@ -526,7 +522,7 @@ sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/o3k
 
 ### 4. Disaster Recovery
 
-- Always use `local,s3` or `rbd,s3` for Glance
+- Always use `local,s3` (or `s3`) for Glance
 - Regularly test S3 failover
 - Monitor replication lag
 
@@ -664,6 +660,6 @@ done
 | **s3** | Cloud/archive | Slow | Yes | Variable |
 | **local,rbd** | Performance + HA | Fast (cache hit) | Yes | Medium |
 | **local,s3** | Cache + cloud | Fast (cache hit) | Yes | Low-Medium |
-| **rbd,s3** | Multi-site DR | Medium | Yes | Medium-High |
+| ~~**rbd,s3**~~ | *unsupported — rejected at startup* | — | — | — |
 
 Choose the mode that best fits your deployment requirements, considering performance, availability, and cost constraints.

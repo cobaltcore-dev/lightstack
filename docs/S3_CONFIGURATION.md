@@ -50,28 +50,41 @@ mc alias set local http://localhost:9000 minioadmin minioadmin
 mc mb local/glance-images
 ```
 
-## Ceph RGW (Rados Gateway)
+## Ceph RGW (Rados Gateway) — validated (SPEC-014)
 
 ```yaml
 glance:
   port: 9292
   storage_mode: s3
-  s3_bucket: images
-  s3_region: default
-  s3_endpoint: http://rgw.ceph.local:7480
+  s3_bucket: images                      # pre-create it; o3k does NOT create buckets
+  s3_region: us-east-1                    # required; must match RGW's zonegroup for SigV4
+  s3_endpoint: https://rgw.ceph.local:443
+  s3_ca_bundle: /etc/o3k/rgw-ca.pem       # internal-CA HTTPS RGW (omit for HTTP / public CA)
+  s3_insecure_skip_verify: false          # test-only; never true in production
+  s3_connect_timeout: 10s                 # connect + first-byte fail-fast (NOT total transfer)
 ```
 
-**Environment Variables**:
+**Environment Variables** (credentials are env-only — there is no config field for them):
 ```bash
 export AWS_ACCESS_KEY_ID=<your-rgw-access-key>
 export AWS_SECRET_ACCESS_KEY=<your-rgw-secret-key>
 ```
 
-**Create RGW User**:
+**Create the RGW user + bucket**:
 ```bash
-radosgw-admin user create --uid=o3k --display-name="O3K Glance"
-# Note the access_key and secret_key from output
+radosgw-admin user create --uid=o3k --display-name="O3K Glance"   # note access_key/secret_key
+aws --endpoint-url https://rgw.ceph.local:443 s3 mb s3://images    # pre-create the bucket
 ```
+
+### RGW quirks & behavior
+
+- **Path-style addressing is forced** for a custom `s3_endpoint` (RGW has no DNS bucket vhosts).
+- **`s3_region` is mandatory** even for RGW (the SDK requires it and SigV4 scopes to it); a mismatch can surface as `SignatureDoesNotMatch` on strict RGW setups.
+- **Buckets are not auto-created** — pre-create with `aws s3 mb` or `radosgw-admin bucket`. A missing bucket fails clearly.
+- **TLS**: HTTPS works; for an internal/private CA set `s3_ca_bundle`. `s3_insecure_skip_verify` is for testing only and defaults to `false`.
+- **No total-operation timeout on transfers** — the fail-fast budget (`s3_connect_timeout`, default 10s) covers connect + time-to-first-byte only, so large images stream to completion.
+- **`imageExists` surfaces real errors** — an auth/network/TLS failure is reported, not silently treated as "not found".
+- **Boot from an RGW-backed image**: on a node with no local copy, o3k lazily fetches the image from RGW, verifies it against the Glance checksum, and normalizes it to a raw base before boot; unused bases are reclaimed when no instance references them.
 
 ## Hybrid Modes
 
@@ -89,7 +102,7 @@ glance:
 ```
 
 **Behavior**:
-- Upload: Write to `~/.o3k/images/` then replicate to S3
+- Upload: Write to `/var/lib/o3k/images/` then replicate to S3
 - Download: Serve from local if available, fallback to S3
 - Delete: Remove from both locations
 

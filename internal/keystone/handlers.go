@@ -43,6 +43,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	auth.DELETE("/tokens", svc.RevokeToken)
 	auth.GET("/projects", svc.ListAuthProjects)
 
+	// S3/EC2 signature validation for Ceph RGW (rgw s3 auth use keystone) —
+	// public + self-validating: the S3 signature is the credential (SPEC-014 FR-006).
+	v3.POST("/s3tokens", svc.S3Tokens)
+	v3.POST("/ec2tokens", svc.EC2Tokens)
+
 	// All management routes require authentication
 	mgmt := v3.Group("")
 	mgmt.Use(authMiddleware)
@@ -60,6 +65,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	mgmt.GET("/users/:id/application_credentials", svc.ListApplicationCredentials)
 	mgmt.GET("/users/:id/application_credentials/:cred_id", svc.GetApplicationCredential)
 	mgmt.DELETE("/users/:id/application_credentials/:cred_id", svc.DeleteApplicationCredential)
+	// EC2/S3 credentials (OpenStack `openstack ec2 credentials …`; SPEC-014 FR-005)
+	mgmt.POST("/users/:id/credentials/OS-EC2", svc.CreateEC2Credential)
+	mgmt.GET("/users/:id/credentials/OS-EC2", svc.ListEC2Credentials)
+	mgmt.GET("/users/:id/credentials/OS-EC2/:access", svc.GetEC2Credential)
+	mgmt.DELETE("/users/:id/credentials/OS-EC2/:access", svc.DeleteEC2Credential)
 
 	// Projects (role assignments must come before /projects/:id to avoid conflicts)
 	mgmt.GET("/projects", svc.ListProjects)

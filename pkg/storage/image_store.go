@@ -2,9 +2,16 @@ package storage
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,25 +19,46 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
 // ImageStore manages image storage operations
 type ImageStore struct {
-	mode       string // "stub", "local", "rbd", "s3", or combinations like "local,rbd", "local,s3"
-	cephPool   string
-	cephConf   string
-	s3Bucket   string
-	s3Region   string
-	s3Endpoint string
-	timeout    time.Duration
-	localPath  string
-	mu         sync.Mutex
-	stubImages map[string]*stubImage // For stub mode
-	s3Client   *s3.Client
+	mode                 string // "stub", "local", "rbd", "s3", or combinations like "local,rbd", "local,s3"
+	cephPool             string
+	cephConf             string
+	s3Bucket             string
+	s3Region             string
+	s3Endpoint           string
+	s3CABundle           string        // PEM CA bundle for an internal-CA HTTPS RGW (optional)
+	s3InsecureSkipVerify bool          // test-only: skip TLS verification
+	connectTimeout       time.Duration // connect + time-to-first-byte fail-fast (NOT total transfer)
+	timeout              time.Duration // short deadline for metadata ops (head/delete)
+	localPath            string
+	mu                   sync.Mutex
+	fetchLocks           sync.Map              // imageID -> *sync.Mutex; serializes EnsureLocalBase
+	stubImages           map[string]*stubImage // For stub mode
+	s3Client             *s3.Client
+}
+
+// S3Options carries the S3/RGW client settings. It lets the settings grow
+// (CA bundle, TLS, timeouts) without churning the NewImageStore/NewService
+// positional signatures (plan.md research §12).
+type S3Options struct {
+	Bucket             string
+	Region             string
+	Endpoint           string
+	CABundlePath       string
+	InsecureSkipVerify bool
+	// ConnectTimeout bounds connect + time-to-first-byte only (fail-fast). It
+	// does NOT bound the body transfer, so large images stream to completion
+	// (FR-014). Zero applies a default.
+	ConnectTimeout time.Duration
 }
 
 // stubImage represents a simulated image
@@ -75,7 +103,18 @@ func s3ImageKey(imageID string) string { return "images/" + imageFileName(imageI
 //     error and continue. The documented "Automatic S3 fallback" lets the
 //     primary backend serve traffic; S3 operations will surface
 //     "S3 client not initialized" until the config is corrected.
-func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string) (*ImageStore, error) {
+func NewImageStore(mode, cephPool, cephConf string, s3opts S3Options) (*ImageStore, error) {
+	// Reject `rbd,s3` up front: Glance has no RBD backend (uploadImageRBD /
+	// downloadImageRBD are placeholders in every build — unlike Cinder there is no
+	// ceph-tagged variant), so the mode can never write the S3 replica that
+	// DownloadImage's rbd,s3 fallback then tries to read. Fail fast at startup
+	// instead of accepting a config that promises redundancy it cannot deliver
+	// (PR #73 review r3710747125).
+	if mode == "rbd,s3" {
+		return nil, fmt.Errorf("glance storage_mode %q is not supported: the Glance RBD backend is not implemented, "+
+			"so the S3 replica would never be written; use \"local,s3\" (local primary, S3 replica) or \"s3\"", mode)
+	}
+
 	// Always resolve to the canonical node-local image dir (the chart's
 	// persistent hostPath). SPEC-011 / cloud-storage#510: Glance previously fell
 	// back to ~/.o3k/images when this dir was absent at startup, but Nova always
@@ -86,15 +125,18 @@ func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint stri
 	localPath := LocalImageDir()
 
 	store := &ImageStore{
-		mode:       mode,
-		cephPool:   cephPool,
-		cephConf:   cephConf,
-		s3Bucket:   s3Bucket,
-		s3Region:   s3Region,
-		s3Endpoint: s3Endpoint,
-		timeout:    5 * time.Second,
-		localPath:  localPath,
-		stubImages: make(map[string]*stubImage),
+		mode:                 mode,
+		cephPool:             cephPool,
+		cephConf:             cephConf,
+		s3Bucket:             s3opts.Bucket,
+		s3Region:             s3opts.Region,
+		s3Endpoint:           s3opts.Endpoint,
+		s3CABundle:           s3opts.CABundlePath,
+		s3InsecureSkipVerify: s3opts.InsecureSkipVerify,
+		connectTimeout:       s3opts.ConnectTimeout,
+		timeout:              5 * time.Second,
+		localPath:            localPath,
+		stubImages:           make(map[string]*stubImage),
 	}
 
 	// Create local storage directory if needed. Surface a failure (FR-008) rather
@@ -114,8 +156,8 @@ func NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint stri
 			}
 			log.Error().Err(err).
 				Str("mode", mode).
-				Str("region", s3Region).
-				Str("endpoint", s3Endpoint).
+				Str("region", s3opts.Region).
+				Str("endpoint", s3opts.Endpoint).
 				Msg("S3 client init failed; falling back to other configured backend(s)")
 		}
 	}
@@ -142,7 +184,16 @@ func containsMode(modes, target string) bool {
 // initS3Client initializes the S3 client
 func (s *ImageStore) initS3Client() error {
 	ctx := context.Background()
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(s.s3Region))
+
+	httpClient, err := s.newS3HTTPClient()
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(s.s3Region),
+		config.WithHTTPClient(httpClient),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
@@ -160,49 +211,96 @@ func (s *ImageStore) initS3Client() error {
 	return nil
 }
 
-// UploadImage uploads an image to storage
-func (s *ImageStore) UploadImage(ctx context.Context, imageID string, reader io.Reader) (int64, error) {
+// newS3HTTPClient builds the HTTP client used for S3/RGW. TLS optionally trusts
+// a custom/internal CA bundle (FR-015); the fail-fast budget is scoped to
+// connect + time-to-first-byte (dial / TLS handshake / response headers) so
+// large image bodies stream to completion (FR-014) instead of being cut off by
+// a fixed total-operation timeout.
+func (s *ImageStore) newS3HTTPClient() (*awshttp.BuildableClient, error) {
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if s.s3InsecureSkipVerify {
+		tlsCfg.InsecureSkipVerify = true // #nosec G402 -- opt-in, test-only (FR-015)
+	}
+	if s.s3CABundle != "" {
+		pemBytes, err := os.ReadFile(s.s3CABundle)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read S3 CA bundle %q: %w", s.s3CABundle, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return nil, fmt.Errorf("no certificates found in S3 CA bundle %q", s.s3CABundle)
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	firstByte := s.connectTimeout
+	if firstByte <= 0 {
+		firstByte = 10 * time.Second
+	}
+
+	return awshttp.NewBuildableClient().
+		WithDialerOptions(func(d *net.Dialer) {
+			d.Timeout = firstByte // connect fail-fast
+		}).
+		WithTransportOptions(func(tr *http.Transport) {
+			tr.TLSClientConfig = tlsCfg
+			tr.TLSHandshakeTimeout = firstByte
+			tr.ResponseHeaderTimeout = firstByte // time-to-first-byte; does NOT bound the body
+			tr.ExpectContinueTimeout = 1 * time.Second
+		}), nil
+}
+
+// UploadImage uploads an image to storage. The bool return reports whether the
+// backend normalized the stored bytes to raw on ingest: the local/RBD real-mode
+// backends do (SPEC-009 WS-0/FR-003), so the caller should record disk_format=raw;
+// the S3 backend stores the bytes as-is, so the caller must keep the image's
+// declared disk_format (SPEC-014 — S3 is out of the normalize-on-ingest scope).
+func (s *ImageStore) UploadImage(ctx context.Context, imageID string, reader io.Reader) (int64, bool, error) {
 	switch s.mode {
 	case "stub":
-		return s.uploadImageStub(imageID, reader)
+		size, err := s.uploadImageStub(imageID, reader)
+		return size, false, err
 	case "local":
-		return s.uploadImageLocal(ctx, imageID, reader)
+		size, err := s.uploadImageLocal(ctx, imageID, reader)
+		return size, true, err
 	case "rbd":
-		return s.uploadImageRBD(ctx, imageID, reader)
+		size, err := s.uploadImageRBD(ctx, imageID, reader)
+		return size, true, err
 	case "s3":
-		return s.uploadImageS3(ctx, imageID, reader)
+		size, err := s.uploadImageS3(ctx, imageID, reader)
+		return size, false, err
 	case "local,rbd":
-		// Upload to local first
+		// Store locally (normalized to raw); RBD replication is not implemented yet.
 		size, err := s.uploadImageLocal(ctx, imageID, reader)
 		if err != nil {
-			return 0, fmt.Errorf("failed to upload to local: %w", err)
+			return 0, false, fmt.Errorf("failed to upload to local: %w", err)
 		}
-		// Then upload to RBD (would need to read from local file)
-		// For now, just log that it would be uploaded to both
-		return size, nil
+		return size, true, nil
 	case "local,s3":
-		// Upload to local first
+		// Upload to local first (normalizes to raw); the S3 replica is that raw file.
 		size, err := s.uploadImageLocal(ctx, imageID, reader)
 		if err != nil {
-			return 0, fmt.Errorf("failed to upload to local: %w", err)
+			return 0, false, fmt.Errorf("failed to upload to local: %w", err)
 		}
 		// Then upload to S3 from local file
 		if err := s.uploadLocalToS3(ctx, imageID); err != nil {
 			// Keep local copy even if S3 fails
-			return size, fmt.Errorf("uploaded to local but failed to replicate to S3: %w", err)
+			return size, true, fmt.Errorf("uploaded to local but failed to replicate to S3: %w", err)
 		}
-		return size, nil
+		return size, true, nil
 	case "rbd,s3":
-		// Upload to RBD first
-		size, err := s.uploadImageRBD(ctx, imageID, reader)
-		if err != nil {
-			return 0, fmt.Errorf("failed to upload to RBD: %w", err)
+		// Unreachable in practice — NewImageStore rejects this mode. Kept fail-closed
+		// so that whoever implements the RBD backend cannot accidentally ship a
+		// half-written image reported as success: the reader is consumed by the RBD
+		// upload, so the S3 replica is never written and DownloadImage's rbd,s3
+		// fallback would find nothing (PR #73 review r3710747125).
+		if _, err := s.uploadImageRBD(ctx, imageID, reader); err != nil {
+			return 0, false, fmt.Errorf("failed to upload to RBD: %w", err)
 		}
-		// S3 upload is not supported when reader has already been consumed by RBD.
-		// Callers that need rbd+s3 should use a MultiReader or buffer the data.
-		return size, nil
+		return 0, false, fmt.Errorf("storage mode %q cannot replicate to S3: the image reader is consumed by the RBD "+
+			"upload, so only RBD was written; use \"local,s3\" instead", s.mode)
 	default:
-		return 0, fmt.Errorf("unsupported storage mode: %s", s.mode)
+		return 0, false, fmt.Errorf("unsupported storage mode: %s", s.mode)
 	}
 }
 
@@ -296,9 +394,19 @@ func normalizeToRaw(src, dst string) error {
 	if format == "raw" {
 		return os.Rename(src, dst)
 	}
-	cmd := exec.Command("qemu-img", "convert", "-O", "raw", src, dst)
+	// Convert to a sibling temp file, then atomically rename into place. Writing dst
+	// directly would leave a partial raw file there if the convert is interrupted —
+	// and the boot fast path trusts an existing base without re-verifying it, so it
+	// would boot a corrupt image.
+	tmpDst := dst + ".convert"
+	cmd := exec.Command("qemu-img", "convert", "-O", "raw", src, tmpDst)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmpDst)
 		return fmt.Errorf("qemu-img convert %s->raw: %w: %s", format, err, string(out))
+	}
+	if err := os.Rename(tmpDst, dst); err != nil {
+		_ = os.Remove(tmpDst)
+		return fmt.Errorf("rename converted image into place: %w", err)
 	}
 	return os.Remove(src)
 }
@@ -334,11 +442,11 @@ func (s *ImageStore) uploadImageRBD(_ context.Context, imageID string, _ io.Read
 	return 0, fmt.Errorf("ceph cluster not configured (would upload to %s/%s)", s.cephPool, imageName)
 }
 
-// uploadImageS3 uploads image to S3
+// uploadImageS3 uploads image to S3. No total-operation timeout is applied so
+// large images stream to completion (FR-014); connect/first-byte fail-fast is
+// enforced by the HTTP transport (newS3HTTPClient), and cancellation still
+// flows through ctx.
 func (s *ImageStore) uploadImageS3(ctx context.Context, imageID string, reader io.Reader) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
 	if s.s3Client == nil {
 		return 0, fmt.Errorf("S3 client not initialized")
 	}
@@ -346,8 +454,13 @@ func (s *ImageStore) uploadImageS3(ctx context.Context, imageID string, reader i
 	objectKey := s3ImageKey(imageID)
 
 	// Stream to a temp file so we can provide an io.ReadSeeker to the S3 SDK
-	// without buffering the entire image in memory.
-	tmp, err := os.CreateTemp("", "s3upload-*")
+	// without buffering the entire image in memory. Stage on the node-local images
+	// volume (localPath), not $TMPDIR — the latter is often small or RAM-backed and
+	// would ENOSPC/OOM on a multi-GB image (FR-014).
+	if err := os.MkdirAll(s.localPath, 0o755); err != nil {
+		return 0, fmt.Errorf("failed to create S3 staging dir %q: %w", s.localPath, err)
+	}
+	tmp, err := os.CreateTemp(s.localPath, "s3upload-*")
 	if err != nil {
 		return 0, fmt.Errorf("failed to create temp file for S3 upload: %w", err)
 	}
@@ -362,18 +475,109 @@ func (s *ImageStore) uploadImageS3(ctx context.Context, imageID string, reader i
 		return 0, fmt.Errorf("failed to seek temp file: %w", err)
 	}
 
-	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+	// Objects over the single-PUT limit must go via multipart, or S3/RGW rejects
+	// the PUT (EntityTooLarge) — which would break FR-014 (validated up to ~10 GB).
+	if size > s3SinglePutMax {
+		if err := s.uploadS3Multipart(ctx, objectKey, tmp, size); err != nil {
+			return 0, err
+		}
+		return size, nil
+	}
+
+	if _, err := s.s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(s.s3Bucket),
 		Key:           aws.String(objectKey),
 		Body:          tmp,
 		ContentLength: aws.Int64(size),
-	})
-
-	if err != nil {
+	}); err != nil {
 		return 0, fmt.Errorf("failed to upload to S3: %w", err)
 	}
 
 	return size, nil
+}
+
+// S3 multipart-upload constraints (AWS S3, honored by Ceph RGW).
+const (
+	s3SinglePutMax = 5 * 1024 * 1024 * 1024 // 5 GiB — hard cap for a single PutObject
+	s3MinPartSize  = 5 * 1024 * 1024        // 5 MiB — minimum part size (all but the last)
+	s3MaxParts     = 10000                  // maximum parts per multipart upload
+)
+
+// s3DefaultPartSize is the default multipart chunk size.
+const s3DefaultPartSize int64 = 128 * 1024 * 1024 // 128 MiB
+
+// s3PartSizeFor returns the multipart part size for an object of the given size:
+// the default chunk, grown as needed to keep the part count within S3's 10,000-part
+// limit, and never below the 5 MiB minimum.
+func s3PartSizeFor(size int64) int64 {
+	part := s3DefaultPartSize
+	if byCount := (size + s3MaxParts - 1) / s3MaxParts; byCount > part {
+		part = byCount
+	}
+	if part < s3MinPartSize {
+		part = s3MinPartSize
+	}
+	return part
+}
+
+// uploadS3Multipart uploads r (of known size) to objectKey as an S3 multipart
+// upload, aborting on any error so no orphaned parts are left billed. Used for
+// objects larger than the single-PUT limit (FR-014).
+func (s *ImageStore) uploadS3Multipart(ctx context.Context, objectKey string, r io.ReaderAt, size int64) error {
+	create, err := s.s3Client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(s.s3Bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start S3 multipart upload: %w", err)
+	}
+	uploadID := create.UploadId
+
+	// abort cleans up the upload so failed parts aren't left billed. It runs on a
+	// non-cancelled context so cleanup still happens when the request ctx was the
+	// thing that failed (the transport keeps its own connect/first-byte timeouts).
+	abort := func() {
+		_, _ = s.s3Client.AbortMultipartUpload(context.WithoutCancel(ctx), &s3.AbortMultipartUploadInput{
+			Bucket:   aws.String(s.s3Bucket),
+			Key:      aws.String(objectKey),
+			UploadId: uploadID,
+		})
+	}
+
+	partSize := s3PartSizeFor(size)
+	var parts []types.CompletedPart
+	var partNum int32 = 1
+	for offset := int64(0); offset < size; offset += partSize {
+		n := partSize
+		if offset+n > size {
+			n = size - offset
+		}
+		out, err := s.s3Client.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket:        aws.String(s.s3Bucket),
+			Key:           aws.String(objectKey),
+			UploadId:      uploadID,
+			PartNumber:    aws.Int32(partNum),
+			Body:          io.NewSectionReader(r, offset, n),
+			ContentLength: aws.Int64(n),
+		})
+		if err != nil {
+			abort()
+			return fmt.Errorf("failed to upload S3 part %d: %w", partNum, err)
+		}
+		parts = append(parts, types.CompletedPart{ETag: out.ETag, PartNumber: aws.Int32(partNum)})
+		partNum++
+	}
+
+	if _, err := s.s3Client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:          aws.String(s.s3Bucket),
+		Key:             aws.String(objectKey),
+		UploadId:        uploadID,
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: parts},
+	}); err != nil {
+		abort()
+		return fmt.Errorf("failed to complete S3 multipart upload: %w", err)
+	}
+	return nil
 }
 
 // uploadLocalToS3 uploads an image from local storage to S3
@@ -487,11 +691,10 @@ func (s *ImageStore) downloadImageRBD(_ context.Context, imageID string, _ io.Wr
 	return fmt.Errorf("ceph cluster not configured (would download from %s/%s)", s.cephPool, imageName)
 }
 
-// downloadImageS3 downloads from S3
+// downloadImageS3 downloads from S3. The body streams under the caller's
+// context with no total-operation timeout (FR-014); connect/first-byte
+// fail-fast is enforced by the HTTP transport (newS3HTTPClient).
 func (s *ImageStore) downloadImageS3(ctx context.Context, imageID string, writer io.Writer) error {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
 	if s.s3Client == nil {
 		return fmt.Errorf("S3 client not initialized")
 	}
@@ -688,11 +891,14 @@ func (s *ImageStore) imageExistsS3(ctx context.Context, imageID string) (bool, e
 	})
 
 	if err != nil {
-		// Distinguish between "not found" and actual errors via HTTP status
-		// The AWS SDK wraps 404 as a smithy NotFound error; for simplicity
-		// we treat any error from HeadObject as "not found" since we cannot
-		// import smithy types without extra deps. Log and return false.
-		return false, nil
+		// A 404 means the object is genuinely absent; any other error (auth,
+		// network, wrong endpoint, TLS) MUST surface rather than be masked as
+		// "not found" (FR-004).
+		var respErr *awshttp.ResponseError
+		if errors.As(err, &respErr) && respErr.HTTPStatusCode() == http.StatusNotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to head S3 object: %w", err)
 	}
 
 	return true, nil
@@ -762,4 +968,79 @@ func (s *ImageStore) getImageSizeS3(ctx context.Context, imageID string) (int64,
 // GetRBDPath returns the RBD path for an image
 func (s *ImageStore) GetRBDPath(imageID string) string {
 	return fmt.Sprintf("rbd:%s/image-%s", s.cephPool, imageID)
+}
+
+// EnsureLocalBase makes sure the raw base for imageID exists at LocalImagePath,
+// fetching it from the configured backend (e.g. S3/RGW) and normalizing it to
+// raw when absent — the lazy fetch-on-boot path that lets a VM boot from an
+// RGW-backed image on a node that holds no local copy (SPEC-014 FR-013). When
+// expectedChecksum is non-empty the fetched bytes are verified against it
+// (MD5, Glance's checksum) before use, and a mismatch fails rather than booting
+// a corrupt image (FR-017). Concurrent callers are serialized per image id so
+// the base is written exactly once, atomically. Returns the local base path.
+func (s *ImageStore) EnsureLocalBase(ctx context.Context, imageID, expectedChecksum string) (string, error) {
+	// s.localPath is LocalImageDir() in production, so this equals
+	// LocalImagePath(imageID) — the exact path Nova boots from — while staying
+	// overridable in tests.
+	finalPath := filepath.Join(s.localPath, imageFileName(imageID))
+
+	// Fast path: already materialized.
+	if _, err := os.Stat(finalPath); err == nil {
+		return finalPath, nil
+	}
+
+	// Serialize per image so simultaneous boots don't race on the base file.
+	unlock := s.lockImage(imageID)
+	defer unlock()
+
+	// Re-check under the lock — another caller may have just materialized it.
+	if _, err := os.Stat(finalPath); err == nil {
+		return finalPath, nil
+	}
+
+	if err := os.MkdirAll(s.localPath, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create image dir %q: %w", s.localPath, err)
+	}
+
+	// Download to a temp file while hashing, so integrity is verified before the
+	// bytes are ever used to boot a VM.
+	tmp, err := os.CreateTemp(s.localPath, imageFileName(imageID)+".fetch-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp fetch file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once renamed into place
+
+	hasher := md5.New() // #nosec G401 -- Glance checksum is MD5 (compatibility), not a security control
+	if err := s.DownloadImage(ctx, imageID, io.MultiWriter(tmp, hasher)); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("failed to fetch image %s from backend: %w", imageID, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("failed to close fetched image: %w", err)
+	}
+
+	if expectedChecksum != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if got != expectedChecksum {
+			return "", fmt.Errorf("image %s checksum mismatch: got %s, want %s", imageID, got, expectedChecksum)
+		}
+	}
+
+	// Normalize to a raw base at the canonical path (atomic rename when the
+	// fetched bytes are already raw).
+	if err := normalizeToRaw(tmpPath, finalPath); err != nil {
+		_ = os.Remove(finalPath)
+		return "", fmt.Errorf("failed to normalize fetched image %s to raw: %w", imageID, err)
+	}
+	return finalPath, nil
+}
+
+// lockImage returns an unlock func for a per-image mutex, serializing
+// EnsureLocalBase across concurrent callers for the same image.
+func (s *ImageStore) lockImage(imageID string) func() {
+	actual, _ := s.fetchLocks.LoadOrStore(imageID, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }

@@ -1,0 +1,79 @@
+# SPEC-014 T003: real Ceph RGW (S3) integration fixture.
+# postgres + ceph/demo (all-in-one real RGW) + o3k with Glance in S3 mode.
+# Self-contained and isolated (own project name, network, and alternate host
+# ports) so it never collides with another o3k deployment on the host.
+#
+#   podman compose -f deployments/docker-compose.rgw-test.yml up -d --build
+#   ./test/rgw_integration_test.sh          # drives the round-trip
+#   podman compose -f deployments/docker-compose.rgw-test.yml down -v
+#
+# Podman-compatible (docker compose works too). Use: -p o3k-rgwtest
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: o3k
+      POSTGRES_USER: o3k
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U o3k"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    networks: [rgwtest]
+
+  # All-in-one Ceph + RGW. Creates the demo user with the fixed keys below and
+  # the `images` bucket (capability A: Glance image storage), then the wrapper
+  # entrypoint wires the RGW's S3 auth to o3k Keystone so tenant S3 keys minted by
+  # o3k validate via /v3/s3tokens (capability B). Serves S3 on :8080.
+  rgw:
+    image: quay.io/ceph/demo:latest-squid
+    entrypoint: ["bash", "/rgw-keystone-entrypoint.sh"]
+    environment:
+      MON_IP: 127.0.0.1
+      CEPH_PUBLIC_NETWORK: 0.0.0.0/0
+      NETWORK_AUTO_DETECT: "4"
+      RGW_NAME: rgw
+      CEPH_DEMO_UID: o3k
+      CEPH_DEMO_ACCESS_KEY: o3ktestaccess
+      CEPH_DEMO_SECRET_KEY: o3ktestsecret
+      CEPH_DEMO_BUCKET: images
+      # Capability-B wireup target (RGW → o3k Keystone S3 auth). o3k is reachable
+      # by service name on the shared network.
+      O3K_KEYSTONE_URL: "http://o3k:35357"
+    volumes:
+      - ./rgw-keystone-entrypoint.sh:/rgw-keystone-entrypoint.sh:ro
+    ports:
+      - "48080:8080" # RGW S3 (host access for the test driver)
+    networks: [rgwtest]
+
+  o3k:
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rgw:
+        condition: service_started
+    environment:
+      O3K_DB_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
+      O3K_JWT_SECRET: "rgwtest-secret"
+      # Glance -> Ceph RGW (S3). Credentials are env-only; match the demo user above.
+      O3K_GLANCE_STORAGE_MODE: "s3"
+      O3K_GLANCE_S3_ENDPOINT: "http://rgw:8080"
+      O3K_GLANCE_S3_BUCKET: "images"
+      O3K_GLANCE_S3_REGION: "us-east-1"
+      AWS_ACCESS_KEY_ID: "o3ktestaccess"
+      AWS_SECRET_ACCESS_KEY: "o3ktestsecret"
+      O3K_ENDPOINT_HOST: "localhost"
+      O3K_LOG_FORMAT: "json"
+    ports:
+      - "45357:35357" # Keystone
+      - "49292:9292" # Glance
+    networks: [rgwtest]
+
+networks:
+  rgwtest:

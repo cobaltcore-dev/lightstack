@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -31,7 +32,8 @@ type Service struct {
 	libvirtMode string
 	vmManager   *hypervisor.VMManager
 	cache       *cache.Cache
-	neutronSvc  NeutronService // For port allocation
+	imageStore  *storage.ImageStore // lazy fetch-on-boot of S3/RGW-backed image bases (SPEC-014)
+	neutronSvc  NeutronService      // For port allocation
 	wg          sync.WaitGroup
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -64,6 +66,42 @@ func NewService(libvirtURI, libvirtMode string, cacheInstance *cache.Cache) *Ser
 func (svc *Service) Shutdown() {
 	svc.cancel()
 	svc.wg.Wait()
+}
+
+// SetImageStore wires the Glance image store into Nova so real-mode boots can
+// lazily materialize an S3/RGW-backed image's raw base on this node before
+// staging the overlay (SPEC-014 FR-013).
+func (svc *Service) SetImageStore(s *storage.ImageStore) {
+	svc.imageStore = s
+}
+
+// reclaimImageBaseIfUnused removes the node-local raw base for imageID once no
+// instance or image-backed volume references it, bounding the lazily-fetched
+// image cache (SPEC-014 FR-016). Best-effort; only meaningful in real mode.
+// The refcount is cluster-wide (instances has no host column): exact on a single
+// node, and safely conservative on multi-node (never evicts a base still in use).
+func (svc *Service) reclaimImageBaseIfUnused(imageID string) {
+	if imageID == "" || svc.libvirtMode != "real" {
+		return
+	}
+	var inUse bool
+	if err := database.DB.QueryRow(svc.ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM instances WHERE image_id = $1
+			UNION ALL
+			SELECT 1 FROM volumes WHERE source_image_id = $1)`, imageID).Scan(&inUse); err != nil {
+		log.Warn().Err(err).Str("image_id", imageID).Msg("cache eviction: refcount query failed; keeping base")
+		return
+	}
+	if inUse {
+		return
+	}
+	base := storage.LocalImagePath(imageID)
+	if err := os.Remove(base); err != nil && !os.IsNotExist(err) {
+		log.Warn().Err(err).Str("path", base).Msg("cache eviction: failed to remove unused image base")
+		return
+	}
+	log.Info().Str("image_id", imageID).Msg("cache eviction: reclaimed unused local image base")
 }
 
 // SetNeutronService sets the Neutron service reference (called after both services are created)
@@ -586,6 +624,24 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				imageUUID := parsedImageUUID.String()
 				imagePath = storage.LocalImagePath(imageUUID)
 				if svc.libvirtMode == "real" {
+					// Lazy fetch-on-boot: materialize the raw base from the image
+					// backend (S3/RGW, or any node lacking a local copy) and verify
+					// it against the image checksum before staging the overlay
+					// (SPEC-014 FR-013/FR-017). No-op when the base already exists.
+					if svc.imageStore != nil {
+						var checksum string
+						_ = database.DB.QueryRow(svc.ctx,
+							"SELECT COALESCE(checksum, '') FROM images WHERE id = $1", imageUUID).Scan(&checksum)
+						if _, ferr := svc.imageStore.EnsureLocalBase(svc.ctx, imageUUID, checksum); ferr != nil {
+							log.Error().Err(ferr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to materialize image base for boot")
+							if _, dbErr := database.DB.Exec(svc.ctx,
+								"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
+								"ERROR", time.Now(), instanceID); dbErr != nil {
+								log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after image fetch failure")
+							}
+							return
+						}
+					}
 					overlay, stageErr := hypervisor.StageOverlay(instanceID, storage.LocalImagePath(imageUUID))
 					if stageErr != nil {
 						log.Error().Err(stageErr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to stage per-instance disk overlay")
@@ -994,11 +1050,12 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	// Get the instance UUID + libvirt domain ID (support lookup by ID or name)
 	var instanceUUID string
 	var libvirtDomainID sql.NullString
+	var instanceImageID sql.NullString
 	queryStart := time.Now()
 	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT id, libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
+		"SELECT id, libvirt_domain_id, image_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
-	).Scan(&instanceUUID, &libvirtDomainID)
+	).Scan(&instanceUUID, &libvirtDomainID, &instanceImageID)
 	middleware.LogDatabaseQuery(c, "SELECT libvirt_domain_id", time.Since(queryStart), err)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1137,6 +1194,12 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	}
 	if rmErr := hypervisor.RemoveInstanceDir(instanceUUID); rmErr != nil {
 		logger.Warn().Err(rmErr).Str("instance_id", instanceUUID).Msg("failed to remove per-instance disk directory")
+	}
+
+	// Reclaim the node-local image base once nothing references it, so lazily
+	// fetched bases don't accumulate unbounded (SPEC-014 FR-016).
+	if instanceImageID.Valid {
+		svc.reclaimImageBaseIfUnused(instanceImageID.String)
 	}
 
 	logger.Info().Str("instance_id", instanceID).Msg("Instance deleted successfully")

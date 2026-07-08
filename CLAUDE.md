@@ -427,8 +427,10 @@ if requestedVersion == "" {
 - N/A — the external PostgreSQL is the product's and is untouched; this feature adds no schema or migration. (012-integration-contract)
 - Go 1.26 + Gin (HTTP), pgx/pgxpool (existing `database.HealthCheck`). **No new Go modules.** Chart: Helm 3.12+, JSON Schema draft-07, helm-unittest (existing harness) — no new chart deps. (013-readiness-liveness-probes)
 - External PostgreSQL — **no schema, no migration, no persisted data** (readiness is a live `Ping`). (013-readiness-liveness-probes)
+- 014-ceph-rgw-s3-backend: Ceph RGW (S3) as Glance backend (validate + implement) + tenant object storage. Existing aws-sdk-go-v2 with a custom `http.Client` (CA pool + connect/first-byte transport timeouts; body streams, no total cap); stdlib `crypto/hmac`+`sha256` for server-side S3 SigV4/SigV2 verification; OpenStack EC2-credentials API reusing the `credentials` table (+ `access_key` col); Nova lazy fetch-on-boot via `storage.EnsureLocalBase` (+ checksum-on-upload, node-local base reclaim). Migration 062 (`credentials.access_key` + `s3` catalog seed); RGW `implicit tenants=s3`. No new Go modules.
 
 ## Recent Changes
+- 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)
 - 011-ensure-storage-subdirs: fix real-mode storage-subdir gap (cloud-storage#510) — Glance no longer falls back to `~/.o3k`; chart initContainer pre-creates node-local subdirs (SPEC-011 plan)
 - v0.7.0 planning: Database DI (ADR-001), rate limiting (ADR-002), Terraform conformance, CI linting, Cinder route redirect, pagination standardization (SPEC-006)
 - 002-horizon-full-compatibility: Added Go 1.26 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking)

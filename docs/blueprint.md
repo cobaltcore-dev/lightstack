@@ -1,9 +1,9 @@
 # o3k Blueprint & OpenStack Compatibility Design
 
-**Status**: Draft (in progress — cloud-storage#420)
+**Status**: Living document (cloud-storage#420; updated for SPEC-014 — cloud-storage#480)
 **Created**: 2026-06-30
 **Reference release**: OpenStack **2025.2 (Flamingo)**
-**o3k version**: v0.6.1 (2026-04-22)
+**o3k version**: v0.6.1 (2026-04-22) + SPEC-014 (Ceph RGW S3 backend, EC2/S3 tenant credentials — cloud-storage#480)
 **Tracking**: [cloud-storage#420](https://github.com/cobaltcore-dev/cloud-storage/issues/420) (epic #413 — o3k for validation)
 
 This is the **authoritative top-level** compatibility reference for o3k. It serves two audiences:
@@ -28,12 +28,12 @@ is the single source of truth for *"what does o3k implement, and what doesn't it
 
 1. [Service map (o3k ↔ OpenStack)](#1-service-map)
 2. [API surface & counting methodology](#2-api-surface--counting-methodology)
-3. [Compatibility matrix (per service)](#3-compatibility-matrix) — *in progress*
-4. [Storage backends](#4-storage-backends) — *to do*
-5. [Synchronous architecture & trade-offs](#5-synchronous-architecture--trade-offs) — *to do*
-6. [Terraform coverage](#6-terraform-coverage) — *to do*
-7. [sci-in-a-box integration surface](#7-sci-in-a-box-integration-surface) — *to do*
-8. [Known gaps & limitations](#8-known-gaps--limitations) — *to do*
+3. [Compatibility matrix (per service)](#3-compatibility-matrix)
+4. [Storage backends](#4-storage-backends)
+5. [Synchronous architecture & trade-offs](#5-synchronous-architecture--trade-offs)
+6. [Terraform coverage](#6-terraform-coverage)
+7. [sci-in-a-box integration surface](#7-sci-in-a-box-integration-surface)
+8. [Known gaps & limitations](#8-known-gaps--limitations)
 
 ---
 
@@ -54,7 +54,9 @@ JWT auth path.
 | Metadata | Nova metadata / EC2 | — | 8775 | — (no auth) | Core |
 | Health | (k8s probes) | — | on identity port | — | `/livez` `/readyz` `/healthcheck` |
 
-There is **no `object-store` (Swift) service** in the catalog — see [§8](#8-known-gaps--limitations).
+There is **no `object-store` (Swift) service** in the catalog; Ceph RGW's S3 API is instead advertised
+under a non-standard **`s3`** service type (migration 062) for tenant object storage — see
+[§4](#4-storage-backends) and [§8](#8-known-gaps--limitations).
 
 ---
 
@@ -77,24 +79,24 @@ from the functional count:
 
 Reported **separately** (not part of the five-service OpenStack API count): Placement (stub), Metadata, Health.
 
-### Per-service counts (derived from source, v0.6.1)
+### Per-service counts (derived from source, v0.6.1 + SPEC-014)
 
 | Service | Raw routes registered | Functional operations | Notes |
 |---|---:|---:|---|
-| Keystone | 60 | **59** | −1 discovery (`GET /v3`); `GET /` on identity port lives in `main.go` |
+| Keystone | 66 | **65** | −1 discovery (`GET /v3`); +6 SPEC-014 (OS-EC2 CRUD, `s3tokens`, `ec2tokens`); `GET /` on identity port lives in `main.go` |
 | Nova | 74 | **71** | −2 discovery, −1 PUT/PATCH alias |
 | Neutron | 100 | **94** | −2 discovery, −4 PUT/PATCH aliases |
 | Cinder | 116 | **67** | −2 discovery, −2 PUT/PATCH, −45 project-scoped aliases |
 | Glance | 38 | **38** | discovery roots live in `main.go` |
-| **Five-service total** | **388** | **329** | |
+| **Five-service total** | **394** | **335** | |
 | Placement (stub) | 5 | 3 | resource_providers / resource_classes / traits — empty lists |
 | Metadata | 7 | 7 | EC2 + OpenStack formats, unauthenticated |
 | Health | 4 | 3 | `/livez`, `/readyz`, `/healthcheck` (GET+HEAD) |
 | **Total routes served** | **≈407** | | |
 
-**Result:** o3k implements **~330 functional operations** across the five core OpenStack services. That is
-the honest figure behind the "330 baseline"; the previous "342 / 104%" came from counting raw routes
-(aliases + discovery) against it. Coverage is substantial — the per-resource detail is in
+**Result:** o3k implements **~335 functional operations** across the five core OpenStack services (329 at
+the v0.6.1 baseline + 6 from SPEC-014's EC2/S3 credential surface). That is the honest figure behind the
+"330 baseline"; the previous "342 / 104%" came from counting raw routes (aliases + discovery) against it. Coverage is substantial — the per-resource detail is in
 [§3](#3-compatibility-matrix), and what's genuinely *missing* is in [§8](#8-known-gaps--limitations).
 
 > Cinder and Neutron functional counts are ±1–2 pending the full per-operation enumeration in §3.
@@ -116,7 +118,7 @@ Contract-test figures come from `test/contract/<service>/` (gophercloud) and the
 **Caveat:** contract tests are *not* CI-gated (they need a live instance), so pass counts are
 point-in-time, and a few report claims overstate the current code — flagged inline.
 
-### 3.1 Keystone — Identity v3 (59 functional operations)
+### 3.1 Keystone — Identity v3 (65 functional operations)
 
 Canonical group list from the OpenStack Identity v3 api-ref (core operations + CURRENT extensions).
 
@@ -141,7 +143,8 @@ Canonical group list from the OpenStack Identity v3 api-ref (core operations + C
 | OS-INHERIT | ❌ | — |
 | OS-FEDERATION / OS-OAUTH1 / OS-OAUTH2 / OS-TRUST | ❌ | enterprise SSO / delegation |
 | OS-EP-FILTER / OS-ENDPOINT-POLICY / OS-REVOKE | ❌ | — |
-| OS-EC2 (ec2 credentials) | ❌ | **Doc drift:** the compat report lists 5 EC2-credential endpoints, but none are registered in `internal/keystone/handlers.go` |
+| OS-EC2 (ec2 credentials) | ✅ | create / list / get / delete `…/OS-EC2` — mints project-scoped S3 access/secret pairs; returns the secret (recoverable, matching Keystone) (SPEC-014) |
+| S3 / EC2 signature validation | ✅ | public `POST /v3/s3tokens` + `POST /v3/ec2tokens` — verify S3 SigV2/V4 (and EC2) signatures for Ceph RGW keystone auth; self-validating (SPEC-014) |
 | OS-PKI / OS-SIMPLE-CERT | ❌ | deprecated upstream |
 
 **Contract tests** (`test/contract/keystone/`, 11 files): report records **52 pass / 3 fail (94.5%)**; the
@@ -153,9 +156,10 @@ above reflects the code, not the report.
 
 **Validation verdict:** o3k implements the full **core IAM surface** that Terraform, Horizon, and the
 OpenStack CLI exercise — token auth, users, projects, domains, groups, roles, project role-assignments,
-service catalog, credentials, application credentials. Every ❌ above is an enterprise
-SSO / delegation / policy / limits feature **outside the sci-in-a-box validation scope** — the one
-in-scope defect is the catalog URL-substitution bug (see [§8](#8-known-gaps--limitations)).
+service catalog, credentials, application credentials, and (SPEC-014) EC2/S3 credentials + S3/EC2
+signature validation for Ceph RGW. Every ❌ above is an enterprise SSO / delegation / policy / limits
+feature **outside the sci-in-a-box validation scope** — the one in-scope defect is the catalog
+URL-substitution bug (see [§8](#8-known-gaps--limitations)).
 
 ### 3.2 Nova — Compute v2.1 (71 functional operations)
 
@@ -348,8 +352,8 @@ reality — from `pkg/storage/image_store.go` (Glance) and `pkg/storage/ceph.go`
 | `stub` | ✅ | ✅ | in-memory, no I/O — dev / unit tests |
 | `local` | ✅ | ✅ | Glance: raw at `/var/lib/o3k/images`; Cinder: qcow2 at `/var/lib/o3k/volumes` |
 | `rbd` (Ceph) | ⚠️ placeholder | ✅ *(build-tag)* | Cinder: real `go-ceph` (`ceph_rbd.go`, `//go:build ceph`); Glance: the `rbd` case exists but replication is log-only / not wired |
-| `s3` (AWS / MinIO / Ceph RGW) | ✅ | ❌ | **Glance only** — AWS SDK v2, `s3_endpoint` + path-style for MinIO/RGW |
-| hybrid | `local,s3` ✅ · `local,rbd` ⚠️ · `rbd,s3` ⚠️ | `local,rbd` ✅ | first backend = primary, rest = fallback/replica |
+| `s3` (AWS / MinIO / Ceph RGW) | ✅ | ❌ | **Glance only** — AWS SDK v2, `s3_endpoint` + path-style for MinIO/RGW; optional TLS CA bundle / skip-verify (`s3_ca_bundle`, `s3_insecure_skip_verify`) + upload checksum (SPEC-014) |
+| hybrid | `local,s3` ✅ · `local,rbd` ⚠️ · `rbd,s3` ❌ *(rejected)* | `local,rbd` ✅ | first backend = primary, rest = fallback/replica |
 
 **The Ceph build-tag caveat — critical for #422.** RBD support lives in `pkg/storage/ceph_rbd.go` behind
 `//go:build ceph`. **Neither `make build` (`Makefile:19`) nor the container image
@@ -360,19 +364,27 @@ present — and note the image is Alpine/musl, where cgo + go-ceph is notoriousl
 #422: ship a Ceph-enabled image variant.**
 
 **Glance hybrid nuance.** Only `local` and `s3` (and `local,s3`, which replicates local→S3) are fully wired.
-`local,rbd` uploads locally and merely *logs* the intended RBD copy; `rbd,s3` skips S3 (the reader is already
-consumed). For #422's "Glance on Ceph RGW", use `storage_mode: s3` (or `local,s3`) with `s3_endpoint` = the
-RGW endpoint — that path is real.
+`local,rbd` uploads locally and merely *logs* the intended RBD copy. **`rbd,s3` is rejected at startup**
+(and removed from the chart's `values.schema.json` enum): Glance's RBD backend is a placeholder in *every*
+build, so the mode could never write the S3 replica its own download-fallback reads — it now fails fast
+rather than silently promising redundancy. For #422's "Glance on Ceph RGW", use `storage_mode: s3` (or
+`local,s3`) with `s3_endpoint` = the RGW endpoint — that path is real.
 
-**Fail-fast timeouts** (consistent with §5): Cinder Ceph/RBD **1 s** (`ceph.go:65`); Glance S3 **5 s**
-(`image_store.go:95`). A slow or unreachable backend errors quickly rather than hanging the synchronous
-request.
+**Fail-fast timeouts** (consistent with §5): Cinder Ceph/RBD **1 s** (`ceph.go:65`); Glance S3 bounds
+**connect + time-to-first-byte** (configurable via `s3_connect_timeout`, `config.go:101`) while the image
+**body streams uncapped** so large images complete — SPEC-014 replaced the old flat 5 s total cap that
+would abort big transfers. A slow or unreachable backend still errors quickly rather than hanging the
+synchronous request.
 
 **Mapping to #422 (Ceph RGW + RBD).**
 - **Glance on Ceph RGW / MinIO** → `storage_mode: s3` (+ `s3_endpoint`, path-style). **Real, works today.**
 - **Cinder on Ceph RBD** → `storage_mode: rbd` / `local,rbd`. **Real go-ceph, but only in a `ceph`-tagged build.**
-- **Swift object read/write** (also named in #422's scope) → **not applicable**: o3k exposes no Swift/object API;
-  S3/RGW here is a *Glance image backend driver*, not a tenant-facing object store (see §7 and [§8](#8-known-gaps--limitations)).
+- **Tenant object read/write** (also named in #422's scope) → **available via S3, not Swift**: o3k still
+  exposes no Swift/`object-store` API, but SPEC-014 added the Keystone-side S3 auth bridge — EC2 credentials
+  (`…/OS-EC2`) + public `POST /v3/s3tokens` — so tenants use **Ceph RGW's S3 API** as a per-project object
+  store (RGW `implicit tenants=s3`), advertised under the `s3` catalog type. S3/RGW is therefore both a
+  Glance image backend *and* a tenant object store; only the Swift protocol is absent (see §7 and
+  [§8](#8-known-gaps--limitations)).
 
 **VM disks (Nova).** Not a Cinder backend, but storage-adjacent: each instance gets a per-instance qcow2
 **overlay over a shared raw base** under `/var/lib/o3k` (SPEC-009); boot-from-volume instead routes the root
@@ -398,9 +410,9 @@ a conductor + queue** (the `WaitGroup` lets graceful drain wait for in-flight bo
 
 **Coordination via PostgreSQL, not RPC.** Multi-node networking uses a DB-polling VXLAN coordinator (~1 s)
 and a node registry with heartbeats (~30 s) instead of agent RPC. Auth is **stateless HMAC-SHA256 JWT**
-(24 h TTL, no token store). **Fail-fast timeouts** keep the synchronous path honest: Ceph/RBD 1 s, S3 5 s,
-libvirt ~2 s connect / ~30 s boot, DB health-check 30 s — a slow dependency errors quickly rather than
-hanging a request.
+(24 h TTL, no token store). **Fail-fast timeouts** keep the synchronous path honest: Ceph/RBD 1 s, S3
+connect + first-byte (configurable; image body uncapped for large transfers — SPEC-014), libvirt ~2 s
+connect / ~30 s boot, DB health-check 30 s — a slow dependency errors quickly rather than hanging a request.
 
 ### Trade-offs vs. traditional (RabbitMQ/oslo.messaging) OpenStack
 
@@ -460,7 +472,7 @@ security groups, volumes, object storage*:
 | Networks | ✅ | network / subnet / router / FIP |
 | Volumes | ✅ | `blockstorage_volume_v3` (core Cinder) |
 | Security groups | ❌ | **not in sc007** — the Neutron secgroup API exists (§3.3) but no `openstack_networking_secgroup_v2` is exercised |
-| Object storage | ❌ | **no Swift/object API in o3k** — `openstack_objectstorage_*` cannot work (§7, §8) |
+| Object storage | ❌ | Terraform's `openstack_objectstorage_*` is **Swift**-based, which o3k doesn't expose; tenant object storage exists via **S3** (RGW + EC2 creds, §4 / §7) but not through this provider |
 
 **Verdict.** For the compute + network + volume + image resources it covers, the drop-in Terraform claim
 holds (modulo the port-id workaround), and it's validated end-to-end in real mode. But "100 %" is
@@ -474,9 +486,10 @@ fail; drop it or track against the Swift decision, §7). Neither is CI-gated yet
 The interface is a two-half contract, defined by the chart's `CONTRACT.md` + `values.schema.json` and the
 SPEC-013 health endpoints.
 
-> **Forward reference.** These artifacts live on **feature/475** (SPEC-013) and **feature/474** (SPEC-012),
-> not yet on `main`, so the paths below resolve once #474/#475 merge. This blueprint (a `main`-based,
-> docs-only branch — see the note in §0) summarizes that surface deliberately as forward references.
+> **Status.** These artifacts are now in-tree on `main`: the chart's `values.schema.json` + `CONTRACT.md`
+> (SPEC-012 / #474) and the SPEC-013 (#475) health endpoints on the identity listener. #474's contract is
+> still being completed against its acceptance criteria, but the schema and health signal described below
+> are live.
 
 **Input contract — `values.schema.json` (SPEC-012 / #474).** Every value is typed, bounded, and described,
 and Helm validates it on `install` / `upgrade` / `lint` / `template`, **rejecting structurally invalid input
@@ -510,8 +523,8 @@ teardown hooks (blocking purge of host + network state) — **already in `main` 
 
 | Gap | Impact | Lands / tracked via |
 |---|---|---|
-| Contract artifacts not yet in `main` | `CONTRACT.md`, `values.schema.json`, honest `/readyz` live on feature/474+475 | #474 (SPEC-012), #475 (SPEC-013) |
-| **No Swift / object-store API** | object read/write scenarios (#422/#424) are unservable; S3/RGW is a Glance *backend*, not a tenant object API | o3k#15 decision (§8) |
+| SPEC-012 contract not fully complete | `values.schema.json`, `CONTRACT.md`, and the honest `/readyz` (SPEC-013) are in `main`; #474's remaining acceptance criteria are still open | #474 (SPEC-012) |
+| **No Swift / `object-store` API** | Swift-protocol scenarios unservable; but tenant object read/write **is** servable via S3 (RGW + EC2 creds + `/v3/s3tokens`, SPEC-014) | Swift decision: o3k#15 (§8) |
 | No CI wiring o3k ↔ orchestrator | integration is validated manually / out-of-tree; contract + Terraform tests aren't CI-gated | #421 / #424 |
 | Multi-node Helm deferred | only single-node deploys today; #421's multi-node configuration is unmet | #52 |
 | Ceph-less stock image | Cinder-on-RBD (#422) needs a custom `-tags ceph` image variant | #422 (§4) |
@@ -525,16 +538,16 @@ case, and (b) per-service lists of canonical OpenStack endpoints o3k does not im
 
 | Limitation | Detail | Impact / tracked |
 |---|---|---|
-| **No Swift / object-store API** | the Keystone catalog advertises only `identity / compute / placement / network / volumev3 / image`; S3 / RGW / MinIO is a *Glance image-backend driver*, not a tenant object store | #422 / #424 object read/write scenarios are unservable; path decision in o3k#15 |
+| **No Swift / `object-store` API** | the catalog advertises `identity / compute / placement / network / volumev3 / image` + a non-standard **`s3`** (RGW) type (SPEC-014); tenants get object storage via **S3** (EC2 creds + `/v3/s3tokens` + RGW `implicit tenants`), but the **Swift** protocol is absent | S3 object read/write servable; Swift-only scenarios await the o3k#15 decision |
 | **Ceph behind a build tag** | `pkg/storage/ceph_rbd.go` is `//go:build ceph`; neither `make build` nor `build/package/Dockerfile` pass `-tags ceph`, so the stock binary/image are Ceph-less | Cinder-on-RBD (#422) needs a custom Ceph-enabled image (§4) |
 | **Cinder advanced surface is thin** | ~96 % of routes registered but only ~18 % pass contract tests; groups / QoS specs / transfers / backup export-import are registered-but-thin | core volume ops are ✅ and host-validated; advanced ops unverified (§3.4) |
 | **Multi-node Helm deferred** | the VXLAN overlay + node registry exist, but the chart deploys single-node only | #52; #421's multi-node configuration is unmet |
 | **Tests not CI-gated** | the 308 gophercloud contract tests and the sc007 Terraform module need a live instance and don't run in CI | coverage figures are point-in-time; #423 asks for a CI smoke |
 | **Placement is stub-only** | returns empty lists so Horizon's panels load; no resource-provider / allocation logic | adequate for validation; not a real scheduler |
 | **Terraform "100 %" is qualified** | one topology (sc007), real-mode / not-CI, plus the port-id workaround; security groups untested and object storage impossible | §6; two of #423's five smoke categories unmet |
-| **SPEC-012 / 013 not yet in `main`** | the Helm integration contract (`CONTRACT.md`, `values.schema.json`) and the honest `/readyz` land via #474 / #475 | §7 references them as forward-refs |
+| **SPEC-012 contract in progress** | `CONTRACT.md`, `values.schema.json`, and the honest `/readyz` (SPEC-013 / #475) are in `main`; #474's remaining acceptance criteria are still being completed | §7 |
 
-**On the headline numbers.** o3k implements **~329 functional operations** across the five core services
+**On the headline numbers.** o3k implements **~335 functional operations** across the five core services
 (§2). The repo's "104 % (342/330)" counted *raw routes* — URL aliases + version-discovery — against a
 self-selected 330-endpoint baseline; the epic's "~70 % complete" (#413) is a holistic assessment weighted by
 the thin Cinder advanced surface, the absent Swift API, and the metadefs/extension gaps. Both are true of
@@ -564,7 +577,6 @@ endpoints per group are separated by a line break (`<br>`).
 | System role assignments | ❌ | `GET, PUT, HEAD, DELETE /v3/system/users/{uid}/roles/{rid}` (+ list)<br>`…/system/groups/{gid}/roles/{rid}` (+ list) | System-scoped roles govern deployment-wide cloud-admin operations; o3k has no system scope — it uses project / admin role checks. |
 | Unified limits | ❌ | `GET, POST /v3/registered_limits`, `GET, PATCH, DELETE /v3/registered_limits/{id}`<br>`GET, POST /v3/limits`, `GET, PATCH, DELETE /v3/limits/{id}`, `GET /v3/limits/model` | o3k enforces quotas per-service (Nova / Cinder / Neutron `quota-sets`), not via Keystone's centralized unified-limits model; the validation path uses the per-service quota APIs. |
 | OS-INHERIT | ❌ | `PUT, HEAD, DELETE …/roles/{rid}/inherited_to_projects` (+ `GET …/roles/inherited_to_projects`; domain- & project-scoped, user & group) | Inherited (domain→project) role assignments are an advanced RBAC convenience; o3k's flat project-scoped model has no inheritance. |
-| OS-EC2 credentials | ❌ | `GET, POST /v3/users/{uid}/credentials/OS-EC2`<br>`GET, DELETE …/OS-EC2/{credential_id}` | EC2-style HMAC credentials target the EC2 / S3 path; o3k exposes no EC2 / object surface and the validation clients use Keystone tokens / app-creds. **The compat report wrongly lists these as implemented.** |
 | OS-TRUST | ❌ | `GET, POST /v3/OS-TRUST/trusts`<br>`GET, DELETE /v3/OS-TRUST/trusts/{id}` (+ trust-roles) | Trusts delegate roles for unattended / Heat-style workflows; not used by the validation scenarios. |
 | OS-FEDERATION | ❌ | identity providers · protocols · mappings · service providers · `GET /v3/OS-FEDERATION/projects` · `/domains` · SAML2/ECP auth (entire extension) | Federated identity (external IdPs / SAML / OIDC) is enterprise SSO; o3k authenticates locally against its own user store. |
 | OS-OAUTH1 / OS-OAUTH2 | ❌ | consumers, request / access tokens, authorization; OAuth2 token + discovery (entire extensions) | OAuth delegation flows are enterprise integrations outside the validation scope. |
