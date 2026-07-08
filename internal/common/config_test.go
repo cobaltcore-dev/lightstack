@@ -3,6 +3,7 @@ package common
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -157,5 +158,132 @@ database:
 	_, err = LoadConfig(tmpfile.Name())
 	if err == nil {
 		t.Error("Expected error for invalid YAML, got nil")
+	}
+}
+
+// SPEC-014 T031: the S3/RGW backend config (TLS/CA + timeout) parses from YAML.
+func TestLoadConfigGlanceS3(t *testing.T) {
+	tmp, err := os.CreateTemp("", "o3k-s3-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(`
+glance:
+  storage_mode: s3
+  s3_bucket: images
+  s3_region: us-east-1
+  s3_endpoint: https://rgw.example:443
+  s3_ca_bundle: /etc/o3k/rgw-ca.pem
+  s3_insecure_skip_verify: true
+  s3_connect_timeout: 3s
+`); err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+
+	cfg, err := LoadConfig(tmp.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	g := cfg.Glance
+	if g.StorageMode != "s3" || g.S3Bucket != "images" || g.S3Region != "us-east-1" ||
+		g.S3Endpoint != "https://rgw.example:443" || g.S3CABundle != "/etc/o3k/rgw-ca.pem" ||
+		!g.S3InsecureSkipVerify || g.S3ConnectTimeout != 3*time.Second {
+		t.Fatalf("glance S3 config not parsed as expected: %+v", g)
+	}
+}
+
+// SPEC-014 T031: O3K_GLANCE_S3_* env vars override the file config.
+func TestLoadConfigGlanceS3EnvOverrides(t *testing.T) {
+	tmp, err := os.CreateTemp("", "o3k-s3env-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString("glance:\n  storage_mode: s3\n"); err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+
+	t.Setenv("O3K_GLANCE_S3_ENDPOINT", "https://env-rgw:443")
+	t.Setenv("O3K_GLANCE_S3_BUCKET", "envbucket")
+	t.Setenv("O3K_GLANCE_S3_REGION", "eu-west-1")
+	t.Setenv("O3K_GLANCE_S3_CA_BUNDLE", "/env/ca.pem")
+	t.Setenv("O3K_GLANCE_S3_INSECURE_SKIP_VERIFY", "true")
+
+	cfg, err := LoadConfig(tmp.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	g := cfg.Glance
+	if g.S3Endpoint != "https://env-rgw:443" || g.S3Bucket != "envbucket" ||
+		g.S3Region != "eu-west-1" || g.S3CABundle != "/env/ca.pem" || !g.S3InsecureSkipVerify {
+		t.Fatalf("env overrides not applied: %+v", g)
+	}
+}
+
+// PR #73 review (r3558640811): the boolean env override must work BOTH ways. A
+// base config that ships s3_insecure_skip_verify: true must be disableable via
+// O3K_GLANCE_S3_INSECURE_SKIP_VERIFY=false — otherwise TLS verification stays off
+// in production with no way to turn it back on from the environment.
+func TestLoadConfigGlanceS3InsecureEnvCanDisable(t *testing.T) {
+	tmp, err := os.CreateTemp("", "o3k-s3ins-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	// base config ships skip-verify ENABLED (e.g. a dev image)
+	if _, err := tmp.WriteString("glance:\n  storage_mode: s3\n  s3_insecure_skip_verify: true\n"); err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+
+	// operator turns it OFF in the pod env
+	t.Setenv("O3K_GLANCE_S3_INSECURE_SKIP_VERIFY", "false")
+
+	cfg, err := LoadConfig(tmp.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Glance.S3InsecureSkipVerify {
+		t.Fatalf("O3K_GLANCE_S3_INSECURE_SKIP_VERIFY=false was ignored; TLS verification still disabled")
+	}
+}
+
+// PR #73 review (r3558649609): S3ConnectTimeout must have an env override like every
+// other glance.s3.* field, so an operator can tune the fail-fast timeout on a slow RGW
+// node without patching a read-only mounted config. A malformed value is ignored (the
+// file value stands) rather than silently zeroing the timeout.
+func TestLoadConfigGlanceS3ConnectTimeoutEnv(t *testing.T) {
+	tmp, err := os.CreateTemp("", "o3k-s3to-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	// base config ships a 3s timeout
+	if _, err := tmp.WriteString("glance:\n  storage_mode: s3\n  s3_connect_timeout: 3s\n"); err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+
+	// a valid duration in the env wins over the file
+	t.Setenv("O3K_GLANCE_S3_CONNECT_TIMEOUT", "10s")
+	cfg, err := LoadConfig(tmp.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Glance.S3ConnectTimeout != 10*time.Second {
+		t.Fatalf("valid env override ignored: got %v, want 10s", cfg.Glance.S3ConnectTimeout)
+	}
+
+	// a malformed value is ignored; the file's 3s stands (never silently zeroed)
+	t.Setenv("O3K_GLANCE_S3_CONNECT_TIMEOUT", "notaduration")
+	cfg, err = LoadConfig(tmp.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Glance.S3ConnectTimeout != 3*time.Second {
+		t.Fatalf("malformed env value not ignored: got %v, want file value 3s", cfg.Glance.S3ConnectTimeout)
 	}
 }

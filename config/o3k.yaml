@@ -70,7 +70,7 @@ glance:
   port: 9292
   ceph_pool: images
   ceph_conf: /etc/ceph/ceph.conf
-  storage_mode: local  # "stub", "local", "rbd", "s3", "local,rbd", "local,s3", "rbd,s3"
+  storage_mode: local  # "stub", "local", "rbd", "s3", "local,rbd", "local,s3" ("rbd,s3" unsupported: no Glance RBD backend)
   s3_bucket: ""       # S3 bucket name (required for s3 mode)
   s3_region: us-east-1  # S3 region
   s3_endpoint: ""     # Custom S3 endpoint (for MinIO, Ceph RGW, etc.)

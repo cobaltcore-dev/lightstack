@@ -257,6 +257,54 @@ jobs:
         if: always()
         run: docker compose -f deployments/docker-compose.yml down -v
 
+  rgw-integration-tests:
+    name: Ceph RGW (S3) Integration Tests
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Start o3k + Postgres + real Ceph RGW (ceph/demo)
+        run: |
+          docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml up -d --build
+          docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml ps
+
+      - name: Wait for o3k Keystone
+        run: |
+          timeout 120 bash -c 'until curl -sf http://localhost:45357/v3 > /dev/null; do sleep 3; done'
+
+      - name: Wait for RGW→Keystone wireup (capability B)
+        run: |
+          timeout 240 bash -c 'until docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml logs rgw 2>/dev/null | grep -q "wireup complete"; do sleep 3; done'
+
+      - name: Install test clients (OpenStack CLI + boto3)
+        run: |
+          python3 -m pip install python-openstackclient boto3
+
+      - name: Capability A — Glance images on Ceph RGW (upload/download + large stream)
+        run: |
+          chmod +x test/rgw_integration_test.sh
+          ./test/rgw_integration_test.sh
+        env:
+          O3K_TEST_IMAGE_SIZE: 256M
+
+      - name: Capability B — Tenant object storage via /v3/s3tokens (auth + isolation + revocation)
+        run: |
+          chmod +x test/tenant_s3_rgw_test.sh
+          ./test/tenant_s3_rgw_test.sh
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: |
+          docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml logs --tail 300
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml down -v
+
   # TODO: Add e2e-fast and e2e-full jobs once E2E test scenarios are implemented.
   # Planned: VM lifecycle, volume attach/detach, network isolation, Terraform validation, Horizon UI tests.
 
@@ -298,7 +346,7 @@ jobs:
   status-check:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [build, unit-tests, contract-tests, integration-tests, dco-check]
+    needs: [build, unit-tests, contract-tests, integration-tests, dco-check, rgw-integration-tests]
     if: always()
 
     steps:
@@ -309,6 +357,7 @@ jobs:
           echo "Contract Tests: ${{ needs.contract-tests.result }}"
           echo "Integration Tests: ${{ needs.integration-tests.result }}"
           echo "SAP Sign-off: ${{ needs.dco-check.result }}"
+          echo "RGW Integration Tests: ${{ needs.rgw-integration-tests.result }}"
 
           if [ "${{ needs.build.result }}" != "success" ]; then
             echo "❌ Build failed"
@@ -334,6 +383,11 @@ jobs:
 
           if [ "${{ needs.dco-check.result }}" != "success" ]; then
             echo "❌ SAP sign-off check failed — all commits need Signed-off-by: name@sap.com"
+            exit 1
+          fi
+
+          if [ "${{ needs.rgw-integration-tests.result }}" != "success" ]; then
+            echo "❌ Ceph RGW (S3) integration tests failed"
             exit 1
           fi
 

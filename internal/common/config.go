@@ -88,6 +88,17 @@ type GlanceConfig struct {
 	S3Bucket    string `yaml:"s3_bucket"`    // S3 bucket name
 	S3Region    string `yaml:"s3_region"`    // S3 region
 	S3Endpoint  string `yaml:"s3_endpoint"`  // Custom S3 endpoint (for MinIO, Ceph RGW, etc.)
+	// S3CABundle is a path to a PEM CA bundle to trust for an HTTPS S3/RGW
+	// endpoint backed by an internal/private CA. Empty uses the system trust
+	// store (fine for HTTP or publicly-trusted certs).
+	S3CABundle string `yaml:"s3_ca_bundle"`
+	// S3InsecureSkipVerify disables TLS verification for the S3/RGW endpoint.
+	// TEST ONLY — never enable in production; defaults to false.
+	S3InsecureSkipVerify bool `yaml:"s3_insecure_skip_verify"`
+	// S3ConnectTimeout bounds connect + time-to-first-byte (fail-fast). It does
+	// NOT bound the body transfer, so large images stream to completion. Zero
+	// means the storage layer applies a default.
+	S3ConnectTimeout time.Duration `yaml:"s3_connect_timeout"`
 }
 
 // MetadataConfig configures the EC2/OpenStack metadata service (WS-4).
@@ -130,6 +141,40 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if jwtSecret := os.Getenv("O3K_JWT_SECRET"); jwtSecret != "" {
 		cfg.Keystone.JWTSecret = jwtSecret
+	}
+	// Glance S3/RGW overrides (handy when config is mounted read-only).
+	if v := os.Getenv("O3K_GLANCE_STORAGE_MODE"); v != "" {
+		cfg.Glance.StorageMode = v
+	}
+	if v := os.Getenv("O3K_GLANCE_S3_ENDPOINT"); v != "" {
+		cfg.Glance.S3Endpoint = v
+	}
+	if v := os.Getenv("O3K_GLANCE_S3_BUCKET"); v != "" {
+		cfg.Glance.S3Bucket = v
+	}
+	if v := os.Getenv("O3K_GLANCE_S3_REGION"); v != "" {
+		cfg.Glance.S3Region = v
+	}
+	if v := os.Getenv("O3K_GLANCE_S3_CA_BUNDLE"); v != "" {
+		cfg.Glance.S3CABundle = v
+	}
+	// Two-way override: an operator must be able to turn skip-verify OFF from the
+	// env even if the mounted config shipped it on (matches OpenStack's symmetric
+	// `insecure` config booleans). Unrecognized/empty values keep the file value.
+	switch os.Getenv("O3K_GLANCE_S3_INSECURE_SKIP_VERIFY") {
+	case "true", "1":
+		cfg.Glance.S3InsecureSkipVerify = true
+	case "false", "0":
+		cfg.Glance.S3InsecureSkipVerify = false
+	}
+	// A malformed duration is ignored (the file value stands) and warned about,
+	// rather than silently zeroing the timeout.
+	if v := os.Getenv("O3K_GLANCE_S3_CONNECT_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Glance.S3ConnectTimeout = d
+		} else {
+			fmt.Fprintf(os.Stderr, "WARNING: ignoring invalid O3K_GLANCE_S3_CONNECT_TIMEOUT %q: %v\n", v, err)
+		}
 	}
 
 	// Warn if using default JWT secret

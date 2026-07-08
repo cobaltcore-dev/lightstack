@@ -29,9 +29,10 @@ type TokenClaims struct {
 
 // AuthService handles authentication operations
 type AuthService struct {
-	jwtSecret []byte
-	tokenTTL  time.Duration
-	cache     *cache.Cache
+	jwtSecret        []byte
+	tokenTTL         time.Duration
+	cache            *cache.Cache
+	glanceS3Endpoint string // resolved cfg.Glance.S3Endpoint, advertised as the `s3` catalog endpoint
 }
 
 // NewAuthService creates a new auth service
@@ -42,6 +43,12 @@ func NewAuthService(jwtSecret string, tokenTTL time.Duration, cacheInstance *cac
 		cache:     cacheInstance,
 	}
 }
+
+// SetGlanceS3Endpoint wires the resolved Glance S3/RGW endpoint (cfg.Glance.S3Endpoint,
+// which the config layer resolves from YAML or O3K_GLANCE_S3_ENDPOINT) so the service
+// catalog advertises the real external RGW rather than a placeholder. Set once at
+// startup, mirroring nova.SetImageStore.
+func (s *AuthService) SetGlanceS3Endpoint(url string) { s.glanceS3Endpoint = url }
 
 // AuthRequest represents an authentication request
 // ScopeField handles both string ("unscoped") and object scope formats
@@ -331,7 +338,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		}
 
 		// Add service catalog
-		resp.Token.Catalog = BuildServiceCatalog(projectID, s.cache)
+		resp.Token.Catalog = BuildServiceCatalog(projectID, s.cache, s.glanceS3Endpoint)
 	}
 
 	return resp, tokenString, nil
@@ -514,7 +521,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		}
 
 		// Add service catalog
-		resp.Token.Catalog = BuildServiceCatalog(projectID, s.cache)
+		resp.Token.Catalog = BuildServiceCatalog(projectID, s.cache, s.glanceS3Endpoint)
 	}
 
 	return resp, tokenString, nil
@@ -552,7 +559,7 @@ func (s *AuthService) CheckPassword(password, hash string) bool {
 }
 
 // BuildServiceCatalog builds the OpenStack service catalog from database
-func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache) []CatalogEntry {
+func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache, s3Endpoint string) []CatalogEntry {
 	ctx := context.Background()
 
 	// Try cache first (service catalog is immutable, 24h TTL)
@@ -576,7 +583,7 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache) []Catalog
 	`)
 	if err != nil {
 		// Fall back to hardcoded catalog on error
-		return buildHardcodedCatalog(projectID)
+		return buildHardcodedCatalog(projectID, s3Endpoint)
 	}
 	defer rows.Close()
 
@@ -597,6 +604,16 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache) []Catalog
 			continue
 		}
 
+		// The `s3` (Ceph RGW) service is an external endpoint configured out-of-band.
+		// Serve the resolved config value (cfg.Glance.S3Endpoint — YAML or env, wired
+		// via SetGlanceS3Endpoint, same source the S3 client uses), never migration
+		// 062's seeded placeholder (substituteURLTemplates rewrites only `http://o3k:`,
+		// never `localhost`) nor the o3k host; omit it when RGW isn't configured.
+		// Matches the fallback catalog (PR #73 review r3558646680).
+		if svcType == "s3" && s3Endpoint == "" {
+			continue
+		}
+
 		// Create service entry if not exists
 		if _, exists := serviceMap[serviceID]; !exists {
 			serviceMap[serviceID] = &CatalogEntry{
@@ -610,6 +627,9 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache) []Catalog
 		if endpointID != nil && iface != nil && url != nil {
 			// Substitute URL templates
 			substitutedURL := substituteURLTemplates(*url, projectID)
+			if svcType == "s3" {
+				substitutedURL = s3Endpoint // external RGW; serve the resolved config URL as-is
+			}
 
 			endpoint := Endpoint{
 				Interface: *iface,
@@ -632,7 +652,7 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache) []Catalog
 
 	// Fall back to hardcoded if query returned nothing
 	if len(catalog) == 0 {
-		return buildHardcodedCatalog(projectID)
+		return buildHardcodedCatalog(projectID, s3Endpoint)
 	}
 
 	// Store in cache (24h TTL per config)
@@ -672,7 +692,7 @@ func substituteURLTemplates(url, projectID string) string {
 }
 
 // buildHardcodedCatalog provides fallback catalog (previous implementation)
-func buildHardcodedCatalog(projectID string) []CatalogEntry {
+func buildHardcodedCatalog(projectID, s3Endpoint string) []CatalogEntry {
 	// Use O3K_ENDPOINT_HOST env var, default to "localhost" for CI compatibility
 	baseHost := os.Getenv("O3K_ENDPOINT_HOST")
 	if baseHost == "" {
@@ -681,7 +701,7 @@ func buildHardcodedCatalog(projectID string) []CatalogEntry {
 	// Honor the configured advertised scheme (SPEC-007 WS-3, FR-010).
 	baseURL := common.EndpointScheme() + "://" + baseHost
 
-	return []CatalogEntry{
+	entries := []CatalogEntry{
 		{
 			Type: "identity",
 			Name: "keystone",
@@ -725,4 +745,16 @@ func buildHardcodedCatalog(projectID string) []CatalogEntry {
 			},
 		},
 	}
+	// Tenant object storage (Ceph RGW S3): the endpoint is the external RGW, taken
+	// from the resolved Glance S3 config (cfg.Glance.S3Endpoint, wired via
+	// SetGlanceS3Endpoint). Only advertised when configured (SPEC-014 FR-009); the
+	// DB catalog (migration 062) is primary, this is the fallback.
+	if s3Endpoint != "" {
+		entries = append(entries, CatalogEntry{
+			Type:      "s3",
+			Name:      "rgw",
+			Endpoints: []Endpoint{{Interface: "public", Region: "RegionOne", URL: s3Endpoint}},
+		})
+	}
+	return entries
 }

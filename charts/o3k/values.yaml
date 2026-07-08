@@ -64,7 +64,26 @@ neutron:
 cinder:
   storageMode: stub           # stub | local | rbd | local,rbd
 glance:
-  storageMode: stub           # stub | local | rbd | s3 | local,rbd | local,s3 | rbd,s3
+  storageMode: stub           # stub | local | rbd | s3 | local,rbd | local,s3  (rbd,s3 unsupported: no Glance RBD backend)
+  # -- S3 / Ceph RGW backend (used when storageMode includes "s3"). Credentials come
+  #    from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the environment — set them via
+  #    `extraEnv` below, not here.
+  s3:
+    endpoint: ""              # RGW S3 endpoint, e.g. https://rgw.example:443
+    bucket: ""                # pre-created bucket for image data (o3k does not create it)
+    region: us-east-1
+    caBundle: ""              # in-container path to a PEM CA bundle for an internal-CA HTTPS RGW
+    insecureSkipVerify: false # test-only; never true in production
+
+# -- Extra environment variables for the o3k container (standard k8s env entries).
+#    Primary use: S3/RGW credentials for the Glance s3 backend, which the AWS SDK reads
+#    from the environment. Prefer a Secret (valueFrom.secretKeyRef) for real credentials.
+extraEnv: []
+#  - name: AWS_ACCESS_KEY_ID
+#    value: "AKIA..."
+#  - name: AWS_SECRET_ACCESS_KEY
+#    valueFrom:
+#      secretKeyRef: { name: rgw-s3-creds, key: secretKey }
 
 # -- Real mode (privileged libvirt + host access). Off by default (FR-012). Authored;
 #    real-mode VM e2e is gated on the post-conditions (issue #52).

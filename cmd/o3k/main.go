@@ -32,6 +32,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/teardown"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/cobaltcore-dev/o3k/pkg/storage"
 	"github.com/gin-gonic/gin"
 	zlog "github.com/rs/zerolog/log"
 )
@@ -139,6 +140,7 @@ func main() {
 
 	// Initialize services
 	authService := keystone.NewAuthService(cfg.Keystone.JWTSecret, cfg.Keystone.TokenTTL, cacheInstance)
+	authService.SetGlanceS3Endpoint(cfg.Glance.S3Endpoint) // advertise the RGW endpoint in the s3 catalog
 	keystoneService := keystone.NewService(authService, cacheInstance)
 
 	// Set default libvirt mode if not specified
@@ -239,15 +241,24 @@ func main() {
 		glanceStorageMode,
 		cfg.Glance.CephPool,
 		cfg.Glance.CephConf,
-		cfg.Glance.S3Bucket,
-		cfg.Glance.S3Region,
-		cfg.Glance.S3Endpoint,
+		storage.S3Options{
+			Bucket:             cfg.Glance.S3Bucket,
+			Region:             cfg.Glance.S3Region,
+			Endpoint:           cfg.Glance.S3Endpoint,
+			CABundlePath:       cfg.Glance.S3CABundle,
+			InsecureSkipVerify: cfg.Glance.S3InsecureSkipVerify,
+			ConnectTimeout:     cfg.Glance.S3ConnectTimeout,
+		},
 		cacheInstance,
 	)
 	if err != nil {
 		log.Fatalf("Failed to initialize Glance: %v", err)
 	}
 	log.Printf("Glance initialized in %s mode", glanceStorageMode)
+
+	// Share Glance's image store with Nova so real-mode boots can lazily fetch
+	// an S3/RGW-backed image base on this node before staging the overlay (SPEC-014).
+	novaService.SetImageStore(glanceService.ImageStore())
 
 	// Initialize metadata service. It must bind a VM-reachable address (all
 	// interfaces by default) so the per-bridge 169.254.169.254 DNAT can reach it

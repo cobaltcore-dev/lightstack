@@ -1,9 +1,12 @@
 package glance
 
 import (
+	"crypto/md5"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -37,8 +40,8 @@ type Service struct {
 // in a way that cannot be served by a hybrid fallback (e.g. mode == "s3"
 // with no AWS credentials). See storage.NewImageStore for the per-mode
 // failure policy.
-func NewService(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string, cacheInstance *cache.Cache) (*Service, error) {
-	imageStore, err := storage.NewImageStore(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint)
+func NewService(mode, cephPool, cephConf string, s3opts storage.S3Options, cacheInstance *cache.Cache) (*Service, error) {
+	imageStore, err := storage.NewImageStore(mode, cephPool, cephConf, s3opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Glance image store: %w", err)
 	}
@@ -47,12 +50,18 @@ func NewService(mode, cephPool, cephConf, s3Bucket, s3Region, s3Endpoint string,
 		storageMode: mode, // storageMode same as mode for backward compatibility
 		cephPool:    cephPool,
 		cephConf:    cephConf,
-		s3Bucket:    s3Bucket,
-		s3Region:    s3Region,
-		s3Endpoint:  s3Endpoint,
+		s3Bucket:    s3opts.Bucket,
+		s3Region:    s3opts.Region,
+		s3Endpoint:  s3opts.Endpoint,
 		imageStore:  imageStore,
 		cache:       cacheInstance,
 	}, nil
+}
+
+// ImageStore returns the underlying image store so other services (e.g. Nova's
+// lazy fetch-on-boot) can share the same backend client (SPEC-014).
+func (svc *Service) ImageStore() *storage.ImageStore {
+	return svc.imageStore
 }
 
 // RegisterRoutes registers Glance routes (excluding version discovery which is handled separately)
@@ -581,8 +590,11 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 		log.Warn().Err(err).Str("image_id", imageID).Msg("failed to mark image as saving")
 	}
 
-	// Upload to storage
-	size, err := svc.imageStore.UploadImage(c.Request.Context(), imageID, c.Request.Body)
+	// Upload to storage, hashing the uploaded bytes so the image's checksum
+	// (MD5, Glance convention) is recorded — it lets a lazily fetched base be
+	// integrity-verified on boot (SPEC-014 FR-002/FR-017).
+	hasher := md5.New() // #nosec G401 -- Glance checksum is MD5 (compatibility), not a security control
+	size, normalizedToRaw, err := svc.imageStore.UploadImage(c.Request.Context(), imageID, io.TeeReader(c.Request.Body, hasher))
 	if err != nil {
 		// Revert status to queued (best-effort; the upload error is the
 		// user-facing one)
@@ -596,12 +608,16 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 		return
 	}
 
-	// Update status to active, set size, and report disk_format=raw — uploads
-	// are normalized to a raw base on ingest (SPEC-009 WS-0/FR-003). Applies to
-	// the local/RBD real-mode backends; S3-as-Glance-backend is out of WS-0 scope.
+	// Mark active and set size + checksum. Normalizing backends (local/RBD real
+	// mode) store a raw base, so disk_format becomes "raw" (SPEC-009 WS-0/FR-003);
+	// the S3 backend stores the bytes as-is, so its create-time disk_format is left
+	// untouched rather than mislabeled "raw" (SPEC-014).
+	checksum := hex.EncodeToString(hasher.Sum(nil))
 	if _, err := database.DB.Exec(c.Request.Context(),
-		"UPDATE images SET status = $1, size_bytes = $2, disk_format = $3, updated_at = $4 WHERE id = $5",
-		"active", size, "raw", time.Now(), imageID); err != nil {
+		`UPDATE images SET status = $1, size_bytes = $2,
+			disk_format = CASE WHEN $3 THEN 'raw' ELSE disk_format END,
+			checksum = $4, updated_at = $5 WHERE id = $6`,
+		"active", size, normalizedToRaw, checksum, time.Now(), imageID); err != nil {
 		log.Error().Err(err).Str("image_id", imageID).Msg("failed to mark image as active after successful upload")
 	}
 

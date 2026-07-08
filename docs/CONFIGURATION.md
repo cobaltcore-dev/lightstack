@@ -347,7 +347,9 @@ glance:
 - `s3` - S3-compatible storage
 - `local,rbd` - Hybrid (local + Ceph)
 - `local,s3` - Hybrid (local + S3)
-- `rbd,s3` - Hybrid (Ceph + S3)
+
+> `rbd,s3` is **not supported** for Glance and is rejected at startup: the Glance RBD
+> backend is not implemented, so the S3 replica would never be written. Use `local,s3`.
 
 **S3 configuration:**
 ```yaml
