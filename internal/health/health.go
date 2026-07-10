@@ -80,8 +80,11 @@ func (c *Checker) MarkStarted() { c.started.Store(true) }
 func (c *Checker) MarkDraining() { c.draining.Store(true) }
 
 // Ready evaluates readiness: not-ready while draining or before all listeners
-// are bound, otherwise runs every gating check concurrently under a bounded
-// timeout. Never hangs.
+// are bound, otherwise runs each gating check under a bounded timeout. Never
+// hangs. Handlers pass context.Background() (not the request context) so a
+// client disconnect or a client-side probe timeout can't cancel the DB
+// round-trip and be misreported as a failure (PR #70 review) — the per-check
+// timeout is the only deadline.
 func (c *Checker) Ready(ctx context.Context) Result {
 	switch {
 	case c.draining.Load():
@@ -147,7 +150,7 @@ func (c *Checker) Livez(ctx *gin.Context) { ctx.String(http.StatusOK, "ok") }
 // Readyz handles GET /readyz: 200 when serving, 503 + short reason otherwise.
 // A ?verbose query lists each check's status (names only).
 func (c *Checker) Readyz(ctx *gin.Context) {
-	r := c.Ready(ctx.Request.Context())
+	r := c.Ready(context.Background())
 	status := http.StatusOK
 	if !r.Ready {
 		status = http.StatusServiceUnavailable
@@ -166,7 +169,7 @@ func (c *Checker) Readyz(ctx *gin.Context) {
 // Healthcheck handles GET|HEAD /healthcheck: an OpenStack/oslo-compatible alias
 // of readiness, content-negotiating text/plain (default) and JSON by Accept.
 func (c *Checker) Healthcheck(ctx *gin.Context) {
-	r := c.Ready(ctx.Request.Context())
+	r := c.Ready(context.Background())
 	status := http.StatusOK
 	if !r.Ready {
 		status = http.StatusServiceUnavailable

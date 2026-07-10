@@ -39,6 +39,27 @@ func doReq(c *Checker, method, target string) *httptest.ResponseRecorder {
 	return w
 }
 
+// TestReadyz_DecoupledFromRequestContext: a client disconnect (a cancelled
+// request context) must not cancel the DB round-trip and be misreported as 503
+// (PR #70 review). The check is rooted at context.Background(), not the request.
+func TestReadyz_DecoupledFromRequestContext(t *testing.T) {
+	// A ctx-aware check like the real DB probe — it fails if its context is done.
+	ctxAware := Check{Name: "database", Probe: func(ctx context.Context) error { return ctx.Err() }}
+	c := startedChecker(ctxAware)
+
+	r := gin.New()
+	c.Register(r)
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client already went away
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil).WithContext(cctx)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("readyz with a cancelled request context = %d, want 200 — health must not depend on the request lifecycle", w.Code)
+	}
+}
+
 func TestReady_NotStartedUntilListenersBound(t *testing.T) {
 	c := New(zerolog.Nop(), okCheck("database")) // not started
 	if r := c.Ready(context.Background()); r.Ready || r.Reason != "starting" {
