@@ -47,7 +47,8 @@ func TestRunHealthcheck_UsageError(t *testing.T) {
 	}
 }
 
-// TestDrainDelay: O3K_DRAIN_SECONDS parsing — empty/invalid/non-positive → 0.
+// TestDrainDelay: O3K_DRAIN_SECONDS parsing — empty/invalid/non-positive → 0,
+// valid → seconds, and anything above the cap clamps to maxDrainDelay.
 func TestDrainDelay(t *testing.T) {
 	cases := map[string]time.Duration{
 		"":    0,
@@ -55,6 +56,7 @@ func TestDrainDelay(t *testing.T) {
 		"-3":  0,
 		"0":   0,
 		"5":   5 * time.Second,
+		"600": maxDrainDelay, // above the 5m cap → clamped
 	}
 	for val, want := range cases {
 		t.Run(val, func(t *testing.T) {

@@ -426,16 +426,29 @@ func runHealthcheck(args []string) int {
 	return 1
 }
 
+// maxDrainDelay caps the graceful-shutdown drain pause. O3K_DRAIN_SECONDS is
+// operator-supplied and read directly here — outside the chart's render-time
+// "drainSeconds < terminationGracePeriodSeconds" guard (e.g. raw manifests or a
+// bare binary) — so bound it too: a bad value must never block shutdown for an
+// absurd time.
+const maxDrainDelay = 5 * time.Minute
+
 // drainDelay returns the graceful-shutdown drain pause from O3K_DRAIN_SECONDS
-// (whole seconds; default 0 = no pause). The chart sets it so the pod is removed
-// from the Service before the process stops serving (SPEC-013 FR-009). Done in
-// the app (not a preStop `sleep`) so it works on minimal/distroless images too.
+// (whole seconds; default 0 = no pause), clamped to maxDrainDelay. The chart
+// sets it so the pod is removed from the Service before the process stops
+// serving (SPEC-013 FR-009). Done in the app (not a preStop `sleep`) so it works
+// on minimal/distroless images too.
 func drainDelay() time.Duration {
 	n, err := strconv.Atoi(os.Getenv("O3K_DRAIN_SECONDS"))
 	if err != nil || n <= 0 {
 		return 0
 	}
-	return time.Duration(n) * time.Second
+	d := time.Duration(n) * time.Second
+	if d > maxDrainDelay {
+		log.Printf("WARNING: O3K_DRAIN_SECONDS=%d exceeds the %s cap; clamping", n, maxDrainDelay)
+		return maxDrainDelay
+	}
+	return d
 }
 
 func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService *keystone.AuthService, checker *health.Checker) *http.Server {
