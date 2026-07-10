@@ -53,9 +53,10 @@ Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive
 
 ### Operations & Architecture
 - **[OPERATIONS](OPERATIONS.md)** - Day-to-day management
+- **[BLUEPRINT](blueprint.md)** ⭐ - o3k ↔ OpenStack compatibility blueprint: service map, per-service matrix, storage backends, known gaps (pinned to 2025.2 Flamingo)
 - **[ARCHITECTURE](ARCHITECTURE.md)** - System design
-- **[API_COVERAGE_REPORT](API_COVERAGE_REPORT.md)** - 104% API coverage (342/330 endpoints)
 - **[API](API.md)** - OpenStack API compatibility
+- **[API_COVERAGE_REPORT](API_COVERAGE_REPORT.md)** - ⚠️ older 104% count, superseded by BLUEPRINT
 - **[TROUBLESHOOTING](TROUBLESHOOTING.md)** - Common issues and solutions
 
 ### Advanced Topics
@@ -124,7 +125,7 @@ Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive
 [CONFIGURATION](CONFIGURATION.md) | [STORAGE_MODES](STORAGE_MODES.md) | [NETWORKING_MODES](NETWORKING_MODES.md)
 
 **API & Architecture**:
-[API_COVERAGE_REPORT](API_COVERAGE_REPORT.md) | [API](API.md) | [ARCHITECTURE](ARCHITECTURE.md) | [WHATS_LEFT](WHATS_LEFT.md)
+[BLUEPRINT](blueprint.md) | [API](API.md) | [ARCHITECTURE](ARCHITECTURE.md) | [API_COVERAGE_REPORT](API_COVERAGE_REPORT.md) | [WHATS_LEFT](WHATS_LEFT.md)
 
 **Operations**:
 [OPERATIONS](OPERATIONS.md) | [TROUBLESHOOTING](TROUBLESHOOTING.md) | [QUICK_REFERENCE](QUICK_REFERENCE.md)
@@ -149,6 +150,6 @@ Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive
 **Documentation Version**: v1.1
 **Last Updated**: March 17, 2026
 **O3K Version**: v0.5.0 (Production Ready)
-**API Coverage**: 104% (342/330 endpoints)
+**API Coverage**: ~329 functional operations across the five core services — see [BLUEPRINT](blueprint.md) (supersedes the older "104% / 342" figure)
 
 **For complete documentation index with learning paths, see [INDEX.md](INDEX.md)** 📚

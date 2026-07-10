@@ -70,7 +70,7 @@ Choose your deployment strategy based on your use case.
 O3K provides 100% compatibility with OpenStack Horizon dashboard.
 
 - **[HORIZON_FULL_COMPATIBILITY_REPORT](HORIZON_FULL_COMPATIBILITY_REPORT.md)** ⭐ **NEW** - Complete 100% compatibility verification
-  - All 342 API endpoints tested with Horizon
+  - All core API endpoints tested with Horizon
   - Dashboard page compatibility matrix
   - Authentication and authorization flow
   - Performance benchmarks and optimization
@@ -114,8 +114,10 @@ Understand O3K's design, implementation, and OpenStack compatibility.
 - **[KEYSTONE_AUTH_FLOW](KEYSTONE_AUTH_FLOW.md)** - JWT authentication flow
 
 #### API Compatibility
-- **[API_COVERAGE_REPORT](API_COVERAGE_REPORT.md)** - 104% coverage analysis (342/330 endpoints)
-- **[API](API.md)** - OpenStack API compatibility details
+- **[BLUEPRINT](blueprint.md)** ⭐ **AUTHORITATIVE** - o3k ↔ OpenStack compatibility blueprint: service map, ~330 functional operations (counting rule stated), per-service matrix, storage backends, sync-architecture trade-offs, Terraform coverage, sci-in-a-box surface, and known gaps. Pinned to OpenStack 2025.2 (Flamingo).
+- **[compatibility/OPENSTACK_COMPATIBILITY_REPORT](compatibility/OPENSTACK_COMPATIBILITY_REPORT.md)** - Deep per-endpoint analysis + contract-test results (BLUEPRINT's appendix)
+- **[API](API.md)** - Quick-start auth / catalog examples
+- **[API_COVERAGE_REPORT](API_COVERAGE_REPORT.md)** - ⚠️ Superseded: older "104% (342/330)" count; see BLUEPRINT for the reconciled figure
 - **[WHATS_LEFT](WHATS_LEFT.md)** - Optional enterprise features not implemented
 
 #### Architecture Decisions
@@ -123,7 +125,7 @@ Understand O3K's design, implementation, and OpenStack compatibility.
   - [ADR-001](adr/ADR-001-database-dependency-injection.md) - Database dependency injection approach
   - [ADR-002](adr/ADR-002-rate-limiting-architecture.md) - Rate limiting architecture
 
-**Key Stats**: O3K implements 342 endpoints across 5 core services, exceeding the OpenStack baseline by 12 endpoints.
+**Key Stats**: O3K implements ~330 functional operations across the 5 core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance). See [BLUEPRINT](blueprint.md) for the counting rule and per-service breakdown.
 
 ---
 
@@ -299,7 +301,7 @@ Analysis of dashboard compatibility and integration options.
 - GitHub: https://github.com/cobaltcore-dev/o3k
 - License: Apache 2.0
 - Current Version: v0.6.0 (Production Ready)
-- API Coverage: 104% (342/330 endpoints)
+- API Coverage: ~329 functional operations across 5 core services (see [BLUEPRINT](blueprint.md))
 
 ---
 
