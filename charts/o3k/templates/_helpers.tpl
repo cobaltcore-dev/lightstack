@@ -87,6 +87,9 @@ FR-006/006a/007/007a/008b/012e/018.
 {{- fail "\n\ndataRetentionPolicy=delete requires teardown.kubectlImage (SPEC-010 / issue #53): the chart pulls no implicit image (FR-018).\nSet --set teardown.kubectlImage=<registry>/kubectl:<tag>\n" -}}
 {{-   end -}}
 {{- end -}}
+{{- if ge (int .Values.drainSeconds) (int .Values.terminationGracePeriodSeconds) -}}
+{{- fail (printf "\n\ndrainSeconds (%d) must be less than terminationGracePeriodSeconds (%d) (SPEC-013 FR-009): otherwise the SIGTERM drain sleep outlasts the grace period and the kubelet SIGKILLs mid-drain, dropping in-flight requests and leaving endpoint deregistration incomplete.\n" (int .Values.drainSeconds) (int .Values.terminationGracePeriodSeconds)) -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
