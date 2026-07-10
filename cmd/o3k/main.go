@@ -297,6 +297,12 @@ func main() {
 		go func() {
 			log.Printf("Starting server on %s", srv.Addr)
 			serving.Done()
+			// Serve always returns non-nil (net/http); the only non-fatal case is
+			// ErrServerClosed, which occurs solely during the coordinated shutdown
+			// below (all servers, after MarkDraining → /readyz is already 503).
+			// Every other Serve error is fatal, so a dead service port always takes
+			// the whole process down — process-alive implies all listeners serving,
+			// which is why /readyz needn't re-probe the other ports (PR #70 review).
 			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("Server failed: %v", err)
 			}
