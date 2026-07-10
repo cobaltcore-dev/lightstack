@@ -135,13 +135,26 @@ func (c *Checker) record(r Result) Result {
 	return r
 }
 
+// Health endpoint paths. Exported as Paths so callers (e.g. the logging
+// middleware, the `o3k healthcheck` CLI) reference one list instead of
+// duplicating the literals and silently drifting (PR #70 review) — change a
+// path here and every consumer follows.
+const (
+	LivezPath       = "/livez"
+	ReadyzPath      = "/readyz"
+	HealthcheckPath = "/healthcheck"
+)
+
+// Paths are the unauthenticated health routes Register mounts.
+var Paths = []string{LivezPath, ReadyzPath, HealthcheckPath}
+
 // Register mounts the unauthenticated health routes on r (the identity engine,
 // beside the root version route). /healthcheck answers GET and HEAD (FR-014).
 func (c *Checker) Register(r gin.IRouter) {
-	r.GET("/livez", c.Livez)
-	r.GET("/readyz", c.Readyz)
-	r.GET("/healthcheck", c.Healthcheck)
-	r.HEAD("/healthcheck", c.Healthcheck)
+	r.GET(LivezPath, c.Livez)
+	r.GET(ReadyzPath, c.Readyz)
+	r.GET(HealthcheckPath, c.Healthcheck)
+	r.HEAD(HealthcheckPath, c.Healthcheck)
 }
 
 // Livez handles GET /livez: 200 while the process is up, no dependency calls.

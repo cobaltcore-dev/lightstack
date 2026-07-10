@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/health"
 )
 
 var logger zerolog.Logger
@@ -59,9 +61,9 @@ func InitLogger(config *common.LoggingConfig) {
 func LoggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Kubernetes polls the health endpoints every few seconds; serve them
-		// without flooding the access log (SPEC-013).
-		switch c.Request.URL.Path {
-		case "/readyz", "/livez", "/healthcheck":
+		// without flooding the access log (SPEC-013). The path list is owned by
+		// the health package so it can't drift from what's actually registered.
+		if slices.Contains(health.Paths, c.Request.URL.Path) {
 			c.Next()
 			return
 		}

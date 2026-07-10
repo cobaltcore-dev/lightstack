@@ -407,9 +407,9 @@ func runHealthcheck(args []string) int {
 		return 2
 	}
 
-	path := "/readyz"
+	path := health.ReadyzPath
 	if *live {
-		path = "/livez"
+		path = health.LivezPath
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(strings.TrimRight(*addr, "/") + path)
