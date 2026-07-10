@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -284,18 +285,25 @@ func main() {
 		}
 		listeners[i] = ln
 	}
-	healthChecker.MarkStarted()
-
-	// Start all servers
+	// Start all servers. Each goroutine signals just before it begins accepting,
+	// so readiness reports "all listeners up" only once every Serve loop is
+	// running — not merely once the sockets are bound (PR #70 review). Binding
+	// up-front already means connections are backlogged (not refused) in the
+	// interim; this closes the scheduler gap before MarkStarted.
+	var serving sync.WaitGroup
+	serving.Add(len(servers))
 	for i, srv := range servers {
 		srv, ln := srv, listeners[i] // capture loop variables
 		go func() {
 			log.Printf("Starting server on %s", srv.Addr)
+			serving.Done()
 			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("Server failed: %v", err)
 			}
 		}()
 	}
+	serving.Wait()
+	healthChecker.MarkStarted()
 
 	log.Println("O3K started successfully")
 	log.Println("  - Keystone (Identity):    http://localhost:35357/v3")
