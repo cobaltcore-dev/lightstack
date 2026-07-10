@@ -88,9 +88,17 @@ kubectl -n o3k get pods -l app.kubernetes.io/name=o3k \
 | `deployed`  | yes            | —            | —          | **Ready** |
 | `pending-*` / `deployed` | no | no          | not elapsed | **Provisioning** |
 
-A **Ready** release's API is genuinely serving: the pod readiness probe is `GET /v3` on the Keystone
-port, so readiness implies the identity API answers. `--wait` blocks until ready or the timeout; on
-timeout/failure Helm exits non-zero and `.info.status` becomes `failed`.
+A **Ready** release's API is genuinely serving: the pod readiness probe is `GET /readyz` on the
+identity port — DB-gated, so readiness is `true` only when the database is reachable and all listeners
+are up (it returns `503` otherwise), and the Pod `Ready` condition is the machine-readable signal to
+consume (not a custom status protocol). `--wait` blocks until ready or the timeout; on timeout/failure
+Helm exits non-zero and `.info.status` becomes `failed`.
+
+> The health endpoints (`/readyz`, `/livez`, the OpenStack `/healthcheck` alias) are **unauthenticated**
+> and served on the identity port. If you expose the identity port externally, restrict these paths at
+> your load balancer / Ingress (per OpenStack guidance). They expose only a coarse status + a short
+> reason (e.g. `database unavailable`) — never error detail. There is no o3k metrics endpoint; scrape
+> the Pod `Ready` condition via `kube-state-metrics`.
 
 ## 3. Endpoints
 

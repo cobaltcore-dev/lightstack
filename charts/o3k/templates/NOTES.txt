@@ -19,6 +19,9 @@ Verify the deployment:
   kubectl rollout status deploy/{{ include "o3k.fullname" . }}
   {{- end }}
   helm test {{ .Release.Name }}
+  # The Pod reports Ready only once GET /readyz passes — database reachable + all
+  # listeners bound (SPEC-013). Gate automation on the native Pod Ready condition:
+  #   kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=180s
 
 Authenticate (port-forward example):
   kubectl port-forward svc/{{ include "o3k.fullname" . }} 35357:35357

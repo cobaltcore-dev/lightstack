@@ -122,6 +122,36 @@ logging:
   level: info                 # debug | info | warn | error
   format: json                # json | text
 
+# -- Kubernetes health probes (SPEC-013). Served unauthenticated on the identity
+#    port: /readyz (DB-gated readiness), /livez (process-up liveness), and the
+#    OpenStack /healthcheck alias. Paths are fixed — tune timing/thresholds only.
+#    Defaults: ~150s startup grace, ~30s readiness-failure detection, ~60s
+#    liveness-failure restart.
+probes:
+  startup:                      # gates on /readyz; tolerates a slow DB connect at boot
+    enabled: true
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 30        # 30 × 5s ≈ 150s boot grace before CrashLoopBackOff
+  readiness:                    # gates Service traffic on /readyz (DB reachable + listeners up)
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3         # ≈30s to leave the Service after the DB drops
+    successThreshold: 1
+  liveness:                     # /livez — process-up only; never gates on the DB
+    enabled: true
+    periodSeconds: 20
+    timeoutSeconds: 2
+    failureThreshold: 3         # ≈60s to restart a wedged process
+
+# -- Graceful-shutdown drain (SPEC-013 FR-009). On SIGTERM o3k reports not-ready
+#    and waits drainSeconds (so the EndpointSlice deregisters) before stopping —
+#    for zero-drop rolling updates. 0 = off (in-flight requests are still drained
+#    by the graceful shutdown). terminationGracePeriodSeconds MUST exceed it.
+drainSeconds: 0
+terminationGracePeriodSeconds: 30
+
 # -- Pod resources / scheduling.
 resources: {}
 nodeSelector: {}

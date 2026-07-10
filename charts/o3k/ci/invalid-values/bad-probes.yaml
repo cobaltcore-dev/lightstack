@@ -1,0 +1,11 @@
+# INVALID: probe periodSeconds below the minimum. MUST be rejected by minimum:1 (SPEC-013).
+image:
+  repository: ghcr.io/o3k/o3k
+secrets:
+  jwtSecret: x
+  adminPassword: x
+database:
+  url: postgres://o3k@db/o3k
+probes:
+  readiness:
+    periodSeconds: 0

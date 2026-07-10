@@ -3,7 +3,7 @@ name: o3k
 description: Deploy O3K (lightweight OpenStack-compatible cloud) on Kubernetes — single-node and multi-node modes from one chart.
 type: application
 # Chart version (SemVer). Bumped independently of the product.
-version: 0.1.0
+version: 0.2.0
 # Default product image tag when image.tag is unset (image.repository is REQUIRED, no default — FR-018).
 appVersion: "0.7.0"
 kubeVersion: ">=1.25.0-0"

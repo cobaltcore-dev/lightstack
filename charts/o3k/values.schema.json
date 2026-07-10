@@ -243,6 +243,57 @@
     "affinity": {
       "type": "object",
       "description": "Free-form pod affinity (Kubernetes passthrough)."
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Kubernetes health probes (SPEC-013), unauthenticated on the identity port: /readyz (DB-gated readiness), /livez (process-up liveness), and the OpenStack /healthcheck alias. Paths are fixed; tune timing/thresholds only.",
+      "properties": {
+        "startup": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "startupProbe -> /readyz. failureThreshold x periodSeconds is the slow-DB-connect boot grace before CrashLoopBackOff.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "periodSeconds": { "type": "integer", "minimum": 1 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "failureThreshold": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "readinessProbe -> /readyz. Failure removes the pod from the Service (no restart).",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "periodSeconds": { "type": "integer", "minimum": 1 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "failureThreshold": { "type": "integer", "minimum": 1 },
+            "successThreshold": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "liveness": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "livenessProbe -> /livez (process-up only; never the DB). Failure restarts the container.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "periodSeconds": { "type": "integer", "minimum": 1 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "failureThreshold": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "drainSeconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Graceful-shutdown drain pause (SPEC-013 FR-009): on SIGTERM o3k reports not-ready and waits this many seconds (so the EndpointSlice deregisters) before stopping. 0 disables."
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Pod terminationGracePeriodSeconds; MUST exceed drainSeconds plus in-flight request time."
     }
   }
 }

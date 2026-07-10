@@ -51,6 +51,17 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "cache.enabled requires cache.redisUrl"
+  - it: rejects drainSeconds >= terminationGracePeriodSeconds (SPEC-013 FR-009)
+    set:
+      image.repository: ghcr.io/o3k/o3k
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://o3k@db/o3k
+      drainSeconds: 45
+      terminationGracePeriodSeconds: 30
+    asserts:
+      - failedTemplate:
+          errorPattern: "must be less than terminationGracePeriodSeconds"
   - it: renders with minimal valid values
     set:
       image.repository: ghcr.io/o3k/o3k
