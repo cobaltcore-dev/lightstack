@@ -116,7 +116,7 @@ func (svc *Service) GetGroup(c *gin.Context) {
 	).Scan(&name, &domainID, &description, &createdAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("group"))
+		common.SendError(c, common.NewIdentityNotFoundError("group", groupID))
 		return
 	}
 	if err != nil {
@@ -194,8 +194,7 @@ func (svc *Service) UpdateGroup(c *gin.Context) {
 	).Scan(&name, &domainID, &description)
 
 	if err != nil {
-		log.Error().Err(err).Str("operation", "update_group_fetch").Str("group_id", groupID).Msg("Failed to fetch updated group")
-		common.SendError(c, common.NewInternalServerError("failed to fetch updated group"))
+		notFoundOr500(c, err, "group", groupID)
 		return
 	}
 
@@ -228,7 +227,7 @@ func (svc *Service) DeleteGroup(c *gin.Context) {
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		common.SendError(c, common.NewNotFoundError("group"))
+		common.SendError(c, common.NewIdentityNotFoundError("group", groupID))
 		return
 	}
 

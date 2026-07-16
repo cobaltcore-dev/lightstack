@@ -123,7 +123,7 @@ func (svc *Service) GetService(c *gin.Context) {
 	`, serviceID).Scan(&id, &svcType, &name, &description, &enabled)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("service"))
+		common.SendError(c, common.NewIdentityNotFoundError("service", serviceID))
 		return
 	}
 	if err != nil {
@@ -161,7 +161,7 @@ func (svc *Service) DeleteService(c *gin.Context) {
 	}
 
 	if result.RowsAffected() == 0 {
-		common.SendError(c, common.NewNotFoundError("service"))
+		common.SendError(c, common.NewIdentityNotFoundError("service", serviceID))
 		return
 	}
 
@@ -239,7 +239,7 @@ func (svc *Service) UpdateService(c *gin.Context) {
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			common.SendError(c, common.NewNotFoundError("service"))
+			common.SendError(c, common.NewIdentityNotFoundError("service", serviceID))
 			return
 		}
 		log.Error().Err(err).Str("operation", "update_service").Str("service_id", serviceID).Msg("Failed to update service")
@@ -377,7 +377,7 @@ func (svc *Service) DeleteEndpoint(c *gin.Context) {
 	}
 
 	if result.RowsAffected() == 0 {
-		common.SendError(c, common.NewNotFoundError("endpoint"))
+		common.SendError(c, common.NewIdentityNotFoundError("endpoint", endpointID))
 		return
 	}
 

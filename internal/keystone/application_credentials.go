@@ -207,7 +207,7 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 	`, credID, userID).Scan(&id, &userIDVal, &projectID, &name, &description, &expiresAt, &unrestricted)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("application credential"))
+		common.SendError(c, common.NewIdentityNotFoundError("Application Credential", credID))
 		return
 	}
 	if err != nil {
@@ -274,7 +274,7 @@ func (svc *Service) DeleteApplicationCredential(c *gin.Context) {
 	}
 
 	if result.RowsAffected() == 0 {
-		common.SendError(c, common.NewNotFoundError("application credential"))
+		common.SendError(c, common.NewIdentityNotFoundError("Application Credential", credID))
 		return
 	}
 
@@ -297,7 +297,7 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 	`, credID).Scan(&id, &userID, &projectID, &name, &description, &expiresAt, &unrestricted)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("application credential"))
+		common.SendError(c, common.NewIdentityNotFoundError("Application Credential", credID))
 		return
 	}
 	if err != nil {

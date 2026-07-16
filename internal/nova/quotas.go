@@ -159,16 +159,8 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 		return
 	}
 
-	// Admin-only operation - check roles
-	roles := c.GetStringSlice("roles")
-	isAdmin := false
-	for _, role := range roles {
-		if role == "admin" {
-			isAdmin = true
-			break
-		}
-	}
-	if !isAdmin {
+	// Admin-only operation
+	if !common.HasRole(c, "admin") {
 		common.SendError(c, common.NewForbiddenError("Policy doesn't allow quota updates to be performed. Admin role required."))
 		return
 	}
