@@ -120,7 +120,7 @@ func (svc *Service) GetCredential(c *gin.Context) {
 	`, credID).Scan(&id, &userID, &projectID, &credType, &blob)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("credential"))
+		common.SendError(c, common.NewIdentityNotFoundError("credential", credID))
 		return
 	}
 	if err != nil {
@@ -193,7 +193,7 @@ func (svc *Service) UpdateCredential(c *gin.Context) {
 	}
 
 	if result.RowsAffected() == 0 {
-		common.SendError(c, common.NewNotFoundError("credential"))
+		common.SendError(c, common.NewIdentityNotFoundError("credential", credID))
 		return
 	}
 
@@ -216,7 +216,7 @@ func (svc *Service) DeleteCredential(c *gin.Context) {
 	}
 
 	if result.RowsAffected() == 0 {
-		common.SendError(c, common.NewNotFoundError("credential"))
+		common.SendError(c, common.NewIdentityNotFoundError("credential", credID))
 		return
 	}
 

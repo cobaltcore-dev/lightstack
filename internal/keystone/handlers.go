@@ -52,95 +52,94 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	mgmt := v3.Group("")
 	mgmt.Use(authMiddleware)
 
+	// Malformed UUID path ids (params named "id" or "*_id") get a Keystone-verbatim
+	// 404 before the handler, on every management route EXCEPT the authz-gated ones
+	// (user delete, password change, EC2 credentials). Those stay on `mgmt` and
+	// validate the id in-handler AFTER their authz check, so 401/403 still precede
+	// the 404 (cloud-storage#515).
+	val := mgmt.Group("")
+	val.Use(uuidParamMiddleware)
+
 	// Users
-	mgmt.GET("/users", svc.ListUsers)
-	mgmt.POST("/users", svc.CreateUser)
-	mgmt.GET("/users/:id", svc.GetUser)
-	mgmt.PATCH("/users/:id", svc.UpdateUser)
-	mgmt.DELETE("/users/:id", svc.DeleteUser)
-	mgmt.POST("/users/:id/password", svc.ChangePassword)
-	mgmt.GET("/users/:id/projects", svc.GetUserProjects)
-	mgmt.GET("/users/:id/groups", svc.GetUserGroups)
-	mgmt.POST("/users/:id/application_credentials", svc.CreateApplicationCredential)
-	mgmt.GET("/users/:id/application_credentials", svc.ListApplicationCredentials)
-	mgmt.GET("/users/:id/application_credentials/:cred_id", svc.GetApplicationCredential)
-	mgmt.DELETE("/users/:id/application_credentials/:cred_id", svc.DeleteApplicationCredential)
-	// EC2/S3 credentials (OpenStack `openstack ec2 credentials …`; SPEC-014 FR-005)
+	val.GET("/users", svc.ListUsers)
+	val.POST("/users", svc.CreateUser)
+	val.GET("/users/:id", svc.GetUser)
+	val.PATCH("/users/:id", svc.UpdateUser)
+	mgmt.DELETE("/users/:id", svc.DeleteUser)            // authz-gated (admin)
+	mgmt.POST("/users/:id/password", svc.ChangePassword) // authz-gated (self-or-admin)
+	val.GET("/users/:id/projects", svc.GetUserProjects)
+	val.GET("/users/:id/groups", svc.GetUserGroups)
+	val.POST("/users/:id/application_credentials", svc.CreateApplicationCredential)
+	val.GET("/users/:id/application_credentials", svc.ListApplicationCredentials)
+	val.GET("/users/:id/application_credentials/:cred_id", svc.GetApplicationCredential)
+	val.DELETE("/users/:id/application_credentials/:cred_id", svc.DeleteApplicationCredential)
+	// EC2/S3 credentials — authz-gated (self-or-admin via denyIfNotSelfOrAdmin);
+	// the :id (user) is validated in-handler after that check (SPEC-014 FR-005).
 	mgmt.POST("/users/:id/credentials/OS-EC2", svc.CreateEC2Credential)
 	mgmt.GET("/users/:id/credentials/OS-EC2", svc.ListEC2Credentials)
 	mgmt.GET("/users/:id/credentials/OS-EC2/:access", svc.GetEC2Credential)
 	mgmt.DELETE("/users/:id/credentials/OS-EC2/:access", svc.DeleteEC2Credential)
 
 	// Projects (role assignments must come before /projects/:id to avoid conflicts)
-	mgmt.GET("/projects", svc.ListProjects)
-	mgmt.POST("/projects", svc.CreateProject)
-	mgmt.PUT("/projects/:id/users/:user_id/roles/:role_id", svc.AssignRole)
-	mgmt.DELETE("/projects/:id/users/:user_id/roles/:role_id", svc.UnassignRole)
-	mgmt.GET("/projects/:id/users/:user_id/roles", svc.ListUserProjectRoles)
-	mgmt.GET("/projects/:id/users/:user_id/roles/:role_id", svc.CheckRoleAssignment)
-	mgmt.GET("/projects/:id", svc.GetProject)
-	mgmt.PATCH("/projects/:id", svc.UpdateProject)
-	mgmt.DELETE("/projects/:id", svc.DeleteProject)
+	val.GET("/projects", svc.ListProjects)
+	val.POST("/projects", svc.CreateProject)
+	val.PUT("/projects/:id/users/:user_id/roles/:role_id", svc.AssignRole)
+	val.DELETE("/projects/:id/users/:user_id/roles/:role_id", svc.UnassignRole)
+	val.GET("/projects/:id/users/:user_id/roles", svc.ListUserProjectRoles)
+	val.GET("/projects/:id/users/:user_id/roles/:role_id", svc.CheckRoleAssignment)
+	val.GET("/projects/:id", svc.GetProject)
+	val.PATCH("/projects/:id", svc.UpdateProject)
+	val.DELETE("/projects/:id", svc.DeleteProject)
 
 	// Groups
-	mgmt.GET("/groups", svc.ListGroups)
-	mgmt.POST("/groups", svc.CreateGroup)
-	mgmt.GET("/groups/:id", svc.GetGroup)
-	mgmt.PATCH("/groups/:id", svc.UpdateGroup)
-	mgmt.DELETE("/groups/:id", svc.DeleteGroup)
-	mgmt.GET("/groups/:id/users", svc.ListGroupUsers)
-	mgmt.PUT("/groups/:id/users/:user_id", svc.AddUserToGroup)
-	mgmt.DELETE("/groups/:id/users/:user_id", svc.RemoveUserFromGroup)
+	val.GET("/groups", svc.ListGroups)
+	val.POST("/groups", svc.CreateGroup)
+	val.GET("/groups/:id", svc.GetGroup)
+	val.PATCH("/groups/:id", svc.UpdateGroup)
+	val.DELETE("/groups/:id", svc.DeleteGroup)
+	val.GET("/groups/:id/users", svc.ListGroupUsers)
+	val.PUT("/groups/:id/users/:user_id", svc.AddUserToGroup)
+	val.DELETE("/groups/:id/users/:user_id", svc.RemoveUserFromGroup)
 
 	// Roles
-	mgmt.GET("/roles", svc.ListRoles)
-	mgmt.POST("/roles", svc.CreateRole)
-	mgmt.GET("/roles/:id", svc.GetRole)
-	mgmt.PATCH("/roles/:id", svc.UpdateRole)
-	mgmt.DELETE("/roles/:id", svc.DeleteRole)
+	val.GET("/roles", svc.ListRoles)
+	val.POST("/roles", svc.CreateRole)
+	val.GET("/roles/:id", svc.GetRole)
+	val.PATCH("/roles/:id", svc.UpdateRole)
+	val.DELETE("/roles/:id", svc.DeleteRole)
 
 	// Role Assignments
-	mgmt.GET("/role_assignments", svc.ListRoleAssignments)
+	val.GET("/role_assignments", svc.ListRoleAssignments)
 
 	// Domains
-	mgmt.GET("/domains", svc.ListDomains)
-	mgmt.POST("/domains", svc.CreateDomain)
-	mgmt.GET("/domains/:id", svc.GetDomain)
-	mgmt.PATCH("/domains/:id", svc.UpdateDomain)
-	mgmt.DELETE("/domains/:id", svc.DeleteDomain)
-	mgmt.GET("/domains/:id/config", svc.GetDomainConfig)
+	val.GET("/domains", svc.ListDomains)
+	val.POST("/domains", svc.CreateDomain)
+	val.GET("/domains/:id", svc.GetDomain)
+	val.PATCH("/domains/:id", svc.UpdateDomain)
+	val.DELETE("/domains/:id", svc.DeleteDomain)
+	val.GET("/domains/:id/config", svc.GetDomainConfig)
 
 	// Services (catalog management)
-	mgmt.GET("/services", svc.ListServices)
-	mgmt.POST("/services", svc.CreateService)
-	mgmt.GET("/services/:id", svc.GetService)
-	mgmt.PATCH("/services/:id", svc.UpdateService)
-	mgmt.DELETE("/services/:id", svc.DeleteService)
+	val.GET("/services", svc.ListServices)
+	val.POST("/services", svc.CreateService)
+	val.GET("/services/:id", svc.GetService)
+	val.PATCH("/services/:id", svc.UpdateService)
+	val.DELETE("/services/:id", svc.DeleteService)
 
 	// Endpoints
-	mgmt.GET("/endpoints", svc.ListEndpoints)
-	mgmt.POST("/endpoints", svc.CreateEndpoint)
-	mgmt.DELETE("/endpoints/:id", svc.DeleteEndpoint)
+	val.GET("/endpoints", svc.ListEndpoints)
+	val.POST("/endpoints", svc.CreateEndpoint)
+	val.DELETE("/endpoints/:id", svc.DeleteEndpoint)
 
 	// Credentials
-	mgmt.GET("/credentials", svc.ListCredentials)
-	mgmt.POST("/credentials", svc.CreateCredential)
-	mgmt.GET("/credentials/:id", svc.GetCredential)
-	mgmt.PATCH("/credentials/:id", svc.UpdateCredential)
-	mgmt.DELETE("/credentials/:id", svc.DeleteCredential)
+	val.GET("/credentials", svc.ListCredentials)
+	val.POST("/credentials", svc.CreateCredential)
+	val.GET("/credentials/:id", svc.GetCredential)
+	val.PATCH("/credentials/:id", svc.UpdateCredential)
+	val.DELETE("/credentials/:id", svc.DeleteCredential)
 
 	// Application Credentials (lookup by ID without user_id)
-	mgmt.GET("/application_credentials/:id", svc.GetApplicationCredentialByID)
-}
-
-// hasRole returns true if the authenticated user has the given role.
-func hasRole(c *gin.Context, role string) bool {
-	for _, r := range c.GetStringSlice("roles") {
-		if r == role {
-			return true
-		}
-	}
-	return false
+	val.GET("/application_credentials/:id", svc.GetApplicationCredentialByID)
 }
 
 // GetVersion returns Keystone API version info
@@ -360,7 +359,7 @@ func (svc *Service) GetUser(c *gin.Context) {
 	).Scan(&id, &name, &enabled, &domainID)
 
 	if err != nil {
-		common.HandleDatabaseError(c, err, "user")
+		notFoundOr500(c, err, "user", userID)
 		return
 	}
 
@@ -422,7 +421,7 @@ func (svc *Service) GetProject(c *gin.Context) {
 	).Scan(&id, &name, &description, &enabled, &domainID)
 
 	if err != nil {
-		common.HandleDatabaseError(c, err, "project")
+		notFoundOr500(c, err, "project", projectID)
 		return
 	}
 
@@ -537,24 +536,22 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 	updates = append(updates, "updated_at = NOW()")
 	args = append(args, projectID)
 
-	query := fmt.Sprintf("UPDATE projects SET %s WHERE id = $%d", joinUpdates(updates), argIdx)
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "update_project").Str("project_id", projectID).Msg("Failed to update project")
-		common.SendError(c, common.NewInternalServerError("failed to update project"))
-		return
-	}
+	// One statement, not an UPDATE followed by a SELECT: the UPDATE both resolves
+	// existence and hands back the row it wrote, so there is no window in which a
+	// concurrent DELETE can make a successful PATCH look like a 404. RETURNING lists
+	// every column the response needs, because a partial PATCH must still echo the
+	// columns it did not touch (upstream Keystone returns the whole project). A miss
+	// is pgx.ErrNoRows, which notFoundOr500 maps to the verbatim 404.
+	query := fmt.Sprintf(
+		"UPDATE projects SET %s WHERE id = $%d RETURNING name, description, domain_id, enabled",
+		joinUpdates(updates), argIdx)
 
-	// Fetch updated project
 	var name, description, domainID string
 	var enabled bool
-	err = database.DB.QueryRow(c.Request.Context(),
-		"SELECT name, description, domain_id, enabled FROM projects WHERE id = $1",
-		projectID,
-	).Scan(&name, &description, &domainID, &enabled)
-
+	err := database.DB.QueryRow(c.Request.Context(), query, args...).
+		Scan(&name, &description, &domainID, &enabled)
 	if err != nil {
-		common.HandleDatabaseError(c, err, "project")
+		notFoundOr500(c, err, "project", projectID)
 		return
 	}
 
@@ -586,7 +583,7 @@ func (svc *Service) DeleteProject(c *gin.Context) {
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		common.SendError(c, common.NewNotFoundError("project"))
+		common.SendError(c, common.NewIdentityNotFoundError("project", projectID))
 		return
 	}
 
@@ -638,7 +635,7 @@ func (svc *Service) GetRole(c *gin.Context) {
 	).Scan(&id, &name)
 
 	if err != nil {
-		common.HandleDatabaseError(c, err, "role")
+		notFoundOr500(c, err, "role", roleID)
 		return
 	}
 
@@ -723,23 +720,14 @@ func (svc *Service) UpdateRole(c *gin.Context) {
 
 	args = append(args, roleID)
 
-	query := fmt.Sprintf("UPDATE roles SET %s WHERE id = $%d", joinUpdates(updates), argIdx)
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "update_role").Str("role_id", roleID).Msg("Failed to update role")
-		common.SendError(c, common.NewInternalServerError("failed to update role"))
-		return
-	}
+	// Single statement for the same reason as UpdateProject: the UPDATE resolves
+	// existence and returns the row it wrote, so no write-then-read window remains.
+	query := fmt.Sprintf("UPDATE roles SET %s WHERE id = $%d RETURNING name", joinUpdates(updates), argIdx)
 
-	// Fetch updated role
 	var name string
-	err = database.DB.QueryRow(c.Request.Context(),
-		"SELECT name FROM roles WHERE id = $1",
-		roleID,
-	).Scan(&name)
-
+	err := database.DB.QueryRow(c.Request.Context(), query, args...).Scan(&name)
 	if err != nil {
-		common.HandleDatabaseError(c, err, "role")
+		notFoundOr500(c, err, "role", roleID)
 		return
 	}
 
@@ -768,7 +756,7 @@ func (svc *Service) DeleteRole(c *gin.Context) {
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		common.SendError(c, common.NewNotFoundError("role"))
+		common.SendError(c, common.NewIdentityNotFoundError("role", roleID))
 		return
 	}
 
@@ -815,7 +803,7 @@ func (svc *Service) UnassignRole(c *gin.Context) {
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		common.SendError(c, common.NewNotFoundError("role assignment"))
+		common.SendError(c, common.NewRoleAssignmentNotFoundError(roleID, userID, projectID))
 		return
 	}
 
@@ -887,7 +875,7 @@ func (svc *Service) CheckRoleAssignment(c *gin.Context) {
 	}
 
 	if !exists {
-		common.SendError(c, common.NewNotFoundError("role assignment"))
+		common.SendError(c, common.NewRoleAssignmentNotFoundError(roleID, userID, projectID))
 		return
 	}
 
@@ -970,7 +958,7 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 // CreateUser creates a new user (POST /v3/users)
 func (svc *Service) CreateUser(c *gin.Context) {
 	// Only admins may create users
-	if !hasRole(c, "admin") {
+	if !common.HasRole(c, "admin") {
 		common.SendError(c, common.NewForbiddenError("admin role required to create users"))
 		return
 	}
@@ -1100,8 +1088,7 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 		userID,
 	).Scan(&exists)
 
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("user"))
+	if existsOr404(c, err, exists, "user", userID) {
 		return
 	}
 
@@ -1197,8 +1184,14 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 	userID := c.Param("id")
 
 	// Only admins may delete users
-	if !hasRole(c, "admin") {
+	if !common.HasRole(c, "admin") {
 		common.SendError(c, common.NewForbiddenError("admin role required to delete users"))
+		return
+	}
+
+	// Authorization passed; validate the id after it so 403 precedes this 404 (#515).
+	if uuid.Validate(userID) != nil {
+		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
 		return
 	}
 
@@ -1217,7 +1210,7 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 	// Check if user was actually deleted
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		common.SendError(c, common.NewNotFoundError("user"))
+		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
 		return
 	}
 
@@ -1230,8 +1223,14 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 
 	// Users may only change their own password; admins may change any user's password
 	callerID := c.GetString("user_id")
-	if callerID != userID && !hasRole(c, "admin") {
+	if callerID != userID && !common.HasRole(c, "admin") {
 		common.SendError(c, common.NewForbiddenError("cannot change another user's password"))
+		return
+	}
+
+	// Authorization passed; validate the id after it so 403 precedes this 404 (#515).
+	if uuid.Validate(userID) != nil {
+		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
 		return
 	}
 
@@ -1255,7 +1254,7 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 	).Scan(&currentPasswordHash)
 
 	if err != nil {
-		common.HandleDatabaseError(c, err, "user")
+		notFoundOr500(c, err, "user", userID)
 		return
 	}
 
@@ -1299,8 +1298,7 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 		userID,
 	).Scan(&exists)
 
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("user"))
+	if existsOr404(c, err, exists, "user", userID) {
 		return
 	}
 
@@ -1358,8 +1356,7 @@ func (svc *Service) GetUserGroups(c *gin.Context) {
 		userID,
 	).Scan(&exists)
 
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("user"))
+	if existsOr404(c, err, exists, "user", userID) {
 		return
 	}
 

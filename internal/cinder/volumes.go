@@ -940,26 +940,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 	// Handle reset status action (admin operation)
 	if resetStatusData, ok := req["os-reset_status"]; ok {
 		// Verify admin role
-		roles, exists := c.Get("roles")
-		if !exists {
-			common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-reset_status to be performed."))
-			return
-		}
-
-		roleList, ok := roles.([]string)
-		if !ok {
-			common.SendError(c, common.NewInternalServerError("failed to read roles"))
-			return
-		}
-		isAdmin := false
-		for _, role := range roleList {
-			if role == "admin" {
-				isAdmin = true
-				break
-			}
-		}
-
-		if !isAdmin {
+		if !common.HasRole(c, "admin") {
 			common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-reset_status to be performed."))
 			return
 		}

@@ -53,8 +53,15 @@ func ec2CredentialView(userID, tenantID, access, secret string) gin.H {
 // could read or mint another user's S3 credential and reach that tenant's RGW
 // namespace (SPEC-014 FR-007; mirrors the self-or-admin check in ChangePassword).
 func denyIfNotSelfOrAdmin(c *gin.Context, userID string) bool {
-	if c.GetString("user_id") != userID && !hasRole(c, "admin") {
+	if c.GetString("user_id") != userID && !common.HasRole(c, "admin") {
 		common.SendError(c, common.NewForbiddenError("cannot manage another user's EC2 credentials"))
+		return true
+	}
+	// Authorization passed; the path id must still be a well-formed user id or no
+	// such user exists (cloud-storage#515). Checked after authz so a 403 always
+	// precedes this 404 (FR-009), and so a malformed id never reaches the query.
+	if uuid.Validate(userID) != nil {
+		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
 		return true
 	}
 	return false
@@ -69,7 +76,7 @@ func (svc *Service) CreateEC2Credential(c *gin.Context) {
 	if denyIfNotSelfOrAdmin(c, userID) {
 		return
 	}
-	isAdmin := hasRole(c, "admin")
+	isAdmin := common.HasRole(c, "admin")
 
 	var req struct {
 		TenantID string `json:"tenant_id"`

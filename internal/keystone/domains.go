@@ -121,7 +121,7 @@ func (svc *Service) GetDomain(c *gin.Context) {
 	`, domainID).Scan(&id, &name, &description, &enabled)
 
 	if err != nil {
-		common.SendError(c, common.NewNotFoundError("domain"))
+		notFoundOr500(c, err, "domain", domainID)
 		return
 	}
 
@@ -157,8 +157,7 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 		SELECT EXISTS(SELECT 1 FROM domains WHERE id = $1)
 	`, domainID).Scan(&exists)
 
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("domain"))
+	if existsOr404(c, err, exists, "domain", domainID) {
 		return
 	}
 
@@ -251,7 +250,7 @@ func (svc *Service) DeleteDomain(c *gin.Context) {
 	`, domainID).Scan(&enabled)
 
 	if err != nil {
-		common.SendError(c, common.NewNotFoundError("domain"))
+		notFoundOr500(c, err, "domain", domainID)
 		return
 	}
 
@@ -272,7 +271,7 @@ func (svc *Service) DeleteDomain(c *gin.Context) {
 	}
 
 	if result.RowsAffected() == 0 {
-		common.SendError(c, common.NewNotFoundError("domain"))
+		common.SendError(c, common.NewIdentityNotFoundError("domain", domainID))
 		return
 	}
 
@@ -289,8 +288,7 @@ func (svc *Service) GetDomainConfig(c *gin.Context) {
 		SELECT EXISTS(SELECT 1 FROM domains WHERE id = $1)
 	`, domainID).Scan(&exists)
 
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("domain"))
+	if existsOr404(c, err, exists, "domain", domainID) {
 		return
 	}
 

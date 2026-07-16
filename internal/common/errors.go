@@ -79,16 +79,36 @@ func NewResourceNotFoundError(resourceType, resourceID string) *OpenStackError {
 	}
 }
 
-// NewProjectNotFoundError returns a 404 whose message matches Keystone's
-// ProjectNotFound verbatim ("Could not find project: <id>."), so identity
-// endpoints that reference a project by id don't diverge from Keystone's message
-// text. Only the message + status are Keystone-exact; the envelope stays o3k's
-// Nova-style form (that envelope divergence is tracked in cloud-storage#518).
-func NewProjectNotFoundError(projectID string) *OpenStackError {
+// NewIdentityNotFoundError returns a 404 whose message matches Keystone's
+// "<Resource>NotFound" text verbatim ("Could not find <resource>: <id>."), so
+// identity endpoints that reference a resource by id don't diverge from
+// Keystone's message text. Only the message + status are Keystone-exact; the
+// envelope stays o3k's Nova-style form (envelope divergence tracked in
+// cloud-storage#518).
+func NewIdentityNotFoundError(resource, id string) *OpenStackError {
 	return &OpenStackError{
 		StatusCode: http.StatusNotFound,
 		Code:       "itemNotFound",
-		Message:    fmt.Sprintf("Could not find project: %s.", projectID),
+		Message:    fmt.Sprintf("Could not find %s: %s.", resource, id),
+	}
+}
+
+// NewProjectNotFoundError is a convenience wrapper for the common project case.
+func NewProjectNotFoundError(projectID string) *OpenStackError {
+	return NewIdentityNotFoundError("project", projectID)
+}
+
+// NewRoleAssignmentNotFoundError returns a 404 whose message matches Keystone's
+// RoleAssignmentNotFound verbatim. An assignment is identified by a (role, actor,
+// target) triple rather than a single id, so upstream does NOT use the
+// "Could not find <resource>: <id>." form that NewIdentityNotFoundError produces.
+func NewRoleAssignmentNotFoundError(roleID, actorID, targetID string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode: http.StatusNotFound,
+		Code:       "itemNotFound",
+		Message: fmt.Sprintf(
+			"Could not find role assignment with role: %s, user or group: %s, "+
+				"project, domain, or system: %s.", roleID, actorID, targetID),
 	}
 }
 
