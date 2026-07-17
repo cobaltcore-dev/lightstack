@@ -5,3 +5,10 @@
 *.tfstate.*
 *.tfvars
 crash.log
+
+# Ignoring .terraform.lock.hcl is a deliberate deviation from HashiCorp's style guide (which
+# says to commit it): these modules are throwaway compatibility probes, so a fresh checkout
+# resolves the current unmodified provider within `~> 3.0` instead of a pinned patch release.
+# A local lockfile still pins subsequent runs in the same directory until it is deleted (the
+# runbooks' teardown does) or `terraform init -upgrade` is used. The version actually tested
+# is recorded in docs/compatibility/TERRAFORM_COMPATIBILITY_REPORT.md.
