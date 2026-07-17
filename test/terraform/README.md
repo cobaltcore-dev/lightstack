@@ -1,32 +1,37 @@
-# Terraform compatibility tests (SPEC-009)
+# Terraform compatibility tests
 
-Validates that the **unmodified** Terraform OpenStack provider works against O3K
-(spec FR-018 / SC-007). Each workstream gets its own self-contained module:
+Validates that the **unmodified** Terraform OpenStack provider works against o3k. Each
+scenario is a self-contained module:
 
 ```text
 test/terraform/
-├── provider.tf.example   # provider block to copy into each wsN/ dir
-├── ws3/                  # north-south: floating IP (added in WS-3 phase)
-├── ws4/                  # cloud-init: instance + key_pair + user_data (WS-4 phase)
-└── ws5/                  # block storage: volume + attach + boot-from-volume (WS-5 phase)
+├── provider.tf.example   # provider block, for reference (each module ships its own provider.tf)
+├── compat/               # SPEC-016 (cloud-storage#481): the mode-agnostic compatibility smoke —
+│                         #   compute instances, networks, security groups, volumes. Runs against a
+│                         #   stub OR real o3k. This is the #481 harness.
+└── sc007/                # SPEC-009 (SC-007 / FR-018): the real-mode DEEP scenario — instance +
+                          #   keypair + user_data + router + floating IP + attached volume, SSH-verified.
 ```
 
 ## Running
 
-These run against a **live O3K** (real mode, on the Linux/k3s host — see
-`../../docs/specs/009-single-node-real-mode/quickstart.md`). They are not run in
-CI.
+Both modules run against a **live o3k** and are **not** CI-gated (they need a running
+instance). `compat/` is the one to run for #481:
 
 ```bash
-source ~/.o3k-env            # OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, OS_PROJECT_NAME, ...
-cd test/terraform/ws4
-cp ../provider.tf.example provider.tf
+source /tmp/o3k-481-env.sh   # OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, OS_PROJECT_NAME, ...
+cd test/terraform/compat
 terraform init
 terraform apply -auto-approve
-# ... assert the created resources ...
 terraform destroy -auto-approve
 ```
 
-A test passes if `apply` and `destroy` succeed with no provider modification and
-the resulting OpenStack resources match the workstream's contract
-(`../../docs/specs/009-single-node-real-mode/contracts/`).
+- **`compat/`** — step-by-step host runbook (stub, k3s + Helm) with expected outcomes:
+  `../../docs/specs/016-terraform-openstack-provider-verification/HOST_TESTING.md`.
+  A run passes if `apply` and `destroy` both succeed with **no provider modification** and all
+  four resource categories are created and cleaned up.
+- **`sc007/`** — real-mode deep scenario; see
+  `../../docs/specs/009-single-node-real-mode/quickstart.md` and its contracts under
+  `../../docs/specs/009-single-node-real-mode/contracts/`.
+
+Working state (`.terraform/`, `*.tfstate`, lockfile) is git-ignored — see `.gitignore`.
