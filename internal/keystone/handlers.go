@@ -113,10 +113,20 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	// Role Assignments
 	val.GET("/role_assignments", svc.ListRoleAssignments)
 
-	// Domains
+	// Domains.
+	//
+	// GET /domains/:id sits on `mgmt` rather than `val` so it can resolve the
+	// `default` alias: the uuid middleware would answer 404 for it before the handler
+	// ran. Standard clients resolve a `--domain` argument client-side by retrieving
+	// the domain first, so without this the alias works only via a client fallback
+	// that a future client version may drop (SPEC-022 FR-001a, A11).
+	//
+	// The exception is one route, one method, one alias. Every other non-identifier
+	// value on it still gets #515's verbatim 404, produced in-handler; and PATCH,
+	// DELETE and /config stay on `val`, where the middleware still answers.
 	val.GET("/domains", svc.ListDomains)
 	val.POST("/domains", svc.CreateDomain)
-	val.GET("/domains/:id", svc.GetDomain)
+	mgmt.GET("/domains/:id", svc.GetDomain) // alias-aware (see above)
 	val.PATCH("/domains/:id", svc.UpdateDomain)
 	val.DELETE("/domains/:id", svc.DeleteDomain)
 	val.GET("/domains/:id/config", svc.GetDomainConfig)
@@ -450,10 +460,20 @@ func (svc *Service) CreateProject(c *gin.Context) {
 		return
 	}
 
-	// Default domain_id if not provided
-	domainID := req.Project.DomainID
-	if domainID == "" {
-		domainID = "00000000-0000-0000-0000-000000000100" // Default domain UUID
+	// Resolve the domain reference before persisting anything, so a request naming a
+	// domain that does not exist is refused rather than half-applied. An omitted
+	// reference and the `default` alias both resolve the Default domain by name; a
+	// UUID resolves directly. Passing the raw value into the `uuid`-typed domain_id
+	// column is what used to make `domain_id: "default"` — what every OpenStack client
+	// sends — a generic 500 (cloud-storage#545 B5/P1, FR-001..FR-003).
+	domainID, outcome := resolveDomainRef(c.Request.Context(), svc.pool, req.Project.DomainID, enabledDomainsOnly)
+	switch outcome {
+	case domainNotFound:
+		common.SendError(c, common.NewBadRequestError("specified domain not found or disabled"))
+		return
+	case domainQueryFailed:
+		common.SendError(c, common.NewInternalServerError("failed to resolve domain"))
+		return
 	}
 
 	// Default enabled to true if not specified
@@ -473,6 +493,14 @@ func (svc *Service) CreateProject(c *gin.Context) {
 		projectID, req.Project.Name, req.Project.Description, domainID, enabled, now, now,
 	)
 	if err != nil {
+		// projects.name is UNIQUE (migration 001), and the violation used to surface as
+		// a generic 500. Report the collision for what it is, the way CreateUser
+		// already does for users_name_key. Detected by SQLSTATE rather than by matching
+		// the error text (FR-004).
+		if common.IsUniqueViolation(err) {
+			common.SendError(c, common.NewConflictError("project with name '"+req.Project.Name+"' already exists"))
+			return
+		}
 		log.Error().Err(err).Str("operation", "create_project").Msg("Failed to create project")
 		common.SendError(c, common.NewInternalServerError("failed to create project"))
 		return
@@ -986,29 +1014,20 @@ func (svc *Service) CreateUser(c *gin.Context) {
 		enabled = *req.User.Enabled
 	}
 
-	// Get domain ID from request or default to "Default" domain
-	var domainID string
-	if req.User.DomainID != "" {
-		// User specified domain by ID - verify it exists and is enabled
-		domainErr := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT id FROM domains WHERE id = $1 AND enabled = true",
-			req.User.DomainID,
-		).Scan(&domainID)
-		if domainErr != nil {
-			common.SendError(c, common.NewBadRequestError("specified domain not found or disabled"))
-			return
-		}
-	} else {
-		// Default to "Default" domain
-		domainErr := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT id FROM domains WHERE name = $1 AND enabled = true",
-			"Default",
-		).Scan(&domainID)
-		if domainErr != nil {
-			log.Error().Err(domainErr).Str("operation", "create_user_resolve_domain").Msg("Failed to resolve default domain")
-			common.SendError(c, common.NewInternalServerError("failed to resolve default domain"))
-			return
-		}
+	// Resolve the domain reference through the shared resolver, so this handler and
+	// the project/group ones cannot disagree about what a valid domain is (FR-008).
+	// The behaviour change here is narrow: `domain_id: "default"` — the alias every
+	// OpenStack client sends — now resolves instead of being rejected. An unknown or
+	// disabled domain keeps its existing 400 and its existing message text, and a
+	// failed lookup is a 500 whichever domain was named (FR-002, FR-005).
+	domainID, outcome := resolveDomainRef(c.Request.Context(), svc.pool, req.User.DomainID, enabledDomainsOnly)
+	switch outcome {
+	case domainNotFound:
+		common.SendError(c, common.NewBadRequestError("specified domain not found or disabled"))
+		return
+	case domainQueryFailed:
+		common.SendError(c, common.NewInternalServerError("failed to resolve domain"))
+		return
 	}
 
 	// Hash password if provided

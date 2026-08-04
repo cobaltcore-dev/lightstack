@@ -969,6 +969,92 @@ type CreateSubnetRequest struct {
 	} `json:"subnet"`
 }
 
+// callerMaySubnetNetwork reports whether the caller is entitled to attach a subnet to
+// the given network, and writes the refusal itself when they are not — so the caller
+// only has to `return`.
+//
+// The rule is upstream Neutron's `create_subnet: rule:admin_or_network_owner`: the
+// network's owner, or an administrator. **A shared network grants nothing here**, and
+// that is a deliberate difference from CreatePort a few files over, which does admit
+// shared networks (`WHERE id = $1 AND (project_id = $2 OR shared = true)`). Sharing a
+// network lets other tenants *attach to* it; it never lets them define its address
+// ranges, gateway or DHCP behaviour. The two handlers therefore read alike and decide
+// differently on purpose — do not "unify" them (SPEC-022 FR-010, A5).
+//
+// The two refusals are distinguished on purpose (FR-010a): a network the caller cannot
+// see at all is "not found", because confirming its existence would leak it; a shared
+// network they can legitimately see in their own network list is "forbidden", because
+// answering "not found" for something they can plainly see would be a detectable lie.
+//
+// Selecting project_id and shared, rather than filtering on them the way CreatePort
+// does, is what makes those two answers separable at all — a WHERE clause that folds
+// the decision in can only report "no row" (research R5).
+func (svc *Service) callerMaySubnetNetwork(c *gin.Context, networkID, projectID string) bool {
+	// A malformed id is a bad request naming the field, not a not-found: it is a body
+	// attribute, so #515's rule for malformed *path* ids does not reach it. Checking
+	// here also keeps the value away from the uuid-typed column, where Postgres would
+	// raise 22P02 and surface as the 500 this feature exists to remove (FR-011a).
+	if uuid.Validate(networkID) != nil {
+		common.SendError(c, common.NewBadRequestError("invalid network_id"))
+		return false
+	}
+
+	// `owner` is a plain string although networks.project_id is nullable (migration
+	// 001:76 declares no NOT NULL). Every writer sets it — CreateNetwork (network.go:498)
+	// and the auto-allocated topology (auto_allocated_topology.go:82) are the only two
+	// INSERTs, and both take the project from the token — so a NULL is reachable only by
+	// editing the table by hand. If one ever appears, Scan fails and the error limb below
+	// answers 500: this fails closed, which is the direction a security check should fail.
+	// A *string here would buy nothing and make the ownership comparison harder to read.
+	//
+	// That the Scan *fails* rather than yielding "" is the load-bearing half, so: pgx's
+	// scanPlanString returns `cannot scan NULL into *string` on a nil src
+	// (pgtype/pgtype.go:410 in v5.10.0), and UUIDCodec.PlanScan offers no plan for a plain
+	// *string, so that generic plan is what runs here. A NULL therefore never reaches the
+	// ownership comparison below. Spelled out because the claim is easy to doubt, and
+	// reading it backwards makes this look like a bypass that it is not.
+	var owner string
+	var shared bool
+	err := svc.pool.QueryRow(c.Request.Context(),
+		"SELECT project_id, shared FROM networks WHERE id = $1",
+		networkID,
+	).Scan(&owner, &shared)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		// FR-011: no network of that id. Previously this reached the foreign key and
+		// surfaced as a 500.
+		common.SendError(c, common.NewNotFoundError("network"))
+		return false
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_subnet_network_lookup").
+			Str("network_id", networkID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to create subnet"))
+		return false
+	}
+
+	if owner == projectID || common.HasRole(c, common.RoleAdmin) {
+		return true
+	}
+
+	// A refused cross-tenant write is the event an operator goes looking for later —
+	// a misconfigured client, or a probe. Named parties, or it cannot answer that
+	// question (FR-011b). A legitimate creation logs nothing.
+	log.Warn().
+		Str("caller_project", projectID).
+		Str("network_id", networkID).
+		Str("network_owner", owner).
+		Bool("network_shared", shared).
+		Msg("refused cross-tenant subnet write")
+
+	if shared {
+		common.SendError(c, common.NewForbiddenError("only the owner of a network may add subnets to it"))
+		return false
+	}
+	common.SendError(c, common.NewNotFoundError("network"))
+	return false
+}
+
 // CreateSubnet creates a new subnet
 func (svc *Service) CreateSubnet(c *gin.Context) {
 	var req CreateSubnetRequest
@@ -978,6 +1064,19 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 	}
 
 	projectID := c.GetString("project_id")
+
+	// Only the target network's owner — or an administrator — may add a subnet to it.
+	// Without this the network_id came straight from the request body and was never
+	// checked against the caller's project, so any tenant could define the address
+	// range, gateway and DHCP behaviour on any other tenant's network, and the victim's
+	// own views then advertised it as theirs (cloud-storage#545 B8, FR-009/FR-010).
+	//
+	// This runs before the INSERT and before applyDHCPForNetwork, so a refused request
+	// leaves no subnet row and starts no address assignment on the target network.
+	if !svc.callerMaySubnetNetwork(c, req.Subnet.NetworkID, projectID) {
+		return
+	}
+
 	subnetID := uuid.New().String()
 
 	ipVersion := 4
@@ -1115,7 +1214,11 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 
 	var subnets []gin.H
 	for rows.Next() {
-		var id, name, networkID, cidr, gatewayIP, owner string
+		var id, name, networkID, cidr, gatewayIP string
+		// Nullable: subnets.project_id carries no NOT NULL, and pgx refuses a NULL into a
+		// plain string — which ends the whole result set, not just this row. A NULL owner
+		// reads as tenant_id null.
+		var owner *string
 		var ipVersion int
 		var enableDHCP bool
 		var dnsNameservers []string
@@ -1168,7 +1271,8 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	subnetID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	var id, name, networkID, cidr, gatewayIP, owner string
+	var id, name, networkID, cidr, gatewayIP string
+	var owner *string // nullable, see ListSubnets
 	var ipVersion int
 	var enableDHCP bool
 	var dnsNameservers []string
@@ -1178,8 +1282,8 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	// non-UUID identifier (the CLI looks up by name this way).
 	//
 	// The visibility predicate must match ListSubnets: the owning NETWORK's project
-	// counts as well as the subnet's own, or an id returned by the listing 404s here.
-	// This is also upstream's rule — neutron's get_subnet policy is
+	// counts as well as the subnet's own, or an id returned by the listing 404s here
+	// (SPEC-022 FR-013a). This is also upstream's rule — neutron's get_subnet policy is
 	// `PROJECT_READER or rule:shared or ... or ADMIN_OR_NET_OWNER_READER`, where
 	// NET_OWNER_READER is `project_id:%(network:project_id)s`.
 	//
@@ -1235,11 +1339,21 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Resolve subnet by UUID or name to its canonical ID (and network for DHCP).
+	// Scope: the subnet's own project, or the owner of the network it sits on —
+	// upstream's delete_subnet is `PROJECT_MEMBER or ADMIN_OR_NET_OWNER_MEMBER`, so a
+	// network's owner may remove a subnet another project attached to it. Deliberately
+	// **no** `shared` disjunct, unlike GetSubnet: upstream puts `rule:shared` in
+	// get_subnet and not in delete_subnet, so sharing a network lets others read its
+	// subnets, never delete them (SPEC-022 FR-013a).
 	var resolvedID, networkID string
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, network_id FROM subnets WHERE (id::text = $1 OR name = $1) AND project_id = $2 LIMIT 1",
-		subnetID, projectID,
-	).Scan(&resolvedID, &networkID)
+	err := svc.pool.QueryRow(c.Request.Context(), `
+		SELECT s.id, s.network_id
+		FROM subnets s
+		JOIN networks n ON s.network_id = n.id
+		WHERE (s.id::text = $1 OR s.name = $1)
+		  AND (s.project_id = $2 OR n.project_id = $2)
+		LIMIT 1
+	`, subnetID, projectID).Scan(&resolvedID, &networkID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
@@ -1257,10 +1371,13 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to stop DHCP server")
 	}
 
-	// Delete from database
+	// Delete by the id the entitlement check above already resolved. Re-filtering on
+	// project_id here would silently no-op for a network owner removing another
+	// project's subnet — 204 with the row still present — because the two predicates
+	// would disagree. One decision, one place.
 	_, err = svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM subnets WHERE id = $1 AND project_id = $2",
-		resolvedID, projectID,
+		"DELETE FROM subnets WHERE id = $1",
+		resolvedID,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", resolvedID).Msg("database error")
@@ -1286,12 +1403,21 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		return
 	}
 
-	// Resolve subnet by UUID or name to its canonical ID.
+	// Resolve subnet by UUID or name to its canonical ID. Scoped like DeleteSubnet —
+	// the subnet's own project or the owner of the network it sits on, no `shared`
+	// disjunct — because upstream's update_subnet and delete_subnet carry the same rule
+	// (`PROJECT_MEMBER or ADMIN_OR_NET_OWNER_MEMBER`). Renaming is strictly weaker than
+	// removing, so a scope that allows the delete and refuses the rename would be an
+	// odd place to draw a line (SPEC-022 FR-013a).
 	var resolvedID, currentName string
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, name FROM subnets WHERE (id::text = $1 OR name = $1) AND project_id = $2 LIMIT 1",
-		subnetID, projectID,
-	).Scan(&resolvedID, &currentName)
+	err := svc.pool.QueryRow(c.Request.Context(), `
+		SELECT s.id, s.name
+		FROM subnets s
+		JOIN networks n ON s.network_id = n.id
+		WHERE (s.id::text = $1 OR s.name = $1)
+		  AND (s.project_id = $2 OR n.project_id = $2)
+		LIMIT 1
+	`, subnetID, projectID).Scan(&resolvedID, &currentName)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
@@ -1308,9 +1434,13 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		currentName = *req.Subnet.Name
 	}
 
+	// By resolved id only — the entitlement query above has already decided. Carrying
+	// project_id here too would make a network owner's rename a silent no-op: 200 with
+	// the old name still stored, because the two predicates disagree (the same trap
+	// DeleteSubnet had).
 	_, err = svc.pool.Exec(c.Request.Context(),
-		"UPDATE subnets SET name = $1 WHERE id = $2 AND project_id = $3",
-		currentName, resolvedID, projectID,
+		"UPDATE subnets SET name = $1 WHERE id = $2",
+		currentName, resolvedID,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", resolvedID).Msg("database error")
@@ -1318,15 +1448,18 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		return
 	}
 
-	// Return updated subnet
+	// Return updated subnet. tenant_id comes from the row, not from the caller: now
+	// that a network's owner may rename a subnet belonging to another project, the two
+	// differ, and reporting the caller would tell them the resource is theirs.
 	var networkID, cidr, gatewayIP string
+	var owner *string // nullable, see ListSubnets
 	var ipVersion int
 	var enableDHCP bool
 	var dnsNameservers []string
 	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT network_id, cidr, gateway_ip, ip_version, enable_dhcp, dns_nameservers FROM subnets WHERE id = $1",
+		"SELECT network_id, cidr, gateway_ip, ip_version, enable_dhcp, dns_nameservers, project_id FROM subnets WHERE id = $1",
 		resolvedID,
-	).Scan(&networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers)
+	).Scan(&networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &owner)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_subnet_fetch").Str("subnet_id", subnetID).Msg("database error")
@@ -1343,7 +1476,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 			"id":               resolvedID,
 			"name":             currentName,
 			"network_id":       networkID,
-			"tenant_id":        projectID,
+			"tenant_id":        owner,
 			"cidr":             cidr,
 			"gateway_ip":       gatewayIP,
 			"ip_version":       ipVersion,

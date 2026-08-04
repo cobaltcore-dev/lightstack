@@ -32,6 +32,19 @@ print_test() {
     echo -e "\n${YELLOW}[TEST]${NC} $1"
 }
 
+# The counters use `VAR=$((VAR + 1))`, not `((VAR++))`, on purpose.
+#
+# `((VAR++))` evaluates to the value *before* the increment, and bash reports an
+# arithmetic expression evaluating to 0 as exit status 1. Combined with `set -e` above,
+# that made the FIRST failure fatal: print_fail is the last command of the
+# `... && print_pass || print_fail` chains below, so its status became the chain's, and
+# the script died before reaching any later check. Passes were immune only because
+# `&&`/`||` suppresses `set -e` for their left-hand elements.
+#
+# The effect was a suite that could never report more than one failure and whose
+# summary was therefore unreliable — the same class of defect as the suites repaired in
+# the cloud-storage#534 review. Fixed here because SPEC-022 SC-008 requires this suite's
+# verdict to be meaningful (cloud-storage#545).
 print_pass() {
     echo -e "${GREEN}[PASS]${NC} $1"
     PASSED=$((PASSED + 1))
