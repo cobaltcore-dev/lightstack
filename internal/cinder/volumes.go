@@ -188,15 +188,55 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// URL themselves still reach us here.
 	//
 	// Every resource registered flat above is therefore registered here too, deliberately:
-	// this group predates the feature by 43 routes, and the one gap in it — `GET
-	// /v3/{project}/volumes`, present as POST but not GET — is filed as a real defect
-	// (cloud-storage#536 B2, a 405 that surprised a client). Leaving the new resources out
-	// of the group would reproduce exactly that class of bug for groups and quota-sets, so
-	// the duplication is the consistent choice, not scope creep.
+	// leaving a resource out of the group reproduces a bug class this project has already
+	// paid for twice, so the duplication is the consistent choice, not scope creep.
+	//
+	// The `:project_id` segment is decoration: every handler in this group reads the
+	// caller's project from the token and none calls c.Param("project_id"). That is what
+	// makes these routes behaviourally identical to their flat twins, and why the segment
+	// cannot widen what a caller sees.
+	//
+	// Two distinct failure modes live here; only the second answers *wrongly*:
+	//
+	//   - **Absent** — no route matches, so the path gets an honest 404. Unhelpful, but
+	//     truthful.
+	//   - **Shadowed** — a by-identifier sibling is registered at the same level, so a
+	//     literal sub-resource name matches *it* and the request is served as a lookup
+	//     for a resource of that name. `GET /v3/groups/detail` did this, GetGroup 500'd,
+	//     and Horizon's Create Volume modal aborted with nothing in the logs pointing at
+	//     routing (cloud-storage#533 F8).
+	//
+	// SPEC-022 (cloud-storage#545 B2) closed the ticketed `GET /volumes` — registered as
+	// POST but not GET, a 405 that surprised a client — plus the four names that were
+	// shadowed here: `volumes/detail`, `snapshots/detail`, `types/default` and
+	// `os-volume-transfer/detail`, each of which had a `:id` sibling at the same level and
+	// so answered as a lookup for a resource literally named "detail"/"default".
+	//
+	// `os-volume-transfer/detail` was missed on the first pass and found by probing the
+	// whole set during the o3k#82 review: this group registers `GET /os-volume-transfer/:id`
+	// below, so the sibling was there all along. It is the reason to distrust a
+	// hand-derived list — the probe is in TestProjectScopedSubResourcesNotShadowed.
+	//
+	// Fourteen routes remain absent from this group, deliberately: they are merely
+	// missing, not wrong, and adding them would ship surface whose only coverage is the
+	// registration guard itself (FR-016a). A later ticket should close them as a set:
+	//
+	//	GET/POST /backups, GET/DELETE /backups/:id, POST /backups/:id/action,
+	//	GET /backups/detail, PUT /volumes/:id, GET /os-availability-zone,
+	//	GET /os-volume-transfer,
+	//	GET/POST /qos-specs, GET/PUT/DELETE /qos-specs/:id
+	//
+	// Two notes on that list. `backups/detail` is in it and is *not* shadowed: this group
+	// registers no backup route at all, so nothing swallows it. And `GET
+	// /os-volume-transfer` is the same shape as the ticketed B2 defect — POST registered,
+	// GET not, so it answers 405 — left in scope for that later ticket rather than
+	// widened into this one.
 	v3 := r.Group("/v3/:project_id")
 	{
-		// Volumes (create, get by ID, update, delete - need project_id in URL)
+		// Volumes (create, list, get by ID, update, delete - need project_id in URL)
 		v3.POST("/volumes", svc.CreateVolume)
+		v3.GET("/volumes", svc.ListVolumes)
+		v3.GET("/volumes/detail", svc.ListVolumesDetail)
 		v3.GET("/volumes/:id", svc.GetVolume)
 		v3.PATCH("/volumes/:id", svc.UpdateVolume)
 		v3.DELETE("/volumes/:id", svc.DeleteVolume)
@@ -211,6 +251,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Snapshots
 		v3.GET("/snapshots", svc.ListSnapshots)
+		v3.GET("/snapshots/detail", svc.ListSnapshotsDetail)
 		v3.POST("/snapshots", svc.CreateSnapshot)
 		v3.GET("/snapshots/:id", svc.GetSnapshot)
 		v3.PUT("/snapshots/:id", svc.UpdateSnapshot)
@@ -226,6 +267,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Volume types
 		v3.GET("/types", svc.ListVolumeTypes)
+		v3.GET("/types/default", svc.GetDefaultVolumeType)
 		v3.POST("/types", svc.CreateVolumeType)
 		v3.GET("/types/:id", svc.GetVolumeType)
 		v3.PUT("/types/:id", svc.UpdateVolumeType)
@@ -246,6 +288,13 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Volume transfers
 		v3.POST("/os-volume-transfer", svc.CreateVolumeTransfer)
+		// Registered *before* the `:id` sibling reads better here, but order is not what
+		// makes this work — gin prefers a static segment over a wildcard at the same
+		// level. Without this route the literal `detail` bound to `:id` and answered as a
+		// lookup for a transfer of that name, which is the shadowing class B2 fixed for
+		// volumes/snapshots/types. The flat twin (line 64) registers the
+		// ListVolumeTransfersNoProject alias, which does nothing but call this handler.
+		v3.GET("/os-volume-transfer/detail", svc.ListVolumeTransfers)
 		v3.GET("/os-volume-transfer/:id", svc.GetVolumeTransfer)
 		v3.POST("/os-volume-transfer/:id/accept", svc.AcceptVolumeTransfer)
 		v3.DELETE("/os-volume-transfer/:id", svc.DeleteVolumeTransfer)

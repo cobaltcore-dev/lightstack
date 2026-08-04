@@ -111,7 +111,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 
 | Criterion | Result |
 |---|---|
-| Login + project switching verified in real UI | **Login ✅** (real). Project switching: switcher present + correct, but only `default` is seeded → re-scope **still not demonstrable**. Originally logged as a fixture limit; the #533 pass found the actual blocker — `POST /v3/projects` returns **500** (**F13**), so a second project cannot be created at all. |
+| Login + project switching verified in real UI | **Login ✅** (real). Project switching: **partially verified** (2026-08-07). The blocker is gone — `POST /v3/projects` no longer 500s (**F13**, fixed in #545/SPEC-022) — and the mechanism behind the switcher is proven at the API: a second project creates with `--domain default`, `GET /v3/auth/projects` lists both, and a token re-scopes to the second. The **switch through the dashboard is still undemonstrated**; it needs a Horizon pass, which this unblocks rather than performs. Originally logged as a fixture limit; the #533 pass found the actual blocker. |
 | Resource management: launch / network / volume | ✅ **All three now succeed through the UI** (#533, 2026-07-29, stub **and** real): network + subnet via the Create Network dialog; volume via the Create Volume dialog (`available`, real qcow2 on disk); instance via the Launch wizard (**ACTIVE**, real libvirt domain, booted from the RGW image). Beyond the criterion: a Horizon-created key pair yields working **`ssh`** into that VM. Originally: all three failed in the UI while succeeding via API/CLI. |
 | Report: per workflow working / not working (+ gaps) | ✅ this document |
 | Report published to `docs/` | ✅ |
@@ -175,8 +175,9 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   it for the seeded project, so only unseeded projects ever saw `100/200/512000`.
 - **Verified**: stub + real — the widget renders Compute, Volume and Network groups. The Network group
   appearing is itself the proof that Horizon took the `quota_details` path.
-- **Still open**: reload **after a project switch** was never verified — it needs a second project, and
-  `POST /v3/projects` returns 500 (**F13**).
+- **Still open**: reload **after a project switch** was never verified. The blocker is cleared — a second
+  project can now be created (**F13**, fixed in #545/SPEC-022) — so this is a pending Horizon check rather
+  than a blocked one.
 
 ### F3 — No "Create Network" in the Project panel (medium) — _stub_ — ✅ **FIXED (SPEC-020 / #533, 2026-07-29)**
 - **Cause**: Project → Network → Networks lacks the Create Network button (only Admin → Network → Networks
@@ -372,11 +373,26 @@ was no drift to inherit); **F16** is a documented limitation of the F7 fix.
   Horizon exposes no panel for OS-EC2, so tenant S3 credentials are CLI-only. Upstream Horizon is the same;
   recorded so the tenant-object-storage workflow isn't mistaken for a defect.
 
-### F13 — `POST /v3/projects` returns 500 (major) — _stub + real_ — ❌ **open**
-- **Impact**: a second project cannot be created, so **project switching has never been demonstrable** — the
-  #482 criterion above, originally attributed to a fixture limitation. It also blocks verifying the Overview
+### F13 — `POST /v3/projects` returns 500 (major) — _stub + real_ — ✅ **FIXED (SPEC-022 / #545, 2026-08-07)**
+- **Impact**: a second project could not be created, so **project switching had never been demonstrable** — the
+  #482 criterion above, originally attributed to a fixture limitation. It also blocked verifying the Overview
   widget across a project switch (F2's residual) and the tenant-object-storage flow.
-- Reproduces on the base commit. Likely `domain_id: "default"` not resolved to a UUID.
+- **Cause** (the guess in the original entry was right): `CreateProject` defaulted only the *empty*
+  `domain_id`, then passed any supplied string straight into a `uuid` column. `domain_id: "default"` — what
+  every OpenStack client sends, because upstream Keystone's Default domain literally carries `default` as its
+  id — failed at the database and surfaced as a generic `computeFault`. `POST /v3/users` rejected the same
+  value cleanly with a `400`, so the reference implementation was already in the same file.
+- **Fix**: one shared resolver, used by project, user and group creation *and* by domain retrieval, resolving
+  the Default domain **by name** rather than by a hard-coded id (migrations 009 and 037 seed that name with
+  different ids). An unknown or disabled domain now answers `400` naming the field; a duplicate project name
+  answers `409` instead of a `500`. `GET /v3/domains/default` resolves, and `GET /v3/domains?name=` filters.
+- **Verified — API (2026-08-07, stub stack built from `feature/545`)**: `POST /v3/projects --domain default`
+  → **`201`**; `GET /v3/auth/projects` — the call that populates Horizon's project switcher — returns **both**
+  projects; re-scoping a token to the second returns **`201`** with `token.project.name` set to it. So the
+  mechanism behind the switcher is proven end to end.
+- **Still unverified — UI**: the switch *through the dashboard* has not been exercised, because that needs a
+  Horizon pass. This fix unblocks the #482 criterion rather than satisfying it; the same applies to F2's
+  residual (Overview widget across a switch) and the tenant-object-storage flow.
 
 ### F14 — `local_settings` drift between the compose config and the Helm chart (medium) — _real_ — ✅ **FIXED in-pass**
 - **Cause**: `deployments/horizon-chart/files/local_settings` is **generated** from
@@ -487,8 +503,8 @@ finding.
 **Answer to #482.** O3K is a drop-in for the OpenStack API/CLI **and, after #532 and #533, the Horizon
 dashboard is usable for UI-driven resource management** — create a network, create a volume, launch an instance,
 then SSH into it, all from the dashboard, in stub and real mode — and, after #534, watch it boot on the Console
-tab. **All nine #482 findings are closed.** The remaining gaps are the pre-existing defects F10–F13/F15, which
-this verification surfaced but did not cause.
+tab. **All nine #482 findings are closed.** The remaining gaps are the pre-existing defects **F10, F11, F12 and
+F15**, which this verification surfaced but did not cause; **F13** was fixed in #545 (SPEC-022, 2026-08-07).
 
 This does not rehabilitate the prior `HORIZON_FULL_COMPATIBILITY_REPORT.md` **"100% compatible / 342
 endpoints"** claim. That claim was never grounded in a browser-level check, and the sixteen findings in this
@@ -509,9 +525,11 @@ report are what grounding it cost — endpoint coverage alone did not, and does 
   writing a relay, and a configurable origin. Also closed two things the ticket did not name — the guest VNC
   listened on `0.0.0.0` (token bypassable) and console-port reuse could point a stale token at another tenant's
   guest.
-- **F10, F11, F12, F13, F15 (open)** — pre-existing, surfaced by the #533 pass; see *Findings from the #533
-  pass*. **F13** (`POST /v3/projects` 500) is the highest value: it is the reason project switching has never
-  been demonstrated, and it blocks two other checks.
+- **F10, F11, F12, F15 (open)** — pre-existing, surfaced by the #533 pass; see *Findings from the #533 pass*.
+  **F13** (`POST /v3/projects` 500) was the highest value of that set — the reason project switching had never
+  been demonstrated, and a blocker on two other checks — and was fixed in #545 (SPEC-022, 2026-08-07). Of what
+  remains, **F10** (`POST /v2.0/ports` 500) is the highest value, per #546: it is also the likely root of the
+  guest's metadata-service reachability failures.
 - **F16** — boot-from-new-volume is adopted rather than implemented; belongs with SPEC-009 storage work.
 
 **Reproducibility (SC-005 met).** Both passes are fully scripted in the two `HOST_TESTING*.md` runbooks;

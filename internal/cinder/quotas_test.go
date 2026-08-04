@@ -372,10 +372,27 @@ func TestRouteRegistration_NoWildcardConflict(t *testing.T) {
 		"DELETE /v3/os-quota-sets/:id",
 		"GET /v3/:project_id/os-quota-sets/:id",
 		"GET /v3/:project_id/os-quota-sets/:id/defaults",
+		// SPEC-022 B2: the project-scoped volume collection, absent as a GET while
+		// POST was registered — a 405 that surprised a client — plus the three
+		// sub-resource names a sibling :id route in the same group was swallowing.
+		"GET /v3/:project_id/volumes",
+		"GET /v3/:project_id/volumes/detail",
+		"GET /v3/:project_id/snapshots/detail",
+		"GET /v3/:project_id/types/default",
 	} {
 		if !registered[want] {
 			t.Errorf("route %q is not registered", want)
 		}
+	}
+
+	// SPEC-022 FR-016a: `backups/detail` stays absent from the project-scoped group.
+	// It is not shadowed — that group registers no backup route at all, so the path
+	// answers an honest 404 from the no-route case rather than being served as a
+	// lookup for a backup named "detail". It belongs with the 15 merely-absent routes
+	// a later ticket closes deliberately, not with the three that answer wrongly.
+	if registered["GET /v3/:project_id/backups/detail"] {
+		t.Error("GET /v3/:project_id/backups/detail was added; FR-016a scopes it out — " +
+			"it is absent rather than shadowed, so adding it here is untested surface")
 	}
 
 	// And `/detail` must NOT be registered. It is Nova's spelling; Block Storage v3

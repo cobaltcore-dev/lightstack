@@ -73,10 +73,17 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 		return
 	}
 
-	// Default to "default" domain
-	domainID := req.Group.DomainID
-	if domainID == "" {
-		domainID = "00000000-0000-0000-0000-000000000100" // default domain (corrected UUID)
+	// Resolve the domain reference through the shared resolver. This handler carried a
+	// copy of CreateProject's unvalidated hard-coded default, and therefore its
+	// identical 500 for `domain_id: "default"` (SPEC-022 FR-006, A3).
+	domainID, outcome := resolveDomainRef(c.Request.Context(), req.Group.DomainID, enabledDomainsOnly)
+	switch outcome {
+	case domainNotFound:
+		common.SendError(c, common.NewBadRequestError("specified domain not found or disabled"))
+		return
+	case domainQueryFailed:
+		common.SendError(c, common.NewInternalServerError("failed to resolve domain"))
+		return
 	}
 
 	groupID := uuid.New().String()
@@ -88,6 +95,14 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 		groupID, req.Group.Name, domainID, req.Group.Description, now, now,
 	)
 	if err != nil {
+		// groups is UNIQUE(name, domain_id) (migration 010), and the violation used to
+		// surface as a generic 500 — the same defect CreateProject just shed. The
+		// message names the domain because, unlike projects.name, the constraint is
+		// per-domain: the same group name is legitimate in another domain.
+		if common.IsUniqueViolation(err) {
+			common.SendError(c, common.NewConflictError("group with name '"+req.Group.Name+"' already exists in this domain"))
+			return
+		}
 		log.Error().Err(err).Str("operation", "create_group").Msg("Failed to create group")
 		common.SendError(c, common.NewInternalServerError("failed to create group"))
 		return

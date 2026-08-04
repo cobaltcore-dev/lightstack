@@ -73,7 +73,11 @@ from the functional count:
 - **Version-discovery roots** (`GET /`, `GET /v3`, `GET /v2.1`, …) — informational, not resource operations.
 - **Cinder project-scoped URL aliases** — Cinder registers most operations twice: a token-scoped form
   (`/v3/volumes`) and a project-in-path form (`/v3/{project_id}/volumes`). These are the *same* operation
-  at two URLs; counted once.
+  at two URLs; counted once. The project segment is decoration — every handler reads the caller's project
+  from the token — so the two forms return the same collection for the same caller. Note the two sets are
+  *not* yet identical: 14 operations are still registered only on the token-scoped form (see the note above
+  `r.Group("/v3/:project_id")` in `internal/cinder/volumes.go`), so "same operation at two URLs" describes
+  the operations present at both, not the whole surface.
 - **PUT/PATCH duplicate registrations** bound to the same handler (o3k accepts both for client tolerance;
   e.g. Neutron `networks`/`subnets`/`ports`/`security-groups`). Counted once, by the OpenStack-canonical verb.
 

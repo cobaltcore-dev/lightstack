@@ -124,10 +124,13 @@ func keysOf(m map[string]any) []string {
 // so the network response advertises the foreign subnet's id, and the subnet listing then
 // cannot resolve it — Horizon renders a null row and the wizard's network step fails.
 //
-// The shape is reachable because CreateSubnet accepts any `network_id` without checking
-// that the caller owns the network — pre-existing on 71aa00d and left alone here, since
-// rejecting those requests would be a new failure mode (FR-016). This test only fixes the
-// listing side, which is what makes the two views agree.
+// The shape is reachable through the administrator path. When this test was written any
+// tenant could produce it, because CreateSubnet took `network_id` from the request body
+// and never checked it against the caller (cloud-storage#545 B8, fixed since). What
+// remains is the admin bypass: an administrator may add a subnet to any network, and
+// CreateSubnet attributes the row to the *caller's* project rather than the network's —
+// so an admin-created subnet on another project's network still lands exactly here. This
+// test only fixes the listing side, which is what makes the two views agree.
 func TestForeignSubnetOnOwnNetworkIsListable(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()

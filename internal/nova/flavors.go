@@ -7,7 +7,6 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rs/zerolog/log"
 )
 
@@ -59,7 +58,7 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 	)
 	if err != nil {
 		// Check for unique constraint violation (duplicate name)
-		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+		if common.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("Flavor with name '"+req.Flavor.Name+"' already exists"))
 			return
 		}
