@@ -348,7 +348,10 @@ func (svc *Service) ListImages(c *gin.Context) {
 
 	var images []gin.H
 	for rows.Next() {
-		var id, name, status, visibility, diskFormat, containerFormat string
+		var id, name, status, visibility string
+		// Nullable, and null in upstream's schema until set. A plain string would make pgx
+		// end the whole result set on one image without formats, failing every caller's list.
+		var diskFormat, containerFormat *string
 		var sizeBytes sql.NullInt64
 		var minDisk, minRAM int
 		var createdAt, updatedAt time.Time
@@ -433,7 +436,8 @@ func (svc *Service) GetImage(c *gin.Context) {
 	}
 
 	// Cache miss - query database
-	var id, name, status, visibility, diskFormat, containerFormat string
+	var id, name, status, visibility string
+	var diskFormat, containerFormat *string // nullable, see ListImages
 	var checksum sql.NullString
 	var sizeBytes sql.NullInt64
 	var minDisk, minRAM int

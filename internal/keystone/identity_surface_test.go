@@ -8,15 +8,22 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // newIdentityTestRouter wires the real RegisterRoutes with a stub auth middleware
 // that sets roles / user_id from the X-Test-Roles / X-Test-User headers, so tests
 // can simulate admin / owner / plain callers without minting JWTs.
 func newIdentityTestRouter() *gin.Engine {
+	return newIdentityTestRouterOn(testPool)
+}
+
+// newIdentityTestRouterOn is newIdentityTestRouter over a caller-chosen pool, for
+// tests that need the database to fail rather than answer.
+func newIdentityTestRouterOn(pool *pgxpool.Pool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	NewService(testPool, nil, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
+	NewService(pool, nil, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))
 		}

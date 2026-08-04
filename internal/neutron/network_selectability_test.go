@@ -131,11 +131,12 @@ func keysOf(m map[string]any) []string {
 // (`project_id:%(network:project_id)s`), so the network's owner may read a subnet on it
 // whoever created it.
 //
-// The shape is reachable because CreateSubnet accepts any `network_id` without checking
-// that the caller owns the network — pre-existing on 71aa00d and left alone here, since
-// rejecting those requests would be a new failure mode (FR-016). It is also reachable
-// without that defect: an admin creating a subnet on a tenant's network records the
-// admin's project, because CreateSubnet ignores any project_id in the body.
+// The shape is reachable through the administrator path. When this test was written any
+// tenant could produce it, because CreateSubnet took `network_id` from the request body
+// and never checked it against the caller (cloud-storage#545 B8, fixed since). What
+// remains is the admin bypass: an administrator may add a subnet to any network, and
+// CreateSubnet attributes the row to the *caller's* project rather than the network's —
+// so an admin-created subnet on another project's network still lands exactly here.
 func TestForeignSubnetOnOwnNetworkIsListableAndResolvable(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()

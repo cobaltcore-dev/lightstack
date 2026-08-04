@@ -26,6 +26,111 @@ log_fail() {
     TESTS_FAILED=$((TESTS_FAILED + 1))
 }
 
+# require_value aborts setup when something it needed was not created.
+#
+# The literal string "null" matters as much as the empty string: `jq -r` prints
+# `null` for a field that is absent, and `[ -z "null" ]` is FALSE — which is exactly
+# why the pre-existing ADMIN_TOKEN guard shape could never catch a failed project
+# create. Without this the suite ran every check against PROJECT1=null and still
+# printed a summary (cloud-storage#545 FR-017).
+require_value() {
+    local label="$1" value="$2"
+    if [ -z "$value" ] || [ "$value" = "null" ]; then
+        echo -e "${RED}SETUP FAILED: could not create ${label} (got '${value}')${NC}"
+        echo -e "${RED}Refusing to run isolation checks against resources that do not exist.${NC}"
+        exit 1
+    fi
+}
+
+# require_status aborts setup when a call that returns no body failed. Role
+# assignments are the case FR-017 names and the ids above cannot cover: they answer
+# 204 with an empty body, so there is no value to inspect — and they were previously
+# piped to /dev/null with the status discarded. A silently failed assignment leaves
+# role-less tokens, every isolation check then refuses for the wrong reason, and the
+# suite reports passes for isolation it never exercised.
+require_status() {
+    local label="$1" want="$2" got="$3"
+    if [ "$got" != "$want" ]; then
+        echo -e "${RED}SETUP FAILED: ${label} returned HTTP ${got}, want ${want}${NC}"
+        exit 1
+    fi
+}
+
+# list_count prints how many entries of a list response match a jq filter, or
+# "HTTP <code>" when the list itself did not answer 200. An error envelope has no list
+# key, so `[.subnets[]?] | length` reads it as 0: without the status check, an
+# endpoint that failed is indistinguishable from one that shows "no trace".
+list_count() {
+    local token="$1" url="$2" filter="$3" body http_code
+    body=$(curl -s -w '\n%{http_code}' -H "X-Auth-Token: $token" "$url")
+    http_code=$(echo "$body" | tail -1)
+    if [ "$http_code" != "200" ]; then
+        echo "HTTP $http_code"
+        return 0
+    fi
+    echo "$body" | sed '$d' | jq -r "$filter" 2>/dev/null || echo "unparseable body"
+}
+
+# Resources the teardown removes. Populated as setup progresses so an abort part-way
+# through still cleans up what it managed to create.
+PROJECT1_ID=""; PROJECT2_ID=""; USER1_ID=""; USER2_ID=""
+USER1_TOKEN=""; USER2_TOKEN=""; MEMBER_ROLE_ID=""
+SERVER1_ID=""; SERVER2_ID=""; NET1_ID=""; NET2_ID=""; SUBNET2_ID=""; VOL1_ID=""; IMAGE1_ID=""
+SHARED_NET_ID=""; SHARED_INTRUDER_ID=""
+
+# Teardown runs however the suite exits — pass, failed check, or aborted setup — and
+# is registered before the first resource is created.
+#
+# It has to: the suite creates its projects under FIXED names, so once a duplicate
+# name is a 409 (FR-004) and setup exits early (FR-017), one crashed run would make
+# every later run abort at setup. Two fixes in this feature combine into that failure
+# mode, so re-runnability is a requirement, not tidiness (FR-017a).
+teardown() {
+    local exit_code=$?
+    echo ""
+    echo "Cleaning up test resources..."
+    # Dependants before dependencies. Every deletion tolerates a resource that was
+    # never created, so an abort during setup is not itself an error.
+    if [ -n "$USER1_TOKEN" ] && [ "$USER1_TOKEN" != "null" ]; then
+        # Enumerated, not tracked: the quota check creates servers it never records. Safe
+        # because this listing can only hold this run's servers — USER1_TOKEN is a member
+        # token scoped by id to the project setup just created (a leftover name 409s and
+        # aborts before the token exists), and the server list is project-scoped.
+        curl -s -X GET "http://localhost:8774/v2.1/servers" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null \
+            | jq -r '.servers[]?.id // empty' 2>/dev/null | while read -r sid; do
+            curl -s -o /dev/null -X DELETE "http://localhost:8774/v2.1/servers/$sid" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
+        done
+        [ -n "$VOL1_ID" ] && [ "$VOL1_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:8776/v3/$PROJECT1_ID/volumes/$VOL1_ID" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
+        [ -n "$NET1_ID" ] && [ "$NET1_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/networks/$NET1_ID" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
+        [ -n "$IMAGE1_ID" ] && [ "$IMAGE1_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9292/v2/images/$IMAGE1_ID" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
+    fi
+    if [ -n "$USER2_TOKEN" ] && [ "$USER2_TOKEN" != "null" ]; then
+        [ -n "$SERVER2_ID" ] && [ "$SERVER2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:8774/v2.1/servers/$SERVER2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
+        # Before the network: DeleteNetwork refuses a network that still has subnets
+        # ("network has subnets; delete subnets first"), and that refusal is invisible
+        # here. Skipping it left the network row to the project's ON DELETE CASCADE and,
+        # in real mode, left the subnet's bridge and dnsmasq running for good.
+        [ -n "$SUBNET2_ID" ] && [ "$SUBNET2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/subnets/$SUBNET2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
+        [ -n "$NET2_ID" ] && [ "$NET2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/networks/$NET2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
+    fi
+    if [ -n "$ADMIN_TOKEN" ] && [ "$ADMIN_TOKEN" != "null" ]; then
+        # The shared network belongs to the administrator's project, so no project
+        # deletion below cascades it away. A subnet the refused write should never have
+        # created goes first: DeleteNetwork refuses a network that still has subnets.
+        [ -n "$SHARED_INTRUDER_ID" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/subnets/$SHARED_INTRUDER_ID" -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
+        [ -n "$SHARED_NET_ID" ] && [ "$SHARED_NET_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/networks/$SHARED_NET_ID" -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
+        for uid in "$USER1_ID" "$USER2_ID"; do
+            [ -n "$uid" ] && [ "$uid" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:35357/v3/users/$uid" -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
+        done
+        for pid in "$PROJECT1_ID" "$PROJECT2_ID"; do
+            [ -n "$pid" ] && [ "$pid" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:35357/v3/projects/$pid" -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
+        done
+    fi
+    # Never mask the suite's own verdict with teardown's success.
+    exit $exit_code
+}
+trap teardown EXIT
+
 echo "========================================"
 echo " Multi-Tenancy & Isolation Test Suite"
 echo "========================================"
@@ -51,6 +156,7 @@ PROJECT1_ID=$(curl -s -X POST "http://localhost:35357/v3/projects" \
     -H "Content-Type: application/json" \
     -d '{"project":{"name":"test-project-1","domain_id":"default"}}' \
     | jq -r '.project.id')
+require_value "project test-project-1" "$PROJECT1_ID"
 
 # Create project2
 PROJECT2_ID=$(curl -s -X POST "http://localhost:35357/v3/projects" \
@@ -58,6 +164,7 @@ PROJECT2_ID=$(curl -s -X POST "http://localhost:35357/v3/projects" \
     -H "Content-Type: application/json" \
     -d '{"project":{"name":"test-project-2","domain_id":"default"}}' \
     | jq -r '.project.id')
+require_value "project test-project-2" "$PROJECT2_ID"
 
 # Create user1 for project1
 USER1_ID=$(curl -s -X POST "http://localhost:35357/v3/users" \
@@ -65,6 +172,7 @@ USER1_ID=$(curl -s -X POST "http://localhost:35357/v3/users" \
     -H "Content-Type: application/json" \
     -d '{"user":{"name":"test-user-1","password":"password1","domain_id":"default"}}' \
     | jq -r '.user.id')
+require_value "user test-user-1" "$USER1_ID"
 
 # Create user2 for project2
 USER2_ID=$(curl -s -X POST "http://localhost:35357/v3/users" \
@@ -72,18 +180,44 @@ USER2_ID=$(curl -s -X POST "http://localhost:35357/v3/users" \
     -H "Content-Type: application/json" \
     -d '{"user":{"name":"test-user-2","password":"password2","domain_id":"default"}}' \
     | jq -r '.user.id')
+require_value "user test-user-2" "$USER2_ID"
 
 # Get member role ID
-MEMBER_ROLE_ID=$(curl -s -X GET "http://localhost:35357/v3/roles?name=_member_" \
-    -H "X-Auth-Token: $ADMIN_TOKEN" | jq -r '.roles[0].id')
+# Pick the member role by name on the CLIENT side, and never by position.
+#
+# Two traps here, both found live (cloud-storage#545):
+#   1. `GET /v3/roles?name=…` ignores the filter and returns every role, so
+#      `.roles[0].id` is whichever sorts first — which is `admin`.
+#   2. Lightstack seeds `admin` / `member` / `reader`; there is no `_member_` (the old
+#      OpenStack spelling this suite used to ask for).
+# Together they meant this suite granted **admin** to both of its test users, so every
+# isolation check below ran with two administrators and could not have detected a
+# cross-tenant breach. Selecting by name and asserting it is not admin closes that.
+MEMBER_ROLE_ID=$(curl -s -X GET "http://localhost:35357/v3/roles" \
+    -H "X-Auth-Token: $ADMIN_TOKEN" | jq -r '.roles[] | select(.name=="member") | .id')
+require_value "the member role lookup" "$MEMBER_ROLE_ID"
 
-# Assign user1 to project1
-curl -s -X PUT "http://localhost:35357/v3/projects/$PROJECT1_ID/users/$USER1_ID/roles/$MEMBER_ROLE_ID" \
-    -H "X-Auth-Token: $ADMIN_TOKEN" > /dev/null
+ADMIN_ROLE_ID=$(curl -s -X GET "http://localhost:35357/v3/roles" \
+    -H "X-Auth-Token: $ADMIN_TOKEN" | jq -r '.roles[] | select(.name=="admin") | .id')
+if [ "$MEMBER_ROLE_ID" = "$ADMIN_ROLE_ID" ]; then
+    echo -e "${RED}SETUP FAILED: the member role resolved to the admin role — isolation checks would be meaningless${NC}"
+    exit 1
+fi
+
+# Assign user1 to project1. The status is checked, not discarded: a role assignment
+# answers 204 with an empty body, so there is no id to guard, and a silent failure
+# here would leave a role-less token that makes every isolation check refuse for the
+# wrong reason (FR-017).
+ASSIGN1_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+    "http://localhost:35357/v3/projects/$PROJECT1_ID/users/$USER1_ID/roles/$MEMBER_ROLE_ID" \
+    -H "X-Auth-Token: $ADMIN_TOKEN")
+require_status "role assignment for test-user-1" "204" "$ASSIGN1_STATUS"
 
 # Assign user2 to project2
-curl -s -X PUT "http://localhost:35357/v3/projects/$PROJECT2_ID/users/$USER2_ID/roles/$MEMBER_ROLE_ID" \
-    -H "X-Auth-Token: $ADMIN_TOKEN" > /dev/null
+ASSIGN2_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+    "http://localhost:35357/v3/projects/$PROJECT2_ID/users/$USER2_ID/roles/$MEMBER_ROLE_ID" \
+    -H "X-Auth-Token: $ADMIN_TOKEN")
+require_status "role assignment for test-user-2" "204" "$ASSIGN2_STATUS"
 
 echo "Created PROJECT1=$PROJECT1_ID, USER1=$USER1_ID"
 echo "Created PROJECT2=$PROJECT2_ID, USER2=$USER2_ID"
@@ -99,6 +233,22 @@ USER2_TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
     -H "Content-Type: application/json" \
     -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"test-user-2","password":"password2","domain":{"name":"Default"}}}},"scope":{"project":{"id":"'$PROJECT2_ID'"}}}}' \
     | grep -i '^X-Subject-Token:' | awk '{print $2}' | tr -d '\r')
+
+require_value "a scoped token for test-user-1" "$USER1_TOKEN"
+require_value "a scoped token for test-user-2" "$USER2_TOKEN"
+
+# Neither tenant token may carry `admin`: an admin caller legitimately bypasses the
+# very isolation this suite is here to check, so an admin token turns every check
+# below into a tautology.
+for pair in "test-user-1:$USER1_TOKEN" "test-user-2:$USER2_TOKEN"; do
+    who=${pair%%:*}; tk=${pair##*:}
+    claims=$(echo "$tk" | cut -d. -f2 | tr '_-' '/+')
+    case $(( ${#claims} % 4 )) in 2) claims="${claims}==" ;; 3) claims="${claims}=" ;; esac
+    if echo "$claims" | base64 -d 2>/dev/null | jq -e '.roles | index("admin")' >/dev/null 2>&1; then
+        echo -e "${RED}SETUP FAILED: ${who}'s token carries the admin role — isolation checks would be meaningless${NC}"
+        exit 1
+    fi
+done
 
 # Test 1: Server isolation - User1 creates server, User2 cannot see it
 log_test "Server isolation between projects"
@@ -162,8 +312,92 @@ if [ -n "$NET1_ID" ] && [ "$NET1_ID" != "null" ]; then
     else
         log_fail "User2 can see User1's network (ISOLATION BREACH)"
     fi
+
+    # Cross-tenant WRITE (cloud-storage#545 B8, FR-018). Everything above this point
+    # only ever checked reads, which is exactly how a tenant being able to define the
+    # address range, gateway and DHCP behaviour on another tenant's network survived
+    # in a suite called "Multi-Tenancy & Isolation".
+    SUBNET_WRITE_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:9696/v2.0/subnets" \
+        -H "X-Auth-Token: $USER2_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"subnet":{"name":"intruder","network_id":"'$NET1_ID'","cidr":"10.199.0.0/24","ip_version":4}}')
+
+    # Exactly 404: NET1 is private, so User2 must not learn it exists. A 403 would
+    # refuse the write and still disclose the network (contract row 2; the shared
+    # network's 403 is row 3, checked below).
+    if [ "$SUBNET_WRITE_STATUS" = "404" ]; then
+        log_pass "User2 cannot add a subnet to User1's private network (HTTP 404)"
+    else
+        log_fail "User2's subnet write to User1's private network answered HTTP $SUBNET_WRITE_STATUS, want 404 (201 = ISOLATION BREACH, 403 = discloses the network)"
+    fi
+
+    # And the victim's own views must show no trace of the attempt.
+    USER1_SUBNETS=$(list_count "$USER1_TOKEN" "http://localhost:9696/v2.0/subnets" \
+        '[.subnets[]? | select(.name=="intruder")] | length')
+    if [ "$USER1_SUBNETS" = "0" ]; then
+        log_pass "User1's subnet list shows no trace of the refused write"
+    else
+        log_fail "User1's subnet list, want no trace of the refused write, got: $USER1_SUBNETS (a count is an ISOLATION BREACH)"
+    fi
+
+    # The fix must cost no legitimate capability: User2 on User2's own network. A
+    # check that only proved refusal would pass against a handler refusing everything.
+    NET2_ID=$(curl -s -X POST "http://localhost:9696/v2.0/networks" \
+        -H "X-Auth-Token: $USER2_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"network":{"name":"project2-network"}}' \
+        | jq -r '.network.id')
+    # Keep the body as well as the status: this is the one subnet the suite really
+    # creates, and teardown needs its id to delete it before the network it sits on.
+    OWN_SUBNET_BODY=$(curl -s -w '\n%{http_code}' -X POST "http://localhost:9696/v2.0/subnets" \
+        -H "X-Auth-Token: $USER2_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"subnet":{"name":"project2-subnet","network_id":"'$NET2_ID'","cidr":"10.198.0.0/24","ip_version":4}}')
+    OWN_SUBNET_STATUS=$(echo "$OWN_SUBNET_BODY" | tail -1)
+    # `|| true`: on a refused create the body is not the subnet document jq expects (or
+    # not JSON at all), and jq's non-zero exit inside a command substitution would trip
+    # `set -e` and kill the suite before the check below could report the failure.
+    SUBNET2_ID=$(echo "$OWN_SUBNET_BODY" | sed '$d' | jq -r '.subnet.id // empty' 2>/dev/null || true)
+    if [ "$OWN_SUBNET_STATUS" = "201" ] && [ -n "$SUBNET2_ID" ]; then
+        log_pass "User2 can still add a subnet to their own network"
+    elif [ "$OWN_SUBNET_STATUS" = "201" ]; then
+        # A 201 without an id still created a subnet, and teardown needs that id to
+        # remove it before NET2. Abort rather than report a capability the suite cannot
+        # clean up after.
+        log_fail "User2's own subnet create answered 201 without an id — teardown cannot remove it"
+        require_value "User2's own subnet id" "$SUBNET2_ID"
+    else
+        log_fail "User2 cannot add a subnet to their own network (HTTP $OWN_SUBNET_STATUS) — the fix cost a legitimate capability"
+    fi
 else
     log_fail "Failed to create network for User1"
+fi
+
+# The shared half (contract row 3): a shared network is visible to every tenant, so a
+# write to one the caller does not own is refused as forbidden, not as not-found. The
+# administrator creates it, as upstream's create_network:shared policy (admin_only)
+# requires.
+SHARED_NET_ID=$(curl -s -X POST "http://localhost:9696/v2.0/networks" \
+    -H "X-Auth-Token: $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"network":{"name":"spec022-shared-network","shared":true}}' \
+    | jq -r '.network.id')
+
+if [ -n "$SHARED_NET_ID" ] && [ "$SHARED_NET_ID" != "null" ]; then
+    SHARED_WRITE_BODY=$(curl -s -w '\n%{http_code}' -X POST "http://localhost:9696/v2.0/subnets" \
+        -H "X-Auth-Token: $USER2_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"subnet":{"name":"intruder-shared","network_id":"'$SHARED_NET_ID'","cidr":"10.197.0.0/24","ip_version":4}}')
+    SHARED_WRITE_STATUS=$(echo "$SHARED_WRITE_BODY" | tail -1)
+    if [ "$SHARED_WRITE_STATUS" = "403" ]; then
+        log_pass "User2 cannot add a subnet to a shared network it does not own (HTTP 403)"
+    else
+        # A 201 created a subnet; record it so teardown can remove it before the network.
+        SHARED_INTRUDER_ID=$(echo "$SHARED_WRITE_BODY" | sed '$d' | jq -r '.subnet.id // empty' 2>/dev/null || true)
+        log_fail "User2's subnet write to a shared network answered HTTP $SHARED_WRITE_STATUS, want 403 (201 = ISOLATION BREACH)"
+    fi
+else
+    log_fail "Failed to create a shared network as admin"
 fi
 
 # Test 3: Volume isolation
@@ -184,6 +418,29 @@ if [ -n "$VOL1_ID" ] && [ "$VOL1_ID" != "null" ]; then
         log_pass "User2 cannot see User1's volume"
     else
         log_fail "User2 can see User1's volume (ISOLATION BREACH)"
+    fi
+
+    # The project-scoped volume LIST (cloud-storage#545 B2, FR-019). The suite has
+    # always created and deleted on this URL form but never listed on it, which is how
+    # a 405 on the collection went unnoticed.
+    LIST_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X GET "http://localhost:8776/v3/$PROJECT1_ID/volumes" \
+        -H "X-Auth-Token: $USER1_TOKEN")
+    LIST_HAS_VOL=$(curl -s -X GET "http://localhost:8776/v3/$PROJECT1_ID/volumes" \
+        -H "X-Auth-Token: $USER1_TOKEN" | jq -r '[.volumes[]? | select(.id=="'$VOL1_ID'")] | length')
+    if [ "$LIST_STATUS" = "200" ] && [ "$LIST_HAS_VOL" = "1" ]; then
+        log_pass "User1 can list volumes on the project-scoped URL form"
+    else
+        log_fail "Project-scoped volume list broken (HTTP $LIST_STATUS, found $LIST_HAS_VOL)"
+    fi
+
+    # The project segment must not widen visibility: User2 naming User1's project in
+    # the path still sees only their own volumes (FR-015).
+    USER2_SEES=$(list_count "$USER2_TOKEN" "http://localhost:8776/v3/$PROJECT1_ID/volumes" \
+        '[.volumes[]? | select(.id=="'$VOL1_ID'")] | length')
+    if [ "$USER2_SEES" = "0" ]; then
+        log_pass "The project segment in the URL does not widen what User2 can see"
+    else
+        log_fail "User2's list via User1's project-scoped URL, want no User1 volume, got: $USER2_SEES (a count is an ISOLATION BREACH)"
     fi
 else
     log_fail "Failed to create volume for User1"
@@ -246,63 +503,40 @@ SERVER2_ID=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
     -d '{"server":{"name":"project2-server","flavorRef":"m1.tiny"}}' \
     | jq -r '.server.id')
 
-if [ -n "$SERVER2_ID" ] && [ "$SERVER2_ID" != "null" ] && [ -n "$VOL1_ID" ]; then
-    ATTACH_RESULT=$(curl -s -X POST "http://localhost:8774/v2.1/servers/$SERVER2_ID/os-volume_attachments" \
+if [ -n "$SERVER2_ID" ] && [ "$SERVER2_ID" != "null" ] && [ -n "$VOL1_ID" ] && [ "$VOL1_ID" != "null" ]; then
+    # Assert on the HTTP status, not on guessed error-body keys.
+    #
+    # This check used to read `jq -r '.error // .badRequest // "success"'`. Lightstack refuses
+    # this attach with `{"itemNotFound": …}` — neither key the expression looks for — so
+    # jq fell through to the literal "success" and the check reported an ISOLATION
+    # BREACH that does not exist. It was a false FAIL for as long as it could run at all
+    # (which was never, because volume creation had to succeed first).
+    #
+    # Same root cause as the rest of this suite's history: an assertion that cannot read
+    # the response it is judging. A status code cannot be misread (cloud-storage#545).
+    ATTACH_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:8774/v2.1/servers/$SERVER2_ID/os-volume_attachments" \
         -H "X-Auth-Token: $USER2_TOKEN" \
         -H "Content-Type: application/json" \
-        -d '{"volumeAttachment":{"volumeId":"'$VOL1_ID'"}}' \
-        | jq -r '.error // .badRequest // "success"')
+        -d '{"volumeAttachment":{"volumeId":"'$VOL1_ID'"}}')
 
-    if [ "$ATTACH_RESULT" != "success" ]; then
-        log_pass "Cannot attach cross-project volume"
-    else
-        log_fail "Can attach cross-project volume (ISOLATION BREACH)"
-    fi
+    # Exactly 404 — AttachVolume looks the volume up within the caller's project, as
+    # upstream Nova refuses a volume the caller cannot see. Any other refusal is not
+    # proof of isolation: a 5xx or 000 means nothing was checked, and a 403 would
+    # disclose that the volume exists.
+    case "$ATTACH_STATUS" in
+        404) log_pass "Cannot attach cross-project volume (HTTP 404)" ;;
+        2*)  log_fail "Can attach cross-project volume (HTTP $ATTACH_STATUS) (ISOLATION BREACH)" ;;
+        *)   log_fail "Cross-project attach answered HTTP $ATTACH_STATUS, want 404 — not proof of isolation" ;;
+    esac
+else
+    # Never skip silently: a missing server or volume means the attach was not tested,
+    # and a suite that stays green without exercising a check is the T1 defect again.
+    log_fail "Cross-project attach not tested: User2's server ('$SERVER2_ID') or User1's volume ('$VOL1_ID') is missing"
 fi
 
-# Cleanup
-echo ""
-echo "Cleaning up test resources..."
-
-# Delete servers
-curl -s -X DELETE "http://localhost:8774/v2.1/servers/$SERVER1_ID" \
-    -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
-
-curl -s -X DELETE "http://localhost:8774/v2.1/servers/$SERVER2_ID" \
-    -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
-
-for i in {1..3}; do
-    curl -s -X GET "http://localhost:8774/v2.1/servers" \
-        -H "X-Auth-Token: $USER1_TOKEN" | jq -r '.servers[].id' | while read sid; do
-        curl -s -X DELETE "http://localhost:8774/v2.1/servers/$sid" \
-            -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
-    done
-done
-
-# Delete volumes
-curl -s -X DELETE "http://localhost:8776/v3/$PROJECT1_ID/volumes/$VOL1_ID" \
-    -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
-
-# Delete networks
-curl -s -X DELETE "http://localhost:9696/v2.0/networks/$NET1_ID" \
-    -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
-
-# Delete images
-curl -s -X DELETE "http://localhost:9292/v2/images/$IMAGE1_ID" \
-    -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
-
-# Delete users and projects
-curl -s -X DELETE "http://localhost:35357/v3/users/$USER1_ID" \
-    -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
-
-curl -s -X DELETE "http://localhost:35357/v3/users/$USER2_ID" \
-    -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
-
-curl -s -X DELETE "http://localhost:35357/v3/projects/$PROJECT1_ID" \
-    -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
-
-curl -s -X DELETE "http://localhost:35357/v3/projects/$PROJECT2_ID" \
-    -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
+# Cleanup is handled by the EXIT trap registered at the top of this script, so it
+# runs on a failed check or an aborted setup too — not only on the happy path this
+# block used to be reachable from (FR-017a).
 
 # Summary
 echo ""

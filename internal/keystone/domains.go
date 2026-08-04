@@ -10,12 +10,22 @@ import (
 )
 
 // ListDomains handles GET /v3/domains
+//
+// The `name` filter is honoured; every other query parameter is still ignored. That
+// one matters because standard clients resolve a `--domain` argument client-side by
+// name when retrieval by id fails, and an unfiltered list silently handed them every
+// domain instead of the one they asked for (SPEC-022 FR-001a). Names are matched
+// exactly — upstream treats domain names as case-sensitive.
 func (svc *Service) ListDomains(c *gin.Context) {
-	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT id, name, description, enabled
-		FROM domains
-		ORDER BY name ASC
-	`)
+	query := `SELECT id, name, description, enabled FROM domains`
+	args := []any{}
+	if name := c.Query("name"); name != "" {
+		query += ` WHERE name = $1`
+		args = append(args, name)
+	}
+	query += ` ORDER BY name ASC`
+
+	rows, err := svc.pool.Query(c.Request.Context(), query, args...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_domains").Msg("Failed to query domains")
@@ -110,6 +120,21 @@ func (svc *Service) CreateDomain(c *gin.Context) {
 func (svc *Service) GetDomain(c *gin.Context) {
 	domainID := c.Param("id")
 
+	// This route is registered on the non-validating group precisely so the `default`
+	// alias reaches here (see the note in RegisterRoutes). Resolve it to a real id
+	// first; the resolver also rejects any other non-identifier value without a query,
+	// which is what lets the verbatim 404 below stand in for the middleware's
+	// (SPEC-022 FR-001a).
+	resolved, outcome := resolveDomainRef(c.Request.Context(), svc.pool, domainID, anyDomainState)
+	switch outcome {
+	case domainNotFound:
+		common.SendError(c, common.NewIdentityNotFoundError("domain", domainID))
+		return
+	case domainQueryFailed:
+		common.SendError(c, common.NewInternalServerError("failed to resolve domain"))
+		return
+	}
+
 	var id uuid.UUID
 	var name string
 	var description *string
@@ -119,7 +144,7 @@ func (svc *Service) GetDomain(c *gin.Context) {
 		SELECT id, name, description, enabled
 		FROM domains
 		WHERE id = $1
-	`, domainID).Scan(&id, &name, &description, &enabled)
+	`, resolved).Scan(&id, &name, &description, &enabled)
 
 	if err != nil {
 		notFoundOr500(c, err, "domain", domainID)

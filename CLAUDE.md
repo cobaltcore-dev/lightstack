@@ -444,6 +444,8 @@ if requestedVersion == "" {
 - PostgreSQL. **No schema change, no migration.** The pool configuration from `lightstack.yaml` is unchanged. (027-database-pool-injection)
 - Go 1.26 (module targets 1.21+) + gin-gonic/gin, jackc/pgx/v5 + pgxpool, digitalocean/go-libvirt (`DomainGetXMLDesc`, `DomainLookupByUUID` → `Domain.ID`, `ConnectGetCapabilities`, all present in the pinned revision `v0.0.0-20260609165003-6254771e63a8`), `encoding/xml`. **No new Go modules.** (021-real-novnc-console)
 - PostgreSQL, migration `065_console_auth_tokens`. It is edited in place: nothing is deployed, and test databases are recreated. This amendment adds `domain_id`. Node-local: `<state_path>/console-tokens/` (the projection) and `<state_path>/console-sockets/` (QEMU-owned, 0750, sockets only). (021-real-novnc-console)
+- Go 1.26 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL). **No new modules.** (022-project-tenant-isolation)
+- External PostgreSQL. **One migration**, `072_groups_domain_id_uuid`: `groups.domain_id` (a `VARCHAR` with no foreign key since `010`) becomes `UUID NOT NULL REFERENCES domains(id)`, alias rows normalised, anything ambiguous stops the migration. Every other fix is behavioural. (022-project-tenant-isolation)
 
 ## Recent Changes
 - 027-database-pool-injection: plan — remove the process-wide database handle. Every database-using constructor takes the `*pgxpool.Pool` first, and the 20 package-level helpers take it as a parameter. `WithTx(ctx, pool, fn)`. One commit, no API or schema change (SPEC-027 plan)

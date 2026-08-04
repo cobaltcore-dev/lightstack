@@ -15,7 +15,7 @@ booting from a Ceph-RGW image, and a key pair created in Horizon lets you **`ssh
 render, the Overview limits widget loads, networks list once, and image delete works. Project switching, long
 recorded as `partial`, is **working** — demonstrated 2026-09-22 once a second project was seeded. **All nine
 original #482 findings are now closed**: F1, the noVNC console, was fixed in #534 (SPEC-021). Lightstack's
-API/CLI worked for every workflow exercised, except F6 (fixed by #532) and the open F10 and F13.
+API/CLI worked for every workflow exercised, except F6 (fixed by #532), F13 (fixed by #545) and the open F10.
 
 > **What this verdict was, and why it changed.** As originally written (2026-07-23) it read: *"the Horizon
 > dashboard is **not** usable for resource management … every create/write workflow is broken … Lightstack is
@@ -134,7 +134,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 
 | Criterion | Result |
 |---|---|
-| Login + project switching verified in real UI | **Both ✅** (real). Login verified 2026-07-23; project switching verified **2026-09-22**, once a second project (`verify-two`) was seeded — the switcher lists both and selecting the other **re-scopes the view**. The earlier `partial` was a fixture limit, not a fault. Seeding that project over the API works when `domain_id` is omitted or is a real UUID; it is the literal `domain_id: "default"` Horizon sends that 500s (**F13**). **Domain** switching is not part of this criterion — the ticket asks for project switching — and is graded separately as workflow **2b**, where it **fails** (F18). |
+| Login + project switching verified in real UI | **Both ✅** (real). Login verified 2026-07-23; project switching verified **2026-09-22**, once a second project (`verify-two`) was seeded — the switcher lists both and selecting the other **re-scopes the view**. The earlier `partial` was a fixture limit, not a fault. Seeding that project over the API works when `domain_id` is omitted or is a real UUID; the literal `domain_id: "default"` Horizon sends 500s on the base (**F13**) and is **fixed on this branch** (#545 / SPEC-022), where `POST /v3/projects --domain default` returns `201`, `GET /v3/auth/projects` lists both projects and a token re-scopes to the second. **Domain** switching is not part of this criterion — the ticket asks for project switching — and is graded separately as workflow **2b**, where it **fails** (F18). |
 | Resource management: launch / network / volume | ✅ **All three now succeed through the UI** (#533, 2026-07-29, stub **and** real): network + subnet via the Create Network dialog; volume via the Create Volume dialog (`available`, real qcow2 on disk); instance via the Launch wizard (**ACTIVE**, real libvirt domain, booted from the RGW image). Beyond the criterion: a Horizon-created key pair yields working **`ssh`** into that VM. Originally: all three failed in the UI while succeeding via API/CLI. |
 | Report: per workflow working / not working (+ gaps) | ✅ this document |
 | Report published to `docs/` | ✅ |
@@ -221,7 +221,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   calls it without checking for `quota_details` and reads its `reserved` key. Advertising `quota_details` is
   for API fidelity only.
 - **Still open**: reload **after a project switch** was never re-run with this fix in place. A second project
-  can be seeded (see the acceptance table and F13), so only the re-run is outstanding.
+  can be seeded (see the acceptance table and F13, itself fixed here), so only the re-run is outstanding.
 - **Evidence for the `reserved` root (2026-08-25)** — from a real-mode re-pass on the #482 branch, which does
   not carry this fix: the rendered Overview HTML carried
   `Error: Unable to retrieve limits information. Details 'reserved'`, and the Horizon container's apache error
@@ -494,17 +494,28 @@ was no drift to inherit); **F16** was a limitation of the F7 fix and is fixed.
   Horizon exposes no panel for OS-EC2, so tenant S3 credentials are CLI-only. Upstream Horizon is the same;
   recorded so the tenant-object-storage workflow isn't mistaken for a defect.
 
-### F13 — `POST /v3/projects` returns 500 (major) — _stub + real_ — ❌ **open**
-- **Impact**: a project cannot be created the way *Horizon* creates one — the Identity panel's own
-  create-project path. It was read at the time as the reason project switching had never been demonstrated;
-  see the next bullet, which supersedes that.
-- **Root (code level)**: `CreateProject` (`internal/keystone/handlers.go:436`) inserts `project.domain_id`
-  verbatim into a `uuid` column and defaults it only when **absent** (to the Default domain's UUID). Horizon
-  sends the literal `"default"`, Postgres rejects it, and the handler returns 500.
-- **Not universal (2026-09-22)**: the re-test created a second project in **both** modes — `POST /v3/projects`
-  with no `domain_id` (stub) and `openstack project create --domain Default`, which resolves the name to a
-  UUID (real) — and that is how project switching was finally demonstrated. The 500 is specific to a
-  non-UUID `domain_id`.
+### F13 — `POST /v3/projects` returns 500 (major) — _stub + real_ — ✅ **FIXED (SPEC-022 / #545, 2026-08-07)**
+- **Impact**: a project could not be created the way *Horizon* creates one — the Identity panel's own
+  create-project path. It was read at first as the reason project switching had never been demonstrated; the
+  2026-09-22 re-test disproved that (a second project seeded with `domain_id` omitted, or with
+  `--domain Default`, which resolves the name to a UUID), narrowing the 500 to a **non-UUID `domain_id`**.
+- **Cause** (the guess in the original entry was right): `CreateProject`
+  (`internal/keystone/handlers.go:448`) defaulted only the *empty* `domain_id`, then passed any supplied
+  string straight into a `uuid` column. `domain_id: "default"` — what every OpenStack client sends, because
+  upstream Keystone's Default domain literally carries `default` as its id — failed at the database and
+  surfaced as a generic `computeFault`. `POST /v3/users` rejected the same value cleanly with a `400`, so the
+  reference implementation was already in the same file.
+- **Fix**: one shared resolver, used by project, user and group creation *and* by domain retrieval, resolving
+  the Default domain **by name** rather than by a hard-coded id (migrations 009 and 037 seed that name with
+  different ids). An unknown or disabled domain now answers `400` naming the field; a duplicate project name
+  answers `409` instead of a `500`. `GET /v3/domains/default` resolves, and `GET /v3/domains?name=` filters.
+- **Verified — API (2026-08-07, stub stack built from `feature/545`)**: `POST /v3/projects --domain default`
+  → **`201`**; `GET /v3/auth/projects` — the call that populates Horizon's project switcher — returns **both**
+  projects; re-scoping a token to the second returns **`201`** with `token.project.name` set to it.
+- **Still unverified — UI**: creating a project *through the Identity panel* has not been exercised; that
+  needs a Horizon pass. Nothing else waits on it — project switching was demonstrated in the browser on
+  2026-09-22 (acceptance table), and F2's residual (Overview widget across a switch) is a pending re-run
+  rather than a blocked check.
 
 ### F14 — `local_settings` drift between the compose config and the Helm chart (medium) — _real_ — ✅ **FIXED in-pass**
 - **Cause**: `charts/horizon/files/local_settings` is **generated** from
@@ -618,7 +629,7 @@ it carries a fix here without a separate change._
 Both passes are complete, and the result is unambiguous.
 
 **What works.** Every OpenStack **API/CLI operation** exercised here succeeds (operation-level
-exceptions: CLI image delete, F6, fixed by #532, and the open F10 and F13 — and see the "Superseded"
+exceptions: CLI image delete, F6, fixed by #532; project create, F13, fixed by #545; and the open F10 — and see the "Superseded"
 paragraph below for four response-shape deviations), and the
 **real backends work end-to-end**:
 sign-in and the read/list dashboard panels render, and via the API the real pass **booted a libvirt/KVM VM
@@ -629,8 +640,9 @@ CLI. This is the exact backend chain the stub pass could not exercise, and it pa
 
 **What doesn't (as of 2026-07-31).** Of the #482 findings, **none** — F1, the noVNC console, was the last one
 open and is fixed by #534 (SPEC-021): the Console tab renders the live guest. Outside that set, the #533
-pass's own **F10–F13 and F15** stay open, as does **F18** (domain-scoped tokens, #549); **F17** — Horizon's
-security-group proxy 500-ing because the list omits `security_group_rules` — is fixed here, as root 2 of F7.
+pass's own **F10–F12 and F15** stay open, as does **F18** (domain-scoped tokens, #549) — **F13** is fixed
+here by #545; **F17** — Horizon's security-group proxy 500-ing because the list omits
+`security_group_rules` — is fixed here, as root 2 of F7.
 
 **Superseded — what didn't work at the time of writing (2026-07-23).** Every create/write workflow through the
 UI failed: no Create-Network button (F3), a dead Create-Volume modal (F8), the Volumes list **500**-ing once a
@@ -651,12 +663,13 @@ Horizon abandons a request at the first failure. Anyone reading F8's "one fix li
 should treat it as a starting hypothesis, not a finding.
 
 **Answer to #482.** Lightstack is a drop-in for the OpenStack API/CLI — the open F10 (real-mode port create)
-and F13 (project create with a non-UUID `domain_id`) aside — **and, after #532 and #533, the Horizon
+aside — **and, after #532 and #533, the Horizon
 dashboard is usable for UI-driven resource management** — create a network, create a volume, launch an
 instance, then SSH into it, all from the dashboard, in stub and real mode — and, after #534, watch it boot on
 the Console tab. **All nine original #482 findings are closed.** The remaining gaps are the pre-existing
-defects F10, F11, F13 and F15, which this verification surfaced but did not cause, F12 (no EC2-credential UI,
-by design), and F18 (domain-scoped tokens, #549).
+defects F10, F11 and F15, which this verification surfaced but did not cause, F12 (no EC2-credential UI,
+by design), and F18 (domain-scoped tokens, #549); F13, the fourth of those pre-existing defects, is fixed
+here by #545.
 
 This does not rehabilitate the prior `HORIZON_FULL_COMPATIBILITY_REPORT.md` **"100% compatible / 342
 endpoints"** claim. That claim was never grounded in a browser-level check, and the eighteen findings in this
@@ -667,8 +680,8 @@ are tracked under [cloud-storage#531](https://github.com/cobaltcore-dev/cloud-st
 scopes itself to F1–F9, split into #532 / #533 / #534, with F17 (filed as `F10` on the #482 branch) folded into
 #533 on 2026-09-22. **F18** is tracked under
 [cloud-storage#549](https://github.com/cobaltcore-dev/cloud-storage/issues/549), which sits **outside** the #531
-umbrella; the #533 pass's open F10, F11, F13 and F15 are tracked in the sub-issues of
-[cloud-storage#536](https://github.com/cobaltcore-dev/cloud-storage/issues/536) — F10/F11 in #546, F13 in #545,
+umbrella; the #533 pass's F10, F11, F13 and F15 are tracked in the sub-issues of
+[cloud-storage#536](https://github.com/cobaltcore-dev/cloud-storage/issues/536) — F10/F11 in #546, F13 in #545 (fixed here),
 F15 in #548 ([#537](https://github.com/cobaltcore-dev/cloud-storage/issues/537), where several
 were first filed, was closed as superseded). F16, filed there for #547, is fixed by #533 (FR-025).
 - ✅ **F4, F5, F6, F9 — DONE (SPEC-019 / cloud-storage#532, 2026-07-24):** networks list once (F4); the `volume`
@@ -688,9 +701,11 @@ were first filed, was closed as superseded). F16, filed there for #547, is fixed
   writing a relay, and a configurable origin. Also closed two things the ticket did not name — the guest VNC
   listened on `0.0.0.0` (token bypassable) and console-port reuse could point a stale token at another tenant's
   guest; both are gone with the move to per-instance unix sockets.
-- **F10, F11, F12, F13, F15 (open)** — pre-existing, surfaced by the #533 pass; see *Findings from the #533
-  pass*. **F13** (`POST /v3/projects` 500 on a non-UUID `domain_id`) is the highest value: it is the Identity
-  panel's own create-project path.
+- **F10, F11, F12, F15 (open)** — pre-existing, surfaced by the #533 pass; see *Findings from the #533 pass*.
+  **F13** (`POST /v3/projects` 500 on a non-UUID `domain_id`) was the highest value of that set — the Identity
+  panel's own create-project path — and is fixed here (#545 / SPEC-022, 2026-08-07). Of what remains, **F10**
+  (`POST /v2.0/ports` 500) is the highest value, per #546: it is also the likely root of the guest's
+  metadata-service reachability failures.
 - **F18 (open — [cloud-storage#549](https://github.com/cobaltcore-dev/cloud-storage/issues/549))** — refuse
   domain-scoped token requests instead of silently returning an unscoped token (already implemented on
   `feature/549`).
