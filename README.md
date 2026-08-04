@@ -363,6 +363,10 @@ o3k/
 ### Development Workflow
 
 ```bash
+# First-time setup: activate the sign-off hook (requires @sap.com email in git config)
+git config core.hooksPath .githooks
+git config user.email "firstname.lastname@sap.com"
+
 # Install development tools
 make install-tools
 
