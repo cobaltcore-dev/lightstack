@@ -260,10 +260,45 @@ jobs:
   # TODO: Add e2e-fast and e2e-full jobs once E2E test scenarios are implemented.
   # Planned: VM lifecycle, volume attach/detach, network isolation, Terraform validation, Horizon UI tests.
 
+  dco-check:
+    name: SAP Sign-off Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify all commits are signed off by an @sap.com address
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+
+          MISSING=""
+          while IFS= read -r sha; do
+            body=$(git log -1 --format='%B' "$sha")
+            if ! echo "$body" | grep -qiE '^Signed-off-by: .+ <[^@>]+@sap\.com>'; then
+              MISSING="$MISSING\n  $sha  $(git log -1 --format='%s' "$sha")"
+            fi
+          done < <(git log --format='%H' "$BASE..$HEAD")
+
+          if [ -n "$MISSING" ]; then
+            echo "❌ The following commits are missing a valid 'Signed-off-by: Name <name@sap.com>' trailer:"
+            echo -e "$MISSING"
+            echo ""
+            echo "Fix with: git commit --amend --signoff  (then force-push)"
+            echo "Or reword all at once: git rebase --signoff $BASE"
+            exit 1
+          fi
+
+          echo "✅ All commits carry a Signed-off-by @sap.com trailer"
+
   status-check:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [build, unit-tests, contract-tests, integration-tests]
+    needs: [build, unit-tests, contract-tests, integration-tests, dco-check]
     if: always()
 
     steps:
@@ -273,6 +308,7 @@ jobs:
           echo "Unit Tests: ${{ needs.unit-tests.result }}"
           echo "Contract Tests: ${{ needs.contract-tests.result }}"
           echo "Integration Tests: ${{ needs.integration-tests.result }}"
+          echo "SAP Sign-off: ${{ needs.dco-check.result }}"
 
           if [ "${{ needs.build.result }}" != "success" ]; then
             echo "❌ Build failed"
@@ -293,6 +329,11 @@ jobs:
 
           if [ "${{ needs.integration-tests.result }}" != "success" ]; then
             echo "❌ Integration tests failed"
+            exit 1
+          fi
+
+          if [ "${{ needs.dco-check.result }}" != "success" ]; then
+            echo "❌ SAP sign-off check failed — all commits need Signed-off-by: name@sap.com"
             exit 1
           fi
 
