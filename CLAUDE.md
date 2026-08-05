@@ -430,6 +430,8 @@ if requestedVersion == "" {
 - 014-ceph-rgw-s3-backend: Ceph RGW (S3) as Glance backend (validate + implement) + tenant object storage. Existing aws-sdk-go-v2 with a custom `http.Client` (CA pool + connect/first-byte transport timeouts; body streams, no total cap); stdlib `crypto/hmac`+`sha256` for server-side S3 SigV4/SigV2 verification; OpenStack EC2-credentials API reusing the `credentials` table (+ `access_key` col); Nova lazy fetch-on-boot via `storage.EnsureLocalBase` (+ checksum-on-upload, node-local base reclaim). Migration 062 (`credentials.access_key` + `s3` catalog seed); RGW `implicit tenants=s3`. No new Go modules.
 - Go 1.26 (module targets 1.21+) + gin-gonic/gin v1.12.0 (HTTP), google/uuid v1.6.0 (`uuid.Validate` — already imported), jackc/pgx/v5 v5.10.0 (`pgx.ErrNoRows`). No new modules. (015-identity-uuid-404)
 - PostgreSQL — **no schema change, no migration** (identity id columns stay `uuid`). (015-identity-uuid-404)
+- Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); **no new modules** (017-nova-server-detail-readback)
+- PostgreSQL — new migration `063` adds `instances.key_name` (nullable `text`); reuses `server_security_groups` (migration 049) and the Neutron `security_groups` table for name→id resolution (017-nova-server-detail-readback)
 
 ## Recent Changes
 - 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)

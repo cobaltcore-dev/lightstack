@@ -281,7 +281,10 @@ type CreateServerRequest struct {
 		Networks  []struct {
 			UUID string `json:"uuid"`
 		} `json:"networks"`
-		KeyName              string `json:"key_name"`
+		KeyName        string `json:"key_name"`
+		SecurityGroups []struct {
+			Name string `json:"name"`
+		} `json:"security_groups"`
 		UserData             string `json:"user_data"`
 		BlockDeviceMappingV2 []struct {
 			BootIndex           any    `json:"boot_index"`
@@ -407,6 +410,57 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		return
 	}
 
+	// FR-002a: validate the keypair exists for this user before creating anything,
+	// so an unknown key_name fails fast with a Nova-compatible 400 (matching real
+	// Nova v2.1 strict input validation) instead of silently booting a keyless VM.
+	if req.Server.KeyName != "" {
+		var kpExists bool
+		if err := database.DB.QueryRow(c.Request.Context(),
+			"SELECT EXISTS(SELECT 1 FROM keypairs WHERE user_id = $1 AND name = $2)",
+			userID, req.Server.KeyName,
+		).Scan(&kpExists); err != nil {
+			log.Error().Err(err).Str("operation", "validate_keypair").Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to validate key_name"))
+			return
+		}
+		if !kpExists {
+			common.SendError(c, common.NewBadRequestError("Invalid key_name provided."))
+			return
+		}
+	}
+
+	// Resolve + validate security groups supplied at create (FR-005). Unknown
+	// non-default names fail fast with 400 (FR-005a); the project `default` group is
+	// ensured on demand (FR-006a). Done before the INSERT so a bad request creates nothing.
+	var sgIDs []string
+	for _, sg := range req.Server.SecurityGroups {
+		if sg.Name == "" {
+			continue
+		}
+		var sgID string
+		sgErr := database.DB.QueryRow(c.Request.Context(),
+			"SELECT id FROM security_groups WHERE name = $1 AND project_id = $2",
+			sg.Name, projectID,
+		).Scan(&sgID)
+		if errors.Is(sgErr, pgx.ErrNoRows) {
+			if sg.Name == "default" {
+				if sgID, sgErr = svc.ensureDefaultSecurityGroup(c.Request.Context(), projectID); sgErr != nil {
+					log.Error().Err(sgErr).Str("operation", "ensure_default_sg").Msg("database error")
+					common.SendError(c, common.NewInternalServerError("failed to ensure default security group"))
+					return
+				}
+			} else {
+				common.SendError(c, common.NewBadRequestError("Security group "+sg.Name+" not found."))
+				return
+			}
+		} else if sgErr != nil {
+			log.Error().Err(sgErr).Str("operation", "resolve_security_group").Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to resolve security group"))
+			return
+		}
+		sgIDs = append(sgIDs, sgID)
+	}
+
 	// Generate instance ID
 	instanceID := uuid.New().String()
 
@@ -421,12 +475,36 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		imageID = nil
 	}
 
+	// Persist key_name (empty → NULL) so server-detail can read it back (FR-002).
+	var keyName any
+	if req.Server.KeyName != "" {
+		keyName = req.Server.KeyName
+	}
+
+	// Create the instance and its security-group associations atomically: if any
+	// association fails, the instance INSERT rolls back too, so we never leave an
+	// instance without the security groups it was created with (FR-005; Constitution
+	// II — same transaction). Associations cascade on delete (server_security_groups
+	// FKs instances ON DELETE CASCADE).
 	queryStart = time.Now()
-	_, err = database.DB.Exec(c.Request.Context(), `
-		INSERT INTO instances (id, name, project_id, user_id, flavor_id, image_id, status, power_state, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, instanceID, req.Server.Name, projectID, userID, flavor.ID, imageID, "BUILD", 0, now, now)
-	middleware.LogDatabaseQuery(c, "INSERT instance", time.Since(queryStart), err)
+	err = database.WithTx(c.Request.Context(), func(tx pgx.Tx) error {
+		if _, txErr := tx.Exec(c.Request.Context(), `
+			INSERT INTO instances (id, name, project_id, user_id, flavor_id, image_id, status, power_state, created_at, updated_at, key_name)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`, instanceID, req.Server.Name, projectID, userID, flavor.ID, imageID, "BUILD", 0, now, now, keyName); txErr != nil {
+			return fmt.Errorf("insert instance: %w", txErr)
+		}
+		for _, sgID := range sgIDs {
+			if _, txErr := tx.Exec(c.Request.Context(), `
+				INSERT INTO server_security_groups (server_id, security_group_id, created_at)
+				VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
+			`, instanceID, sgID, now); txErr != nil {
+				return fmt.Errorf("associate security group %s: %w", sgID, txErr)
+			}
+		}
+		return nil
+	})
+	middleware.LogDatabaseQuery(c, "INSERT instance and security groups", time.Since(queryStart), err)
 
 	if err != nil {
 		logger.Error().Err(err).Str("instance_id", instanceID).Msg("Failed to create instance in database")
@@ -849,6 +927,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT i.id, i.name, i.status, i.power_state, i.project_id, i.user_id,
 		       i.flavor_id, i.image_id, i.created_at, i.updated_at, i.launched_at,
+		       i.key_name,
 		       f.vcpus, f.ram_mb, f.disk_gb, f.name as flavor_name
 		FROM instances i
 		LEFT JOIN flavors f ON i.flavor_id = f.id
@@ -865,28 +944,29 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	defer rows.Close()
 
 	var servers []gin.H
+	var ids []string
 	for rows.Next() {
-		var id, name, status, projectID, userID, flavorID, flavorName string
+		var id, name, status, rowProjectID, userID, flavorID, flavorName string
 		var powerState, vcpus, ramMB, diskGB int
 		var createdAt, updatedAt time.Time
 		var launchedAt sql.NullTime
-		var imageID sql.NullString
+		var imageID, keyName sql.NullString
 
-		if err := rows.Scan(&id, &name, &status, &powerState, &projectID, &userID,
-			&flavorID, &imageID, &createdAt, &updatedAt, &launchedAt,
+		if err := rows.Scan(&id, &name, &status, &powerState, &rowProjectID, &userID,
+			&flavorID, &imageID, &createdAt, &updatedAt, &launchedAt, &keyName,
 			&vcpus, &ramMB, &diskGB, &flavorName); err != nil {
 			log.Warn().Err(err).Msg("failed to scan server detail row")
 			continue
 		}
 
 		// Get addresses for this instance
-		addresses := svc.getInstanceAddresses(c.Request.Context(), id, projectID)
+		addresses := svc.getInstanceAddresses(c.Request.Context(), id, rowProjectID)
 
 		entry := gin.H{
 			"id":                     id,
 			"name":                   name,
 			"status":                 status,
-			"tenant_id":              projectID,
+			"tenant_id":              rowProjectID,
 			"user_id":                userID,
 			"created":                createdAt.Format(time.RFC3339),
 			"updated":                updatedAt.Format(time.RFC3339),
@@ -899,6 +979,12 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 				"disk":  diskGB,
 			},
 		}
+		// key_name: always present; null when the instance has no keypair (FR-003).
+		if keyName.Valid {
+			entry["key_name"] = keyName.String
+		} else {
+			entry["key_name"] = nil
+		}
 		if imageID.Valid {
 			entry["image"] = gin.H{"id": imageID.String}
 		} else {
@@ -910,9 +996,22 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 			entry["OS-SRV-USG:launched_at"] = nil
 		}
 		servers = append(servers, entry)
+		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+	}
+
+	// Attach security_groups to every entry in one batched query (no N+1, FR-007).
+	sgMap, err := securityGroupNamesForServers(c.Request.Context(), ids)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_servers_detail_sgs").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list security groups"))
+		return
+	}
+	for _, s := range servers {
+		sid, _ := s["id"].(string)
+		s["security_groups"] = formatSecurityGroups(sgMap[sid])
 	}
 
 	if servers == nil {
@@ -983,7 +1082,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var id, name, status string
-	var userID, flavorID, imageID sql.NullString
+	var userID, flavorID, imageID, keyName sql.NullString
 	var powerState int
 	var createdAt, updatedAt time.Time
 
@@ -992,12 +1091,12 @@ func (svc *Service) GetServer(c *gin.Context) {
 	err := database.DB.QueryRow(c.Request.Context(), `
 		SELECT id, name, status, power_state, project_id,
 		       user_id::text, flavor_id::text, image_id::text,
-		       created_at, updated_at
+		       created_at, updated_at, key_name
 		FROM instances
 		WHERE project_id = $2 AND (
 			(id::text = $1) OR (name = $1)
 		)
-	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projectID, &userID, &flavorID, &imageID, &createdAt, &updatedAt)
+	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projectID, &userID, &flavorID, &imageID, &createdAt, &updatedAt, &keyName)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -1033,6 +1132,22 @@ func (svc *Service) GetServer(c *gin.Context) {
 	if imageID.Valid {
 		response["image"] = gin.H{"id": imageID.String}
 	}
+
+	// key_name: always present; null when the instance has no keypair (FR-001).
+	if keyName.Valid {
+		response["key_name"] = keyName.String
+	} else {
+		response["key_name"] = nil
+	}
+
+	// security_groups: current membership by name; [{"name":"default"}] when none (FR-004/FR-006).
+	sgNames, err := securityGroupNamesForServer(c.Request.Context(), id)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "get_server_sgs").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to get security groups"))
+		return
+	}
+	response["security_groups"] = formatSecurityGroups(sgNames)
 
 	c.JSON(http.StatusOK, gin.H{"server": response})
 }

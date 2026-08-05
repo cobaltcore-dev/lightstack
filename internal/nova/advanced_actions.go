@@ -641,6 +641,129 @@ func (svc *Service) LiveMigrateInstance(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
+// ensureDefaultSecurityGroup returns the id of the project's `default` security
+// group, creating it (and its default rules) if absent. OpenStack guarantees every
+// project has a default security group (Neutron auto-creates it); o3k only seeds one
+// for the seeded default project, so this closes that gap on demand (FR-006a).
+// The SG insert is idempotent via ON CONFLICT (project_id, name); the default rules
+// are guarded by a row-count check (see the note at the rules insert). Rules mirror
+// migrations/002_seed_data.up.sql (egress IPv4/IPv6 allow-all, ingress tcp/22).
+func (svc *Service) ensureDefaultSecurityGroup(ctx context.Context, projectID string) (string, error) {
+	sgID := uuid.New().String()
+	if _, err := database.DB.Exec(ctx,
+		`INSERT INTO security_groups (id, name, project_id, description)
+		 VALUES ($1, 'default', $2, 'Default security group')
+		 ON CONFLICT (project_id, name) DO NOTHING`,
+		sgID, projectID); err != nil {
+		return "", fmt.Errorf("insert default security group: %w", err)
+	}
+
+	// Re-select the id (the insert above may have been a no-op if it already existed).
+	if err := database.DB.QueryRow(ctx,
+		"SELECT id FROM security_groups WHERE name = 'default' AND project_id = $1",
+		projectID,
+	).Scan(&sgID); err != nil {
+		return "", fmt.Errorf("re-select default security group id: %w", err)
+	}
+
+	// Seed default rules only for a freshly created group (no rows yet).
+	var ruleCount int
+	if err := database.DB.QueryRow(ctx,
+		"SELECT count(*) FROM security_group_rules WHERE security_group_id = $1", sgID,
+	).Scan(&ruleCount); err != nil {
+		return "", fmt.Errorf("count existing rules for %s: %w", sgID, err)
+	}
+	if ruleCount == 0 {
+		// No ON CONFLICT clause: security_group_rules has no unique constraint on the
+		// rule shape (only its gen_random_uuid id), so ON CONFLICT DO NOTHING could
+		// never fire — it would just mislead. The ruleCount==0 guard makes this a
+		// no-op on re-entry; a rare concurrent first-create for the same project could
+		// double-insert these, which is benign (identical allow-all/ssh rules).
+		if _, err := database.DB.Exec(ctx, `
+			INSERT INTO security_group_rules (security_group_id, direction, ethertype, protocol, port_range_min, port_range_max)
+			VALUES
+				($1, 'egress', 'IPv4', NULL, NULL, NULL),
+				($1, 'egress', 'IPv6', NULL, NULL, NULL),
+				($1, 'ingress', 'IPv4', 'tcp', 22, 22)`, sgID); err != nil {
+			return "", fmt.Errorf("seed default rules for %s: %w", sgID, err)
+		}
+	}
+	return sgID, nil
+}
+
+// securityGroupNamesForServer returns the names of the security groups currently
+// associated with a server. The INNER JOIN drops orphaned associations (an SG row
+// deleted out from under a server_security_groups row, which has no FK).
+func securityGroupNamesForServer(ctx context.Context, serverID string) ([]string, error) {
+	rows, err := database.DB.Query(ctx, `
+		SELECT sg.name
+		FROM server_security_groups ssg
+		JOIN security_groups sg ON sg.id = ssg.security_group_id
+		WHERE ssg.server_id = $1
+		ORDER BY sg.name
+	`, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("query security groups for server %s: %w", serverID, err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("scan security group name for server %s: %w", serverID, err)
+		}
+		names = append(names, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate security groups for server %s: %w", serverID, err)
+	}
+	return names, nil
+}
+
+// securityGroupNamesForServers batches securityGroupNamesForServer across a page of
+// servers in a single query (no N+1), returning server_id → names.
+func securityGroupNamesForServers(ctx context.Context, serverIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(serverIDs))
+	if len(serverIDs) == 0 {
+		return result, nil
+	}
+	rows, err := database.DB.Query(ctx, `
+		SELECT ssg.server_id::text, sg.name
+		FROM server_security_groups ssg
+		JOIN security_groups sg ON sg.id = ssg.security_group_id
+		WHERE ssg.server_id::text = ANY($1)
+		ORDER BY sg.name
+	`, serverIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query security groups for servers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid, name string
+		if err := rows.Scan(&sid, &name); err != nil {
+			return nil, fmt.Errorf("scan security group row: %w", err)
+		}
+		result[sid] = append(result[sid], name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate security groups for servers: %w", err)
+	}
+	return result, nil
+}
+
+// formatSecurityGroups renders SG names as Nova's [{"name": ...}] shape,
+// synthesizing the default group when the instance has none (FR-006).
+func formatSecurityGroups(names []string) []gin.H {
+	if len(names) == 0 {
+		return []gin.H{{"name": "default"}}
+	}
+	out := make([]gin.H, 0, len(names))
+	for _, n := range names {
+		out = append(out, gin.H{"name": n})
+	}
+	return out
+}
+
 // AddSecurityGroup adds a security group to an instance
 func (svc *Service) AddSecurityGroup(c *gin.Context) {
 	instanceID := c.Param("id")
