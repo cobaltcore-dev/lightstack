@@ -1,5 +1,7 @@
 #!/bin/bash
-set -e
+# No `set -e` here on purpose: the failure protocol is the PASSED/FAILED summary at the
+# bottom and the exit code derived from it. Under errexit the first test ends the run --
+# a helper's `return 1` aborts, and so does a counter update that evaluates to 0.
 
 # Horizon Full Functionality Test
 # Tests all major Horizon dashboard features against Lightstack
@@ -9,17 +11,21 @@ echo "Horizon Full Functionality Test"
 echo "================================"
 echo ""
 
+# Host running Lightstack. Defaults to localhost so this works against the docker-compose stack;
+# override for a remote host, e.g. LIGHTSTACK_HOST=10.2.199.101 (SPEC-018 T032).
+LIGHTSTACK_HOST="${LIGHTSTACK_HOST:-localhost}"
+
 # Configuration
-export OS_AUTH_URL=http://10.2.199.101:35357/v3
+export OS_AUTH_URL=http://${LIGHTSTACK_HOST}:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
 export OS_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
-export OS_ENDPOINT_OVERRIDE_network=http://10.2.199.101:9696
-export OS_ENDPOINT_OVERRIDE_compute=http://10.2.199.101:8774
-export OS_ENDPOINT_OVERRIDE_volume=http://10.2.199.101:8776
-export OS_ENDPOINT_OVERRIDE_image=http://10.2.199.101:9292
+export OS_ENDPOINT_OVERRIDE_network=http://${LIGHTSTACK_HOST}:9696
+export OS_ENDPOINT_OVERRIDE_compute=http://${LIGHTSTACK_HOST}:8774
+export OS_ENDPOINT_OVERRIDE_volume=http://${LIGHTSTACK_HOST}:8776
+export OS_ENDPOINT_OVERRIDE_image=http://${LIGHTSTACK_HOST}:9292
 
 # Colors for output
 RED='\033[0;31m'
@@ -45,14 +51,14 @@ test_endpoint() {
         -H "X-Auth-Token: $TOKEN" \
         -H "Content-Type: application/json" \
         $extra_args \
-        "http://10.2.199.101:9696$path" 2>/dev/null || echo "000")
+        "http://${LIGHTSTACK_HOST}:9696$path" 2>/dev/null || echo "000")
 
     status_code=$(echo "$response" | tail -1)
     body=$(echo "$response" | head -n -1)
 
     if [ "$status_code" = "$expected_status" ]; then
         echo -e "${GREEN}✓ PASS${NC} (HTTP $status_code)"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
         return 0
     else
         echo -e "${RED}✗ FAIL${NC} (Expected $expected_status, got $status_code)"
@@ -60,7 +66,7 @@ test_endpoint() {
             echo "  Response: $body" | head -c 200
             echo ""
         fi
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
         return 1
     fi
 }
@@ -74,13 +80,13 @@ test_openstack_command() {
 
     if output=$(eval "$cmd" 2>&1); then
         echo -e "${GREEN}✓ PASS${NC}"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
         return 0
     else
         echo -e "${RED}✗ FAIL${NC}"
         echo "  Error: $output" | head -c 200
         echo ""
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
         return 1
     fi
 }
@@ -128,8 +134,13 @@ test_endpoint "GET /v2.0/floatingips" "GET" "/v2.0/floatingips" "200"
 
 # Get project ID for quota test
 PROJECT_ID=$(openstack token issue -f value -c project_id)
-test_endpoint "GET /v2.0/quotas/:id" "GET" "/v2.0/quotas/$PROJECT_ID" "200"
-test_endpoint "GET /v2.0/quotas/:id/details" "GET" "/v2.0/quotas/$PROJECT_ID/details" "200"
+if [ -z "$PROJECT_ID" ]; then
+    echo -e "${RED}✗ FAIL${NC} (no project_id from a token -- quota endpoints not probed)"
+    FAILED=$((FAILED + 2))
+else
+    test_endpoint "GET /v2.0/quotas/:id" "GET" "/v2.0/quotas/$PROJECT_ID" "200"
+    test_endpoint "GET /v2.0/quotas/:id/details" "GET" "/v2.0/quotas/$PROJECT_ID/details" "200"
+fi
 
 echo ""
 echo "=== Cinder (Block Storage) ==="

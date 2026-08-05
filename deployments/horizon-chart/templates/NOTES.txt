@@ -1,0 +1,25 @@
+{{ .Chart.Name }} {{ .Chart.Version }} — verification Horizon (SPEC-018) installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Horizon points at Lightstack via OPENSTACK_HOST = {{ .Values.lightstack.host }} (in-cluster; Horizon calls Lightstack server-side).
+
+Reach the dashboard:
+{{- if eq .Values.horizon.service.type "NodePort" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "lightstack-horizon.fullname" . }}
+  # browser → http://<node-ip>:{{ .Values.horizon.service.nodePort }}/dashboard   (login: admin / secret)
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "lightstack-horizon.fullname" . }} 8080:{{ .Values.horizon.service.port }}
+  # browser → http://localhost:8080/dashboard
+{{- end }}
+
+Prerequisites:
+  - Lightstack deployed on THIS cluster; set lightstack.host to its Service name (default "{{ .Values.lightstack.host }}").
+  - Lightstack catalog endpointHost MUST resolve for this pod (set the lightstack chart's endpointHost to the same Service DNS).
+
+LAB ONLY: no TLS, permissive ALLOWED_HOSTS, non-secure cookies. Do not expose this release to an
+untrusted network. values.yaml lists what is permissive and how to change it.
+
+Namespace "{{ .Release.Namespace }}" must NOT enforce the Pod Security Admission `restricted`
+profile — the kolla Horizon container runs apache as root. Under `restricted` the pod is rejected at
+admission and this install looks successful while nothing runs. values.yaml has the non-root recipe.
+
+Console tab (noVNC) is a KNOWN GAP (F1) — it will not show the guest. Use `openstack console log show` instead.

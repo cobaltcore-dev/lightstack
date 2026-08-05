@@ -1,0 +1,40 @@
+# helm-unittest specs for the config-rollout contract (PR #77 review, discussion_r3956050981).
+#
+# checksum/config hashes the RENDERED ConfigMap, not one file, so a change to any mounted config
+# rolls the pod — kolla's COPY_ALWAYS only re-applies at container start, so without a rollout the
+# container keeps serving the old copies.
+#
+# What these specs pin: the annotation is present and is a real sha256, and the ConfigMap carries
+# all four files the checksum is meant to cover. What they cannot pin: that the annotation is the
+# hash of the ConfigMap rather than of a single file — both render as an opaque 64-hex string, and
+# asserting a literal hash would need updating on every legitimate config edit. Dropping a file
+# from the ConfigMap, or losing the annotation, does fail here.
+suite: config checksum annotation and ConfigMap coverage
+tests:
+  - it: the Deployment carries a checksum/config annotation
+    templates:
+      - templates/horizon-deployment.yaml
+    asserts:
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+
+  - it: the annotation is a sha256, not an empty or truncated value
+    templates:
+      - templates/horizon-deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/config"]
+          pattern: "^[0-9a-f]{64}$"
+
+  - it: the ConfigMap carries every file the checksum is meant to cover
+    templates:
+      - templates/configmap.yaml
+    asserts:
+      - exists:
+          path: data["config.json"]
+      - exists:
+          path: data["local_settings"]
+      - exists:
+          path: data["ports.conf"]
+      - exists:
+          path: data["horizon-nolist.conf"]

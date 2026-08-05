@@ -68,14 +68,15 @@ Choose your deployment strategy based on your use case.
 
 ### 🌐 Horizon Dashboard Integration
 
-Lightstack provides 100% compatibility with OpenStack Horizon dashboard.
+Lightstack serves the OpenStack APIs Horizon consumes. The **dashboard UI is not a drop-in for resource
+management** — read/list panels render, create/write flows fail UI-side while the same operations succeed
+via API/CLI (findings F1–F11).
 
-- **[HORIZON_FULL_COMPATIBILITY_REPORT](HORIZON_FULL_COMPATIBILITY_REPORT.md)** ⭐ **NEW** - Complete 100% compatibility verification
-  - All core API endpoints tested with Horizon
-  - Dashboard page compatibility matrix
-  - Authentication and authorization flow
+- **[Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)** ⭐ **NEW** - Browser-level verification: API/CLI compatible, dashboard **not** a drop-in for resource management (F1–F11)
+- **[HORIZON_FULL_COMPATIBILITY_REPORT](HORIZON_FULL_COMPATIBILITY_REPORT.md)** - SUPERSEDED (API-endpoint coverage only; see the report above for UI verdicts)
+  - API endpoint coverage (342/330), microversions, auth flow
+  - Per-page API dependency matrix
   - Performance benchmarks and optimization
-  - Production deployment scenarios
   - Troubleshooting guide
 - **[HORIZON_INTEGRATION](HORIZON_INTEGRATION.md)** - Integration overview and architecture
 - **[HORIZON_DEPLOYMENT](HORIZON_DEPLOYMENT.md)** - Deploy Horizon separately to existing Lightstack
@@ -192,7 +193,7 @@ Analysis of dashboard compatibility and integration options.
   - Comprehensive analysis of SAP Elektra dashboard
   - **Verdict**: Not compatible with Lightstack (requires SAP infrastructure)
   - Detailed comparison with Horizon
-  - Recommendation: Continue with Horizon (100% compatible)
+  - Recommendation: Continue with Horizon (API-compatible; UI not a drop-in — see the compatibility report)
 
 ---
 

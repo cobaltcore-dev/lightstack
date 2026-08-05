@@ -80,6 +80,10 @@ notes.md
 # Host-test artifacts (downloaded by docs/specs/*/HOST-TESTING.md, not source)
 cirros*.img
 
+# SPEC-018 real-mode host-run values — contains RGW/JWT secrets, never commit.
+# HOST_TESTING_REAL_MODE.md generates this (ideally under /tmp); guard the repo-root path too.
+/lightstack-real-values.yaml
+
 # Keep important root docs
 !/README.md
 !/CLAUDE.md
