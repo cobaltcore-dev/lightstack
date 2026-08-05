@@ -44,8 +44,10 @@ type UpdateFloatingIPRequest struct {
 func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	// Parse pagination parameters
-	limit := 1000
+	// Parse pagination parameters. No default cap: without `limit` every visible row is returned,
+	// as upstream does (pagination_max_limit defaults to -1); a nil limit binds LIMIT NULL, which
+	// Postgres reads as no limit.
+	var limit any
 	offset := 0
 	if limitParam := c.Query("limit"); limitParam != "" {
 		if parsedLimit, err := strconv.Atoi(limitParam); err == nil && parsedLimit > 0 {

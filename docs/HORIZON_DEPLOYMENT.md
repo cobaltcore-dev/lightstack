@@ -8,11 +8,11 @@
 
 This guide provides step-by-step instructions for deploying OpenStack Horizon dashboard with Lightstack as the backend.
 
-> **Scope of compatibility.** Lightstack serves the OpenStack APIs Horizon consumes, and Horizon's read/list
-> panels render against it. The dashboard is **not** a drop-in for resource management: the create/write
-> flows (network, volume, launch) and the noVNC console fail UI-side, while the same operations succeed via
-> API/CLI. See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
-> (findings F1–F11) before relying on any UI workflow below.
+> **Scope of compatibility.** Lightstack serves the OpenStack APIs Horizon consumes, and the dashboard is
+> **usable for resource management**: network, volume and instance create work from the UI (#532, #533).
+> The noVNC console still fails UI-side (F1, #534), and a few other gaps remain. See the
+> [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18) before
+> relying on any UI workflow below.
 
 ## Prerequisites
 
@@ -365,13 +365,13 @@ docker exec lightstack-horizon curl -s http://lightstack:35357/v3 | jq
 Test key Horizon features:
 
 ```bash
-# Instance Management -- the wizard is EXPECTED TO FAIL (finding F7, see the compatibility report)
+# Instance Management
 # - Navigate to Compute > Instances
-# - Click "Launch Instance"
-# - The wizard loads with flavors and images, but its Networks step will not let you
-#   select a Lightstack network, so the instance cannot be created from the UI.
-# - The API path works -- to actually boot an instance use the CLI instead:
-#     openstack server create --flavor <f> --image <i> --network <n> --key-name <k> vm1
+# - Click "Launch Instance"; give it a name, then pick an image (Source), a flavor and
+#   a network (create one under Network > Networks first if the project has none)
+# - Verify the instance is listed and reaches Active
+# - The wizard's default "Create New Volume: Yes" boots from the image without creating
+#   a volume (finding F16, see the compatibility report)
 
 # Network Topology
 # - Navigate to Network > Network Topology
@@ -384,12 +384,10 @@ Test key Horizon features:
 # - For working console output use the serial log instead:
 #     openstack console log show <server>
 
-# Volume Management -- EXPECTED TO FAIL (findings F8 + F9, see the compatibility report)
+# Volume Management
 # - Navigate to Volumes > Volumes
-# - The empty panel renders, but "Create Volume" opens no dialog (F8); and once a volume
-#   exists the panel itself returns a 500 (TemplateSyntaxError -- F9).
-# - The API path works -- to actually create a volume use the CLI instead:
-#     openstack volume create --size 1 vol1
+# - Click "Create Volume", enter a name and a size, and submit
+# - Verify the volume is listed
 ```
 
 ## Troubleshooting

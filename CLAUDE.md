@@ -56,7 +56,7 @@ Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It 
 
 **Core Philosophy:**
 - **Terraform Compatibility First**: Users can use existing Terraform OpenStack provider scripts unchanged
-- **UI/CLI Compatibility**: OpenStack CLI works identically; Horizon consumes the same APIs, but its **UI is not a drop-in** for resource management (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`)
+- **UI/CLI Compatibility**: OpenStack CLI works identically; Horizon's dashboard is **usable for resource management**, with its open UI gaps listed in `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`
 - **Drop-in Replacement**: Zero modifications needed to migrate from OpenStack to Lightstack
 - **Synchronous Operations**: No message queues - operations complete before API returns
 - **Fail-Fast Design**: External dependency failures return immediately (< 1 second timeouts)
@@ -438,6 +438,8 @@ if requestedVersion == "" {
 - No schema change, no migration. Real-mode backends: node-local `/var/lib/lightstack` (VM disks, volumes), Ceph **RGW/S3** for Glance images. External PostgreSQL unchanged. **RBD not used.** (018-horizon-dashboard-verification)
 - Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); `google/uuid`. **No new modules.** (019-horizon-compat-api-fixes)
 - External PostgreSQL. **One** new migration `064_fix_cinder_volume_alias_localhost` (reseeds the `volume` alias `…015` endpoint URL only; s3 `…016` is config-overridden by `BuildServiceCatalog` and deliberately untouched). F9 reuses the existing `volumes.volume_type` column (migration `016`); F4 and F6 add **no** columns. (019-horizon-compat-api-fixes)
+- Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL). **No new modules.** (020-horizon-create-ui-enablement)
+- External PostgreSQL. **No migration, no schema change** — reuses `quotas` (migration `007`, row-per-resource, `project_id UUID NOT NULL REFERENCES projects(id)`) and `cinder_quotas` (migration `039`). Neutron has no quota table and does not gain one (limits stay code defaults; usage is counted live). (020-horizon-create-ui-enablement)
 
 ## Recent Changes
 - 026-rename-to-lightstack: plan — staged rename (8 stages, gates green per stage); spec dir stays **untracked** (it cannot shed its own 70 occurrences); real-mode host validation mandatory (stub mode never reaches the chain namer or the state root) (SPEC-026 plan)

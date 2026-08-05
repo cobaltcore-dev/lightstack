@@ -957,7 +957,7 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 // CreateUser creates a new user (POST /v3/users)
 func (svc *Service) CreateUser(c *gin.Context) {
 	// Only admins may create users
-	if !common.HasRole(c, "admin") {
+	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("admin role required to create users"))
 		return
 	}
@@ -1183,7 +1183,7 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 	userID := c.Param("id")
 
 	// Only admins may delete users
-	if !common.HasRole(c, "admin") {
+	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("admin role required to delete users"))
 		return
 	}
@@ -1222,7 +1222,7 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 
 	// Users may only change their own password; admins may change any user's password
 	callerID := c.GetString("user_id")
-	if callerID != userID && !common.HasRole(c, "admin") {
+	if callerID != userID && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("cannot change another user's password"))
 		return
 	}

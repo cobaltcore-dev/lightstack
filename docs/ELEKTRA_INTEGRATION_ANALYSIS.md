@@ -17,7 +17,7 @@
 3. Incompatibility with standard OpenStack deployments
 4. Significant customization effort with limited transferability
 
-**Alternative Recommendation**: Continue with **Horizon dashboard** as the primary web UI — noting its UI is **not** a drop-in for resource management (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`, findings F1–F11).
+**Alternative Recommendation**: Continue with **Horizon dashboard** as the primary web UI — it is usable for resource management, with open gaps listed in `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md` (findings F1–F18).
 
 ---
 
@@ -354,10 +354,10 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 
 ### 4.3 Scenario 3: Use Horizon Instead (Current Approach)
 
-**Goal**: Continue with Horizon dashboard (API-compatible; UI resource management **not** a drop-in)
+**Goal**: Continue with Horizon dashboard (usable for resource management; open gaps in the Horizon compatibility report)
 
 **Work Required**: ✅ **ALREADY COMPLETE**
-- Horizon integration: API-level functional (HORIZON_INTEGRATION.md); **UI create/write flows fail** (F1–F11)
+- Horizon integration: API-level functional (HORIZON_INTEGRATION.md); **UI create/write flows work** since #532/#533 (findings F1–F18)
 - All workflows tested via API/CLI: VM lifecycle, networking, volumes, images
 - Performance optimized: <3s response times
 - Production-ready deployment guides available
@@ -375,7 +375,7 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 | Aspect | Elektra | Horizon | Winner for Lightstack |
 |--------|---------|---------|----------------|
 | **OpenStack Compatibility** | SAP-specific | 100% vanilla OpenStack | ✅ **Horizon** |
-| **lightstack Integration Status** | Not integrated | APIs working; UI **not** a drop-in for resource management | ✅ **Horizon** |
+| **lightstack Integration Status** | Not integrated | APIs working; UI usable for resource management | ✅ **Horizon** |
 | **Technology Stack** | Rails 7 + React 18 | Django 5 + Angular/React | ⚖️ Tie (both modern) |
 | **Quota Management** | Limes (proprietary) | Native OpenStack | ✅ **Horizon** (works with lightstack) |
 | **Authentication** | Custom (monsoon-auth) | Standard Keystone | ✅ **Horizon** (lightstack compatible) |
@@ -600,7 +600,7 @@ If Lightstack will run **alongside** SAP infrastructure:
 6. ⚠️ Plan for ongoing fork maintenance
 
 **Optimal Path**:
-1. ✅ Continue using Horizon (APIs work today; UI resource management is **not** a drop-in — [Horizon report](compatibility/HORIZON_COMPATIBILITY_REPORT.md))
+1. ✅ Continue using Horizon (APIs and UI resource management work today; open gaps in the [Horizon report](compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 2. ✅ Invest saved effort (8-11 months) into Lightstack core features
 3. ✅ Build custom UI for lightstack-specific enhancements (if needed)
 4. ✅ Maintain OpenStack standard compliance

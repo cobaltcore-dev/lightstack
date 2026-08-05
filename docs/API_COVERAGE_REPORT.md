@@ -72,8 +72,8 @@ The original baseline of 330 endpoints represented core OpenStack APIs as of the
 ## Notable Achievements
 
 ### 1. Horizon Dashboard Compatibility ⚠️
-- APIs Horizon consumes are served; the **UI is not a drop-in** for resource management
-  (findings F1–F11 — see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`)
+- APIs Horizon consumes are served, and the **dashboard is usable** for resource management
+  (findings F1–F18 — see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`)
 - All 6 user stories implemented and tested **at the API level**
 - Performance optimization for 100+ resources
 - 17 contract tests validating Horizon integration
@@ -127,7 +127,7 @@ The original baseline of 330 endpoints represented core OpenStack APIs as of the
 | Binary Size | ~500MB+ | ~35MB | ✅ 93% smaller |
 | Dependencies | Many (RabbitMQ, memcached, etc.) | PostgreSQL only | ✅ Simplified |
 | Deployment Time | Hours | 15 minutes | ✅ 96% faster |
-| Horizon Compatible | Yes (UI + API) | APIs yes; UI **not** a drop-in | ⚠️ [Horizon report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) |
+| Horizon Compatible | Yes (UI + API) | APIs yes; UI usable for resource management (console open, F1) | ⚠️ [Horizon report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) |
 
 ## Remaining Optional Work
 
@@ -157,7 +157,7 @@ The following endpoints are **not implemented** and are **LOW priority** for typ
 | Criteria | Status | Notes |
 |----------|--------|-------|
 | Core API Coverage | ✅ 104% | Exceeds baseline |
-| Horizon Compatible | ⚠️ APIs only | UI **not** a drop-in for resource management — [Horizon report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) |
+| Horizon Compatible | ⚠️ APIs + UI | UI usable for resource management; open gaps in the [Horizon report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) |
 | Production Operations | ✅ Complete | All actions implemented |
 | Multi-Tenancy | ✅ Complete | Domains, projects, RBAC |
 | Performance | ✅ Optimized | <3s list queries, pagination |

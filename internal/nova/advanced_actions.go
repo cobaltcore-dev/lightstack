@@ -471,8 +471,8 @@ func (svc *Service) EvacuateInstance(c *gin.Context) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Admin-only operation
-	if !common.HasRole(c, "admin") {
+	// Admin-only operation - check roles
+	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("Policy doesn't allow evacuate to be performed"))
 		return
 	}
@@ -782,8 +782,10 @@ func (svc *Service) AddSecurityGroup(c *gin.Context) {
 		return
 	}
 
+	// 400, not 409, as upstream: Nova appends the group's id to the port's list, Neutron
+	// rejects the duplicate and Nova maps that to SecurityGroupCannotBeApplied.
 	if alreadyAssociated {
-		common.SendError(c, common.NewConflictError("security group already associated with instance"))
+		common.SendError(c, common.NewBadRequestError("security group already associated with instance"))
 		return
 	}
 
@@ -1171,8 +1173,8 @@ func (svc *Service) ResetStateAction(c *gin.Context) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Admin-only operation
-	if !common.HasRole(c, "admin") {
+	// Admin-only operation - check roles
+	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-resetState to be performed"))
 		return
 	}

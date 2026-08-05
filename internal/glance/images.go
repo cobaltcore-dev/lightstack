@@ -350,17 +350,29 @@ func (svc *Service) ListImages(c *gin.Context) {
 	})
 }
 
+// imageCacheKey names a cached image entry, scoped to the caller.
+//
+// The caller is part of the key because GetImage reads the cache BEFORE applying its
+// visibility predicate (`visibility = 'public' OR project_id = $2`). Keyed on the image
+// alone, the first fetch by an owner populated an entry that any authenticated caller
+// knowing the id could then read for the whole TTL, where the uncached answer is 404.
+// Same shape as networkCacheKey in internal/neutron, raised on PR #79.
+func imageCacheKey(projectID, imageID string) string {
+	return "image:" + projectID + ":" + imageID
+}
+
 // GetImage returns a single image
 func (svc *Service) GetImage(c *gin.Context) {
 	imageID := c.Param("id")
 	projectID := c.GetString("project_id")
 	ctx := c.Request.Context()
 
-	// Try cache first
+	// Try cache first. The key is scoped to the caller (see imageCacheKey): this lookup
+	// happens before the visibility predicate below, so an unscoped key would serve one
+	// tenant's private image to another.
 	if svc.cache != nil {
-		cacheKey := "image:" + imageID
 		var cached gin.H
-		if err := svc.cache.Get(ctx, cacheKey, &cached); err == nil {
+		if err := svc.cache.Get(ctx, imageCacheKey(projectID, imageID), &cached); err == nil {
 			c.JSON(http.StatusOK, cached)
 			return
 		}
@@ -445,7 +457,7 @@ func (svc *Service) GetImage(c *gin.Context) {
 
 	// Store in cache (1h TTL per config)
 	if svc.cache != nil {
-		svc.cache.TrySet(ctx, "image:"+id, image, 1*time.Hour)
+		svc.cache.TrySet(ctx, imageCacheKey(projectID, id), image, 1*time.Hour)
 	}
 
 	c.JSON(http.StatusOK, image)
@@ -508,7 +520,7 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 		return
 	}
 
-	switch imageDeleteAuthz(common.HasRole(c, "admin"), owner, projectID, visibility) {
+	switch imageDeleteAuthz(common.HasRole(c, common.RoleAdmin), owner, projectID, visibility) {
 	case http.StatusNotFound:
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
@@ -550,9 +562,10 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 		log.Warn().Err(err).Str("image_id", imageID).Msg("image row deleted but backend object delete failed; object may be orphaned")
 	}
 
-	// Invalidate cache
+	// Invalidate cache. Entries are keyed per caller (imageCacheKey), so evicting this image
+	// means evicting every project's view of it, not just the deleter's.
 	if svc.cache != nil {
-		svc.cache.TryDelete(ctx, "image:"+imageID)
+		svc.cache.TryDeletePattern(ctx, "image:*:"+imageID)
 		svc.cache.TryDeletePattern(ctx, "images:*")
 	}
 
@@ -606,6 +619,14 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 				log.Warn().Err(err).Str("image_id", imageID).Str("field", field).Msg("failed to apply image patch op; continuing")
 			}
 		}
+	}
+
+	// Evict before re-reading. GetImage below tries the cache first, so without this the
+	// response is the pre-patch body and every caller's view stays stale for the whole TTL.
+	// The pattern spans callers for the same reason DeleteImage's does.
+	if svc.cache != nil {
+		svc.cache.TryDeletePattern(c.Request.Context(), "image:*:"+imageID)
+		svc.cache.TryDeletePattern(c.Request.Context(), "images:*")
 	}
 
 	// Return updated image

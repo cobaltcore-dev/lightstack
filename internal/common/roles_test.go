@@ -33,3 +33,19 @@ func TestHasRole(t *testing.T) {
 		}
 	}
 }
+
+// TestHasRole_MalformedClaim: a "roles" value that is not a []string yields no roles
+// rather than panicking, so callers deny access (403) instead of returning a server
+// error. The auth middleware always sets a []string, so this is a defensive guarantee
+// relied on by the callers that previously type-asserted the claim themselves
+// (SPEC-020 FR-019).
+func TestHasRole_MalformedClaim(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, bad := range []any{"admin", 42, []int{1}, map[string]string{"r": "admin"}} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Set("roles", bad)
+		if HasRole(c, RoleAdmin) {
+			t.Errorf("HasRole with malformed roles claim %#v = true, want false", bad)
+		}
+	}
+}
