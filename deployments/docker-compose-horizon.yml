@@ -75,10 +75,21 @@ services:
     container_name: lightstack-horizon
     hostname: horizon
     ports:
-      - "80:80"
+      # Host port is parametrized so rootless Podman can remap off privileged :80.
+      # Defaults to 80 (unchanged for Docker/root users): export HORIZON_HTTP_PORT=8080 to remap.
+      - "${HORIZON_HTTP_PORT:-80}:80"
     environment:
       - KOLLA_INSTALL_TYPE=source
       - KOLLA_CONFIG_STRATEGY=COPY_ALWAYS
+      # Django signs CSRF tokens with this; apache runs processes=3, so every worker must get
+      # the SAME value, or a token minted by one worker is rejected by the others. A labelled lab
+      # default (as with POSTGRES_PASSWORD above, and the chart's horizon.secretKey) keeps every
+      # caller of this file working — scripts/start_validation.sh, README, QUICK_REFERENCE and
+      # UNIFIED_DEPLOYMENT all drive it without exporting anything. Override beyond a lab.
+      - SECRET_KEY=${HORIZON_SECRET_KEY:-lightstack-horizon-lab-only-change-me}
+      # local_settings defaults DEBUG to False; the dev stack opts in so a 500 shows a traceback.
+      - HORIZON_DEBUG=${HORIZON_DEBUG:-True}
+      - HORIZON_ALLOWED_HOSTS=${HORIZON_ALLOWED_HOSTS:-*}
     volumes:
       - ./horizon-config/config.json:/var/lib/kolla/config_files/config.json:ro
       - ./horizon-config/local_settings:/var/lib/kolla/config_files/local_settings:ro
@@ -92,6 +103,9 @@ services:
       lightstack:
         condition: service_healthy
       novnc:
+        # service_started, NOT service_healthy — deliberate. novnc reports unhealthy by design
+        # (dead VNC target, F1) and Horizon degrades fine without the console tab. See the novnc
+        # service below before changing this.
         condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/dashboard/auth/login/"]
@@ -101,16 +115,27 @@ services:
       start_period: 60s
     restart: unless-stopped
 
-  # noVNC Console Proxy
+  # noVNC console client — maintained, pinned (bonigarcia/novnc). Its entrypoint runs
+  # novnc_proxy against VNC_SERVER, so a target is required; Lightstack exposes no reachable guest VNC
+  # (docs/specs/018-horizon-dashboard-verification/research.md U1), so VNC_SERVER is a dead
+  # placeholder and the console fails on connect, reproducing F1. Not kolla
+  # nova-novncproxy:2025.2 either; see research.md U1.
+  #
+  # Its healthcheck therefore reports unhealthy, which is expected and harmless: horizon depends on
+  # it with `condition: service_started`, and Compose satisfies that from dependency order alone —
+  # it never consults health (verified against an always-failing healthcheck). Do NOT change it to
+  # `service_healthy`, or Horizon will refuse to start over a console gap it tolerates fine.
+  # One caveat: `docker compose up --wait` DOES gate every service on running-or-healthy, so it will
+  # fail here. Use `up -d` (what the SPEC-018 runbooks and quickstart do), or pass `--wait` only
+  # after disabling this service.
   novnc:
-    image: dougw/novnc:latest
+    image: bonigarcia/novnc:1.3.0
     container_name: lightstack-novnc
     hostname: novnc
     ports:
       - "6080:6080"
     environment:
-      - DISPLAY_WIDTH=1280
-      - DISPLAY_HEIGHT=720
+      - VNC_SERVER=127.0.0.1:5900
     networks:
       - lightstack-network
     healthcheck:

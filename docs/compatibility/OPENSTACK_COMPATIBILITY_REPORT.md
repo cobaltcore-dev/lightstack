@@ -10,7 +10,7 @@
 Lightstack demonstrates **strong API compatibility** with OpenStack 2025.2, achieving:
 - **308/330 endpoints implemented** (93% coverage)
 - **76 contract test files** validating API contracts
-- **100% compatibility** with Terraform, Horizon UI, and OpenStack CLI
+- **Terraform and OpenStack CLI**: compatible. **Horizon UI**: API-compatible but **not** a drop-in for resource management — see the [Horizon Compatibility Report](HORIZON_COMPATIBILITY_REPORT.md)
 
 ### Test Execution Results
 
@@ -376,7 +376,7 @@ Lightstack demonstrates **strong API compatibility** with OpenStack 2025.2, achi
 | Client | Version | Compatibility | Validation Method |
 |--------|---------|---------------|-------------------|
 | **Terraform Provider** | 1.48+ | ✅ 100% | Manual testing + contract tests |
-| **Horizon Dashboard** | 2025.2 | ✅ 100% | `horizon_compat_test.sh` passing |
+| **Horizon Dashboard** | 2025.2 | ⚠️ APIs compatible; UI **not** a drop-in | Browser-level verification (SPEC-018) — [report](HORIZON_COMPATIBILITY_REPORT.md) |
 | **OpenStack CLI** | 6.0+ | ✅ 100% | Integration tests passing |
 | **gophercloud SDK** | 1.8+ | ✅ 100% | 76 contract test files |
 | **python-openstackclient** | 6.0+ | ✅ 100% | Integration tests passing |
@@ -441,7 +441,7 @@ Lightstack demonstrates **excellent OpenStack 2025.2 API compatibility** with:
 
 ### Strengths
 - ✅ **93% endpoint coverage** (308/330) - Production ready
-- ✅ **100% client compatibility** - Terraform, Horizon, CLI all work unchanged
+- ✅ **Terraform and CLI** work unchanged; ⚠️ **Horizon's UI is not a drop-in** for resource management (see the [Horizon Compatibility Report](HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ **Comprehensive test suite** - 76 contract test files
 - ✅ **TDD methodology** - Tests written before implementation
 - ✅ **Highest service coverage** - Neutron at 98%

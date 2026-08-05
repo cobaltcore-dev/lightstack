@@ -38,7 +38,7 @@ A comprehensive codebase review identified 42 findings (5 Critical, 12 High, 15 
 
 ## Executive Summary
 
-Lightstack has successfully achieved its core mission: **making OpenStack as simple to deploy as K3s is for Kubernetes**. With 104% endpoint coverage (342/330), comprehensive contract testing at 90% pass rate (258/286 tests), and validated production deployments, the project delivers **100% Terraform compatibility** - users can migrate existing Terraform scripts, Horizon UI workflows, and OpenStack CLI commands without any modifications.
+Lightstack has successfully achieved its core mission: **making OpenStack as simple to deploy as K3s is for Kubernetes**. With 104% endpoint coverage (342/330), comprehensive contract testing at 90% pass rate (258/286 tests), and validated production deployments, the project delivers **100% Terraform compatibility** - users can migrate existing Terraform scripts and OpenStack CLI commands without any modifications. Horizon is **API**-compatible, but its **UI is not a drop-in** for resource management - see the [Horizon Compatibility Report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md).
 
 **Key Achievement**: All HIGH and MEDIUM priority features are complete, with 90% contract test coverage milestone achieved (2026-03-31). The remaining contract test gaps are in advanced features (metadata operations, volume transfers, quota management) that represent <5% usage patterns.
 
@@ -327,7 +327,7 @@ test/*.sh              20+ integration test scripts
 | Client | Status | Validation Method | Compatibility |
 |--------|--------|-------------------|---------------|
 | **Terraform Provider** | ✅ 100% | Manual validation + contract tests | All `openstack_*` resources work unchanged |
-| **Horizon Dashboard** | ✅ 100% | `horizon_compat_test.sh` | Identical UI workflows |
+| **Horizon Dashboard** | ⚠️ APIs compatible; UI **not** a drop-in | Browser-level verification (SPEC-018) — [report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md) | Read/list panels render; every create/write workflow fails (F1–F11) |
 | **OpenStack CLI** | ✅ 100% | Integration tests | All `openstack` commands work unchanged |
 | **gophercloud SDK** | ✅ 100% | Contract tests | Go client library fully compatible |
 | **python-openstackclient** | ✅ 100% | Integration tests | Python CLI fully compatible |
@@ -499,7 +499,7 @@ Seed data creates:
 - ✅ 100% HIGH priority features
 - ✅ 100% MEDIUM priority features
 - ✅ All core workflows functional
-- ✅ Horizon dashboard 100% compatible
+- ⚠️ Horizon dashboard API-compatible; UI **not** a drop-in for resource management ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ Terraform provider 100% resources working
 - ✅ OpenStack CLI 100% commands working
 
@@ -557,7 +557,7 @@ Seed data creates:
 |---------|----------------------|-----|
 | **Core Services** | ✅ 5 services | ✅ 5 services |
 | **API Compatibility** | ✅ 100% | ✅ 91% |
-| **Horizon Dashboard** | ✅ Native | ✅ 100% compatible |
+| **Horizon Dashboard** | ✅ Native | ⚠️ APIs served; UI **not** a drop-in ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md)) |
 | **OpenStack CLI** | ✅ Native | ✅ 100% compatible |
 | **Multi-Tenancy** | ✅ Full | ✅ Full (domains, projects) |
 | **RBAC** | ✅ Full | ✅ Full (roles, assignments) |
@@ -576,7 +576,7 @@ Lightstack has successfully achieved its mission to be the "K3s of OpenStack". W
 
 1. **Simplicity**: Single 35MB binary vs multi-GB Python distributions
 2. **Performance**: 10x faster than traditional OpenStack
-3. **Compatibility**: 100% Horizon, CLI, and Terraform compatibility
+3. **Compatibility**: 100% CLI and Terraform compatibility; Horizon API-compatible, but its UI is **not** a drop-in ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 4. **Coverage**: 104% endpoint coverage (exceeds baseline)
 5. **Testing**: 90% contract test pass rate (258/286 tests)
 6. **Architecture**: Clean, maintainable Go codebase

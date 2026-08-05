@@ -1,0 +1,72 @@
+{{- if .Values.novnc.enabled }}
+{{/*
+  KNOWN GAP (research.md U1 / finding F1): Lightstack's Nova returns a hardcoded
+  http://localhost:6080 console URL with a random, unpersisted token and a fabricated VNC
+  port (never read from libvirt — internal/nova/console.go), so no proxy can resolve a guest.
+  A maintained noVNC client (bonigarcia/novnc, fixed tag) is deployed only to reproduce that the
+  Console tab stays unavailable; its VNC target is a dead placeholder (novnc.vncServer).
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightstack-horizon.fullname" . }}-novnc
+  labels:
+    {{- include "lightstack-horizon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: novnc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "lightstack-horizon.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: novnc
+  template:
+    metadata:
+      labels:
+        {{- include "lightstack-horizon.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: novnc
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: novnc
+          image: "{{ .Values.novnc.image.repository }}:{{ .Values.novnc.image.tag }}"
+          imagePullPolicy: {{ .Values.novnc.image.pullPolicy }}
+          {{- with .Values.novnc.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            # Required by the image entrypoint: novnc_proxy --vnc $VNC_SERVER.
+            - name: VNC_SERVER
+              value: {{ .Values.novnc.vncServer | quote }}
+          ports:
+            - name: novnc
+              containerPort: 6080
+          {{- with .Values.novnc.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lightstack-horizon.fullname" . }}-novnc
+  labels:
+    {{- include "lightstack-horizon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: novnc
+spec:
+  type: {{ .Values.novnc.service.type }}
+  selector:
+    {{- include "lightstack-horizon.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: novnc
+  ports:
+    - name: novnc
+      port: {{ .Values.novnc.service.port }}
+      targetPort: 6080
+      protocol: TCP
+      {{- if eq .Values.novnc.service.type "NodePort" }}
+      nodePort: {{ .Values.novnc.service.nodePort }}
+      {{- end }}
+{{- end }}

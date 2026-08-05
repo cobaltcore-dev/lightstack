@@ -6,7 +6,7 @@
 
 ## Overview
 
-Lightstack provides 100% API compatibility with OpenStack Horizon dashboard, but Horizon itself is:
+Lightstack serves the APIs the OpenStack Horizon dashboard consumes (its UI is **not** a drop-in for resource management — see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`). Horizon itself is:
 - **Optional**: Lightstack works perfectly without Horizon (CLI/API/SDK are primary interfaces)
 - **Independent**: Horizon runs as a separate service (Django application)
 - **Configurable**: Requires specific configuration to connect to Lightstack
@@ -98,9 +98,8 @@ OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
 SESSION_TIMEOUT = 14400  # 4 hours
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 
-# Console Access
+# Console Access (CONSOLE_TYPE only -- Horizon has no console-proxy setting)
 CONSOLE_TYPE = 'novnc'
-NOVNC_PROXY_URL = 'http://localhost:6080'
 ```
 
 **Key Configuration Points**:
@@ -290,7 +289,8 @@ docker exec lightstack date
 
 **Causes**:
 - noVNC proxy not running
-- Incorrect `NOVNC_PROXY_URL`
+- Lightstack returns a hardcoded `http://localhost:6080/vnc_auto.html` console URL (SPEC-018
+  finding **F1**, cloud-storage#534) — there is no Horizon-side setting to correct
 - Nova not configured for console access
 
 **Fix**:
@@ -442,7 +442,7 @@ keystone:
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Command cheatsheet
 
 **Support**:
-- API compatibility: 100% (all Horizon workflows functional)
+- API compatibility: broad (one known gap: image delete is a no-op, F6). **UI workflows are not all functional** — create/write flows fail; see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 - Known issues: Identity projects page 404 (Horizon bug, not lightstack)
 - Primary interfaces: OpenStack CLI, API, SDK
 - Web UI: Optional Horizon dashboard

@@ -56,7 +56,7 @@ Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It 
 
 **Core Philosophy:**
 - **Terraform Compatibility First**: Users can use existing Terraform OpenStack provider scripts unchanged
-- **UI/CLI Compatibility**: Horizon dashboard and OpenStack CLI work identically
+- **UI/CLI Compatibility**: OpenStack CLI works identically; Horizon consumes the same APIs, but its **UI is not a drop-in** for resource management (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`)
 - **Drop-in Replacement**: Zero modifications needed to migrate from OpenStack to Lightstack
 - **Synchronous Operations**: No message queues - operations complete before API returns
 - **Fail-Fast Design**: External dependency failures return immediately (< 1 second timeouts)
@@ -434,6 +434,8 @@ if requestedVersion == "" {
 - PostgreSQL — **no schema change, no new migration**; migration `052` edited in place (five `endpoints.url` rows). Nothing is deployed. (026-rename-to-lightstack)
 - Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); **no new modules** (017-nova-server-detail-readback)
 - PostgreSQL — new migration `063` adds `instances.key_name` (nullable `VARCHAR(255)`); reuses `server_security_groups` (migration 049) and the Neutron `security_groups` table for name→id resolution (017-nova-server-detail-readback)
+- No product code. Verification tooling only — Helm 3.12+ (new verification chart; existing `charts/lightstack`), Bash + `python-openstackclient` + `curl` (existing `test/horizon_*.sh`), and the unmodified upstream kolla Horizon image (Flamingo 2025.2, Python/Django — config-only, never patched). + docker-compose (stub pass); k3s (root/privileged) + `charts/lightstack` in real mode; minikube + Rook/Ceph exposing an RGW (S3) endpoint; a new verification Horizon chart (kolla image + `horizon-config` ConfigMap + memcached + `bonigarcia/novnc`). (018-horizon-dashboard-verification)
+- No schema change, no migration. Real-mode backends: node-local `/var/lib/lightstack` (VM disks, volumes), Ceph **RGW/S3** for Glance images. External PostgreSQL unchanged. **RBD not used.** (018-horizon-dashboard-verification)
 
 ## Recent Changes
 - 026-rename-to-lightstack: plan — staged rename (8 stages, gates green per stage); spec dir stays **untracked** (it cannot shed its own 70 occurrences); real-mode host validation mandatory (stub mode never reaches the chain namer or the state root) (SPEC-026 plan)

@@ -2,11 +2,11 @@
 
 **Date**: March 17, 2026
 **Version**: Lightstack v1.0 + Horizon Flamingo 2025.2
-**Status**: ✅ Production Ready - 100% API Compatible
+**Status**: ⚠️ API-compatible; the Horizon **UI is not a drop-in for resource management** — see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 
 ## Executive Summary
 
-Lightstack achieves **100% API compatibility** with OpenStack Horizon dashboard (Flamingo 2025.2). All dashboard features work without modifications, patches, or workarounds.
+Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon's read/list panels render against it without modifications, patches or workarounds. **The dashboard is not usable for resource management**: every create/write flow — network, volume, launch, console — fails UI-side, while the same operations succeed via API/CLI. See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F11).
 
 ### Key Features
 
@@ -287,9 +287,9 @@ CACHES = {
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 SESSION_COOKIE_AGE = 86400  # 24 hours (matches token TTL)
 
-# noVNC Console
+# noVNC Console (CONSOLE_TYPE only -- Horizon has no console-proxy setting; the URL comes
+# from Nova's response)
 CONSOLE_TYPE = 'novnc'
-NOVNC_PROXY_URL = 'http://10.2.199.101:6080'
 
 # API Versions
 OPENSTACK_API_VERSIONS = {
@@ -389,7 +389,10 @@ sudo -u postgres psql lightstack -c "UPDATE endpoints SET url = REPLACE(url, 'ht
 **Solutions**:
 1. Verify noVNC running: `nc -zv 10.2.199.101 6080`
 2. Check console URL: `grep console_proxy_base_url /opt/lightstack/config/lightstack.yaml`
-3. Verify Horizon noVNC config: `grep NOVNC_PROXY_URL /opt/lightstack/config/horizon-config/local_settings`
+3. Note there is nothing to fix Horizon-side: it has no console-proxy setting, and Lightstack
+   returns a hardcoded `http://localhost:6080/vnc_auto.html` console URL — SPEC-018 finding **F1**
+   ([cloud-storage#534](https://github.com/cobaltcore-dev/cloud-storage/issues/534)). Use
+   `openstack console log show <server>` meanwhile.
 
 ---
 
@@ -436,7 +439,7 @@ go test ./test/contract/... -v -count=1
 
 ## Conclusion
 
-Lightstack provides **100% API compatibility** with OpenStack Horizon dashboard. All endpoints, authentication flows, and response formats match OpenStack specifications exactly. The deployment is production-ready and requires no Horizon modifications.
+Lightstack serves the API surface OpenStack Horizon consumes: endpoints, authentication flows and response formats follow the OpenStack specifications, and Horizon needs no modifications to talk to it. That is **not** the same as a working dashboard — UI resource management is broken (F1–F11); see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
 
 **Key Strengths**:
 - Complete endpoint coverage (342/330 = 104%)

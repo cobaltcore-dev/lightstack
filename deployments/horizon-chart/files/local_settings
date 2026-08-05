@@ -1,0 +1,443 @@
+# OpenStack Horizon Configuration for Lightstack
+# OpenStack Release: Flamingo (2025.2)
+# Lightstack Version: v0.5.0+
+# Last Updated: 2026-03-13
+
+import os
+from django.utils.translation import gettext_lazy as _
+
+# ==========================================
+# Basic Django Settings
+# ==========================================
+
+# Both are env-driven so a deployer can change them without editing this file; the compose
+# stack and the Helm chart each inject them. Defaults are the safe ones -- upstream Horizon also
+# defaults DEBUG to False -- and the dev compose file opts into HORIZON_DEBUG=True.
+#
+# ALLOWED_HOSTS stays permissive by default on purpose: DEBUG=False makes it mandatory, and the
+# chart's documented entry point is http://<node-ip>:30080/dashboard, so pinning a single host
+# would make Django answer 400 to every request. Narrow it for anything shared.
+DEBUG = os.environ.get('HORIZON_DEBUG', 'False').strip().lower() in ('1', 'true', 'yes', 'on')
+_allowed_hosts = [h.strip() for h in os.environ.get('HORIZON_ALLOWED_HOSTS', '*').split(',') if h.strip()]
+ALLOWED_HOSTS = _allowed_hosts or ['*']
+
+# SECRET_KEY must be IDENTICAL across all WSGI workers. apache/horizon-nolist.conf runs
+# `processes=3`, and Django signs CSRF tokens and the messages cookie with this value, so a
+# per-process key means a token minted by one worker is rejected by the others. Computing it
+# inline (e.g. os.urandom at import) is therefore wrong here -- upstream Horizon's
+# local_settings.py.example says to share one key "regardless of the amount of Python WSGI
+# workers".
+#
+# Prefer an injected value; otherwise fall back to Horizon's own helper, which generates the
+# key once under a file lock and shares it between workers — the same approach upstream's
+# local_settings.py.example uses ("regardless of the amount of Python WSGI workers").
+# In the kolla image the env var is the ONLY reliable mechanism: extend_start.sh imports these
+# settings as root (collectstatic/compress), while apache's WSGIDaemonProcess runs as `horizon`,
+# so the key file the first importer creates is root-owned 0600 and the workers get an unhandled
+# PermissionError on read -- generate_or_read_from_file() has no except clause, so Horizon fails
+# to start. (kolla chowns its OWN default key store to `horizon` at the end of extend_start.sh,
+# but that fix does not cover this path.) All three deployments therefore inject SECRET_KEY:
+# docker-compose-horizon.yml, the horizon-chart Deployment, and scripts/deploy-turnkey.sh. The
+# file fallback is kept for running Horizon outside those deployments, where a single user owns
+# the whole process tree; point it elsewhere with HORIZON_SECRET_KEY_FILE.
+_secret_key = os.environ.get('SECRET_KEY')
+if not _secret_key:
+    from horizon.utils import secret_key as _secret_key_utils
+    _secret_key = _secret_key_utils.generate_or_read_from_file(
+        os.environ.get('HORIZON_SECRET_KEY_FILE', '/tmp/.horizon_secret_key'))
+SECRET_KEY = _secret_key
+
+# Web root for Horizon dashboard
+WEBROOT = '/dashboard/'
+LOGIN_URL = '/dashboard/auth/login/'
+LOGOUT_URL = '/dashboard/auth/logout/'
+LOGIN_REDIRECT_URL = '/dashboard/'
+STATIC_ROOT = '/var/lib/kolla/venv/lib/python3.12/site-packages/static'
+STATIC_URL = '/static/'
+
+# ==========================================
+# OpenStack Backend Configuration
+# ==========================================
+
+# Lightstack Service Discovery
+OPENSTACK_HOST = os.environ.get("OPENSTACK_HOST", "lightstack")
+OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
+
+# API Version Configuration (Lightstack Flamingo Compatible)
+OPENSTACK_API_VERSIONS = {
+    "identity": 3,      # Keystone v3
+    "image": 2,         # Glance v2
+    "volume": 3,        # Cinder v3
+    "compute": 2,       # Nova v2.1 (Horizon expects integer 2, not 2.1)
+}
+
+# ==========================================
+# Keystone v3 Configuration
+# ==========================================
+
+OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
+OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
+
+# Default user domain for authentication
+OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN = True
+OPENSTACK_KEYSTONE_DOMAIN_CHOICES = (
+    ('Default', 'Default'),
+)
+
+# ==========================================
+# Session Configuration
+# ==========================================
+
+# Session timeout, 4 hours. Deliberately SHORTER than Lightstack's 24h token_ttl
+# (config/lightstack.yaml, charts/lightstack/templates/_helpers.tpl): upstream Horizon
+# documents SESSION_TIMEOUT as a way to supersede the token timeout with a shorter session,
+# and it never exceeds token expiry. With the default SESSION_REFRESH=True this is an idle
+# timeout, not a hard limit. Upstream's own default is 3600.
+SESSION_TIMEOUT = 14400
+
+# Session engine (use cache with Memcached for multi-process reliability)
+SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+
+# Security settings (enable in production with HTTPS)
+SESSION_COOKIE_SECURE = False  # Set True with HTTPS
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SECURE = False     # Set True with HTTPS
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SAMESITE = 'Lax'
+
+# ==========================================
+# Console Access Configuration
+# ==========================================
+
+CONSOLE_TYPE = 'novnc'  # VNC console type
+# There is no Horizon setting for the console proxy URL: upstream documents CONSOLE_TYPE only, and
+# the URL comes from Nova's os-getVNCConsole / remote-consoles response. Lightstack returns a
+# hardcoded http://localhost:6080/vnc_auto.html (internal/nova/console.go) -- SPEC-018 finding F1,
+# cloud-storage#534. A NOVNC_PROXY_URL line used to sit here; Horizon never read it.
+
+# Console types available in dropdown
+CONSOLE_TYPES = [
+    ('novnc', _('noVNC')),
+    ('spice', _('SPICE')),
+]
+
+# ==========================================
+# Regional Settings
+# ==========================================
+
+OPENSTACK_KEYSTONE_REGION_NAME = "RegionOne"
+TIME_ZONE = "UTC"
+LANGUAGE_CODE = 'en'
+
+# Available regions (add more if multi-region)
+AVAILABLE_REGIONS = [
+    (OPENSTACK_KEYSTONE_URL, 'RegionOne'),
+]
+
+# ==========================================
+# Service Feature Configuration
+# ==========================================
+
+# Nova (Compute) Features
+OPENSTACK_HYPERVISOR_FEATURES = {
+    'can_set_mount_point': False,
+    'can_set_password': True,
+    'requires_keypair': False,
+    'enable_quotas': True,
+}
+
+# Neutron (Network) Features
+OPENSTACK_NEUTRON_NETWORK = {
+    'enable_router': True,
+    'enable_quotas': True,
+    'enable_ipv6': False,
+    'enable_distributed_router': False,
+    'enable_ha_router': False,
+    'enable_lb': False,
+    'enable_firewall': False,
+    'enable_vpn': False,
+    'enable_fip_topology_check': True,
+
+    # Supported network types
+    'supported_provider_types': ['local', 'flat', 'vlan', 'vxlan'],
+    'segmentation_id_range': {
+        'vlan': [1, 4094],
+        'vxlan': [1, 16777215],
+    },
+
+    # Default network settings
+    'default_dns_nameservers': ['8.8.8.8', '8.8.4.4'],
+    'supported_vnic_types': ['normal', 'direct', 'macvtap'],
+    'enable_port_forwarding': True,
+}
+
+# Cinder (Block Storage) Features
+OPENSTACK_CINDER_FEATURES = {
+    'enable_backup': False,  # Disable if not using Cinder backup
+    'enable_volume_transfer': True,
+}
+
+# Glance (Image) Features
+OPENSTACK_IMAGE_FORMATS = (
+    ('', _('Select format')),
+    ('aki', _('AKI - Amazon Kernel Image')),
+    ('ami', _('AMI - Amazon Machine Image')),
+    ('ari', _('ARI - Amazon Ramdisk Image')),
+    ('docker', _('Docker')),
+    ('iso', _('ISO - Optical Disk Image')),
+    ('ova', _('OVA - Open Virtual Appliance')),
+    ('qcow2', _('QCOW2 - QEMU Emulator')),
+    ('raw', _('Raw')),
+    ('vdi', _('VDI - Virtual Disk Image')),
+    ('vhd', _('VHD - Virtual Hard Disk')),
+    ('vhdx', _('VHDX - Large Virtual Hard Disk')),
+    ('vmdk', _('VMDK - Virtual Machine Disk')),
+)
+
+# ==========================================
+# Dashboard Configuration
+# ==========================================
+
+# Disable unwanted panels (customize as needed)
+HORIZON_CONFIG = {
+    'user_home': 'openstack_dashboard.views.get_user_home',
+    'ajax_queue_limit': 10,
+    'auto_fade_alerts': {
+        'delay': 3000,
+        'fade_duration': 1500,
+        'types': ['alert-success', 'alert-info']
+    },
+    'help_url': "https://docs.openstack.org",
+    'exceptions': {
+        'recoverable': [],
+        'not_found': [],
+        'unauthorized': [],
+    },
+    'modal_backdrop': 'static',
+    'angular_modules': [],
+    'js_files': [],
+    'js_spec_files': [],
+
+    # Password validation rules
+    'password_validator': {
+        'regex': '.*',
+        'help_text': _("Password must be at least 8 characters."),
+    },
+    'password_autocomplete': 'off',
+
+    # Disable customization endpoint (for security)
+    'customization_module': '',
+}
+
+# Disable features not supported by Lightstack stub mode
+HORIZON_IMAGES_UPLOAD_MODE = 'direct'
+
+# ==========================================
+# Policy Configuration
+# ==========================================
+
+# Policy files path (use defaults)
+POLICY_FILES_PATH = '/etc/openstack-dashboard'
+POLICY_FILES = {
+    'identity': 'keystone_policy.yaml',
+    'compute': 'nova_policy.yaml',
+    'volume': 'cinder_policy.yaml',
+    'image': 'glance_policy.yaml',
+    'network': 'neutron_policy.yaml',
+}
+
+# ==========================================
+# Logging Configuration
+# ==========================================
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'console': {
+            'format': '%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
+        },
+        'operation': {
+            'format': '%(asctime)s %(message)s',
+        },
+    },
+    'handlers': {
+        'null': {
+            'level': 'DEBUG',
+            'class': 'logging.NullHandler',
+        },
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'console',
+        },
+        'operation': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'operation',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'horizon': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'openstack_dashboard': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'novaclient': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'cinderclient': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'keystoneauth': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'neutronclient': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'glanceclient': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'openstack_auth': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+        },
+        'django.db.backends': {
+            'handlers': ['null'],
+            'propagate': False,
+        },
+        'requests': {
+            'handlers': ['null'],
+            'propagate': False,
+        },
+        'urllib3': {
+            'handlers': ['null'],
+            'propagate': False,
+        },
+    },
+}
+
+# ==========================================
+# Cache Configuration
+# ==========================================
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.memcached.PyMemcacheCache',
+        'LOCATION': os.environ.get('MEMCACHED_LOCATION', 'memcached:11211'),
+    }
+}
+
+# ==========================================
+# Security Configuration
+# ==========================================
+
+# CORS Headers (if needed)
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+# Content Security Policy (disable for development)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_BROWSER_XSS_FILTER = True
+X_FRAME_OPTIONS = 'SAMEORIGIN'
+
+# ==========================================
+# Integration Settings
+# ==========================================
+
+# Disable external integrations
+OPENSTACK_ENABLE_PASSWORD_RETRIEVE = False
+OPENSTACK_ENDPOINT_TYPE = "publicURL"
+
+# Image backend
+IMAGE_BACKEND = {
+    'image_formats': OPENSTACK_IMAGE_FORMATS,
+}
+
+# Instance features
+LAUNCH_INSTANCE_LEGACY_ENABLED = False
+LAUNCH_INSTANCE_NG_ENABLED = True
+
+# Create volume from image
+OPENSTACK_IMAGE_BACKEND = {
+    'image_formats': OPENSTACK_IMAGE_FORMATS,
+}
+
+# ==========================================
+# Theme Configuration
+# ==========================================
+
+# Default theme
+AVAILABLE_THEMES = [
+    ('default', 'Default', 'themes/default'),
+    ('material', 'Material', 'themes/material'),
+]
+DEFAULT_THEME = 'default'
+
+# Site branding
+SITE_BRANDING = "Lightstack Cloud Dashboard"
+SITE_BRANDING_LINK = "/"
+
+# ==========================================
+# Debug Settings (Development Only)
+# ==========================================
+
+# Disable debug toolbar
+DEBUG_TOOLBAR = False
+
+# Email backend (for password reset - configure for production)
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# ==========================================
+# Additional Settings
+# ==========================================
+
+# Pagination
+API_RESULT_LIMIT = 1000
+API_RESULT_PAGE_SIZE = 20
+
+# Swift (Object Storage) - disabled for Lightstack
+SWIFT_FILE_TRANSFER_CHUNK_SIZE = 512 * 1024
+
+# Trove (Database) - disabled for Lightstack
+# Heat (Orchestration) - disabled for Lightstack
+# Sahara (Data Processing) - disabled for Lightstack
+
+# ==========================================
+# Custom Lightstack Settings
+# ==========================================
+
+# Lightstack-specific customizations
+CUSTOM_DASHBOARD_NAME = "Lightstack Horizon Dashboard"
+CUSTOM_PRODUCT_NAME = "Lightstack OpenStack Platform"
+CUSTOM_WELCOME_MESSAGE = "Welcome to Lightstack - Lightweight OpenStack"
+
+# Disable features not available in Lightstack stub mode
+SHOW_KEYSTONE_V2_RC = False
+
+# ==========================================
+# End of Configuration
+# ==========================================
