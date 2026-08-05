@@ -9,17 +9,21 @@ echo "Horizon Full Functionality Test"
 echo "================================"
 echo ""
 
+# Host running O3K. Defaults to localhost so this works against the docker-compose stack;
+# override for a remote host, e.g. O3K_HOST=10.2.199.101 (SPEC-018 T032).
+O3K_HOST="${O3K_HOST:-localhost}"
+
 # Configuration
-export OS_AUTH_URL=http://10.2.199.101:35357/v3
+export OS_AUTH_URL=http://${O3K_HOST}:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
 export OS_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
-export OS_ENDPOINT_OVERRIDE_network=http://10.2.199.101:9696
-export OS_ENDPOINT_OVERRIDE_compute=http://10.2.199.101:8774
-export OS_ENDPOINT_OVERRIDE_volume=http://10.2.199.101:8776
-export OS_ENDPOINT_OVERRIDE_image=http://10.2.199.101:9292
+export OS_ENDPOINT_OVERRIDE_network=http://${O3K_HOST}:9696
+export OS_ENDPOINT_OVERRIDE_compute=http://${O3K_HOST}:8774
+export OS_ENDPOINT_OVERRIDE_volume=http://${O3K_HOST}:8776
+export OS_ENDPOINT_OVERRIDE_image=http://${O3K_HOST}:9292
 
 # Colors for output
 RED='\033[0;31m'
@@ -45,7 +49,7 @@ test_endpoint() {
         -H "X-Auth-Token: $TOKEN" \
         -H "Content-Type: application/json" \
         $extra_args \
-        "http://10.2.199.101:9696$path" 2>/dev/null || echo "000")
+        "http://${O3K_HOST}:9696$path" 2>/dev/null || echo "000")
 
     status_code=$(echo "$response" | tail -1)
     body=$(echo "$response" | head -n -1)

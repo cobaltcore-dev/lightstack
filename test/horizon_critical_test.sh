@@ -7,11 +7,15 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
+# Host running O3K. Defaults to localhost so this works against the docker-compose stack;
+# override for a remote host, e.g. O3K_HOST=10.2.199.101 (SPEC-018 T032).
+O3K_HOST="${O3K_HOST:-localhost}"
+
 echo "Testing critical Horizon endpoints..."
 echo ""
 
 # Get auth token
-TOKEN=$(curl -s -X POST http://10.2.199.101:35357/v3/auth/tokens \
+TOKEN=$(curl -s -X POST http://${O3K_HOST}:35357/v3/auth/tokens \
   -H "Content-Type: application/json" \
   -d '{
     "auth": {
@@ -25,7 +29,7 @@ TOKEN=$(curl -s -X POST http://10.2.199.101:35357/v3/auth/tokens \
     }
   }' | jq -r '.token.catalog[] | select(.type == "network") | .endpoints[0].url')
 
-AUTH_TOKEN=$(curl -s -i -X POST http://10.2.199.101:35357/v3/auth/tokens \
+AUTH_TOKEN=$(curl -s -i -X POST http://${O3K_HOST}:35357/v3/auth/tokens \
   -H "Content-Type: application/json" \
   -d '{
     "auth": {
@@ -39,7 +43,7 @@ AUTH_TOKEN=$(curl -s -i -X POST http://10.2.199.101:35357/v3/auth/tokens \
     }
   }' | grep -i "^X-Subject-Token:" | cut -d' ' -f2 | tr -d '\r')
 
-PROJECT_ID=$(curl -s -X POST http://10.2.199.101:35357/v3/auth/tokens \
+PROJECT_ID=$(curl -s -X POST http://${O3K_HOST}:35357/v3/auth/tokens \
   -H "Content-Type: application/json" \
   -d '{
     "auth": {
@@ -65,7 +69,7 @@ echo ""
 
 echo "2. Nova - List servers with addresses field"
 SERVERS=$(curl -s -H "X-Auth-Token: $AUTH_TOKEN" \
-  "http://10.2.199.101:8774/v2.1/$PROJECT_ID/servers/detail")
+  "http://${O3K_HOST}:8774/v2.1/$PROJECT_ID/servers/detail")
 if echo "$SERVERS" | jq -e '.servers[0].addresses' > /dev/null 2>&1; then
     echo -e "   ${GREEN}✓ PASS${NC} - addresses field present"
 elif echo "$SERVERS" | jq -e '.servers | length == 0' > /dev/null 2>&1; then
@@ -78,7 +82,7 @@ echo ""
 
 echo "3. Neutron - Get quota details"
 QUOTA=$(curl -s -w "\n%{http_code}" -H "X-Auth-Token: $AUTH_TOKEN" \
-  "http://10.2.199.101:9696/v2.0/quotas/$PROJECT_ID/details")
+  "http://${O3K_HOST}:9696/v2.0/quotas/$PROJECT_ID/details")
 STATUS=$(echo "$QUOTA" | tail -1)
 BODY=$(echo "$QUOTA" | head -n -1)
 
@@ -93,7 +97,7 @@ echo ""
 
 echo "4. Neutron - List networks"
 NETWORKS=$(curl -s -w "\n%{http_code}" -H "X-Auth-Token: $AUTH_TOKEN" \
-  "http://10.2.199.101:9696/v2.0/networks")
+  "http://${O3K_HOST}:9696/v2.0/networks")
 STATUS=$(echo "$NETWORKS" | tail -1)
 
 if [ "$STATUS" = "200" ]; then
@@ -105,7 +109,7 @@ echo ""
 
 echo "5. Neutron - List routers"
 ROUTERS=$(curl -s -w "\n%{http_code}" -H "X-Auth-Token: $AUTH_TOKEN" \
-  "http://10.2.199.101:9696/v2.0/routers")
+  "http://${O3K_HOST}:9696/v2.0/routers")
 STATUS=$(echo "$ROUTERS" | tail -1)
 
 if [ "$STATUS" = "200" ]; then
@@ -117,7 +121,7 @@ echo ""
 
 echo "6. Neutron - List floating IPs"
 FIPS=$(curl -s -w "\n%{http_code}" -H "X-Auth-Token: $AUTH_TOKEN" \
-  "http://10.2.199.101:9696/v2.0/floatingips")
+  "http://${O3K_HOST}:9696/v2.0/floatingips")
 STATUS=$(echo "$FIPS" | tail -1)
 
 if [ "$STATUS" = "200" ]; then

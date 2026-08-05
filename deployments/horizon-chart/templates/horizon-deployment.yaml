@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "o3k-horizon.fullname" . }}
+  labels:
+    {{- include "o3k-horizon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: horizon
+spec:
+  replicas: {{ .Values.horizon.replicas }}
+  selector:
+    matchLabels:
+      {{- include "o3k-horizon.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: horizon
+  template:
+    metadata:
+      annotations:
+        # Roll the pod when the mounted config changes (COPY_ALWAYS re-applies on start).
+        checksum/config: {{ .Files.Get "files/local_settings" | sha256sum }}
+      labels:
+        {{- include "o3k-horizon.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: horizon
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: horizon
+          image: "{{ .Values.horizon.image.repository }}:{{ .Values.horizon.image.tag }}"
+          imagePullPolicy: {{ .Values.horizon.image.pullPolicy }}
+          {{- with .Values.horizon.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: KOLLA_INSTALL_TYPE
+              value: source
+            - name: KOLLA_CONFIG_STRATEGY
+              value: COPY_ALWAYS
+            # Repoints local_settings at the in-cluster o3k Service (research.md U3).
+            - name: OPENSTACK_HOST
+              value: {{ .Values.o3k.host | quote }}
+            # Shared across all apache workers on purpose — see horizon.secretKey in values.yaml.
+            - name: SECRET_KEY
+              value: {{ .Values.horizon.secretKey | quote }}
+            - name: HORIZON_DEBUG
+              value: {{ .Values.horizon.debug | quote }}
+            - name: HORIZON_ALLOWED_HOSTS
+              value: {{ .Values.horizon.allowedHosts | quote }}
+            # Point Horizon's CACHES at the release-qualified memcached Service.
+            - name: MEMCACHED_LOCATION
+              value: {{ printf "%s-memcached:11211" (include "o3k-horizon.fullname" .) | quote }}
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: kolla-config
+              mountPath: /var/lib/kolla/config_files
+              readOnly: true
+            - name: horizon-logs
+              mountPath: /var/log/kolla/horizon
+          # kolla Horizon takes 2-3 minutes to come up (collectstatic + compress + apache).
+          # Startup is therefore gated on its own probe: liveness and readiness do not begin
+          # until it succeeds, so a slow cluster can no longer be restarted mid-boot. Same
+          # shape as charts/o3k's probes.startup (SPEC-013). initialDelaySeconds is omitted
+          # on the other two on purpose — with a startupProbe present it would only add
+          # dead time after boot already completed.
+          startupProbe:
+            httpGet:
+              path: /dashboard/auth/login/
+              port: 80
+            periodSeconds: 10
+            failureThreshold: 30   # 30 x 10s = 300s boot grace before CrashLoopBackOff
+          readinessProbe:
+            httpGet:
+              path: /dashboard/auth/login/
+              port: 80
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /dashboard/auth/login/
+              port: 80
+            periodSeconds: 30
+            failureThreshold: 3    # explicit: this is the k8s default, and the reason
+                                   # a bare initialDelaySeconds: 90 still killed at ~150s
+          {{- with .Values.horizon.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: kolla-config
+          configMap:
+            name: {{ include "o3k-horizon.fullname" . }}-config
+        - name: horizon-logs
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

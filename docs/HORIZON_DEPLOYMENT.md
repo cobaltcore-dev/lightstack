@@ -153,14 +153,13 @@ services:
       start_period: 60s
 
   novnc:
-    image: dougw/novnc:latest
+    image: bonigarcia/novnc:1.3.0
     container_name: o3k-novnc
     hostname: novnc
     ports:
       - "6080:6080"
     environment:
-      - DISPLAY_WIDTH=1024
-      - DISPLAY_HEIGHT=768
+      - VNC_SERVER=127.0.0.1:5900
     networks:
       - o3k-network
     restart: unless-stopped

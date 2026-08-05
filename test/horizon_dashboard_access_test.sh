@@ -1,16 +1,18 @@
 #!/bin/bash
 # Test Horizon dashboard access and service panel availability
 
-set -e
+set -euo pipefail
 
 echo "=== Horizon Dashboard Access Test ==="
 
 # Configuration
-export OS_AUTH_URL=http://localhost:35357/v3
-export OS_USERNAME=admin
-export OS_PASSWORD=secret
-export OS_PROJECT_NAME=default
-export OS_DOMAIN_NAME=Default
+# Parameter defaults, so a caller who already sourced ~/.o3k-env (or exported OS_* vars)
+# keeps their own values instead of having them overwritten.
+export OS_AUTH_URL="${OS_AUTH_URL:-http://localhost:35357/v3}"
+export OS_USERNAME="${OS_USERNAME:-admin}"
+export OS_PASSWORD="${OS_PASSWORD:-secret}"
+export OS_PROJECT_NAME="${OS_PROJECT_NAME:-default}"
+export OS_DOMAIN_NAME="${OS_DOMAIN_NAME:-Default}"
 
 echo "1. Authenticating to O3K..."
 TOKEN=$(openstack token issue -f value -c id)
@@ -44,7 +46,7 @@ fi
 echo "3. Verifying service endpoints..."
 # Check each service has public endpoint
 for service in "${REQUIRED_SERVICES[@]}"; do
-  ENDPOINT=$(echo "$CATALOG" | jq -r ".[] | select(.Type == \"$service\") | .Endpoints[] | select(.interface == \"public\") | .url" | head -1)
+  ENDPOINT=$(printf '%s' "$CATALOG" | jq -r --arg s "$service" 'first(.[] | select(.Type == $s) | .Endpoints[] | select(.interface == "public") | .url) // empty')
   if [ -z "$ENDPOINT" ]; then
     echo "  ✗ Service '$service' missing public endpoint"
     exit 1
@@ -55,10 +57,10 @@ done
 
 echo "4. Testing endpoint connectivity..."
 # Test each service endpoint responds
-NOVA_ENDPOINT=$(echo "$CATALOG" | jq -r '.[] | select(.Type == "compute") | .Endpoints[] | select(.interface == "public") | .url' | head -1)
-NEUTRON_ENDPOINT=$(echo "$CATALOG" | jq -r '.[] | select(.Type == "network") | .Endpoints[] | select(.interface == "public") | .url' | head -1)
-CINDER_ENDPOINT=$(echo "$CATALOG" | jq -r '.[] | select(.Type == "volume") | .Endpoints[] | select(.interface == "public") | .url' | head -1)
-GLANCE_ENDPOINT=$(echo "$CATALOG" | jq -r '.[] | select(.Type == "image") | .Endpoints[] | select(.interface == "public") | .url' | head -1)
+NOVA_ENDPOINT=$(printf '%s' "$CATALOG" | jq -r 'first(.[] | select(.Type == "compute") | .Endpoints[] | select(.interface == "public") | .url) // empty')
+NEUTRON_ENDPOINT=$(printf '%s' "$CATALOG" | jq -r 'first(.[] | select(.Type == "network") | .Endpoints[] | select(.interface == "public") | .url) // empty')
+CINDER_ENDPOINT=$(printf '%s' "$CATALOG" | jq -r 'first(.[] | select(.Type == "volume") | .Endpoints[] | select(.interface == "public") | .url) // empty')
+GLANCE_ENDPOINT=$(printf '%s' "$CATALOG" | jq -r 'first(.[] | select(.Type == "image") | .Endpoints[] | select(.interface == "public") | .url) // empty')
 
 # Nova version check
 NOVA_RESPONSE=$(curl -s -H "X-Auth-Token: $TOKEN" "$NOVA_ENDPOINT")

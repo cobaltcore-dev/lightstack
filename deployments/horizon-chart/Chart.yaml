@@ -1,0 +1,16 @@
+apiVersion: v2
+name: o3k-horizon
+description: >-
+  Verification-scoped Horizon dashboard (kolla Flamingo 2025.2) for SPEC-018.
+  Deploys the UNMODIFIED upstream Horizon image + memcached + noVNC against a
+  chart-deployed real-mode O3K on the same cluster, reusing deployments/horizon-config/*.
+  This is verification infrastructure — NOT a product chart, and NOT part of charts/o3k.
+type: application
+version: 0.1.0
+appVersion: "2025.2"
+keywords:
+  - horizon
+  - openstack
+  - o3k
+  - verification
+home: https://github.com/cobaltcore-dev/cloud-storage/issues/482

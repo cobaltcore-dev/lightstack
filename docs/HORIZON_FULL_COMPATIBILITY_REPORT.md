@@ -2,9 +2,16 @@
 
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
-**Date**: March 17, 2026
-**Status**: ✅ **100% Compatible**
-**Coverage**: 342/330 endpoints (104%)
+> **⚠️ SUPERSEDED (2026-07-23) — see [`compatibility/HORIZON_COMPATIBILITY_REPORT.md`](compatibility/HORIZON_COMPATIBILITY_REPORT.md).**
+> This document (SPEC-002) measured **API-endpoint coverage**, not a working dashboard. The SPEC-018
+> browser-level verification (stub + real, host-run) found that while O3K's **API/CLI is compatible** and
+> its real backends work end-to-end (VM boots from a Ceph-RGW image, real networking, metadata/cloud-init,
+> SSH), the Horizon **dashboard is _not_ usable for resource management** — every create/write workflow is
+> broken (findings F1–F9). Read the "100% compatible" claim below as **API coverage only**, not UI parity.
+
+**Date**: March 17, 2026 (original)
+**Status**: ⚠️ **API endpoints: broad coverage; Horizon UI: NOT a drop-in for resource management** — see the SPEC-018 report
+**Coverage**: 342/330 endpoints (104%) — endpoint count only; does not imply a working dashboard
 
 ## Executive Summary
 

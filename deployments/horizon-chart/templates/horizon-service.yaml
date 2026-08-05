@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "o3k-horizon.fullname" . }}
+  labels:
+    {{- include "o3k-horizon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: horizon
+spec:
+  type: {{ .Values.horizon.service.type }}
+  selector:
+    {{- include "o3k-horizon.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: horizon
+  ports:
+    - name: http
+      port: {{ .Values.horizon.service.port }}
+      targetPort: 80
+      protocol: TCP
+      {{- if eq .Values.horizon.service.type "NodePort" }}
+      nodePort: {{ .Values.horizon.service.nodePort }}
+      {{- end }}

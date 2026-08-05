@@ -432,6 +432,8 @@ if requestedVersion == "" {
 - PostgreSQL — **no schema change, no migration** (identity id columns stay `uuid`). (015-identity-uuid-404)
 - Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); **no new modules** (017-nova-server-detail-readback)
 - PostgreSQL — new migration `063` adds `instances.key_name` (nullable `text`); reuses `server_security_groups` (migration 049) and the Neutron `security_groups` table for name→id resolution (017-nova-server-detail-readback)
+- No product code. Verification tooling only — Helm 3.12+ (new verification chart; existing `charts/o3k`), Bash + `python-openstackclient` + `curl` (existing `test/horizon_*.sh`), and the unmodified upstream kolla Horizon image (Flamingo 2025.2, Python/Django — config-only, never patched). + docker-compose (stub pass); k3s (root/privileged) + `charts/o3k` in real mode; minikube + Rook/Ceph exposing an RGW (S3) endpoint; a new verification Horizon chart (kolla image + `horizon-config` ConfigMap + memcached + `bonigarcia/novnc`). (018-horizon-dashboard-verification)
+- No schema change, no migration. Real-mode backends: node-local `/var/lib/o3k` (VM disks, volumes), Ceph **RGW/S3** for Glance images. External PostgreSQL unchanged. **RBD not used.** (018-horizon-dashboard-verification)
 
 ## Recent Changes
 - 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)
