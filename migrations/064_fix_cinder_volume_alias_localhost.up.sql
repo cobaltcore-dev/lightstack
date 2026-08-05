@@ -1,0 +1,11 @@
+-- Fix the cinder `volume` alias endpoint (service ...015, added by migration 054)
+-- which was seeded at http://localhost:8776/v3 AFTER migration 052's one-shot
+-- localhost->o3k rewrite (052 targeted services ...010-...014 only, so it could
+-- never reach ...015). Bring it to the http://o3k: convention every other endpoint
+-- uses, so runtime host substitution resolves it to the configured host and the raw
+-- `endpoint list` no longer shows a stray localhost (F5, cloud-storage#532).
+--
+-- The s3 endpoint (service ...016, migration 062) is intentionally NOT touched: its
+-- advertised value is the external RGW URL resolved from config at catalog-build time
+-- (BuildServiceCatalog), so its seeded placeholder is never served.
+UPDATE endpoints SET url = 'http://o3k:8776/v3' WHERE service_id = '00000000-0000-0000-0000-000000000015';

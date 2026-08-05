@@ -21,6 +21,14 @@ refutes SPEC-002's ungrounded "100% compatible" claim. **9 findings (F1–F9).**
 > (SPEC-002's "100% compatible", never grounded in a browser-level check) — a superseded banner there now
 > points here, leaving one authoritative statement (SC-003).
 
+> **Update — 2026-07-24 (SPEC-019 / cloud-storage#532):** findings **F4, F5, F6, F9 are FIXED** and
+> re-verified in **both** stub and real mode (runbooks under
+> [`../specs/019-horizon-compat-api-fixes/`](../specs/019-horizon-compat-api-fixes/)). The create/write-UI
+> cluster (**F2/F3/F7/F8**, #533) and the noVNC console (**F1**, #534) remain open. Net: the read/list panels
+> now render (volumes no longer 500), the volume catalog is reachable, networks list once, and image delete
+> works via the API — but Horizon is still not a drop-in for UI-driven resource *creation* (see #533). Each
+> fixed finding is tagged ✅ inline; see the updated Follow-ups.
+
 ## Environment
 
 | Field | Stub pass | Real pass (graded) |
@@ -134,7 +142,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 - **Follow-up**: the same one-key fix as F2 — add `"reserved": 0` to each resource in `GetQuotaDetails`
   (`internal/neutron/network.go`). Expected to close **F2 and F3 together**; not yet verified by re-test.
 
-### F4 — Duplicate network listing in the Project panel (medium) — _stub + real (2026-07-23)_
+### F4 — Duplicate network listing in the Project panel (medium) — _stub + real (2026-07-23)_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: a single network shows **twice** in Project → Network → Networks. Ruled out: **not** a Neutron
   API dup (`openstack network list` → **once**) and **not** a catalog dup (`catalog show network` → a single
   clean `public: http://o3k-o3k:9696`). So the duplication is in **how Horizon builds the Project panel** —
@@ -145,7 +153,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 - **Follow-up**: verify O3K Neutron `GET /v2.0/networks` honors the `shared` / `router:external` / project
   filters (a filtered query should not return a plain project net); compare against upstream Neutron.
 
-### F5 — Volume (Cinder) catalog endpoint advertises `localhost` (major) — _stub_
+### F5 — Volume (Cinder) catalog endpoint advertises `localhost` (major) — _stub_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: migration `040` seeds the volume endpoint (`…013`) as `http://localhost:8776/v3`; migration
   `052` rewrites `…013` to `http://o3k:8776/v3`, but migration `054_cinder_volume_alias` adds a **second**
   volume endpoint (`…015`) hardcoded to `http://localhost:8776/v3`, which `052` (running earlier) never
@@ -162,7 +170,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 - **Follow-up**: seed the alias endpoint (`…015`) with the configurable host (not `localhost`), and/or
   make catalog host-substitution rewrite `localhost:` too. Verify against #481 Terraform (volume path).
 
-### F6 — Glance image delete is a no-op (medium) — _stub_
+### F6 — Glance image delete is a no-op (medium) — _stub_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: `openstack image delete <id>` returns success (no error) but the image stays in
   `image list`. Two explicitly-deleted images (`70c6ee27…`, `32d8ea8e…`) reappeared alongside a freshly
   created one — three `cirros` images after two deletes.
@@ -213,7 +221,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   (`internal/neutron/network.go`) — closes F2 + F3. (2) Separately, why the Volumes modal never opens and
   the Launch wizard cannot validate; both are JS-level and need a browser, not an API-level trace.
 
-### F9 — Volumes panel 500s (TemplateSyntaxError) once a volume exists (major) — _real (2026-07-23)_
+### F9 — Volumes panel 500s (TemplateSyntaxError) once a volume exists (major) — _real (2026-07-23)_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: with `test-vol-cli` present, `GET /dashboard/project/volumes/` throws `TemplateSyntaxError`
   in `horizon/tables/base.py:1948 get_rows` rendering `horizon/common/_data_table.html`. O3K's Cinder
   volume response is **heavily null-populated** — `openstack volume show` returns `type`/`volume_type_id`,
@@ -274,11 +282,17 @@ coverage it counted is real, but it does not translate into a working dashboard 
 - **F7 + volume-create modal (separate from the above)** — their create actions render server-side and the
   Nova/Cinder quota and limits calls return 200 with every key Horizon reads, so the quota theory does not
   explain them. Needs a browser-level (JavaScript) investigation, not an API trace.
-- **F9** — populate O3K's Cinder volume response (null `type`/`availability_zone`/`encrypted`/…) so
-  Horizon's volume table renders.
-- **F4** — make O3K Neutron honor the `shared`/`router:external`/project list filters (no double-listing).
-- **F1** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy + configurable URL).
-- **F6** — fix Glance image delete (currently a no-op).
+- ✅ **F4, F5, F6, F9 — DONE (SPEC-019 / cloud-storage#532, 2026-07-24):** O3K Neutron now honors the
+  `shared`/`router:external`/project list filters so each network lists once (F4); the `volume` catalog alias
+  advertises the configured host, not `localhost` (F5); the Cinder volume response carries the full non-null
+  upstream field set so Horizon's volume table renders instead of 500-ing (F9); and Glance image delete
+  removes the image with owner-or-admin authorization, returning 404/403 appropriately (F6). Verified in
+  **both** stub and real mode.
+- **F8 cluster (open — #533)** — trace the Nova/Cinder/Neutron quota+limits+types calls Horizon makes
+  when opening each create UI; one root fix likely re-enables F2/F3/F7 and the volume-create modal. *(Note:
+  Horizon's row **Delete** buttons are part of this write-UI cluster — the F6 fix restores delete via the
+  API/CLI, but the dashboard's delete action stays broken until #533.)*
+- **F1 (open — #534)** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy + configurable URL).
 
 **Reproducibility (SC-005 met).** Both passes are fully scripted in the two `HOST_TESTING*.md` runbooks;
 the real pass reuses the SPEC-014 `deployments/rook/setup-rook-rgw.sh` fixture.

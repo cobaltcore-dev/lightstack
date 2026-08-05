@@ -79,6 +79,7 @@ func (svc *Service) ListRBACPolicies(c *gin.Context) {
 		var id, projectID, objectType, objectID, targetTenant, action string
 
 		if err := rows.Scan(&id, &projectID, &objectType, &objectID, &targetTenant, &action); err != nil {
+			log.Warn().Err(err).Str("operation", "ListRBACPolicies").Msg("failed to scan row")
 			continue
 		}
 
@@ -93,6 +94,8 @@ func (svc *Service) ListRBACPolicies(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"rbac_policies": policies})

@@ -41,6 +41,7 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 		var createdAt time.Time
 
 		if err := rows.Scan(&id, &userIDVal, &projectID, &name, &description, &expiresAt, &unrestricted, &createdAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListApplicationCredentials").Msg("failed to scan row")
 			continue
 		}
 
@@ -79,6 +80,9 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 					})
 				}
 			}
+			if err := roleRows.Err(); err != nil {
+				log.Warn().Err(err).Msg("roleRows iteration error; list may be truncated")
+			}
 			roleRows.Close()
 			credential["roles"] = roles
 		}
@@ -87,6 +91,8 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(200, gin.H{"application_credentials": credentials})
@@ -251,6 +257,9 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 				})
 			}
 		}
+		if err := roleRows.Err(); err != nil {
+			log.Warn().Err(err).Msg("roleRows iteration error; list may be truncated")
+		}
 		roleRows.Close()
 		credential["roles"] = roles
 	}
@@ -340,6 +349,9 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 					"name": roleName,
 				})
 			}
+		}
+		if err := roleRows.Err(); err != nil {
+			log.Warn().Err(err).Msg("roleRows iteration error; list may be truncated")
 		}
 		roleRows.Close()
 		credential["roles"] = roles

@@ -237,6 +237,85 @@ type CreateVolumeRequest struct {
 	} `json:"volume"`
 }
 
+// Volume response constants (F9 — Horizon volume-table compatibility).
+const (
+	volumeTSLayout = "2006-01-02T15:04:05.000000"
+	// defaultVolumeType is upstream Cinder's canonical default-type name, reported
+	// when a volume has no explicit type (spec Q2). Kept in sync with GetDefaultVolumeType.
+	defaultVolumeType = "__DEFAULT__"
+	// volumeBackendHost is a stable, non-null value for the admin-only host attribute;
+	// O3K does not model per-backend hosts, but Horizon's table dereferences it.
+	volumeBackendHost = "o3k"
+)
+
+// volumeRow is the persisted state serializeVolume renders. It is a named struct
+// rather than a positional argument list because the fields are mostly strings and
+// a transposed pair (tenant/user, name/description) would be silently wrong.
+type volumeRow struct {
+	ID          string
+	Name        string
+	Description string
+	TenantID    string
+	UserID      string
+	VolumeType  string
+	Status      string
+	Size        int
+	Bootable    bool
+	Attachments []any
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// serializeVolume renders a volume as the full upstream Cinder v3 object, with a
+// non-null value for every field Horizon's volume table dereferences (F9,
+// FR-001/004/005). It is the single source of truth for the show, list-detail, and
+// create responses so they stay consistent. Attributes O3K does not model are still
+// emitted, with the same values upstream Cinder reports (verified against the v3.65
+// api-ref volume response) — present-but-null beats absent, because a template that
+// dereferences a missing key raises where null merely renders empty.
+func serializeVolume(v volumeRow) gin.H {
+	// Defensive default (intentional duplication with CreateVolume): read-back tolerates
+	// legacy rows whose volume_type is NULL/empty; create persists the concrete default.
+	volumeType := v.VolumeType
+	if volumeType == "" {
+		volumeType = defaultVolumeType
+	}
+	attachments := v.Attachments
+	if attachments == nil {
+		attachments = []any{}
+	}
+	return gin.H{
+		"id":                           v.ID,
+		"name":                         v.Name,
+		"description":                  v.Description,
+		"tenant_id":                    v.TenantID,
+		"user_id":                      v.UserID,
+		"size":                         v.Size,
+		"status":                       v.Status,
+		"bootable":                     fmt.Sprintf("%t", v.Bootable),
+		"created_at":                   v.CreatedAt.Format(volumeTSLayout),
+		"updated_at":                   v.UpdatedAt.Format(volumeTSLayout),
+		"attachments":                  attachments,
+		"metadata":                     gin.H{},
+		"volume_type":                  volumeType,
+		"volume_type_id":               volumeType,
+		"availability_zone":            "nova",
+		"encrypted":                    false,
+		"multiattach":                  false,
+		"consumes_quota":               true,
+		"shared_targets":               false,
+		"os-vol-tenant-attr:tenant_id": v.TenantID,
+		"os-vol-host-attr:host":        volumeBackendHost,
+		// Modelled by upstream Cinder but not by O3K; emitted with upstream's own
+		// null values so the key is always present for clients that dereference it.
+		"consistencygroup_id": nil,
+		"migration_status":    nil,
+		"replication_status":  nil,
+		"snapshot_id":         nil,
+		"source_volid":        nil,
+	}
+}
+
 // CreateVolume creates a new volume
 func (svc *Service) CreateVolume(c *gin.Context) {
 	var req CreateVolumeRequest
@@ -274,12 +353,20 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 		return
 	}
 
-	// Insert into database (status available — backing is already provisioned)
+	// Insert into database (status available — backing is already provisioned).
+	// Persist the requested volume_type so it can be read back (F9, FR-003); the
+	// column exists (migration 016) but was previously parsed and discarded.
 	now := time.Now()
+	// Persist the concrete default so volume_type reads back verbatim; serializeVolume
+	// repeats this check defensively for legacy NULL rows (intentional duplication).
+	volumeType := req.Volume.VolumeType
+	if volumeType == "" {
+		volumeType = defaultVolumeType
+	}
 	_, err := database.DB.Exec(c.Request.Context(), `
-		INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, source_image_id, rbd_pool, rbd_image, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, volumeID, req.Volume.Name, projectID, userID, req.Volume.Size, "available", bootable, sourceImageID, svc.cephPool, "volume-"+volumeID, now, now)
+		INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, source_image_id, rbd_pool, rbd_image, volume_type, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, volumeID, req.Volume.Name, projectID, userID, req.Volume.Size, "available", bootable, sourceImageID, svc.cephPool, "volume-"+volumeID, volumeType, now, now)
 
 	if err != nil {
 		// Rollback: delete the backing (best-effort; the DB error is user-facing)
@@ -292,19 +379,12 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"volume": gin.H{
-			"id":          volumeID,
-			"name":        req.Volume.Name,
-			"tenant_id":   projectID,
-			"user_id":     userID,
-			"size":        req.Volume.Size,
-			"status":      "available",
-			"bootable":    fmt.Sprintf("%t", bootable),
-			"created_at":  now.Format("2006-01-02T15:04:05.000000"),
-			"updated_at":  now.Format("2006-01-02T15:04:05.000000"),
-			"metadata":    gin.H{},
-			"attachments": []any{},
-		},
+		"volume": serializeVolume(volumeRow{
+			ID: volumeID, Name: req.Volume.Name, Description: req.Volume.Description,
+			TenantID: projectID, UserID: userID, VolumeType: volumeType,
+			Status: "available", Size: req.Volume.Size, Bootable: bootable,
+			CreatedAt: now, UpdatedAt: now,
+		}),
 	})
 }
 
@@ -431,7 +511,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
-		SELECT v.id, v.name, v.size_gb, v.status, v.bootable, v.attached_to_instance_id, v.created_at, v.updated_at
+		SELECT v.id, v.name, v.description, v.size_gb, v.status, v.bootable, v.attached_to_instance_id, v.user_id, v.volume_type, v.created_at, v.updated_at
 		FROM volumes v
 		WHERE v.project_id = $1%s
 		ORDER BY v.created_at DESC
@@ -450,10 +530,10 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 		var id, name, status string
 		var size int
 		var bootable bool
-		var attachedTo sql.NullString
+		var attachedTo, userID, volumeType, description sql.NullString
 		var createdAt, updatedAt time.Time
 
-		if err := rows.Scan(&id, &name, &size, &status, &bootable, &attachedTo, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &description, &size, &status, &bootable, &attachedTo, &userID, &volumeType, &createdAt, &updatedAt); err != nil {
 			log.Warn().Err(err).Msg("failed to scan volume detail row")
 			continue
 		}
@@ -466,17 +546,12 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 			})
 		}
 
-		volumes = append(volumes, gin.H{
-			"id":          id,
-			"name":        name,
-			"tenant_id":   projectID,
-			"size":        size,
-			"status":      status,
-			"bootable":    fmt.Sprintf("%t", bootable),
-			"created_at":  createdAt.Format("2006-01-02T15:04:05.000000"),
-			"updated_at":  updatedAt.Format("2006-01-02T15:04:05.000000"),
-			"attachments": attachments,
-		})
+		volumes = append(volumes, serializeVolume(volumeRow{
+			ID: id, Name: name, Description: description.String,
+			TenantID: projectID, UserID: userID.String, VolumeType: volumeType.String,
+			Status: status, Size: size, Bootable: bootable, Attachments: attachments,
+			CreatedAt: createdAt, UpdatedAt: updatedAt,
+		}))
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
@@ -499,15 +574,15 @@ func (svc *Service) GetVolume(c *gin.Context) {
 	var id, name, status string
 	var size int
 	var bootable bool
-	var attachedTo sql.NullString
+	var attachedTo, userID, volumeType, description sql.NullString
 	var createdAt, updatedAt time.Time
 
 	// Support lookup by ID or name
 	err := database.DB.QueryRow(c.Request.Context(), `
-		SELECT id, name, size_gb, status, bootable, attached_to_instance_id, created_at, updated_at
+		SELECT id, name, description, size_gb, status, bootable, attached_to_instance_id, user_id, volume_type, created_at, updated_at
 		FROM volumes
 		WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))
-	`, volumeID, projectID).Scan(&id, &name, &size, &status, &bootable, &attachedTo, &createdAt, &updatedAt)
+	`, volumeID, projectID).Scan(&id, &name, &description, &size, &status, &bootable, &attachedTo, &userID, &volumeType, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
@@ -528,17 +603,12 @@ func (svc *Service) GetVolume(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"volume": gin.H{
-			"id":          id,
-			"name":        name,
-			"tenant_id":   projectID,
-			"size":        size,
-			"status":      status,
-			"bootable":    fmt.Sprintf("%t", bootable),
-			"created_at":  createdAt.Format("2006-01-02T15:04:05.000000"),
-			"updated_at":  updatedAt.Format("2006-01-02T15:04:05.000000"),
-			"attachments": attachments,
-		},
+		"volume": serializeVolume(volumeRow{
+			ID: id, Name: name, Description: description.String,
+			TenantID: projectID, UserID: userID.String, VolumeType: volumeType.String,
+			Status: status, Size: size, Bootable: bootable, Attachments: attachments,
+			CreatedAt: createdAt, UpdatedAt: updatedAt,
+		}),
 	})
 }
 
@@ -558,17 +628,33 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
+	// Any other lookup failure must abort here: falling through would leave attachedTo
+	// zero-valued, skip both the attach and snapshot guards, and destroy the backing
+	// store below on nothing worse than a transient DB error.
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_volume_lookup").Str("volume_id", volumeID).Msg("failed to look up volume")
+		common.SendError(c, common.NewInternalServerError("failed to delete volume"))
+		return
+	}
 
 	if attachedTo.Valid {
 		common.SendError(c, common.NewBadRequestError("volume is attached to an instance"))
 		return
 	}
 
-	// Check for existing snapshots
+	// Check for existing snapshots. The count error is checked separately: a combined
+	// `err == nil && snapshotCount > 0` silently skipped this guard whenever the query
+	// failed, deleting a volume that still had snapshots and orphaning their backing
+	// objects.
 	var snapshotCount int
 	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM snapshots WHERE volume_id = $1", volumeID,
-	).Scan(&snapshotCount); err == nil && snapshotCount > 0 {
+	).Scan(&snapshotCount); err != nil {
+		log.Error().Err(err).Str("operation", "delete_volume_snapshot_count").Str("volume_id", volumeID).Msg("failed to count volume snapshots")
+		common.SendError(c, common.NewInternalServerError("failed to delete volume"))
+		return
+	}
+	if snapshotCount > 0 {
 		common.SendError(c, common.NewOperationConflictError("delete volume", "volume has snapshots; delete snapshots first"))
 		return
 	}
@@ -1119,11 +1205,12 @@ func (svc *Service) ListSnapshotsDetail(c *gin.Context) {
 
 // GetDefaultVolumeType returns the default volume type
 func (svc *Service) GetDefaultVolumeType(c *gin.Context) {
-	// Return a default volume type for Horizon compatibility
+	// Return the default volume type for Horizon compatibility. The name matches
+	// what a typeless volume reads back via serializeVolume (F9, spec Q2).
 	c.JSON(http.StatusOK, gin.H{
 		"volume_type": gin.H{
-			"id":          "default",
-			"name":        "default",
+			"id":          defaultVolumeType,
+			"name":        defaultVolumeType,
 			"description": "Default volume type",
 			"is_public":   true,
 		},

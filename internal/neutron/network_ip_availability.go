@@ -37,6 +37,7 @@ func (svc *Service) ListNetworkIPAvailabilities(c *gin.Context) {
 		var subnetCount int
 
 		if err := rows.Scan(&networkID, &name, &projectID, &subnetCount); err != nil {
+			log.Warn().Err(err).Str("operation", "ListNetworkIPAvailabilities").Msg("failed to scan row")
 			continue
 		}
 
@@ -58,6 +59,8 @@ func (svc *Service) ListNetworkIPAvailabilities(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if availabilities == nil {
@@ -125,6 +128,8 @@ func (svc *Service) GetNetworkIPAvailability(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -459,18 +460,102 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"network": gin.H{
-			"id":             networkID,
-			"name":           req.Network.Name,
-			"tenant_id":      projectID,
-			"admin_state_up": adminStateUp,
-			"status":         "ACTIVE",
-			"shared":         shared,
-			"mtu":            mtu,
-			"subnets":        []string{},
-			"created_at":     now.Format(time.RFC3339),
-			"updated_at":     now.Format(time.RFC3339),
+			"id":              networkID,
+			"name":            req.Network.Name,
+			"tenant_id":       projectID,
+			"admin_state_up":  adminStateUp,
+			"status":          "ACTIVE",
+			"shared":          shared,
+			"router:external": false,
+			"mtu":             mtu,
+			"subnets":         []string{},
+			"created_at":      now.Format(time.RFC3339),
+			"updated_at":      now.Format(time.RFC3339),
 		},
 	})
+}
+
+// sharedFilter selects how the `shared` neutron list filter constrains results.
+type sharedFilter int
+
+const (
+	sharedAny     sharedFilter = iota // caller's own networks OR any shared (no filter)
+	sharedOnly                        // shared=true: only shared networks
+	nonSharedOnly                     // shared=false: exclude shared networks
+)
+
+// neutronBool parses a neutron-style boolean query parameter, distinguishing an
+// absent parameter from an explicit false (F4).
+func neutronBool(s string) (val bool, present bool) {
+	if s == "" {
+		return false, false
+	}
+	b, err := strconv.ParseBool(s)
+	if err != nil {
+		return false, false
+	}
+	return b, true
+}
+
+// networkListDecision maps the `shared` and `router:external` query filters to a
+// shared-filter mode and an empty flag. router:external=true yields empty because
+// O3K models no external/provider networks; honoring these filters is what makes
+// Horizon's project/shared/external sub-queries disjoint so each network renders
+// exactly once (F4, FR-009/010/012).
+func networkListDecision(sharedParam, routerExternalParam string) (sf sharedFilter, empty bool) {
+	if ext, ok := neutronBool(routerExternalParam); ok && ext {
+		return sharedAny, true
+	}
+	switch b, ok := neutronBool(sharedParam); {
+	case ok && b:
+		return sharedOnly, false
+	case ok && !b:
+		return nonSharedOnly, false
+	default:
+		return sharedAny, false
+	}
+}
+
+// buildNetworkListFilter builds the WHERE conditions and positional args for the
+// network list from the caller's project and the neutron list filters Horizon sends
+// (F4). It honors `shared` (only/exclude shared), `router:external` (empty result —
+// O3K models no external networks), and `tenant_id`/`project_id` (narrowing within the
+// caller's authorized scope), plus the id/name filters the Terraform provider uses.
+// Placeholders are numbered from $1; `empty` means the query must return nothing. The
+// caller continues numbering marker/pagination args from $(len(args)+1). Pure — no DB.
+func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantParam, idParam, nameParam string) (conds []string, args []any, empty bool) {
+	sf, empty := networkListDecision(sharedParam, routerExternalParam)
+	if empty {
+		return nil, nil, true
+	}
+	argIdx := 1
+	switch sf {
+	case sharedOnly:
+		conds = append(conds, "shared = true")
+	case nonSharedOnly:
+		conds = append(conds, fmt.Sprintf("(project_id = $%d AND shared = false)", argIdx))
+		args = append(args, caller)
+		argIdx++
+	default: // sharedAny — the caller's own networks OR any shared network
+		conds = append(conds, fmt.Sprintf("(project_id = $%d OR shared = true)", argIdx))
+		args = append(args, caller)
+		argIdx++
+	}
+	if tenantParam != "" {
+		conds = append(conds, fmt.Sprintf("project_id = $%d", argIdx))
+		args = append(args, tenantParam)
+		argIdx++
+	}
+	if idParam != "" {
+		conds = append(conds, fmt.Sprintf("id::text = $%d", argIdx))
+		args = append(args, idParam)
+		argIdx++
+	}
+	if nameParam != "" {
+		conds = append(conds, fmt.Sprintf("name = $%d", argIdx))
+		args = append(args, nameParam)
+	}
+	return conds, args, false
 }
 
 // ListNetworks lists all networks
@@ -491,12 +576,22 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	// Neutron list filters (F4): honoring shared / router:external / tenant_id makes
+	// Horizon's project+shared+external sub-queries disjoint, so each network renders
+	// exactly once instead of being merged in from multiple overlapping queries.
+	tenant := c.Query("tenant_id")
+	if tenant == "" {
+		tenant = c.Query("project_id")
+	}
+	conds, queryArgs, empty := buildNetworkListFilter(projectID, c.Query("shared"), c.Query("router:external"), tenant, c.Query("id"), c.Query("name"))
+	if empty {
+		// router:external=true — O3K models no external networks.
+		c.JSON(http.StatusOK, gin.H{"networks": []gin.H{}})
+		return
+	}
+	argIdx := len(queryArgs) + 1
 
+	// Marker-based pagination
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
@@ -505,25 +600,10 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 			marker,
 		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", argIdx, argIdx+1)
+			conds = append(conds, fmt.Sprintf("(created_at, id) < ($%d, $%d)", argIdx, argIdx+1))
 			queryArgs = append(queryArgs, markerCreatedAt, markerID)
 			argIdx += 2
 		}
-	}
-
-	// Honor the neutron list filters the Terraform provider + CLI use to resolve a
-	// network by id or name; without these a by-id lookup returns every network and
-	// the provider fails with "More than one network found" (SPEC-009 / SC-007).
-	var filterCondition string
-	if idParam := c.Query("id"); idParam != "" {
-		filterCondition += fmt.Sprintf(" AND id::text = $%d", argIdx)
-		queryArgs = append(queryArgs, idParam)
-		argIdx++
-	}
-	if nameParam := c.Query("name"); nameParam != "" {
-		filterCondition += fmt.Sprintf(" AND name = $%d", argIdx)
-		queryArgs = append(queryArgs, nameParam)
-		argIdx++
 	}
 
 	queryArgs = append(queryArgs, limit, offset)
@@ -531,10 +611,10 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at
 		FROM networks
-		WHERE (project_id = $1 OR shared = true)%s%s
+		WHERE %s
 		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d
-	`, markerCondition, filterCondition, argIdx, argIdx+1), queryArgs...)
+	`, strings.Join(conds, " AND "), argIdx, argIdx+1), queryArgs...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_networks").Msg("database error")
@@ -551,23 +631,27 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		var createdAt, updatedAt time.Time
 
 		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListNetworks").Msg("failed to scan row")
 			continue
 		}
 
 		networks = append(networks, gin.H{
-			"id":             id,
-			"name":           name,
-			"tenant_id":      projectID,
-			"admin_state_up": adminStateUp,
-			"status":         status,
-			"shared":         shared,
-			"mtu":            mtu,
-			"created_at":     createdAt.Format(time.RFC3339),
-			"updated_at":     updatedAt.Format(time.RFC3339),
+			"id":              id,
+			"name":            name,
+			"tenant_id":       projectID,
+			"admin_state_up":  adminStateUp,
+			"status":          status,
+			"shared":          shared,
+			"router:external": false,
+			"mtu":             mtu,
+			"created_at":      createdAt.Format(time.RFC3339),
+			"updated_at":      updatedAt.Format(time.RFC3339),
 		})
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if networks == nil {
@@ -626,15 +710,16 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	}
 
 	network := gin.H{
-		"id":             id,
-		"name":           name,
-		"tenant_id":      projectID,
-		"admin_state_up": adminStateUp,
-		"status":         status,
-		"shared":         shared,
-		"mtu":            mtu,
-		"created_at":     createdAt.Format(time.RFC3339),
-		"updated_at":     updatedAt.Format(time.RFC3339),
+		"id":              id,
+		"name":            name,
+		"tenant_id":       projectID,
+		"admin_state_up":  adminStateUp,
+		"status":          status,
+		"shared":          shared,
+		"router:external": false,
+		"mtu":             mtu,
+		"created_at":      createdAt.Format(time.RFC3339),
+		"updated_at":      updatedAt.Format(time.RFC3339),
 	}
 
 	// Store in cache (30min TTL per config) before adding the dynamic subnet
@@ -917,6 +1002,7 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 		var createdAt, updatedAt time.Time
 
 		if err := rows.Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListSubnets").Msg("failed to scan row")
 			continue
 		}
 
@@ -943,6 +1029,8 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if subnets == nil {
@@ -1214,9 +1302,16 @@ func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) []st
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			log.Warn().Err(err).Str("operation", "networkSubnetIDs").Msg("failed to scan row")
 			continue
 		}
 		ids = append(ids, id)
+	}
+	// Log rather than fail: this feeds the advisory `subnets` list on a network
+	// response, and the callers have no error channel. A truncated list is at least
+	// visible in the log.
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Str("network_id", networkID).Msg("subnet rows iteration error; subnet list may be truncated")
 	}
 	return ids
 }

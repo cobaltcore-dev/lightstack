@@ -330,6 +330,9 @@ func (svc *Service) ListPorts(c *gin.Context) {
 					securityGroups = append(securityGroups, sgID)
 				}
 			}
+			if err := sgRows.Err(); err != nil {
+				log.Warn().Err(err).Msg("sgRows iteration error; list may be truncated")
+			}
 			sgRows.Close()
 		}
 
@@ -409,6 +412,9 @@ func (svc *Service) GetPort(c *gin.Context) {
 			if err := sgRows.Scan(&sgID); err == nil {
 				securityGroups = append(securityGroups, sgID)
 			}
+		}
+		if err := sgRows.Err(); err != nil {
+			log.Warn().Err(err).Msg("sgRows iteration error; list may be truncated")
 		}
 	}
 

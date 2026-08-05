@@ -710,6 +710,7 @@ func securityGroupNamesForServer(ctx context.Context, serverID string) ([]string
 	for rows.Next() {
 		var n string
 		if err := rows.Scan(&n); err != nil {
+			log.Warn().Err(err).Str("operation", "securityGroupNamesForServer").Msg("failed to scan row")
 			return nil, fmt.Errorf("scan security group name for server %s: %w", serverID, err)
 		}
 		names = append(names, n)
@@ -741,6 +742,7 @@ func securityGroupNamesForServers(ctx context.Context, serverIDs []string) (map[
 	for rows.Next() {
 		var sid, name string
 		if err := rows.Scan(&sid, &name); err != nil {
+			log.Warn().Err(err).Str("operation", "securityGroupNamesForServers").Msg("failed to scan row")
 			return nil, fmt.Errorf("scan security group row: %w", err)
 		}
 		result[sid] = append(result[sid], name)

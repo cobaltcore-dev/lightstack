@@ -153,12 +153,18 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 		metaMap := make(map[string]string)
 		for rows.Next() {
 			var key, value string
-			if err := rows.Scan(&key, &value); err == nil {
+			if err := rows.Scan(&key, &value); err != nil {
+				log.Warn().Err(err).Str("operation", "GetMetaDataJSON").Msg("failed to scan row")
+			} else {
 				metaMap[key] = value
 			}
 		}
+		// Fail rather than serve silently-incomplete instance metadata; cloud-init
+		// retries, whereas a missing key would look authoritative.
 		if err := rows.Err(); err != nil {
-			log.Error().Err(err).Msg("rows iteration error")
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("instance metadata rows iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to get instance metadata"))
+			return
 		}
 		if len(metaMap) > 0 {
 			metadata["meta"] = metaMap
@@ -177,9 +183,20 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 		keysMap := make(map[string]string)
 		for keyRows.Next() {
 			var name, pubkey string
-			if err := keyRows.Scan(&name, &pubkey); err == nil {
-				keysMap[name] = pubkey
+			if err := keyRows.Scan(&name, &pubkey); err != nil {
+				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to scan public key row")
+				common.SendError(c, common.NewInternalServerError("failed to get instance metadata"))
+				return
 			}
+			keysMap[name] = pubkey
+		}
+		// Fail closed on a truncated key read: serving an incomplete public_keys map
+		// boots the guest without its SSH key and locks the user out. cloud-init retries
+		// on error. Matches publicKeysForInstance on the EC2 metadata path.
+		if err := keyRows.Err(); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("public key rows iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to get instance metadata"))
+			return
 		}
 		if len(keysMap) > 0 {
 			metadata["public_keys"] = keysMap
@@ -252,6 +269,7 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		var dnsServers []string
 
 		if err := rows.Scan(&portID, &mac, &ip, &networkID, &networkName, &cidr, &gateway, &dnsServers); err != nil {
+			log.Warn().Err(err).Str("operation", "GetNetworkDataJSON").Msg("failed to scan row")
 			continue
 		}
 
@@ -283,8 +301,12 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		networks = append(networks, netConfig)
 		linkID++
 	}
+	// Fail rather than serve a partial network_data.json: a missing interface would
+	// leave the guest misconfigured, and cloud-init retries on error.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("rows iteration error")
+		log.Error().Err(err).Msg("network data rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to get network data"))
+		return
 	}
 
 	// Return network_data.json structure
@@ -339,7 +361,12 @@ func (svc *Service) GetEC2MetaData(c *gin.Context) {
 		// The request's source IP is the instance's fixed IP.
 		c.String(http.StatusOK, c.ClientIP())
 	case path == "public-keys" || path == "public-keys/":
-		keys := svc.publicKeysForInstance(ctx, instanceID)
+		keys, err := svc.publicKeysForInstance(ctx, instanceID)
+		if err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to read public keys")
+			c.String(http.StatusInternalServerError, "")
+			return
+		}
 		lines := make([]string, 0, len(keys))
 		for i, k := range keys {
 			lines = append(lines, fmt.Sprintf("%d=%s", i, k.name))
@@ -349,7 +376,12 @@ func (svc *Service) GetEC2MetaData(c *gin.Context) {
 		// public-keys/<index> -> "openssh-key"; public-keys/<index>/openssh-key -> the key
 		parts := strings.Split(strings.TrimPrefix(path, "public-keys/"), "/")
 		idx, perr := strconv.Atoi(parts[0])
-		keys := svc.publicKeysForInstance(ctx, instanceID)
+		keys, err := svc.publicKeysForInstance(ctx, instanceID)
+		if err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to read public keys")
+			c.String(http.StatusInternalServerError, "")
+			return
+		}
 		if perr != nil || idx < 0 || idx >= len(keys) {
 			c.String(http.StatusNotFound, "")
 			return
@@ -369,13 +401,17 @@ func (svc *Service) GetEC2MetaData(c *gin.Context) {
 
 // publicKeysForInstance returns the instance's SSH keypair — scoped to the
 // instance's key_name, not every key the owner has — for the EC2 public-keys tree.
-func (svc *Service) publicKeysForInstance(ctx context.Context, instanceID string) []struct{ name, key string } {
+// publicKeysForInstance returns the SSH keys cloud-init should inject. It reports an
+// error rather than a short list when the read fails: a truncated list boots the guest
+// without its key and locks the user out, whereas an error lets the caller fail so
+// cloud-init retries.
+func (svc *Service) publicKeysForInstance(ctx context.Context, instanceID string) ([]struct{ name, key string }, error) {
 	// Instances do not persist the key_name used at boot, so scope to every
 	// keypair owned by the instance's user (matches GetMetaDataJSON).
 	var userID string
 	if err := database.DB.QueryRow(ctx,
 		`SELECT user_id FROM instances WHERE id = $1`, instanceID).Scan(&userID); err != nil {
-		return nil
+		return nil, err
 	}
 	rows, err := database.DB.Query(ctx, `
 		SELECT name, public_key
@@ -383,17 +419,21 @@ func (svc *Service) publicKeysForInstance(ctx context.Context, instanceID string
 		WHERE user_id = $1
 		ORDER BY name`, userID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var out []struct{ name, key string }
 	for rows.Next() {
 		var n, k string
-		if err := rows.Scan(&n, &k); err == nil {
-			out = append(out, struct{ name, key string }{n, k})
+		if err := rows.Scan(&n, &k); err != nil {
+			return nil, err
 		}
+		out = append(out, struct{ name, key string }{n, k})
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ListVersions returns available metadata API versions

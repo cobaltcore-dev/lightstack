@@ -53,6 +53,7 @@ func (svc *Service) ListKeypairs(c *gin.Context) {
 		var createdAt time.Time
 
 		if err := rows.Scan(&id, &name, &uid, &publicKey, &fingerprint, &createdAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListKeypairs").Msg("failed to scan row")
 			continue
 		}
 

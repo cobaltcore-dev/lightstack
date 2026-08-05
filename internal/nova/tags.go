@@ -41,7 +41,9 @@ func (svc *Service) ListServerTags(c *gin.Context) {
 	tags := []string{}
 	for rows.Next() {
 		var tag string
-		if err := rows.Scan(&tag); err == nil {
+		if err := rows.Scan(&tag); err != nil {
+			log.Warn().Err(err).Str("operation", "ListServerTags").Msg("failed to scan row")
+		} else {
 			tags = append(tags, tag)
 		}
 	}

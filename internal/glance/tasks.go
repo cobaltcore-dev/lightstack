@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/gin-gonic/gin"
@@ -72,6 +73,7 @@ func (svc *Service) ListTasks(c *gin.Context) {
 		var createdAt, updatedAt time.Time
 
 		if err := rows.Scan(&id, &taskType, &status, &input, &result, &owner, &createdAt, &updatedAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListTasks").Msg("failed to scan row")
 			continue
 		}
 
@@ -97,6 +99,8 @@ func (svc *Service) ListTasks(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{

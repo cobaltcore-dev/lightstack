@@ -282,6 +282,7 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 		var id, name, description, domainID, domainName string
 		var enabled bool
 		if err := rows.Scan(&id, &name, &description, &enabled, &domainID, &domainName); err != nil {
+			log.Warn().Err(err).Str("operation", "ListAuthProjects").Msg("failed to scan row")
 			continue
 		}
 
@@ -833,6 +834,7 @@ func (svc *Service) ListUserProjectRoles(c *gin.Context) {
 	for rows.Next() {
 		var id, name string
 		if err := rows.Scan(&id, &name); err != nil {
+			log.Warn().Err(err).Str("operation", "ListUserProjectRoles").Msg("failed to scan row")
 			continue
 		}
 		roles = append(roles, gin.H{
