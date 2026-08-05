@@ -62,6 +62,9 @@ func (svc *Service) ListTrunks(c *gin.Context) {
 					})
 				}
 			}
+			if err := subPortRows.Err(); err != nil {
+				log.Warn().Err(err).Msg("subPortRows iteration error; list may be truncated")
+			}
 			subPortRows.Close()
 		}
 
@@ -82,6 +85,8 @@ func (svc *Service) ListTrunks(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"trunks": trunks})
@@ -188,6 +193,9 @@ func (svc *Service) GetTrunk(c *gin.Context) {
 					"segmentation_id":   segmentationID,
 				})
 			}
+		}
+		if err := subPortRows.Err(); err != nil {
+			log.Warn().Err(err).Msg("subPortRows iteration error; list may be truncated")
 		}
 	}
 
@@ -318,6 +326,9 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 					"segmentation_id":   segmentationID,
 				})
 			}
+		}
+		if err := subPortRows.Err(); err != nil {
+			log.Warn().Err(err).Msg("subPortRows iteration error; list may be truncated")
 		}
 	}
 
@@ -460,6 +471,9 @@ func (svc *Service) AddSubports(c *gin.Context) {
 				})
 			}
 		}
+		if err := subPortRows.Err(); err != nil {
+			log.Warn().Err(err).Msg("subPortRows iteration error; list may be truncated")
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -567,6 +581,9 @@ func (svc *Service) RemoveSubports(c *gin.Context) {
 					"segmentation_id":   segmentationID,
 				})
 			}
+		}
+		if err := subPortRows.Err(); err != nil {
+			log.Warn().Err(err).Msg("subPortRows iteration error; list may be truncated")
 		}
 	}
 

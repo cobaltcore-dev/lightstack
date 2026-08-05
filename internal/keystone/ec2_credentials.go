@@ -159,6 +159,7 @@ func (svc *Service) ListEC2Credentials(c *gin.Context) {
 		var projectID *string
 		var blob string
 		if err := rows.Scan(&projectID, &blob); err != nil {
+			log.Warn().Err(err).Str("operation", "ListEC2Credentials").Msg("failed to scan row")
 			continue
 		}
 		var b ec2Blob
@@ -173,6 +174,8 @@ func (svc *Service) ListEC2Credentials(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("ec2 cred list: rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(200, gin.H{"credentials": creds})

@@ -95,6 +95,7 @@ func (vc *VXLANCoordinator) syncNetworks(ctx context.Context) {
 		var vni *int
 
 		if err := rows.Scan(&networkID, &name, &projectID, &vni); err != nil {
+			log.Warn().Err(err).Str("operation", "syncNetworks").Msg("failed to scan row")
 			continue
 		}
 
@@ -153,6 +154,7 @@ func (vc *VXLANCoordinator) syncPorts(ctx context.Context) {
 		var networkID, macAddress, vtepIP string
 
 		if err := rows.Scan(&networkID, &macAddress, &vtepIP); err != nil {
+			log.Warn().Err(err).Str("operation", "syncPorts").Msg("failed to scan row")
 			continue
 		}
 

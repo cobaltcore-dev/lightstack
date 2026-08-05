@@ -1,6 +1,7 @@
 package glance
 
 import (
+	"context"
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
@@ -209,12 +210,15 @@ func (svc *Service) CreateImage(c *gin.Context) {
 		containerFormat = req.ContainerFormat
 	}
 
-	// Insert into database
+	// Insert into database. Record the owning project for images of EVERY visibility,
+	// not just private ones — visibility governs who can see an image, ownership governs
+	// who can delete it (F6, FR-014). Storing public images ownerless (project_id NULL)
+	// was the root cause of the delete no-op.
 	now := time.Now()
 	_, err := database.DB.Exec(c.Request.Context(), `
 		INSERT INTO images (id, name, project_id, status, visibility, disk_format, container_format, min_disk_gb, min_ram_mb, rbd_pool, rbd_image, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-	`, imageID, req.Name, sql.NullString{String: projectID, Valid: visibility == "private"}, "queued", visibility, diskFormat, containerFormat, req.MinDisk, req.MinRAM, svc.cephPool, "image-"+imageID, now, now)
+	`, imageID, req.Name, sql.NullString{String: projectID, Valid: projectID != ""}, "queued", visibility, diskFormat, containerFormat, req.MinDisk, req.MinRAM, svc.cephPool, "image-"+imageID, now, now)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_image").Msg("failed to insert image into database")
@@ -303,6 +307,7 @@ func (svc *Service) ListImages(c *gin.Context) {
 		var createdAt, updatedAt time.Time
 
 		if err := rows.Scan(&id, &name, &status, &visibility, &sizeBytes, &diskFormat, &containerFormat, &minDisk, &minRAM, &createdAt, &updatedAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListImages").Msg("failed to scan row")
 			continue
 		}
 
@@ -421,12 +426,16 @@ func (svc *Service) GetImage(c *gin.Context) {
 		var tags []string
 		for rows.Next() {
 			var tag string
-			if rows.Scan(&tag) == nil {
+			if err := rows.Scan(&tag); err != nil {
+				log.Warn().Err(err).Str("operation", "GetImage").Msg("failed to scan row")
+			} else {
 				tags = append(tags, tag)
 			}
 		}
 		if err := rows.Err(); err != nil {
 			log.Error().Err(err).Msg("rows iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to read results"))
+			return
 		}
 		if tags == nil {
 			tags = []string{}
@@ -442,40 +451,74 @@ func (svc *Service) GetImage(c *gin.Context) {
 	c.JSON(http.StatusOK, image)
 }
 
-// DeleteImage deletes an image
-func (svc *Service) DeleteImage(c *gin.Context) {
-	imageID := c.Param("id")
-	projectID := c.GetString("project_id")
-	ctx := c.Request.Context()
-
-	// Check if image exists in database (and user has access)
-	var exists bool
-	err := database.DB.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND (visibility = 'public' OR project_id = $2))",
-		imageID, projectID,
-	).Scan(&exists)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_image_check").Str("image_id", imageID).Msg("failed to check image existence")
-		common.SendError(c, common.NewInternalServerError("failed to delete image"))
-		return
+// imageDeleteAuthz applies upstream Glance's delete authorization (F6): the image's
+// owner, or an admin, may delete it. Returns 0 to proceed; http.StatusForbidden when
+// the caller can see the image (it is public) but does not own it; http.StatusNotFound
+// to hide an image the caller cannot see (private and not owned). Visibility controls
+// who can see the image, ownership controls who can delete it.
+func imageDeleteAuthz(isAdmin bool, owner sql.NullString, caller, visibility string) int {
+	if isAdmin || (owner.Valid && owner.String == caller) {
+		return 0
 	}
-	if !exists {
-		common.SendError(c, common.NewNotFoundError("image"))
-		return
+	if visibility == "public" {
+		return http.StatusForbidden
 	}
+	return http.StatusNotFound
+}
 
-	// Block deletion while any dependent disk references the image: an instance
-	// booted from it (instances.image_id) or a copy-on-write volume cloned from
-	// it (volumes.source_image_id). Independent local copies do not set
-	// source_image_id and so do not pin. OpenStack-standard 409. (SPEC-009 FR-004)
+// imageInUse reports whether any instance boots from the image (instances.image_id)
+// or any volume was cloned from it (volumes.source_image_id) — either pins the image
+// against deletion (OpenStack-standard 409). Independent local copies do not set
+// source_image_id, so they do not pin.
+func (svc *Service) imageInUse(ctx context.Context, imageID string) (bool, error) {
 	var inUse bool
-	if err := database.DB.QueryRow(ctx,
+	err := database.DB.QueryRow(ctx,
 		`SELECT EXISTS(
 			SELECT 1 FROM instances WHERE image_id = $1
 			UNION ALL
 			SELECT 1 FROM volumes WHERE source_image_id = $1)`,
 		imageID,
-	).Scan(&inUse); err != nil {
+	).Scan(&inUse)
+	return inUse, err
+}
+
+// DeleteImage removes an image, authorized owner-or-admin per upstream Glance (F6):
+// 404 when it doesn't exist or the caller cannot see it, 403 when visible but not
+// owned, 409 when in use, 204 on success.
+func (svc *Service) DeleteImage(c *gin.Context) {
+	imageID := c.Param("id")
+	projectID := c.GetString("project_id")
+	ctx := c.Request.Context()
+
+	// Look up the image's owner and visibility; a missing row is 404. Authorization
+	// then follows upstream Glance — owner-or-admin may delete (F6, FR-014a).
+	var owner sql.NullString
+	var visibility string
+	err := database.DB.QueryRow(ctx,
+		"SELECT project_id, visibility FROM images WHERE id = $1",
+		imageID,
+	).Scan(&owner, &visibility)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("image"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_image_lookup").Str("image_id", imageID).Msg("failed to look up image")
+		common.SendError(c, common.NewInternalServerError("failed to delete image"))
+		return
+	}
+
+	switch imageDeleteAuthz(common.HasRole(c, "admin"), owner, projectID, visibility) {
+	case http.StatusNotFound:
+		common.SendError(c, common.NewNotFoundError("image"))
+		return
+	case http.StatusForbidden:
+		common.SendError(c, common.NewForbiddenError("not authorized to delete this image"))
+		return
+	}
+
+	inUse, err := svc.imageInUse(ctx, imageID)
+	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_image_inuse_check").Str("image_id", imageID).Msg("failed to check image usage")
 		common.SendError(c, common.NewInternalServerError("failed to delete image"))
 		return
@@ -485,19 +528,27 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 		return
 	}
 
-	// Delete from database first
-	_, err = database.DB.Exec(ctx,
-		"DELETE FROM images WHERE id = $1 AND project_id = $2",
-		imageID, projectID,
-	)
+	// Delete from the database by id (authorization verified above) and confirm a row
+	// was removed, so a no-op delete surfaces as 404 rather than a false success
+	// (F6, FR-015). The former `AND project_id = $2` never matched a public image —
+	// whose project_id is NULL — which was the root cause of the silent no-op.
+	tag, err := database.DB.Exec(ctx, "DELETE FROM images WHERE id = $1", imageID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_image_db").Str("image_id", imageID).Msg("failed to delete image from database")
 		common.SendError(c, common.NewInternalServerError("failed to delete image"))
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		common.SendError(c, common.NewNotFoundError("image"))
+		return
+	}
 
-	// Delete from storage (best effort - image metadata gone is success)
-	_ = svc.imageStore.DeleteImage(ctx, imageID)
+	// Delete from storage (best effort — the metadata row is already gone, so the API
+	// result stays 204). Log a failure: nothing will retry it, so the backend object is
+	// orphaned and this line is the only record of which image it belonged to.
+	if err := svc.imageStore.DeleteImage(ctx, imageID); err != nil {
+		log.Warn().Err(err).Str("image_id", imageID).Msg("image row deleted but backend object delete failed; object may be orphaned")
+	}
 
 	// Invalidate cache
 	if svc.cache != nil {

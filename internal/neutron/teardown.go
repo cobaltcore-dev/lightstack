@@ -159,6 +159,7 @@ func queryStrings(ctx context.Context, query string) ([]string, error) {
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
+			log.Warn().Err(err).Str("operation", "queryStrings").Msg("failed to scan row")
 			return nil, err
 		}
 		if s != "" {

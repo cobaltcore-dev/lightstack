@@ -2027,6 +2027,9 @@ func (svc *Service) GetLimits(c *gin.Context) {
 				quotas[resource] = hardLimit
 			}
 		}
+		if err := quotaRows.Err(); err != nil {
+			log.Warn().Err(err).Msg("quotaRows iteration error; list may be truncated")
+		}
 	}
 
 	// Return limits response
