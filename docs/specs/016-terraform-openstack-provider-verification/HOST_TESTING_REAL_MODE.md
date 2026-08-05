@@ -168,8 +168,9 @@ cd test/terraform/compat && terraform destroy -auto-approve   # → 9 destroyed
 sudo virsh list --all                                          # tf-compat-vm gone
 ```
 **Pass** = destroy removes the domain, the overlay, the netns, and the SG chain (SPEC-010 teardown
-territory). Note the same `key_name`/`security_groups` read-back drift as stub (§3 of
-`HOST_TESTING.md`) — it's mode-independent.
+territory). The `terraform plan` re-plan must be `No changes` in real mode too — the
+`key_name`/`security_groups` read-back (SPEC-017) is mode-independent, so a replacing plan is a
+regression here as much as in stub (§3 of `HOST_TESTING.md`).
 
 > **Also run `sc007`** (`cd test/terraform/sc007`): it adds a router + floating IP + FIP
 > association (real L3 / NAT) and SSH-verifies key injection + user_data — the real-mode extras the
