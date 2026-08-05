@@ -432,6 +432,8 @@ if requestedVersion == "" {
 - PostgreSQL — **no schema change, no migration** (identity id columns stay `uuid`). (015-identity-uuid-404)
 - 026-rename-to-lightstack: product rename to `lightstack` across 6,749 occurrences / 482 files / 51 paths. Go 1.26.2, **no dependency change**. Module path becomes `github.com/cobaltcore-dev/lightstack`, matching the repository. Case by role: `Lightstack` prose, `lightstack` identifiers/paths, `LIGHTSTACK_` for the 77 env vars. Three hand-written exceptions: iptables chain prefixes → `LS-SG-`/`LS-NSI-` (the full name overflows the 28-char budget), the catalog host token (migration `052` + `auth.go:684,686` must move together), and the acceptance check written as a character class so it does not match itself. No new tests — verification is the acceptance check plus manual checks.
 - PostgreSQL — **no schema change, no new migration**; migration `052` edited in place (five `endpoints.url` rows). Nothing is deployed. (026-rename-to-lightstack)
+- Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); **no new modules** (017-nova-server-detail-readback)
+- PostgreSQL — new migration `063` adds `instances.key_name` (nullable `text`); reuses `server_security_groups` (migration 049) and the Neutron `security_groups` table for name→id resolution (017-nova-server-detail-readback)
 
 ## Recent Changes
 - 026-rename-to-lightstack: plan — staged rename (8 stages, gates green per stage); spec dir stays **untracked** (it cannot shed its own 70 occurrences); real-mode host validation mandatory (stub mode never reaches the chain namer or the state root) (SPEC-026 plan)

@@ -641,6 +641,79 @@ func (svc *Service) LiveMigrateInstance(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
+// securityGroupNamesForServer returns the names of the security groups currently
+// associated with a server. The INNER JOIN drops orphaned associations (an SG row
+// deleted out from under a server_security_groups row, which has no FK).
+func securityGroupNamesForServer(ctx context.Context, serverID string) ([]string, error) {
+	rows, err := database.DB.Query(ctx, `
+		SELECT sg.name
+		FROM server_security_groups ssg
+		JOIN security_groups sg ON sg.id = ssg.security_group_id
+		WHERE ssg.server_id = $1
+		ORDER BY sg.name
+	`, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("query security groups for server %s: %w", serverID, err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("scan security group name for server %s: %w", serverID, err)
+		}
+		names = append(names, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate security groups for server %s: %w", serverID, err)
+	}
+	return names, nil
+}
+
+// securityGroupNamesForServers batches securityGroupNamesForServer across a page of
+// servers in a single query (no N+1), returning server_id → names.
+func securityGroupNamesForServers(ctx context.Context, serverIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(serverIDs))
+	if len(serverIDs) == 0 {
+		return result, nil
+	}
+	rows, err := database.DB.Query(ctx, `
+		SELECT ssg.server_id::text, sg.name
+		FROM server_security_groups ssg
+		JOIN security_groups sg ON sg.id = ssg.security_group_id
+		WHERE ssg.server_id = ANY($1::uuid[])
+		ORDER BY sg.name
+	`, serverIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query security groups for servers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid, name string
+		if err := rows.Scan(&sid, &name); err != nil {
+			return nil, fmt.Errorf("scan security group row: %w", err)
+		}
+		result[sid] = append(result[sid], name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate security groups for servers: %w", err)
+	}
+	return result, nil
+}
+
+// formatSecurityGroups renders SG names as Nova's [{"name": ...}] shape,
+// synthesizing the default group when the instance has none (FR-006).
+func formatSecurityGroups(names []string) []gin.H {
+	if len(names) == 0 {
+		return []gin.H{{"name": "default"}}
+	}
+	out := make([]gin.H, 0, len(names))
+	for _, n := range names {
+		out = append(out, gin.H{"name": n})
+	}
+	return out
+}
+
 // AddSecurityGroup adds a security group to an instance
 func (svc *Service) AddSecurityGroup(c *gin.Context) {
 	instanceID := c.Param("id")
