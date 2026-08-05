@@ -84,9 +84,7 @@ Enter primary network interface [eth0]:
 Enter network gateway [192.168.1.1]:
 Enter DNS servers [8.8.8.8,8.8.4.4]:
 Enter PostgreSQL password for lightstack database: ********
-Enter storage path for volumes [/var/lib/lightstack/volumes]:
-Enter storage path for images [/var/lib/lightstack/images]:
-Enter storage path for instances [/var/lib/lightstack/instances]:
+Enter node-local state root [/var/lib/lightstack]:
 Deploy Horizon dashboard? [Y/n]: Y
 
 [INFO] Configuration Summary:
@@ -96,9 +94,7 @@ Deploy Horizon dashboard? [Y/n]: Y
   Network Interface:  eth0
   Gateway:            192.168.1.1
   DNS Servers:        8.8.8.8,8.8.4.4
-  Volume Path:        /var/lib/lightstack/volumes
-  Image Path:         /var/lib/lightstack/images
-  Instance Path:      /var/lib/lightstack/instances
+  State Root:         /var/lib/lightstack
   Deploy Horizon:     Y
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

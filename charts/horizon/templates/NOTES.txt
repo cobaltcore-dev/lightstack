@@ -1,4 +1,4 @@
-{{ .Chart.Name }} {{ .Chart.Version }} — verification Horizon (SPEC-018) installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+{{ .Chart.Name }} {{ .Chart.Version }} — Horizon dashboard for Lightstack, installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
 
 Horizon points at Lightstack via OPENSTACK_HOST = {{ .Values.lightstack.host }} (in-cluster; Horizon calls Lightstack server-side).
 
@@ -22,4 +22,9 @@ Namespace "{{ .Release.Namespace }}" must NOT enforce the Pod Security Admission
 profile — the kolla Horizon container runs apache as root. Under `restricted` the pod is rejected at
 admission and this install looks successful while nothing runs. values.yaml has the non-root recipe.
 
-Console tab (noVNC) is a KNOWN GAP (F1) — it will not show the guest. Use `openstack console log show` instead.
+Console tab (noVNC): served by the lightstack chart's console proxy, not this one. It needs
+real mode with `consoleProxy.enabled=true` and `nova.consoleProxyBaseUrl` set to an
+origin the BROWSER can reach (e.g. http://<node-ip>:30680 — origin only, no path).
+In stub mode the console API answers 501: there is no guest to display.
+`openstack console log show` gives the serial log either way.
+

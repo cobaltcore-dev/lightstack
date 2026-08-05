@@ -449,24 +449,17 @@ Lightstack generates a cloud-init ISO and attaches it as a CD-ROM:
 
 ## VNC Console Access
 
-### Get VNC Port
+### Open the console
 
 ```bash
-# Via OpenStack
 openstack console url show test-vm
-
-# Via virsh
-virsh vncdisplay <uuid>
 ```
 
-### Connect via VNC Client
+Guest consoles are per-start unix sockets with no TCP port, reached only through the
+console proxy with a token (SPEC-021). To see where a guest's socket is, on its node:
 
 ```bash
-# Install VNC viewer
-sudo apt-get install tigervnc-viewer
-
-# Connect
-vncviewer localhost:5900
+sudo virsh dumpxml <uuid> | grep -A2 "<graphics"
 ```
 
 ---
@@ -703,10 +696,8 @@ sudo aa-status
 sudo aa-complain /usr/sbin/libvirtd
 ```
 
-2. **Firewall Rules**: Allow VNC ports for console access
-```bash
-sudo ufw allow 5900:5999/tcp
-```
+2. **Firewall Rules**: There are no VNC ports to open — guest consoles are unix
+sockets. Browsers need only the console proxy's port (6080, or the chart's NodePort).
 
 3. **Libvirt Authentication**: Enable SASL authentication
 ```bash

@@ -181,12 +181,12 @@ full action set (below).
 | Compute v2.1 group | Lightstack | Notes |
 |---|:--:|---|
 | Servers (CRUD) | ✅ | list / detail / create / show / update (PUT + PATCH) / delete |
-| Server actions (`/servers/{id}/action`) | ✅ | start, stop, reboot, pause/unpause, suspend/resume, shelve/shelveOffload/unshelve, lock/unlock, resize/confirmResize/revertResize, rebuild, **rescue** (no unrescue), evacuate, migrate, live-migrate, createImage (snapshot), createBackup, restore, changePassword, add/removeSecurityGroup, forceDelete, os-resetState, os-resetNetwork, + 5 console actions |
+| Server actions (`/servers/{id}/action`) | ✅ | start, stop, reboot, pause/unpause, suspend/resume, shelve/shelveOffload/unshelve, lock/unlock, resize/confirmResize/revertResize, rebuild, **rescue** (no unrescue), evacuate, migrate, live-migrate, createImage (snapshot), createBackup, restore, changePassword, add/removeSecurityGroup, forceDelete, os-resetState, os-resetNetwork, + 5 console actions (`os-getVNCConsole` and `os-getConsoleOutput` serve; `os-getSerialConsole` / `os-getSPICEConsole` / `os-getRDPConsole` refuse by design — see Remote consoles) |
 | Server metadata | ✅ | get / set / replace |
 | Server tags | ✅ | list / replace / delete-all / add / delete |
 | Server diagnostics | ✅ | `GET /servers/{id}/diagnostics` |
 | Instance actions (os-instance-actions) | ✅ | list / show |
-| Remote consoles | ⚠️ | `POST /remote-consoles` + legacy `os-get*Console` actions respond, but return a synthetic `localhost:6080` URL + unpersisted token + no libvirt VNC-port readback → the interactive noVNC console can't display a guest (SPEC-018 F1). Serial console log (`os-getConsoleOutput`) works in real mode. |
+| Remote consoles | ✅ | `POST /remote-consoles` and the legacy `os-getVNCConsole` action return a working noVNC URL at a configurable origin (`nova.console_proxy_base_url`), carrying a persisted, revocable token; the guest's VNC socket is read from the running libvirt domain per request. The console is a per-start unix socket with no TCP listener, so the token-validating proxy is the only route in and a stale link names a path that no longer exists; every endpoint-moving operation (stop/start/reboot/suspend/resume/shelve/delete/forceDelete) revokes, and a sweep revokes links whose guest stopped outside the API. `GET /os-console-auth-tokens/{token}` is served for compatibility. Other types (`xvpvnc`, SPICE, RDP, interactive serial) are **refused** with a clear error rather than a fabricated URL, and stub mode refuses with 501. Serial console log (`os-getConsoleOutput`) works in real mode. Multi-node console is not supported in v1 (SPEC-021 / SPEC-018 F1, fixed). |
 | Volume attachments | ⚠️ | list / show / attach / detach — no `PUT` (swap/update) |
 | Interface attachments | ⚠️ | list / attach / detach — no show-one `GET …/os-interface/{port_id}` |
 | Server migrations | ✅ | `os-migrations` list; per-server list / show / delete (abort) / action |
@@ -217,9 +217,10 @@ code constant is **2.90**; and it lists **unrescue** as implemented — only **r
 
 **Validation verdict:** Nova covers the entire compute surface the validation path exercises — full server
 lifecycle and action set, flavors, keypairs, metadata, volume & interface attach, quotas, AZ,
-server groups, aggregates, migrations. The one functional caveat is the **interactive remote console** —
-`remote-consoles` responds but the returned noVNC URL is non-functional (⚠️ §3.2; SPEC-018 F1); the serial
-console log works. The sc007 Terraform scenario (boot a server with keypair + user-data, attach a volume,
+server groups, aggregates, migrations. The **interactive remote console** works too as of SPEC-021: the
+returned noVNC URL resolves a persisted, revocable token to the guest's per-start unix socket, verified in a
+browser against a live framebuffer (✅ §3.2; SPEC-018 F1 fixed). Its one limit is that the token projection
+is node-local, so multi-node console is unsupported in v1. The sc007 Terraform scenario (boot a server with keypair + user-data, attach a volume,
 associate a floating IP) is fully supported. Every other ❌/⚠️ is admin / legacy / enterprise
 (see [§8.2](#82-nova--not-implemented-endpoints)); none block validation.
 
@@ -602,8 +603,8 @@ endpoints per group are separated by a line break (`<br>`).
 
 > **Scope note.** None of the below are on the validation path. The sc007 Terraform scenario and Horizon
 > exercise the server lifecycle + action set, flavors, keypairs, metadata, volume/interface attach,
-> quotas and AZ — all ✅ in §3.2 (the interactive remote console is ⚠️: endpoints respond but the noVNC URL
-> is non-functional — SPEC-018 F1). The gaps are admin, legacy nova-network, or enterprise features.
+> quotas and AZ — all ✅ in §3.2, including the interactive remote console since SPEC-021 (SPEC-018 F1
+> fixed). The gaps are admin, legacy nova-network, or enterprise features.
 > Multiple endpoints per group are separated by `<br>`.
 
 | Compute v2.1 group | Impl. | Not-implemented endpoint(s) | Justification |

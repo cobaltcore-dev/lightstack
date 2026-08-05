@@ -1,3 +1,7 @@
+# Node-local state root for real mode (pkg/paths). Absolute, and the same path the host
+# sees: libvirtd opens the paths Lightstack writes into the domain XML.
+# state_path: /var/lib/lightstack
+
 database:
   url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
   max_connections: 50  # Increased from 20 for higher concurrency
@@ -59,6 +63,21 @@ nova:
   libvirt_uri: "qemu:///system"
   default_flavor: m1.small
   libvirt_mode: stub  # "stub" or "real"
+
+  # noVNC console (SPEC-021). Real mode only: stub mode has no guest, so the console
+  # API refuses at request time instead of returning a link that leads nowhere.
+  #
+  # Browser-reachable ORIGIN of the console proxy — "scheme://host:port", NO path.
+  # Lightstack appends the client page and the token query itself, so they cannot drift from
+  # the deployed noVNC version. Empty derives it from the request. Anything more than an
+  # origin — e.g. upstream Nova's ".../vnc_auto.html" form — fails startup.
+  console_proxy_base_url: ""
+  # How long an issued console link stays usable. The effective ceiling is this plus
+  # console_reconcile_interval: the proxy performs no expiry check of its own, so a
+  # token dies when Lightstack removes its projection entry, not the instant it expires.
+  console_token_ttl: 10m
+  # How often expired console tokens are reaped. This is what ENFORCES expiry.
+  console_reconcile_interval: 30s
 
 neutron:
   port: 9696

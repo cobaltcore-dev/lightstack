@@ -63,6 +63,19 @@ tls:
 # -- Per-service modes (FR-011/012). All set in the rendered lightstack.yaml.
 nova:
   libvirtMode: stub           # stub | real
+  # -- noVNC console (SPEC-021, real mode only).
+  #    consoleProxyBaseUrl is the browser-reachable ORIGIN only — "scheme://host:port",
+  #    no path. Lightstack appends the client page and the token query itself, so they cannot
+  #    drift from the deployed noVNC version. Empty derives it from the request.
+  #    A path (e.g. /vnc_auto.html) is refused: by the schema at install, by the binary
+  #    at startup.
+  consoleProxyBaseUrl: ""
+  # -- How long an issued console link stays usable. The effective ceiling is
+  #    consoleTokenTtl + consoleReconcileInterval: the proxy performs no expiry check,
+  #    so a token dies when Lightstack removes its projection entry.
+  consoleTokenTtl: 10m
+  # -- How often expired console tokens are reaped. This is what ENFORCES expiry.
+  consoleReconcileInterval: 30s
 neutron:
   networkingMode: stub        # stub | iptables | ebpf
   securityGroupMode: stub     # stub | iptables | ebpf
@@ -97,6 +110,9 @@ realMode:
   privileged: false
   hostNetwork: false
   libvirtSocketPath: /var/run/libvirt/libvirt-sock
+  # -- Node-local data root. Mounted at the same path inside the pod and passed to the
+  #    binary as state_path — the two must match, because libvirtd on the host opens the
+  #    paths Lightstack writes into the domain XML. Absolute.
   hostStoragePath: /var/lib/lightstack
   # -- One-time in-place upgrade from a pre-rename install (cloud-storage#575).
   #    Set to that node's old state root (the product was renamed, the root moved with
@@ -104,6 +120,88 @@ realMode:
   #    the subdirs are pre-created. Empty renders nothing — fresh installs need it not.
   legacyStatePath: ""
   floatingIpPool: ""          # operator-supplied pool routed to nodes (FR-009c)
+
+# -- noVNC console proxy (SPEC-021). Real mode only: stub mode has no guest, so
+#    the console API refuses at request time and no proxy is deployed.
+#
+#    This is the UNMODIFIED upstream noVNC image with its start command overridden
+#    to run websockify directly, serving both the client page and the
+#    token-resolving relay. Lightstack contributes no relay code — only the token
+#    projection under {realMode.hostStoragePath}/console-tokens that it reads.
+consoleProxy:
+  # -- Single-node real mode only (v1): its token projection and every guest's console
+  #    socket are node-local, so multi-node renders no proxy, and Lightstack then refuses
+  #    console requests with 400 "Unavailable console type novnc" rather than issuing
+  #    URLs that lead nowhere. Setting this false does the same on a single node.
+  enabled: true
+  image:
+    # bonigarcia/novnc — maintained (Apache-2.0), Alpine. NOTE: the tag is the
+    # IMAGE's version, not noVNC's — 1.3.0 ships noVNC 1.6.0. A bump must update
+    # the digest and re-verify: bundled websockify token plugins, the client page
+    # names, and that requests/redis/jwcrypto are still absent (only file-based
+    # token plugins work without modifying the image).
+    repository: bonigarcia/novnc
+    tag: "1.3.0"
+    # The image is pulled by this digest when it is set, and the tag above is then
+    # only a label. It is 1.3.0's, the content SPEC-021's proxy contract was verified
+    # against; the tag is mutable. Overriding the tag alone still pulls this digest:
+    # set it to "" to pull by tag.
+    digest: "sha256:a5be468dc8967a55ffe870e809fa36dbbfc19b67d8156c1e7cb2d26aaa4f32c2"
+    pullPolicy: IfNotPresent
+  service:
+    type: NodePort
+    # Any other port needs nova.consoleProxyBaseUrl: Lightstack derives links at 6080 only.
+    port: 6080
+    nodePort: 30680
+  # -- Drop an idle console session after this many seconds. websockify defaults
+  #    this to 0 (disabled), which would let an abandoned browser tab hold a
+  #    guest console open indefinitely.
+  idleTimeoutSeconds: 300
+  # -- Where libvirt creates each running guest's VNC socket
+  #    (<dir>/domain-<id>-<name>/vnc.sock). The proxy mounts it read-only at the same
+  #    path, because each token names that exact path. libvirt's qemu state dir on
+  #    Debian/Ubuntu and RHEL alike; change it only if qemu.conf moves it.
+  libvirtDomainDir: /var/lib/libvirt/qemu
+  # Binds an unprivileged port and only reads the token projection.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+      # -- The one capability kept. connect() on a unix socket needs write permission
+      #    on it, and each guest's console socket belongs to libvirt-qemu, in a 0750
+      #    directory — root with nothing kept is just "other" there. The kvm gid that
+      #    would also grant it differs between distributions; this does not.
+      add: ["DAC_OVERRIDE"]
+    # -- Pinned, not incidental: Lightstack writes the projection entries as root with mode
+    #    0600 (internal/console/store.go), and fsGroup does not apply to hostPath
+    #    volumes, so a matching UID is the only way the proxy can read them. The
+    #    image happens to run as root today; if a bump ever added a USER directive,
+    #    every token would stop resolving with no signal — TokenFile re-reads per
+    #    lookup instead of failing at startup, and the page probe stays green.
+    #    Change this only together with the file mode in store.go.
+    runAsUser: 0
+  # -- Health probes, mirroring the lightstack container's (SPEC-013) but against the client
+  #    page the proxy serves. Path is fixed — tune timing/thresholds only.
+  #    A tcpSocket probe would be useless here: the kernel accepts connections from
+  #    the listen backlog even when websockify is wedged, so it reports healthy
+  #    precisely when the console is broken. GET /vnc_lite.html requires the process
+  #    to actually answer.
+  probes:
+    readiness:                  # gates Service traffic; ≈30s to leave the Service
+      enabled: true
+      periodSeconds: 10
+      timeoutSeconds: 2
+      failureThreshold: 3
+      successThreshold: 1
+    liveness:                   # ≈120s before restarting — see the note in the template
+      enabled: true
+      periodSeconds: 20
+      timeoutSeconds: 5
+      failureThreshold: 6
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
 
 podSecurity:
   applyPrivilegedNamespaceLabel: false   # real mode only (FR-012d)

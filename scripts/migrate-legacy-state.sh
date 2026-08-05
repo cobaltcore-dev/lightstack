@@ -2,11 +2,11 @@
 #
 # Lightstack — one-time migration of a pre-rename node's local state
 #
-# The product rename (cobaltcore-dev/cloud-storage#575) moved the node-local state root.
-# pkg/paths.Base is a compile-time constant, so an upgraded binary writes to the new
-# root and stops seeing the image bases, volume files, instance overlays, cloud-init
-# ISOs and dnsmasq state a pre-rename install left behind. Nothing persisted a path —
-# every location is derived from the resource id — so the data only has to move once.
+# The product rename (cobaltcore-dev/cloud-storage#575) moved the default node-local
+# state root, so an upgraded binary writes to the new root and stops seeing the image
+# bases, volume files, instance overlays, cloud-init ISOs and dnsmasq state a
+# pre-rename install left behind. Nothing persisted a path — every location is derived
+# from the resource id — so the data only has to move once.
 #
 # Reports what it would do and exits; pass --apply to actually move anything.
 #

@@ -53,6 +53,11 @@ lightstack --config /path/to/custom.yaml
 **File:** `config/lightstack.yaml`
 
 ```yaml
+# Node-local state root (real mode): image bases, volumes, instance overlays,
+# cloud-init ISOs, DHCP state, console tokens. Absolute; the same path the host
+# sees, since libvirtd opens the paths written into the domain XML.
+state_path: /var/lib/lightstack
+
 # Database connection
 database:
   url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
@@ -450,6 +455,19 @@ database:
 
 ## Storage Configuration
 
+### Node-local state root
+
+```yaml
+state_path: /var/lib/lightstack
+```
+
+Top-level, not per service: image bases, volumes, instance overlays, cloud-init ISOs, DHCP
+state and console tokens all live under it. It must be absolute and not `/`, and Lightstack
+refuses to start otherwise. It must also be the **same path on the host** as Lightstack sees:
+libvirtd opens the paths Lightstack writes into the domain XML, so a container has to mount
+the root at the path it has on the host. The Helm chart sets it from
+`realMode.hostStoragePath` and mounts it that way.
+
 ### Local Storage
 
 ```yaml
@@ -460,7 +478,7 @@ glance:
   storage_mode: local
 ```
 
-**Storage locations:**
+**Storage locations** (under `state_path`, default shown):
 - Volumes: `/var/lib/lightstack/volumes/`
 - Images: `/var/lib/lightstack/images/`
 

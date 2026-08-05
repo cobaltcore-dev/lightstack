@@ -614,8 +614,11 @@ nova:
   port: 8774
   libvirt_mode: real
   libvirt_uri: "qemu+tcp://compute1/system"  # Will be load-balanced
-  instance_storage_path: "rbd:vms/instances"  # Ceph RBD
-  console_proxy_base_url: "https://lightstack-api.example.com:6080/vnc_auto.html"
+  # The noVNC console is single-node only in v1 (SPEC-021): each node's token projection
+  # and guest console sockets are node-local. With this, console requests answer 400
+  # "Unavailable console type novnc" instead of a URL that leads nowhere;
+  # `openstack console log show` still works.
+  console_enabled: false
 
 neutron:
   host: "0.0.0.0"

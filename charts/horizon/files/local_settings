@@ -106,7 +106,7 @@ SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = False     # Set True with HTTPS
 # MUST stay False in BOTH copies, and `make horizon-chart-sync` MUST be run after
 # changing it: deployments/horizon-config/local_settings is the source that compose
-# reads, and deployments/horizon-chart/files/local_settings is generated from it and is
+# reads, and charts/horizon/files/local_settings is generated from it and is
 # what real mode (Helm) reads. Both paths are named explicitly because this comment is
 # copied verbatim into the generated file, where "this file" would mean the other one —
 # the drift recorded as F14 is exactly what that ambiguity produced.
@@ -131,17 +131,21 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 # Console Access Configuration
 # ==========================================
 
-CONSOLE_TYPE = 'novnc'  # VNC console type
-# There is no Horizon setting for the console proxy URL: upstream documents CONSOLE_TYPE only, and
-# the URL comes from Nova's os-getVNCConsole / remote-consoles response. Lightstack returns a
-# hardcoded http://localhost:6080/vnc_auto.html (internal/nova/console.go) -- SPEC-018 finding F1,
-# cloud-storage#534. A NOVNC_PROXY_URL line used to sit here; Horizon never read it.
+# Horizon dispatches on this via CONSOLES in
+# openstack_dashboard/dashboards/project/instances/console.py, whose keys are
+# exactly: AUTO, VNC, SPICE, RDP, SERIAL, MKS.
+#
+# It was 'novnc' here, which is NOT one of those. CONSOLES['novnc'] raises
+# KeyError, Horizon converts that to NotAvailable, and the Console tab reports
+# "Console is currently unavailable" WITHOUT ever calling Nova. That masked the
+# real console for as long as F1 was open, because the backend was broken too.
+# 'VNC' is the value that reaches Nova's noVNC console (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 
-# Console types available in dropdown
-CONSOLE_TYPES = [
-    ('novnc', _('noVNC')),
-    ('spice', _('SPICE')),
-]
+# There is no Horizon setting for the console proxy URL: upstream documents CONSOLE_TYPE only, and
+# the URL comes from Nova's os-getVNCConsole / remote-consoles response, which Lightstack builds
+# from nova.console_proxy_base_url in lightstack.yaml. NOVNC_PROXY_URL and CONSOLE_TYPES lines
+# used to sit here; Horizon reads neither.
 
 # ==========================================
 # Regional Settings

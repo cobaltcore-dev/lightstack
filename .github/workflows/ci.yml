@@ -343,8 +343,8 @@ jobs:
           fi
           helm version --short
 
-      # Lints + renders + unit-tests charts/lightstack, then lints + renders the SPEC-018
-      # verification Horizon chart. Needs no cluster and no running Lightstack.
+      # Lints + renders + unit-tests both product charts: charts/lightstack, then
+      # charts/horizon. Needs no cluster and no running Lightstack.
       - name: Lint, render and unit-test the Helm charts
         run: make chart-test
 

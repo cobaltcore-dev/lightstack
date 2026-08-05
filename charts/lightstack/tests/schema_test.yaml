@@ -46,3 +46,42 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "rgwCompatTenantIds|boolean|schema"
+  - it: rejects a consoleProxyBaseUrl carrying a path (pattern)
+    # An origin only (SPEC-021 FR-020): Lightstack appends the client page itself, so a
+    # path yields a console link that 404s. The binary refuses it at startup too; the
+    # pattern moves that failure from a crash-looping pod to `helm install`.
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: x
+      secrets.adminPassword: x
+      database.url: postgres://lightstack@db/lightstack
+      nova.consoleProxyBaseUrl: http://10.2.199.101:6080/vnc_auto.html
+    asserts:
+      - failedTemplate:
+          errorPattern: "consoleProxyBaseUrl|does not match pattern|schema"
+  - it: rejects a relative hostStoragePath (pattern)
+    # The chart hands it to the binary as state_path, which must be absolute: libvirtd
+    # on the host opens the paths Lightstack writes into the domain XML. The binary
+    # refuses a relative root at startup too; the pattern moves that failure from a
+    # crash-looping pod to `helm install`.
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: x
+      secrets.adminPassword: x
+      database.url: postgres://lightstack@db/lightstack
+      realMode.hostStoragePath: data/lightstack
+    asserts:
+      - failedTemplate:
+          errorPattern: "hostStoragePath|does not match pattern|schema"
+  - it: rejects a console proxy image digest that is not a sha256 digest (pattern)
+    # The template renders repository@digest, so a tag here yields a reference the
+    # runtime cannot pull.
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: x
+      secrets.adminPassword: x
+      database.url: postgres://lightstack@db/lightstack
+      consoleProxy.image.digest: "1.3.0"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/consoleProxy/image/digest.*does not match pattern"

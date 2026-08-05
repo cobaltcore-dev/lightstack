@@ -3,9 +3,8 @@
 ## Upgrading an install created under the previous product name
 
 Lightstack was renamed (`cobaltcore-dev/cloud-storage#575`). The rename moved the
-node-local state root, and that root is a compile-time constant in the binary
-(`pkg/paths/paths.go`), so an upgraded node writes to the new root and stops seeing what
-the old one holds: image bases, volume backing files, per-instance disk overlays,
+default node-local state root (`pkg/paths/paths.go`), so an upgraded node writes to the
+new root and stops seeing what the old one holds: image bases, volume backing files, per-instance disk overlays,
 cloud-init ISOs and dnsmasq state.
 
 Nothing has to be rewritten to fix this. No database column stores a path — every
@@ -297,7 +296,7 @@ Lightstack's Horizon `local_settings` set `CSRF_COOKIE_HTTPONLY = True`. Horizon
 the CSRF token from `document.cookie`, so with the flag set some dashboard actions fail without
 an error — Delete Key Pair does nothing. Both shipped copies,
 `deployments/horizon-config/local_settings` and the chart's
-`deployments/horizon-chart/files/local_settings`, now set `False`. If you deploy Horizon from your
+`charts/horizon/files/local_settings`, now set `False`. If you deploy Horizon from your
 own copy of that file, change the flag there too.
 
 ### Quota and limits
@@ -370,3 +369,88 @@ Reads follow upstream's visibility rules, so sharing an image now has an effect.
 | image show and download | public images and the caller's own | also community images, images with no owner, images shared with the caller (any membership status), and every image for an administrator |
 | image list, default | public images and the caller's own | the caller's own, public ones, and shared ones whose membership is accepted; an administrator lists every image. Either way other projects' community images are left out unless `?visibility=community` or `all` asks for them |
 | `?visibility=`, `?member_status=`, `?status=` on the list | ignored | honoured as upstream; an invalid `visibility` or `member_status` is a `400` |
+
+## The console origin is now read — and must be an origin
+
+`nova.console_proxy_base_url` used to be ignored: the binary had no such setting, although four
+deployment guides told operators to set it, with example values ending in `/vnc_auto.html`. It is
+now honoured (SPEC-021), and it takes an **origin only** — `scheme://host[:port]`. Lightstack
+appends the client page and the token query itself, so a path would produce a console link that
+404s.
+
+A value with anything beyond the origin — a path, query or fragment — now **stops startup**, with
+an error that names the corrected value:
+
+```text
+Failed to load config: nova.console_proxy_base_url "http://203.0.113.10:6080/vnc_auto.html" must be an origin only; Lightstack appends the client page and token itself (unlike upstream Nova's novncproxy_base_url, it names no page): use "http://203.0.113.10:6080"
+```
+
+Drop the path. Three sources carry one:
+
+- the old guides' example values;
+- a config written by `scripts/deploy-turnkey.sh` or `scripts/deploy-single-node.sh` before this
+  release — both wrote `http://<host>:6080/vnc_auto.html`. Edit the value. A console on those
+  installs also needs the updated scripts' `novnc` service: the old one could not resolve a token
+  at all;
+- a value carried over from upstream Nova, whose `novncproxy_base_url` **does** name the page.
+
+With Helm, `nova.consoleProxyBaseUrl` is pattern-checked, so the same value fails `helm install` /
+`helm upgrade` instead of starting a pod that exits. An empty value is still valid: the origin is
+then derived from the request.
+
+## Guests created before this release still expose their console
+
+A guest's VNC console is now a UNIX socket that libvirt creates per start in the domain's private
+directory, with no TCP listener, so the token-checking console proxy is the one way in and a freed
+console can never be handed to another guest (SPEC-021). That holds for guests **defined** after
+the upgrade. The console is part of the libvirt domain definition, written once when the instance
+is created, and nothing Lightstack does afterwards — reboot, stop/start, an upgrade — rewrites it.
+Real mode only: stub mode defines no domains.
+
+A guest created before this release therefore still has a TCP console on `0.0.0.0`: anything that
+can reach the node reaches it, with no token and no password, as it always could. Lightstack does
+not paper over it — a console request for such a guest fails with
+`500 console misconfigured on this host`, and the log says
+`guest console is not a unix socket; refusing to proxy`.
+
+List the affected domains on each node:
+
+```sh
+for d in $(sudo virsh list --all --name); do sudo virsh dumpxml --inactive "$d" | grep -q "<listen type='address'" && echo "$d"; done
+```
+
+Then, per domain, either delete and recreate the instance, or fix the definition in place:
+
+1. `sudo virsh edit <domain>` — replace the whole `<graphics type='vnc' …>` element with
+   `<graphics type='vnc' sharePolicy='force-shared'><listen type='socket'/></graphics>`: no
+   `port`, `autoport` or `listen` attribute, and no path of your own — libvirt picks one per
+   start. `sharePolicy='force-shared'` keeps a second viewer from disconnecting the first.
+2. Stop and start the server (`sudo virsh domuuid <domain>` prints its id). The edit takes effect
+   only when qemu restarts: `openstack server reboot`, soft or hard, reboots the guest inside the
+   same qemu process and does not pick it up. `openstack server stop` only asks the guest to shut
+   down, so wait for `sudo virsh domstate <domain>` to report `shut off` before
+   `openstack server start`.
+
+## `realMode.hostStoragePath` now takes effect
+
+The chart always accepted this value, but the binary ignored it: its node-local root was a
+compile-time constant, `/var/lib/lightstack`. A custom value therefore mounted a host directory
+Lightstack never wrote to. Its state went into the container's own filesystem instead, guests did
+not boot (libvirtd on the host looks for their disks where the domain XML says), and console
+tokens never reached the proxy.
+
+The root is now the `state_path` setting in `lightstack.yaml` — absolute, default
+`/var/lib/lightstack` — and the chart renders it from `realMode.hostStoragePath`. On the default
+there is nothing to do. An install that set a custom value never worked in real mode and now uses
+that directory as intended; anything created while the value was ignored — instances left in
+`ERROR`, images whose data was lost with a container restart — has to be recreated.
+
+Outside Helm, set `state_path` directly. The directory must be the same path on the host and to
+Lightstack, since libvirtd opens the paths Lightstack writes into the domain XML.
+
+Both deploy scripts had the same defect. `scripts/deploy-turnkey.sh`'s `LIGHTSTACK_STORAGE_DIR`
+moved three bind mounts and wrote per-service `*_storage_path` keys the binary never read; it now
+writes `state_path` and mounts the whole root at the same path — which also brings `cloud-init` and
+`dhcp` onto the host, where they were missing even on the default root. `scripts/deploy-single-node.sh`
+asked for three per-service paths that went into the same unread keys; it now asks for one state
+root. Re-running either script regenerates its files.

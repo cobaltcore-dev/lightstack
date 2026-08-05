@@ -24,6 +24,19 @@ app.kubernetes.io/name: {{ include "lightstack.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/*
+Selector labels for the console proxy (SPEC-021).
+
+Deliberately a DIFFERENT app.kubernetes.io/name, not lightstack.selectorLabels plus a
+component label: the main Service and Deployment select on name+instance alone, so
+a console-proxy pod carrying those two would be adopted as a lightstack endpoint and API
+traffic would be routed to the noVNC proxy.
+*/}}
+{{- define "lightstack.consoleProxySelectorLabels" -}}
+app.kubernetes.io/name: {{ include "lightstack.name" . }}-console-proxy
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
 {{/* Image reference; repository is REQUIRED (FR-018). */}}
 {{- define "lightstack.image" -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
@@ -68,6 +81,13 @@ FR-006/006a/007/007a/008b/012e/018.
 {{-   if and (not .Values.tls.secretName) (not .Values.tls.certManagerIssuer) -}}
 {{- fail "\n\ntls.enabled requires tls.secretName or tls.certManagerIssuer (the chart generates no certificates).\n" -}}
 {{-   end -}}
+{{-   if and (include "lightstack.consoleProxyDeployed" .) (not .Values.nova.consoleProxyBaseUrl) -}}
+{{- fail "\n\ntls.enabled with the console proxy requires nova.consoleProxyBaseUrl: the proxy serves plain HTTP, so set an https origin that terminates TLS in front of it (or consoleProxy.enabled=false).\n" -}}
+{{-   end -}}
+{{- end -}}
+{{- /* 6080 is the binary's defaultConsoleProxyPort, the only port it derives an origin for. */ -}}
+{{- if and (include "lightstack.consoleProxyDeployed" .) (ne (int .Values.consoleProxy.service.port) 6080) (not .Values.nova.consoleProxyBaseUrl) -}}
+{{- fail "\n\nconsoleProxy.service.port other than 6080 requires nova.consoleProxyBaseUrl: without one, Lightstack derives console links at port 6080, where this proxy does not listen.\n" -}}
 {{- end -}}
 {{- if and (eq .Values.deploymentMode "multi-node") .Values.realMode.enabled -}}
 {{-   if not (or (eq .Values.glance.storageMode "rbd") (eq .Values.glance.storageMode "s3")) -}}
@@ -97,7 +117,21 @@ Render the product lightstack.yaml from values. Embedded into a Secret (research
 the binary has no generic lightstack_<SECTION>_<KEY> env layer, so config — including the
 admin password — is carried in the --config file, kept out of plaintext via a Secret).
 */}}
+{{/*
+The noVNC console proxy runs only where it can work: real mode, single node (SPEC-021
+v1). Its token projection and every guest's console socket are node-local, so in
+multi-node one proxy would serve one node and silently fail every other. The binary is
+told the same answer (nova.console_enabled) so it refuses consoles instead of issuing
+URLs that lead nowhere. Renders "true" or nothing.
+*/}}
+{{- define "lightstack.consoleProxyDeployed" -}}
+{{- if and .Values.realMode.enabled .Values.consoleProxy.enabled (ne .Values.deploymentMode "multi-node") -}}true{{- end -}}
+{{- end -}}
+
 {{- define "lightstack.config" -}}
+# The binary's node-local root. Same string as the hostPath mount: libvirtd on the host
+# opens the paths Lightstack writes into the domain XML.
+state_path: {{ .Values.realMode.hostStoragePath | quote }}
 database:
   url: {{ .Values.database.url | quote }}
   max_connections: 50
@@ -117,6 +151,10 @@ nova:
   port: 8774
   libvirt_uri: "qemu:///system"
   libvirt_mode: {{ .Values.nova.libvirtMode | quote }}
+  console_proxy_base_url: {{ .Values.nova.consoleProxyBaseUrl | quote }}
+  console_token_ttl: {{ .Values.nova.consoleTokenTtl | quote }}
+  console_reconcile_interval: {{ .Values.nova.consoleReconcileInterval | quote }}
+  console_enabled: {{ if include "lightstack.consoleProxyDeployed" . }}true{{ else }}false{{ end }}
 neutron:
   port: 9696
   networking_mode: {{ .Values.neutron.networkingMode | quote }}
@@ -174,10 +212,18 @@ nodeSelector:
 initContainers:
   {{- if .Values.realMode.legacyStatePath }}
   # One-time in-place upgrade from a pre-rename install (cloud-storage#575): the
-  # node-local root moved with the product rename, and pkg/paths.Base is a compile-time
-  # constant, so without this the upgraded pod writes to the new root and stops seeing
-  # the image bases, volumes, overlays, cloud-init ISOs and dnsmasq state already on the
-  # node. Subdir list mirrors pkg/paths/paths.go.
+  # default node-local root moved with the product rename, so without this the upgraded
+  # pod writes to the new root and stops seeing the image bases, volumes, overlays,
+  # cloud-init ISOs and dnsmasq state already on the node.
+  #
+  # The copy loop below (`for sub in ...`) is pkg/paths/paths.go minus console-tokens;
+  # init-host-storage further down still CREATES console-tokens — creating is safe,
+  # copying is not. The directory is a projection of console_auth_tokens, never the
+  # store of record (SPEC-021 FR-023b): Lightstack writes an entry when it issues a token
+  # and afterwards only removes entries. A pre-rename node's entries predate the unix-socket
+  # console and map tokens to TCP host:port targets, which libvirt may since have handed to
+  # another guest — the stale-token-to-another-tenant's-guest case the per-start socket
+  # exists to prevent. Losing the projection only stops tokens resolving.
   #
   # Merges file by file. The two roots are separate volumes, so rename() returns EXDEV and
   # every move here is an interruptible copy; an interrupted one leaves a half-populated
@@ -233,6 +279,7 @@ initContainers:
         "{{ .Values.realMode.hostStoragePath }}/instances"
         "{{ .Values.realMode.hostStoragePath }}/cloud-init"
         "{{ .Values.realMode.hostStoragePath }}/dhcp"
+        "{{ .Values.realMode.hostStoragePath }}/console-tokens"
     volumeMounts:
       - name: host-storage
         mountPath: {{ .Values.realMode.hostStoragePath }}

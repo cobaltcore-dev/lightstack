@@ -123,23 +123,24 @@ chart-test:
 	@helm plugin list 2>/dev/null | grep -q '^unittest' || (echo "ERROR: helm-unittest plugin not found. Run 'make install-tools' first." && exit 1)
 	@bash charts/lightstack/ci/run-tests.sh
 	@$(MAKE) --no-print-directory horizon-chart-check
-	@echo "Linting + rendering + unit-testing verification Horizon chart (deployments/horizon-chart)..."
-	@helm lint deployments/horizon-chart
-	@helm template verify deployments/horizon-chart >/dev/null
-	@helm unittest deployments/horizon-chart
+	@echo "Linting + rendering + unit-testing the Horizon chart (charts/horizon)..."
+	@helm lint charts/horizon
+	@helm template verify charts/horizon >/dev/null
+	@helm unittest charts/horizon
 
-# Where horizon-chart-sync writes. Overridden by horizon-chart-check to render into a temp dir.
-HORIZON_CHART_FILES ?= deployments/horizon-chart/files
-
-# Sync the verification Horizon chart's bundled config from the canonical source.
+# Sync the Horizon chart's bundled config from the canonical source.
 # Helm's .Files is scoped to the chart directory (helm package only bundles chart files), so
-# deployments/horizon-chart/files/* MUST be a copy of deployments/horizon-config/* -- it cannot
+# charts/horizon/files/* MUST be a copy of deployments/horizon-config/* -- it cannot
 # reference the sibling dir. Re-run whenever horizon-config/* changes: the 3 apache/config files
 # are copied verbatim; local_settings gets the 3 SPEC-018 env-driven edits (OPENSTACK_HOST,
 # AVAILABLE_REGIONS, MEMCACHED_LOCATION) re-applied so the chart repoints Horizon at the
 # in-cluster lightstack + memcached Services. DEBUG needs no substitution here: local_settings reads it
 # from HORIZON_DEBUG and defaults to False, so the chart is safe by default and only the dev
 # docker-compose file opts into True.
+# Overridable so horizon-chart-check can render into a temp dir and diff without
+# touching the working tree.
+HORIZON_CHART_FILES ?= charts/horizon/files
+
 horizon-chart-sync:
 	@echo "Syncing $(HORIZON_CHART_FILES)/ from deployments/horizon-config/ ..."
 	@mkdir -p $(HORIZON_CHART_FILES)
@@ -149,17 +150,17 @@ horizon-chart-sync:
 	sed -e 's|^OPENSTACK_HOST = "lightstack".*|OPENSTACK_HOST = os.environ.get("OPENSTACK_HOST", "lightstack")|' -e "s|('http://lightstack:35357/v3', 'RegionOne'),|(OPENSTACK_KEYSTONE_URL, 'RegionOne'),|" -e "s|'LOCATION': 'memcached:11211',|'LOCATION': os.environ.get('MEMCACHED_LOCATION', 'memcached:11211'),|" deployments/horizon-config/local_settings > $(HORIZON_CHART_FILES)/local_settings
 	@echo "Synced. Review with: git diff $(HORIZON_CHART_FILES)/"
 
-# Fail if deployments/horizon-chart/files/ is stale relative to deployments/horizon-config/.
+# Fail if charts/horizon/files/ is stale relative to deployments/horizon-config/.
 # Non-destructive on purpose: re-renders into a temp dir and diffs, so it never rewrites the
 # working tree and gives no false failures on a dirty checkout. Run by chart-test (and so by CI).
 horizon-chart-check:
 	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
 		$(MAKE) --no-print-directory horizon-chart-sync HORIZON_CHART_FILES="$$tmp" >/dev/null && \
-		if diff -ru deployments/horizon-chart/files "$$tmp" >/dev/null; then \
+		if diff -ru charts/horizon/files "$$tmp" >/dev/null; then \
 			echo "horizon-chart files/ is in sync with deployments/horizon-config/"; \
 		else \
-			echo "ERROR: deployments/horizon-chart/files/ is stale:"; \
-			diff -ru deployments/horizon-chart/files "$$tmp" || true; \
+			echo "ERROR: charts/horizon/files/ is stale:"; \
+			diff -ru charts/horizon/files "$$tmp" || true; \
 			echo "Run 'make horizon-chart-sync' and commit the result."; \
 			exit 1; \
 		fi
@@ -279,7 +280,7 @@ help:
 	@echo "  test-errors      - Run error handling tests"
 	@echo "  test-horizon-ui  - Run the Horizon create-UI regression probe (requires Lightstack running)"
 	@echo "  chart-test       - Run Helm chart tests (lint + template + unittest; no cluster)"
-	@echo "  horizon-chart-sync - Sync verification Horizon chart files/ from deployments/horizon-config/"
+	@echo "  horizon-chart-sync - Sync charts/horizon files/ from deployments/horizon-config/"
 	@echo "  horizon-chart-check - Fail if that synced copy is stale (non-destructive; run by chart-test)"
 	@echo "  test-all         - Run all test suites"
 	@echo "  clean            - Remove build artifacts"

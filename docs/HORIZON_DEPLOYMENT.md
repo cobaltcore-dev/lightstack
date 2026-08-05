@@ -9,8 +9,8 @@
 This guide provides step-by-step instructions for deploying OpenStack Horizon dashboard with Lightstack as the backend.
 
 > **Scope of compatibility.** Lightstack serves the OpenStack APIs Horizon consumes, and the dashboard is
-> **usable for resource management**: network, volume and instance create work from the UI (#532, #533).
-> The noVNC console still fails UI-side (F1, #534), and a few other gaps remain. See the
+> **usable for resource management**: network, volume and instance create work from the UI (#532, #533),
+> and the noVNC console works in real mode (#534). A few other gaps remain. See the
 > [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18) before
 > relying on any UI workflow below.
 
@@ -71,9 +71,10 @@ SESSION_COOKIE_SECURE = False  # Set True with HTTPS in production
 CSRF_COOKIE_SECURE = False     # Set True with HTTPS in production
 
 # Console Access Configuration
-# Required by Horizon, but the noVNC console does not work against Lightstack (finding F1) --
-# see "Console Access" under Configuration below. The serial log (console log show) does work.
-CONSOLE_TYPE = 'novnc'
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 
 # Regional Settings
 OPENSTACK_KEYSTONE_REGION_NAME = "RegionOne"
@@ -150,8 +151,6 @@ services:
       - horizon-logs:/var/log/kolla/horizon:rw
     networks:
       - lightstack-network
-    depends_on:
-      - novnc
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/dashboard/auth/login/"]
@@ -159,27 +158,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-
-  # noVNC console client on a fixed tag (replaces the unmaintained dougw/novnc). Its entrypoint runs
-  # novnc_proxy against VNC_SERVER, so a target is required -- but Lightstack exposes no reachable
-  # guest VNC (finding F1), so VNC_SERVER below is a dead placeholder and the console fails on
-  # connect. The container is kept so the deployment matches the one that was verified.
-  novnc:
-    image: bonigarcia/novnc:1.3.0
-    container_name: lightstack-novnc
-    hostname: novnc
-    ports:
-      - "6080:6080"
-    environment:
-      - VNC_SERVER=127.0.0.1:5900
-    networks:
-      - lightstack-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6080"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
 networks:
   lightstack-network:
@@ -326,17 +304,18 @@ Horizon resolves Lightstack services using the `OPENSTACK_HOST` setting. Options
 
 ### Console Access
 
-> **Known gap (F1): the noVNC console does not work.** Lightstack returns a synthetic
-> `http://localhost:6080` console URL with an unpersisted token and a fabricated VNC port that is never
-> read back from libvirt, and the proxy is unwired — so the Console tab shows *"Unable to load Console"*.
-> The setting below is kept because Horizon requires it, not because the console functions.
-> Use `openstack console log show <server>` (the serial log), which does work. See
-> [F1 in the compatibility report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
-
-VNC console requires noVNC proxy. Configuration:
+The console proxy belongs to Lightstack, not to this Horizon deployment. Horizon only iframes the URL
+Nova returns; in real mode that URL points at the proxy Lightstack deploys with itself (the chart's
+`consoleProxy`, or the deploy scripts' `novnc` service), so nothing here runs one. Against a stub-mode
+Lightstack the Console tab reports the console unavailable, which is correct: stub mode has no guest,
+and the API refuses with `501`. Multi-node deploys no proxy in v1, and the API refuses with `400`
+(SPEC-021). Horizon needs only:
 
 ```python
-CONSOLE_TYPE = 'novnc'
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 ```
 
 ## Verification
@@ -377,11 +356,13 @@ Test key Horizon features:
 # - Navigate to Network > Network Topology
 # - Verify topology visualization loads
 
-# VNC Console -- EXPECTED TO FAIL (finding F1, see the compatibility report)
+# VNC Console (SPEC-021 -- finding F1 is fixed)
 # - Launch or select an existing instance
 # - Click instance name > Console tab
-# - Expect "Unable to load Console" / "Console currently not available"
-# - For working console output use the serial log instead:
+# - Real mode, single node: the guest's framebuffer, taking keyboard input
+# - Stub mode or multi-node: "Console currently not available" is expected --
+#   stub has no guest, multi-node deploys no console proxy in v1
+# - The serial log works in every mode:
 #     openstack console log show <server>
 
 # Volume Management
@@ -489,15 +470,18 @@ docker exec lightstack-horizon ping -c 3 lightstack
 
 ### VNC Console Issues
 
-**Symptom**: Console tab shows "Unable to load Console" / "Unable to connect"
+**Symptom**: Console tab shows "unavailable" / "Unable to load Console" / "Unable to connect"
 
-This is **finding F1**, a known Lightstack gap — not a misconfiguration of your deployment. The console URL
-Lightstack returns points at `localhost` with an unpersisted token and a fabricated VNC port, and the noVNC
-proxy is not wired to libvirt, so the browser never reaches a guest. Wiring a real console (token store +
-libvirt VNC-port readback + a real proxy + a configurable URL) is tracked as a follow-up in the
-[compatibility report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
+- **Stub mode, or multi-node**: expected. There is no guest (stub, `501`) or no proxy (multi-node,
+  `400 Unavailable console type novnc`), and the tab says so.
+- **Real mode, single node**: run `openstack console url show <server>` first. An error names the cause
+  (`409` not running, `500` with the reason in Lightstack's log); a URL means the rest is between the
+  browser and the proxy — its log shows `connecting to unix socket: …` for a token it resolved. The
+  step-by-step checks are in `docs/specs/021-real-novnc-console/quickstart.md`.
+- `CONSOLE_TYPE` must be `'VNC'`: `'novnc'` is not a Horizon `CONSOLES` key and fails before Nova is
+  ever called.
 
-**Workaround** — the serial console log works:
+**Fallback** — the serial console log works in every mode:
 
 ```bash
 openstack console log show test-vm

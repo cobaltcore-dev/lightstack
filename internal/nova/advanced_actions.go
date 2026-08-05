@@ -45,6 +45,12 @@ func (svc *Service) SuspendInstance(c *gin.Context) {
 		return
 	}
 
+	// Suspending takes the guest's console away, so outstanding links must not
+	// survive it (SPEC-021 FR-014).
+	if !svc.revokeConsoleTokens(c, instanceID, "instance suspended") {
+		return
+	}
+
 	// Update status to SUSPENDED
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE instances
@@ -112,6 +118,12 @@ func (svc *Service) ResumeInstance(c *gin.Context) {
 		return
 	}
 
+	// Resuming can bring the guest back on a different console socket than it had
+	// before (SPEC-021 FR-014).
+	if !svc.revokeConsoleTokens(c, instanceID, "instance resumed") {
+		return
+	}
+
 	// Update status to ACTIVE
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE instances
@@ -176,6 +188,12 @@ func (svc *Service) ShelveInstance(c *gin.Context) {
 	// Can only shelve an active or stopped instance
 	if status != "ACTIVE" && status != "SHUTOFF" {
 		common.SendError(c, common.NewInvalidStateError(fmt.Sprintf("cannot shelve instance in %s state", status)))
+		return
+	}
+
+	// Shelving stops the guest and takes its console away, so outstanding links
+	// must not survive it (SPEC-021 FR-014).
+	if !svc.revokeConsoleTokens(c, instanceID, "instance shelved") {
 		return
 	}
 

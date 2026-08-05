@@ -1,0 +1,342 @@
+# helm-unittest specs for the noVNC console proxy (SPEC-021 / cloud-storage#534,
+# finding F1). These pin contracts/proxy-deployment.md.
+#
+# Every assertion here guards a failure that is SILENT in a live cluster:
+#   * the image's default entrypoint "works" but proxies to a dead placeholder;
+#   * a missing --idle-timeout leaves it at 0 (disabled), so an abandoned tab
+#     holds a guest console open forever;
+#   * an added --host-token lets a client pick the target instead of the token;
+#   * without libvirt's domain directory mounted, every token names a socket the
+#     proxy cannot see, and without DAC_OVERRIDE it cannot connect to one it can;
+#   * without podAffinity it can land on a node with an empty token directory
+#     and refuse every token — indistinguishable from a token bug.
+suite: noVNC console proxy
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+tests:
+  - it: is not deployed in stub mode — there is no guest to display
+    template: templates/console-proxy.yaml
+    set:
+      realMode.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: is not deployed when explicitly disabled
+    template: templates/console-proxy.yaml
+    set:
+      realMode.enabled: true
+      consoleProxy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: is not deployed in multi-node — its projection and the guest sockets are node-local
+    # One proxy would serve one node and silently fail every other: tokens issued
+    # there are projected there, and each guest's console socket lives on its node.
+    template: templates/console-proxy.yaml
+    set:
+      realMode.enabled: true
+      deploymentMode: multi-node
+      glance.storageMode: rbd
+      cinder.storageMode: rbd
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: overrides the image entrypoint to run websockify with a file-based token plugin
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command[0]
+          value: /bin/sh
+      # TokenFile, never ReadOnlyTokenFile: the read-only variant caches targets
+      # on first use and would keep serving revoked tokens.
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--token-plugin TokenFile"
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "ReadOnlyTokenFile"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--web /root/noVNC"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--token-source /var/lib/lightstack/console-tokens"
+      # novnc_proxy is the image default: one fixed --vnc target, no tokens. That
+      # is precisely the F1 bug.
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "novnc_proxy"
+
+  - it: pulls the image by the verified digest, not the mutable tag
+    # contracts/proxy-deployment.md records what was verified against this digest
+    # (TokenFile, the client page names, the absent python modules); a retag of 1.3.0
+    # would change all of it with no chart change. Digest only, never tag@digest:
+    # Podman and skopeo reject a reference that carries both.
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: bonigarcia/novnc@sha256:a5be468dc8967a55ffe870e809fa36dbbfc19b67d8156c1e7cb2d26aaa4f32c2
+
+  - it: pulls by tag once the digest is cleared
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+      consoleProxy.image.digest: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: bonigarcia/novnc:1.3.0
+
+  - it: sets a non-zero idle timeout so abandoned tabs release the guest console
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--idle-timeout 300"
+
+  - it: never passes --host-token, which would let a client choose the target
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--host-token"
+
+  - it: answers on the node's own address, the origin Lightstack derives when none is set
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
+
+  - it: is pinned to the Lightstack pod's node by required pod affinity, not a nodeSelector
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.template.spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels["app.kubernetes.io/name"]
+          value: lightstack
+      # A preferred rule would schedule anyway and then fail every token.
+      - notExists:
+          path: spec.template.spec.affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution
+
+  - it: mounts the token projection read-only — the proxy resolves, never mints
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          value: /var/lib/lightstack
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].readOnly
+          value: true
+      - equal:
+          path: spec.template.spec.volumes[0].hostPath.path
+          value: /var/lib/lightstack
+
+  - it: mounts libvirt's domain directories read-only at the path libvirt reports
+    # The guest console is a unix socket libvirt creates per start under
+    # <libvirtDomainDir>/domain-<id>-<name>/vnc.sock, and the token names that exact
+    # path, so the proxy must see it at the same place. Directory, not
+    # DirectoryOrCreate: a real-mode node without libvirt should fail loudly here.
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: libvirt-domains
+            mountPath: /var/lib/libvirt/qemu
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: libvirt-domains
+            hostPath:
+              path: /var/lib/libvirt/qemu
+              type: Directory
+
+  - it: keeps DAC_OVERRIDE and nothing else, so root can connect to a qemu-owned socket
+    # connect() on a unix socket needs write permission on it, and the socket is
+    # libvirt-qemu's, in a 0750 directory. Root with every capability dropped is just
+    # "other" there. DAC_OVERRIDE is the host-independent fix; the kvm gid differs
+    # between distributions.
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+          value: ["DAC_OVERRIDE"]
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          value: ["ALL"]
+
+  - it: does not carry the main lightstack selector, so the API Service cannot adopt it
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      # Caught live on k3s: with app.kubernetes.io/name=lightstack on the pod template, the
+      # lightstack Service selected the console proxy and Keystone/Nova traffic was routed
+      # to noVNC. The main Service selects on name+instance ALONE — a component
+      # label does not narrow it — so the name must differ.
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: lightstack-console-proxy
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/name"]
+          value: lightstack-console-proxy
+      # But the affinity must still target the MAIN pod, which does carry name=lightstack.
+      - equal:
+          path: spec.template.spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels["app.kubernetes.io/name"]
+          value: lightstack
+
+  - it: its Service selects only the proxy, never the API pods
+    template: templates/console-proxy.yaml
+    documentIndex: 1
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.selector["app.kubernetes.io/name"]
+          value: lightstack-console-proxy
+
+  - it: runs a single replica because the token projection is node-local
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: exposes the console port via the service
+    template: templates/console-proxy.yaml
+    documentIndex: 1
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: kind
+          value: Service
+      - equal:
+          path: spec.ports[0].port
+          value: 6080
+      - equal:
+          path: spec.ports[0].nodePort
+          value: 30680
+
+  - it: pre-creates the console-tokens subdirectory before lightstack starts
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: "/var/lib/lightstack/console-tokens"
+
+  - it: renders the console settings into lightstack.yaml
+    template: templates/secret.yaml
+    set:
+      realMode.enabled: true
+      nova.consoleProxyBaseUrl: http://10.2.199.101:30680
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'console_proxy_base_url: "http://10\.2\.199\.101:30680"'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'console_token_ttl: "10m"'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'console_reconcile_interval: "30s"'
+
+  # A tcpSocket probe reports healthy on a wedged websockify: the kernel completes the
+  # handshake from the listen backlog whether or not the process ever calls accept().
+  # Verified by freezing the pinned image — tcpSocket succeeded while httpGet timed out.
+  # So the probe type is a correctness property, not a style choice, and it is pinned.
+  - it: probes the served client page over HTTP, never a bare TCP socket
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /vnc_lite.html
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /vnc_lite.html
+      - notExists:
+          path: spec.template.spec.containers[0].readinessProbe.tcpSocket
+      - notExists:
+          path: spec.template.spec.containers[0].livenessProbe.tcpSocket
+
+  # Restarting the proxy kills every console session on the node, so liveness must be
+  # strictly more forgiving than readiness: a transient stall drops it from the Service
+  # first, and only a sustained failure restarts it.
+  - it: gives liveness a longer failure budget than readiness
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.failureThreshold
+          value: 3
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.failureThreshold
+          value: 6
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.periodSeconds
+          value: 20
+
+  - it: allows either probe to be disabled independently
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+      consoleProxy.probes.liveness.enabled: false
+    asserts:
+      - exists:
+          path: spec.template.spec.containers[0].readinessProbe
+      - notExists:
+          path: spec.template.spec.containers[0].livenessProbe

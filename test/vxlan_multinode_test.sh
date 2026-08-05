@@ -219,7 +219,7 @@ test_vni_allocation() {
     log_info "Testing VNI allocation..."
 
     # Authenticate
-    TOKEN=$(curl -s -X POST http://localhost:35357/v3/auth/tokens \
+    TOKEN=$(curl -i -s -X POST http://localhost:35357/v3/auth/tokens \
         -H "Content-Type: application/json" \
         -d '{
             "auth": {
@@ -240,7 +240,7 @@ test_vni_allocation() {
                     }
                 }
             }
-        }' | jq -r '.token.token' 2>/dev/null)
+        }' | grep -i '^X-Subject-Token:' | awk '{print $2}' | tr -d '\r')
 
     if [ -z "$TOKEN" ] || [ "$TOKEN" == "null" ]; then
         log_error "Failed to get auth token"
@@ -291,7 +291,7 @@ test_fdb_sync() {
     log_info "Testing FDB synchronization..."
 
     # Authenticate
-    TOKEN=$(curl -s -X POST http://localhost:35357/v3/auth/tokens \
+    TOKEN=$(curl -i -s -X POST http://localhost:35357/v3/auth/tokens \
         -H "Content-Type: application/json" \
         -d '{
             "auth": {
@@ -312,7 +312,7 @@ test_fdb_sync() {
                     }
                 }
             }
-        }' | jq -r '.token.token' 2>/dev/null)
+        }' | grep -i '^X-Subject-Token:' | awk '{print $2}' | tr -d '\r')
 
     # Get network ID
     NETWORK_ID=$(psql -U lightstack -d lightstack -tAc "SELECT id FROM networks WHERE name = 'test-vxlan-network' LIMIT 1;")

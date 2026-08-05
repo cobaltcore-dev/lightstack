@@ -13,9 +13,9 @@ management.** Create a network with a subnet, create a volume, and launch an ins
 dashboard, verified in stub **and** real mode; the launched VM reaches ACTIVE on a real libvirt domain
 booting from a Ceph-RGW image, and a key pair created in Horizon lets you **`ssh`** into it. Read/list panels
 render, the Overview limits widget loads, networks list once, and image delete works. Project switching, long
-recorded as `partial`, is **working** — demonstrated 2026-09-22 once a second project was seeded. **One #482
-finding remains open: F1**, the noVNC console (#534). Lightstack's API/CLI worked for every workflow
-exercised, except F6 (fixed by #532) and the open F10 and F13.
+recorded as `partial`, is **working** — demonstrated 2026-09-22 once a second project was seeded. **All nine
+original #482 findings are now closed**: F1, the noVNC console, was fixed in #534 (SPEC-021). Lightstack's
+API/CLI worked for every workflow exercised, except F6 (fixed by #532) and the open F10 and F13.
 
 > **What this verdict was, and why it changed.** As originally written (2026-07-23) it read: *"the Horizon
 > dashboard is **not** usable for resource management … every create/write workflow is broken … Lightstack is
@@ -59,6 +59,8 @@ where several were first filed, was closed as superseded); the 2026-09-22 re-tes
 >
 > **This changes the report's headline verdict**: with F1 (#534, noVNC) the only remaining #482 finding, the
 > dashboard *is* usable for resource management. See the revised Verdict and Conclusion.
+>
+> **Updated 2026-07-31**: F1 is fixed too (SPEC-021 / #534), so **no #482 finding remains open**.
 >
 > **The "one shared root" hypothesis in F8 was wrong.** F2/F3 were the predicted quota-metadata root; **F8's
 > actual root was a Cinder route-registration bug** and **F7's were three response-shape/request-parsing
@@ -124,7 +126,7 @@ container reports unhealthy — irrelevant, the console is not-exercised in stub
 | 3 | Create network | ✅ **working** (#533) | ✅ **working** (#533) | **F3+F4 reproduced in real (2026-07-23)**: Project → Network → Networks had **no Create button** (only Admin did); an Admin-created net listed **twice** in Project — root-caused 2026-09-22 to `ListNetworks` ignoring the `shared` filter, fixed by #532 (see F4). F3's missing button root-caused 2026-08-25 to the same `reserved` gap as F2. **#533 (2026-07-29): FIXED** — Create Network present on the Project panel; `ui-net` + `ui-sub` created through the dialog and listed once, stub and real. | F3, F4 |
 | 4 | Create volume | ✅ **working** (#533) | ✅ **working** (#533) | Real (2026-07-23): volumev3 catalog is **clean** (`lightstack-lightstack:8776`) and CLI `volume create` → `available` — Cinder API works and F5's stub `localhost:8776` is **not** on Horizon's v3 path. Empty panel renders; **Create Volume button opens no dialog** (F8, create-UI cluster, not the endpoint). And once a volume exists the panel **500s** (`TemplateSyntaxError` in `get_rows`) → **F9**. **#533 (2026-07-29): FIXED** — the dialog opens (root was the cinder `groups/detail` route, not metadata) and `ui-vol` reaches `available`, backed by a real qcow2 under `/var/lib/lightstack/volumes`. | F5, F8, F9 |
 | 5 | Launch instance (+SSH) | ✅ **working** (#533) | ✅ **working via the UI** (#533) | Real (2026-07-23): UI wizard can't select a network (F7 — root-caused to F4's duplicate `id` plus three response-shape defects). But CLI `server create` → **ACTIVE**, `power_state Running`, real **libvirt VM booted from the RGW image**, `addresses=test-net=10.0.0.77`, `key_name`+`security_groups` present. Real compute + RGW-image boot **proven**; **`ssh cirros@10.0.0.77` succeeds** (`uid=1000` — cloud-init key injection + default-SG tcp/22 + reachable fixed IP all work). Console → T7. **#533 (2026-07-29): FIXED via the UI** — `ui-vm` launched from the wizard reaches **ACTIVE** on a real libvirt domain with an address on `spec020-net`; and with a key pair created **in Horizon**, `ssh cirros@<ip>` returns `uid=1000`. | F7 |
-| 6 | Instance console (noVNC) | not-exercised | noVNC **not working** (F1) / serial log **works** | Real (2026-07-23): `console log show vm1` returns real cirros boot + EC2 metadata + `vm1 login:` (serial console **works**). noVNC Console **tab** → **"Unable to load Console" + "Console currently not available"** (F1 confirmed — no guest). | F1 |
+| 6 | Instance console (noVNC) | not-exercised | **works** (after #534) — serial log **works** | Real (2026-07-23): `console log show vm1` returns real cirros boot + EC2 metadata + `vm1 login:` (serial console **works**). noVNC Console **tab** → "Unable to load Console" (F1 confirmed — no guest). **Re-verified after #534/SPEC-021: the Console tab renders the live guest framebuffer and accepts keyboard input.** | F1 ✅ |
 
 _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pending._
 
@@ -139,7 +141,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 
 ## Findings
 
-### F1 — noVNC console shows no guest (major) — _confirmed real 2026-07-23; re-confirmed 2026-09-22_
+### F1 — noVNC console shows no guest (major) — _confirmed real 2026-07-23; re-confirmed 2026-09-22_ — ✅ **FIXED (SPEC-021 / #534, 2026-07-31)**
 - **Cause**: synthetic `http://localhost:6080` console URL + a random, unpersisted token + a
   fabricated VNC port (never read from libvirt) + an unwired noVNC proxy (`internal/nova/console.go`;
   `research.md` U1).
@@ -147,12 +149,47 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   "Console currently not available"** — the returned URL points at `localhost`, so the browser never
   reaches the proxy at all. The serial Console Log works (verified real: real cirros boot output +
   `vm1 login:`).
-- **Re-confirmed (2026-09-22, real)**: unchanged at the API level —
-  `POST /v2.1/servers/<id>/remote-consoles` (`compute 2.6`) returns
-  `{"url": "http://localhost:6080/vnc_auto.html?token=<random>"}`, i.e. still the synthetic `localhost`
-  URL with an unpersisted token.
-- **Workaround**: `openstack console log show <server>`.
-- **Follow-up**: wire real noVNC (token store + libvirt VNC-port readback + real proxy + configurable URL).
+- **Re-confirmed (2026-09-22, real)**: still reproduced at the API level on the `feature/482`/`feature/532`
+  base, which predates this branch — `POST /v2.1/servers/<id>/remote-consoles` (`compute 2.6`) returned
+  `{"url": "http://localhost:6080/vnc_auto.html?token=<random>"}`, i.e. the synthetic `localhost` URL with an
+  unpersisted token. Fixed here; see below.
+- **Fix**: all four causes, plus one the ticket did not name.
+  - **The relay is not written, it is configured.** The noVNC image already pinned in the verification
+    stacks bundles websockify and its token plugins; a command override turns it into a real
+    token-resolving proxy serving both the client page and the WebSocket relay. Verified before
+    committing to the design: a good token yields `101 Switching Protocols` and `connecting to: …`, a
+    bad one is closed with no response and no guest contacted. Lightstack gained **no** relay code and **no**
+    new Go dependency. It ships in `charts/lightstack` as `consoleProxy`.
+  - **Real console**: the guest's VNC unix socket, read from libvirt per request via
+    `DomainGetXMLDesc(dom, 0)` — flags `0`, the *running* definition, because the inactive one carries no
+    socket path yet. Never cached: libvirt creates a new socket on every start.
+  - **Real token**: persisted in `console_auth_tokens` (migration 065) and projected into
+    `/var/lib/lightstack/console-tokens/` for the proxy to read. Expiry is enforced by *deleting* that entry —
+    websockify performs no expiry check — so a reconciler sweep is the mechanism, not housekeeping.
+  - **Configurable URL**: `nova.console_proxy_base_url`, an **origin** only. This setting appeared in
+    four operator guides for years while the binary ignored it entirely; their example values also named
+    `vnc_auto.html`, a page that does not exist in noVNC 1.6.0.
+  - **Not in the ticket, found while designing and in review**: the guest VNC listened on `0.0.0.0`, so the
+    token was bypassable by anything that could reach the node. And a token that froze a TCP port could,
+    after that port was freed and handed to the next guest, reach a **different tenant's** guest — which
+    revoking on stop/start alone cannot prevent, because a guest can power itself off without any API call.
+    The console is now a per-start unix socket with no TCP listener: the proxy is the only route in, and a
+    stale link names a path that no longer exists. Lifecycle operations still revoke, and a reconciler sweep
+    revokes links whose guest stopped outside the API. `sharePolicy='force-shared'` additionally stops a
+    second viewer evicting the first.
+  - **A second, independent blocker, found only by fixing the first.** Lightstack's own Horizon config set
+    `CONSOLE_TYPE = 'novnc'`. Horizon dispatches on that through `CONSOLES` in
+    `project/instances/console.py`, whose keys are `AUTO`/`VNC`/`SPICE`/`RDP`/`SERIAL`/`MKS` — so
+    `CONSOLES['novnc']` raised `KeyError`, became `NotAvailable`, and the tab reported *"Console is
+    currently unavailable"* **without ever calling Nova**. With the backend broken too, the two failures
+    were indistinguishable; repairing the backend simply moved the error up a layer. Now `'VNC'`.
+    The same block also carried `NOVNC_PROXY_URL` and `CONSOLE_TYPES`, which **no upstream Horizon code
+    reads** — invented settings that looked authoritative, with `NOVNC_PROXY_URL` still pointing at
+    `localhost:6080`. Both removed.
+- **Honest limits**: effective token validity is `TTL + reconcile interval` (10m30s at the defaults),
+  not exactly 10m. Multi-node console is out of scope for v1. SPICE, RDP and interactive serial consoles
+  are refused with a clear error rather than a fabricated URL.
+- **Workaround (no longer needed, still supported)**: `openstack console log show <server>`.
 - **Tracked**: [cloud-storage#534](https://github.com/cobaltcore-dev/cloud-storage/issues/534)
 
 ### F2 — Project Overview: "Unable to retrieve limits information" (medium) — _stub + real_ — ✅ **FIXED (SPEC-020 / #533, 2026-07-29)**
@@ -470,9 +507,10 @@ was no drift to inherit); **F16** was a limitation of the F7 fix and is fixed.
   non-UUID `domain_id`.
 
 ### F14 — `local_settings` drift between the compose config and the Helm chart (medium) — _real_ — ✅ **FIXED in-pass**
-- **Cause**: `deployments/horizon-chart/files/local_settings` is **generated** from
+- **Cause**: `charts/horizon/files/local_settings` is **generated** from
   `deployments/horizon-config/local_settings` by `make horizon-chart-sync`, and **real mode reads the chart
-  copy**. A hand-edit to the compose copy left the two disagreeing.
+  copy**. A hand-edit to the compose copy left the two disagreeing. (The chart copy sat at
+  `deployments/horizon-chart/files/local_settings` when this was found; #534 relocated it.)
 - **Symptom**: with the chart still carrying `CSRF_COOKIE_HTTPONLY = True`, Project → Compute → Key Pairs →
   **Delete Key Pair** silently did nothing. Django logged `Forbidden (CSRF token missing.)`; Lightstack never saw the
   request. Access-log tell: a **`200` with a non-empty body** on a `DELETE` where success is `204` empty.
@@ -589,8 +627,8 @@ from a Ceph-RGW image**, attached it to real Neutron networking with a reachable
 real **serial console** — SSH login succeeded (`uid=1000(cirros)`). Volume and server creation succeed via
 CLI. This is the exact backend chain the stub pass could not exercise, and it passed.
 
-**What doesn't (as of 2026-07-29).** Of the #482 findings, **F1 only** — the noVNC console tab shows no guest
-(#534). The serial console works, so this is the console *plumbing*, not compute. Outside that set, the #533
+**What doesn't (as of 2026-07-31).** Of the #482 findings, **none** — F1, the noVNC console, was the last one
+open and is fixed by #534 (SPEC-021): the Console tab renders the live guest. Outside that set, the #533
 pass's own **F10–F13 and F15** stay open, as does **F18** (domain-scoped tokens, #549); **F17** — Horizon's
 security-group proxy 500-ing because the list omits `security_group_rules` — is fixed here, as root 2 of F7.
 
@@ -615,9 +653,10 @@ should treat it as a starting hypothesis, not a finding.
 **Answer to #482.** Lightstack is a drop-in for the OpenStack API/CLI — the open F10 (real-mode port create)
 and F13 (project create with a non-UUID `domain_id`) aside — **and, after #532 and #533, the Horizon
 dashboard is usable for UI-driven resource management** — create a network, create a volume, launch an
-instance, then SSH into it, all from the dashboard, in stub and real mode. The remaining gaps are the noVNC
-console (F1 / #534), the pre-existing defects F10, F11, F13 and F15, F12 (no EC2-credential UI, by design),
-and F18 (domain-scoped tokens).
+instance, then SSH into it, all from the dashboard, in stub and real mode — and, after #534, watch it boot on
+the Console tab. **All nine original #482 findings are closed.** The remaining gaps are the pre-existing
+defects F10, F11, F13 and F15, which this verification surfaced but did not cause, F12 (no EC2-credential UI,
+by design), and F18 (domain-scoped tokens, #549).
 
 This does not rehabilitate the prior `HORIZON_FULL_COMPATIBILITY_REPORT.md` **"100% compatible / 342
 endpoints"** claim. That claim was never grounded in a browser-level check, and the eighteen findings in this
@@ -644,8 +683,11 @@ were first filed, was closed as superseded). F16, filed there for #547, is fixed
   too — F14 explains why one of them appeared not to.)*
 - ✅ **F17 — DONE with the same change** (`ListSecurityGroups` emits `security_group_rules`), which is why the
   2026-09-22 re-test found it open on the base and fixed on this branch.
-- **F1 (open — #534)** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy +
-  configurable URL).
+- **F1 (FIXED — #534 / SPEC-021)** — a real noVNC console: persisted+revocable token store, libvirt VNC-socket
+  readback per request, a token-resolving proxy built by configuring the already-pinned noVNC image rather than
+  writing a relay, and a configurable origin. Also closed two things the ticket did not name — the guest VNC
+  listened on `0.0.0.0` (token bypassable) and console-port reuse could point a stale token at another tenant's
+  guest; both are gone with the move to per-start unix sockets.
 - **F10, F11, F12, F13, F15 (open)** — pre-existing, surfaced by the #533 pass; see *Findings from the #533
   pass*. **F13** (`POST /v3/projects` 500 on a non-UUID `domain_id`) is the highest value: it is the Identity
   panel's own create-project path.

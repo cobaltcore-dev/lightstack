@@ -22,10 +22,10 @@ echo ""
 
 # Get authentication token
 echo "Authenticating..."
-TOKEN=$(curl -s -X POST "http://localhost:35357/v3/auth/tokens" \
+TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
     -H "Content-Type: application/json" \
     -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"admin","password":"secret","domain":{"name":"Default"}}}},"scope":{"project":{"name":"default","domain":{"name":"Default"}}}}}' \
-    | jq -r '.token.token')
+    | grep -i '^X-Subject-Token:' | awk '{print $2}' | tr -d '\r')
 
 if [ -z "$TOKEN" ]; then
     echo -e "${RED}Failed to get authentication token${NC}"
@@ -152,10 +152,13 @@ for i in $(seq 1 $TOTAL_REQUESTS); do
         -X GET "http://localhost:8774/v2.1/servers" \
         -H "X-Auth-Token: $TOKEN")
 
+    # $((X+1)), not ((X++)): with set -e, ((X++)) post-increments and yields the OLD
+    # value, so the very first increment from 0 evaluates to 0, which bash treats as a
+    # failed command and the script dies mid-loop. That killed Test 4 every run.
     if [ "$HTTP_CODE" = "200" ]; then
-        ((SUCCESS_COUNT++))
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
     else
-        ((ERROR_COUNT++))
+        ERROR_COUNT=$((ERROR_COUNT + 1))
     fi
 
     # Progress indicator every 20 requests

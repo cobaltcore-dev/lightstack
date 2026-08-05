@@ -2,24 +2,32 @@ package common
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Database DatabaseConfig `yaml:"database"`
-	Compute  ComputeConfig  `yaml:"compute"`
-	Keystone KeystoneConfig `yaml:"keystone"`
-	Nova     NovaConfig     `yaml:"nova"`
-	Neutron  NeutronConfig  `yaml:"neutron"`
-	Cinder   CinderConfig   `yaml:"cinder"`
-	Glance   GlanceConfig   `yaml:"glance"`
-	Metadata MetadataConfig `yaml:"metadata"`
-	Logging  LoggingConfig  `yaml:"logging"`
-	Cache    CacheConfig    `yaml:"cache"`
-	Server   ServerConfig   `yaml:"server"`
+	// StatePath is the node-local root for per-node state (pkg/paths): image bases,
+	// volumes, instance overlays, cloud-init ISOs, DHCP state and console tokens.
+	// Empty means /var/lib/lightstack; the chart sets it from realMode.hostStoragePath.
+	StatePath string         `yaml:"state_path"`
+	Database  DatabaseConfig `yaml:"database"`
+	Compute   ComputeConfig  `yaml:"compute"`
+	Keystone  KeystoneConfig `yaml:"keystone"`
+	Nova      NovaConfig     `yaml:"nova"`
+	Neutron   NeutronConfig  `yaml:"neutron"`
+	Cinder    CinderConfig   `yaml:"cinder"`
+	Glance    GlanceConfig   `yaml:"glance"`
+	Metadata  MetadataConfig `yaml:"metadata"`
+	Logging   LoggingConfig  `yaml:"logging"`
+	Cache     CacheConfig    `yaml:"cache"`
+	Server    ServerConfig   `yaml:"server"`
 }
 
 type ServerConfig struct {
@@ -62,7 +70,42 @@ type NovaConfig struct {
 	LibvirtURI    string `yaml:"libvirt_uri"`
 	DefaultFlavor string `yaml:"default_flavor"`
 	LibvirtMode   string `yaml:"libvirt_mode"` // "stub" or "real"
+
+	// ConsoleProxyBaseURL is the browser-reachable ORIGIN of the console proxy
+	// ("scheme://host:port"), never a full page URL: the client page and the
+	// ?path=%3Ftoken%3D query are appended in code so they cannot drift from the
+	// deployed noVNC/websockify version (SPEC-021 FR-020). Empty means "derive
+	// from the same endpoint settings as the rest of the catalog" (FR-021).
+	// Anything but an origin fails LoadConfig (validateConsoleProxyBaseURL).
+	ConsoleProxyBaseURL string `yaml:"console_proxy_base_url"`
+	// ConsoleTokenTTL bounds how long an issued console link stays usable
+	// (FR-010). Note the effective ceiling is TTL + ConsoleReconcileInterval:
+	// the proxy performs no expiry check of its own, so a token dies when Lightstack
+	// removes its projection entry, not at the instant it expires.
+	ConsoleTokenTTL time.Duration `yaml:"console_token_ttl"`
+	// ConsoleReconcileInterval is how often expired console tokens are reaped
+	// from the database and the projection directory (FR-016). This is what
+	// actually enforces expiry — see ConsoleTokenTTL.
+	ConsoleReconcileInterval time.Duration `yaml:"console_reconcile_interval"`
+	// ConsoleEnabled says whether a console proxy is deployed at all. Unset means
+	// yes — the deploy scripts run one and never set it. The chart renders false
+	// wherever it deploys none (multi-node, where v1 has none, or
+	// consoleProxy.enabled=false), so the API refuses instead of issuing a URL that
+	// leads nowhere. A pointer, because a plain bool cannot tell unset from false.
+	ConsoleEnabled *bool `yaml:"console_enabled"`
 }
+
+// ConsolesEnabled reports whether a console proxy is deployed; unset means yes.
+func (n NovaConfig) ConsolesEnabled() bool {
+	return n.ConsoleEnabled == nil || *n.ConsoleEnabled
+}
+
+// Console defaults (SPEC-021). Applied by LoadConfig when the file omits them,
+// so a deployment that never heard of the console still expires tokens.
+const (
+	DefaultConsoleTokenTTL          = 10 * time.Minute
+	DefaultConsoleReconcileInterval = 30 * time.Second
+)
 
 type NeutronConfig struct {
 	Port                     int           `yaml:"port"`
@@ -194,10 +237,69 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
+	// Console defaults (SPEC-021). A zero TTL would mean "already expired" and a
+	// zero interval would disable the reaper entirely — since the proxy never
+	// checks expiry itself, that would leave tokens valid forever. Default rather
+	// than trust the file to mention them.
+	if cfg.Nova.ConsoleTokenTTL <= 0 {
+		cfg.Nova.ConsoleTokenTTL = DefaultConsoleTokenTTL
+	}
+	if cfg.Nova.ConsoleReconcileInterval <= 0 {
+		cfg.Nova.ConsoleReconcileInterval = DefaultConsoleReconcileInterval
+	}
+	if err := validateConsoleProxyBaseURL(cfg.Nova.ConsoleProxyBaseURL); err != nil {
+		return nil, err
+	}
+	statePath, err := resolveStatePath(cfg.StatePath)
+	if err != nil {
+		return nil, err
+	}
+	cfg.StatePath = statePath
+
 	// Warn if using default JWT secret
 	if cfg.Keystone.JWTSecret == "change-me-in-production" {
 		fmt.Fprintln(os.Stderr, "WARNING: Using default JWT secret! Set LIGHTSTACK_JWT_SECRET environment variable in production.")
 	}
 
 	return &cfg, nil
+}
+
+// resolveStatePath defaults and validates the node-local root (pkg/paths). It must be
+// absolute: libvirtd on the host opens the paths Lightstack writes into the domain XML,
+// so Lightstack and the host must read the same string. "/" is refused because cleanup
+// purges the per-service subdirectories directly under the root.
+func resolveStatePath(p string) (string, error) {
+	if p == "" {
+		return paths.DefaultBase, nil
+	}
+	clean := filepath.Clean(p)
+	if !filepath.IsAbs(clean) || clean == "/" {
+		return "", fmt.Errorf("state_path %q must be an absolute directory other than /", p)
+	}
+	return clean, nil
+}
+
+// validateConsoleProxyBaseURL refuses anything but an origin (SPEC-021 FR-020).
+// Lightstack appends the client page and the token query itself, so a path would
+// yield a console link that 404s — and nothing would say why until a browser
+// tried it. The trap is upstream's: Nova's novncproxy_base_url DOES name the page
+// (".../vnc_auto.html"), so values carried over from Nova, or from our own old
+// guides, arrive with one. A trailing slash is harmless; buildConsoleURL trims it.
+func validateConsoleProxyBaseURL(raw string) error {
+	if raw == "" {
+		return nil // derived from the request (FR-021)
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("nova.console_proxy_base_url %q is not an origin: want http(s)://host[:port]", raw)
+	}
+	// Comparing against the rebuilt origin catches every extra at once: path,
+	// query, fragment, userinfo, even a bare trailing "?" or "#".
+	origin := u.Scheme + "://" + u.Host
+	if strings.TrimSuffix(raw, "/") != origin {
+		return fmt.Errorf("nova.console_proxy_base_url %q must be an origin only; Lightstack appends "+
+			"the client page and token itself (unlike upstream Nova's novncproxy_base_url, it names "+
+			"no page): use %q", u.Redacted(), origin)
+	}
+	return nil
 }

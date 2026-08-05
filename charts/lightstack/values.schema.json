@@ -144,9 +144,24 @@
     "nova": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Compute service mode.",
+      "description": "Compute service mode and console settings.",
       "properties": {
-        "libvirtMode": { "type": "string", "enum": ["stub", "real"], "description": "stub (no libvirt) or real (libvirt/KVM)." }
+        "libvirtMode": { "type": "string", "enum": ["stub", "real"], "description": "stub (no libvirt) or real (libvirt/KVM)." },
+        "consoleProxyBaseUrl": {
+          "type": "string",
+          "pattern": "^(https?://[^/?#@\\s]+/?)?$",
+          "description": "Browser-reachable ORIGIN of the console proxy (scheme://host:port, no path). Empty derives it from the request. Pattern-checked because Lightstack appends the client page and token itself, and the binary refuses to start on anything more than an origin: without it, a path such as /vnc_auto.html (the form upstream Nova's novncproxy_base_url takes) installs cleanly and then crash-loops the pod."
+        },
+        "consoleTokenTtl": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
+          "description": "Console token lifetime (Go duration, e.g. 10m). Effective ceiling is this plus consoleReconcileInterval. Pattern-checked because these render into lightstack.yaml and are parsed as time.Duration: an unparseable value is a hard LoadConfig error (not a defaulted one), so without it a typo installs cleanly and then crash-loops the pod. The repeated group accepts compound forms like 1h30m, which time.ParseDuration also accepts."
+        },
+        "consoleReconcileInterval": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
+          "description": "How often expired console tokens are reaped. This is what enforces expiry \u2014 the proxy performs no expiry check. Same duration pattern as consoleTokenTtl."
+        }
       }
     },
     "neutron": {
@@ -195,9 +210,83 @@
         "privileged": { "type": "boolean", "description": "Run the pod privileged." },
         "hostNetwork": { "type": "boolean", "description": "Use host networking." },
         "libvirtSocketPath": { "type": "string", "description": "Host libvirtd socket (hostPath)." },
-        "hostStoragePath": { "type": "string", "description": "Node-local data root (hostPath)." },
+        "hostStoragePath": { "type": "string", "pattern": "^/.+", "description": "Node-local data root (hostPath), mounted at the same path in the pod and passed to the binary as state_path. Absolute: libvirtd on the host opens the paths Lightstack writes into the domain XML." },
         "legacyStatePath": { "type": "string", "description": "Pre-rename node-local root to migrate into hostStoragePath once; empty disables." },
         "floatingIpPool": { "type": "string", "description": "Operator pool routed to nodes (FR-009c)." }
+      }
+    },
+    "consoleProxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "noVNC console proxy (SPEC-021). Real mode only; deployed alongside Lightstack on the same node.",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Deploy the console proxy (real mode only)." },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository"],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Proxy image repository. minLength 1 and required so blanking it (--set consoleProxy.image.repository=) is rejected at install: without it the template renders image: \":<tag>\", which fails later and less clearly at admission. Matches how image.repository fails closed (FR-018)."
+            },
+            "tag": { "type": "string", "description": "IMAGE version, not noVNC's \u2014 1.3.0 ships noVNC 1.6.0." },
+            "digest": {
+              "type": "string",
+              "pattern": "^(sha256:[a-f0-9]{64})?$",
+              "description": "Pulled as repository@digest when non-empty, and the tag is then ignored; \"\" pulls by tag. Never rendered as tag@digest, which Podman and skopeo reject. Defaults to the digest SPEC-021's proxy contract was verified against."
+            },
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "nodePort": { "type": "integer", "minimum": 30000, "maximum": 32767 }
+          }
+        },
+        "idleTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Drop idle console sessions. Must be non-zero: websockify disables the idle timeout at 0, letting an abandoned tab hold a guest console open indefinitely."
+        },
+        "libvirtDomainDir": { "type": "string", "pattern": "^/.+", "description": "Where libvirt creates each running guest's VNC unix socket (domain-<id>-<name>/vnc.sock). Mounted read-only at the same path, because each console token names that exact path." },
+        "containerSecurityContext": { "type": "object", "description": "Container securityContext for the proxy. Keeps DAC_OVERRIDE by default: connect() on a guest's console socket needs write permission on a libvirt-qemu-owned socket." },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Health probes for the console proxy, mirroring the lightstack container's (SPEC-013) but against GET /vnc_lite.html, the client page the proxy serves. Path is fixed; tune timing/thresholds only. A tcpSocket probe is deliberately NOT used: the kernel accepts connections from the listen backlog even when websockify is wedged, so it would report healthy precisely when the console is broken.",
+          "properties": {
+            "readiness": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "readinessProbe -> GET /vnc_lite.html. Failure removes the pod from the Service (no restart).",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "periodSeconds": { "type": "integer", "minimum": 1 },
+                "timeoutSeconds": { "type": "integer", "minimum": 1 },
+                "failureThreshold": { "type": "integer", "minimum": 1 },
+                "successThreshold": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "liveness": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "livenessProbe -> GET /vnc_lite.html. Deliberately slower/more forgiving than readiness: a transient stall should drop the proxy from the Service, not restart it and kill every console session on the node.",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "periodSeconds": { "type": "integer", "minimum": 1 },
+                "timeoutSeconds": { "type": "integer", "minimum": 1 },
+                "failureThreshold": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        },
+        "resources": { "type": "object", "description": "Resource requests/limits for the proxy." }
       }
     },
     "podSecurity": {
