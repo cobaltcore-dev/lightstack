@@ -247,7 +247,7 @@ nova:
   port: 8774
   libvirt_mode: real  # real for KVM, stub for development
   libvirt_uri: "qemu:///system"
-  console_proxy_base_url: "http://10.2.199.101:6080/vnc_auto.html"
+  console_proxy_base_url: "http://10.2.199.101:6080"   # origin only, no path
 
 neutron:
   host: "0.0.0.0"
@@ -288,8 +288,10 @@ SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 SESSION_COOKIE_AGE = 86400  # 24 hours (matches token TTL)
 
 # noVNC Console
-CONSOLE_TYPE = 'novnc'
-NOVNC_PROXY_URL = 'http://10.2.199.101:6080'
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 
 # API Versions
 OPENSTACK_API_VERSIONS = {
@@ -389,7 +391,8 @@ sudo -u postgres psql o3k -c "UPDATE endpoints SET url = REPLACE(url, 'http://lo
 **Solutions**:
 1. Verify noVNC running: `nc -zv 10.2.199.101 6080`
 2. Check console URL: `grep console_proxy_base_url /opt/o3k/config/o3k.yaml`
-3. Verify Horizon noVNC config: `grep NOVNC_PROXY_URL /opt/o3k/config/horizon-config/local_settings`
+3. Verify a token was issued: `o3k console-tokens list` (Horizon has no proxy setting
+   of its own — O3K returns the complete console URL, Horizon just iframes it)
 
 ---
 

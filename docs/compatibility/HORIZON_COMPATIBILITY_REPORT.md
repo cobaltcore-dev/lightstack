@@ -8,8 +8,9 @@ that branch (`docker.io/library/o3k:spec020`); same Horizon image and topology a
 management.** Create a network with a subnet, create a volume, and launch an instance — all through the
 dashboard, verified in stub **and** real mode; the launched VM reaches ACTIVE on a real libvirt domain
 booting from a Ceph-RGW image, and a key pair created in Horizon lets you **`ssh`** into it. Read/list panels
-render, the Overview limits widget loads, networks list once, and image delete works. **One #482 finding
-remains open: F1**, the noVNC console (#534). O3K's API/CLI surface was compatible throughout.
+render, the Overview limits widget loads, networks list once, and image delete works. **All nine #482 findings
+are now closed**: F1, the noVNC console, was fixed in #534 (SPEC-021). O3K's API/CLI surface was compatible
+throughout.
 
 > **What this verdict was, and why it changed.** As originally written (2026-07-23) it read: *"the Horizon
 > dashboard is **not** usable for resource management … every create/write workflow is broken … O3K is
@@ -49,6 +50,8 @@ remains open: F1**, the noVNC console (#534). O3K's API/CLI surface was compatib
 >
 > **This changes the report's headline verdict**: with F1 (#534, noVNC) the only remaining #482 finding, the
 > dashboard *is* usable for resource management. See the revised Verdict and Conclusion.
+>
+> **Updated 2026-07-31**: F1 is fixed too (SPEC-021 / #534), so **no #482 finding remains open**.
 >
 > **The "one shared root" hypothesis in F8 was wrong.** F2/F3 were the predicted quota-metadata root; **F8's
 > actual root was a Cinder route-registration bug** and **F7's were three response-shape/request-parsing
@@ -100,7 +103,7 @@ container reports unhealthy — irrelevant, the console is not-exercised in stub
 | 3 | Create network | ✅ **working** (#533) | ✅ **working** (#533) | **F3+F4 reproduce in real (2026-07-23)**: Project → Network → Networks still has **no Create button** (only Admin does); an Admin-created net lists **twice** in Project. Neutron-vs-UI dup source: see F4. **#533 (2026-07-29): FIXED** — Create Network present on the Project panel; `ui-net` + `ui-sub` created through the dialog and listed once, stub and real. | F3, F4 |
 | 4 | Create volume | ✅ **working** (#533) | ✅ **working** (#533) | Real (2026-07-23): volumev3 catalog is **clean** (`o3k-o3k:8776`) and CLI `volume create` → `available` — Cinder API works and F5's stub `localhost:8776` is **not** on Horizon's v3 path. Empty panel renders; **Create Volume button opens no dialog** (F8, create-UI cluster, not the endpoint). And once a volume exists the panel **500s** (`TemplateSyntaxError` in `get_rows`) → **F9**. **#533 (2026-07-29): FIXED** — the dialog opens (root was the cinder `groups/detail` route, not metadata) and `ui-vol` reaches `available`, backed by a real qcow2 under `/var/lib/o3k/volumes`. | F5, F8, F9 |
 | 5 | Launch instance (+SSH) | ✅ **working** (#533) | ✅ **working via the UI** (#533) | Real (2026-07-23): UI wizard can't select a network (F7). But CLI `server create` → **ACTIVE**, `power_state Running`, real **libvirt VM booted from the RGW image**, `addresses=test-net=10.0.0.77`, `key_name`+`security_groups` present. Real compute + RGW-image boot **proven**; **`ssh cirros@10.0.0.77` succeeds** (`uid=1000` — cloud-init key injection + default-SG tcp/22 + reachable fixed IP all work). Console → T7. **#533 (2026-07-29): FIXED via the UI** — `ui-vm` launched from the wizard reaches **ACTIVE** on a real libvirt domain with an address on `spec020-net`; and with a key pair created **in Horizon**, `ssh cirros@<ip>` returns `uid=1000`. | F7 |
-| 6 | Instance console (noVNC) | not-exercised | noVNC **not working** (F1) / serial log **works** | Real (2026-07-23): `console log show vm1` returns real cirros boot + EC2 metadata + `vm1 login:` (serial console **works**). noVNC Console **tab** → **"Unable to load Console" + "Console currently not available"** (F1 confirmed — no guest). | F1 |
+| 6 | Instance console (noVNC) | not-exercised | **works** (after #534) — serial log **works** | Real (2026-07-23): `console log show vm1` returns real cirros boot + EC2 metadata + `vm1 login:` (serial console **works**). noVNC Console **tab** → "Unable to load Console" (F1 confirmed — no guest). **Re-verified after #534/SPEC-021: the Console tab renders the live guest framebuffer and accepts keyboard input.** | F1 ✅ |
 
 _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pending._
 
@@ -115,7 +118,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 
 ## Findings
 
-### F1 — noVNC console shows no guest (major) — _confirmed real (2026-07-23)_
+### F1 — noVNC console shows no guest (major) — ✅ **FIXED (SPEC-021 / #534, 2026-07-31)**
 - **Cause**: synthetic `http://localhost:6080` console URL + a random, unpersisted token + a
   fabricated VNC port (never read from libvirt) + an unwired noVNC proxy (`internal/nova/console.go`;
   `research.md` U1).
@@ -123,56 +126,41 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   "Console currently not available"** — the returned URL points at `localhost`, so the browser never
   reaches the proxy at all. The serial Console Log works (verified real: real cirros boot output +
   `vm1 login:`).
-- **Workaround**: `openstack console log show <server>`.
-- **Follow-up**: wire real noVNC (token store + libvirt VNC-port readback + real proxy + configurable URL).
+- **Fix**: all four causes, plus one the ticket did not name.
+  - **The relay is not written, it is configured.** The noVNC image already pinned in the verification
+    stacks bundles websockify and its token plugins; a command override turns it into a real
+    token-resolving proxy serving both the client page and the WebSocket relay. Verified before
+    committing to the design: a good token yields `101 Switching Protocols` and `connecting to: …`, a
+    bad one is closed with no response and no guest contacted. O3K gained **no** relay code and **no**
+    new Go dependency. It ships in `charts/o3k` as `consoleProxy`.
+  - **Real port**: read from libvirt per request via `DomainGetXMLDesc(dom, 0)` — flags `0`, the
+    *running* definition, because `DomainXMLInactive` still reports `port='-1'` and would reproduce the
+    original bug. Never cached: libvirt reassigns the port on every start.
+  - **Real token**: persisted in `console_auth_tokens` (migration 065) and projected into
+    `/var/lib/o3k/console-tokens/` for the proxy to read. Expiry is enforced by *deleting* that entry —
+    websockify performs no expiry check — so a reconciler sweep is the mechanism, not housekeeping.
+  - **Configurable URL**: `nova.console_proxy_base_url`, an **origin** only. This setting appeared in
+    four operator guides for years while the binary ignored it entirely; their example values also named
+    `vnc_auto.html`, a page that does not exist in noVNC 1.6.0.
+  - **Not in the ticket, found while designing**: the guest VNC listened on `0.0.0.0`, so the token was
+    bypassable by anything that could reach the node. It now binds loopback, making the proxy the only
+    route in. And because libvirt hands out console ports sequentially, a token surviving a stop could
+    later resolve to a **different tenant's** guest — so stop/start/reboot/suspend/resume/delete all
+    revoke. `sharePolicy='force-shared'` additionally stops a second viewer evicting the first.
+  - **A second, independent blocker, found only by fixing the first.** O3K's own Horizon config set
+    `CONSOLE_TYPE = 'novnc'`. Horizon dispatches on that through `CONSOLES` in
+    `project/instances/console.py`, whose keys are `AUTO`/`VNC`/`SPICE`/`RDP`/`SERIAL`/`MKS` — so
+    `CONSOLES['novnc']` raised `KeyError`, became `NotAvailable`, and the tab reported *"Console is
+    currently unavailable"* **without ever calling Nova**. With the backend broken too, the two failures
+    were indistinguishable; repairing the backend simply moved the error up a layer. Now `'VNC'`.
+    The same block also carried `NOVNC_PROXY_URL` and `CONSOLE_TYPES`, which **no upstream Horizon code
+    reads** — invented settings that looked authoritative, with `NOVNC_PROXY_URL` still pointing at
+    `localhost:6080`. Both removed.
+- **Honest limits**: effective token validity is `TTL + reconcile interval` (10m30s at the defaults),
+  not exactly 10m. Multi-node console is out of scope for v1. SPICE, RDP and interactive serial consoles
+  are refused with a clear error rather than a fabricated URL.
+- **Workaround (no longer needed, still supported)**: `openstack console log show <server>`.
 
-<<<<<<< variant A
-### F2 — Project Overview: "Unable to retrieve limits information" (medium) — _confirmed real (2026-08-25)_
-- **Cause**: O3K's Neutron quota-details response omits `reserved`. Upstream Neutron returns
-  `{limit, used, reserved}` per resource (`neutron/db/quota/driver.py`, `get_detailed_project_quotas`)
-  and Horizon reads `detail['used'] + detail['reserved']` **unconditionally**
-  (`openstack_dashboard/usage/quotas.py`, `_get_tenant_network_usages`), but O3K's `GetQuotaDetails`
-  (`internal/neutron/network.go`) returns only `{limit, used}` for all seven resources — so the lookup
-  raises `KeyError: 'reserved'`. Horizon catches the Nova and Cinder limit calls individually, each with
-  its own message; the Neutron call has **no** `try/except`, so the error reaches the bare
-  `except Exception` in `openstack_dashboard/usage/views.py` and renders as
-  **"Unable to retrieve limits information. Details 'reserved'"** — the outer catch-all, which is why the
-  message names no service. **Not a Nova fault**: `GET /v2.1/limits` returns 200 with all 13 keys Horizon
-  reads, and Cinder's `GET /v3/{project}/limits` returns 200 with all 6. This supersedes the earlier
-  "Nova limits/quota" attribution.
-- **Impact**: the Overview usage panel errors on **every** load, not only after a project switch (the real
-  pass hit it immediately post-login, with no switch). Project switching itself succeeds; the damage is a
-  degraded first impression on the landing page.
-- **Follow-up**: add `"reserved": 0` to each resource in `GetQuotaDetails` (`internal/neutron/network.go`).
-  O3K holds no reservations, so a constant `0` is correct, and it covers all three keys
-  `_get_tenant_network_usages` reads (`limit`, `used`, `reserved`). Product-code change — out of scope for
-  this verification-only spec, and **not yet verified by re-test**.
-- **Evidence (2026-08-25)**: rendered Overview HTML carries
-  `Error: Unable to retrieve limits information. Details 'reserved'`, and the Horizon container's apache
-  error log logs `horizon.exceptions WARNING  Recoverable error: 'reserved'` on every Overview load.
-  `_get_tenant_network_usages` is the only site in `usage/quotas.py` that reads `'reserved'` from a
-  response dict, which is what rules out the Nova and Cinder paths.
-
-### F3 — No "Create Network" in the Project panel (medium) — _stub + real; root-caused 2026-08-25_
-- **Cause**: **the same missing `reserved` key as F2.** Horizon's `CreateNetwork.allowed()`
-  (`openstack_dashboard/dashboards/project/networks/tables.py`) calls
-  `quotas.tenant_quota_usages(request, targets=('network',))` — the Neutron quota path — before rendering
-  the action. That call raises `KeyError: 'reserved'` (see F2), so the action is never added and the
-  Project → Network → Networks table ships without it. Admin → Network → Networks uses a table that does
-  **not** gate on tenant quota, which is precisely why the button survives there. Note the action's own
-  logic would have kept the button *enabled* on a mere quota miss (`allowed()` returns `True`
-  unconditionally and defaults `available` to 1) — it disappears only because the lookup **raises**.
-- **Impact**: unchanged — a project user cannot create a network from the standard Project panel, the
-  ticket's named workflow location.
-- **Evidence (2026-08-25)**: `/dashboard/project/networks/` renders only
-  `networks__action_filter_project_networks`, and the string "Create Network" is absent;
-  `/dashboard/admin/networks/` renders `networks__action_create` and the string is present. The
-  `'reserved'` KeyError is logged on **every** project panel load (networks / volumes / instances one
-  each, Overview two), yet only Networks loses its action — Volumes and Instances gate on the Cinder and
-  Nova quota paths, which both return 200.
-- **Follow-up**: the same one-key fix as F2 — add `"reserved": 0` to each resource in `GetQuotaDetails`
-  (`internal/neutron/network.go`). Expected to close **F2 and F3 together**; not yet verified by re-test.
->>>>>>> variant B
 ### F2 — Project Overview: "Unable to retrieve limits information" (medium) — _stub_ — ✅ **FIXED (SPEC-020 / #533, 2026-07-29)**
 - **Cause**: the Overview usage/limits widget's call (Nova limits/quota) errors on load / after project switch.
 - **Root (confirmed)**: the quota/limits read surface was incomplete and self-inconsistent. Nova's
@@ -200,20 +188,6 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 - **Fix**: the same quota surface as F2, plus `project_id` alongside `tenant_id` on the network object.
 - **Verified**: stub + real — the button is present on the *Project* panel and the dialog creates a network
   with a subnet, listed exactly once (the #532 F4 dedup still holding).
-####### Ancestor
-### F2 — Project Overview: "Unable to retrieve limits information" (medium) — _stub_
-- **Cause**: the Overview usage/limits widget's call (Nova limits/quota) errors on load / after project switch.
-- **Impact**: project switching succeeds, but the Overview usage panel shows an error; degraded first impression.
-- **Follow-up**: investigate the Nova limits/quota response Horizon's Overview consumes.
-
-### F3 — No "Create Network" in the Project panel (medium) — _stub_
-- **Cause**: Project → Network → Networks lacks the Create Network button (only Admin → Network → Networks
-  has it). Horizon hides it when the expected capability/policy/quota isn't advertised by Neutron.
-- **Impact**: a project user cannot create a network from the standard Project panel — the ticket's
-  named workflow location.
-- **Follow-up**: identify what Neutron capability/policy/quota Horizon checks to render the Project
-  Create Network control.
-======= end
 
 ### F4 — Duplicate network listing in the Project panel (medium) — _stub + real (2026-07-23)_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: a single network shows **twice** in Project → Network → Networks. Ruled out: **not** a Neutron
@@ -457,7 +431,6 @@ from a Ceph-RGW image**, attached it to real Neutron networking with a reachable
 real **serial console** — SSH login succeeded (`uid=1000(cirros)`). Volume and server creation succeed via
 CLI. This is the exact backend chain the stub pass could not exercise, and it passed.
 
-<<<<<<< variant A
 **What doesn't.** The **Horizon dashboard is not usable for resource management.** Every create/write
 workflow through the UI fails: no Create-Network button in the Project panel (F3), a dead Create-Volume
 modal (F8), the Volumes list itself **500s** once a volume exists (F9), and the Launch-Instance wizard
@@ -496,9 +469,6 @@ coverage it counted is real, but it does not translate into a working dashboard 
   Horizon's row **Delete** buttons are part of this write-UI cluster — the F6 fix restores delete via the
   API/CLI, but the dashboard's delete action stays broken until #533.)*
 - **F1 (open — #534)** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy + configurable URL).
->>>>>>> variant B
-**What doesn't (as of 2026-07-29).** **F1 only** — the noVNC console tab shows no guest (#534). The serial
-console works, so this is the console *plumbing*, not compute.
 
 **Superseded — what didn't work at the time of writing (2026-07-23).** Every create/write workflow through the
 UI failed: no Create-Network button (F3), a dead Create-Volume modal (F8), the Volumes list **500**-ing once a
@@ -516,8 +486,9 @@ finding.
 
 **Answer to #482.** O3K is a drop-in for the OpenStack API/CLI **and, after #532 and #533, the Horizon
 dashboard is usable for UI-driven resource management** — create a network, create a volume, launch an instance,
-then SSH into it, all from the dashboard, in stub and real mode. The remaining gaps are the noVNC console (F1 /
-#534) and the pre-existing defects F10–F13/F15.
+then SSH into it, all from the dashboard, in stub and real mode — and, after #534, watch it boot on the Console
+tab. **All nine #482 findings are closed.** The remaining gaps are the pre-existing defects F10–F13/F15, which
+this verification surfaced but did not cause.
 
 This does not rehabilitate the prior `HORIZON_FULL_COMPATIBILITY_REPORT.md` **"100% compatible / 342
 endpoints"** claim. That claim was never grounded in a browser-level check, and the sixteen findings in this
@@ -533,40 +504,15 @@ report are what grounding it cost — endpoint coverage alone did not, and does 
   carry their rules array with the full key set; server create resolves security groups by **id or name**;
   networks carry `project_id` with resolvable `subnets`. Verified in **both** modes. *(The row **Delete**
   buttons noted under the old F6 follow-up work too — F14 explains why one of them appeared not to.)*
-- **F1 (open — #534)** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy +
-  configurable URL).
+- **F1 (FIXED — #534 / SPEC-021)** — a real noVNC console: persisted+revocable token store, libvirt VNC-port
+  readback per request, a token-resolving proxy built by configuring the already-pinned noVNC image rather than
+  writing a relay, and a configurable origin. Also closed two things the ticket did not name — the guest VNC
+  listened on `0.0.0.0` (token bypassable) and console-port reuse could point a stale token at another tenant's
+  guest.
 - **F10, F11, F12, F13, F15 (open)** — pre-existing, surfaced by the #533 pass; see *Findings from the #533
   pass*. **F13** (`POST /v3/projects` 500) is the highest value: it is the reason project switching has never
   been demonstrated, and it blocks two other checks.
 - **F16** — boot-from-new-volume is adopted rather than implemented; belongs with SPEC-009 storage work.
-####### Ancestor
-**What doesn't.** The **Horizon dashboard is not usable for resource management.** Every create/write
-workflow through the UI fails: no Create-Network button in the Project panel (F3), a dead Create-Volume
-modal (F8), the Volumes list itself **500s** once a volume exists (F9), and the Launch-Instance wizard
-**can't select a network** (F7). Alongside: networks list **twice** (F4), image delete is a **no-op** (F6),
-the **noVNC console** is unwired (F1), and the overview **limits widget errors** (F2). The common thread
-(F8): Horizon's create flows and table renderers depend on quota/limits/type metadata and fully-populated
-resource fields that O3K under-serves — so buttons hide, modals don't open, wizard steps won't validate,
-and populated tables crash, even though the underlying APIs work.
-
-**Answer to #482.** O3K is a **drop-in for the OpenStack API/CLI**, but the **Horizon dashboard is _not_ a
-drop-in for UI-driven resource management** as of `feature/482 @ 5123591`. This **refutes the prior
-`HORIZON_FULL_COMPATIBILITY_REPORT.md` "100% compatible / 342 endpoints" claim** — the endpoint coverage it
-counted is real, but it does not translate into a working dashboard for creating resources.
-
-**Follow-ups** (separate tickets — this is verify-not-fix scope, as SPEC-016 spun off #524):
-- ✅ **F4, F5, F6, F9 — DONE (SPEC-019 / cloud-storage#532, 2026-07-24):** O3K Neutron now honors the
-  `shared`/`router:external`/project list filters so each network lists once (F4); the `volume` catalog alias
-  advertises the configured host, not `localhost` (F5); the Cinder volume response carries the full non-null
-  upstream field set so Horizon's volume table renders instead of 500-ing (F9); and Glance image delete
-  removes the image with owner-or-admin authorization, returning 404/403 appropriately (F6). Verified in
-  **both** stub and real mode.
-- **F8 cluster (open — #533)** — trace the Nova/Cinder/Neutron quota+limits+types calls Horizon makes
-  when opening each create UI; one root fix likely re-enables F2/F3/F7 and the volume-create modal. *(Note:
-  Horizon's row **Delete** buttons are part of this write-UI cluster — the F6 fix restores delete via the
-  API/CLI, but the dashboard's delete action stays broken until #533.)*
-- **F1 (open — #534)** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy + configurable URL).
-======= end
 
 **Reproducibility (SC-005 met).** Both passes are fully scripted in the two `HOST_TESTING*.md` runbooks;
 the real pass reuses the SPEC-014 `deployments/rook/setup-rook-rgw.sh` fixture.

@@ -438,6 +438,8 @@ if requestedVersion == "" {
 - External PostgreSQL. **One** new migration `064_fix_cinder_s3_catalog_localhost` (reseeds the `…015`/`…016` endpoint URLs). F9 reuses the existing `volumes.volume_type` column (migration `016`); F4 and F6 add **no** columns. (019-horizon-compat-api-fixes)
 - Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL). **No new modules.** (020-horizon-create-ui-enablement)
 - External PostgreSQL. **No migration, no schema change** — reuses `quotas` (migration `007`, row-per-resource, `project_id UUID NOT NULL REFERENCES projects(id)`) and `cinder_quotas` (migration `039`). Neutron has no quota table and does not gain one (limits stay code defaults; usage is counted live). (020-horizon-create-ui-enablement)
+- Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL), digitalocean/go-libvirt (`DomainGetXMLDesc` — confirmed present in the pinned revision), `encoding/xml` (stdlib) for the graphics element. **No new Go modules** — the relay is not ours. (021-real-novnc-console)
+- PostgreSQL — one new migration `065`: console-token table; drops the dead `instances.console_vnc_port` / `console_vnc_password`. Node-local: one new subdirectory `/var/lib/o3k/console-tokens` under the existing `realMode.hostStoragePath` contract. (021-real-novnc-console)
 
 ## Recent Changes
 - 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)

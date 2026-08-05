@@ -55,7 +55,30 @@ type NovaConfig struct {
 	LibvirtURI    string `yaml:"libvirt_uri"`
 	DefaultFlavor string `yaml:"default_flavor"`
 	LibvirtMode   string `yaml:"libvirt_mode"` // "stub" or "real"
+
+	// ConsoleProxyBaseURL is the browser-reachable ORIGIN of the console proxy
+	// ("scheme://host:port"), never a full page URL: the client page and the
+	// ?path=%3Ftoken%3D query are appended in code so they cannot drift from the
+	// deployed noVNC/websockify version (SPEC-021 FR-020). Empty means "derive
+	// from the same endpoint settings as the rest of the catalog" (FR-021).
+	ConsoleProxyBaseURL string `yaml:"console_proxy_base_url"`
+	// ConsoleTokenTTL bounds how long an issued console link stays usable
+	// (FR-010). Note the effective ceiling is TTL + ConsoleReconcileInterval:
+	// the proxy performs no expiry check of its own, so a token dies when O3K
+	// removes its projection entry, not at the instant it expires.
+	ConsoleTokenTTL time.Duration `yaml:"console_token_ttl"`
+	// ConsoleReconcileInterval is how often expired console tokens are reaped
+	// from the database and the projection directory (FR-016). This is what
+	// actually enforces expiry — see ConsoleTokenTTL.
+	ConsoleReconcileInterval time.Duration `yaml:"console_reconcile_interval"`
 }
+
+// Console defaults (SPEC-021). Applied by LoadConfig when the file omits them,
+// so a deployment that never heard of the console still expires tokens.
+const (
+	DefaultConsoleTokenTTL          = 10 * time.Minute
+	DefaultConsoleReconcileInterval = 30 * time.Second
+)
 
 type NeutronConfig struct {
 	Port                     int           `yaml:"port"`
@@ -175,6 +198,17 @@ func LoadConfig(path string) (*Config, error) {
 		} else {
 			fmt.Fprintf(os.Stderr, "WARNING: ignoring invalid O3K_GLANCE_S3_CONNECT_TIMEOUT %q: %v\n", v, err)
 		}
+	}
+
+	// Console defaults (SPEC-021). A zero TTL would mean "already expired" and a
+	// zero interval would disable the reaper entirely — since the proxy never
+	// checks expiry itself, that would leave tokens valid forever. Default rather
+	// than trust the file to mention them.
+	if cfg.Nova.ConsoleTokenTTL <= 0 {
+		cfg.Nova.ConsoleTokenTTL = DefaultConsoleTokenTTL
+	}
+	if cfg.Nova.ConsoleReconcileInterval <= 0 {
+		cfg.Nova.ConsoleReconcileInterval = DefaultConsoleReconcileInterval
 	}
 
 	// Warn if using default JWT secret

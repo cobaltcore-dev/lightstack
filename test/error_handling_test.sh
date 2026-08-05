@@ -125,8 +125,13 @@ log_test "Errors have message and code fields"
 RESPONSE=$(curl -s -X GET "http://localhost:8774/v2.1/servers/non-existent-id" \
     -H "X-Auth-Token: $TOKEN")
 
-HAS_MESSAGE=$(echo "$RESPONSE" | jq 'has("itemNotFound") and .itemNotFound | has("message")')
-HAS_CODE=$(echo "$RESPONSE" | jq 'has("itemNotFound") and .itemNotFound | has("code")')
+# Parenthesised deliberately: jq's | binds looser than and, so
+#   has("itemNotFound") and .itemNotFound | has("message")
+# parses as (has(...) and .itemNotFound) | has("message") -- a BOOLEAN piped into
+# has() -- which errors with "Cannot check whether boolean has a string key" and made
+# this check unpassable regardless of what the API returned.
+HAS_MESSAGE=$(echo "$RESPONSE" | jq 'has("itemNotFound") and (.itemNotFound | has("message"))')
+HAS_CODE=$(echo "$RESPONSE" | jq 'has("itemNotFound") and (.itemNotFound | has("code"))')
 
 if [ "$HAS_MESSAGE" == "true" ] && [ "$HAS_CODE" == "true" ]; then
     log_pass "Errors contain message and code fields"

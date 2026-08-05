@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/console"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/internal/middleware"
 	"github.com/cobaltcore-dev/o3k/internal/neutron"
@@ -34,9 +35,13 @@ type Service struct {
 	cache       *cache.Cache
 	imageStore  *storage.ImageStore // lazy fetch-on-boot of S3/RGW-backed image bases (SPEC-014)
 	neutronSvc  NeutronService      // For port allocation
-	wg          sync.WaitGroup
-	ctx         context.Context
-	cancel      context.CancelFunc
+	// Console token store and the browser-reachable proxy origin (SPEC-021).
+	// consoleStore is nil only in tests that never touch the console.
+	consoleStore        *console.Store
+	consoleProxyBaseURL string
+	wg                  sync.WaitGroup
+	ctx                 context.Context
+	cancel              context.CancelFunc
 }
 
 const (
@@ -73,6 +78,19 @@ func (svc *Service) Shutdown() {
 // staging the overlay (SPEC-014 FR-013).
 func (svc *Service) SetImageStore(s *storage.ImageStore) {
 	svc.imageStore = s
+}
+
+// SetConsoleStore wires the console-token store (SPEC-021). Without it the
+// console endpoints refuse rather than improvise, which is the point: a token
+// we cannot persist is a token we cannot revoke.
+func (svc *Service) SetConsoleStore(s *console.Store) {
+	svc.consoleStore = s
+}
+
+// SetConsoleProxyBaseURL sets the browser-reachable ORIGIN of the console proxy.
+// Empty means "derive it from the request", never "use localhost" (FR-021).
+func (svc *Service) SetConsoleProxyBaseURL(u string) {
+	svc.consoleProxyBaseURL = u
 }
 
 // reclaimImageBaseIfUnused removes the node-local raw base for imageID once no
@@ -231,6 +249,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Console access
 		v21.POST("/servers/:id/remote-consoles", svc.GetRemoteConsole)
+		// Console-auth-token compatibility view (microversion 2.31+, SPEC-021
+		// FR-015). Nothing in O3K's console path depends on it — the proxy
+		// resolves tokens from its projection directory — but `openstack` and
+		// third-party tooling expect the endpoint to exist.
+		v21.GET("/os-console-auth-tokens/:token", svc.ShowConsoleAuthToken)
 
 		// Host aggregates
 		v21.GET("/os-aggregates", svc.ListAggregates)
@@ -1360,6 +1383,12 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		return
 	}
 
+	// Revoke console tokens before the row goes. The FK cascade removes the rows
+	// for us, but not their projection files — and a projection file the proxy
+	// can still read is a live console for an instance that no longer exists
+	// (SPEC-021 FR-014).
+	svc.revokeConsoleTokens(c, instanceUUID, "instance deleted")
+
 	// Delete the instance row (support lookup by ID or name).
 	queryStart = time.Now()
 	_, err = tx.Exec(ctx,
@@ -1529,12 +1558,15 @@ func (svc *Service) ServerAction(c *gin.Context) {
 		return
 	}
 
-	// Get libvirt domain ID for remaining actions (support lookup by ID or name)
+	// Get libvirt domain ID for remaining actions (support lookup by ID or name).
+	// The resolved UUID is also what console-token revocation keys on, since the
+	// caller may have addressed the instance by name.
 	var libvirtDomainID any
+	var resolvedInstanceID string
 	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
+		"SELECT id, libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
-	).Scan(&libvirtDomainID)
+	).Scan(&resolvedInstanceID, &libvirtDomainID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		log.Warn().Str("instance_id", instanceID).Msg("Instance not found in ServerAction")
@@ -1551,6 +1583,14 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	if libvirtDomainID != nil {
 		libvirtDomainStr = fmt.Sprintf("%v", libvirtDomainID)
 	}
+
+	// Every action left at this point (reboot, os-stop, os-start) can move or
+	// free the guest's console port, and libvirt hands ports out sequentially —
+	// so a surviving token could later resolve to a DIFFERENT instance's
+	// framebuffer. Revoke BEFORE acting, not after: doing it afterwards leaves a
+	// window where the old token is live against a restarting domain
+	// (SPEC-021 FR-014).
+	svc.revokeConsoleTokens(c, resolvedInstanceID, "lifecycle action")
 
 	log.Debug().
 		Bool("libvirt_valid", libvirtDomainStr != "").

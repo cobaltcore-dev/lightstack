@@ -160,3 +160,33 @@ func TestDefaultCloudInitConfig(t *testing.T) {
 		t.Error("UserData missing cloud-config header")
 	}
 }
+
+// SPEC-021 FR-017 / FR-018a: the guest console must be reachable only through
+// the token-validating proxy, and a second viewer must not evict the first.
+// Both are one attribute each, and both fail silently if dropped — a wildcard
+// listen just quietly works, and allow-exclusive just quietly disconnects
+// someone. Pin them.
+func TestDomainXMLConsoleIsLoopbackAndShared(t *testing.T) {
+	spec := VMSpec{
+		UUID:     "11111111-2222-3333-4444-555555555555",
+		Name:     "console-xml-test",
+		MemoryMB: 512,
+		VCPUs:    1,
+	}
+	xml := GenerateVMXML(spec)
+
+	if !strings.Contains(xml, "listen='127.0.0.1'") {
+		t.Errorf("graphics must listen on loopback only; got:\n%s", xml)
+	}
+	if strings.Contains(xml, "0.0.0.0") {
+		t.Errorf("graphics must not listen on a wildcard address — the console token becomes bypassable; got:\n%s", xml)
+	}
+	if !strings.Contains(xml, "sharePolicy='force-shared'") {
+		t.Errorf("graphics must set sharePolicy='force-shared' so a second viewer does not evict the first; got:\n%s", xml)
+	}
+	// autoport is what makes the port dynamic, which is why it must be read back
+	// from libvirt per request rather than cached.
+	if !strings.Contains(xml, "autoport='yes'") {
+		t.Errorf("graphics must keep autoport='yes'; got:\n%s", xml)
+	}
+}

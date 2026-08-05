@@ -102,17 +102,13 @@ chart-test:
 	@command -v helm >/dev/null 2>&1 || (echo "ERROR: helm not found. Run 'make install-tools' first." && exit 1)
 	@helm plugin list 2>/dev/null | grep -q '^unittest' || (echo "ERROR: helm-unittest plugin not found. Run 'make install-tools' first." && exit 1)
 	@bash charts/o3k/ci/run-tests.sh
-	@$(MAKE) --no-print-directory horizon-chart-check
-	@echo "Linting + rendering verification Horizon chart (deployments/horizon-chart)..."
-	@helm lint deployments/horizon-chart
-	@helm template verify deployments/horizon-chart >/dev/null
+	@echo "Linting + rendering the Horizon chart (charts/horizon)..."
+	@helm lint charts/horizon
+	@helm template verify charts/horizon >/dev/null
 
-# Where horizon-chart-sync writes. Overridden by horizon-chart-check to render into a temp dir.
-HORIZON_CHART_FILES ?= deployments/horizon-chart/files
-
-# Sync the verification Horizon chart's bundled config from the canonical source.
+# Sync the Horizon chart's bundled config from the canonical source.
 # Helm's .Files is scoped to the chart directory (helm package only bundles chart files), so
-# deployments/horizon-chart/files/* MUST be a copy of deployments/horizon-config/* -- it cannot
+# charts/horizon/files/* MUST be a copy of deployments/horizon-config/* -- it cannot
 # reference the sibling dir. Re-run whenever horizon-config/* changes: the 3 apache/config files
 # are copied verbatim; local_settings gets the 3 SPEC-018 env-driven edits (OPENSTACK_HOST,
 # AVAILABLE_REGIONS, MEMCACHED_LOCATION) re-applied so the chart repoints Horizon at the
@@ -120,13 +116,12 @@ HORIZON_CHART_FILES ?= deployments/horizon-chart/files
 # from HORIZON_DEBUG and defaults to False, so the chart is safe by default and only the dev
 # docker-compose file opts into True.
 horizon-chart-sync:
-	@echo "Syncing $(HORIZON_CHART_FILES)/ from deployments/horizon-config/ ..."
-	@mkdir -p $(HORIZON_CHART_FILES)
-	cp deployments/horizon-config/config.json $(HORIZON_CHART_FILES)/config.json
-	cp deployments/horizon-config/apache/ports.conf $(HORIZON_CHART_FILES)/ports.conf
-	cp deployments/horizon-config/apache/horizon-nolist.conf $(HORIZON_CHART_FILES)/horizon-nolist.conf
-	sed -e 's|^OPENSTACK_HOST = "o3k".*|OPENSTACK_HOST = os.environ.get("OPENSTACK_HOST", "o3k")|' -e "s|('http://o3k:35357/v3', 'RegionOne'),|(OPENSTACK_KEYSTONE_URL, 'RegionOne'),|" -e "s|'LOCATION': 'memcached:11211',|'LOCATION': os.environ.get('MEMCACHED_LOCATION', 'memcached:11211'),|" deployments/horizon-config/local_settings > $(HORIZON_CHART_FILES)/local_settings
-	@echo "Synced. Review with: git diff $(HORIZON_CHART_FILES)/"
+	@echo "Syncing charts/horizon/files/ from deployments/horizon-config/ ..."
+	cp deployments/horizon-config/config.json charts/horizon/files/config.json
+	cp deployments/horizon-config/apache/ports.conf charts/horizon/files/ports.conf
+	cp deployments/horizon-config/apache/horizon-nolist.conf charts/horizon/files/horizon-nolist.conf
+	sed -e 's|^OPENSTACK_HOST = "o3k".*|OPENSTACK_HOST = os.environ.get("OPENSTACK_HOST", "o3k")|' -e "s|('http://o3k:35357/v3', 'RegionOne'),|(OPENSTACK_KEYSTONE_URL, 'RegionOne'),|" -e "s|'LOCATION': 'memcached:11211',|'LOCATION': os.environ.get('MEMCACHED_LOCATION', 'memcached:11211'),|" deployments/horizon-config/local_settings > charts/horizon/files/local_settings
+	@echo "Synced. Review with: git diff charts/horizon/files/"
 
 # Fail if deployments/horizon-chart/files/ is stale relative to deployments/horizon-config/.
 # Non-destructive on purpose: re-renders into a temp dir and diffs, so it never rewrites the

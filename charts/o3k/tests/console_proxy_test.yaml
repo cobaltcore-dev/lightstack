@@ -1,0 +1,262 @@
+# helm-unittest specs for the noVNC console proxy (SPEC-021 / cloud-storage#534,
+# finding F1). These pin contracts/proxy-deployment.md.
+#
+# Every assertion here guards a failure that is SILENT in a live cluster:
+#   * the image's default entrypoint "works" but proxies to a dead placeholder;
+#   * a missing --idle-timeout leaves it at 0 (disabled), so an abandoned tab
+#     holds a guest console open forever;
+#   * an added --host-token lets a client pick the target instead of the token;
+#   * without hostNetwork the proxy cannot reach a loopback-bound guest;
+#   * without podAffinity it can land on a node with an empty token directory
+#     and refuse every token — indistinguishable from a token bug.
+suite: noVNC console proxy
+set:
+  image.repository: ghcr.io/o3k/o3k
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://o3k@db/o3k
+tests:
+  - it: is not deployed in stub mode — there is no guest to display
+    template: templates/console-proxy.yaml
+    set:
+      realMode.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: is not deployed when explicitly disabled
+    template: templates/console-proxy.yaml
+    set:
+      realMode.enabled: true
+      consoleProxy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: overrides the image entrypoint to run websockify with a file-based token plugin
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command[0]
+          value: /bin/sh
+      # TokenFile, never ReadOnlyTokenFile: the read-only variant caches targets
+      # on first use and would keep serving revoked tokens.
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--token-plugin TokenFile"
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "ReadOnlyTokenFile"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--web /root/noVNC"
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--token-source /var/lib/o3k/console-tokens"
+      # novnc_proxy is the image default: one fixed --vnc target, no tokens. That
+      # is precisely the F1 bug.
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "novnc_proxy"
+
+  - it: sets a non-zero idle timeout so abandoned tabs release the guest console
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--idle-timeout 300"
+
+  - it: never passes --host-token, which would let a client choose the target
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].command[2]
+          pattern: "--host-token"
+
+  - it: shares the node network namespace so it can reach the loopback-bound guest
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
+
+  - it: is pinned to the O3K pod's node by required pod affinity, not a nodeSelector
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.template.spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels["app.kubernetes.io/name"]
+          value: o3k
+      # A preferred rule would schedule anyway and then fail every token.
+      - notExists:
+          path: spec.template.spec.affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution
+
+  - it: mounts the token projection read-only — the proxy resolves, never mints
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          value: /var/lib/o3k
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].readOnly
+          value: true
+      - equal:
+          path: spec.template.spec.volumes[0].hostPath.path
+          value: /var/lib/o3k
+
+  - it: does not carry the main o3k selector, so the API Service cannot adopt it
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      # Caught live on k3s: with app.kubernetes.io/name=o3k on the pod template, the
+      # o3k Service selected the console proxy and Keystone/Nova traffic was routed
+      # to noVNC. The main Service selects on name+instance ALONE — a component
+      # label does not narrow it — so the name must differ.
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: o3k-console-proxy
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/name"]
+          value: o3k-console-proxy
+      # But the affinity must still target the MAIN pod, which does carry name=o3k.
+      - equal:
+          path: spec.template.spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels["app.kubernetes.io/name"]
+          value: o3k
+
+  - it: its Service selects only the proxy, never the API pods
+    template: templates/console-proxy.yaml
+    documentIndex: 1
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.selector["app.kubernetes.io/name"]
+          value: o3k-console-proxy
+
+  - it: runs a single replica because the token projection is node-local
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: exposes the console port via the service
+    template: templates/console-proxy.yaml
+    documentIndex: 1
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: kind
+          value: Service
+      - equal:
+          path: spec.ports[0].port
+          value: 6080
+      - equal:
+          path: spec.ports[0].nodePort
+          value: 30680
+
+  - it: pre-creates the console-tokens subdirectory before o3k starts
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: "/var/lib/o3k/console-tokens"
+
+  - it: renders the console settings into o3k.yaml
+    template: templates/secret.yaml
+    set:
+      realMode.enabled: true
+      nova.consoleProxyBaseUrl: http://10.2.199.101:30680
+    asserts:
+      - matchRegex:
+          path: stringData["o3k.yaml"]
+          pattern: 'console_proxy_base_url: "http://10\.2\.199\.101:30680"'
+      - matchRegex:
+          path: stringData["o3k.yaml"]
+          pattern: 'console_token_ttl: "10m"'
+      - matchRegex:
+          path: stringData["o3k.yaml"]
+          pattern: 'console_reconcile_interval: "30s"'
+
+  # A tcpSocket probe reports healthy on a wedged websockify: the kernel completes the
+  # handshake from the listen backlog whether or not the process ever calls accept().
+  # Verified by freezing the pinned image — tcpSocket succeeded while httpGet timed out.
+  # So the probe type is a correctness property, not a style choice, and it is pinned.
+  - it: probes the served client page over HTTP, never a bare TCP socket
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /vnc_lite.html
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /vnc_lite.html
+      - notExists:
+          path: spec.template.spec.containers[0].readinessProbe.tcpSocket
+      - notExists:
+          path: spec.template.spec.containers[0].livenessProbe.tcpSocket
+
+  # Restarting the proxy kills every console session on the node, so liveness must be
+  # strictly more forgiving than readiness: a transient stall drops it from the Service
+  # first, and only a sustained failure restarts it.
+  - it: gives liveness a longer failure budget than readiness
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.failureThreshold
+          value: 3
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.failureThreshold
+          value: 6
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.periodSeconds
+          value: 20
+
+  - it: allows either probe to be disabled independently
+    template: templates/console-proxy.yaml
+    documentIndex: 0
+    set:
+      realMode.enabled: true
+      consoleProxy.probes.liveness.enabled: false
+    asserts:
+      - exists:
+          path: spec.template.spec.containers[0].readinessProbe
+      - notExists:
+          path: spec.template.spec.containers[0].livenessProbe

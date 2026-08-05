@@ -20,6 +20,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/cinder"
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/compute"
+	"github.com/cobaltcore-dev/o3k/internal/console"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/internal/glance"
 	"github.com/cobaltcore-dev/o3k/internal/health"
@@ -32,6 +33,7 @@ import (
 	"github.com/cobaltcore-dev/o3k/internal/teardown"
 	"github.com/cobaltcore-dev/o3k/pkg/cache"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/cobaltcore-dev/o3k/pkg/paths"
 	"github.com/cobaltcore-dev/o3k/pkg/storage"
 	"github.com/gin-gonic/gin"
 	zlog "github.com/rs/zerolog/log"
@@ -56,6 +58,14 @@ func main() {
 		os.Exit(runHealthcheck(os.Args[2:]))
 	}
 
+	// `o3k console-tokens list|purge` inspects and revokes noVNC console tokens
+	// (SPEC-021). The projection files under /var/lib/o3k/console-tokens are
+	// readable by hand, but they carry no expiry or ownership — both live in the
+	// database, which is what this reads.
+	if len(os.Args) > 1 && os.Args[1] == "console-tokens" {
+		os.Exit(runConsoleTokens(os.Args[2:]))
+	}
+
 	flag.Parse()
 
 	// Load configuration
@@ -76,27 +86,7 @@ func main() {
 
 	// Connect to database with optimized pool settings
 	ctx := context.Background()
-	poolConfig := &database.PoolConfig{
-		MaxConns:          int32(cfg.Database.MaxConnections),
-		MinConns:          int32(cfg.Database.MinConnections),
-		MaxConnLifetime:   cfg.Database.MaxConnLifetime,
-		MaxConnIdleTime:   cfg.Database.MaxConnIdleTime,
-		HealthCheckPeriod: cfg.Database.HealthCheckPeriod,
-	}
-
-	// Use defaults if not specified
-	if poolConfig.MinConns == 0 {
-		poolConfig.MinConns = 2
-	}
-	if poolConfig.MaxConnLifetime == 0 {
-		poolConfig.MaxConnLifetime = 1 * time.Hour
-	}
-	if poolConfig.MaxConnIdleTime == 0 {
-		poolConfig.MaxConnIdleTime = 15 * time.Minute
-	}
-	if poolConfig.HealthCheckPeriod == 0 {
-		poolConfig.HealthCheckPeriod = 1 * time.Minute
-	}
+	poolConfig := newPoolConfig(cfg)
 
 	if err := database.Connect(ctx, cfg.Database.URL, poolConfig); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -260,6 +250,21 @@ func main() {
 	// an S3/RGW-backed image base on this node before staging the overlay (SPEC-014).
 	novaService.SetImageStore(glanceService.ImageStore())
 
+	// Console tokens (SPEC-021). The store is shared with Nova's console handlers;
+	// the reconciler is what actually enforces expiry, because the noVNC proxy
+	// resolves whatever entry it finds on disk and never checks a clock. Its
+	// startup sweep also clears entries orphaned by an unclean shutdown.
+	consoleStore := console.NewStore(paths.ConsoleTokenDir(), cfg.Nova.ConsoleTokenTTL)
+	novaService.SetConsoleStore(consoleStore)
+	novaService.SetConsoleProxyBaseURL(cfg.Nova.ConsoleProxyBaseURL)
+	// Its own cancellable context so shutdown can stop it before the pool closes.
+	// On the process context it would keep sweeping through shutdown and log a
+	// reaping failure against a closing pool on every restart.
+	consoleCtx, stopConsoleReconciler := context.WithCancel(ctx)
+	go console.NewReconciler(consoleStore, cfg.Nova.ConsoleReconcileInterval).Run(consoleCtx)
+	log.Printf("Console tokens: dir=%s ttl=%s reconcile=%s",
+		paths.ConsoleTokenDir(), cfg.Nova.ConsoleTokenTTL, cfg.Nova.ConsoleReconcileInterval)
+
 	// Initialize metadata service. It must bind a VM-reachable address (all
 	// interfaces by default) so the per-bridge 169.254.169.254 DNAT can reach it
 	// in real mode (SPEC-009 WS-4).
@@ -352,6 +357,8 @@ func main() {
 	log.Println("Nova background goroutines stopped")
 	cinderService.Shutdown()
 	log.Println("Cinder background goroutines stopped")
+	stopConsoleReconciler()
+	log.Println("Console-token reconciler stopped")
 
 	// Stop VXLAN services
 	if vxlanCoordinator != nil {
@@ -384,6 +391,88 @@ func main() {
 // (issue #53). Exit codes: 0 success, 1 a required class could not be purged
 // (fail-closed — the blocking pre-delete hook then aborts uninstall), 2 usage or
 // config error.
+// newPoolConfig builds the pgx pool settings, substituting defaults for anything
+// the config file omits.
+//
+// The defaults are not cosmetic: pgxpool starts a background health-check ticker,
+// and time.NewTicker panics on a non-positive interval — so a config without
+// database.health_check_period (which is exactly what the Helm chart renders)
+// crashes the process at startup. Every path that opens a pool must go through
+// here; a subcommand that built the struct by hand is how that panic was found.
+func newPoolConfig(cfg *common.Config) *database.PoolConfig {
+	pc := &database.PoolConfig{
+		MaxConns:          int32(cfg.Database.MaxConnections),
+		MinConns:          int32(cfg.Database.MinConnections),
+		MaxConnLifetime:   cfg.Database.MaxConnLifetime,
+		MaxConnIdleTime:   cfg.Database.MaxConnIdleTime,
+		HealthCheckPeriod: cfg.Database.HealthCheckPeriod,
+	}
+	if pc.MinConns == 0 {
+		pc.MinConns = 2
+	}
+	if pc.MaxConnLifetime == 0 {
+		pc.MaxConnLifetime = 1 * time.Hour
+	}
+	if pc.MaxConnIdleTime == 0 {
+		pc.MaxConnIdleTime = 15 * time.Minute
+	}
+	if pc.HealthCheckPeriod == 0 {
+		pc.HealthCheckPeriod = 1 * time.Minute
+	}
+	return pc
+}
+
+// runConsoleTokens implements the `o3k console-tokens` subcommand (SPEC-021,
+// Article II). It needs a database connection — the projection directory alone
+// cannot answer "when does this expire" or "whose is it" — so it loads the
+// config and connects before delegating. Exit codes: 0 success, 1 operation
+// failed, 2 usage/config error.
+func runConsoleTokens(args []string) int {
+	// The leading --config is consumed here so the subcommand's own flags stay
+	// clean; everything after it belongs to console.RunCLI.
+	fs := flag.NewFlagSet("console-tokens", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // usage is console.RunCLI's job, not the flag package's
+	cfgPath := fs.String("config", "config/o3k.yaml", "Path to configuration file")
+	if err := fs.Parse(args); err != nil {
+		// --help must not need a database: RunCLI prints usage without touching the
+		// store, so answer before the config load and connect below.
+		if errors.Is(err, flag.ErrHelp) {
+			return console.RunCLI(context.Background(), nil, []string{"--help"}, os.Stdout, os.Stderr)
+		}
+		// Anything else is a misuse. Reporting it beats continuing: flag.Parse stops
+		// at the first non-flag argument, so `list --json` never reaches here, and
+		// swallowing the error would run the subcommand with the offending flag
+		// silently dropped.
+		fmt.Fprintf(os.Stderr, "console-tokens: %v\n", err)
+		return 2
+	}
+	// Everything after the consumed --config belongs to console.RunCLI.
+	rest := fs.Args()
+
+	cfg, err := common.LoadConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "console-tokens: failed to load config: %v\n", err)
+		return 2
+	}
+	middleware.InitLogger(&cfg.Logging)
+
+	// A short-lived CLI needs only a couple of connections, but it must still go
+	// through newPoolConfig so the health-check ticker gets a positive interval.
+	pc := newPoolConfig(cfg)
+	pc.MaxConns = 2
+	pc.MinConns = 1
+
+	ctx := context.Background()
+	if err := database.Connect(ctx, cfg.Database.URL, pc); err != nil {
+		fmt.Fprintf(os.Stderr, "console-tokens: failed to connect to the database: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	store := console.NewStore(paths.ConsoleTokenDir(), cfg.Nova.ConsoleTokenTTL)
+	return console.RunCLI(ctx, store, rest, os.Stdout, os.Stderr)
+}
+
 func runCleanup(args []string) {
 	fs := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config/o3k.yaml", "Path to configuration file")

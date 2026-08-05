@@ -4,7 +4,9 @@
   "description": "Input contract for the O3K chart. helm install/upgrade/lint/template validate values against this schema and reject structurally invalid input before any workload is created. See charts/o3k/CONTRACT.md. Cross-field conditional requirements (e.g. credentials required unless an existing secret; the teardown image required under delete) are enforced at render time, not here.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image"],
+  "required": [
+    "image"
+  ],
   "properties": {
     "nameOverride": {
       "type": "string",
@@ -13,7 +15,9 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository"],
+      "required": [
+        "repository"
+      ],
       "description": "Container image for the o3k binary.",
       "properties": {
         "repository": {
@@ -27,7 +31,11 @@
         },
         "pullPolicy": {
           "type": "string",
-          "enum": ["Always", "IfNotPresent", "Never"],
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ],
           "description": "Image pull policy."
         },
         "pullSecrets": {
@@ -38,7 +46,10 @@
     },
     "deploymentMode": {
       "type": "string",
-      "enum": ["single-node", "multi-node"],
+      "enum": [
+        "single-node",
+        "multi-node"
+      ],
       "description": "Topology profile: single-node (Deployment) or multi-node (DaemonSet)."
     },
     "replicaCount": {
@@ -99,7 +110,11 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["ClusterIP", "NodePort", "LoadBalancer"],
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ],
           "description": "Service type."
         },
         "annotations": {
@@ -113,10 +128,22 @@
       "additionalProperties": false,
       "description": "Optional external Ingress.",
       "properties": {
-        "enabled": { "type": "boolean", "description": "Enable an Ingress." },
-        "className": { "type": "string", "description": "IngressClass name." },
-        "annotations": { "type": "object", "description": "Free-form Ingress annotations." },
-        "hosts": { "type": "array", "description": "Ingress host rules." }
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable an Ingress."
+        },
+        "className": {
+          "type": "string",
+          "description": "IngressClass name."
+        },
+        "annotations": {
+          "type": "object",
+          "description": "Free-form Ingress annotations."
+        },
+        "hosts": {
+          "type": "array",
+          "description": "Ingress host rules."
+        }
       }
     },
     "tls": {
@@ -124,18 +151,55 @@
       "additionalProperties": false,
       "description": "Optional TLS at the exposure layer; sets the https catalog scheme.",
       "properties": {
-        "enabled": { "type": "boolean", "description": "Enable per-service-port TLS." },
-        "secretName": { "type": "string", "description": "Cert Secret name (default: <release>-o3k-tls)." },
-        "certManagerIssuer": { "type": "string", "description": "cert-manager (Cluster)Issuer name to auto-provision the cert." },
-        "certManagerKind": { "type": "string", "enum": ["ClusterIssuer", "Issuer"], "description": "Which cert-manager annotation to emit." }
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable per-service-port TLS."
+        },
+        "secretName": {
+          "type": "string",
+          "description": "Cert Secret name (default: <release>-o3k-tls)."
+        },
+        "certManagerIssuer": {
+          "type": "string",
+          "description": "cert-manager (Cluster)Issuer name to auto-provision the cert."
+        },
+        "certManagerKind": {
+          "type": "string",
+          "enum": [
+            "ClusterIssuer",
+            "Issuer"
+          ],
+          "description": "Which cert-manager annotation to emit."
+        }
       }
     },
     "nova": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Compute service mode.",
+      "description": "Compute service mode and console settings.",
       "properties": {
-        "libvirtMode": { "type": "string", "enum": ["stub", "real"], "description": "stub (no libvirt) or real (libvirt/KVM)." }
+        "libvirtMode": {
+          "type": "string",
+          "enum": [
+            "stub",
+            "real"
+          ],
+          "description": "stub (no libvirt) or real (libvirt/KVM)."
+        },
+        "consoleProxyBaseUrl": {
+          "type": "string",
+          "description": "Browser-reachable ORIGIN of the console proxy (scheme://host:port, no path). Empty derives it from the request. Do not append /vnc_auto.html — that page does not exist in noVNC 1.6.0."
+        },
+        "consoleTokenTtl": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
+          "description": "Console token lifetime (Go duration, e.g. 10m). Effective ceiling is this plus consoleReconcileInterval. Pattern-checked because these render into o3k.yaml and are parsed as time.Duration: an unparseable value is a hard LoadConfig error (not a defaulted one), so without it a typo installs cleanly and then crash-loops the pod. The repeated group accepts compound forms like 1h30m, which time.ParseDuration also accepts."
+        },
+        "consoleReconcileInterval": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
+          "description": "How often expired console tokens are reaped. This is what enforces expiry — the proxy performs no expiry check. Same duration pattern as consoleTokenTtl."
+        }
       }
     },
     "neutron": {
@@ -143,8 +207,24 @@
       "additionalProperties": false,
       "description": "Network service modes.",
       "properties": {
-        "networkingMode": { "type": "string", "enum": ["stub", "iptables", "ebpf"], "description": "Networking backend." },
-        "securityGroupMode": { "type": "string", "enum": ["stub", "iptables", "ebpf"], "description": "Security-group backend." }
+        "networkingMode": {
+          "type": "string",
+          "enum": [
+            "stub",
+            "iptables",
+            "ebpf"
+          ],
+          "description": "Networking backend."
+        },
+        "securityGroupMode": {
+          "type": "string",
+          "enum": [
+            "stub",
+            "iptables",
+            "ebpf"
+          ],
+          "description": "Security-group backend."
+        }
       }
     },
     "cinder": {
@@ -152,7 +232,16 @@
       "additionalProperties": false,
       "description": "Block-storage service mode.",
       "properties": {
-        "storageMode": { "type": "string", "enum": ["stub", "local", "rbd", "local,rbd"], "description": "Storage backend (primary,fallback comma-separated)." }
+        "storageMode": {
+          "type": "string",
+          "enum": [
+            "stub",
+            "local",
+            "rbd",
+            "local,rbd"
+          ],
+          "description": "Storage backend (primary,fallback comma-separated)."
+        }
       }
     },
     "glance": {
@@ -160,17 +249,44 @@
       "additionalProperties": false,
       "description": "Image service mode.",
       "properties": {
-        "storageMode": { "type": "string", "enum": ["stub", "local", "rbd", "s3", "local,rbd", "local,s3"], "description": "Storage backend (primary,fallback comma-separated). rbd,s3 is unsupported: Glance has no RBD backend, so the S3 replica would never be written — use local,s3." },
+        "storageMode": {
+          "type": "string",
+          "enum": [
+            "stub",
+            "local",
+            "rbd",
+            "s3",
+            "local,rbd",
+            "local,s3",
+            "rbd,s3"
+          ],
+          "description": "Storage backend (primary,fallback comma-separated). rbd,s3 is unsupported: Glance has no RBD backend, so the S3 replica would never be written — use local,s3."
+        },
         "s3": {
           "type": "object",
           "additionalProperties": false,
           "description": "S3 / Ceph RGW backend (when storageMode includes s3). Credentials via AWS_* env, not here.",
           "properties": {
-            "endpoint": { "type": "string", "description": "RGW S3 endpoint URL." },
-            "bucket": { "type": "string", "description": "Pre-created bucket for image data." },
-            "region": { "type": "string", "description": "S3 region (RGW zonegroup)." },
-            "caBundle": { "type": "string", "description": "In-container path to a PEM CA bundle for an internal-CA HTTPS RGW." },
-            "insecureSkipVerify": { "type": "boolean", "description": "Skip TLS verification (test-only; never true in production)." }
+            "endpoint": {
+              "type": "string",
+              "description": "RGW S3 endpoint URL."
+            },
+            "bucket": {
+              "type": "string",
+              "description": "Pre-created bucket for image data."
+            },
+            "region": {
+              "type": "string",
+              "description": "S3 region (RGW zonegroup)."
+            },
+            "caBundle": {
+              "type": "string",
+              "description": "In-container path to a PEM CA bundle for an internal-CA HTTPS RGW."
+            },
+            "insecureSkipVerify": {
+              "type": "boolean",
+              "description": "Skip TLS verification (test-only; never true in production)."
+            }
           }
         }
       }
@@ -180,12 +296,159 @@
       "additionalProperties": false,
       "description": "Privileged real mode (libvirt + host access). Off by default.",
       "properties": {
-        "enabled": { "type": "boolean", "description": "Gate privileged pod + host mounts." },
-        "privileged": { "type": "boolean", "description": "Run the pod privileged." },
-        "hostNetwork": { "type": "boolean", "description": "Use host networking." },
-        "libvirtSocketPath": { "type": "string", "description": "Host libvirtd socket (hostPath)." },
-        "hostStoragePath": { "type": "string", "description": "Node-local data root (hostPath)." },
-        "floatingIpPool": { "type": "string", "description": "Operator pool routed to nodes (FR-009c)." }
+        "enabled": {
+          "type": "boolean",
+          "description": "Gate privileged pod + host mounts."
+        },
+        "privileged": {
+          "type": "boolean",
+          "description": "Run the pod privileged."
+        },
+        "hostNetwork": {
+          "type": "boolean",
+          "description": "Use host networking."
+        },
+        "libvirtSocketPath": {
+          "type": "string",
+          "description": "Host libvirtd socket (hostPath)."
+        },
+        "hostStoragePath": {
+          "type": "string",
+          "description": "Node-local data root (hostPath)."
+        },
+        "floatingIpPool": {
+          "type": "string",
+          "description": "Operator pool routed to nodes (FR-009c)."
+        }
+      }
+    },
+    "consoleProxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "noVNC console proxy (SPEC-021). Real mode only; deployed alongside O3K on the same node.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Deploy the console proxy (real mode only)."
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Proxy image repository. minLength 1 and required so blanking it (--set consoleProxy.image.repository=) is rejected at install: without it the template renders image: \":<tag>\", which fails later and less clearly at admission. Matches how image.repository fails closed (FR-018)."
+            },
+            "tag": {
+              "type": "string",
+              "description": "IMAGE version, not noVNC's — 1.3.0 ships noVNC 1.6.0."
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "ClusterIP",
+                "NodePort",
+                "LoadBalancer"
+              ]
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "nodePort": {
+              "type": "integer",
+              "minimum": 30000,
+              "maximum": 32767
+            }
+          }
+        },
+        "idleTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Drop idle console sessions. Must be non-zero: websockify disables the idle timeout at 0, letting an abandoned tab hold a guest console open indefinitely."
+        },
+        "containerSecurityContext": {
+          "type": "object",
+          "description": "Container securityContext for the proxy."
+        },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Health probes for the console proxy, mirroring the o3k container's (SPEC-013) but against GET /vnc_lite.html, the client page the proxy serves. Path is fixed; tune timing/thresholds only. A tcpSocket probe is deliberately NOT used: the kernel accepts connections from the listen backlog even when websockify is wedged, so it would report healthy precisely when the console is broken.",
+          "properties": {
+            "readiness": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "readinessProbe -> GET /vnc_lite.html. Failure removes the pod from the Service (no restart).",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "periodSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "timeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "successThreshold": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "liveness": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "livenessProbe -> GET /vnc_lite.html. Deliberately slower/more forgiving than readiness: a transient stall should drop the proxy from the Service, not restart it and kill every console session on the node.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "periodSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "timeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "description": "Resource requests/limits for the proxy."
+        }
       }
     },
     "podSecurity": {
@@ -193,7 +456,10 @@
       "additionalProperties": false,
       "description": "PodSecurity Admission handling.",
       "properties": {
-        "applyPrivilegedNamespaceLabel": { "type": "boolean", "description": "Label the namespace privileged (real mode only; FR-012d)." }
+        "applyPrivilegedNamespaceLabel": {
+          "type": "boolean",
+          "description": "Label the namespace privileged (real mode only; FR-012d)."
+        }
       }
     },
     "multiNode": {
@@ -201,10 +467,24 @@
       "additionalProperties": false,
       "description": "Multi-node (DaemonSet) settings. Cross-node behavior is deferred (issue #52).",
       "properties": {
-        "nodeSelectorLabel": { "type": "string", "description": "DaemonSet node selector label." },
-        "vxlanEnabled": { "type": "boolean", "description": "VXLAN overlay." },
-        "vxlanPort": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Node-to-node VXLAN UDP port." },
-        "minProductVersion": { "type": "string", "description": "Advisory-only minimum product-version floor (FR-010). NOT the deployed version — that is image.tag. Not enforced today." }
+        "nodeSelectorLabel": {
+          "type": "string",
+          "description": "DaemonSet node selector label."
+        },
+        "vxlanEnabled": {
+          "type": "boolean",
+          "description": "VXLAN overlay."
+        },
+        "vxlanPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Node-to-node VXLAN UDP port."
+        },
+        "minProductVersion": {
+          "type": "string",
+          "description": "Advisory-only minimum product-version floor (FR-010). NOT the deployed version — that is image.tag. Not enforced today."
+        }
       }
     },
     "cache": {
@@ -212,13 +492,22 @@
       "additionalProperties": false,
       "description": "Optional Redis cache (off by default).",
       "properties": {
-        "enabled": { "type": "boolean", "description": "Enable the cache." },
-        "redisUrl": { "type": "string", "description": "Redis URL. In multi-node MUST be a single shared Redis (FR-006a)." }
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the cache."
+        },
+        "redisUrl": {
+          "type": "string",
+          "description": "Redis URL. In multi-node MUST be a single shared Redis (FR-006a)."
+        }
       }
     },
     "dataRetentionPolicy": {
       "type": "string",
-      "enum": ["retain", "delete"],
+      "enum": [
+        "retain",
+        "delete"
+      ],
       "description": "retain keeps all state on uninstall; delete runs the blocking pre-delete purge (SPEC-010)."
     },
     "teardown": {
@@ -226,9 +515,19 @@
       "additionalProperties": false,
       "description": "Teardown hook settings. Effective only when dataRetentionPolicy: delete.",
       "properties": {
-        "kubectlImage": { "type": "string", "description": "kubectl image for the quiesce/PVC-delete Job. REQUIRED under delete (render-time). Must ship /bin/sh." },
-        "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Purge Job activeDeadlineSeconds." },
-        "deletePVCs": { "type": "boolean", "description": "Delete release-owned PVCs during teardown." }
+        "kubectlImage": {
+          "type": "string",
+          "description": "kubectl image for the quiesce/PVC-delete Job. REQUIRED under delete (render-time). Must ship /bin/sh."
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Purge Job activeDeadlineSeconds."
+        },
+        "deletePVCs": {
+          "type": "boolean",
+          "description": "Delete release-owned PVCs during teardown."
+        }
       }
     },
     "logging": {
@@ -236,8 +535,24 @@
       "additionalProperties": false,
       "description": "Observability.",
       "properties": {
-        "level": { "type": "string", "enum": ["debug", "info", "warn", "error"], "description": "Log level." },
-        "format": { "type": "string", "enum": ["json", "text"], "description": "Log format." }
+        "level": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "description": "Log level."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "json",
+            "text"
+          ],
+          "description": "Log format."
+        }
       }
     },
     "resources": {
@@ -257,10 +572,16 @@
       "description": "Extra environment variables for the o3k container (e.g. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for the Glance s3 backend). Standard k8s env entries.",
       "items": {
         "type": "object",
-        "required": ["name"],
+        "required": [
+          "name"
+        ],
         "properties": {
-          "name": { "type": "string" },
-          "value": { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
         }
       }
     },
@@ -278,10 +599,21 @@
           "additionalProperties": false,
           "description": "startupProbe -> /readyz. failureThreshold x periodSeconds is the slow-DB-connect boot grace before CrashLoopBackOff.",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "periodSeconds": { "type": "integer", "minimum": 1 },
-            "timeoutSeconds": { "type": "integer", "minimum": 1 },
-            "failureThreshold": { "type": "integer", "minimum": 1 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
         "readiness": {
@@ -289,11 +621,25 @@
           "additionalProperties": false,
           "description": "readinessProbe -> /readyz. Failure removes the pod from the Service (no restart).",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "periodSeconds": { "type": "integer", "minimum": 1 },
-            "timeoutSeconds": { "type": "integer", "minimum": 1 },
-            "failureThreshold": { "type": "integer", "minimum": 1 },
-            "successThreshold": { "type": "integer", "minimum": 1 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "successThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
         "liveness": {
@@ -301,10 +647,21 @@
           "additionalProperties": false,
           "description": "livenessProbe -> /livez (process-up only; never the DB). Failure restarts the container.",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "periodSeconds": { "type": "integer", "minimum": 1 },
-            "timeoutSeconds": { "type": "integer", "minimum": 1 },
-            "failureThreshold": { "type": "integer", "minimum": 1 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         }
       }

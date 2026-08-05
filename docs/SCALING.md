@@ -615,7 +615,7 @@ nova:
   libvirt_mode: real
   libvirt_uri: "qemu+tcp://compute1/system"  # Will be load-balanced
   instance_storage_path: "rbd:vms/instances"  # Ceph RBD
-  console_proxy_base_url: "https://o3k-api.example.com:6080/vnc_auto.html"
+  console_proxy_base_url: "https://o3k-api.example.com:6080"   # origin only, no path
 
 neutron:
   host: "0.0.0.0"

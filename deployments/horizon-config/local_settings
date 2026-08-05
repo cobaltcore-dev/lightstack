@@ -124,14 +124,16 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 # Console Access Configuration
 # ==========================================
 
-CONSOLE_TYPE = 'novnc'  # VNC console type
-NOVNC_PROXY_URL = 'http://localhost:6080'  # noVNC proxy URL
-
-# Console types available in dropdown
-CONSOLE_TYPES = [
-    ('novnc', _('noVNC')),
-    ('spice', _('SPICE')),
-]
+# Horizon dispatches on this via CONSOLES in
+# openstack_dashboard/dashboards/project/instances/console.py, whose keys are
+# exactly: AUTO, VNC, SPICE, RDP, SERIAL, MKS.
+#
+# It was 'novnc' here, which is NOT one of those. CONSOLES['novnc'] raises
+# KeyError, Horizon converts that to NotAvailable, and the Console tab reports
+# "Console is currently unavailable" WITHOUT ever calling Nova. That masked the
+# real console for as long as F1 was open, because the backend was broken too.
+# 'VNC' is the value that reaches Nova's noVNC console (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 
 # ==========================================
 # Regional Settings

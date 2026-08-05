@@ -24,6 +24,19 @@ app.kubernetes.io/name: {{ include "o3k.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/*
+Selector labels for the console proxy (SPEC-021).
+
+Deliberately a DIFFERENT app.kubernetes.io/name, not o3k.selectorLabels plus a
+component label: the main Service and Deployment select on name+instance alone, so
+a console-proxy pod carrying those two would be adopted as an o3k endpoint and API
+traffic would be routed to the noVNC proxy.
+*/}}
+{{- define "o3k.consoleProxySelectorLabels" -}}
+app.kubernetes.io/name: {{ include "o3k.name" . }}-console-proxy
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
 {{/* Image reference; repository is REQUIRED (FR-018). */}}
 {{- define "o3k.image" -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
@@ -116,6 +129,9 @@ nova:
   port: 8774
   libvirt_uri: "qemu:///system"
   libvirt_mode: {{ .Values.nova.libvirtMode | quote }}
+  console_proxy_base_url: {{ .Values.nova.consoleProxyBaseUrl | quote }}
+  console_token_ttl: {{ .Values.nova.consoleTokenTtl | quote }}
+  console_reconcile_interval: {{ .Values.nova.consoleReconcileInterval | quote }}
 neutron:
   port: 9696
   networking_mode: {{ .Values.neutron.networkingMode | quote }}
@@ -188,6 +204,7 @@ initContainers:
         "{{ .Values.realMode.hostStoragePath }}/instances"
         "{{ .Values.realMode.hostStoragePath }}/cloud-init"
         "{{ .Values.realMode.hostStoragePath }}/dhcp"
+        "{{ .Values.realMode.hostStoragePath }}/console-tokens"
     volumeMounts:
       - name: host-storage
         mountPath: {{ .Values.realMode.hostStoragePath }}

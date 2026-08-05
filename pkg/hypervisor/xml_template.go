@@ -160,10 +160,21 @@ func GenerateVMXML(spec VMSpec) string {
     </console>
 `, ConsoleLogPath(spec.UUID))
 
-	// VNC graphics
+	// VNC graphics (SPEC-021).
+	//
+	// listen='127.0.0.1' is load-bearing, not tidiness: the console proxy is the
+	// only thing that should be able to reach a guest's framebuffer, and it does
+	// so by sharing the host network namespace. Listening on 0.0.0.0 — as this
+	// did before F1 was fixed — makes the console-token check bypassable by
+	// anything that can reach the node.
+	//
+	// sharePolicy='force-shared' lets several viewers watch one guest at once.
+	// libvirt's default (allow-exclusive) silently disconnects the previous
+	// viewer when a second one connects, which reads as a bug during exactly the
+	// support scenario a console exists for.
 	sb.WriteString(`
-    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
-      <listen type='address' address='0.0.0.0'/>
+    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1' sharePolicy='force-shared'>
+      <listen type='address' address='127.0.0.1'/>
     </graphics>
 `)
 

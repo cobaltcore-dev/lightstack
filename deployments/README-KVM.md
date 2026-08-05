@@ -40,7 +40,7 @@ nova:
   libvirt_mode: real
   libvirt_uri: "qemu:///system"
   instance_storage_path: "/var/lib/o3k/instances"
-  console_proxy_base_url: "http://YOUR_HOST_IP:6080/vnc_auto.html"
+  console_proxy_base_url: "http://YOUR_HOST_IP:6080"   # origin only, no path
 
 neutron:
   host: "0.0.0.0"

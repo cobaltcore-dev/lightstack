@@ -14,8 +14,14 @@ func TestNeutronGetQuota_Contract(t *testing.T) {
 
 	client := contract.SetupNeutronClient(t)
 
-	// Get quota for current project
-	quota, err := quotas.Get(client, client.ProviderClient.TokenID).Extract()
+	// Get quota for the current project.
+	//
+	// The second argument is a PROJECT ID, not a token. This passed
+	// client.ProviderClient.TokenID until 2026-08-03, which sent the whole JWT as the
+	// path segment — GET /v2.0/quotas/eyJhbGci… — so O3K correctly answered 404
+	// "project could not be found" and the test had never once exercised the endpoint.
+	projectID := contract.GetProjectIDFromToken(t, client)
+	quota, err := quotas.Get(client, projectID).Extract()
 	require.NoError(t, err)
 	require.NotNil(t, quota)
 

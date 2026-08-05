@@ -283,7 +283,11 @@ nova:
   libvirt_mode: real  # IMPORTANT: Enable real KVM mode
   libvirt_uri: "qemu:///system"
   instance_storage_path: "/var/lib/o3k/instances"
-  console_proxy_base_url: "http://192.168.1.100:6080/vnc_auto.html"  # Replace with your host IP
+  # Browser-reachable ORIGIN of the console proxy — scheme://host:port, NO path.
+  # O3K appends the client page and token query itself.
+  console_proxy_base_url: "http://192.168.1.100:6080"  # Replace with your host IP
+  console_token_ttl: 10m            # how long a console link stays usable
+  console_reconcile_interval: 30s   # how often expired links are reaped
 
 neutron:
   host: "0.0.0.0"
@@ -400,28 +404,44 @@ services:
       - OPENSTACK_KEYSTONE_URL=http://192.168.1.100:35357/v3
       - OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT=True
       - OPENSTACK_KEYSTONE_DEFAULT_DOMAIN=Default
-      - CONSOLE_TYPE=novnc
-      - NOVNC_PROXY_BASE_URL=http://192.168.1.100:6080/vnc_auto.html
+      # VNC, not novnc: Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS.
+      - CONSOLE_TYPE=VNC
     volumes:
       - ./local_settings.py:/etc/openstack-dashboard/local_settings.py:ro
     networks:
       - o3k-net
 
+  # noVNC console proxy. This is the UNMODIFIED upstream noVNC image with its start
+  # command overridden to run websockify directly, so one component serves both the
+  # client page and the token-resolving relay.
+  #
+  # Two flags carry the whole design:
+  #   --token-plugin TokenFile  resolve ?token= against O3K's projection directory
+  #                             (NOT ReadOnlyTokenFile, which caches and would keep
+  #                             serving revoked tokens)
+  #   --idle-timeout            defaults to 0 = disabled; without it an abandoned
+  #                             browser tab holds a guest console open forever
+  # Never add --host-token: it would let a client choose the target host instead of
+  # the token doing so.
+  #
+  # NOT kolla nova-novncproxy: it validates tokens through a Nova console-auth
+  # callback configured in nova.conf, which O3K does not implement.
   novnc:
-    image: quay.io/openstack.kolla/nova-novncproxy:2025.2-ubuntu-noble
+    image: bonigarcia/novnc:1.3.0
     container_name: novnc-proxy
     restart: unless-stopped
-    ports:
-      - "6080:6080"
-    environment:
-      - NOVA_NOVNCPROXY_BASE_URL=http://192.168.1.100:6080/vnc_auto.html
+    network_mode: host   # the guest console binds 127.0.0.1; only host networking reaches it
+    volumes:
+      # Read-only: the proxy resolves tokens, O3K mints and revokes them.
+      - /var/lib/o3k/console-tokens:/var/lib/o3k/console-tokens:ro
     command: >
-      /usr/bin/nova-novncproxy
-      --web /usr/share/novnc
-      --novncproxy_host=0.0.0.0
-      --novncproxy_port=6080
-    networks:
-      - o3k-net
+      /bin/sh -c "cd /root/noVNC/utils/websockify &&
+      exec python3 -m websockify
+      --web /root/noVNC
+      --token-plugin TokenFile
+      --token-source /var/lib/o3k/console-tokens
+      --idle-timeout 300
+      6080"
 
 networks:
   o3k-net:
@@ -450,8 +470,13 @@ OPENSTACK_KEYSTONE_DEFAULT_ROLE = 'member'
 
 SESSION_TIMEOUT = 14400  # 4 hours
 
-CONSOLE_TYPE = 'novnc'
-OPENSTACK_CONSOLE_NOVNC_PROXY_URL = f"http://{OPENSTACK_HOST}:6080/vnc_auto.html"
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
+# No proxy URL setting here: Horizon has none. O3K builds the full console URL
+# (origin + client page + token query) and returns it from the API; Horizon just
+# iframes what it is given. Set the origin via nova.console_proxy_base_url in o3k.yaml.
 
 ALLOWED_HOSTS = ['*']
 DEBUG = False
@@ -915,7 +940,22 @@ sudo netstat -tulpn | grep 6080
 **Check Nova console URL configuration**:
 ```bash
 grep console_proxy_base_url /opt/o3k/config/o3k.yaml
-# Should match your host IP
+# Should be an ORIGIN your browser can reach — scheme://host:port, no path.
+# O3K appends the client page and token query itself.
+```
+
+**Check the console-token projection** — this is what the proxy actually reads:
+```bash
+/opt/o3k/bin/o3k console-tokens list          # add --json for scripting
+```
+Empty right after `openstack console url show`? The failure is O3K-side. Entries
+piling up past their expiry? The reconciler is not running — and since the proxy
+performs no expiry check of its own, nothing else enforces token lifetime.
+
+**Proxy refusing every token** is usually a permission problem, not a token bug:
+```bash
+docker exec novnc-proxy ls -l /var/lib/o3k/console-tokens/
+docker logs novnc-proxy | tail    # "Token '…' not found" vs "connecting to: …"
 ```
 
 ### Issue 5: Floating IPs Not Working

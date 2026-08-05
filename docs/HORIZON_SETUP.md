@@ -99,15 +99,19 @@ SESSION_TIMEOUT = 14400  # 4 hours
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 
 # Console Access
-CONSOLE_TYPE = 'novnc'
-NOVNC_PROXY_URL = 'http://localhost:6080'
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 ```
 
 **Key Configuration Points**:
 - `OPENSTACK_HOST`: Must resolve to O3K service
 - `OPENSTACK_API_VERSIONS`: Match O3K implemented versions
 - `SESSION_TIMEOUT`: Should match O3K JWT token TTL (default 24h, recommended 4h for Horizon)
-- `CONSOLE_TYPE`: Must match deployed console proxy (noVNC, SPICE, etc.)
+- `CONSOLE_TYPE`: One of Horizon's `CONSOLES` keys — `AUTO`, `VNC`, `SPICE`, `RDP`,
+  `SERIAL`, `MKS`. Use `VNC` for O3K's noVNC console. Not `'novnc'`: that is not a key,
+  so Horizon reports the console as unavailable without ever calling Nova.
 
 ---
 
@@ -290,7 +294,9 @@ docker exec o3k date
 
 **Causes**:
 - noVNC proxy not running
-- Incorrect `NOVNC_PROXY_URL`
+- Incorrect `nova.console_proxy_base_url` in `o3k.yaml` — it must be an origin the
+  BROWSER can reach (Horizon has no proxy setting of its own; O3K returns the full URL)
+- No console token issued — check with `o3k console-tokens list`
 - Nova not configured for console access
 
 **Fix**:
@@ -301,8 +307,12 @@ docker ps | grep novnc
 # Test noVNC endpoint
 curl http://localhost:6080
 
-# Check Nova console configuration
-grep console_proxy config/o3k.yaml
+# Check Nova console configuration (an ORIGIN — scheme://host:port, no path)
+grep console_proxy_base_url config/o3k.yaml
+
+# Inspect the console tokens the proxy resolves against.
+# In a container the binary is /app/o3k and is not on $PATH.
+docker exec o3k /app/o3k console-tokens list
 ```
 
 ---

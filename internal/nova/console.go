@@ -1,21 +1,40 @@
 package nova
 
 import (
-	"context"
-	"crypto/rand"
-	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
+	"net/url"
+	"strings"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/o3k/internal/console"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
+)
+
+// Console handlers (SPEC-021 / cloud-storage#534, finding F1).
+//
+// Before this feature these returned a hardcoded http://localhost:6080 URL with
+// a random token nothing recorded and a port derived from a hash of the instance
+// id. Every part of that was fiction. Now:
+//
+//   - the port is read back from libvirt on every request (never cached: the
+//     hypervisor reassigns it on each start);
+//   - the token is persisted and projected for the proxy, so it can be resolved
+//     and revoked;
+//   - the URL points at an operator-configured origin;
+//   - and anything we cannot actually serve is refused instead of dressed up as
+//     a URL that leads nowhere.
+//
+// The client page and ?path= query are appended here rather than configured, so
+// they cannot drift from the deployed noVNC/websockify version.
+const (
+	consoleClientPage = "/vnc_lite.html"
+	consoleTypeNoVNC  = "novnc"
 )
 
 // GetConsoleRequest represents a console access request
@@ -26,58 +45,25 @@ type GetConsoleRequest struct {
 	} `json:"remote_console"`
 }
 
-// GetRemoteConsole returns console connection details
+// GetRemoteConsole handles POST /servers/{id}/remote-consoles (microversion 2.6+).
 func (svc *Service) GetRemoteConsole(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
 	var req GetConsoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
 
-	// Verify instance exists
-	var libvirtDomainID sql.NullString
-	var vncPort int
-	var vncPassword string
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id, console_vnc_port, console_vnc_password FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&libvirtDomainID, &vncPort, &vncPassword)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	if req.RemoteConsole.Type != consoleTypeNoVNC {
+		// Honest refusal rather than a plausible URL. O3K serves one console type;
+		// returning 200 with an unreachable URL for the others cost real debugging
+		// time during the SPEC-018 verification pass.
+		common.SendError(c, common.NewBadRequestError(unsupportedConsoleTypeMsg(req.RemoteConsole.Type)))
 		return
 	}
 
-	// If VNC not configured yet, set it up
-	if vncPort == 0 || vncPassword == "" {
-		vncPort, vncPassword, err = svc.setupVNCConsole(c.Request.Context(), instanceID, libvirtDomainID.String)
-		if err != nil {
-			log.Error().Err(err).Str("operation", "setup_vnc_console").Msg("console setup error")
-			common.SendError(c, common.NewInternalServerError("failed to setup console"))
-			return
-		}
-	}
-
-	// Build console URL based on protocol/type
-	var consoleURL string
-	switch req.RemoteConsole.Type {
-	case "novnc":
-		// noVNC is a web-based VNC client
-		// Format: http://nova-novncproxy:6080/vnc_auto.html?token=<token>
-		token := generateConsoleToken(instanceID)
-		consoleURL = fmt.Sprintf("http://localhost:6080/vnc_auto.html?token=%s", token)
-	case "xvpvnc":
-		// XVP VNC (legacy)
-		consoleURL = fmt.Sprintf("http://localhost:6081/console?token=%s", generateConsoleToken(instanceID))
-	case "serial":
-		// Serial console
-		consoleURL = fmt.Sprintf("ws://localhost:6083/?token=%s", generateConsoleToken(instanceID))
-	default:
-		common.SendError(c, common.NewBadRequestError(fmt.Sprintf("unsupported console type: %s", req.RemoteConsole.Type)))
-		return
+	consoleURL, ok := svc.issueConsoleURL(c)
+	if !ok {
+		return // issueConsoleURL already sent the error
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -89,11 +75,8 @@ func (svc *Service) GetRemoteConsole(c *gin.Context) {
 	})
 }
 
-// GetVNCConsole returns VNC console details (legacy API)
+// GetVNCConsole handles the legacy os-getVNCConsole body form.
 func (svc *Service) GetVNCConsole(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
 	var req struct {
 		GetVNCConsole struct {
 			Type string `json:"type"` // "novnc" or "xvpvnc"
@@ -105,15 +88,11 @@ func (svc *Service) GetVNCConsole(c *gin.Context) {
 		return
 	}
 
-	svc.getVNCConsoleResponse(c, instanceID, projectID, req.GetVNCConsole.Type)
+	svc.getVNCConsoleResponse(c, req.GetVNCConsole.Type)
 }
 
-// GetVNCConsoleAction handles VNC console requests from the action API
+// GetVNCConsoleAction handles os-getVNCConsole dispatched from the action API.
 func (svc *Service) GetVNCConsoleAction(c *gin.Context, vncConsole any) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Parse the already-parsed action body
 	consoleMap, ok := vncConsole.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid console request"))
@@ -122,42 +101,25 @@ func (svc *Service) GetVNCConsoleAction(c *gin.Context, vncConsole any) {
 
 	consoleType, ok := consoleMap["type"].(string)
 	if !ok {
-		consoleType = "novnc" // default
+		consoleType = consoleTypeNoVNC
 	}
 
-	svc.getVNCConsoleResponse(c, instanceID, projectID, consoleType)
+	svc.getVNCConsoleResponse(c, consoleType)
 }
 
-// getVNCConsoleResponse is the shared logic for returning console details
-func (svc *Service) getVNCConsoleResponse(c *gin.Context, instanceID, projectID, consoleType string) {
-
-	// Verify instance exists
-	var libvirtDomainID sql.NullString
-	var vncPort int
-	var vncPassword string
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id, console_vnc_port, console_vnc_password FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&libvirtDomainID, &vncPort, &vncPassword)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("instance"))
+// getVNCConsoleResponse is the shared legacy path. It deliberately routes
+// through the same issuance as the modern endpoint (FR-005): two code paths
+// returning two different URLs for one instance is how consoles rot.
+func (svc *Service) getVNCConsoleResponse(c *gin.Context, consoleType string) {
+	if consoleType != consoleTypeNoVNC {
+		common.SendError(c, common.NewBadRequestError(unsupportedConsoleTypeMsg(consoleType)))
 		return
 	}
 
-	// If VNC not configured yet, set it up
-	if vncPort == 0 || vncPassword == "" {
-		vncPort, vncPassword, err = svc.setupVNCConsole(c.Request.Context(), instanceID, libvirtDomainID.String)
-		if err != nil {
-			log.Error().Err(err).Str("operation", "setup_vnc_console_action").Msg("console setup error")
-			common.SendError(c, common.NewInternalServerError("failed to setup console"))
-			return
-		}
+	consoleURL, ok := svc.issueConsoleURL(c)
+	if !ok {
+		return
 	}
-
-	// Generate console URL
-	token := generateConsoleToken(instanceID)
-	consoleURL := fmt.Sprintf("http://localhost:6080/vnc_auto.html?token=%s", token)
 
 	c.JSON(http.StatusOK, gin.H{
 		"console": gin.H{
@@ -167,73 +129,242 @@ func (svc *Service) getVNCConsoleResponse(c *gin.Context, instanceID, projectID,
 	})
 }
 
-// setupVNCConsole configures VNC access for an instance
-func (svc *Service) setupVNCConsole(ctx context.Context, instanceID, libvirtDomainID string) (int, string, error) {
-	// Generate random VNC password
-	password := generateVNCPassword()
+// issueConsoleURL performs the whole issuance: authorize, read the live console
+// endpoint from libvirt, persist a token, and build the URL. It writes the error
+// response itself and reports success via the bool, so each caller stays a thin
+// wrapper around its own response shape.
+func (svc *Service) issueConsoleURL(c *gin.Context) (string, bool) {
+	ctx := c.Request.Context()
+	instanceID := c.Param("id")
+	projectID := c.GetString("project_id")
 
-	// In real mode, we would query libvirt for the actual VNC port
-	// For now, use a calculated port based on instance ID hash
-	vncPort := 5900 + (hashString(instanceID) % 1000)
-
-	// In stub mode or if libvirt not available, just store the values
-	// In real mode, we could configure VNC on the libvirt domain
-
-	// Update database
-	_, err := database.DB.Exec(ctx, `
-		UPDATE instances
-		SET console_vnc_port = $1, console_vnc_password = $2, updated_at = $3
-		WHERE id = $4
-	`, vncPort, password, time.Now(), instanceID)
-
+	ownerProject, err := lookupConsoleInstance(c, instanceID, projectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Deliberately the same answer for "absent" and "someone else's": a 403
+		// here would confirm the instance exists.
+		common.SendError(c, common.NewNotFoundError("instance"))
+		return "", false
+	}
 	if err != nil {
-		return 0, "", err
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("console: instance lookup failed")
+		common.SendError(c, common.NewInternalServerError("failed to look up instance"))
+		return "", false
 	}
 
-	return vncPort, password, nil
-}
-
-// generateConsoleToken creates a temporary token for console access
-func generateConsoleToken(_ string) string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		log.Error().Err(err).Msg("failed to generate console token")
+	if svc.consoleStore == nil {
+		// No store means no revocable token, and an unrevocable console is worse
+		// than none at all.
+		common.SendError(c, common.NewInternalServerError("console token store is not configured"))
+		return "", false
 	}
-	return hex.EncodeToString(b)
-}
 
-// generateVNCPassword creates a random VNC password
-func generateVNCPassword() string {
-	bytes := make([]byte, 8)
-	rand.Read(bytes)
-	return hex.EncodeToString(bytes)
-}
-
-// hashString creates a simple hash of a string for port calculation
-func hashString(s string) int {
-	hash := 0
-	for _, c := range s {
-		hash = (hash * 31) + int(c)
+	host, port, err := svc.consoleEndpoint(c, instanceID)
+	if err != nil {
+		sendConsoleEndpointError(c, instanceID, err)
+		return "", false
 	}
-	if hash < 0 {
-		hash = -hash
+
+	token, err := svc.consoleStore.Issue(ctx, instanceID, ownerProject, host, port)
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("console: issuing token failed")
+		common.SendError(c, common.NewInternalServerError("failed to issue console token"))
+		return "", false
 	}
-	return hash
+
+	return buildConsoleURL(svc.consoleProxyBaseURL, c, token), true
 }
 
-// GetConsoleOutputAction handles console output requests (os-getConsoleOutput action)
+// lookupConsoleInstance resolves an instance for a console request and returns the
+// project that owns it.
+//
+// One rule, one implementation, shared by BOTH console surfaces — the interactive
+// console and the serial log (FR-013). Upstream's policy for these is admin_or_owner:
+// an admin may address any project's instance, everyone else only their own. Without
+// the override the Admin panel's Console tab is broken for every instance the admin
+// does not own; with it in only one of the two handlers, an admin could open a
+// tenant's framebuffer while 404ing on that same instance's boot log.
+//
+// Returns pgx.ErrNoRows for both "absent" and "someone else's" so callers answer 404
+// either way: a 403 would confirm the instance exists.
+func lookupConsoleInstance(c *gin.Context, instanceID, projectID string) (string, error) {
+	var ownerProject string
+	if common.HasRole(c, "admin") {
+		err := database.DB.QueryRow(c.Request.Context(),
+			"SELECT project_id FROM instances WHERE id = $1", instanceID).Scan(&ownerProject)
+		return ownerProject, err
+	}
+	err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT project_id FROM instances WHERE id = $1 AND project_id = $2",
+		instanceID, projectID).Scan(&ownerProject)
+	return ownerProject, err
+}
+
+// revokeConsoleTokens drops every console token of an instance, for use by any
+// operation that can move or free its console endpoint (SPEC-021 FR-014).
+//
+// Failures are logged, not returned: revocation is a safety measure attached to
+// operations that must still succeed. A failure here leaves a token alive until
+// the reconciler's next sweep, which is why that sweep exists.
+func (svc *Service) revokeConsoleTokens(c *gin.Context, instanceID, reason string) {
+	if svc.consoleStore == nil || instanceID == "" {
+		return
+	}
+	if err := svc.consoleStore.RevokeByInstance(c.Request.Context(), instanceID); err != nil {
+		log.Error().Err(err).
+			Str("instance_id", instanceID).
+			Str("reason", reason).
+			Msg("console: revoking tokens failed; the reconciler will retry")
+	}
+}
+
+// consoleEndpoint reads the guest's live console endpoint from the hypervisor.
+func (svc *Service) consoleEndpoint(c *gin.Context, instanceID string) (string, int, error) {
+	if svc.libvirtMode == "stub" || svc.vmManager == nil {
+		return "", 0, hypervisor.ErrConsoleUnavailable
+	}
+	return svc.vmManager.GetConsoleEndpoint(c.Request.Context(), instanceID)
+}
+
+// sendConsoleEndpointError maps a readback failure onto the status code that
+// describes it, so a caller never has to guess whether the problem is their
+// request, the instance's state, or the deployment.
+func sendConsoleEndpointError(c *gin.Context, instanceID string, err error) {
+	switch {
+	case errors.Is(err, hypervisor.ErrConsoleUnavailable):
+		// Stub mode: the deployment has no hypervisor, so no console can exist.
+		// 501 rather than a 4xx — the caller did nothing wrong.
+		c.JSON(http.StatusNotImplemented, gin.H{
+			"notImplemented": gin.H{
+				"code":    http.StatusNotImplemented,
+				"message": "console unavailable: nova is running in stub mode, there is no guest to display",
+			},
+		})
+	case errors.Is(err, hypervisor.ErrConsoleNotReady):
+		common.SendError(c, common.NewConflictError(
+			"console not available: the instance is not running"))
+	case errors.Is(err, hypervisor.ErrNoGraphicalConsole):
+		common.SendError(c, common.NewConflictError(
+			"console not available: the instance has no graphical console device"))
+	case errors.Is(err, hypervisor.ErrConsoleNotLoopback):
+		// A guest reachable off-host would make the token decorative. Refusing is
+		// the safe direction.
+		log.Error().Err(err).Str("instance_id", instanceID).
+			Msg("console: guest console is not bound to loopback; refusing to proxy")
+		common.SendError(c, common.NewInternalServerError("console misconfigured on this host"))
+	default:
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("console: endpoint readback failed")
+		common.SendError(c, common.NewInternalServerError("failed to read the instance console endpoint"))
+	}
+}
+
+// buildConsoleURL assembles <origin>/vnc_lite.html?path=%3Ftoken%3D<token>.
+//
+// The ?path= form is upstream's (nova returns the same shape): the noVNC client
+// appends it to its WebSocket URL, so the browser opens ws://<origin>/?token=…
+// against websockify, which resolves the token to a guest.
+//
+// The inner "?token=" is percent-encoded because it is a VALUE inside the outer
+// ?path= parameter: left literal, its own ? and = would terminate that value and
+// the client would receive an empty path. The token itself is 32 hex characters
+// and needs no escaping — only the two delimiters around it do.
+func buildConsoleURL(configuredOrigin string, c *gin.Context, token string) string {
+	origin := strings.TrimRight(configuredOrigin, "/")
+	if origin == "" {
+		// Never a hardcoded localhost: fall back to the same endpoint settings
+		// that govern the rest of O3K's advertised URLs (FR-021).
+		origin = deriveConsoleOrigin(c)
+	}
+	return fmt.Sprintf("%s%s?path=%s", origin, consoleClientPage, url.QueryEscape("?token="+token))
+}
+
+// deriveConsoleOrigin returns the proxy origin for a request, with the API port
+// replaced by the console port.
+//
+// common.BaseURL applies its port argument ONLY in its O3K_ENDPOINT_HOST branch;
+// otherwise it returns scheme://c.Request.Host verbatim and drops the port
+// (pinned by common.BaseURL's own test: BaseURL(ctx, 0) -> "https://host:443").
+// Relying on it alone therefore advertises Nova's own port, 8774, as the console
+// origin — a link the browser resolves to the API, not the proxy. That is the last
+// surviving form of the hardcoded-URL bug SPEC-021 exists to fix, so the port is
+// re-applied here rather than changing BaseURL, which every service's self-links
+// share.
+//
+// Only helps when the browser can reach the API host directly (the single-node
+// case). Behind an ingress whose hostname differs from the proxy's, set
+// nova.console_proxy_base_url explicitly — there is nothing in the request to
+// derive that from.
+func deriveConsoleOrigin(c *gin.Context) string {
+	base := strings.TrimRight(common.BaseURL(c, defaultConsoleProxyPort), "/")
+	u, err := url.Parse(base)
+	if err != nil || u.Hostname() == "" {
+		return base
+	}
+	u.Host = fmt.Sprintf("%s:%d", u.Hostname(), defaultConsoleProxyPort)
+	return u.String()
+}
+
+// defaultConsoleProxyPort is the port the chart publishes for the console proxy.
+// Only used when no origin is configured.
+const defaultConsoleProxyPort = 6080
+
+func unsupportedConsoleTypeMsg(consoleType string) string {
+	if consoleType == "" {
+		consoleType = "(none)"
+	}
+	return fmt.Sprintf(
+		"unsupported console type %q: this deployment serves only %q; use `openstack console log show` for serial output",
+		consoleType, consoleTypeNoVNC)
+}
+
+// ShowConsoleAuthToken handles GET /os-console-auth-tokens/{token} (microversion
+// 2.31+).
+//
+// This exists for API compatibility only. The proxy resolves tokens from the
+// projection directory without asking us, so nothing about the console depends
+// on this endpoint working — but `openstack` and third-party tooling expect it.
+func (svc *Service) ShowConsoleAuthToken(c *gin.Context) {
+	if svc.consoleStore == nil {
+		common.SendError(c, common.NewNotFoundError("console token"))
+		return
+	}
+
+	rec, err := svc.consoleStore.Resolve(c.Request.Context(), c.Param("token"))
+	if err != nil {
+		// Unknown, expired and instance-gone are deliberately indistinguishable.
+		if !errors.Is(err, console.ErrTokenNotFound) {
+			log.Error().Err(err).Msg("console: token lookup failed")
+		}
+		common.SendError(c, common.NewNotFoundError("console token"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"console": gin.H{
+			"instance_uuid": rec.InstanceID,
+			"host":          rec.Host,
+			"port":          rec.Port,
+		},
+	})
+}
+
+// GetConsoleOutputAction handles console output requests (os-getConsoleOutput action).
+//
+// The output itself is unchanged by SPEC-021 and deliberately so: the serial log is
+// the documented fallback that worked throughout the F1 outage, and breaking it would
+// be a regression (FR-026). Its AUTHORIZATION did change, to match the interactive
+// console: both are admin_or_owner, so an admin reading one tenant's framebuffer and
+// 404ing on the same instance's boot log would be incoherent.
 func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput any) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Verify instance exists
-	var id string
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&id)
+	// Verify the instance exists and the caller may see it, with the same admin
+	// override issueConsoleURL uses (FR-013).
+	_, err := lookupConsoleInstance(c, instanceID, projectID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Absent and someone else's are the same answer: a 403 would confirm the
+		// instance exists.
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -248,7 +379,9 @@ func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput any) {
 
 	// In real mode, return the VM's captured serial console log (SPEC-009 WS-0).
 	if svc.libvirtMode == "real" {
-		if out, rerr := hypervisor.ReadConsoleLog(id, length); rerr == nil {
+		// instanceID, not a re-scanned column: the lookup matched on id = $1, so they
+		// are the same value by construction.
+		if out, rerr := hypervisor.ReadConsoleLog(instanceID, length); rerr == nil {
 			c.JSON(http.StatusOK, gin.H{"output": out})
 			return
 		}
@@ -272,113 +405,21 @@ func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput any) {
 	})
 }
 
-// GetSerialConsoleAction handles serial console requests (os-getSerialConsole action)
-func (svc *Service) GetSerialConsoleAction(c *gin.Context, serialConsole any) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists
-	var id string
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&id)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return
-	}
-
-	// Parse console type
-	consoleType := "serial"
-	if consoleMap, ok := serialConsole.(map[string]any); ok {
-		if typeVal, ok := consoleMap["type"].(string); ok {
-			consoleType = typeVal
-		}
-	}
-
-	// Generate serial console URL
-	token := generateConsoleToken(instanceID)
-	consoleURL := fmt.Sprintf("ws://localhost:6083/?token=%s", token)
-
-	c.JSON(http.StatusOK, gin.H{
-		"console": gin.H{
-			"type": consoleType,
-			"url":  consoleURL,
-		},
-	})
+// GetSerialConsoleAction handles os-getSerialConsole.
+//
+// O3K captures a serial LOG but serves no interactive serial console, so this
+// refuses instead of returning a ws:// URL nothing listens on (FR-025).
+func (svc *Service) GetSerialConsoleAction(c *gin.Context, _ any) {
+	common.SendError(c, common.NewBadRequestError(unsupportedConsoleTypeMsg("serial")))
 }
 
-// GetSPICEConsoleAction handles SPICE console requests (os-getSPICEConsole action)
-func (svc *Service) GetSPICEConsoleAction(c *gin.Context, spiceConsole any) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists
-	var id string
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&id)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return
-	}
-
-	// Parse console type
-	consoleType := "spice-html5"
-	if consoleMap, ok := spiceConsole.(map[string]any); ok {
-		if typeVal, ok := consoleMap["type"].(string); ok {
-			consoleType = typeVal
-		}
-	}
-
-	// Generate SPICE console URL
-	token := generateConsoleToken(instanceID)
-	consoleURL := fmt.Sprintf("http://localhost:6082/spice_auto.html?token=%s", token)
-
-	c.JSON(http.StatusOK, gin.H{
-		"console": gin.H{
-			"type": consoleType,
-			"url":  consoleURL,
-		},
-	})
+// GetSPICEConsoleAction handles os-getSPICEConsole — not served (FR-025).
+func (svc *Service) GetSPICEConsoleAction(c *gin.Context, _ any) {
+	common.SendError(c, common.NewBadRequestError(unsupportedConsoleTypeMsg("spice-html5")))
 }
 
-// GetRDPConsoleAction handles RDP console requests (os-getRDPConsole action)
-func (svc *Service) GetRDPConsoleAction(c *gin.Context, rdpConsole any) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists
-	var id string
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&id)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return
-	}
-
-	// Parse console type
-	consoleType := "rdp-html5"
-	if consoleMap, ok := rdpConsole.(map[string]any); ok {
-		if typeVal, ok := consoleMap["type"].(string); ok {
-			consoleType = typeVal
-		}
-	}
-
-	// Generate RDP console URL
-	token := generateConsoleToken(instanceID)
-	consoleURL := fmt.Sprintf("http://localhost:6084/rdp.html?token=%s", token)
-
-	c.JSON(http.StatusOK, gin.H{
-		"console": gin.H{
-			"type": consoleType,
-			"url":  consoleURL,
-		},
-	})
+// GetRDPConsoleAction handles os-getRDPConsole — not served (FR-025). Upstream
+// removed the Hyper-V driver and returns 400 here too.
+func (svc *Service) GetRDPConsoleAction(c *gin.Context, _ any) {
+	common.SendError(c, common.NewBadRequestError(unsupportedConsoleTypeMsg("rdp-html5")))
 }

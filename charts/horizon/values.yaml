@@ -1,5 +1,5 @@
-# Verification Horizon chart (SPEC-018).
-# Deploys unmodified kolla Horizon + memcached + noVNC against a real-mode O3K on the SAME
+# Horizon dashboard for O3K.
+# Deploys unmodified kolla Horizon + memcached against an O3K deployment on the SAME
 # cluster. O3K itself stays ClusterIP and is called by Horizon server-side (research.md U3),
 # so only Horizon (and, for reproduction, noVNC) are exposed via NodePort.
 # See docs/specs/018-horizon-dashboard-verification/.
@@ -97,40 +97,14 @@ memcached:
       cpu: 250m
       memory: 192Mi
 
-# noVNC console client. KNOWN GAP (research.md U1 / finding F1): O3K's Nova returns a
-# hardcoded http://localhost:6080 console URL with a random, unpersisted token and a
-# fabricated VNC port (never read from libvirt — see internal/nova/console.go), so no
-# proxy can resolve a guest and the Horizon Console tab stays "unavailable". Deployed only
-# to reproduce that, with a maintained + pinned image; disable if not needed.
-novnc:
-  enabled: true
-  image:
-    # bonigarcia/novnc — maintained (Apache-2.0), Alpine noVNC client, serves :6080. Pinned.
-    # Not kolla nova-novncproxy:2025.2 (needs nova.conf + a console-auth callback O3K lacks) —
-    # see docs/specs/018-horizon-dashboard-verification/research.md U1.
-    repository: bonigarcia/novnc
-    tag: "1.3.0"
-    pullPolicy: IfNotPresent
-  service:
-    type: NodePort
-    port: 6080
-    nodePort: 30680
-  # VNC target the client fronts. O3K exposes no reachable guest VNC (F1), so this is a
-  # deliberate dead placeholder: the pod boots and serves noVNC, the console fails on
-  # connect — exactly the F1 behavior. Point at a real host:port if O3K ever exposes one.
-  vncServer: "127.0.0.1:5900"
-  # Binds unprivileged :6080 — safe to harden (rootfs left writable; websockify may use /tmp).
-  containerSecurityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop: ["ALL"]
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 250m
-      memory: 128Mi
+# The noVNC console is NOT deployed by this chart.
+#
+# It used to be, as a reproduction prop for finding F1: a client pointed at a dead
+# placeholder target, proving the Console tab stayed unavailable. SPEC-021 made the
+# console real, and the working proxy lives in charts/o3k (`consoleProxy`) because
+# every requirement it has is a property of the O3K node — a node-local token
+# directory and the host network namespace to reach a loopback-bound guest.
+# Putting it here would pin Horizon to the hypervisor node forever.
 
 # Left empty: see the PSA note under horizon.containerSecurityContext above.
 podSecurityContext: {}

@@ -25,3 +25,9 @@ func CloudInitDir() string { return filepath.Join(Base, "cloud-init") }
 
 // DHCPDir holds dnsmasq runtime state (configs, leases, pids).
 func DHCPDir() string { return filepath.Join(Base, "dhcp") }
+
+// ConsoleTokenDir holds the console-token projection the noVNC proxy reads: one
+// file per live token, "<token>: <host>:<port>". It is a projection of the
+// console_auth_tokens table, never the store of record — losing it stops tokens
+// from resolving, which is the safe direction (SPEC-021 FR-023b).
+func ConsoleTokenDir() string { return filepath.Join(Base, "console-tokens") }

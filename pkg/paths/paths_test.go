@@ -13,6 +13,7 @@ func TestLayout(t *testing.T) {
 		{InstancesDir(), "/var/lib/o3k/instances"},
 		{CloudInitDir(), "/var/lib/o3k/cloud-init"},
 		{DHCPDir(), "/var/lib/o3k/dhcp"},
+		{ConsoleTokenDir(), "/var/lib/o3k/console-tokens"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

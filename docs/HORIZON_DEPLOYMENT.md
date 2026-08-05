@@ -65,7 +65,10 @@ SESSION_COOKIE_SECURE = False  # Set True with HTTPS in production
 CSRF_COOKIE_SECURE = False     # Set True with HTTPS in production
 
 # Console Access Configuration
-CONSOLE_TYPE = 'novnc'  # VNC console support
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 
 # Regional Settings
 OPENSTACK_KEYSTONE_REGION_NAME = "RegionOne"
@@ -317,7 +320,10 @@ Horizon resolves O3K services using the `OPENSTACK_HOST` setting. Options:
 VNC console requires noVNC proxy. Configuration:
 
 ```python
-CONSOLE_TYPE = 'novnc'
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 ```
 
 O3K generates console tokens that Horizon uses to establish VNC connections through the noVNC proxy (port 6080).

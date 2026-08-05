@@ -45,6 +45,10 @@ func (svc *Service) SuspendInstance(c *gin.Context) {
 		return
 	}
 
+	// Suspending frees the guest's console port for reuse by another domain, so
+	// outstanding tokens must not survive it (SPEC-021 FR-014).
+	svc.revokeConsoleTokens(c, instanceID, "instance suspended")
+
 	// Update status to SUSPENDED
 	_, err = database.DB.Exec(c.Request.Context(), `
 		UPDATE instances
@@ -111,6 +115,10 @@ func (svc *Service) ResumeInstance(c *gin.Context) {
 		common.SendError(c, common.NewInvalidStateError(fmt.Sprintf("cannot resume instance in %s state", status)))
 		return
 	}
+
+	// Resuming can land the guest on a different console port than it had before
+	// (SPEC-021 FR-014).
+	svc.revokeConsoleTokens(c, instanceID, "instance resumed")
 
 	// Update status to ACTIVE
 	_, err = database.DB.Exec(c.Request.Context(), `

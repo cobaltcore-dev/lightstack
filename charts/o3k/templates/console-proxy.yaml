@@ -1,0 +1,171 @@
+{{- if and .Values.realMode.enabled .Values.consoleProxy.enabled }}
+{{/*
+  noVNC console proxy (SPEC-021 / cloud-storage#534, finding F1).
+
+  O3K writes NO relay code. The pinned upstream noVNC image already bundles
+  websockify and its token plugins, so the default entrypoint
+  (`novnc_proxy --vnc $VNC_SERVER`, a single fixed target with no token support —
+  which is what made the old console a dead placeholder) is replaced by
+  websockify itself, serving the bundled client AND resolving one token per
+  connection.
+
+  O3K's only job is keeping /var/lib/o3k/console-tokens truthful.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "o3k.fullname" . }}-console-proxy
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console-proxy
+spec:
+  # The token projection is node-local, so a second replica on another node
+  # would refuse every token it was handed.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "o3k.consoleProxySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "o3k.consoleProxySelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: console-proxy
+    spec:
+      # The guest's VNC binds 127.0.0.1 so the token is the only way in
+      # (FR-017). libvirtd and its qemu processes run in the HOST network
+      # namespace — the chart mounts the host's libvirt socket — so only a
+      # host-networked pod can reach that loopback address.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # Pin to the O3K pod's node, not to a node name: the token directory is
+      # node-local, and a nodeSelector would strand the proxy reading an empty
+      # directory on the wrong host if O3K were ever rescheduled. Required, not
+      # preferred — a preferred rule would schedule anyway and fail every token.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  {{- include "o3k.selectorLabels" . | nindent 18 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: console-proxy
+          image: "{{ .Values.consoleProxy.image.repository }}:{{ .Values.consoleProxy.image.tag }}"
+          imagePullPolicy: {{ .Values.consoleProxy.image.pullPolicy }}
+          {{- with .Values.consoleProxy.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Replaces the image's default entrypoint. Notes on the flags:
+          #   --web            serve the bundled noVNC client from the same port
+          #   --token-plugin   TokenFile, NOT ReadOnlyTokenFile: the read-only
+          #                    variant caches on first use and would keep serving
+          #                    revoked tokens, silently voiding expiry
+          #   --idle-timeout   defaults to 0 (disabled); without it an abandoned
+          #                    browser tab holds a guest console open forever
+          #   NO --host-token  it would let a client choose the target host
+          #                    instead of the token doing so (FR-012)
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              cd /root/noVNC/utils/websockify &&
+              exec python3 -m websockify
+              --web /root/noVNC
+              --token-plugin TokenFile
+              --token-source {{ .Values.realMode.hostStoragePath }}/console-tokens
+              --idle-timeout {{ .Values.consoleProxy.idleTimeoutSeconds }}
+              {{ .Values.consoleProxy.service.port }}
+          ports:
+            - name: console
+              containerPort: {{ .Values.consoleProxy.service.port }}
+              hostPort: {{ .Values.consoleProxy.service.port }}
+          volumeMounts:
+            # Read-only: the proxy resolves tokens, it never mints or revokes
+            # them. Anything that writes here is a bug.
+            #
+            # Deliberately the whole storage root, not `subPath: console-tokens`.
+            # A subPath bind resolves to one inode when the container starts, so a
+            # token directory deleted and recreated on the host — which node-local
+            # teardown does — would leave the proxy reading the orphaned inode
+            # until the pod restarts, and nothing would report it: TokenFile
+            # re-reads per lookup rather than failing at startup, and the tcpSocket
+            # probe stays green. Mounting the parent keeps a live view.
+            #
+            # Accepted cost: the proxy can read the node's other O3K state
+            # (instances/, volumes/, images/, cloud-init/) read-only. Bounded by
+            # readOnly and by the fact that it is pinned to the node whose O3K pod
+            # already has all of it read-write and privileged.
+            - name: host-storage
+              mountPath: {{ .Values.realMode.hostStoragePath }}
+              readOnly: true
+          # Honest probes, same principle as the o3k container's /readyz and /livez
+          # (SPEC-013): hit something only a working process can answer.
+          #
+          # httpGet, NOT tcpSocket. The kernel completes the TCP handshake from the
+          # listen backlog whether or not the process ever calls accept(), so a
+          # tcpSocket probe passes against a wedged websockify — verified by freezing
+          # the pinned image: tcpSocket succeeded, httpGet timed out. GETting the
+          # client page exercises accept -> route -> respond, and it is the exact
+          # resource the browser loads (consoleClientPage in internal/nova/console.go),
+          # so a passing probe means a usable console rather than an open socket.
+          {{- with .Values.consoleProxy.probes.readiness }}
+          {{- if .enabled }}
+          readinessProbe:
+            httpGet: { path: /vnc_lite.html, port: console }
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+            successThreshold: {{ .successThreshold }}
+          {{- end }}
+          {{- end }}
+          {{- with .Values.consoleProxy.probes.liveness }}
+          {{- if .enabled }}
+          # Deliberately slower and more forgiving than readiness: a transient stall
+          # should drop the proxy out of the Service, not restart it and kill every
+          # console session on the node.
+          livenessProbe:
+            httpGet: { path: /vnc_lite.html, port: console }
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+          {{- end }}
+          {{- end }}
+          {{- with .Values.consoleProxy.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: host-storage
+          hostPath:
+            path: {{ .Values.realMode.hostStoragePath }}
+            type: DirectoryOrCreate
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "o3k.fullname" . }}-console-proxy
+  labels:
+    {{- include "o3k.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console-proxy
+spec:
+  type: {{ .Values.consoleProxy.service.type }}
+  selector:
+    {{- include "o3k.consoleProxySelectorLabels" . | nindent 4 }}
+  ports:
+    - name: console
+      port: {{ .Values.consoleProxy.service.port }}
+      targetPort: {{ .Values.consoleProxy.service.port }}
+      protocol: TCP
+      {{- if eq .Values.consoleProxy.service.type "NodePort" }}
+      nodePort: {{ .Values.consoleProxy.service.nodePort }}
+      {{- end }}
+{{- end }}

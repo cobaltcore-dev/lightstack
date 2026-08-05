@@ -38,6 +38,20 @@ nova:
   default_flavor: m1.small
   libvirt_mode: stub  # "stub" or "real"
 
+  # noVNC console (SPEC-021). Real mode only: stub mode has no guest, so the console
+  # API refuses at request time instead of returning a link that leads nowhere.
+  #
+  # Browser-reachable ORIGIN of the console proxy — "scheme://host:port", NO path.
+  # O3K appends the client page and the token query itself, so they cannot drift from
+  # the deployed noVNC version. Empty derives it from the request.
+  console_proxy_base_url: ""
+  # How long an issued console link stays usable. The effective ceiling is this plus
+  # console_reconcile_interval: the proxy performs no expiry check of its own, so a
+  # token dies when O3K removes its projection entry, not the instant it expires.
+  console_token_ttl: 10m
+  # How often expired console tokens are reaped. This is what ENFORCES expiry.
+  console_reconcile_interval: 30s
+
 neutron:
   port: 9696
   dhcp_lease_time: 24h

@@ -18,12 +18,12 @@ log_test() {
 
 log_pass() {
     echo -e "${GREEN}✓${NC} $1"
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
 }
 
 log_fail() {
     echo -e "${RED}✗${NC} $1"
-    ((TESTS_FAILED++))
+    TESTS_FAILED=$((TESTS_FAILED + 1))
 }
 
 echo "========================================"
@@ -35,10 +35,10 @@ echo ""
 echo "Setting up test projects and users..."
 
 # Admin authentication
-ADMIN_TOKEN=$(curl -s -X POST "http://localhost:35357/v3/auth/tokens" \
+ADMIN_TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
     -H "Content-Type: application/json" \
     -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"admin","password":"secret","domain":{"name":"Default"}}}},"scope":{"project":{"name":"default","domain":{"name":"Default"}}}}}' \
-    | jq -r '.token.token')
+    | grep -i '^X-Subject-Token:' | awk '{print $2}' | tr -d '\r')
 
 if [ -z "$ADMIN_TOKEN" ]; then
     echo -e "${RED}Failed to get admin token${NC}"
@@ -90,15 +90,15 @@ echo "Created PROJECT2=$PROJECT2_ID, USER2=$USER2_ID"
 echo ""
 
 # Get tokens for user1 and user2
-USER1_TOKEN=$(curl -s -X POST "http://localhost:35357/v3/auth/tokens" \
+USER1_TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
     -H "Content-Type: application/json" \
     -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"test-user-1","password":"password1","domain":{"name":"Default"}}}},"scope":{"project":{"id":"'$PROJECT1_ID'"}}}}' \
-    | jq -r '.token.token')
+    | grep -i '^X-Subject-Token:' | awk '{print $2}' | tr -d '\r')
 
-USER2_TOKEN=$(curl -s -X POST "http://localhost:35357/v3/auth/tokens" \
+USER2_TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
     -H "Content-Type: application/json" \
     -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"test-user-2","password":"password2","domain":{"name":"Default"}}}},"scope":{"project":{"id":"'$PROJECT2_ID'"}}}}' \
-    | jq -r '.token.token')
+    | grep -i '^X-Subject-Token:' | awk '{print $2}' | tr -d '\r')
 
 # Test 1: Server isolation - User1 creates server, User2 cannot see it
 log_test "Server isolation between projects"
