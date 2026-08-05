@@ -42,8 +42,8 @@ install-deps:
 
 # Run tests
 test:
-	@echo "Running tests..."
-	go test -v ./...
+	@echo "Running unit tests (excludes test/contract — use 'make test-contract' for those)..."
+	go test -v $$(go list ./... | grep -v '/test/contract')
 
 # Run contract tests (requires O3K to be running)
 test-contract:
