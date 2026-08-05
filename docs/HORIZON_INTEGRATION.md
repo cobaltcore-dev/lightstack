@@ -2,11 +2,11 @@
 
 **Date**: March 17, 2026
 **Version**: Lightstack v1.0 + Horizon Flamingo 2025.2
-**Status**: ⚠️ API-compatible; the Horizon **UI is not a drop-in for resource management** — see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
+**Status**: ⚠️ The Horizon dashboard is **usable for resource management**; its open UI gaps (the noVNC console and others) are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 
 ## Executive Summary
 
-Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon's read/list panels render against it without modifications, patches or workarounds. **The dashboard is not usable for resource management**: every create/write flow — network, volume, launch, console — fails UI-side, while the same operations succeed via API/CLI. See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F11).
+Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon renders against it without modifications, patches or workarounds. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). Open UI gaps: the noVNC console (F1), standalone port create in real mode (F10), router gateways (F11), project create (F13) and domain switching (F18). See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
 
 ### Key Features
 
@@ -439,7 +439,7 @@ go test ./test/contract/... -v -count=1
 
 ## Conclusion
 
-Lightstack serves the API surface OpenStack Horizon consumes: endpoints, authentication flows and response formats follow the OpenStack specifications, and Horizon needs no modifications to talk to it. That is **not** the same as a working dashboard — UI resource management is broken (F1–F11); see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
+Lightstack serves the API surface OpenStack Horizon consumes: endpoints, authentication flows and response formats follow the OpenStack specifications, and Horizon needs no modifications to talk to it. Since #532 and #533 the dashboard is usable for resource management as well; the remaining UI gaps are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
 
 **Key Strengths**:
 - Complete endpoint coverage (342/330 = 104%)

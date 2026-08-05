@@ -163,6 +163,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		// Quotas
 		v2.GET("/quotas/:id", svc.GetQuota)
 		v2.GET("/quotas/:id/details", svc.GetQuotaDetails)
+		v2.GET("/quotas/:id/default", svc.GetQuotaDefault)
+		// python-neutronclient appends a .json suffix to the quota sub-resources,
+		// so the same handlers are registered under both spellings (FR-002).
+		v2.GET("/quotas/:id/details.json", svc.GetQuotaDetails)
+		v2.GET("/quotas/:id/default.json", svc.GetQuotaDefault)
 
 		// QoS Policies
 		v2.GET("/qos/policies", svc.ListQoSPolicies)
@@ -272,7 +277,11 @@ func (svc *Service) ListVersions(c *gin.Context) {
 // ListExtensions lists available API extensions
 func (svc *Service) ListExtensions(c *gin.Context) {
 	// Return list of supported extensions
-	// Horizon uses this to determine feature availability
+	// Horizon uses this to determine feature availability.
+	//
+	// Every entry carries the full upstream shape {alias, name, description, updated, links}.
+	// `links` is part of the entry in the Network v2 api-ref and is empty for all of these —
+	// a client that reads it unconditionally gets [] rather than a missing key (SPEC-020 T043).
 	c.JSON(200, gin.H{
 		"extensions": []gin.H{
 			{
@@ -280,65 +289,121 @@ func (svc *Service) ListExtensions(c *gin.Context) {
 				"name":        "security-group",
 				"description": "The security groups extension",
 				"updated":     "2012-10-05T10:00:00-00:00",
+				"links":       []gin.H{},
 			},
 			{
 				"alias":       "router",
 				"name":        "Neutron L3 Router",
 				"description": "Router abstraction for basic L3 forwarding",
 				"updated":     "2012-07-20T10:00:00-00:00",
+				"links":       []gin.H{},
 			},
 			{
 				"alias":       "port-security",
 				"name":        "Port Security",
 				"description": "Port security extension",
 				"updated":     "2012-07-23T10:00:00-00:00",
+				"links":       []gin.H{},
 			},
 			{
 				"alias":       "binding",
 				"name":        "Port Binding",
 				"description": "Expose port bindings of a virtual port to external application",
 				"updated":     "2014-02-03T10:00:00-00:00",
+				"links":       []gin.H{},
 			},
 			{
 				"alias":       "provider",
 				"name":        "Provider Network",
 				"description": "Provider network extension",
 				"updated":     "2012-09-07T10:00:00-00:00",
+				"links":       []gin.H{},
 			},
 			{
 				"alias":       "quotas",
 				"name":        "Quota management support",
 				"description": "Expose resource quotas",
 				"updated":     "2012-07-29T10:00:00-00:00",
+				"links":       []gin.H{},
+			},
+			{
+				// Advertised because /quotas/{project}/details is served. Horizon 2025.2
+				// calls that endpoint without checking for this alias, so the alias is for
+				// API fidelity, not what makes the Overview widget work (SPEC-020 FR-013).
+				"alias":       "quota_details",
+				"name":        "Quota details management support",
+				"description": "Expose functions for quotas usage statistics per project",
+				"updated":     "2017-02-10T10:00:00-00:00",
+				"links":       []gin.H{},
 			},
 		},
 	})
 }
 
+// neutronQuotaDefaults holds the default network limits.
+//
+// Lightstack models no per-project network quota table, so these code defaults are the
+// limits every network-quota view reports. Keeping them in ONE place is what stops
+// GetQuota, GetQuotaDetails and GetQuotaDefault from drifting apart (SPEC-020
+// FR-003) — they were previously written out twice with the values duplicated.
+var neutronQuotaDefaults = map[string]int{
+	"network":             100,
+	"subnet":              100,
+	"port":                500,
+	"router":              10,
+	"floatingip":          50,
+	"security_group":      100,
+	"security_group_rule": 500,
+}
+
+// neutronQuotaLimits returns a fresh copy of the default network limits.
+func neutronQuotaLimits() gin.H {
+	quota := gin.H{}
+	for resource, limit := range neutronQuotaDefaults {
+		quota[resource] = limit
+	}
+	return quota
+}
+
 // GetQuota returns network quotas for a project (limits only; use
 // GetQuotaDetails for limits + usage).
 func (svc *Service) GetQuota(c *gin.Context) {
-	// Return quota response
-	c.JSON(200, gin.H{
-		"quota": gin.H{
-			"network":             100,
-			"subnet":              100,
-			"port":                500,
-			"router":              10,
-			"floatingip":          50,
-			"security_group":      100,
-			"security_group_rule": 500,
-		},
-	})
+	projectID, apiErr := common.QuotaTargetProject(c)
+	if apiErr != nil {
+		common.SendError(c, apiErr)
+		return
+	}
+	quota := neutronQuotaLimits()
+	// Upstream Neutron reports both spellings of the owning project.
+	quota["project_id"] = projectID
+	quota["tenant_id"] = projectID
+	c.JSON(200, gin.H{"quota": quota})
+}
+
+// GetQuotaDefault returns the default network quotas for a project (code defaults
+// only, no usage), served at /v2.0/quotas/{project_id}/default.
+func (svc *Service) GetQuotaDefault(c *gin.Context) {
+	projectID, apiErr := common.QuotaTargetProject(c)
+	if apiErr != nil {
+		common.SendError(c, apiErr)
+		return
+	}
+	quota := neutronQuotaLimits()
+	quota["project_id"] = projectID
+	quota["tenant_id"] = projectID
+	c.JSON(200, gin.H{"quota": quota})
 }
 
 // GetQuotaDetails returns network quotas with usage details
 func (svc *Service) GetQuotaDetails(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID, apiErr := common.QuotaTargetProject(c)
+	if apiErr != nil {
+		common.SendError(c, apiErr)
+		return
+	}
 
-	// Query current usage. Scan failures degrade to zero (the quota
-	// response still ships) and are logged for diagnosis.
-	var networksUsed, subnetsUsed, portsUsed, routersUsed, floatingIPsUsed, securityGroupsUsed int
+	// Query current usage. A count that fails answers 500, never zero usage.
+	var networksUsed, subnetsUsed, portsUsed, routersUsed, floatingIPsUsed, securityGroupsUsed, securityGroupRulesUsed int
 
 	usageQueries := []struct {
 		label string
@@ -351,46 +416,38 @@ func (svc *Service) GetQuotaDetails(c *gin.Context) {
 		{"routers", "SELECT COUNT(*) FROM routers WHERE project_id = $1", &routersUsed},
 		{"floating_ips", "SELECT COUNT(*) FROM floating_ips WHERE project_id = $1", &floatingIPsUsed},
 		{"security_groups", "SELECT COUNT(*) FROM security_groups WHERE project_id = $1", &securityGroupsUsed},
+		{"security_group_rules", "SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)", &securityGroupRulesUsed},
 	}
 	for _, q := range usageQueries {
 		if err := database.DB.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
-			log.Warn().Err(err).Str("resource", q.label).Str("project_id", projectID).Msg("failed to query quota usage")
+			log.Error().Err(err).Str("resource", q.label).Str("project_id", projectID).Msg("failed to query quota usage")
+			common.SendError(c, common.NewInternalServerError("failed to get quota usage"))
+			return
 		}
 	}
 
-	// Return quota details with usage
-	c.JSON(200, gin.H{
-		"quota": gin.H{
-			"network": gin.H{
-				"limit": 100,
-				"used":  networksUsed,
-			},
-			"subnet": gin.H{
-				"limit": 100,
-				"used":  subnetsUsed,
-			},
-			"port": gin.H{
-				"limit": 500,
-				"used":  portsUsed,
-			},
-			"router": gin.H{
-				"limit": 10,
-				"used":  routersUsed,
-			},
-			"floatingip": gin.H{
-				"limit": 50,
-				"used":  floatingIPsUsed,
-			},
-			"security_group": gin.H{
-				"limit": 100,
-				"used":  securityGroupsUsed,
-			},
-			"security_group_rule": gin.H{
-				"limit": 500,
-				"used":  0,
-			},
-		},
-	})
+	// Return quota details with usage. Limits come from the same shared defaults as
+	// GetQuota and GetQuotaDefault so the three views cannot disagree (FR-003).
+	// `reserved` is always 0 — Lightstack completes operations synchronously and models no
+	// reservations (Constitution Art. II).
+	usage := map[string]int{
+		"network":             networksUsed,
+		"subnet":              subnetsUsed,
+		"port":                portsUsed,
+		"router":              routersUsed,
+		"floatingip":          floatingIPsUsed,
+		"security_group":      securityGroupsUsed,
+		"security_group_rule": securityGroupRulesUsed,
+	}
+	quota := gin.H{}
+	for resource, limit := range neutronQuotaDefaults {
+		quota[resource] = gin.H{
+			"limit":    limit,
+			"used":     usage[resource],
+			"reserved": 0,
+		}
+	}
+	c.JSON(200, gin.H{"quota": quota})
 }
 
 // GetNamespaceManager returns the namespace manager (for VXLAN coordinator)
@@ -463,6 +520,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 			"id":              networkID,
 			"name":            req.Network.Name,
 			"tenant_id":       projectID,
+			"project_id":      projectID,
 			"admin_state_up":  adminStateUp,
 			"status":          "ACTIVE",
 			"shared":          shared,
@@ -562,8 +620,10 @@ func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantPara
 func (svc *Service) ListNetworks(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	// Parse pagination parameters
-	limit := 1000
+	// Parse pagination parameters. No default cap: without `limit` every visible row is returned,
+	// as upstream does (pagination_max_limit defaults to -1); a nil limit binds LIMIT NULL, which
+	// Postgres reads as no limit.
+	var limit any
 	offset := 0
 	if limitParam := c.Query("limit"); limitParam != "" {
 		if parsedLimit, err := strconv.Atoi(limitParam); err == nil && parsedLimit > 0 {
@@ -609,7 +669,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id
 		FROM networks
 		WHERE %s
 		ORDER BY created_at DESC, id DESC
@@ -625,20 +685,24 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	var networks []gin.H
 	for rows.Next() {
-		var id, name, status string
+		var id, name, status, owner string
 		var adminStateUp, shared bool
 		var mtu int
 		var createdAt, updatedAt time.Time
 
-		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner); err != nil {
 			log.Warn().Err(err).Str("operation", "ListNetworks").Msg("failed to scan row")
 			continue
 		}
 
+		// tenant_id from the row, not the caller: this listing can legitimately contain a SHARED
+		// network owned by another project, and reporting the caller would tell them a foreign
+		// resource is theirs (moved here from cloud-storage#546 B11 on PR #79 review).
 		networks = append(networks, gin.H{
 			"id":              id,
 			"name":            name,
-			"tenant_id":       projectID,
+			"tenant_id":       owner,
+			"project_id":      owner,
 			"admin_state_up":  adminStateUp,
 			"status":          status,
 			"shared":          shared,
@@ -660,10 +724,31 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	// Populate subnet IDs for each network (rows above are fully consumed).
 	for _, n := range networks {
-		n["subnets"] = svc.networkSubnetIDs(c.Request.Context(), n["id"].(string))
+		subnetIDs, err := svc.networkSubnetIDs(c.Request.Context(), n["id"].(string))
+		if err != nil {
+			log.Error().Err(err).Str("operation", "list_networks").Msg("failed to resolve subnet ids")
+			common.SendError(c, common.NewInternalServerError("failed to list networks"))
+			return
+		}
+		n["subnets"] = subnetIDs
 	}
 
 	c.JSON(http.StatusOK, gin.H{"networks": networks})
+}
+
+// networkCacheKey names a cached network entry, scoped to the caller.
+//
+// The caller is part of the key because GetNetwork reads the cache BEFORE applying its
+// visibility predicate (owner OR shared). Keyed on the network alone, the first fetch by an
+// owner populated an entry that any authenticated caller knowing the id could then read for
+// the whole TTL, where the uncached answer is 404 (raised on PR #79; the same defect is
+// SRC-1 on the #546 branch, whose fix this matches).
+//
+// Scoping the key rather than re-checking on hit keeps a hit free of database work, at the
+// cost of one entry per (caller, network) pair — a shared network is cached once per project
+// that asks for it, which is the price of the lookup preceding the check.
+func networkCacheKey(projectID, networkID string) string {
+	return "network:" + projectID + ":" + networkID
 }
 
 // GetNetwork returns a single network
@@ -672,14 +757,21 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	projectID := c.GetString("project_id")
 	ctx := c.Request.Context()
 
-	// Try cache first
+	// Try cache first. The key is scoped to the caller (see networkCacheKey): this lookup
+	// happens before the visibility predicate below, so an unscoped key would serve one
+	// tenant's network to another.
 	if svc.cache != nil {
-		cacheKey := "network:" + networkID
 		var cached gin.H
-		if err := svc.cache.Get(ctx, cacheKey, &cached); err == nil {
+		if err := svc.cache.Get(ctx, networkCacheKey(projectID, networkID), &cached); err == nil {
 			// subnets are queried fresh so they reflect later subnet changes
 			if id, ok := cached["id"].(string); ok {
-				cached["subnets"] = svc.networkSubnetIDs(ctx, id)
+				subnetIDs, subErr := svc.networkSubnetIDs(ctx, id)
+				if subErr != nil {
+					log.Error().Err(subErr).Str("operation", "get_network_cached").Msg("failed to resolve subnet ids")
+					common.SendError(c, common.NewInternalServerError("failed to get network"))
+					return
+				}
+				cached["subnets"] = subnetIDs
 			}
 			c.JSON(http.StatusOK, gin.H{"network": cached})
 			return
@@ -687,17 +779,17 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	}
 
 	// Cache miss - query database
-	var id, name, status string
+	var id, name, status, owner string
 	var adminStateUp, shared bool
 	var mtu int
 	var createdAt, updatedAt time.Time
 
 	err := database.DB.QueryRow(ctx, `
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id
 		FROM networks
 		WHERE (id::text = $1 OR name = $1) AND (project_id = $2 OR shared = true)
 		LIMIT 1
-	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt)
+	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -709,10 +801,13 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		return
 	}
 
+	// tenant_id from the row, not the caller — this handler can return a SHARED network owned by
+	// another project.
 	network := gin.H{
 		"id":              id,
 		"name":            name,
-		"tenant_id":       projectID,
+		"tenant_id":       owner,
+		"project_id":      owner,
 		"admin_state_up":  adminStateUp,
 		"status":          status,
 		"shared":          shared,
@@ -725,10 +820,16 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	// Store in cache (30min TTL per config) before adding the dynamic subnet
 	// list, so cached entries never carry a stale subnets field.
 	if svc.cache != nil {
-		svc.cache.TrySet(ctx, "network:"+id, network, 30*time.Minute)
+		svc.cache.TrySet(ctx, networkCacheKey(projectID, id), network, 30*time.Minute)
 	}
 
-	network["subnets"] = svc.networkSubnetIDs(ctx, id)
+	subnetIDs, err := svc.networkSubnetIDs(ctx, id)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "get_network").Msg("failed to resolve subnet ids")
+		common.SendError(c, common.NewInternalServerError("failed to get network"))
+		return
+	}
+	network["subnets"] = subnetIDs
 
 	c.JSON(http.StatusOK, gin.H{"network": network})
 }
@@ -777,9 +878,10 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 		return
 	}
 
-	// Invalidate cache
+	// Invalidate cache. Entries are keyed per caller (networkCacheKey), so evicting this
+	// network means evicting every project's view of it, not just the deleter's.
 	if svc.cache != nil {
-		svc.cache.TryDelete(ctx, "network:"+networkID)
+		svc.cache.TryDeletePattern(ctx, "network:*:"+networkID)
 		svc.cache.TryDeletePattern(ctx, "networks:*")
 	}
 
@@ -838,6 +940,14 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 		log.Error().Err(err).Str("operation", "update_network").Str("network_id", networkID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update network"))
 		return
+	}
+
+	// Evict before re-reading. GetNetwork below tries the cache first, so without this the
+	// response is the pre-update body and every caller's view stays stale for the whole TTL.
+	// The pattern spans callers for the same reason DeleteNetwork's does.
+	if svc.cache != nil {
+		svc.cache.TryDeletePattern(c.Request.Context(), "network:*:"+networkID)
+		svc.cache.TryDeletePattern(c.Request.Context(), "networks:*")
 	}
 
 	// Return updated network
@@ -942,8 +1052,10 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 func (svc *Service) ListSubnets(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	// Parse pagination parameters
-	limit := 1000
+	// Parse pagination parameters. No default cap: without `limit` every visible row is returned,
+	// as upstream does (pagination_max_limit defaults to -1); a nil limit binds LIMIT NULL, which
+	// Postgres reads as no limit.
+	var limit any
 	offset := 0
 	if limitParam := c.Query("limit"); limitParam != "" {
 		if parsedLimit, err := strconv.Atoi(limitParam); err == nil && parsedLimit > 0 {
@@ -978,10 +1090,16 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
-		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at
+		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at, s.project_id
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
-		WHERE (s.project_id = $1 OR n.shared = true)%s
+		-- Scope by the owning NETWORK's visibility, not only the subnet's own
+		-- project_id. A network response lists every subnet of that network
+		-- (networkSubnetIDs applies no project predicate), so anything visible there
+		-- must be listable here too — otherwise Horizon expands the network's
+		-- subnets array against this listing, fails to resolve an id, and renders a
+		-- null row that breaks the launch wizard (SPEC-020 FR-007).
+		WHERE (s.project_id = $1 OR n.project_id = $1 OR n.shared = true)%s
 		ORDER BY s.created_at DESC
 		LIMIT $%d OFFSET $%d
 	`, markerCondition, argIdx, argIdx+1), queryArgs...)
@@ -995,13 +1113,13 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 
 	var subnets []gin.H
 	for rows.Next() {
-		var id, name, networkID, cidr, gatewayIP string
+		var id, name, networkID, cidr, gatewayIP, owner string
 		var ipVersion int
 		var enableDHCP bool
 		var dnsNameservers []string
 		var createdAt, updatedAt time.Time
 
-		if err := rows.Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner); err != nil {
 			log.Warn().Err(err).Str("operation", "ListSubnets").Msg("failed to scan row")
 			continue
 		}
@@ -1010,11 +1128,14 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 			dnsNameservers = []string{}
 		}
 
+		// tenant_id from the row, not the caller: the WHERE above deliberately matches
+		// subnets on the caller's networks and on shared networks, so this listing can
+		// legitimately contain rows the caller does not own.
 		subnets = append(subnets, gin.H{
 			"id":               id,
 			"name":             name,
 			"network_id":       networkID,
-			"tenant_id":        projectID,
+			"tenant_id":        owner,
 			"cidr":             cidr,
 			"gateway_ip":       gatewayIP,
 			"ip_version":       ipVersion,
@@ -1045,7 +1166,7 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	subnetID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	var id, name, networkID, cidr, gatewayIP string
+	var id, name, networkID, cidr, gatewayIP, owner string
 	var ipVersion int
 	var enableDHCP bool
 	var dnsNameservers []string
@@ -1053,13 +1174,24 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 
 	// id::text comparison resolves by UUID or name without crashing on a
 	// non-UUID identifier (the CLI looks up by name this way).
+	//
+	// The visibility predicate must match ListSubnets: the owning NETWORK's project
+	// counts as well as the subnet's own, or an id returned by the listing 404s here.
+	// This is also upstream's rule — neutron's get_subnet policy is
+	// `PROJECT_READER or rule:shared or ... or ADMIN_OR_NET_OWNER_READER`, where
+	// NET_OWNER_READER is `project_id:%(network:project_id)s`.
+	//
+	// Consequently s.project_id is selected, not assumed: this handler can return a subnet
+	// the caller does not own — one on their network, or on a shared network — so reporting
+	// the caller as tenant_id would tell them a resource is theirs when it is not.
 	err := database.DB.QueryRow(c.Request.Context(), `
-		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at
+		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at, s.project_id
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
-		WHERE (s.id::text = $1 OR s.name = $1) AND (s.project_id = $2 OR n.shared = true)
+		WHERE (s.id::text = $1 OR s.name = $1)
+		  AND (s.project_id = $2 OR n.project_id = $2 OR n.shared = true)
 		LIMIT 1
-	`, subnetID, projectID).Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt)
+	`, subnetID, projectID).Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
@@ -1080,7 +1212,7 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 			"id":               id,
 			"name":             name,
 			"network_id":       networkID,
-			"tenant_id":        projectID,
+			"tenant_id":        owner,
 			"cidr":             cidr,
 			"gateway_ip":       gatewayIP,
 			"ip_version":       ipVersion,
@@ -1290,30 +1422,33 @@ func broadcast(ipNet *net.IPNet) net.IP {
 // It always returns a non-nil slice so the JSON response serializes as a list,
 // and is queried fresh (never cached) so network responses reflect subnet
 // additions/removals immediately.
-func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) []string {
+//
+// Every failure is returned rather than logged. An earlier version treated this list as
+// advisory and logged a truncated result, on the reasoning that the callers had no error
+// channel — but the list is not advisory: Horizon expands each id against the subnet
+// listing and renders a null row for any it cannot resolve, which is the launch-wizard
+// failure FR-007 exists to fix. A short list is therefore indistinguishable from a
+// network whose subnets were deleted, and answering 500 is the honest outcome. All three
+// callers assemble a response and can report it.
+func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) ([]string, error) {
 	ids := []string{}
 	rows, err := database.DB.Query(ctx,
 		"SELECT id FROM subnets WHERE network_id = $1 ORDER BY created_at DESC", networkID)
 	if err != nil {
-		log.Error().Err(err).Str("network_id", networkID).Msg("failed to list subnets for network")
-		return ids
+		return nil, fmt.Errorf("list subnets for network %s: %w", networkID, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			log.Warn().Err(err).Str("operation", "networkSubnetIDs").Msg("failed to scan row")
-			continue
+			return nil, fmt.Errorf("scan subnet id for network %s: %w", networkID, err)
 		}
 		ids = append(ids, id)
 	}
-	// Log rather than fail: this feeds the advisory `subnets` list on a network
-	// response, and the callers have no error channel. A truncated list is at least
-	// visible in the log.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Str("network_id", networkID).Msg("subnet rows iteration error; subnet list may be truncated")
+		return nil, fmt.Errorf("iterate subnets for network %s: %w", networkID, err)
 	}
-	return ids
+	return ids, nil
 }
 
 // subnetAllocationPools computes the default allocation pool for a subnet CIDR

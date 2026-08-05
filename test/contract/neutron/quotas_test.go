@@ -15,7 +15,8 @@ func TestNeutronGetQuota_Contract(t *testing.T) {
 	client := contract.SetupNeutronClient(t)
 
 	// Get quota for current project
-	quota, err := quotas.Get(client, client.ProviderClient.TokenID).Extract()
+	projectID := contract.GetProjectIDFromToken(t, client)
+	quota, err := quotas.Get(client, projectID).Extract()
 	require.NoError(t, err)
 	require.NotNil(t, quota)
 

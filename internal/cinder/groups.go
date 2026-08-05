@@ -13,7 +13,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ListGroups lists all volume groups
+// ListGroups lists all volume groups. Serves both `groups` and `groups/detail` —
+// Lightstack's group objects already carry every field it models, so the detailed view has
+// nothing extra to add. See the route registration in volumes.go for why
+// `groups/detail` needs its own entry.
 func (svc *Service) ListGroups(c *gin.Context) {
 	projectID := c.GetString("project_id")
 

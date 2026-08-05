@@ -17,10 +17,19 @@ import (
 )
 
 // TestNovaAddSecurityGroup_Contract tests POST /v2.1/servers/:id/action (addSecurityGroup)
+//
+// A new server already carries "default" (assigned at create when none is requested,
+// as upstream does), so the group added here is one the test creates.
 func TestNovaAddSecurityGroup_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
+	netClient := contract.SetupNeutronClient(t)
+
+	// Declared before the server so defer LIFO runs the server delete first.
+	sg, err := groups.Create(netClient, groups.CreateOpts{Name: "sg-action-test-sg"}).Extract()
+	require.NoError(t, err, "Failed to create sg-action-test-sg fixture")
+	defer groups.Delete(netClient, sg.ID)
 
 	// Create test server
 	server, err := servers.Create(client, servers.CreateOpts{
@@ -34,7 +43,7 @@ func TestNovaAddSecurityGroup_Contract(t *testing.T) {
 	// Add security group
 	actionBody := `{
 		"addSecurityGroup": {
-			"name": "default"
+			"name": "sg-action-test-sg"
 		}
 	}`
 
@@ -52,7 +61,12 @@ func TestNovaAddSecurityGroup_Contract(t *testing.T) {
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
 
-// TestNovaAddSecurityGroupDuplicate_Contract tests adding same SG twice returns 409
+// TestNovaAddSecurityGroupDuplicate_Contract tests adding a SG the server already has returns 400
+//
+// Upstream answers 400, not 409: Nova appends the group's id to the port's list, Neutron
+// rejects the duplicate ("Duplicate items in the list") and Nova maps that to
+// SecurityGroupCannotBeApplied. A new server already carries "default", so adding it
+// once is the duplicate.
 func TestNovaAddSecurityGroupDuplicate_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 
@@ -67,7 +81,7 @@ func TestNovaAddSecurityGroupDuplicate_Contract(t *testing.T) {
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
 
-	// Add security group first time
+	// Add "default", which the server already has - should get 400
 	actionBody := `{
 		"addSecurityGroup": {
 			"name": "default"
@@ -82,27 +96,16 @@ func TestNovaAddSecurityGroupDuplicate_Contract(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-
-	// Try to add same security group again - should get 409
-	req, err = http.NewRequest("POST", url, strings.NewReader(actionBody))
-	require.NoError(t, err)
-	req.Header.Set("X-Auth-Token", client.TokenID)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err = http.DefaultClient.Do(req)
-	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 // TestNovaRemoveSecurityGroup_Contract tests POST /v2.1/servers/:id/action (removeSecurityGroup)
 //
 // Two security groups must be attached so the documented "cannot remove last
-// security group" guard (advanced_actions.go) does not fire. The seed only
-// ships "default"; "test-sg" is created here, per the explicit guidance in
+// security group" guard (advanced_actions.go) does not fire. The server carries
+// "default" from create; "test-sg" is created here, per the explicit guidance in
 // migrations/058_seed_test_security_group.up.sql:
 //
 //	"Security group data for contract tests should be created by the test setup code."
@@ -130,22 +133,12 @@ func TestNovaRemoveSecurityGroup_Contract(t *testing.T) {
 
 	url := client.ServiceURL("servers", server.ID, "action")
 
-	// Add "default" — verify success (previously discarded silently).
-	addBody := `{"addSecurityGroup":{"name":"default"}}`
+	// Add "test-sg" next to "default" — verify success.
+	addBody := `{"addSecurityGroup":{"name":"test-sg"}}`
 	req, _ := http.NewRequest("POST", url, strings.NewReader(addBody))
 	req.Header.Set("X-Auth-Token", client.TokenID)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	resp.Body.Close()
-	require.Equal(t, http.StatusAccepted, resp.StatusCode, "addSecurityGroup default should return 202")
-
-	// Add "test-sg" — verify success.
-	addBody2 := `{"addSecurityGroup":{"name":"test-sg"}}`
-	req, _ = http.NewRequest("POST", url, strings.NewReader(addBody2))
-	req.Header.Set("X-Auth-Token", client.TokenID)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	resp.Body.Close()
 	require.Equal(t, http.StatusAccepted, resp.StatusCode, "addSecurityGroup test-sg should return 202")

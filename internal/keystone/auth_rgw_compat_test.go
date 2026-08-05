@@ -787,7 +787,7 @@ func TestDashFreeProjectID(t *testing.T) {
 
 	cases := []struct{ in, want string }{
 		{rgwCompatProjectID, rgwCompatProjectIDDashFree},                         // canonical UUID becomes dash-free
-		{rgwCompatProjectIDDashFree, rgwCompatProjectIDDashFree},                  // already dash-free
+		{rgwCompatProjectIDDashFree, rgwCompatProjectIDDashFree},                 // already dash-free
 		{"32hexnodasheshere000000000000000", "32hexnodasheshere000000000000000"}, // hyphen-less: unchanged
 		{"my_underscore_project", "my_underscore_project"},                       // non-UUID: unchanged
 		{"", ""},

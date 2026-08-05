@@ -80,10 +80,12 @@ func TestNovaServerMigrate_Contract(t *testing.T) {
 
 // TestNovaServerLiveMigrate_Contract tests POST /v2.1/servers/:id/action (os-migrateLive).
 //
-// FLAKY: this test passes most runs but fails intermittently against the same
-// code and the same stub-mode stack — suspected timing/state race in the
-// live-migrate action path. Re-run on failure before treating it as a real
-// regression.
+// Previously marked FLAKY. The race is real but benign: server create returns 202 and
+// finishes asynchronously, so a live-migrate issued immediately hits either an ACTIVE
+// instance (202) or one still building (409). Both are legitimate, and the test
+// accepts both. What actually failed was the 409 branch's body assertion, which
+// demanded a top-level "error" key — a shape neither Lightstack nor upstream Nova emits. It
+// only looked intermittent because the 409 branch is only taken under load.
 func TestNovaServerLiveMigrate_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 
@@ -112,9 +114,15 @@ func TestNovaServerLiveMigrate_Contract(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
+	// Read the body ONCE. Two reads of the same response drain it: the second returns "",
+	// and every diagnostic below then reports an empty body for a response that had one.
+	// The two guards overlap — any status outside {202, 409} enters both — and the status
+	// check is a soft assert, so execution reaches the second block regardless.
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err, "reading the response body")
+
 	// Debug: Print response if not expected status
 	if resp.StatusCode != 202 && resp.StatusCode != 409 {
-		respBody, _ := io.ReadAll(resp.Body)
 		t.Logf("Unexpected status %d, body: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -123,12 +131,15 @@ func TestNovaServerLiveMigrate_Contract(t *testing.T) {
 
 	// Verify response body is valid JSON for non-202 responses
 	if resp.StatusCode != 202 {
-		respBody, _ := io.ReadAll(resp.Body)
 		var result map[string]interface{}
 		err = json.Unmarshal(respBody, &result)
-		// Should be valid JSON error response
-		if err == nil {
-			assert.Contains(t, result, "error")
-		}
+		require.NoErrorf(t, err, "error body should be JSON, got %s", string(respBody))
+
+		// Nova wraps faults in an envelope named after the fault, not under a generic
+		// "error" key: a 409 is {"conflictingRequest": {"code": 409, "message": "..."}}.
+		fault, ok := result["conflictingRequest"].(map[string]interface{})
+		require.Truef(t, ok, "409 body should carry a conflictingRequest fault, got %s", string(respBody))
+		assert.EqualValues(t, resp.StatusCode, fault["code"], "fault code should match the HTTP status")
+		assert.NotEmpty(t, fault["message"], "fault should carry a message")
 	}
 }

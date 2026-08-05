@@ -20,7 +20,7 @@ Completed comprehensive analysis and testing enhancement of Lightstack API compa
 
 ### Key Findings
 - **93% API coverage** - 308/330 endpoints implemented
-- **Terraform and CLI** work unchanged; **Horizon's UI is not a drop-in** for resource management (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`)
+- **Terraform and CLI** work unchanged; **Horizon's dashboard is usable** for resource management (open gaps: see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`)
 - **76 existing test files** - Comprehensive contract test suite
 - **31 new tests created** - Covering HIGH priority gaps
 - **1 active bug** - Service catalog URL substitution (documented, known issue)
@@ -289,7 +289,7 @@ Completed comprehensive analysis and testing enhancement of Lightstack API compa
 |--------|---------|-------------|--------|
 | **gophercloud** | 1.8+ | 76+31 contract tests | ✅ 100% |
 | **Terraform** | 1.48+ | Manual + integration | ✅ 100% |
-| **Horizon** | 2025.2 | Browser-level verification (SPEC-018) | ⚠️ APIs compatible; UI **not** a drop-in ([report](../compatibility/HORIZON_COMPATIBILITY_REPORT.md)) |
+| **Horizon** | 2025.2 | Browser-level verification (SPEC-018, re-run after #532/#533) | ⚠️ UI usable for resource management; console open, F1 ([report](../compatibility/HORIZON_COMPATIBILITY_REPORT.md)) |
 | **OpenStack CLI** | 6.0+ | Integration tests | ✅ 100% |
 | **python-openstackclient** | 6.0+ | Integration tests | ✅ 100% |
 
@@ -395,7 +395,7 @@ Successfully enhanced lightstack's OpenStack 2025.2 API compatibility testing wi
 ✅ **Comprehensive compatibility report** documenting 93% API coverage
 ✅ **All critical workflows tested** - CRUD operations for all services
 ✅ **Production-ready quality** - Proper cleanup, error handling, validation
-✅ **Terraform and CLI** verified unchanged; ⚠️ **Horizon UI** verified as *not* a drop-in for resource management (`docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`)
+✅ **Terraform and CLI** verified unchanged; ⚠️ **Horizon UI** verified usable for resource management, with open gaps (`docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`)
 
 ### Quality Assurance
 ✅ **TDD methodology** - All tests follow red-green-refactor pattern

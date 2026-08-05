@@ -6,7 +6,7 @@
 
 ## Overview
 
-Lightstack serves the APIs the OpenStack Horizon dashboard consumes (its UI is **not** a drop-in for resource management — see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`). Horizon itself is:
+Lightstack serves the APIs the OpenStack Horizon dashboard consumes (its UI is **usable for resource management**; open gaps are listed in `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`). Horizon itself is:
 - **Optional**: Lightstack works perfectly without Horizon (CLI/API/SDK are primary interfaces)
 - **Independent**: Horizon runs as a separate service (Django application)
 - **Configurable**: Requires specific configuration to connect to Lightstack
@@ -442,7 +442,7 @@ keystone:
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Command cheatsheet
 
 **Support**:
-- API compatibility: broad (one known gap: image delete is a no-op, F6). **UI workflows are not all functional** — create/write flows fail; see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
+- API compatibility: broad. **UI workflows**: network, volume and instance create work; the noVNC console and a few other gaps remain — see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 - Known issues: Identity projects page 404 (Horizon bug, not lightstack)
 - Primary interfaces: OpenStack CLI, API, SDK
 - Web UI: Optional Horizon dashboard

@@ -81,6 +81,16 @@ Reported **separately** (not part of the five-service OpenStack API count): Plac
 
 ### Per-service counts (derived from source, v0.6.1 + SPEC-014)
 
+> **Stale as of 2026-07-29 — counts predate SPEC-019 (#532) and SPEC-020 (#533).** Those features added
+> functional operations not reflected below: Nova `os-quota-sets/{id}/detail`; Neutron `quotas/{id}/default`;
+> Cinder `quota-sets/{id}?usage=true`, `/defaults`, `groups/detail` and a new `GET /v3/extensions`. They also
+> added pure **aliases** that should *not* raise the functional count — Neutron's `quotas/{id}/details.json`
+> and `quotas/{id}/default.json` (same handlers as `/details` and `/default`), Cinder's `os-quota-sets/*`
+> spelling, and project-scoped duplicates of the group, quota, `/extensions` and `/os-availability-zone`
+> routes. The
+> numbers have deliberately **not** been re-derived here rather than estimated; recount from source with the
+> methodology above before quoting them.
+
 | Service | Raw routes registered | Functional operations | Notes |
 |---|---:|---:|---|
 | Keystone | 66 | **65** | −1 discovery (`GET /v3`); +6 SPEC-014 (OS-EC2 CRUD, `s3tokens`, `ec2tokens`); `GET /` on identity port lives in `main.go` |
@@ -185,7 +195,7 @@ full action set (below).
 | Flavor access (os-flavor-access) | ✅ | list + add/removeTenantAccess (via flavor action) |
 | Keypairs | ✅ | list / create / show / delete |
 | Limits | ✅ | `GET /limits` |
-| Quota sets (os-quota-sets) | ✅ | get / update / defaults |
+| Quota sets (os-quota-sets) | ✅ | get / update / defaults / **detail** (SPEC-020) |
 | Usage (os-simple-tenant-usage) | ✅ | list / show |
 | Availability zones | ✅ | list / detail |
 | Hypervisors (os-hypervisors) | ✅ | list / detail / statistics (synthetic in stub mode) |
@@ -234,7 +244,7 @@ enterprise networking extensions and some partial management surfaces.
 | Trunks | ✅ | CRUD + `add_subports` / `remove_subports` |
 | QoS policies | ✅ | CRUD |
 | QoS rules | ⚠️ | **bandwidth-limit only** — no dscp-marking / minimum-bandwidth / minimum-packet-rate; no `GET /qos/rule-types` |
-| Quotas | ⚠️ | **read-only**: `GET /quotas/{id}` + `/details` — no update / reset / list / default (network quotas are set via Nova `os-quota-sets`) |
+| Quotas | ⚠️ | **read-only**: `GET /quotas/{id}`, `/details`, **`/default`** (SPEC-020), plus their `.json` aliases — no update / reset / list. The limits are fixed code defaults (network 100, subnet 100, port 500, router 10, floatingip 50, security_group 100, security_group_rule 500); Neutron never reads the `quotas` table, so the network keys in Nova's `os-quota-sets` change only what Nova reports |
 | Agents | ⚠️ | list / show + L3-agent-on-router (list, add) — no enable/disable, delete, remove-L3-agent, or DHCP-agent scheduling |
 | Auto-allocated topology | ✅ | get / create / delete |
 | Network IP availability | ✅ | list / show |
@@ -256,8 +266,8 @@ resource families (FWaaS, VPNaaS, BGP, SFC, segments, …), so real coverage of 
 subnets, ports, security groups + rules, routers + interfaces, floating IPs, port forwarding. The sc007
 Terraform scenario (network / subnet / router / router-interface / port / floating-IP + association) is
 fully supported. Gaps are advanced networking extensions and partial quota/agent/QoS-rule management
-(see [§8.3](#83-neutron--not-implemented-endpoints)); none block validation — note only that Neutron
-quotas are read-only, so quota seeding goes through Nova.
+(see [§8.3](#83-neutron--not-implemented-endpoints)); none block validation — note only that Neutron's
+quota limits are fixed code defaults, and no API sets them.
 
 ### 3.4 Cinder — Block Storage v3 (67 functional operations)
 
@@ -279,11 +289,11 @@ quotas are read-only, so quota seeding goes through Nova.
 | Volume types | ✅ | CRUD + `default` + action (add/remove access) |
 | Volume type extra-specs | ✅ | per-key CRUD |
 | Volume type access | ✅ | list (+ add/remove via type action) |
-| Quotas | ✅ | quota-sets get / update / delete |
+| Quotas | ✅ | quota-sets get / update / delete / **defaults**, and usage through `quota-sets/{id}?usage=true` — Block Storage v3 has no `/detail` sub-resource — under both `quota-sets` and the upstream `os-quota-sets` spelling (SPEC-020) |
 | Limits | ✅ | `GET /limits` |
 | Availability zones | ✅ | `GET /os-availability-zone` |
 | QoS specs | ⚠️ | CRUD registered; low contract coverage |
-| Volume groups | ⚠️ | `/groups` CRUD registered, but README flags **"groups need implementation"**; no group_snapshots / group_types / group action |
+| Volume groups | ⚠️ | `/groups` CRUD + **`/groups/detail`**, at both the flat and project-scoped paths (SPEC-020); no group_snapshots / group_types / group action. `groups/detail` is **not optional**: python-cinderclient uses it for `groups.list(detailed=True)`, and Horizon's create-volume form calls that — its absence broke the Create Volume dialog (Horizon report F8) |
 | Backups | ⚠️ | CRUD + action registered; no `export_record` / `import_record` |
 | Volume transfers | ⚠️ | list / create / show / accept / delete registered; low contract coverage |
 | Manage / unmanage | ⚠️ | `os-volume-manage`, `manageable_volumes`, `os-snapshot-manage` |
@@ -577,7 +587,7 @@ endpoints per group are separated by a line break (`<br>`).
 | Regions | ❌ | `GET, POST /v3/regions`<br>`GET, PUT, PATCH, DELETE /v3/regions/{id}` | Lightstack is a single-region deployment; multi-region catalog topology is out of scope. |
 | Policies | ❌ | `GET, POST /v3/policies`<br>`GET, PATCH, DELETE /v3/policies/{id}` | The policy API stores / distributes RBAC policy blobs; Lightstack enforces authorization in-code (role checks in middleware), so there is no policy document to serve. De-emphasized upstream. |
 | System role assignments | ❌ | `GET, PUT, HEAD, DELETE /v3/system/users/{uid}/roles/{rid}` (+ list)<br>`…/system/groups/{gid}/roles/{rid}` (+ list) | System-scoped roles govern deployment-wide cloud-admin operations; Lightstack has no system scope — it uses project / admin role checks. |
-| Unified limits | ❌ | `GET, POST /v3/registered_limits`, `GET, PATCH, DELETE /v3/registered_limits/{id}`<br>`GET, POST /v3/limits`, `GET, PATCH, DELETE /v3/limits/{id}`, `GET /v3/limits/model` | Lightstack enforces quotas per-service (Nova / Cinder / Neutron `quota-sets`), not via Keystone's centralized unified-limits model; the validation path uses the per-service quota APIs. |
+| Unified limits | ❌ | `GET, POST /v3/registered_limits`, `GET, PATCH, DELETE /v3/registered_limits/{id}`<br>`GET, POST /v3/limits`, `GET, PATCH, DELETE /v3/limits/{id}`, `GET /v3/limits/model` | Lightstack keeps quotas per service — Nova and Cinder quota sets, Neutron fixed defaults — and enforces only Nova's instances, cores and RAM, not via Keystone's centralized unified-limits model; the validation path uses the per-service quota APIs. |
 | OS-INHERIT | ❌ | `PUT, HEAD, DELETE …/roles/{rid}/inherited_to_projects` (+ `GET …/roles/inherited_to_projects`; domain- & project-scoped, user & group) | Inherited (domain→project) role assignments are an advanced RBAC convenience; lightstack's flat project-scoped model has no inheritance. |
 | OS-TRUST | ❌ | `GET, POST /v3/OS-TRUST/trusts`<br>`GET, DELETE /v3/OS-TRUST/trusts/{id}` (+ trust-roles) | Trusts delegate roles for unattended / Heat-style workflows; not used by the validation scenarios. |
 | OS-FEDERATION | ❌ | identity providers · protocols · mappings · service providers · `GET /v3/OS-FEDERATION/projects` · `/domains` · SAML2/ECP auth (entire extension) | Federated identity (external IdPs / SAML / OIDC) is enterprise SSO; Lightstack authenticates locally against its own user store. |
@@ -624,14 +634,15 @@ endpoints per group are separated by a line break (`<br>`).
 | Neutron v2.0 group | Impl. | Not-implemented endpoint(s) | Justification |
 |---|:--:|---|---|
 | QoS rules | ⚠️ | `dscp_marking_rules`<br>`minimum_bandwidth_rules`<br>`minimum_packet_rate_rules`<br>`GET /qos/rule-types` | Only bandwidth-limit shaping is wired; the other rule types target DSCP marking / SR-IOV min-bandwidth / packet-rate QoS, none used by the validation scenarios. |
-| Quotas | ⚠️ | `PUT /quotas/{id}` (update)<br>`DELETE /quotas/{id}` (reset)<br>`GET /quotas` (list)<br>`GET /quotas/{id}/default` | Neutron quota is read-only in lightstack; network quotas are set through Nova `os-quota-sets` (which covers networks / subnets / ports / routers / floatingips), so the Neutron write endpoints are redundant. |
+| Quotas | ⚠️ | `PUT /quotas/{id}` (update)<br>`DELETE /quotas/{id}` (reset)<br>`GET /quotas` (list) | Neutron quota is read-only in lightstack and reports fixed code defaults. Nova's `os-quota-sets` carries network keys (networks, subnets, ports, routers, security groups), but Neutron never reads them, so a value written there changes only what Nova reports — no API sets Neutron's limits. `GET /quotas/{id}/default` **was** missing and is now served (SPEC-020) — Horizon's default-quota views read it; the Overview widget reads `/details`. |
 | Agents | ⚠️ | `PUT /agents/{id}` (enable/disable)<br>`DELETE /agents/{id}`<br>`DELETE /routers/{id}/l3-agents/{agent_id}`<br>DHCP-agent scheduling (`/agents/{id}/dhcp-networks`, `/networks/{id}/dhcp-agents`) | Single-node has no agent fleet to schedule or drain; list + show + L3-agent-add satisfy Horizon's agent panel. |
 | Routers | ⚠️ | `PUT /routers/{id}/add_extraroutes`<br>`PUT /routers/{id}/remove_extraroutes` | Extra routes are set via the router `PUT` (`routes` attribute); the atomic add/remove is a concurrency convenience. |
 | FWaaS v2 | ❌ | `/fwaas/firewall_groups`<br>`/fwaas/firewall_policies`<br>`/fwaas/firewall_rules` | Firewall-as-a-Service; tenant traffic filtering is handled by security groups (✅), which is what the validation path uses. |
 | VPNaaS | ❌ | `/vpn/vpnservices` · `/ikepolicies` · `/ipsecpolicies` · `/ipsec-site-connections` · `/endpoint-groups` | Site-to-site IPsec VPN; not used by the validation scenarios. |
 | BGP / BGP-VPN | ❌ | `/bgp-speakers` · `/bgp-peers` · `/bgpvpn/*` | Dynamic routing / L3VPN for multi-site fabrics; out of scope for single-node. |
 | Service Function Chaining | ❌ | `/sfc/port_chains` · `/port_pair_groups` · `/port_pairs` · `/flow_classifiers` | NFV traffic steering; enterprise-only. |
-| Network segments | ❌ | `/segments` | Multi-segment (routed / L2) provider networks; Lightstack uses flat + VXLAN tenant networks. |
+| Network segments | ❌ | `/segments` | Multi-segment (routed / L2) provider networks; lightstack uses flat + VXLAN tenant networks. |
+| **External networks (model gap, not an endpoint)** | ❌ | *n/a — `router:external` is hard-coded `false`* | Every network object reports `router:external: false` (`internal/neutron/network.go:527,709,814`) and `GET /v2.0/networks?router:external=true` returns `[]` by design (`networkListDecision`, `network.go:563`). North-south egress is instead reached by attaching a router gateway to an ordinary network — `PUT /routers/{id}` accepts `external_gateway_info` (`router.go:68`), which is how the SPEC-014 runbook wires it. **Consequence for the dashboard**: Horizon's router *Set Gateway* dialog lists candidates from exactly that filter, so it is always empty and egress cannot be configured from the UI (Horizon report F11). This is an attribute-level gap, which is why it does not appear as a missing endpoint above. |
 | Logging | ❌ | `/log/logs` · `/log/loggable-resources` | Security-group / FWaaS packet-flow logging; not used. |
 | Tap-as-a-Service | ❌ | `/taas/tap_services` · `/taas/tap_flows` | Port mirroring for IDS / monitoring; out of scope. |
 | Neutron flavors + service profiles | ❌ | `/flavors` · `/service_profiles` | The Neutron flavor framework selects pluggable L3 / LB service drivers; Lightstack ships a single built-in L3 implementation. |
@@ -647,7 +658,7 @@ endpoints per group are separated by a line break (`<br>`).
 | Cinder v3 group | Impl. | Not-implemented endpoint(s) | Justification |
 |---|:--:|---|---|
 | Volume actions | ⚠️ | `os-migrate_volume`<br>`os-migrate_volume_completion`<br>`revert` (revert-to-snapshot)<br>`os-volume_upload_image`<br>`os-set_bootable` | Core attach / detach / extend / retype / reset-status / readonly / reimage / force-detach are wired; migration, revert-to-snapshot, upload-to-image and set-bootable target multi-backend or image-pipeline flows off the validation path. |
-| Volume groups | ⚠️ | `POST /groups/{id}/action` (+ group replication) | `/groups` CRUD is registered but the README flags groups as needing implementation; consistency-group actions are absent. |
+| Volume groups | ⚠️ | `POST /groups/{id}/action` (+ group replication) | `/groups` CRUD and `/groups/detail` are registered (SPEC-020); consistency-group actions are absent. `groups/detail` must be *registered*: without it gin matches `detail` as a group id and the handler 500s — how Horizon report F8 arose. Registration order is irrelevant; gin's static segment wins over the wildcard either way. |
 | Backups | ⚠️ | `GET /backups/{id}/export_record`<br>`POST /backups/import_record` | Backup-metadata export/import for DR portability; the validation path doesn't back up volumes. |
 | Services | ⚠️ | `PUT /os-services/{enable,disable}` | Single-node has no storage-service fleet to enable/disable. |
 | Attachments API *(v3.27+)* | ❌ | `GET, POST /attachments`<br>`GET, PUT, DELETE /attachments/{id}`<br>`POST /attachments/{id}/action` | The microversioned Cinder attachments resource; Lightstack attaches volumes through Nova's `os-volume_attachments` (✅), which is what Terraform and Horizon use. |
@@ -658,7 +669,7 @@ endpoints per group are separated by a line break (`<br>`).
 | Capabilities | ❌ | `GET /capabilities/{host}` | Backend capability discovery for the scheduler; single-backend deployment. |
 | Messages | ❌ | `GET, DELETE /messages` | Async user-facing fault messages; Lightstack is synchronous — errors are returned inline. |
 | Clusters / Workers | ❌ | `/clusters` · `/workers/cleanup` | Active/active HA service-cluster management; single-node. |
-| Quota class sets · resource filters · manageable snapshots · extensions | ❌ | `/os-quota-class-sets/{id}` · `/resource_filters` · `/manageable_snapshots` · `/extensions` | Class-default quotas (per-project quota-sets used instead), filterable-attribute discovery, adopt-existing-snapshot listing, legacy extension list — niche. |
+| Quota class sets · resource filters · manageable snapshots | ❌ | `/os-quota-class-sets/{id}` · `/resource_filters` · `/manageable_snapshots` | Class-default quotas (per-project quota-sets used instead), filterable-attribute discovery, adopt-existing-snapshot listing — niche. **`GET /v3/extensions` is now implemented** (SPEC-020): Horizon's create-volume form probes it via `extension_supported`; without it the form still opens, but shows "Unable to determine if availability zones extension is supported." and offers no availability-zone choice. |
 
 ### 8.5 Glance — not-implemented endpoints
 

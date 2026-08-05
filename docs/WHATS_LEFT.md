@@ -205,7 +205,7 @@ Total: **52 endpoints** in "bonus" category, but 12 net over baseline
 | Images | ✅ 100% | Upload, download, metadata, import workflow |
 | Authentication | ✅ 100% | Users, projects, domains, roles, tokens |
 | Multi-Tenancy | ✅ 100% | Project isolation, RBAC, quotas |
-| Horizon Dashboard | ⚠️ API only | APIs served; **UI not a drop-in** for resource management (F1–F11, see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`) |
+| Horizon Dashboard | ⚠️ Usable | APIs served; **UI usable** for resource management, open gaps F1/F10/F11/F13/F18 (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`) |
 | Performance | ✅ Optimized | Pagination, indexes, <3s queries |
 | Testing | ✅ Comprehensive | 65+ tests (contract + integration) |
 | Documentation | ✅ Complete | Deployment guides, API docs |

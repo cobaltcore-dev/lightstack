@@ -363,10 +363,15 @@ func TestDeleteVolumeWithSnapshot_DB(t *testing.T) {
 }
 
 // TestDeleteVolumeSnapshotCountError_DB proves the snapshot guard fails closed. It
-// induces a real error on the count query (the snapshots table is renamed away for the
-// duration) and asserts the delete is refused and the volume survives. Under the old
-// `err == nil && snapshotCount > 0` form the error short-circuited the guard and the
-// volume was deleted, so this test fails against that version.
+// induces a real error on the count query (the snapshots table is held under an exclusive
+// lock until the request's deadline) and asserts the delete is refused and the volume
+// survives. Under the old `err == nil && snapshotCount > 0` form the error short-circuited
+// the guard and the volume was deleted, so this test fails against that version.
+//
+// The fault used to be injected by renaming the table away. That rename was visible to
+// every package running in parallel against the same database: their snapshot queries
+// failed, and a cleanup that ran inside the window left rows behind. A lock only makes
+// them wait.
 func TestDeleteVolumeSnapshotCountError_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -378,21 +383,9 @@ func TestDeleteVolumeSnapshotCountError_DB(t *testing.T) {
 	}
 	t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM volumes WHERE id=$1", volID) })
 
-	if _, err := database.DB.Exec(ctx, "ALTER TABLE snapshots RENAME TO snapshots_faultinject"); err != nil {
-		t.Fatalf("rename snapshots away: %v", err)
-	}
-	restored := false
-	restore := func() {
-		if !restored {
-			database.DB.Exec(ctx, "ALTER TABLE snapshots_faultinject RENAME TO snapshots")
-			restored = true
-		}
-	}
-	t.Cleanup(restore)
-
 	r := newCinderTestRouter()
-	code, body := doReq(r, http.MethodDelete, "/v3/volumes/"+volID, "", cinderAuthHdr(seededProjectID, seededUserID))
-	restore()
+	code, body := serveWithTableLocked(t, r, "snapshots", http.MethodDelete, "/v3/volumes/"+volID,
+		cinderAuthHdr(seededProjectID, seededUserID))
 
 	if code != http.StatusInternalServerError {
 		t.Errorf("delete with failing snapshot count: code=%d body=%s; want 500 (fail closed)", code, body)

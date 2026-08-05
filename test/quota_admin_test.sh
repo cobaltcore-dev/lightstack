@@ -109,7 +109,10 @@ NON_ADMIN_UPDATE=$(curl -s -X PUT http://localhost:8774/v2.1/os-quota-sets/$PROJ
     }
   }')
 
-NON_ADMIN_ERROR=$(echo "$NON_ADMIN_UPDATE" | jq -r '.error.code // empty')
+# Lightstack returns OpenStack-style error envelopes keyed by the error name
+# (e.g. {"forbidden":{"code":403,...}}), not {"error":{...}} — accept either so this
+# assertion actually exercises the admin check (SPEC-020 FR-020).
+NON_ADMIN_ERROR=$(echo "$NON_ADMIN_UPDATE" | jq -r '(.error.code // .forbidden.code // (.. | objects | select(has("code")) | .code)) // empty' | head -1)
 if [ "$NON_ADMIN_ERROR" = "403" ]; then
   echo "✓ Non-admin correctly denied (403 Forbidden)"
   NON_ADMIN_TEST="PASS"

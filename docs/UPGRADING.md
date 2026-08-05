@@ -225,3 +225,109 @@ kubectl patch secret "$SECRET" --type=json -p="[
 
 Then roll the Deployment or DaemonSet yourself. The chart cannot checksum a Secret it does
 not render, so nothing restarts on its own.
+
+## Redis cache keys are now scoped to the caller
+
+`GET /v2.0/networks/{id}` and `GET /v2/images/{id}` read the cache **before** applying their
+visibility predicate, so an entry keyed on the resource id alone was served to any
+authenticated caller that knew the id. The keys now carry the caller's project:
+
+| | before | after |
+|---|---|---|
+| Neutron network | `network:<id>` | `network:<project_id>:<id>` |
+| Glance image | `image:<id>` | `image:<project_id>:<id>` |
+
+This only matters where caching is enabled. It is off by default in both
+`config/lightstack.yaml` and the chart, so a deployment with no Redis needs nothing here.
+
+Entries written under the old keys are neither read nor evicted: the new lookup cannot match
+them, and the invalidation patterns (`network:*:<id>`, `image:*:<id>`) do not either — the
+old key has no project segment for the `*` to stand in for. Nothing serves them, so they
+simply expire: 30 minutes for a network, one hour for an image. There is no stale-read
+window and no action to take.
+
+If you would rather not leave them sitting in Redis, drop them before starting the new
+version — the new entries repopulate on the next read:
+
+```bash
+redis-cli --scan --pattern 'lightstack:network:*' | xargs -r redis-cli del
+redis-cli --scan --pattern 'lightstack:image:*'   | xargs -r redis-cli del
+```
+
+Adjust the prefix if `cache.key_prefix` is not the default.
+
+## Quota, limits and security-group API changes
+
+Several quota, limits and security-group answers changed, most of them to match upstream
+OpenStack. A client that relied on an old answer now gets a different status code or value.
+Nothing is migrated, and there is no switch to restore the old behaviour. Two changes can need
+action on your side — eBPF mode and a self-maintained Horizon configuration — and the rest is
+listed per service below. Two rows deliberately differ from upstream: `default` is Lightstack's
+own alias for the caller's project, and an unscoped token gets `404` on `/limits` where upstream
+answers `200`.
+
+### eBPF security groups fail closed (eBPF mode only)
+
+With `networking_mode: ebpf`, three cases admitted more than the rules said:
+
+- A rule whose only source is `remote_group_id` was translated to `0.0.0.0/0`, admitting every
+  source. It now admits nothing — the filter is programmed once, at port creation, and cannot
+  follow a group's members.
+- An IPv6 rule without a prefix became IPv4 `0.0.0.0/0`, and one with an IPv6 prefix made the
+  port's whole rule set fail to program. IPv6 rules are now left out of the filter, which parses
+  IPv4 only.
+- When programming a port's rules failed, the filter was not attached and the port stayed
+  unfiltered. It is now attached either way.
+
+Traffic one of these cases admitted before the upgrade is dropped after it. Before upgrading an
+eBPF deployment, replace rules whose only source is a remote group with `remote_ip_prefix` CIDRs.
+
+### Horizon: `CSRF_COOKIE_HTTPONLY` must be `False`
+
+Lightstack's Horizon `local_settings` set `CSRF_COOKIE_HTTPONLY = True`. Horizon's AngularJS reads
+the CSRF token from `document.cookie`, so with the flag set some dashboard actions fail without
+an error — Delete Key Pair does nothing. Both shipped copies,
+`deployments/horizon-config/local_settings` and the chart's
+`deployments/horizon-chart/files/local_settings`, now set `False`. If you deploy Horizon from your
+own copy of that file, change the flag there too.
+
+### Quota and limits
+
+`{id}` is the project in the quota path: Nova `/os-quota-sets/{id}`, Cinder `/v3/quota-sets/{id}`,
+Neutron `/v2.0/quotas/{id}`.
+
+| | before | after |
+|---|---|---|
+| Cinder quota `PUT` / `DELETE` | any authenticated caller | admin only (`403` otherwise) |
+| Nova quota `PUT` by a non-admin | `400` when the body was malformed | `403` before the body is read |
+| `{id}` of `default`, or empty | Cinder: the project named `default`; Nova `PUT`: `500` | the caller's project, on every verb |
+| a non-admin's `{id}` naming another project | that project's quotas | `403`. Nova `defaults` is still `200`, as upstream allows anyone to read it |
+| an admin's `{id}` naming no project | `200` with default quotas | `404` |
+| a malformed `{id}` | Nova: `500` | `404` |
+| an unscoped token, on the quota routes and Nova/Cinder `/limits` | `500` (Neutron quotas: `200`) | `404` |
+| a usage count that fails | `200`, reporting zero usage | `500` |
+| Nova `/limits` for a project without quota rows | `maxTotalInstances` 100, `maxTotalCores` 200, `maxTotalRAMSize` 512000, `maxSecurityGroups` 50 | 10, 20, 51200 and 10 — the quota-set defaults |
+| Nova `/limits` usage | `DELETED` instances left out; floating IPs, security groups and server groups always `0` | every instance row counted; the others counted |
+| Cinder `/limits` | `maxTotalVolumes` 1000, `maxTotalSnapshots` 1000, `maxTotalBackupGigabytes` 5000; quota overrides ignored | 100, 100 and 10000; overrides applied |
+| Cinder quota set with `?usage=true` | the parameter was ignored | `{in_use, limit, reserved}` per resource |
+
+### Neutron
+
+| | before | after |
+|---|---|---|
+| network and subnet `tenant_id` / `project_id` | the caller's project | the owning project |
+| subnet listing | the caller's own and shared subnets | also subnets other projects created on the caller's networks |
+| listings without `limit` (networks, subnets, ports, routers, floating IPs) | the first 1000 rows, with no `next` link | every row; an explicit `limit` still pages |
+| network list/show when the subnet lookup fails | a truncated `subnets` list | `500` |
+| unset `remote_ip_prefix` / `remote_group_id` in `GET /v2.0/security-groups/{id}` | `""` | `null` |
+| creating a rule in another project's group | allowed | `404` |
+| reading or deleting another project's rule | allowed | `404` |
+| deleting an unknown rule id | `204` | `404` |
+| `remote_group_id` | stored unchecked; a malformed id gave `500` | `400` when malformed, `404` when not the caller's group |
+
+### Nova
+
+| | before | after |
+|---|---|---|
+| `addSecurityGroup` with a group the server already has | `409` | `400`, as upstream, where Neutron rejects the duplicate id |
+| server create, `security_groups[].name` | a group name | a group name or id |

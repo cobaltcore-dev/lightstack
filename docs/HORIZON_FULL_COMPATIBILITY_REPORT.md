@@ -6,12 +6,13 @@
 > This document (SPEC-002) measured **API-endpoint coverage**, not a working dashboard. The SPEC-018
 > browser-level verification (stub + real, host-run) found that while Lightstack's **API/CLI is compatible** and
 > its real backends work end-to-end (VM boots from a Ceph-RGW image, real networking, metadata/cloud-init,
-> SSH), the Horizon **dashboard is _not_ usable for resource management** — every create/write workflow is
-> broken (findings F1–F11). The sections below have been reduced to what SPEC-002 actually measured —
-> **API-endpoint coverage** — with UI verdicts deferred to the SPEC-018 report.
+> SSH), the Horizon **dashboard was _not_ usable for resource management** — every create/write workflow was
+> broken. #532 and #533 have since fixed those workflows and the dashboard is usable for resource management;
+> its open gaps are tracked in that report (findings F1–F18). The sections below have been reduced to what
+> SPEC-002 actually measured — **API-endpoint coverage** — with UI verdicts deferred to the SPEC-018 report.
 
 **Date**: March 17, 2026 (original)
-**Status**: ⚠️ **API endpoints: broad coverage; Horizon UI: NOT a drop-in for resource management** — see the SPEC-018 report
+**Status**: ⚠️ **API endpoints: broad coverage; Horizon UI: usable for resource management since #532/#533** — see the SPEC-018 report
 **Coverage**: 342/330 endpoints (104%) — endpoint count only; does not imply a working dashboard
 
 ## Executive Summary
@@ -23,8 +24,9 @@ stands and is cited by the superseding report.
 
 **What this document does _not_ establish: that the dashboard works.** Endpoint coverage was measured
 from API traces, never from a browser-level check of the UI. The SPEC-018 verification that did run one
-found the Horizon UI is **not** a drop-in for resource management — every create/write workflow fails
-UI-side (findings F1–F11) while the same operations succeed via API/CLI. **For any statement about UI
+found the Horizon UI was **not** a drop-in for resource management — every create/write workflow failed
+UI-side while the same operations succeeded via API/CLI; #532 and #533 have since fixed those workflows
+(findings F1–F18). **For any statement about UI
 behaviour, read the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md), not this file.**
 
 ## Verification Methodology
@@ -51,12 +53,12 @@ last column. Full detail in the [SPEC-018 report](compatibility/HORIZON_COMPATIB
 
 | Page | APIs served | API Dependencies | Notes (UI verdict per SPEC-018) |
 |------|-------------|------------------|-------|
-| **Overview** | ✅ | Nova, Cinder, Neutron quotas | ❌ UI: limits widget errors (**F2**) |
-| **Instances** | ✅ | Nova servers, flavors, images | ❌ UI: launch wizard can't select a network (**F7**); console shows no guest (**F1**) |
-| **Volumes** | ✅ | Cinder volumes, snapshots, backups | ❌ UI: Create Volume opens no dialog (**F8**); panel 500s once a volume exists (**F9**) |
-| **Images** | ✅ | Glance images | ⚠️ UI: delete is a no-op (**F6**) |
+| **Overview** | ✅ | Nova, Cinder, Neutron quotas | ✅ UI: limits widget loads (**F2** fixed, #533) |
+| **Instances** | ✅ | Nova servers, flavors, images | ⚠️ UI: launch works (**F7** fixed, #533); console shows no guest (**F1**, open) |
+| **Volumes** | ✅ | Cinder volumes, snapshots, backups | ✅ UI: Create Volume works (**F8** fixed, #533); panel renders with volumes (**F9** fixed, #532) |
+| **Images** | ✅ | Glance images | ✅ UI: delete works (**F6** fixed, #532) |
 | **Network Topology** | ✅ | Neutron networks, routers, instances | Visual topology map |
-| **Networks** | ✅ | Neutron networks, subnets | ❌ UI: no Create Network button (**F3**); networks listed twice (**F4**) |
+| **Networks** | ✅ | Neutron networks, subnets | ✅ UI: Create Network present (**F3** fixed, #533); networks listed once (**F4** fixed, #532) |
 | **Routers** | ✅ | Neutron routers, interfaces | External gateways, static routes |
 | **Security Groups** | ✅ | Neutron security groups, rules | Port-based firewall rules |
 | **Floating IPs** | ✅ | Neutron floating IPs, ports | Allocate, associate, disassociate |
@@ -70,7 +72,7 @@ last column. Full detail in the [SPEC-018 report](compatibility/HORIZON_COMPATIB
 | **System Info** | ✅ | Nova, Neutron, Cinder services | Service status, versions |
 | **Hypervisors** | ✅ | Nova hypervisors | Compute node details |
 | **Instances** | ✅ | Nova servers (all projects) | Admin view across all tenants |
-| **Volumes** | ✅ | Cinder volumes (all projects) | ⚠️ UI: see **F9** (volumes panel) |
+| **Volumes** | ✅ | Cinder volumes (all projects) | ✅ UI: panel renders with volumes (**F9** fixed, #532) |
 | **Flavors** | ✅ | Nova flavors | Create, edit, delete flavors |
 | **Images** | ✅ | Glance images (all projects) | Image visibility, metadata |
 | **Networks** | ✅ | Neutron networks (all projects) | Provider networks, VLAN setup |
@@ -91,10 +93,10 @@ last column. Full detail in the [SPEC-018 report](compatibility/HORIZON_COMPATIB
 ## Critical Workflows (API call sequences)
 
 These record the **API sequence** each workflow issues and that Lightstack answers all of them. The ✅
-markers below are API-level results from SPEC-002's traces. Several of these workflows are **not
-completable in the dashboard** — see the per-workflow notes and the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
+markers below are API-level results from SPEC-002's traces. The UI results give the dashboard status
+from the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md), as re-verified after #532/#533.
 
-### 1. Instance Launch Workflow — APIs ✅ / **UI broken (F7, F1)**
+### 1. Instance Launch Workflow — APIs ✅ / UI ✅ launch (F7 fixed) / ❌ console (F1)
 
 **Steps**:
 1. Navigate to Project → Instances
@@ -115,9 +117,9 @@ GET /v2.1/servers/{id}/action (os-getVNCConsole)  # noVNC console access
 ```
 
 **Result (API)**: ✅ Instance created successfully.
-**Result (UI)**: ❌ the launch wizard cannot select a network (**F7**), and the console tab shows no guest (**F1**). `openstack server create` works; `openstack console log show` works.
+**Result (UI)**: the launch wizard completes since #533 (**F7** fixed); the console tab still shows no guest (**F1**). `openstack console log show` works.
 
-### 2. Volume Attachment Workflow — APIs ✅ / **UI blocked upstream (F8, F9)**
+### 2. Volume Attachment Workflow — APIs ✅ / UI no longer blocked (F8, F9 fixed)
 
 **Steps**:
 1. Create volume in Project → Volumes
@@ -136,9 +138,9 @@ GET /v2.1/servers/{id}/os-volume_attachments   # List attachments
 ```
 
 **Result (API)**: ✅ Volume attached, visible in instance details and guest OS.
-**Result (UI)**: ❌ a volume cannot be created in the dashboard to begin with (**F8**), and the Volumes panel 500s once one exists (**F9**).
+**Result (UI)**: a volume can be created in the dashboard (**F8** fixed, #533), and the Volumes panel renders once one exists (**F9** fixed, #532). Attaching from the dashboard was not re-verified.
 
-### 3. Network Creation Workflow — APIs ✅ / **UI broken (F3)**
+### 3. Network Creation Workflow — APIs ✅ / UI ✅ (F3 fixed)
 
 **Steps**:
 1. Navigate to Project → Networks
@@ -154,7 +156,7 @@ GET /v2.0/networks/{id}                      # Get network details
 ```
 
 **Result (API)**: ✅ Network created with subnet, DHCP enabled.
-**Result (UI)**: ❌ the Project panel offers no Create Network button (**F3**), and networks list twice (**F4**).
+**Result (UI)**: the Project panel offers Create Network (**F3** fixed, #533), and networks list once (**F4** fixed, #532).
 
 ### 4. Floating IP Association Workflow — APIs ✅ / UI not exercised
 
@@ -1073,11 +1075,12 @@ Lightstack serves **the full API surface Horizon consumes**, through:
 **Result (API)**: Horizon's API dependencies are met without modifications, custom patches or workarounds
 to Lightstack, and every page's calls are answered.
 
-**Result (UI)**: **not a drop-in.** The SPEC-018 browser-level pass found every create/write workflow
-broken in the dashboard (F1–F11) while the same operations succeed via API/CLI.
+**Result (UI)**: **usable for resource management** since #532/#533. The SPEC-018 browser-level pass first
+found every create/write workflow broken in the dashboard; those workflows are fixed, and the open gaps are
+listed in the SPEC-018 report (findings F1–F18).
 
-**Recommendation**: Lightstack is suitable where the **OpenStack API/CLI** is the interface. For the
-**Horizon dashboard as a management UI it is not yet a drop-in** — see the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) for the per-workflow
+**Recommendation**: Lightstack is suitable where the **OpenStack API/CLI** is the interface, and the
+**Horizon dashboard** now works as a management UI for networks, volumes and instances — see the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) for the per-workflow
 verdicts and the open follow-ups.
 
 ## References
