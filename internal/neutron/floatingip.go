@@ -145,6 +145,8 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if floatingIPs == nil {
@@ -272,7 +274,7 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 				if err := svc.routerManager.EnsureFloatingIP(floatingIP, *fixedIP, uplink); err != nil {
 					log.Warn().Err(err).Str("floating_ip", floatingIP).Msg("failed to configure floating IP NAT")
 				}
-				if err := svc.routerManager.EnsureIngressFilter(*fixedIP, uplink, svc.portIngressRules(c.Request.Context(), req.FloatingIP.PortID)); err != nil {
+				if err := svc.ensureIngressFilter(c.Request.Context(), *fixedIP, uplink, req.FloatingIP.PortID); err != nil {
 					log.Warn().Err(err).Str("fixed_ip", *fixedIP).Msg("WS-3: failed to program ingress filter")
 				}
 			} else {
@@ -526,7 +528,7 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 					return
 				}
 				// Default-deny inbound, open per the port's SG ingress rules (T034).
-				if err := svc.routerManager.EnsureIngressFilter(fixedIP, uplink, svc.portIngressRules(c.Request.Context(), newPortID)); err != nil {
+				if err := svc.ensureIngressFilter(c.Request.Context(), fixedIP, uplink, newPortID); err != nil {
 					log.Warn().Err(err).Str("fixed_ip", fixedIP).Msg("WS-3: failed to program ingress filter")
 				}
 
@@ -651,7 +653,11 @@ func (svc *Service) portPrimaryFixedIP(ctx context.Context, portID string) strin
 // portIngressRules returns the IP-based ingress rules of a port's security
 // groups (skipping same-group / remote_group_id rules, which are east-west) —
 // what the north-south ingress filter enforces for a floating IP (T034).
-func (svc *Service) portIngressRules(ctx context.Context, portID string) []networking.IngressRule {
+// portIngressRules returns the ingress rules to program for a port. It reports an error
+// rather than a short list when the read fails: callers replace the port's whole filter
+// with what they get back, so a truncated list would silently drop firewall allowances.
+// On error the caller must leave the existing filter in place.
+func (svc *Service) portIngressRules(ctx context.Context, portID string) ([]networking.IngressRule, error) {
 	rows, err := database.DB.Query(ctx, `
 		SELECT r.protocol, r.port_range_min, r.port_range_max, r.remote_ip_prefix
 		FROM security_group_rules r
@@ -661,7 +667,7 @@ func (svc *Service) portIngressRules(ctx context.Context, portID string) []netwo
 		  AND r.remote_group_id IS NULL`, portID)
 	if err != nil {
 		log.Warn().Err(err).Str("port_id", portID).Msg("WS-3: failed to query ingress rules")
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var out []networking.IngressRule
@@ -669,6 +675,7 @@ func (svc *Service) portIngressRules(ctx context.Context, portID string) []netwo
 		var proto, remote sql.NullString
 		var pmin, pmax sql.NullInt32
 		if err := rows.Scan(&proto, &pmin, &pmax, &remote); err != nil {
+			log.Warn().Err(err).Str("operation", "portIngressRules").Msg("failed to scan row")
 			continue
 		}
 		out = append(out, networking.IngressRule{
@@ -678,7 +685,21 @@ func (svc *Service) portIngressRules(ctx context.Context, portID string) []netwo
 			Remote:   remote.String,
 		})
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Str("port_id", portID).Msg("WS-3: ingress rules rows iteration error; refusing to program a partial filter")
+		return nil, err
+	}
+	return out, nil
+}
+
+// ensureIngressFilter programs a port's ingress filter, skipping the update when the
+// rule set could not be read in full (fail-safe: keep the filter that is already there).
+func (svc *Service) ensureIngressFilter(ctx context.Context, fixedIP, uplink, portID string) error {
+	rules, err := svc.portIngressRules(ctx, portID)
+	if err != nil {
+		return err
+	}
+	return svc.routerManager.EnsureIngressFilter(fixedIP, uplink, rules)
 }
 
 // refreshIngressFiltersForSG rebuilds the north-south ingress filter for every
@@ -701,9 +722,16 @@ func (svc *Service) refreshIngressFiltersForSG(ctx context.Context, sgID string)
 	var targets []target
 	for rows.Next() {
 		var t target
-		if err := rows.Scan(&t.fixed, &t.port); err == nil {
+		if err := rows.Scan(&t.fixed, &t.port); err != nil {
+			log.Warn().Err(err).Str("operation", "refreshIngressFiltersForSG").Msg("failed to scan row")
+		} else {
 			targets = append(targets, t)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		log.Error().Err(err).Str("sg_id", sgID).Msg("WS-3: FIP rows iteration error; skipping SG ingress refresh")
+		return
 	}
 	rows.Close()
 	if len(targets) == 0 {
@@ -715,7 +743,7 @@ func (svc *Service) refreshIngressFiltersForSG(ctx context.Context, sgID string)
 		return
 	}
 	for _, t := range targets {
-		if err := svc.routerManager.EnsureIngressFilter(t.fixed, uplink, svc.portIngressRules(ctx, t.port)); err != nil {
+		if err := svc.ensureIngressFilter(ctx, t.fixed, uplink, t.port); err != nil {
 			log.Warn().Err(err).Str("fixed_ip", t.fixed).Msg("WS-3: ingress filter refresh failed")
 		}
 	}
@@ -741,12 +769,16 @@ func (svc *Service) allocateFloatingIP(ctx context.Context, subnetCIDR string) (
 	for rows.Next() {
 		var ip string
 		if err := rows.Scan(&ip); err != nil {
+			log.Warn().Err(err).Str("operation", "allocateFloatingIP").Msg("failed to scan row")
 			continue
 		}
 		allocatedIPs[ip] = true
 	}
+	// A partial read leaves allocatedIPs incomplete, which would hand out an IP that
+	// is already allocated — fail instead of risking a duplicate floating IP.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("rows iteration error")
+		log.Error().Err(err).Msg("floating IP allocation: rows iteration error")
+		return "", fmt.Errorf("failed to read allocated floating IPs: %w", err)
 	}
 
 	// Find first available IP in range

@@ -287,6 +287,7 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 		var portState *string
 
 		if err := rows.Scan(&id, &portID, &networkID, &fixedIPsJSON, &macAddress, &portState); err != nil {
+			log.Warn().Err(err).Str("operation", "ListInterfaceAttachments").Msg("failed to scan row")
 			continue
 		}
 

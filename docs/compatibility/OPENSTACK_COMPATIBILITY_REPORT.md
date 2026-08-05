@@ -5,6 +5,15 @@
 
 ---
 
+> **Update — 2026-07-24:** this 2026-03 (v0.5.0) report is largely stale. The "100% compatibility with
+> Horizon UI" claim below did **not** survive browser-level verification — SPEC-018 found Horizon's
+> create/write UI is not a drop-in (see [`HORIZON_COMPATIBILITY_REPORT.md`](./HORIZON_COMPATIBILITY_REPORT.md)).
+> The API/response findings **F4/F5/F6/F9** — including the service-catalog URL-substitution item under
+> Known Issues below — are **fixed in SPEC-019 / cloud-storage#532** and verified in stub + real mode;
+> Horizon's UI write workflows remain open (#533/#534). Treat this document's coverage numbers and "100%
+> client" rows as pre-v0.6 estimates, superseded by the grounded SPEC-016 (Terraform) and SPEC-018/019
+> (Horizon) reports in this directory.
+
 ## Executive Summary
 
 Lightstack demonstrates **strong API compatibility** with OpenStack 2025.2, achieving:

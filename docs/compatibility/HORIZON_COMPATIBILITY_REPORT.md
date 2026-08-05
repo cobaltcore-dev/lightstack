@@ -30,6 +30,14 @@ refutes SPEC-002's ungrounded "100% compatible" claim. **11 findings (F1–F11).
 > (SPEC-002's "100% compatible", never grounded in a browser-level check) — a superseded banner there now
 > points here, leaving one authoritative statement (SC-003).
 
+> **Update — 2026-07-24 (SPEC-019 / cloud-storage#532):** findings **F4, F5, F6, F9 are FIXED** and
+> re-verified in **both** stub and real mode (runbooks under
+> [`../specs/019-horizon-compat-api-fixes/`](../specs/019-horizon-compat-api-fixes/)). The create/write-UI
+> cluster (**F2/F3/F7/F8**, #533) and the noVNC console (**F1**, #534) remain open. Net: the read/list panels
+> now render (volumes no longer 500), the volume catalog is reachable, networks list once, and image delete
+> works via the API — but Horizon is still not a drop-in for UI-driven resource *creation* (see #533). Each
+> fixed finding is tagged ✅ inline; see the updated Follow-ups.
+
 ## Environment
 
 | Field | Stub pass | Real pass (graded) |
@@ -167,7 +175,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   (`internal/neutron/network.go`). Expected to close **F2 and F3 together**; not yet verified by re-test.
 - **Tracked**: [cloud-storage#533](https://github.com/cobaltcore-dev/cloud-storage/issues/533)
 
-### F4 — Duplicate network listing in the Project panel (medium) — _stub + real; root-caused 2026-09-22_
+### F4 — Duplicate network listing in the Project panel (medium) — _stub + real; root-caused 2026-09-22_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause — proven (2026-09-22)**: `ListNetworks` (`internal/neutron/network.go:477`) **ignores the `shared`
   and `router:external` list filters**. It parses only `id` and `name` (added for the Terraform provider,
   SPEC-009 / SC-007) and always queries `WHERE (project_id = $1 OR shared = true)`. Horizon's
@@ -188,13 +196,14 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   (verified from a logged-in session against stub `:8080` and again against real-mode k3s `:30080`).
 - **Impact**: confusing/incorrect network list (both passes) — and, per **F7**, the duplicate `id` is what
   empties the Launch-Instance wizard's Networks table.
-- **Fixed on `feature/532`** (`9e17dfc`, not yet on `main`): `buildNetworkListFilter` honours
+- **Fixed on `feature/532`** (SPEC-019 / #532, 2026-07-24; not yet on `main`): `buildNetworkListFilter` honours
   `shared` / `router:external` / `tenant_id` / `id` / `name`, making Horizon's sub-queries disjoint, and
   short-circuits `router:external=true` to an empty list. This report's passes ran on `feature/482`, which
-  is the base of that chain and therefore predates the fix.
+  is the base of that chain and therefore predates the fix. The fix itself was re-verified in **both**
+  stub and real mode — see [`../specs/019-horizon-compat-api-fixes/`](../specs/019-horizon-compat-api-fixes/).
 - **Tracked**: [cloud-storage#532](https://github.com/cobaltcore-dev/cloud-storage/issues/532)
 
-### F5 — Volume (Cinder) catalog endpoint advertises `localhost` (major) — _stub_
+### F5 — Volume (Cinder) catalog endpoint advertises `localhost` (major) — _stub_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: migration `040` seeds the volume endpoint (`…013`) as `http://localhost:8776/v3`; migration
   `052` rewrites `…013` to `http://lightstack:8776/v3`, but migration `054_cinder_volume_alias` adds a **second**
   volume endpoint (`…015`) hardcoded to `http://localhost:8776/v3`, which `052` (running earlier) never
@@ -208,17 +217,17 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 - **Impact**: **stub** — the whole Volumes panel is dead (list + create). **Real** — list works; only the
   create modal is dead (→ F8).
 - **Workaround**: none via the UI (CLI works).
-- **Follow-up**: seed the alias endpoint (`…015`) with the configurable host (not `localhost`), and/or
+- **Follow-up (as filed 2026-07-23 — resolved 2026-07-24, see the update above and the Follow-ups below)**: seed the alias endpoint (`…015`) with the configurable host (not `localhost`), and/or
   make catalog host-substitution rewrite `localhost:` too. Verify against #481 Terraform (volume path).
 - **Tracked**: [cloud-storage#532](https://github.com/cobaltcore-dev/cloud-storage/issues/532)
 
-### F6 — Glance image delete is a no-op (medium) — _stub_
+### F6 — Glance image delete is a no-op (medium) — _stub_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: `openstack image delete <id>` returns success (no error) but the image stays in
   `image list`. Two explicitly-deleted images (`70c6ee27…`, `32d8ea8e…`) reappeared alongside a freshly
   created one — three `cirros` images after two deletes.
 - **Impact**: images can't be removed via CLI or the Horizon Images panel; the delete action appears to
   succeed but leaves the image behind.
-- **Follow-up**: inspect the Glance DELETE handler (stub mode) — it likely returns 2xx without removing
+- **Follow-up (as filed 2026-07-23 — resolved 2026-07-24, see the update above and the Follow-ups below)**: inspect the Glance DELETE handler (stub mode) — it likely returns 2xx without removing
   the row. (Commit `ce2cf14` previously touched "image delete idempotency"; re-verify.) Confirm whether
   it recurs in real mode (RGW-backed).
 - **Tracked**: [cloud-storage#532](https://github.com/cobaltcore-dev/cloud-storage/issues/532)
@@ -299,7 +308,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   that one is JS-level and needs a browser, not an API-level trace.
 - **Tracked**: [cloud-storage#533](https://github.com/cobaltcore-dev/cloud-storage/issues/533)
 
-### F9 — Volumes panel 500s (TemplateSyntaxError) once a volume exists (major) — _real (2026-07-23)_
+### F9 — Volumes panel 500s (TemplateSyntaxError) once a volume exists (major) — _real (2026-07-23)_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: with `test-vol-cli` present, `GET /dashboard/project/volumes/` throws `TemplateSyntaxError`
   in `horizon/tables/base.py:1948 get_rows` rendering `horizon/common/_data_table.html`. Lightstack's Cinder
   volume response is **heavily null-populated** — `openstack volume show` returns `type`/`volume_type_id`,
@@ -309,7 +318,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   populated one 500s.
 - **Impact**: the Volumes panel is unusable whenever any volume exists — a **read/list** break on top of
   the create-UI break (F8). Distinct from F5 (the v3 endpoint is clean in real).
-- **Follow-up**: the full Django traceback is in the Horizon **container's apache error log** (pod stdout
+- **Follow-up (as filed 2026-07-23 — resolved 2026-07-24, see the update above and the Follow-ups below)**: the full Django traceback is in the Horizon **container's apache error log** (pod stdout
   only shows kolla/apache startup): `kubectl -n lightstack exec deploy/horizon-lightstack-horizon -- sh -c 'tail -80 /var/log/apache2/*error*'`.
   Pinpoint the failing column (likely `encrypted` / `volume_type` / `availability_zone` being null), then
   have Lightstack's Cinder populate those fields to non-null defaults (cf. upstream Cinder's volume schema).
@@ -420,7 +429,7 @@ coverage it counted is real, but it does not translate into a working dashboard 
   and Horizon reads all three unconditionally; Lightstack omits `reserved`, so the Overview limits widget errors
   and the Project Create-Network action is dropped. Verified as the cause 2026-08-25; the fix itself is
   not yet re-tested.
-- **F7 — answered 2026-09-22, and it is F4** (fix already on `feature/532`, `9e17dfc`; not on `main`).
+- **F7 — answered 2026-09-22, and it is F4** (fix on `feature/532`, SPEC-019 / #532; not on `main`).
   Honouring the `shared` / `router:external` filters in `ListNetworks` makes Horizon's sub-queries disjoint,
   which removes the duplicate `id` that makes AngularJS's `track by` repeater throw. **Re-test required** —
   removing the duplicate is necessary but not proven sufficient for the wizard to complete.
@@ -429,11 +438,18 @@ coverage it counted is real, but it does not translate into a working dashboard 
 - **Volume-create modal (still open, [cloud-storage#533](https://github.com/cobaltcore-dev/cloud-storage/issues/533))** — its create action renders server-side and the
   Cinder quota and limits calls return 200 with every key Horizon reads, so the quota theory does not
   explain it. Needs a browser-level (JavaScript) investigation, not an API trace.
-- **F9** ([cloud-storage#532](https://github.com/cobaltcore-dev/cloud-storage/issues/532)) — populate Lightstack's Cinder volume response (null `type`/`availability_zone`/`encrypted`/…) so
   Horizon's volume table renders.
-- **F4** ([cloud-storage#532](https://github.com/cobaltcore-dev/cloud-storage/issues/532)) — make Lightstack Neutron honor the `shared`/`router:external`/project list filters (no double-listing).
+- ✅ **F4, F5, F6, F9 — DONE (SPEC-019 / [cloud-storage#532](https://github.com/cobaltcore-dev/cloud-storage/issues/532), 2026-07-24):** Lightstack Neutron now honors the
+  `shared`/`router:external`/project list filters so each network lists once (F4); the `volume` catalog alias
+  advertises the configured host, not `localhost` (F5); the Cinder volume response carries the full non-null
+  upstream field set so Horizon's volume table renders instead of 500-ing (F9); and Glance image delete
+  removes the image with owner-or-admin authorization, returning 404/403 appropriately (F6). Verified in
+  **both** stub and real mode. *(Horizon's row **Delete** buttons belong to the write-UI cluster below — the
+  F6 fix restores delete via the API/CLI, but the dashboard's delete action stays broken until #533.)*
+- **F8 cluster (still open, [cloud-storage#533](https://github.com/cobaltcore-dev/cloud-storage/issues/533))** — trace the Nova/Cinder/Neutron quota+limits+types calls
+  Horizon makes when opening each create UI; with F7 now answered as F4, the remaining unknowns are F2/F3
+  (the `reserved` gap above) and the volume-create modal.
 - **F1** ([cloud-storage#534](https://github.com/cobaltcore-dev/cloud-storage/issues/534)) — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy + configurable URL).
-- **F6** ([cloud-storage#532](https://github.com/cobaltcore-dev/cloud-storage/issues/532)) — fix Glance image delete (currently a no-op).
 - **F11** ([cloud-storage#549](https://github.com/cobaltcore-dev/cloud-storage/issues/549)) — refuse domain-scoped token requests instead of silently returning an unscoped token (already implemented on `feature/549`).
 
 **Reproducibility (SC-005 — self-reproduced 2026-09-22).** Both passes are fully scripted in the two

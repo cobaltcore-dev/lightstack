@@ -3,6 +3,7 @@ package neutron
 import (
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -41,4 +42,98 @@ func TestGenerateMAC(t *testing.T) {
 			seen[mac] = struct{}{}
 		}
 	})
+}
+
+// TestNeutronBool: the list-filter boolean parser accepts neutron's boolean spellings
+// and reports absence distinctly from false (F4). Pure — no DB.
+func TestNeutronBool(t *testing.T) {
+	cases := []struct {
+		in           string
+		val, present bool
+	}{
+		{"", false, false},
+		{"true", true, true}, {"True", true, true}, {"1", true, true},
+		{"false", false, true}, {"False", false, true}, {"0", false, true},
+		{"bogus", false, false},
+	}
+	for _, tc := range cases {
+		v, p := neutronBool(tc.in)
+		if v != tc.val || p != tc.present {
+			t.Errorf("neutronBool(%q) = (%v,%v), want (%v,%v)", tc.in, v, p, tc.val, tc.present)
+		}
+	}
+}
+
+// TestNetworkListDecision: ListNetworks must honor the filters Horizon's
+// network_list_for_tenant sends so its sub-queries are disjoint and each network
+// renders once (F4, FR-009/010/012). Pure — no DB.
+func TestNetworkListDecision(t *testing.T) {
+	// router:external=true → empty result set (Lightstack models no external networks).
+	if _, empty := networkListDecision("", "true"); !empty {
+		t.Error("router:external=true should yield an empty result")
+	}
+	// shared=true → only shared networks.
+	if sf, empty := networkListDecision("true", ""); sf != sharedOnly || empty {
+		t.Errorf("shared=true → (%v, empty=%v), want (sharedOnly, false)", sf, empty)
+	}
+	// shared=false → exclude shared networks.
+	if sf, empty := networkListDecision("false", ""); sf != nonSharedOnly || empty {
+		t.Errorf("shared=false → (%v, empty=%v), want (nonSharedOnly, false)", sf, empty)
+	}
+	// no shared filter → caller's own OR shared (unchanged default).
+	if sf, empty := networkListDecision("", ""); sf != sharedAny || empty {
+		t.Errorf("default → (%v, empty=%v), want (sharedAny, false)", sf, empty)
+	}
+	// router:external=false with no shared filter → default, not empty.
+	if sf, empty := networkListDecision("", "false"); sf != sharedAny || empty {
+		t.Errorf("router:external=false → (%v, empty=%v), want (sharedAny, false)", sf, empty)
+	}
+}
+
+// TestBuildNetworkListFilter: the extracted WHERE/args builder emits the right SQL and
+// positional args per filter so Horizon's sub-queries stay disjoint (F4). Pure — no DB.
+func TestBuildNetworkListFilter(t *testing.T) {
+	const caller = "proj-A"
+
+	// router:external=true → empty result set (no external networks modeled).
+	if _, _, empty := buildNetworkListFilter(caller, "", "true", "", "", ""); !empty {
+		t.Error("router:external=true should yield empty=true")
+	}
+
+	// Default (no filters): scope = caller's own OR shared, one arg (the caller).
+	conds, args, empty := buildNetworkListFilter(caller, "", "", "", "", "")
+	if empty {
+		t.Fatal("default filter should not be empty")
+	}
+	if where := strings.Join(conds, " AND "); where != "(project_id = $1 OR shared = true)" {
+		t.Errorf("default where = %q", where)
+	}
+	if len(args) != 1 || args[0] != caller {
+		t.Errorf("default args = %v, want [%q]", args, caller)
+	}
+
+	// shared=true → only shared, and NO caller arg (so pagination starts at $1).
+	conds, args, _ = buildNetworkListFilter(caller, "true", "", "", "", "")
+	if where := strings.Join(conds, " AND "); where != "shared = true" {
+		t.Errorf("shared=true where = %q", where)
+	}
+	if len(args) != 0 {
+		t.Errorf("shared=true args = %v, want none", args)
+	}
+
+	// shared=false → exclude shared, scoped to the caller.
+	conds, _, _ = buildNetworkListFilter(caller, "false", "", "", "", "")
+	if where := strings.Join(conds, " AND "); !strings.Contains(where, "shared = false") {
+		t.Errorf("shared=false where = %q", where)
+	}
+
+	// tenant + name append sequential placeholders after the scope arg ($1).
+	conds, args, _ = buildNetworkListFilter(caller, "", "", "proj-A", "", "netx")
+	where := strings.Join(conds, " AND ")
+	if !strings.Contains(where, "project_id = $2") || !strings.Contains(where, "name = $3") {
+		t.Errorf("tenant+name where = %q, want $2/$3 placeholders", where)
+	}
+	if len(args) != 3 {
+		t.Errorf("tenant+name args = %v, want 3", args)
+	}
 }

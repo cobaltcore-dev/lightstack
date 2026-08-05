@@ -36,6 +36,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 		var createdAt, updatedAt time.Time
 
 		if err := rows.Scan(&id, &svcType, &name, &description, &enabled, &createdAt, &updatedAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListServices").Msg("failed to scan row")
 			continue
 		}
 
@@ -54,6 +55,8 @@ func (svc *Service) ListServices(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(200, gin.H{"services": services})
@@ -288,6 +291,7 @@ func (svc *Service) ListEndpoints(c *gin.Context) {
 		var serviceType, serviceName string
 
 		if err := rows.Scan(&id, &serviceID, &iface, &url, &region, &enabled, &serviceType, &serviceName); err != nil {
+			log.Warn().Err(err).Str("operation", "ListEndpoints").Msg("failed to scan row")
 			continue
 		}
 
@@ -307,6 +311,8 @@ func (svc *Service) ListEndpoints(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	c.JSON(200, gin.H{"endpoints": endpoints})

@@ -343,6 +343,7 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 		var attachedAt time.Time
 
 		if err := rows.Scan(&volumeID, &device, &attachedAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListVolumeAttachments").Msg("failed to scan row")
 			continue
 		}
 
@@ -383,6 +384,7 @@ func (svc *Service) getNextAvailableDevice(ctx context.Context, instanceID strin
 	for rows.Next() {
 		var device string
 		if err := rows.Scan(&device); err != nil {
+			log.Warn().Err(err).Str("operation", "getNextAvailableDevice").Msg("failed to scan row")
 			continue
 		}
 		usedDevices[device] = true
