@@ -117,19 +117,31 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		return
 	}
 
+	// From here on the port row AND the TAP exist; every failure path below must
+	// undo both, or a transient error leaks a host interface per retry.
+	rollbackPort := func(reason string) {
+		if _, err := database.DB.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Msg("rollback: failed to delete port after " + reason)
+		}
+		if err := svc.tapManager.DeleteTAPDevice(tapName, true, nsName); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("rollback: failed to delete TAP after " + reason)
+		}
+	}
+
 	// Apply security groups (default to "default" security group if none specified)
 	securityGroups := req.Port.SecurityGroups
 	if len(securityGroups) == 0 {
-		// Get default security group for project
-		var defaultSGID string
-		err := database.DB.QueryRow(c.Request.Context(),
-			"SELECT id FROM security_groups WHERE project_id = $1 AND name = 'default'",
-			projectID,
-		).Scan(&defaultSGID)
-
-		if err == nil {
-			securityGroups = []string{defaultSGID}
+		// OpenStack guarantees every project has a default group (Neutron creates it
+		// lazily); ensure it rather than silently creating a port with none.
+		defaultSGID, err := EnsureDefaultSecurityGroup(c.Request.Context(), projectID)
+		if err != nil {
+			// Never return a port the caller believes is in the default group when it isn't.
+			rollbackPort("default security-group failure")
+			log.Error().Err(err).Str("port_id", portID).Msg("failed to ensure default security group")
+			common.SendError(c, common.NewInternalServerError("failed to ensure default security group"))
+			return
 		}
+		securityGroups = []string{defaultSGID}
 	}
 
 	// Insert port-security group associations
@@ -142,11 +154,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		).Scan(&exists)
 
 		if err != nil || !exists {
-			// Clean up port on failure (best-effort; the lookup error is
-			// the user-facing one)
-			if _, cleanupErr := database.DB.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID); cleanupErr != nil {
-				log.Warn().Err(cleanupErr).Str("port_id", portID).Msg("rollback: failed to delete port after security-group lookup failure")
-			}
+			rollbackPort("security-group lookup failure")
 			common.SendError(c, common.NewNotFoundError(fmt.Sprintf("security group %s", sgID)))
 			return
 		}
@@ -156,11 +164,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 			portID, sgID,
 		)
 		if err != nil {
-			// Clean up port on failure (best-effort; the insert error
-			// is the user-facing one)
-			if _, cleanupErr := database.DB.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID); cleanupErr != nil {
-				log.Warn().Err(cleanupErr).Str("port_id", portID).Msg("rollback: failed to delete port after security-group association failure")
-			}
+			rollbackPort("security-group association failure")
 			log.Error().Err(err).Str("operation", "associate_security_group").Str("sg_id", sgID).Msg("failed to associate security group")
 			common.SendError(c, common.NewInternalServerError("failed to associate security group"))
 			return
@@ -1269,15 +1273,18 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 
 	// Associate the project's default security group (OpenStack: an instance's
 	// port gets the default SG unless overridden), so security-group rules apply
-	// to the VM's north-south traffic (SPEC-009 WS-3 / T034).
-	var defaultSG string
-	if err := database.DB.QueryRow(ctx,
-		"SELECT id FROM security_groups WHERE project_id = $1 AND name = 'default' LIMIT 1", projectID).Scan(&defaultSG); err == nil {
-		if _, err := database.DB.Exec(ctx,
-			"INSERT INTO port_security_groups (port_id, security_group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-			portID, defaultSG); err != nil {
-			log.Warn().Err(err).Str("port_id", portID).Msg("failed to associate default security group with port")
-		}
+	// to the VM's north-south traffic (SPEC-009 WS-3 / T034). Ensured, not looked
+	// up: a fresh project has no default group until its first use.
+	// Best-effort by design: the caller (Nova CreateServer) treats an allocation
+	// error as "boot without this network", which is worse than a port with no
+	// group — a group-less port is fail-closed on both dataplanes (north-south
+	// default DROP, XDP drop on miss), so it can only block traffic, never expose it.
+	if defaultSG, err := EnsureDefaultSecurityGroup(ctx, projectID); err != nil {
+		log.Warn().Err(err).Str("port_id", portID).Msg("failed to ensure default security group for port; port has no group (fail-closed)")
+	} else if _, err := database.DB.Exec(ctx,
+		"INSERT INTO port_security_groups (port_id, security_group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+		portID, defaultSG); err != nil {
+		log.Warn().Err(err).Str("port_id", portID).Msg("failed to associate default security group with port")
 	}
 
 	// Distribute FDB entry if VXLAN is enabled

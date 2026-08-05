@@ -59,7 +59,7 @@ partial — see Finding F1.
 
 | #481 category | Result |
 |---|:--:|
-| Compute instances | ✅ Working (create/read/delete); re-plan drift — F1 |
+| Compute instances | ✅ Working (create/read/delete); re-plan is a no-op — F1 resolved (SPEC-017) |
 | Networks | ✅ Working |
 | Security groups | ✅ Working |
 | Volumes | ✅ Working |
@@ -85,7 +85,7 @@ paths and delete-confirmation semantics the provider relies on.
 
 ## Findings
 
-### F1 — `openstack_compute_instance_v2` is not idempotent on re-plan · Minor
+### F1 — `openstack_compute_instance_v2` is not idempotent on re-plan · Minor · ✅ Resolved (SPEC-017 / #524)
 
 After a successful `apply`, a second `terraform plan` reports the instance **must be replaced**:
 
@@ -104,18 +104,31 @@ on the same state: it would recreate the VM (and its volume attachment) instead 
 Single-shot create/destroy pipelines are unaffected.
 
 **Recommendation (out of scope for #481, which is verify-only).** Populate `key_name` and
-`security_groups` in the Nova server-detail response (≈1 line each) to make re-apply a true
-no-op. This is the same class of gap as the documented port-id deviation in
+`security_groups` in the Nova server-detail response to make re-apply a true no-op. This is the
+same class of gap as the documented port-id deviation in
 [`docs/blueprint.md` §6](../blueprint.md); tracked as a follow-up, not a blocker.
+
+**Resolved — SPEC-017 (#524).** Nova server-detail (`GET /v2.1/servers/{id}` **and**
+`/servers/detail`) now returns `key_name` and `security_groups`. The estimate above ("≈1 line
+each") proved optimistic: neither value was persisted, so the fix also persists them at create —
+`key_name` via migration `063` (`instances.key_name`), security groups via `server_security_groups`
+— validates them synchronously (unknown keypair / non-default group → `400`, matching Nova v2.1),
+ensures the project `default` group on demand, and defaults `security_groups` to
+`[{"name":"default"}]`. A repeated `terraform plan` is now a no-op — confirmed on a host run
+(2026-07-21, all-stub mode, unmodified provider 3.4.0): `apply` → `plan -detailed-exitcode` **0** →
+`destroy`. Covered by DB-backed unit tests in `internal/nova` that assert both fields on show +
+list-detail and run in CI. Real mode is not covered by that run.
 
 ## Notes & scope
 
 - **Object storage** is deliberately excluded: Terraform's `openstack_objectstorage_*` is
   Swift-based and Lightstack exposes no `object-store` service (tenant object storage exists via S3 /
   Ceph RGW + EC2 creds — SPEC-014 — but not through this provider). See lightstack#15.
-- **Not CI-gated (yet).** This runs against a live instance. Because it passes in **stub** mode,
-  it is a candidate for the planned CI "Terraform validation" job
-  ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)).
+- **Regression coverage.** The full terraform-in-CI smoke still runs against a live instance and
+  remains a candidate for a dedicated CI "Terraform validation" job
+  ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)). In the meantime, the F1 fields
+  are guarded by DB-backed unit tests in `internal/nova` (`server_detail_keyname_test.go`,
+  `server_detail_secgroups_test.go`) that already run in the CI `unit-tests` job (SPEC-017 US3).
 - **Complementary coverage.** [`test/terraform/sc007/`](../../test/terraform/sc007/) (SPEC-009)
   is the real-mode *deep* scenario — router + floating IP + FIP association + SSH-verified key /
   user-data injection — validating what stub mode can't (actual boot, L3/NAT).

@@ -199,7 +199,7 @@ keypair, instance, volume, volume-attach.
 
 ---
 
-## 3. Test — verify each resource landed (and the known read-back drift)
+## 3. Test — verify each resource landed (and that the re-plan is clean)
 
 ```bash
 source /tmp/lightstack-481-env.sh
@@ -209,14 +209,14 @@ openstack network show tf-compat-net -f value -c status            # ACTIVE
 openstack security group rule list tf-compat-sg -f value | wc -l   # ≥ 2 (ssh + icmp; +defaults)
 openstack server show tf-compat-vm -f json | \
   python3 -c 'import sys,json;d=json.load(sys.stdin);print("addresses:",d.get("addresses"))'
-# Known deviation — re-plan is NOT idempotent (document, do not "fix" here):
+# Re-plan must be a no-op since SPEC-017 (cloud-storage#524): expect 'No changes'
 terraform plan -no-color | grep -E 'No changes|must be replaced|forces replacement' | head
 ```
 **Pass** = server `ACTIVE`, volume `in-use`, network `ACTIVE`, ≥2 SG rules, `addresses`
-populated with a fixed IP. **Expected deviation:** `terraform plan` reports the instance
-`must be replaced` because `key_pair … forces replacement` — Lightstack's Nova server-detail omits
-`key_name` (and `security_groups`), so the provider can't read them back. Create/destroy still
-work; only a second `apply` on the same state churns the instance. Record whatever you see.
+populated with a fixed IP, and `terraform plan` prints **`No changes`**. Since SPEC-017
+(cloud-storage#524) the Nova server-detail reads back `key_name` and `security_groups`, so a
+re-plan that reports `must be replaced` (`key_pair … forces replacement`) is a **regression** in
+the read-back — record it as a failure, not as a known deviation.
 
 ---
 
@@ -249,7 +249,7 @@ echo "=== pods ==="; kubectl -n lightstack get pods
 cd "$(git rev-parse --show-toplevel)/test/terraform/compat"
 terraform apply -auto-approve -no-color > /tmp/lightstack-481-apply.log 2>&1; apply_rc=$?
 echo "=== apply tail (exit $apply_rc) ==="; tail -20 /tmp/lightstack-481-apply.log
-echo "=== drift ==="; terraform plan -no-color 2>&1 | grep -E 'No changes|Plan:|forces replacement' | head
+echo "=== re-plan (want No changes) ==="; terraform plan -no-color 2>&1 | grep -E 'No changes|Plan:|forces replacement' | head
 terraform destroy -auto-approve -no-color > /tmp/lightstack-481-destroy.log 2>&1; destroy_rc=$?
 echo "=== destroy tail (exit $destroy_rc) ==="; tail -15 /tmp/lightstack-481-destroy.log
 ```
@@ -296,5 +296,7 @@ resource cleanup needed.
 - **`Could not resolve … cirros`** on apply → the §1.5 image create was skipped or landed in
   another project; re-run it as admin and confirm `openstack image list` shows `cirros`
   `active`.
-- **`terraform plan` shows the instance replacing every time** → expected (see §3); it is a
-  read-back gap in Lightstack's Nova server detail, not a harness bug.
+- **`terraform plan` shows the instance replacing every time** → a **regression**, not a harness
+  bug: since SPEC-017 (cloud-storage#524) the server detail reads back `key_name` and
+  `security_groups`, so the re-plan must be `No changes` (see §3). Check `openstack server show
+  tf-compat-vm -f json` for `key_name` and `security_groups` before blaming the harness.
