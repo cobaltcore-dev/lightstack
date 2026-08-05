@@ -44,3 +44,50 @@ tests:
       - matchRegex:
           path: stringData["lightstack.yaml"]
           pattern: 'rgw_compat_tenant_ids: true'
+  - it: renders the default hostStoragePath as the binary's state_path
+    set:
+      database.url: postgres://lightstack@db/lightstack
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^state_path: "/var/lib/lightstack"$'
+  - it: renders a custom hostStoragePath as the binary's state_path
+    # The chart mounts hostStoragePath at the same path inside the pod, and the binary
+    # must use that same string as its root: libvirtd on the host opens the paths
+    # Lightstack writes into the domain XML.
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      realMode.hostStoragePath: /data/lightstack
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^state_path: "/data/lightstack"$'
+  - it: tells the binary a console proxy exists in single-node real mode
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  console_enabled: true$'
+  - it: tells the binary no console proxy exists in multi-node, so it refuses consoles
+    # Without this the API would keep issuing URLs to a proxy that is not there.
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+      deploymentMode: multi-node
+      glance.storageMode: rbd
+      cinder.storageMode: rbd
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  console_enabled: false$'
+  - it: tells the binary no console proxy exists when consoleProxy is disabled
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+      consoleProxy.enabled: false
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  console_enabled: false$'

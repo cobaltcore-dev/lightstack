@@ -71,3 +71,57 @@ tests:
     asserts:
       - hasDocuments:
           count: 1
+  - it: fails when tls.enabled deploys the console proxy without an explicit origin
+    # The proxy serves plain HTTP, so an https console needs something in front of it
+    # to terminate TLS. An http one inside an https deployment is mixed content, which
+    # browsers block, so neither derived origin would work.
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+      tls.enabled: true
+      tls.secretName: lightstack-tls
+    asserts:
+      - failedTemplate:
+          errorPattern: "nova.consoleProxyBaseUrl"
+  - it: fails when the console proxy port is changed without an explicit origin
+    # Without an origin, Lightstack derives one at the default port (6080, the binary's
+    # defaultConsoleProxyPort); a proxy listening elsewhere would get links to a port
+    # where nothing answers.
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+      consoleProxy.service.port: 7080
+    asserts:
+      - failedTemplate:
+          errorPattern: "consoleProxy.service.port"
+  - it: renders a changed console proxy port once the origin is explicit
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+      consoleProxy.service.port: 7080
+      nova.consoleProxyBaseUrl: http://10.2.199.101:7080
+    asserts:
+      - hasDocuments:
+          count: 1
+  - it: renders tls.enabled with the console proxy once the origin is explicit
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+      tls.enabled: true
+      tls.secretName: lightstack-tls
+      nova.consoleProxyBaseUrl: https://console.example.com
+    asserts:
+      - hasDocuments:
+          count: 1

@@ -1,0 +1,21 @@
+apiVersion: v2
+name: lightstack-horizon
+description: >-
+  Horizon dashboard (kolla Flamingo 2025.2) for Lightstack. Deploys the UNMODIFIED upstream
+  Horizon image plus memcached against a Lightstack deployment, reusing deployments/horizon-config/*.
+  The noVNC console is deliberately NOT part of this chart: it is a property of the
+  Lightstack node (node-local token directory, host network namespace), so it ships in
+  charts/lightstack as consoleProxy and Horizon stays deployable anywhere.
+type: application
+# Chart version (SemVer), bumped independently of the dashboard release.
+# 0.2.0: promoted out of deployments/ into a product chart; the reproduction-only
+#        noVNC deployment removed in favour of charts/lightstack's console proxy (SPEC-021).
+version: 0.2.0
+appVersion: "2025.2"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - horizon
+  - openstack
+  - lightstack
+  - dashboard
+home: https://github.com/cobaltcore-dev/lightstack

@@ -3,6 +3,8 @@ package common
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -352,5 +354,175 @@ func TestLoadConfigGlanceS3ConnectTimeoutEnv(t *testing.T) {
 	}
 	if cfg.Glance.S3ConnectTimeout != 3*time.Second {
 		t.Fatalf("malformed env value not ignored: got %v, want file value 3s", cfg.Glance.S3ConnectTimeout)
+	}
+}
+
+// SPEC-021 FR-020: console_proxy_base_url is an ORIGIN. Lightstack appends the client
+// page and the token query itself, so anything more than scheme://host[:port] would
+// produce a console link that 404s — e.g. ".../vnc_auto.html/vnc_lite.html?path=...".
+// That is exactly the value upstream Nova's novncproxy_base_url takes, so it must be
+// refused at load rather than silently accepted or rewritten.
+func TestLoadConfigConsoleProxyBaseURL(t *testing.T) {
+	cases := []struct {
+		value     string
+		wantErr   bool
+		wantInErr string // the corrected origin, when there is one to suggest
+		notInErr  string // the error lands in startup logs: no credentials
+	}{
+		{value: "", wantErr: false}, // empty derives the origin from the request (FR-021)
+		{value: "http://10.2.199.101:6080", wantErr: false},
+		{value: "https://console.example.com", wantErr: false},
+		{value: "http://10.2.199.101:6080/", wantErr: false}, // the trailing slash is trimmed
+		{value: "http://[2001:db8::1]:6080", wantErr: false},
+
+		{value: "http://10.2.199.101:6080/vnc_auto.html", wantErr: true, wantInErr: `"http://10.2.199.101:6080"`},
+		{value: "http://10.2.199.101:6080/vnc_lite.html", wantErr: true, wantInErr: `"http://10.2.199.101:6080"`},
+		{value: "http://10.2.199.101:6080?token=x", wantErr: true},
+		{value: "http://10.2.199.101:6080#top", wantErr: true},
+		{value: "http://user:secret@10.2.199.101:6080", wantErr: true, notInErr: "secret"},
+		{value: "10.2.199.101:6080", wantErr: true},
+		{value: "ftp://10.2.199.101:6080", wantErr: true},
+		{value: "http://", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "lightstack.yaml")
+			content := "nova:\n  console_proxy_base_url: \"" + tc.value + "\"\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := LoadConfig(path)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("LoadConfig rejected a valid origin: %v", err)
+				}
+				// Accepted means used as written — never rewritten into something else.
+				if cfg.Nova.ConsoleProxyBaseURL != tc.value {
+					t.Fatalf("ConsoleProxyBaseURL = %q, want %q unchanged", cfg.Nova.ConsoleProxyBaseURL, tc.value)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("LoadConfig accepted %q; it must be refused, the console link would not resolve", tc.value)
+			}
+			if !strings.Contains(err.Error(), "console_proxy_base_url") {
+				t.Errorf("error does not name the key: %v", err)
+			}
+			if tc.wantInErr != "" && !strings.Contains(err.Error(), tc.wantInErr) {
+				t.Errorf("error does not suggest the origin %s: %v", tc.wantInErr, err)
+			}
+			if tc.notInErr != "" && strings.Contains(err.Error(), tc.notInErr) {
+				t.Errorf("error leaks %q: %v", tc.notInErr, err)
+			}
+		})
+	}
+}
+
+// state_path is the node-local root (pkg/paths). It must be absolute: libvirtd on the
+// host opens the paths Lightstack writes into the domain XML, so both sides must read
+// the same string, and a relative root has no meaning on the host. "/" is refused too —
+// cleanup purges the per-service subdirectories directly under it.
+func TestLoadConfigStatePath(t *testing.T) {
+	cases := []struct {
+		name, yaml, want string
+		wantErr          bool
+	}{
+		{name: "omitted defaults", yaml: "", want: "/var/lib/lightstack"},
+		{name: "custom", yaml: "state_path: /data/lightstack\n", want: "/data/lightstack"},
+		{name: "trailing slash cleaned", yaml: "state_path: /data/lightstack/\n", want: "/data/lightstack"},
+		{name: "relative refused", yaml: "state_path: data/lightstack\n", wantErr: true},
+		{name: "root refused", yaml: "state_path: /\n", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "lightstack.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := LoadConfig(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("LoadConfig accepted %q; it must be refused", tc.yaml)
+				}
+				if !strings.Contains(err.Error(), "state_path") {
+					t.Errorf("error does not name the key: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.StatePath != tc.want {
+				t.Errorf("StatePath = %q; want %q", cfg.StatePath, tc.want)
+			}
+		})
+	}
+}
+
+// console_enabled says whether a console proxy is deployed at all (SPEC-021). Omitted
+// means yes — the deploy scripts run one and never set the key — and only an explicit
+// false turns consoles off, which is what the chart renders wherever it deploys no
+// proxy (multi-node, or consoleProxy.enabled=false).
+func TestLoadConfigConsoleEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml string
+		want       bool
+	}{
+		{name: "omitted", yaml: "", want: true},
+		{name: "true", yaml: "nova:\n  console_enabled: true\n", want: true},
+		{name: "false", yaml: "nova:\n  console_enabled: false\n", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "lightstack.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if got := cfg.Nova.ConsolesEnabled(); got != tc.want {
+				t.Errorf("ConsolesEnabled() = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The console token TTL and reconcile interval fall back to their defaults when the file
+// omits them or sets zero or a negative value (SPEC-021). LoadConfig is the only guard:
+// the interval goes straight to time.NewTicker in the token reconciler, which panics on
+// a non-positive duration, and a zero TTL would issue tokens that are already expired.
+func TestLoadConfigConsoleDurations(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml    string
+		ttl, interval time.Duration
+	}{
+		{"omitted", "", DefaultConsoleTokenTTL, DefaultConsoleReconcileInterval},
+		{"zero", "nova:\n  console_token_ttl: 0s\n  console_reconcile_interval: 0s\n",
+			DefaultConsoleTokenTTL, DefaultConsoleReconcileInterval},
+		{"negative", "nova:\n  console_token_ttl: -1m\n  console_reconcile_interval: -5s\n",
+			DefaultConsoleTokenTTL, DefaultConsoleReconcileInterval},
+		{"set", "nova:\n  console_token_ttl: 2m\n  console_reconcile_interval: 5s\n",
+			2 * time.Minute, 5 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "lightstack.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.Nova.ConsoleTokenTTL != tc.ttl {
+				t.Errorf("ConsoleTokenTTL = %v; want %v", cfg.Nova.ConsoleTokenTTL, tc.ttl)
+			}
+			if cfg.Nova.ConsoleReconcileInterval != tc.interval {
+				t.Errorf("ConsoleReconcileInterval = %v; want %v", cfg.Nova.ConsoleReconcileInterval, tc.interval)
+			}
+		})
 	}
 }

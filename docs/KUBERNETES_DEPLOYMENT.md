@@ -231,7 +231,7 @@ spec:
               mountPath: /app/config/lightstack.yaml
               subPath: lightstack.yaml
             - name: storage
-              mountPath: /var/lib/lightstack
+              mountPath: /var/lib/lightstack   # = state_path (default); change both together
           livenessProbe:
             httpGet:
               path: /v3

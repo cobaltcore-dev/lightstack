@@ -160,3 +160,44 @@ func TestDefaultCloudInitConfig(t *testing.T) {
 		t.Error("UserData missing cloud-config header")
 	}
 }
+
+// SPEC-021 FR-017 / FR-018a: the guest console must be reachable only through
+// the token-validating proxy, and a second viewer must not evict the first.
+// Both are one attribute each, and both fail silently if dropped — a wildcard
+// listen just quietly works, and allow-exclusive just quietly disconnects
+// someone. Pin them.
+func TestDomainXMLConsoleIsUnixSocketAndShared(t *testing.T) {
+	spec := VMSpec{
+		UUID:     "11111111-2222-3333-4444-555555555555",
+		Name:     "console-xml-test",
+		MemoryMB: 512,
+		VCPUs:    1,
+	}
+	xml := GenerateVMXML(spec)
+
+	start := strings.Index(xml, "<graphics")
+	end := strings.Index(xml, "</graphics>")
+	if start < 0 || end < start {
+		t.Fatalf("no graphics element; got:\n%s", xml)
+	}
+	graphics := xml[start:end]
+
+	// A per-start UNIX socket, and no TCP listener at all: nothing on the network can
+	// reach the guest, and no port exists for a later guest to inherit.
+	if !strings.Contains(graphics, "<listen type='socket'/>") {
+		t.Errorf("graphics must listen on a libvirt-generated unix socket; got:\n%s", graphics)
+	}
+	for _, tcp := range []string{"port=", "autoport", "listen='", "type='address'", "0.0.0.0", "127.0.0.1"} {
+		if strings.Contains(graphics, tcp) {
+			t.Errorf("graphics must not configure a TCP listener (found %q); got:\n%s", tcp, graphics)
+		}
+	}
+	// No fixed path either: libvirt puts the socket in the domain's per-start private
+	// directory, so the path changes on every start and a stale token names nothing.
+	if strings.Contains(graphics, "socket='") {
+		t.Errorf("graphics must leave the socket path to libvirt; got:\n%s", graphics)
+	}
+	if !strings.Contains(graphics, "sharePolicy='force-shared'") {
+		t.Errorf("graphics must set sharePolicy='force-shared' so a second viewer does not evict the first; got:\n%s", graphics)
+	}
+}

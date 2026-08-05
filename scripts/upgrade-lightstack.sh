@@ -243,11 +243,11 @@ stop_service() {
     fi
 }
 
-# Migrate a pre-rename node's local state (cloud-storage#575). The state root moved with
-# the product rename and pkg/paths.Base is a compile-time constant, so without this the
-# upgraded binary writes to the new root and stops seeing the image bases, volumes,
-# overlays, cloud-init ISOs and dnsmasq state already on this node. Runs with the service
-# stopped, and is a no-op on any install that never ran under the old name.
+# Migrate a pre-rename node's local state (cloud-storage#575). The default state root
+# moved with the product rename, so without this the upgraded binary writes to the new
+# root and stops seeing the image bases, volumes, overlays, cloud-init ISOs and dnsmasq
+# state already on this node. Runs with the service stopped, and is a no-op on any
+# install that never ran under the old name.
 migrate_legacy_state() {
     # Prefer the copy next to this script — on a checkout install the tree has not been
     # updated yet, so $LIGHTSTACK_DIR still holds the pre-upgrade version.

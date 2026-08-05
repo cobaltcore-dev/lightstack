@@ -102,7 +102,7 @@ Optional:
   LIGHTSTACK_DB_PASSWORD    Password for the PostgreSQL lightstack role; 12+ chars from
                      [A-Za-z0-9._~-]                              (default: generated)
   LIGHTSTACK_INSTALL_DIR    Config install prefix                        (default: /opt/lightstack)
-  LIGHTSTACK_STORAGE_DIR    Volume/image/instance storage root           (default: /var/lib/lightstack)
+  LIGHTSTACK_STORAGE_DIR    Node-local state root (state_path)           (default: /var/lib/lightstack)
   LIGHTSTACK_REPO_DIR       Lightstack checkout used as the Docker build context (default: /root/lightstack)
 
 WARNING: this rewrites /etc/netplan and takes over LIGHTSTACK_NETWORK_IFACE. Run it only
@@ -597,8 +597,10 @@ setup_database() {
 create_storage() {
     log_info "Creating storage directories..."
 
-    mkdir -p "$STORAGE_DIR"/{volumes,images,instances}
-    chmod 755 "$STORAGE_DIR"/{volumes,images,instances}
+    # The subdirs the chart's init-host-storage initContainer creates: not every service
+    # creates its own, and one that finds its subdir missing fails.
+    mkdir -p "$STORAGE_DIR"/{images,volumes,instances,cloud-init,dhcp,console-tokens}
+    chmod 755 "$STORAGE_DIR"/{images,volumes,instances,cloud-init,dhcp,console-tokens}
 
     log_success "Storage directories created at $STORAGE_DIR"
 }
@@ -622,6 +624,10 @@ generate_config() {
 
     # Lightstack main configuration
     cat > "$CONFIG_DIR/lightstack.yaml" <<EOF
+# Node-local state root. The compose file mounts it at this same path, because libvirtd on
+# the host opens the paths Lightstack writes into the domain XML.
+state_path: "$STORAGE_DIR"
+
 database:
   url: "postgres://lightstack:$DB_PASSWORD@localhost:5432/lightstack?sslmode=disable"
   max_connections: 20
@@ -637,8 +643,7 @@ nova:
   port: 8774
   libvirt_mode: real
   libvirt_uri: "qemu:///system"
-  instance_storage_path: "$STORAGE_DIR/instances"
-  console_proxy_base_url: "http://$HOST_IP:6080/vnc_auto.html"
+  console_proxy_base_url: "http://$HOST_IP:6080"   # origin only, no path
 
 neutron:
   host: "0.0.0.0"
@@ -651,13 +656,11 @@ cinder:
   host: "0.0.0.0"
   port: 8776
   storage_mode: local
-  local_storage_path: "$STORAGE_DIR/volumes"
 
 glance:
   host: "0.0.0.0"
   port: 9292
   storage_mode: local
-  local_storage_path: "$STORAGE_DIR/images"
 
 metadata:
   host: "0.0.0.0"
@@ -688,10 +691,10 @@ EOF
 
     # No noVNC rewrite here, on purpose. Horizon has no setting for the console proxy URL --
     # upstream documents CONSOLE_TYPE only, and the URL arrives in Nova's os-getVNCConsole /
-    # remote-consoles response. Lightstack returns a hardcoded http://localhost:6080/vnc_auto.html
-    # (internal/nova/console.go), so nothing edited into local_settings can reach it. See SPEC-018
-    # finding F1 (cloud-storage#534). A `sed s/novnc:6080/.../` used to sit here; that token never
-    # existed in deployments/horizon-config/local_settings, so it never matched anything.
+    # remote-consoles response, which Lightstack builds from nova.console_proxy_base_url in
+    # lightstack.yaml (written above), so nothing edited into local_settings can change it.
+    # A `sed s/novnc:6080/.../` used to sit here; that token never existed in
+    # deployments/horizon-config/local_settings, so it never matched anything.
 
     # AVAILABLE_REGIONS carries its own literal Keystone URL (the compose service name), which the
     # OPENSTACK_HOST rewrite above does not reach. With it left alone Horizon's login page offers a
@@ -732,9 +735,10 @@ services:
     network_mode: host
     volumes:
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
-      - $STORAGE_DIR/volumes:$STORAGE_DIR/volumes
-      - $STORAGE_DIR/images:$STORAGE_DIR/images
-      - $STORAGE_DIR/instances:$STORAGE_DIR/instances
+      # The whole state root, at the same path: it is the binary's state_path, and libvirtd
+      # on the host opens the paths Lightstack writes into the domain XML (disks, cloud-init
+      # ISOs, console logs). The novnc proxy below reads console-tokens from it too.
+      - $STORAGE_DIR:$STORAGE_DIR
       - $CONFIG_DIR:/opt/lightstack/config:ro
     command: [/app/lightstack, -config, /opt/lightstack/config/lightstack.yaml]
     restart: unless-stopped
@@ -744,18 +748,47 @@ services:
       timeout: 5s
       retries: 3
 
-  # noVNC console client (bonigarcia/novnc, pinned). Needs a VNC target; Lightstack exposes none, so
-  # VNC_SERVER is a dead placeholder and the console fails on connect (research.md U1).
+  # noVNC console proxy (SPEC-021) -- the recipe of charts/lightstack/templates/console-proxy.yaml.
+  # websockify serves the noVNC client and resolves each ?token= against the entries Lightstack
+  # writes to $STORAGE_DIR/console-tokens; each entry names the guest's VNC unix socket.
+  # Host networking so it answers on the host's own address at port 6080.
+  #   entrypoint, not command: the image's default runs novnc_proxy against ONE fixed target,
+  #     and compose's command replaces only its arguments
+  #   TokenFile, not ReadOnlyTokenFile: the read-only plugin caches, and would keep serving
+  #     revoked tokens
+  #   no --host-token: it would let the client pick the target instead of the token
+  #   pinned to 1.3.0's digest, as the chart is: the tag is mutable (digest only, because
+  #     Podman rejects tag@digest)
   novnc:
-    image: bonigarcia/novnc:1.3.0
+    image: bonigarcia/novnc@sha256:a5be468dc8967a55ffe870e809fa36dbbfc19b67d8156c1e7cb2d26aaa4f32c2
     container_name: lightstack-novnc
     hostname: novnc
     network_mode: host
-    environment:
-      - VNC_SERVER=127.0.0.1:5900
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        cd /root/noVNC/utils/websockify &&
+        exec python3 -m websockify
+        --web /root/noVNC
+        --token-plugin TokenFile
+        --token-source $STORAGE_DIR/console-tokens
+        --idle-timeout 300
+        6080
+    volumes:
+      # Read-only, and the parent rather than console-tokens itself: a bind of the subdirectory
+      # pins one inode, so a token directory recreated on the host would leave the proxy
+      # reading the orphaned one.
+      - $STORAGE_DIR:$STORAGE_DIR:ro
+      # Where libvirt creates each running guest's VNC unix socket
+      # (domain-<id>-<name>/vnc.sock): every token names that exact path, so the
+      # proxy sees it at the same place. Read-only is enough to connect().
+      - /var/lib/libvirt/qemu:/var/lib/libvirt/qemu:ro
     restart: unless-stopped
     healthcheck:
-      test: [CMD, nc, -z, localhost, "6080"]
+      # The client page, not a TCP connect: the kernel accepts from the listen backlog even
+      # when websockify is wedged.
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6080/vnc_lite.html', timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -881,8 +914,11 @@ show_completion() {
     echo "   Password: secret"
     echo "   Domain: Default"
     echo ""
-    echo "🖥️  noVNC Console:"
-    echo "   URL: http://$HOST_IP:6080"
+    echo "🖥️  Instance Console (noVNC):"
+    echo "   Horizon: Project → Compute → Instances → <server> → Console"
+    echo "   CLI:     openstack console url show <server>"
+    echo "   Each link is per instance and expires after 10 minutes;"
+    echo "   http://$HOST_IP:6080 on its own opens no console."
     echo ""
     echo "🔧 OpenStack CLI:"
     echo "   source /root/.lightstack-env"

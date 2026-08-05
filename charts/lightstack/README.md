@@ -126,7 +126,7 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | `realMode.enabled` | `false` | real | gate privileged pod + host mounts |
 | `realMode.privileged` / `hostNetwork` | `false` | real | host-level access |
 | `realMode.libvirtSocketPath` | `/var/run/libvirt/libvirt-sock` | real | host libvirtd socket (hostPath) |
-| `realMode.hostStoragePath` | `/var/lib/lightstack` | real | node-local VM/volume/image data (hostPath) |
+| `realMode.hostStoragePath` | `/var/lib/lightstack` | real | node-local VM/volume/image data (hostPath); mounted at the same path and passed to the binary as `state_path` — absolute |
 | `realMode.legacyStatePath` | `""` | real | pre-rename root to migrate into `hostStoragePath` once; empty renders nothing ([UPGRADING](../../docs/UPGRADING.md)) |
 | `realMode.floatingIpPool` | `""` | real | operator pool routed to nodes (FR-009c) |
 | `podSecurity.applyPrivilegedNamespaceLabel` | `false` | real | label the namespace `privileged` (FR-012d) |
@@ -181,6 +181,10 @@ the chart emits the matching annotation — `cert-manager.io/cluster-issuer` by 
 (defaulting to `<release>-lightstack-tls`), so cert-manager provisions the cert. The chart never
 generates certs itself. Either way it advertises `https://` catalog/self-link URLs
 (`LIGHTSTACK_ENDPOINT_SCHEME=https`); TLS terminates per service port.
+
+In real mode the console proxy serves plain HTTP, so `tls.enabled` also needs
+`nova.consoleProxyBaseUrl`: an `https` origin that terminates TLS in front of the proxy (or set
+`consoleProxy.enabled=false`). The chart refuses to render without one.
 
 ## Upgrade
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/console"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/internal/middleware"
 	"github.com/cobaltcore-dev/lightstack/internal/neutron"
@@ -39,9 +40,14 @@ type Service struct {
 	imageStore  *storage.ImageStore // lazy fetch-on-boot of S3/RGW-backed image bases (SPEC-014)
 	neutronSvc  NeutronService      // For port allocation
 	cinderSvc   CinderService       // For boot-from-new-volume (SPEC-020 FR-025)
-	wg          sync.WaitGroup
-	ctx         context.Context
-	cancel      context.CancelFunc
+	// Console token store and the browser-reachable proxy origin (SPEC-021).
+	// consoleStore is nil only in tests that never touch the console.
+	consoleStore        *console.Store
+	consoleProxyBaseURL string
+	consoleEnabled      bool
+	wg                  sync.WaitGroup
+	ctx                 context.Context
+	cancel              context.CancelFunc
 }
 
 const (
@@ -63,8 +69,10 @@ func NewService(pool *pgxpool.Pool, libvirtURI, libvirtMode string, cacheInstanc
 		libvirtMode: libvirtMode,
 		cache:       cacheInstance,
 		neutronSvc:  nil, // Set via SetNeutronService after initialization
-		ctx:         ctx,
-		cancel:      cancel,
+		// Consoles are on unless the deployment says no proxy runs (SetConsoleEnabled).
+		consoleEnabled: true,
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 }
 
@@ -79,6 +87,25 @@ func (svc *Service) Shutdown() {
 // staging the overlay (SPEC-014 FR-013).
 func (svc *Service) SetImageStore(s *storage.ImageStore) {
 	svc.imageStore = s
+}
+
+// SetConsoleStore wires the console-token store (SPEC-021). Without it the
+// console endpoints refuse rather than improvise, which is the point: a token
+// we cannot persist is a token we cannot revoke.
+func (svc *Service) SetConsoleStore(s *console.Store) {
+	svc.consoleStore = s
+}
+
+// SetConsoleProxyBaseURL sets the browser-reachable ORIGIN of the console proxy.
+// Empty means "derive it from the request", never "use localhost" (FR-021).
+func (svc *Service) SetConsoleProxyBaseURL(u string) {
+	svc.consoleProxyBaseURL = u
+}
+
+// SetConsoleEnabled records whether a console proxy is deployed. Without one,
+// console requests are refused rather than answered with a URL that leads nowhere.
+func (svc *Service) SetConsoleEnabled(enabled bool) {
+	svc.consoleEnabled = enabled
 }
 
 // reclaimImageBaseIfUnused removes the node-local raw base for imageID once no
@@ -254,6 +281,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 		// Console access
 		v21.POST("/servers/:id/remote-consoles", svc.GetRemoteConsole)
+		// Console-auth-token compatibility view (microversion 2.31+, SPEC-021
+		// FR-015). Nothing in Lightstack's console path depends on it — the proxy
+		// resolves tokens from its projection directory — but `openstack` and
+		// third-party tooling expect the endpoint to exist.
+		v21.GET("/os-console-auth-tokens/:token", svc.ShowConsoleAuthToken)
 
 		// Host aggregates
 		v21.GET("/os-aggregates", svc.ListAggregates)
@@ -1586,6 +1618,13 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		return
 	}
 
+	// Revoke console tokens before the domain goes, not merely before the row, so
+	// no link outlives the console it was issued for. The FK cascade removes the
+	// rows, but not their files (SPEC-021 FR-014).
+	if !svc.revokeConsoleTokens(c, instanceUUID, "instance deleted") {
+		return
+	}
+
 	// Delete VM from libvirt (if available)
 	if svc.vmManager != nil && libvirtDomainID.Valid && libvirtDomainID.String != "" {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
@@ -1856,12 +1895,28 @@ func (svc *Service) ServerAction(c *gin.Context) {
 		return
 	}
 
-	// Get libvirt domain ID for remaining actions (support lookup by ID or name)
+	// Only reboot, os-stop and os-start are left. Refuse anything else now, before the
+	// instance is looked up and its console tokens revoked — the order upstream's
+	// dispatcher uses (nova/api/openstack/wsgi.py) — so a request naming no action this
+	// API knows cannot invalidate live console links, or become a 500 when the revoke
+	// fails closed.
+	_, reboot := req["reboot"]
+	_, stop := req["os-stop"]
+	_, start := req["os-start"]
+	if !reboot && !stop && !start {
+		common.SendError(c, common.NewBadRequestError("unknown action"))
+		return
+	}
+
+	// Get libvirt domain ID for remaining actions (support lookup by ID or name).
+	// The resolved UUID is also what console-token revocation keys on, since the
+	// caller may have addressed the instance by name.
 	var libvirtDomainID any
+	var resolvedInstanceID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
+		"SELECT id, libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
-	).Scan(&libvirtDomainID)
+	).Scan(&resolvedInstanceID, &libvirtDomainID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		log.Warn().Str("instance_id", instanceID).Msg("Instance not found in ServerAction")
@@ -1877,6 +1932,15 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	libvirtDomainStr := ""
 	if libvirtDomainID != nil {
 		libvirtDomainStr = fmt.Sprintf("%v", libvirtDomainID)
+	}
+
+	// Every action left at this point (reboot, os-stop, os-start) can move or end
+	// the guest's console, so outstanding links go first. Revoke BEFORE acting, not
+	// after: afterwards leaves a window where the old link is live against a
+	// restarting domain (SPEC-021 FR-014). A stop that completes later, or one the
+	// guest does itself, is caught by the reconciler's socket check (FR-014a).
+	if !svc.revokeConsoleTokens(c, resolvedInstanceID, "lifecycle action") {
+		return
 	}
 
 	log.Debug().
@@ -1924,9 +1988,6 @@ func (svc *Service) ServerAction(c *gin.Context) {
 				"ACTIVE", 1, time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE on start")
 			}
-		} else {
-			common.SendError(c, common.NewBadRequestError("unknown action"))
-			return
 		}
 		c.Status(http.StatusAccepted)
 		return
@@ -1954,9 +2015,6 @@ func (svc *Service) ServerAction(c *gin.Context) {
 			common.SendError(c, common.NewInternalServerError("failed to start server"))
 			return
 		}
-	} else {
-		common.SendError(c, common.NewBadRequestError("unknown action"))
-		return
 	}
 
 	c.Status(http.StatusAccepted)
@@ -2926,6 +2984,22 @@ func (svc *Service) ForceDeleteInstanceAction(c *gin.Context) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
+	// Read in both modes: a found row is what proves this project owns the
+	// instance, and the console revoke below is not project-scoped.
+	var libvirtDomainID any
+	err := svc.pool.QueryRow(c.Request.Context(),
+		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
+		instanceID, projectID,
+	).Scan(&libvirtDomainID)
+
+	// Revoke console tokens before the row goes. The FK cascade removes their rows
+	// but not their projection files, and a file the proxy can still read keeps
+	// resolving, with no row left to revoke it by, until the next orphan sweep
+	// (SPEC-021 FR-014).
+	if err == nil && !svc.revokeConsoleTokens(c, instanceID, "instance force-deleted") {
+		return
+	}
+
 	// In stub mode, just delete from database
 	if svc.libvirtMode == "stub" || svc.vmManager == nil {
 		_, err := svc.pool.Exec(c.Request.Context(),
@@ -2942,12 +3016,6 @@ func (svc *Service) ForceDeleteInstanceAction(c *gin.Context) {
 	}
 
 	// In real mode, destroy VM then delete from database
-	var libvirtDomainID any
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&libvirtDomainID)
-
 	if err == nil && libvirtDomainID != nil {
 		domainStr := fmt.Sprintf("%v", libvirtDomainID)
 		if domainStr != "" {

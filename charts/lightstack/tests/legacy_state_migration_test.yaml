@@ -1,9 +1,9 @@
 # helm-unittest specs for the one-time legacy node-local state migration
 # (cobaltcore-dev/cloud-storage#575, PR review). The product rename moved the
-# node-local root from the pre-rename path to /var/lib/lightstack. pkg/paths.Base is a
-# compile-time constant, so an upgraded pod writes to the new root and stops
-# seeing the image bases, volume files, instance overlays, cloud-init ISOs and
-# dnsmasq state a pre-rename install left under the old one.
+# default node-local root from the pre-rename path to /var/lib/lightstack, so an
+# upgraded pod writes to the new root and stops seeing the image bases, volume
+# files, instance overlays, cloud-init ISOs and dnsmasq state a pre-rename install
+# left under the old one.
 #
 # realMode.legacyStatePath is the opt-in: set it to the old root and an extra
 # initContainer moves that node's state across once, before init-host-storage
@@ -49,6 +49,22 @@ tests:
       - matchRegex:
           path: spec.template.spec.initContainers[0].image
           pattern: ghcr.io/lightstack/lightstack
+
+  - it: the migration never carries console-tokens over, though init-host-storage creates it
+    # Creating the directory is safe; copying it is not. Its entries are token -> host:port
+    # mappings, and a pre-rename node's would point at libvirt ports since reassigned — to
+    # another tenant's guest, the case stop/start revocation exists to prevent (SPEC-021).
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.legacyStatePath: /var/lib/legacy-root
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: console-tokens
+      - matchRegex:
+          path: spec.template.spec.initContainers[1].command[2]
+          pattern: /var/lib/lightstack/console-tokens
 
   - it: the migration merges every paths.go subdir file by file, and fails on a conflict
     template: templates/deployment.yaml

@@ -102,11 +102,6 @@ services:
     depends_on:
       lightstack:
         condition: service_healthy
-      novnc:
-        # service_started, NOT service_healthy — deliberate. novnc reports unhealthy by design
-        # (dead VNC target, F1) and Horizon degrades fine without the console tab. See the novnc
-        # service below before changing this.
-        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/dashboard/auth/login/"]
       interval: 30s
@@ -115,35 +110,9 @@ services:
       start_period: 60s
     restart: unless-stopped
 
-  # noVNC console client — maintained, pinned (bonigarcia/novnc). Its entrypoint runs
-  # novnc_proxy against VNC_SERVER, so a target is required; Lightstack exposes no reachable guest VNC
-  # (docs/specs/018-horizon-dashboard-verification/research.md U1), so VNC_SERVER is a dead
-  # placeholder and the console fails on connect, reproducing F1. Not kolla
-  # nova-novncproxy:2025.2 either; see research.md U1.
-  #
-  # Its healthcheck therefore reports unhealthy, which is expected and harmless: horizon depends on
-  # it with `condition: service_started`, and Compose satisfies that from dependency order alone —
-  # it never consults health (verified against an always-failing healthcheck). Do NOT change it to
-  # `service_healthy`, or Horizon will refuse to start over a console gap it tolerates fine.
-  # One caveat: `docker compose up --wait` DOES gate every service on running-or-healthy, so it will
-  # fail here. Use `up -d` (what the SPEC-018 runbooks and quickstart do), or pass `--wait` only
-  # after disabling this service.
-  novnc:
-    image: bonigarcia/novnc:1.3.0
-    container_name: lightstack-novnc
-    hostname: novnc
-    ports:
-      - "6080:6080"
-    environment:
-      - VNC_SERVER=127.0.0.1:5900
-    networks:
-      - lightstack-network
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6080"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
+  # No noVNC console here: this is the STUB stack, and stub mode refuses console
+  # requests at the API with 501 (there is no guest to display). The working proxy
+  # is deployed by charts/lightstack in real mode (SPEC-021).
 
 networks:
   lightstack-network:

@@ -99,14 +99,19 @@ SESSION_TIMEOUT = 14400  # 4 hours
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 
 # Console Access (CONSOLE_TYPE only -- Horizon has no console-proxy setting)
-CONSOLE_TYPE = 'novnc'
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 ```
 
 **Key Configuration Points**:
 - `OPENSTACK_HOST`: Must resolve to Lightstack service
 - `OPENSTACK_API_VERSIONS`: Match Lightstack implemented versions
 - `SESSION_TIMEOUT`: Should match Lightstack JWT token TTL (default 24h, recommended 4h for Horizon)
-- `CONSOLE_TYPE`: Must match deployed console proxy (noVNC, SPICE, etc.)
+- `CONSOLE_TYPE`: One of Horizon's `CONSOLES` keys — `AUTO`, `VNC`, `SPICE`, `RDP`,
+  `SERIAL`, `MKS`. Use `VNC` for Lightstack's noVNC console. Not `'novnc'`: that is not a key,
+  so Horizon reports the console as unavailable without ever calling Nova.
 
 ---
 
@@ -289,8 +294,9 @@ docker exec lightstack date
 
 **Causes**:
 - noVNC proxy not running
-- Lightstack returns a hardcoded `http://localhost:6080/vnc_auto.html` console URL (SPEC-018
-  finding **F1**, cloud-storage#534) — there is no Horizon-side setting to correct
+- Incorrect `nova.console_proxy_base_url` in `lightstack.yaml` — it must be an origin the
+  BROWSER can reach (Horizon has no proxy setting of its own; Lightstack returns the full URL)
+- No console token issued — check with `lightstack console-tokens list`
 - Nova not configured for console access
 
 **Fix**:
@@ -301,8 +307,12 @@ docker ps | grep novnc
 # Test noVNC endpoint
 curl http://localhost:6080
 
-# Check Nova console configuration
-grep console_proxy config/lightstack.yaml
+# Check Nova console configuration (an ORIGIN — scheme://host:port, no path)
+grep console_proxy_base_url config/lightstack.yaml
+
+# Inspect the console tokens the proxy resolves against.
+# In a container the binary is /app/lightstack and is not on $PATH.
+docker exec lightstack /app/lightstack console-tokens list
 ```
 
 ---

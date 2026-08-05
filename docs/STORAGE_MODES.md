@@ -2,6 +2,9 @@
 
 Lightstack supports multiple storage backends for both Cinder (block storage) and Glance (image service), allowing flexible deployment options from development to production.
 
+> Paths below assume the default node-local root, `/var/lib/lightstack`. It is the `state_path`
+> setting (Helm: `realMode.hostStoragePath`); every local path in this guide moves with it.
+
 ## Overview
 
 ### Cinder Storage Modes

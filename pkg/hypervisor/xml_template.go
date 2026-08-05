@@ -160,10 +160,24 @@ func GenerateVMXML(spec VMSpec) string {
     </console>
 `, ConsoleLogPath(spec.UUID))
 
-	// VNC graphics
+	// VNC graphics (SPEC-021).
+	//
+	// A UNIX socket, not a TCP port, and no path of our own. libvirt creates the
+	// socket in the domain's per-start private directory (domain-<id>-<name>), so
+	// the path changes on every start. That is load-bearing: a console token names
+	// its target, and a TCP port outlives the guest that held it — libvirt hands
+	// the lowest free port to the next guest that starts, so a surviving token
+	// reached another tenant's framebuffer. A socket path dies with its guest. And
+	// with no TCP listener at all, nothing on the network can reach a guest
+	// without going through the token-checking proxy.
+	//
+	// sharePolicy='force-shared' lets several viewers watch one guest at once.
+	// libvirt's default (allow-exclusive) silently disconnects the previous
+	// viewer when a second one connects, which reads as a bug during exactly the
+	// support scenario a console exists for.
 	sb.WriteString(`
-    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
-      <listen type='address' address='0.0.0.0'/>
+    <graphics type='vnc' sharePolicy='force-shared'>
+      <listen type='socket'/>
     </graphics>
 `)
 

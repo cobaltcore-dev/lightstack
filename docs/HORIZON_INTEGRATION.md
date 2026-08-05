@@ -217,7 +217,7 @@ services:
     network_mode: host
     volumes:
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
-      - /var/lib/lightstack:/var/lib/lightstack
+      - /var/lib/lightstack:/var/lib/lightstack   # state root (state_path), same path on both sides
       - /opt/lightstack/config:/opt/lightstack/config:ro
 
   horizon:
@@ -247,7 +247,7 @@ nova:
   port: 8774
   libvirt_mode: real  # real for KVM, stub for development
   libvirt_uri: "qemu:///system"
-  console_proxy_base_url: "http://10.2.199.101:6080/vnc_auto.html"
+  console_proxy_base_url: "http://10.2.199.101:6080"   # origin only, no path
 
 neutron:
   host: "0.0.0.0"
@@ -289,7 +289,10 @@ SESSION_COOKIE_AGE = 86400  # 24 hours (matches token TTL)
 
 # noVNC Console (CONSOLE_TYPE only -- Horizon has no console-proxy setting; the URL comes
 # from Nova's response)
-CONSOLE_TYPE = 'novnc'
+# 'VNC', not 'novnc': Horizon's CONSOLES keys are AUTO/VNC/SPICE/RDP/SERIAL/MKS,
+# so 'novnc' raises KeyError and the Console tab reports "unavailable" without ever
+# calling Nova (SPEC-021 / #534).
+CONSOLE_TYPE = 'VNC'
 
 # API Versions
 OPENSTACK_API_VERSIONS = {
@@ -389,10 +392,8 @@ sudo -u postgres psql lightstack -c "UPDATE endpoints SET url = REPLACE(url, 'ht
 **Solutions**:
 1. Verify noVNC running: `nc -zv 10.2.199.101 6080`
 2. Check console URL: `grep console_proxy_base_url /opt/lightstack/config/lightstack.yaml`
-3. Note there is nothing to fix Horizon-side: it has no console-proxy setting, and Lightstack
-   returns a hardcoded `http://localhost:6080/vnc_auto.html` console URL — SPEC-018 finding **F1**
-   ([cloud-storage#534](https://github.com/cobaltcore-dev/cloud-storage/issues/534)). Use
-   `openstack console log show <server>` meanwhile.
+3. Verify a token was issued: `lightstack console-tokens list` (Horizon has no proxy setting
+   of its own — Lightstack returns the complete console URL, Horizon just iframes it)
 
 ---
 

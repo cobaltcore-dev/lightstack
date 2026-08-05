@@ -24,6 +24,11 @@ This deployment configuration runs Lightstack in a Docker container with access 
 Create `/opt/lightstack/config/lightstack.yaml`:
 
 ```yaml
+# Node-local state root: image bases, volumes, instance overlays, cloud-init ISOs,
+# DHCP state and console tokens. Absolute; libvirtd opens the paths Lightstack
+# writes into the domain XML, so this is also where the host keeps guest disks.
+state_path: "/var/lib/lightstack"
+
 database:
   url: "postgres://lightstack:YOUR_PASSWORD@localhost:5432/lightstack?sslmode=disable"
   max_connections: 20
@@ -39,8 +44,8 @@ nova:
   port: 8774
   libvirt_mode: real
   libvirt_uri: "qemu:///system"
-  instance_storage_path: "/var/lib/lightstack/instances"
-  console_proxy_base_url: "http://YOUR_HOST_IP:6080/vnc_auto.html"
+  # No graphical console in this deployment: it runs no console proxy (see Architecture).
+  console_enabled: false
 
 neutron:
   host: "0.0.0.0"
@@ -53,13 +58,11 @@ cinder:
   host: "0.0.0.0"
   port: 8776
   storage_mode: local
-  local_storage_path: "/var/lib/lightstack/volumes"
 
 glance:
   host: "0.0.0.0"
   port: 9292
   storage_mode: local
-  local_storage_path: "/var/lib/lightstack/images"
 
 metadata:
   host: "0.0.0.0"
@@ -116,6 +119,7 @@ This deployment uses:
 - **Libvirt socket mount**: `/var/run/libvirt/libvirt-sock` for KVM access
 - **Storage directories**: Mounted from host for persistence
 - **Config mount**: `/opt/lightstack/config` (read-only)
+- **No graphical console**: no console proxy runs here, so the config sets `nova.console_enabled: false` and console requests are answered `400 Unavailable console type novnc` instead of with a link that leads nowhere. The serial log (`openstack console log show`) still works. For noVNC, deploy with the Helm chart (`charts/lightstack`) or `scripts/deploy-turnkey.sh` / `scripts/deploy-single-node.sh`, which run the proxy.
 
 ## Why Not Pure Docker Compose?
 

@@ -52,6 +52,10 @@ via MetalLB or a routed/L2 subnet (FR-009c — see chart README).
 NOTE (deferred — issue #52): cross-node behavior — VM placement across nodes and
 cross-node tenant traffic (VXLAN) — is NOT yet implemented. Single-node real mode is
 functional (SPEC-009 / #503); a multi-node deploy schedules but won't network across nodes.
+{{- if .Values.realMode.enabled }}
+No noVNC console proxy is deployed in multi-node (SPEC-021 v1): console requests answer
+400 "Unavailable console type novnc"; `openstack console log show` still works.
+{{- end }}
 {{- end }}
 {{- if eq .Values.dataRetentionPolicy "delete" }}
 
