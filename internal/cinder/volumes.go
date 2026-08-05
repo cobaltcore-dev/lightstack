@@ -59,8 +59,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// Limits endpoint without project_id (extracts from token)
 	r.GET("/v3/limits", svc.GetLimitsNoProject)
 
-	// Volume transfers without project_id (extracts from token)
-	// MUST be registered before v3/:project_id group to avoid route conflict
+	// Volume transfers without project_id (extracts from token).
 	r.GET("/v3/os-volume-transfer", svc.ListVolumeTransfersNoProject)
 	r.GET("/v3/os-volume-transfer/detail", svc.ListVolumeTransfersNoProject)
 	r.POST("/v3/os-volume-transfer", svc.CreateVolumeTransfer)
@@ -102,8 +101,24 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	r.PUT("/v3/types/:id/extra_specs/:key", svc.UpdateVolumeTypeExtraSpecKey)
 	r.DELETE("/v3/types/:id/extra_specs/:key", svc.DeleteVolumeTypeExtraSpecKey)
 
-	// Volume groups without project_id (extracts from token)
+	// Volume groups without project_id (extracts from token).
+	//
+	// `groups/detail` is what python-cinderclient requests for
+	// groups.list(detailed=True), and therefore what Horizon reaches through
+	// api.cinder.group_list. It MUST be registered — when only `groups/:id` existed, gin
+	// matched the request as a group literally named "detail" and GetGroup 500'd, which
+	// aborted Horizon's Create Volume modal and made the button look inert.
+	//
+	// Registration *order* is irrelevant: gin's tree splices a static child ahead of an
+	// existing wildcard at the same level, so the static route wins however it is added
+	// (verified against the vendored gin v1.12.0 in both orders). Only presence matters.
+	// What does panic is reusing a *different* param name at a position already claimed by
+	// one — ":tenant_id" beside an existing ":id" — which is why every route here says :id.
+	//
+	// Both views share ListGroups: O3K's group objects already carry every field it
+	// models, so the detailed view has nothing extra to add.
 	r.GET("/v3/groups", svc.ListGroups)
+	r.GET("/v3/groups/detail", svc.ListGroups)
 	r.POST("/v3/groups", svc.CreateGroup)
 	r.GET("/v3/groups/:id", svc.GetGroup)
 	r.PUT("/v3/groups/:id", svc.UpdateGroup)
@@ -127,8 +142,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// Availability zones without project_id (extracts from token)
 	r.GET("/v3/os-availability-zone", svc.ListAvailabilityZones)
 
-	// Volume/snapshot management without project_id (extracts from token)
-	// MUST be registered before v3/:project_id group to avoid route conflict
+	// Volume/snapshot management without project_id (extracts from token).
 	r.POST("/v3/os-volume-manage", svc.ManageVolume)
 	r.GET("/v3/manageable_volumes", svc.ListManageableVolumes)
 	r.POST("/v3/os-snapshot-manage", svc.ManageSnapshot)
@@ -150,11 +164,35 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// OS services list without project_id
 	r.GET("/v3/os-services", svc.ListServices)
 
-	// Quotas without project_id (extracts target project from URL :id)
+	// API extensions (Horizon's create-volume form probes this)
+	r.GET("/v3/extensions", svc.ListExtensions)
+
+	// Quotas without project_id (extracts target project from URL :id).
+	// `os-quota-sets` is upstream Cinder's spelling and the one python-cinderclient
+	// (and therefore Horizon) requests; `quota-sets` is kept for the callers that
+	// already use it. Both resolve to the same handlers. There is deliberately no
+	// `/detail` sub-resource: that is Nova's spelling, and block storage exposes usage
+	// through `?usage=true` on the show route instead (see GetQuotaSet).
 	r.GET("/v3/quota-sets/:id", svc.GetQuotaSet)
+	r.GET("/v3/quota-sets/:id/defaults", svc.GetQuotaSetDefaults)
 	r.PUT("/v3/quota-sets/:id", svc.UpdateQuotaSet)
 	r.DELETE("/v3/quota-sets/:id", svc.DeleteQuotaSet)
+	r.GET("/v3/os-quota-sets/:id", svc.GetQuotaSet)
+	r.GET("/v3/os-quota-sets/:id/defaults", svc.GetQuotaSetDefaults)
+	r.PUT("/v3/os-quota-sets/:id", svc.UpdateQuotaSet)
+	r.DELETE("/v3/os-quota-sets/:id", svc.DeleteQuotaSet)
 
+	// Project-scoped forms of everything above. Cinder's canonical upstream path carries
+	// the project (`/v3/{admin_project_id}/os-quota-sets/{project_id}`), and while O3K's
+	// catalog advertises the flat `http://<host>:8776/v3`, clients that build the scoped
+	// URL themselves still reach us here.
+	//
+	// Every resource registered flat above is therefore registered here too, deliberately:
+	// this group predates the feature by 43 routes, and the one gap in it — `GET
+	// /v3/{project}/volumes`, present as POST but not GET — is filed as a real defect
+	// (cloud-storage#536 B2, a 405 that surprised a client). Leaving the new resources out
+	// of the group would reproduce exactly that class of bug for groups and quota-sets, so
+	// the duplication is the consistent choice, not scope creep.
 	v3 := r.Group("/v3/:project_id")
 	{
 		// Volumes (create, get by ID, update, delete - need project_id in URL)
@@ -217,10 +255,28 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		v3.GET("/manageable_volumes", svc.ListManageableVolumes)
 		v3.POST("/os-snapshot-manage", svc.ManageSnapshot)
 
-		// Quotas
+		// API extensions
+		v3.GET("/extensions", svc.ListExtensions)
+
+		// Volume groups. Clients that resolve a project-scoped catalog URL
+		// (http://host:8776/v3/{project_id}) address these here; `detail` precedes
+		// `:id` for the same reason as the flat routes above.
+		v3.GET("/groups", svc.ListGroups)
+		v3.GET("/groups/detail", svc.ListGroups)
+		v3.POST("/groups", svc.CreateGroup)
+		v3.GET("/groups/:id", svc.GetGroup)
+		v3.PUT("/groups/:id", svc.UpdateGroup)
+		v3.DELETE("/groups/:id", svc.DeleteGroup)
+
+		// Quotas (both spellings, as above)
 		v3.GET("/quota-sets/:id", svc.GetQuotaSet)
+		v3.GET("/quota-sets/:id/defaults", svc.GetQuotaSetDefaults)
 		v3.PUT("/quota-sets/:id", svc.UpdateQuotaSet)
 		v3.DELETE("/quota-sets/:id", svc.DeleteQuotaSet)
+		v3.GET("/os-quota-sets/:id", svc.GetQuotaSet)
+		v3.GET("/os-quota-sets/:id/defaults", svc.GetQuotaSetDefaults)
+		v3.PUT("/os-quota-sets/:id", svc.UpdateQuotaSet)
+		v3.DELETE("/os-quota-sets/:id", svc.DeleteQuotaSet)
 	}
 }
 
@@ -1026,7 +1082,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 	// Handle reset status action (admin operation)
 	if resetStatusData, ok := req["os-reset_status"]; ok {
 		// Verify admin role
-		if !common.HasRole(c, "admin") {
+		if !common.HasRole(c, common.RoleAdmin) {
 			common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-reset_status to be performed."))
 			return
 		}
@@ -1988,56 +2044,42 @@ func (svc *Service) DeleteSnapshotMetadataKey(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// GetLimits returns volume service limits and quotas
-func (svc *Service) GetLimits(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
-	// Query current usage from database. Scan failures degrade to zero usage
-	// (the limit response still ships) and are logged for diagnosis.
-	var volumesUsed, snapshotsUsed, gigabytesUsed int
-
-	if err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
-		projectID,
-	).Scan(&volumesUsed, &gigabytesUsed); err != nil {
-		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query volume usage for limits")
-	}
-
-	if err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM snapshots WHERE project_id = $1 AND status != 'deleted'",
-		projectID,
-	).Scan(&snapshotsUsed); err != nil {
-		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query snapshot usage for limits")
-	}
-
-	// Return limits response
-	c.JSON(200, gin.H{
-		"limits": gin.H{
-			"rate": []gin.H{}, // No rate limiting
-			"absolute": gin.H{
-				"maxTotalVolumes":          1000,
-				"maxTotalSnapshots":        1000,
-				"maxTotalVolumeGigabytes":  10000,
-				"maxTotalBackups":          100,
-				"maxTotalBackupGigabytes":  5000,
-				"totalVolumesUsed":         volumesUsed,
-				"totalSnapshotsUsed":       snapshotsUsed,
-				"totalGigabytesUsed":       gigabytesUsed,
-				"totalBackupsUsed":         0,
-				"totalBackupGigabytesUsed": 0,
+// ListExtensions lists the Cinder v3 API extensions O3K implements. Horizon's
+// volume-create form calls extension_supported() while building the dialog, so a
+// 404 here raises during form construction and the modal never opens (SPEC-020 F8).
+// Only extensions O3K genuinely implements are advertised.
+func (svc *Service) ListExtensions(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"extensions": []gin.H{
+			{
+				"alias":       "os-availability-zone",
+				"name":        "AvailabilityZones",
+				"description": "Describe Availability Zones.",
+				"updated":     "2013-06-27T00:00:00+00:00",
+				"links":       []gin.H{},
 			},
 		},
 	})
 }
 
-// GetLimitsNoProject returns volume service limits without project_id in URL (extracts from token)
-func (svc *Service) GetLimitsNoProject(c *gin.Context) {
-	// Extract project_id from JWT token (set by auth middleware)
+// GetLimits returns volume service limits and quotas for the caller's project.
+// Limits come from the shared helper (defaults overlaid with cinder_quotas), so this
+// view agrees with the quota-set views and reflects an admin's quota override
+// (SPEC-020 FR-003) — previously every maxTotal* value here was hardcoded and the
+// cinder_quotas table was ignored entirely.
+func (svc *Service) GetLimits(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	// Query current usage from database. Scan failures degrade to zero usage
-	// (the limit response still ships) and are logged for diagnosis.
-	var volumesUsed, snapshotsUsed, gigabytesUsed int
+	limits, err := resolveCinderQuotaLimits(c.Request.Context(), projectID)
+	if err != nil {
+		log.Error().Err(err).Str("project_id", projectID).Msg("failed to resolve cinder quota limits")
+		common.SendError(c, common.NewInternalServerError("failed to get limits"))
+		return
+	}
+
+	// Query current usage. Scan failures degrade to zero usage (the limit response
+	// still ships) and are logged for diagnosis.
+	var volumesUsed, snapshotsUsed, gigabytesUsed, backupsUsed, backupGigabytesUsed int
 
 	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
@@ -2053,24 +2095,39 @@ func (svc *Service) GetLimitsNoProject(c *gin.Context) {
 		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query snapshot usage for limits")
 	}
 
-	// Return limits response
+	// volume_backups (migration 022) carries no 'deleted' status — DeleteBackup removes
+	// the row — so this counts every row for the project.
+	if err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volume_backups WHERE project_id = $1",
+		projectID,
+	).Scan(&backupsUsed, &backupGigabytesUsed); err != nil {
+		log.Warn().Err(err).Str("project_id", projectID).Msg("failed to query backup usage for limits")
+	}
+
 	c.JSON(200, gin.H{
 		"limits": gin.H{
 			"rate": []gin.H{}, // No rate limiting
 			"absolute": gin.H{
-				"maxTotalVolumes":          1000,
-				"maxTotalSnapshots":        1000,
-				"maxTotalVolumeGigabytes":  10000,
-				"maxTotalBackups":          100,
-				"maxTotalBackupGigabytes":  5000,
+				"maxTotalVolumes":          limits["volumes"],
+				"maxTotalSnapshots":        limits["snapshots"],
+				"maxTotalVolumeGigabytes":  limits["gigabytes"],
+				"maxTotalBackups":          limits["backups"],
+				"maxTotalBackupGigabytes":  limits["backup_gigabytes"],
 				"totalVolumesUsed":         volumesUsed,
 				"totalSnapshotsUsed":       snapshotsUsed,
 				"totalGigabytesUsed":       gigabytesUsed,
-				"totalBackupsUsed":         0,
-				"totalBackupGigabytesUsed": 0,
+				"totalBackupsUsed":         backupsUsed,
+				"totalBackupGigabytesUsed": backupGigabytesUsed,
 			},
 		},
 	})
+}
+
+// GetLimitsNoProject serves the limits endpoint registered without a project_id in
+// the URL. The project always comes from the token, so it simply delegates to
+// GetLimits rather than duplicating its body.
+func (svc *Service) GetLimitsNoProject(c *gin.Context) {
+	svc.GetLimits(c)
 }
 
 // ListServices returns list of volume services

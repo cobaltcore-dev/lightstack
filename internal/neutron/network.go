@@ -163,6 +163,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		// Quotas
 		v2.GET("/quotas/:id", svc.GetQuota)
 		v2.GET("/quotas/:id/details", svc.GetQuotaDetails)
+		v2.GET("/quotas/:id/default", svc.GetQuotaDefault)
+		// python-neutronclient appends a .json suffix to the quota sub-resources,
+		// so the same handlers are registered under both spellings (FR-002).
+		v2.GET("/quotas/:id/details.json", svc.GetQuotaDetails)
+		v2.GET("/quotas/:id/default.json", svc.GetQuotaDefault)
 
 		// QoS Policies
 		v2.GET("/qos/policies", svc.ListQoSPolicies)
@@ -310,35 +315,87 @@ func (svc *Service) ListExtensions(c *gin.Context) {
 				"name":        "Quota management support",
 				"description": "Expose resource quotas",
 				"updated":     "2012-07-29T10:00:00-00:00",
+				"links":       []gin.H{},
+			},
+			{
+				// Advertising this puts Horizon's network-usage read on the single
+				// /quotas/{project}/details endpoint instead of its multi-call
+				// resource-counting fallback (SPEC-020 FR-013).
+				"alias":       "quota_details",
+				"name":        "Quota details management support",
+				"description": "Expose functions for quotas usage statistics per project",
+				"updated":     "2017-02-10T10:00:00-00:00",
+				"links":       []gin.H{},
 			},
 		},
 	})
 }
 
+// neutronQuotaDefaults holds the default network limits.
+//
+// O3K models no per-project network quota table, so these code defaults are the
+// limits every network-quota view reports. Keeping them in ONE place is what stops
+// GetQuota, GetQuotaDetails and GetQuotaDefault from drifting apart (SPEC-020
+// FR-003) — they were previously written out twice with the values duplicated.
+var neutronQuotaDefaults = map[string]int{
+	"network":             100,
+	"subnet":              100,
+	"port":                500,
+	"router":              10,
+	"floatingip":          50,
+	"security_group":      100,
+	"security_group_rule": 500,
+}
+
+// neutronQuotaLimits returns a fresh copy of the default network limits.
+func neutronQuotaLimits() gin.H {
+	quota := gin.H{}
+	for resource, limit := range neutronQuotaDefaults {
+		quota[resource] = limit
+	}
+	return quota
+}
+
 // GetQuota returns network quotas for a project (limits only; use
 // GetQuotaDetails for limits + usage).
 func (svc *Service) GetQuota(c *gin.Context) {
-	// Return quota response
-	c.JSON(200, gin.H{
-		"quota": gin.H{
-			"network":             100,
-			"subnet":              100,
-			"port":                500,
-			"router":              10,
-			"floatingip":          50,
-			"security_group":      100,
-			"security_group_rule": 500,
-		},
-	})
+	projectID, ok := common.QuotaTargetProject(c)
+	if !ok {
+		common.SendError(c, common.NewNotFoundError("project"))
+		return
+	}
+	quota := neutronQuotaLimits()
+	// Upstream Neutron reports both spellings of the owning project.
+	quota["project_id"] = projectID
+	quota["tenant_id"] = projectID
+	c.JSON(200, gin.H{"quota": quota})
+}
+
+// GetQuotaDefault returns the default network quotas for a project (code defaults
+// only, no usage), served at /v2.0/quotas/{project_id}/default.
+func (svc *Service) GetQuotaDefault(c *gin.Context) {
+	projectID, ok := common.QuotaTargetProject(c)
+	if !ok {
+		common.SendError(c, common.NewNotFoundError("project"))
+		return
+	}
+	quota := neutronQuotaLimits()
+	quota["project_id"] = projectID
+	quota["tenant_id"] = projectID
+	c.JSON(200, gin.H{"quota": quota})
 }
 
 // GetQuotaDetails returns network quotas with usage details
 func (svc *Service) GetQuotaDetails(c *gin.Context) {
-	projectID := c.Param("id")
+	projectID, ok := common.QuotaTargetProject(c)
+	if !ok {
+		common.SendError(c, common.NewNotFoundError("project"))
+		return
+	}
 
 	// Query current usage. Scan failures degrade to zero (the quota
 	// response still ships) and are logged for diagnosis.
-	var networksUsed, subnetsUsed, portsUsed, routersUsed, floatingIPsUsed, securityGroupsUsed int
+	var networksUsed, subnetsUsed, portsUsed, routersUsed, floatingIPsUsed, securityGroupsUsed, securityGroupRulesUsed int
 
 	usageQueries := []struct {
 		label string
@@ -351,6 +408,7 @@ func (svc *Service) GetQuotaDetails(c *gin.Context) {
 		{"routers", "SELECT COUNT(*) FROM routers WHERE project_id = $1", &routersUsed},
 		{"floating_ips", "SELECT COUNT(*) FROM floating_ips WHERE project_id = $1", &floatingIPsUsed},
 		{"security_groups", "SELECT COUNT(*) FROM security_groups WHERE project_id = $1", &securityGroupsUsed},
+		{"security_group_rules", "SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)", &securityGroupRulesUsed},
 	}
 	for _, q := range usageQueries {
 		if err := database.DB.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
@@ -358,39 +416,28 @@ func (svc *Service) GetQuotaDetails(c *gin.Context) {
 		}
 	}
 
-	// Return quota details with usage
-	c.JSON(200, gin.H{
-		"quota": gin.H{
-			"network": gin.H{
-				"limit": 100,
-				"used":  networksUsed,
-			},
-			"subnet": gin.H{
-				"limit": 100,
-				"used":  subnetsUsed,
-			},
-			"port": gin.H{
-				"limit": 500,
-				"used":  portsUsed,
-			},
-			"router": gin.H{
-				"limit": 10,
-				"used":  routersUsed,
-			},
-			"floatingip": gin.H{
-				"limit": 50,
-				"used":  floatingIPsUsed,
-			},
-			"security_group": gin.H{
-				"limit": 100,
-				"used":  securityGroupsUsed,
-			},
-			"security_group_rule": gin.H{
-				"limit": 500,
-				"used":  0,
-			},
-		},
-	})
+	// Return quota details with usage. Limits come from the same shared defaults as
+	// GetQuota and GetQuotaDefault so the three views cannot disagree (FR-003).
+	// `reserved` is always 0 — O3K completes operations synchronously and models no
+	// reservations (Constitution Art. II).
+	usage := map[string]int{
+		"network":             networksUsed,
+		"subnet":              subnetsUsed,
+		"port":                portsUsed,
+		"router":              routersUsed,
+		"floatingip":          floatingIPsUsed,
+		"security_group":      securityGroupsUsed,
+		"security_group_rule": securityGroupRulesUsed,
+	}
+	quota := gin.H{}
+	for resource, limit := range neutronQuotaDefaults {
+		quota[resource] = gin.H{
+			"limit":    limit,
+			"used":     usage[resource],
+			"reserved": 0,
+		}
+	}
+	c.JSON(200, gin.H{"quota": quota})
 }
 
 // GetNamespaceManager returns the namespace manager (for VXLAN coordinator)
@@ -463,6 +510,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 			"id":              networkID,
 			"name":            req.Network.Name,
 			"tenant_id":       projectID,
+			"project_id":      projectID,
 			"admin_state_up":  adminStateUp,
 			"status":          "ACTIVE",
 			"shared":          shared,
@@ -639,6 +687,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 			"id":              id,
 			"name":            name,
 			"tenant_id":       projectID,
+			"project_id":      projectID,
 			"admin_state_up":  adminStateUp,
 			"status":          status,
 			"shared":          shared,
@@ -660,7 +709,13 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	// Populate subnet IDs for each network (rows above are fully consumed).
 	for _, n := range networks {
-		n["subnets"] = svc.networkSubnetIDs(c.Request.Context(), n["id"].(string))
+		subnetIDs, err := svc.networkSubnetIDs(c.Request.Context(), n["id"].(string))
+		if err != nil {
+			log.Error().Err(err).Str("operation", "list_networks").Msg("failed to resolve subnet ids")
+			common.SendError(c, common.NewInternalServerError("failed to list networks"))
+			return
+		}
+		n["subnets"] = subnetIDs
 	}
 
 	c.JSON(http.StatusOK, gin.H{"networks": networks})
@@ -679,7 +734,13 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		if err := svc.cache.Get(ctx, cacheKey, &cached); err == nil {
 			// subnets are queried fresh so they reflect later subnet changes
 			if id, ok := cached["id"].(string); ok {
-				cached["subnets"] = svc.networkSubnetIDs(ctx, id)
+				subnetIDs, subErr := svc.networkSubnetIDs(ctx, id)
+				if subErr != nil {
+					log.Error().Err(subErr).Str("operation", "get_network_cached").Msg("failed to resolve subnet ids")
+					common.SendError(c, common.NewInternalServerError("failed to get network"))
+					return
+				}
+				cached["subnets"] = subnetIDs
 			}
 			c.JSON(http.StatusOK, gin.H{"network": cached})
 			return
@@ -713,6 +774,7 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		"id":              id,
 		"name":            name,
 		"tenant_id":       projectID,
+		"project_id":      projectID,
 		"admin_state_up":  adminStateUp,
 		"status":          status,
 		"shared":          shared,
@@ -728,7 +790,13 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		svc.cache.TrySet(ctx, "network:"+id, network, 30*time.Minute)
 	}
 
-	network["subnets"] = svc.networkSubnetIDs(ctx, id)
+	subnetIDs, err := svc.networkSubnetIDs(ctx, id)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "get_network").Msg("failed to resolve subnet ids")
+		common.SendError(c, common.NewInternalServerError("failed to get network"))
+		return
+	}
+	network["subnets"] = subnetIDs
 
 	c.JSON(http.StatusOK, gin.H{"network": network})
 }
@@ -981,7 +1049,13 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
-		WHERE (s.project_id = $1 OR n.shared = true)%s
+		-- Scope by the owning NETWORK's visibility, not only the subnet's own
+		-- project_id. A network response lists every subnet of that network
+		-- (networkSubnetIDs applies no project predicate), so anything visible there
+		-- must be listable here too — otherwise Horizon expands the network's
+		-- subnets array against this listing, fails to resolve an id, and renders a
+		-- null row that breaks the launch wizard (SPEC-020 FR-007).
+		WHERE (s.project_id = $1 OR n.project_id = $1 OR n.shared = true)%s
 		ORDER BY s.created_at DESC
 		LIMIT $%d OFFSET $%d
 	`, markerCondition, argIdx, argIdx+1), queryArgs...)
@@ -1290,30 +1364,33 @@ func broadcast(ipNet *net.IPNet) net.IP {
 // It always returns a non-nil slice so the JSON response serializes as a list,
 // and is queried fresh (never cached) so network responses reflect subnet
 // additions/removals immediately.
-func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) []string {
+//
+// Every failure is returned rather than logged. An earlier version treated this list as
+// advisory and logged a truncated result, on the reasoning that the callers had no error
+// channel — but the list is not advisory: Horizon expands each id against the subnet
+// listing and renders a null row for any it cannot resolve, which is the launch-wizard
+// failure FR-007 exists to fix. A short list is therefore indistinguishable from a
+// network whose subnets were deleted, and answering 500 is the honest outcome. All three
+// callers assemble a response and can report it.
+func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) ([]string, error) {
 	ids := []string{}
 	rows, err := database.DB.Query(ctx,
 		"SELECT id FROM subnets WHERE network_id = $1 ORDER BY created_at DESC", networkID)
 	if err != nil {
-		log.Error().Err(err).Str("network_id", networkID).Msg("failed to list subnets for network")
-		return ids
+		return nil, fmt.Errorf("list subnets for network %s: %w", networkID, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			log.Warn().Err(err).Str("operation", "networkSubnetIDs").Msg("failed to scan row")
-			continue
+			return nil, fmt.Errorf("scan subnet id for network %s: %w", networkID, err)
 		}
 		ids = append(ids, id)
 	}
-	// Log rather than fail: this feeds the advisory `subnets` list on a network
-	// response, and the callers have no error channel. A truncated list is at least
-	// visible in the log.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Str("network_id", networkID).Msg("subnet rows iteration error; subnet list may be truncated")
+		return nil, fmt.Errorf("iterate subnets for network %s: %w", networkID, err)
 	}
-	return ids
+	return ids, nil
 }
 
 // subnetAllocationPools computes the default allocation pool for a subnet CIDR

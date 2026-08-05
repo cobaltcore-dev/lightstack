@@ -49,36 +49,3 @@ func AuthMiddleware(authService *keystone.AuthService) gin.HandlerFunc {
 		c.Next()
 	}
 }
-
-// RequireProjectScope ensures the token is project-scoped
-func RequireProjectScope() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		projectID, exists := c.Get("project_id")
-		if !exists || projectID == "" {
-			common.AbortWithError(c, common.NewForbiddenError("project-scoped token required"))
-			return
-		}
-		c.Next()
-	}
-}
-
-// RequireRole ensures the user has a specific role
-func RequireRole(role string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		roles, exists := c.Get("roles")
-		if !exists {
-			common.AbortWithError(c, common.NewForbiddenError("insufficient privileges"))
-			return
-		}
-
-		roleList := roles.([]string)
-		for _, r := range roleList {
-			if r == role || r == "admin" {
-				c.Next()
-				return
-			}
-		}
-
-		common.AbortWithError(c, common.NewForbiddenError("insufficient privileges"))
-	}
-}

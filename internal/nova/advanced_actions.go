@@ -471,8 +471,8 @@ func (svc *Service) EvacuateInstance(c *gin.Context) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Admin-only operation
-	if !common.HasRole(c, "admin") {
+	// Admin-only operation - check roles
+	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("Policy doesn't allow evacuate to be performed"))
 		return
 	}
@@ -1220,8 +1220,8 @@ func (svc *Service) ResetStateAction(c *gin.Context) {
 	instanceID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Admin-only operation
-	if !common.HasRole(c, "admin") {
+	// Admin-only operation - check roles
+	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-resetState to be performed"))
 		return
 	}

@@ -652,51 +652,155 @@ func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 	})
 }
 
-// ListSecurityGroups lists all security groups
-func (svc *Service) ListSecurityGroups(c *gin.Context) {
-	projectID := c.GetString("project_id")
+// securityGroupRulesByGroup loads the rules of the given security groups, keyed by
+// security_group_id. Groups without rules are absent from the map; callers must
+// substitute an empty slice rather than nil — see ListSecurityGroups.
+func securityGroupRulesByGroup(ctx context.Context, sgIDs []string) (map[string][]gin.H, error) {
+	byGroup := make(map[string][]gin.H, len(sgIDs))
+	if len(sgIDs) == 0 {
+		return byGroup, nil
+	}
 
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := database.DB.Query(ctx, `
+		SELECT id, security_group_id, direction, ethertype, protocol, port_range_min,
+		       port_range_max, remote_ip_prefix, remote_group_id, created_at
+		FROM security_group_rules
+		WHERE security_group_id = ANY($1)
+		ORDER BY created_at, id
+	`, sgIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query security group rules for %d group(s): %w", len(sgIDs), err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ruleID, sgID, direction, ethertype string
+		var protocol, remoteIPPrefix, remoteGroupID *string
+		var portRangeMin, portRangeMax *int
+		var createdAt time.Time
+
+		if err := rows.Scan(&ruleID, &sgID, &direction, &ethertype, &protocol,
+			&portRangeMin, &portRangeMax, &remoteIPPrefix, &remoteGroupID, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan security group rule row: %w", err)
+		}
+
+		// Emit every key unconditionally — null when unset — exactly as upstream
+		// Neutron does. Horizon's SecurityGroupRule.__init__ dereferences protocol,
+		// port_range_min, port_range_max, remote_ip_prefix and remote_group_id as
+		// sgr['...'], so an *absent* key is a KeyError (HTTP 500 "'protocol'"), not a
+		// missing value. Nil pointers marshal to JSON null, which it handles.
+		//
+		// remote_ip_prefix / remote_group_id are passed through as pointers rather than
+		// normalized, so a NULL column is null here exactly as it is in the two flat
+		// emitters — and as upstream reports it ("remote_ip_prefix": null in the api-ref
+		// examples). An earlier version substituted "" for these two to match what
+		// GetSecurityGroup used to emit, which left one emitter disagreeing with the
+		// other two: the thing FR-023 exists to prevent. Horizon reads either as unset
+		// (`if not sgr[...]`), so the only observable change is "" → null on group-by-id.
+		byGroup[sgID] = append(byGroup[sgID], gin.H{
+			"id":                ruleID,
+			"security_group_id": sgID,
+			"direction":         direction,
+			"ethertype":         ethertype,
+			"protocol":          protocol,
+			"port_range_min":    portRangeMin,
+			"port_range_max":    portRangeMax,
+			"remote_ip_prefix":  remoteIPPrefix,
+			"remote_group_id":   remoteGroupID,
+			"created_at":        createdAt.Format(time.RFC3339),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate security group rules: %w", err)
+	}
+	return byGroup, nil
+}
+
+// securityGroupRow is one row of security_groups as the list view needs it.
+type securityGroupRow struct {
+	id, name, description string
+	createdAt, updatedAt  time.Time
+}
+
+// listSecurityGroupRows loads a project's security groups.
+//
+// This lives in its own function so that its `defer rows.Close()` returns the pooled
+// connection when it returns — before the caller issues the rules query. Scanning
+// inline in ListSecurityGroups would hold two pool connections per in-flight request,
+// which a busy endpoint can turn into pool exhaustion rather than mere slowness.
+func listSecurityGroupRows(ctx context.Context, projectID string) ([]securityGroupRow, error) {
+	rows, err := database.DB.Query(ctx, `
 		SELECT id, name, description, created_at, updated_at
 		FROM security_groups
 		WHERE project_id = $1
 		ORDER BY created_at DESC, id DESC
 	`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("query security groups for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
 
+	var out []securityGroupRow
+	for rows.Next() {
+		var r securityGroupRow
+		if err := rows.Scan(&r.id, &r.name, &r.description, &r.createdAt, &r.updatedAt); err != nil {
+			log.Warn().Err(err).Msg("failed to scan security group row")
+			continue
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate security groups for project %s: %w", projectID, err)
+	}
+	return out, nil
+}
+
+// ListSecurityGroups lists all security groups.
+//
+// Every group MUST carry a security_group_rules array, as upstream Neutron does.
+// Horizon reads this list through openstacksdk, whose to_dict() emits the key
+// unconditionally — so omitting it yields null rather than a missing key, and
+// SecurityGroup.__init__ ("if 'security_group_rules' not in sg") does not catch it:
+// the panel and the launch wizard's security-group step both died with
+// "'NoneType' object is not iterable".
+func (svc *Service) ListSecurityGroups(c *gin.Context) {
+	projectID := c.GetString("project_id")
+
+	sgRows, err := listSecurityGroupRows(c.Request.Context(), projectID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_security_groups").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list security groups"))
 		return
 	}
-	defer rows.Close()
 
-	var securityGroups []gin.H
-	for rows.Next() {
-		var id, name, description string
-		var createdAt, updatedAt time.Time
-
-		if err := rows.Scan(&id, &name, &description, &createdAt, &updatedAt); err != nil {
-			log.Warn().Err(err).Msg("failed to scan security group row")
-			continue
-		}
-
-		securityGroups = append(securityGroups, gin.H{
-			"id":          id,
-			"name":        name,
-			"tenant_id":   projectID,
-			"description": description,
-			"created_at":  createdAt.Format(time.RFC3339),
-			"updated_at":  updatedAt.Format(time.RFC3339),
-		})
+	sgIDs := make([]string, 0, len(sgRows))
+	for _, r := range sgRows {
+		sgIDs = append(sgIDs, r.id)
 	}
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("rows iteration error")
-		common.SendError(c, common.NewInternalServerError("failed to read results"))
+
+	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), sgIDs)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_security_group_rules").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list security group rules"))
 		return
 	}
 
-	if securityGroups == nil {
-		securityGroups = []gin.H{}
+	securityGroups := []gin.H{}
+	for _, r := range sgRows {
+		groupRules := rulesByGroup[r.id]
+		if groupRules == nil {
+			groupRules = []gin.H{}
+		}
+		securityGroups = append(securityGroups, gin.H{
+			"id":                   r.id,
+			"name":                 r.name,
+			"project_id":           projectID,
+			"tenant_id":            projectID,
+			"description":          r.description,
+			"created_at":           r.createdAt.Format(time.RFC3339),
+			"updated_at":           r.updatedAt.Format(time.RFC3339),
+			"security_group_rules": groupRules,
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"security_groups": securityGroups})
@@ -731,73 +835,22 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 
 	// Fetch associated rules — keyed by the resolved UUID (id), not the
 	// possibly-by-name request param (sgID).
-	rows, err := database.DB.Query(c.Request.Context(), `
-		SELECT id, direction, ethertype, protocol, port_range_min, port_range_max,
-		       remote_ip_prefix, remote_group_id, created_at
-		FROM security_group_rules
-		WHERE security_group_id = $1
-	`, id)
+	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), []string{id})
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_sg_rules").Str("sg_id", sgID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get security group rules"))
 		return
 	}
-	defer rows.Close()
-
-	rules := []gin.H{}
-	for rows.Next() {
-		var ruleID, direction, ethertype string
-		var protocol, remoteIPPrefix, remoteGroupID *string
-		var portRangeMin, portRangeMax *int
-		var ruleCreatedAt time.Time
-
-		err := rows.Scan(&ruleID, &direction, &ethertype, &protocol, &portRangeMin, &portRangeMax,
-			&remoteIPPrefix, &remoteGroupID, &ruleCreatedAt)
-		if err != nil {
-			log.Warn().Err(err).Msg("failed to scan security group rule row")
-			continue
-		}
-
-		rule := gin.H{
-			"id":                ruleID,
-			"security_group_id": id,
-			"direction":         direction,
-			"ethertype":         ethertype,
-			"created_at":        ruleCreatedAt.Format(time.RFC3339),
-		}
-
-		if protocol != nil {
-			rule["protocol"] = *protocol
-		}
-		if portRangeMin != nil {
-			rule["port_range_min"] = *portRangeMin
-		}
-		if portRangeMax != nil {
-			rule["port_range_max"] = *portRangeMax
-		}
-		if remoteIPPrefix != nil {
-			rule["remote_ip_prefix"] = *remoteIPPrefix
-		} else {
-			rule["remote_ip_prefix"] = ""
-		}
-		if remoteGroupID != nil {
-			rule["remote_group_id"] = *remoteGroupID
-		} else {
-			rule["remote_group_id"] = ""
-		}
-
-		rules = append(rules, rule)
-	}
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("rows iteration error")
-		common.SendError(c, common.NewInternalServerError("failed to read results"))
-		return
+	rules := rulesByGroup[id]
+	if rules == nil {
+		rules = []gin.H{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"security_group": gin.H{
 			"id":                   id,
 			"name":                 name,
+			"project_id":           projectID,
 			"tenant_id":            projectID,
 			"description":          description,
 			"created_at":           createdAt.Format(time.RFC3339),
@@ -909,11 +962,45 @@ type CreateSecurityGroupRuleRequest struct {
 	} `json:"security_group_rule"`
 }
 
+// securityGroupOwnedByCaller reports whether a security group belongs to the caller's
+// project. It is the ownership gate for the rule handlers, which address a rule (or its
+// group) by id supplied in the request and would otherwise operate on any tenant's
+// firewall state.
+//
+// A group in another project is reported as absent, not forbidden: 403 would confirm the
+// id exists, which is itself the cross-tenant disclosure we are closing. Both ids are
+// compared as text so a malformed id simply fails to match instead of raising
+// "invalid input syntax for type uuid" as a 500 — that includes the empty project id an
+// unscoped token carries.
+func securityGroupOwnedByCaller(ctx context.Context, sgID, projectID string) (bool, error) {
+	var owned bool
+	err := database.DB.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM security_groups WHERE id::text = $1 AND project_id::text = $2)",
+		sgID, projectID).Scan(&owned)
+	return owned, err
+}
+
 // CreateSecurityGroupRule creates a new security group rule
 func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 	var req CreateSecurityGroupRuleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+
+	// The target group must be the caller's. Checked before anything else, because the
+	// steps below write the caller's rule into another tenant's iptables chain and
+	// security_group_rules row without ever consulting project_id otherwise.
+	owned, err := securityGroupOwnedByCaller(c.Request.Context(),
+		req.SecurityGroupRule.SecurityGroupID, c.GetString("project_id"))
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_sg_rule").
+			Str("sg_id", req.SecurityGroupRule.SecurityGroupID).Msg("ownership check failed")
+		common.SendError(c, common.NewInternalServerError("failed to create security group rule"))
+		return
+	}
+	if !owned {
+		common.SendError(c, common.NewNotFoundError("security group"))
 		return
 	}
 
@@ -977,7 +1064,7 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err = database.DB.Exec(c.Request.Context(), `
 		INSERT INTO security_group_rules (id, security_group_id, direction, ethertype, protocol, port_range_min, port_range_max, remote_ip_prefix, remote_group_id, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, ruleID, req.SecurityGroupRule.SecurityGroupID, req.SecurityGroupRule.Direction, etherType,
@@ -1034,9 +1121,12 @@ func (svc *Service) ListSecurityGroupRules(c *gin.Context) {
 
 	var rules []gin.H
 	for rows.Next() {
+		// Nullable columns scan into pointers, matching securityGroupRulesByGroup and
+		// GetSecurityGroupRule: a nil pointer marshals to JSON null, so the full key
+		// set falls out without adapters.
 		var id, sgID, direction, etherType string
-		var protocol, remoteIP, remoteGroup sql.NullString
-		var portMin, portMax sql.NullInt32
+		var protocol, remoteIP, remoteGroup *string
+		var portMin, portMax *int
 		var createdAt time.Time
 
 		if err := rows.Scan(&id, &sgID, &direction, &etherType, &protocol, &portMin, &portMax, &remoteIP, &remoteGroup, &createdAt); err != nil {
@@ -1044,31 +1134,20 @@ func (svc *Service) ListSecurityGroupRules(c *gin.Context) {
 			continue
 		}
 
-		rule := gin.H{
+		// Full key set with explicit nulls, as in securityGroupRulesByGroup — an
+		// absent key is a KeyError in every client that indexes the rule directly.
+		rules = append(rules, gin.H{
 			"id":                id,
 			"security_group_id": sgID,
 			"direction":         direction,
 			"ethertype":         etherType,
+			"protocol":          protocol,
+			"port_range_min":    portMin,
+			"port_range_max":    portMax,
+			"remote_ip_prefix":  remoteIP,
+			"remote_group_id":   remoteGroup,
 			"created_at":        createdAt.Format(time.RFC3339),
-		}
-
-		if protocol.Valid {
-			rule["protocol"] = protocol.String
-		}
-		if portMin.Valid {
-			rule["port_range_min"] = portMin.Int32
-		}
-		if portMax.Valid {
-			rule["port_range_max"] = portMax.Int32
-		}
-		if remoteIP.Valid {
-			rule["remote_ip_prefix"] = remoteIP.String
-		}
-		if remoteGroup.Valid {
-			rule["remote_group_id"] = remoteGroup.String
-		}
-
-		rules = append(rules, rule)
+		})
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
@@ -1093,12 +1172,17 @@ func (svc *Service) GetSecurityGroupRule(c *gin.Context) {
 	var portRangeMin, portRangeMax *int
 	var createdAt time.Time
 
+	// Scoped by the owning group's project, exactly as ListSecurityGroupRules is: a rule
+	// carries protocol, port ranges and remote CIDRs, so an unscoped lookup hands another
+	// tenant's firewall configuration to any authenticated caller. A rule outside the
+	// caller's project is indistinguishable from one that does not exist (ErrNoRows → 404).
 	err := database.DB.QueryRow(c.Request.Context(), `
-		SELECT id, security_group_id, direction, ethertype, protocol,
-		       port_range_min, port_range_max, remote_ip_prefix, remote_group_id, created_at
-		FROM security_group_rules
-		WHERE id = $1
-	`, ruleID).Scan(&id, &sgID, &direction, &ethertype, &protocol, &portRangeMin, &portRangeMax,
+		SELECT sgr.id, sgr.security_group_id, sgr.direction, sgr.ethertype, sgr.protocol,
+		       sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id, sgr.created_at
+		FROM security_group_rules sgr
+		JOIN security_groups sg ON sg.id = sgr.security_group_id
+		WHERE sgr.id::text = $1 AND sg.project_id::text = $2
+	`, ruleID, c.GetString("project_id")).Scan(&id, &sgID, &direction, &ethertype, &protocol, &portRangeMin, &portRangeMax,
 		&remoteIPPrefix, &remoteGroupID, &createdAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1111,29 +1195,19 @@ func (svc *Service) GetSecurityGroupRule(c *gin.Context) {
 		return
 	}
 
-	rule := gin.H{
+	// Full key set with explicit nulls, as in securityGroupRulesByGroup.
+	c.JSON(http.StatusOK, gin.H{"security_group_rule": gin.H{
 		"id":                id,
 		"security_group_id": sgID,
 		"direction":         direction,
 		"ethertype":         ethertype,
+		"protocol":          protocol,
+		"port_range_min":    portRangeMin,
+		"port_range_max":    portRangeMax,
+		"remote_ip_prefix":  remoteIPPrefix,
+		"remote_group_id":   remoteGroupID,
 		"created_at":        createdAt.Format(time.RFC3339),
-	}
-	if protocol != nil {
-		rule["protocol"] = *protocol
-	}
-	if portRangeMin != nil {
-		rule["port_range_min"] = *portRangeMin
-	}
-	if portRangeMax != nil {
-		rule["port_range_max"] = *portRangeMax
-	}
-	if remoteIPPrefix != nil {
-		rule["remote_ip_prefix"] = *remoteIPPrefix
-	}
-	if remoteGroupID != nil {
-		rule["remote_group_id"] = *remoteGroupID
-	}
-	c.JSON(http.StatusOK, gin.H{"security_group_rule": rule})
+	}})
 }
 
 // DeleteSecurityGroupRule deletes a security group rule
@@ -1145,13 +1219,28 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 	var protocol, remoteIP, remoteGroup sql.NullString
 	var portMin, portMax sql.NullInt32
 
+	// Scoped by the owning group's project. Unscoped, this deleted any rule in the
+	// cluster — and removed it from iptables too, so one request could open or close
+	// another tenant's firewall. A rule outside the caller's project reads as absent.
+	projectID := c.GetString("project_id")
 	err := database.DB.QueryRow(c.Request.Context(), `
-		SELECT security_group_id, direction, ethertype, protocol, port_range_min, port_range_max, remote_ip_prefix, remote_group_id
-		FROM security_group_rules
-		WHERE id = $1
-	`, ruleID).Scan(&sgID, &direction, &etherType, &protocol, &portMin, &portMax, &remoteIP, &remoteGroup)
+		SELECT sgr.security_group_id, sgr.direction, sgr.ethertype, sgr.protocol, sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id
+		FROM security_group_rules sgr
+		JOIN security_groups sg ON sg.id = sgr.security_group_id
+		WHERE sgr.id::text = $1 AND sg.project_id::text = $2
+	`, ruleID, projectID).Scan(&sgID, &direction, &etherType, &protocol, &portMin, &portMax, &remoteIP, &remoteGroup)
 
-	if err == nil && svc.sgManager != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("security group rule"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_sg_rule").Str("rule_id", ruleID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to delete security group rule"))
+		return
+	}
+
+	if svc.sgManager != nil {
 		rule := networking.SecurityGroupRule{
 			ID:             ruleID,
 			Direction:      direction,
@@ -1168,14 +1257,21 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 		}
 	}
 
-	// Delete from database
-	_, err = database.DB.Exec(c.Request.Context(),
-		"DELETE FROM security_group_rules WHERE id = $1",
-		ruleID,
-	)
+	// The row is already proven to be the caller's by the lookup above; the predicate is
+	// repeated so this statement is self-evidently scoped when read on its own, and so a
+	// concurrent delete surfaces as 404 rather than a misleading 204.
+	tag, err := database.DB.Exec(c.Request.Context(), `
+		DELETE FROM security_group_rules
+		WHERE id::text = $1
+		  AND security_group_id IN (SELECT id FROM security_groups WHERE project_id::text = $2)
+	`, ruleID, projectID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_sg_rule").Str("rule_id", ruleID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete security group rule"))
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		common.SendError(c, common.NewNotFoundError("security group rule"))
 		return
 	}
 

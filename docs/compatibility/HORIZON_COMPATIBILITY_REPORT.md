@@ -1,16 +1,25 @@
 # Horizon Dashboard Compatibility Report
 
 **Ticket**: [cobaltcore-dev/cloud-storage#482](https://github.com/cobaltcore-dev/cloud-storage/issues/482)
-**Date**: stub pass 2026-07-22; real (graded) pass 2026-07-23
-**Verdict**: **Both passes complete.** O3K's OpenStack **APIs work end-to-end** — the real pass booted a
-**libvirt VM from a Ceph-RGW image**, gave it real Neutron networking + metadata/cloud-init SSH-key
-injection, and **`ssh`'d in**; the serial console shows a real boot. **But the Horizon dashboard is not
-usable for resource management**: every create/write workflow is broken — no Create-Network button (F3),
-dead Create-Volume modal (F8), Volumes list **500s** once a volume exists (F9), Launch wizard can't select
-a network (F7); plus the network lists **twice** (F4), image delete is a no-op (F6), the noVNC console is
-unwired (F1), and the overview limits widget errors (F2). Read/list paths render; **write paths don't**.
-**Net: O3K is API/CLI-compatible; the Horizon UI is _not_ a drop-in for resource management.** This
-refutes SPEC-002's ungrounded "100% compatible" claim. **9 findings (F1–F9).**
+**Date**: stub pass 2026-07-22; real (graded) pass 2026-07-23. **Re-verified after #532 (2026-07-24) and #533
+(stub + real, 2026-07-27…29)** — the #533 re-verification ran on `feature/533` with the o3k image built from
+that branch (`docker.io/library/o3k:spec020`); same Horizon image and topology as the original real pass.
+**Verdict (revised 2026-07-29, after #532 and #533):** **the Horizon dashboard is usable for resource
+management.** Create a network with a subnet, create a volume, and launch an instance — all through the
+dashboard, verified in stub **and** real mode; the launched VM reaches ACTIVE on a real libvirt domain
+booting from a Ceph-RGW image, and a key pair created in Horizon lets you **`ssh`** into it. Read/list panels
+render, the Overview limits widget loads, networks list once, and image delete works. **One #482 finding
+remains open: F1**, the noVNC console (#534). O3K's API/CLI surface was compatible throughout.
+
+> **What this verdict was, and why it changed.** As originally written (2026-07-23) it read: *"the Horizon
+> dashboard is **not** usable for resource management … every create/write workflow is broken … O3K is
+> API/CLI-compatible; the Horizon UI is *not* a drop-in for resource management."* That was accurate for the
+> code as it stood — 8 of 9 findings were real and reproduced. #532 fixed the read/list breaks (F4/F5/F6/F9)
+> and #533 the create/write cluster (F2/F3/F7/F8). The original assessment also **refuted SPEC-002's
+> ungrounded "100% compatible" claim**, and that refutation stands: the claim was never grounded in a
+> browser-level check, and the nine findings are what grounding it actually cost.
+
+**16 findings total**: F1–F9 from this pass (#482), F10–F16 added by the #533 pass.
 
 > This report is filled from the two host passes documented in
 > [`../specs/018-horizon-dashboard-verification/HOST_TESTING.md`](../specs/018-horizon-dashboard-verification/HOST_TESTING.md)
@@ -28,6 +37,27 @@ refutes SPEC-002's ungrounded "100% compatible" claim. **9 findings (F1–F9).**
 > now render (volumes no longer 500), the volume catalog is reachable, networks list once, and image delete
 > works via the API — but Horizon is still not a drop-in for UI-driven resource *creation* (see #533). Each
 > fixed finding is tagged ✅ inline; see the updated Follow-ups.
+
+> **Update — 2026-07-29 (SPEC-020 / cloud-storage#533):** findings **F2, F3, F7, F8 are FIXED** and verified in
+> **both** stub and real mode (runbooks under
+> [`../specs/020-horizon-create-ui-enablement/`](../specs/020-horizon-create-ui-enablement/)). **The
+> create/write UIs now work**: the dashboard creates a network with a subnet, opens the Create Volume dialog
+> and creates a volume, and launches an instance that reaches **ACTIVE on a real libvirt domain**, booting
+> cirros from the RGW-backed image. The Overview limits widget renders. Going further than the ticket asked,
+> a key pair created **in Horizon** is injected via config-drive and **`ssh cirros@<ip>` succeeds** into the
+> dashboard-built VM.
+>
+> **This changes the report's headline verdict**: with F1 (#534, noVNC) the only remaining #482 finding, the
+> dashboard *is* usable for resource management. See the revised Verdict and Conclusion.
+>
+> **The "one shared root" hypothesis in F8 was wrong.** F2/F3 were the predicted quota-metadata root; **F8's
+> actual root was a Cinder route-registration bug** and **F7's were three response-shape/request-parsing
+> defects**. Each surfaced only after its predecessor was fixed, because Horizon abandons a request at the
+> first failure. Details under each finding.
+>
+> The pass also produced **seven new findings, F10–F16**, none of them regressions — **five** pre-existing
+> defects (F10–F13, F15), one config-drift bug introduced and fixed within the pass (F14), and one documented
+> limitation of the F7 fix (F16). See *Findings from the #533 pass*.
 
 ## Environment
 
@@ -66,10 +96,10 @@ container reports unhealthy — irrelevant, the console is not-exercised in stub
 | # | Workflow | Stub | Real (graded) | Evidence | Finding |
 |---|---|---|---|---|---|
 | 1 | Sign-in | **working** | **working** | Real (2026-07-23): login → Project Overview renders; Domain `Default`. | — |
-| 2 | Project switching | **partial** | **working (switcher); re-scope not exercised** | Real: switcher present + correct (`Default`/`default`), but only the `default` project is seeded → nothing to switch to (fixture limitation, not a Horizon fault). F2 limits-error **reproduces in real** (2026-08-25), root-caused to O3K's Neutron quota-details omitting `reserved` — see F2. | F2 |
-| 3 | Create network | **not working** | **not working** | **F3+F4 reproduce in real (2026-07-23)**: Project → Network → Networks still has **no Create button** (only Admin does); an Admin-created net lists **twice** in Project. Neutron-vs-UI dup source: see F4. F3's missing button root-caused 2026-08-25 to the same `reserved` gap as F2. | F3, F4 |
-| 4 | Create volume | **not working** | **not working** (different cause) | Real (2026-07-23): volumev3 catalog is **clean** (`o3k-o3k:8776`) and CLI `volume create` → `available` — Cinder API works and F5's stub `localhost:8776` is **not** on Horizon's v3 path. Empty panel renders; **Create Volume button opens no dialog** (F8, create-UI cluster, not the endpoint). And once a volume exists the panel **500s** (`TemplateSyntaxError` in `get_rows`) → **F9**. | F5, F8, F9 |
-| 5 | Launch instance (+SSH) | **not working** (UI) | UI **not working** (F7); **API/real compute WORKS** | Real (2026-07-23): UI wizard can't select a network (F7). But CLI `server create` → **ACTIVE**, `power_state Running`, real **libvirt VM booted from the RGW image**, `addresses=test-net=10.0.0.77`, `key_name`+`security_groups` present. Real compute + RGW-image boot **proven**; **`ssh cirros@10.0.0.77` succeeds** (`uid=1000` — cloud-init key injection + default-SG tcp/22 + reachable fixed IP all work). Console → T7. | F7 |
+| 2 | Project switching | **partial** | **working (switcher); re-scope still not exercised** | Real: switcher present + correct (`Default`/`default`), but only the `default` project is seeded → nothing to switch to (fixture limitation, not a Horizon fault). F2 limits-error in real: _TBC_. | F2 |
+| 3 | Create network | ✅ **working** (#533) | ✅ **working** (#533) | **F3+F4 reproduce in real (2026-07-23)**: Project → Network → Networks still has **no Create button** (only Admin does); an Admin-created net lists **twice** in Project. Neutron-vs-UI dup source: see F4. **#533 (2026-07-29): FIXED** — Create Network present on the Project panel; `ui-net` + `ui-sub` created through the dialog and listed once, stub and real. | F3, F4 |
+| 4 | Create volume | ✅ **working** (#533) | ✅ **working** (#533) | Real (2026-07-23): volumev3 catalog is **clean** (`o3k-o3k:8776`) and CLI `volume create` → `available` — Cinder API works and F5's stub `localhost:8776` is **not** on Horizon's v3 path. Empty panel renders; **Create Volume button opens no dialog** (F8, create-UI cluster, not the endpoint). And once a volume exists the panel **500s** (`TemplateSyntaxError` in `get_rows`) → **F9**. **#533 (2026-07-29): FIXED** — the dialog opens (root was the cinder `groups/detail` route, not metadata) and `ui-vol` reaches `available`, backed by a real qcow2 under `/var/lib/o3k/volumes`. | F5, F8, F9 |
+| 5 | Launch instance (+SSH) | ✅ **working** (#533) | ✅ **working via the UI** (#533) | Real (2026-07-23): UI wizard can't select a network (F7). But CLI `server create` → **ACTIVE**, `power_state Running`, real **libvirt VM booted from the RGW image**, `addresses=test-net=10.0.0.77`, `key_name`+`security_groups` present. Real compute + RGW-image boot **proven**; **`ssh cirros@10.0.0.77` succeeds** (`uid=1000` — cloud-init key injection + default-SG tcp/22 + reachable fixed IP all work). Console → T7. **#533 (2026-07-29): FIXED via the UI** — `ui-vm` launched from the wizard reaches **ACTIVE** on a real libvirt domain with an address on `spec020-net`; and with a key pair created **in Horizon**, `ssh cirros@<ip>` returns `uid=1000`. | F7 |
 | 6 | Instance console (noVNC) | not-exercised | noVNC **not working** (F1) / serial log **works** | Real (2026-07-23): `console log show vm1` returns real cirros boot + EC2 metadata + `vm1 login:` (serial console **works**). noVNC Console **tab** → **"Unable to load Console" + "Console currently not available"** (F1 confirmed — no guest). | F1 |
 
 _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pending._
@@ -78,8 +108,8 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 
 | Criterion | Result |
 |---|---|
-| Login + project switching verified in real UI | **Login ✅** (real). Project switching: switcher present + correct, but only `default` is seeded → re-scope not demonstrable (fixture limit, not a fault). |
-| Resource management: launch / network / volume | **All create/write via the UI FAIL** — network ❌ (F3 no button, F4 dup), volume ❌ (F8 dead modal, F9 list 500s), launch ❌ (F7 can't select a network). Via **API/CLI all succeed** — real VM boots from the RGW image, gets an IP, SSH works. |
+| Login + project switching verified in real UI | **Login ✅** (real). Project switching: switcher present + correct, but only `default` is seeded → re-scope **still not demonstrable**. Originally logged as a fixture limit; the #533 pass found the actual blocker — `POST /v3/projects` returns **500** (**F13**), so a second project cannot be created at all. |
+| Resource management: launch / network / volume | ✅ **All three now succeed through the UI** (#533, 2026-07-29, stub **and** real): network + subnet via the Create Network dialog; volume via the Create Volume dialog (`available`, real qcow2 on disk); instance via the Launch wizard (**ACTIVE**, real libvirt domain, booted from the RGW image). Beyond the criterion: a Horizon-created key pair yields working **`ssh`** into that VM. Originally: all three failed in the UI while succeeding via API/CLI. |
 | Report: per workflow working / not working (+ gaps) | ✅ this document |
 | Report published to `docs/` | ✅ |
 
@@ -96,6 +126,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 - **Workaround**: `openstack console log show <server>`.
 - **Follow-up**: wire real noVNC (token store + libvirt VNC-port readback + real proxy + configurable URL).
 
+<<<<<<< variant A
 ### F2 — Project Overview: "Unable to retrieve limits information" (medium) — _confirmed real (2026-08-25)_
 - **Cause**: O3K's Neutron quota-details response omits `reserved`. Upstream Neutron returns
   `{limit, used, reserved}` per resource (`neutron/db/quota/driver.py`, `get_detailed_project_quotas`)
@@ -141,6 +172,48 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   Nova quota paths, which both return 200.
 - **Follow-up**: the same one-key fix as F2 — add `"reserved": 0` to each resource in `GetQuotaDetails`
   (`internal/neutron/network.go`). Expected to close **F2 and F3 together**; not yet verified by re-test.
+>>>>>>> variant B
+### F2 — Project Overview: "Unable to retrieve limits information" (medium) — _stub_ — ✅ **FIXED (SPEC-020 / #533, 2026-07-29)**
+- **Cause**: the Overview usage/limits widget's call (Nova limits/quota) errors on load / after project switch.
+- **Root (confirmed)**: the quota/limits read surface was incomplete and self-inconsistent. Nova's
+  absolute-limits view carried its **own** default map with instances/cores/RAM at `100/200/512000` against a
+  quota-set default of `10/20/51200` — ten times apart; Nova had no `os-quota-sets/{id}/detail`; Neutron had
+  no `quotas/{id}/default` and no `.json`-suffixed details; Cinder served no usage view (its `?usage=true`
+  parameter was ignored) and no `/defaults`, and its limits view ignored the `cinder_quotas` table entirely, so an admin's override had no
+  effect on it.
+- **Fix**: one `resolve*QuotaLimits` helper per service as the single source of defaults, overlaid with the
+  quota table, so the limits and quota-set views cannot disagree; the missing `detail`/`default` variants
+  added; Neutron advertises `quota_details`. Nova's inflated map was **latent** — migration 007's seed masked
+  it for the seeded project, so only unseeded projects ever saw `100/200/512000`.
+- **Verified**: stub + real — the widget renders Compute, Volume and Network groups. The Network group
+  appearing is itself the proof that Horizon took the `quota_details` path.
+- **Still open**: reload **after a project switch** was never verified — it needs a second project, and
+  `POST /v3/projects` returns 500 (**F13**).
+
+### F3 — No "Create Network" in the Project panel (medium) — _stub_ — ✅ **FIXED (SPEC-020 / #533, 2026-07-29)**
+- **Cause**: Project → Network → Networks lacks the Create Network button (only Admin → Network → Networks
+  has it). Horizon hides it when the expected capability/policy/quota isn't advertised by Neutron.
+- **Root (confirmed)**: **quota, not policy.** Upstream Neutron's default `create_network` rule is
+  `rule:admin_or_project_member`, so a stock Horizon already permits a project member — the control was
+  hidden because the network-quota fetch failed. Grounded against upstream policy before the fix, which is
+  why no policy change was needed.
+- **Fix**: the same quota surface as F2, plus `project_id` alongside `tenant_id` on the network object.
+- **Verified**: stub + real — the button is present on the *Project* panel and the dialog creates a network
+  with a subnet, listed exactly once (the #532 F4 dedup still holding).
+####### Ancestor
+### F2 — Project Overview: "Unable to retrieve limits information" (medium) — _stub_
+- **Cause**: the Overview usage/limits widget's call (Nova limits/quota) errors on load / after project switch.
+- **Impact**: project switching succeeds, but the Overview usage panel shows an error; degraded first impression.
+- **Follow-up**: investigate the Nova limits/quota response Horizon's Overview consumes.
+
+### F3 — No "Create Network" in the Project panel (medium) — _stub_
+- **Cause**: Project → Network → Networks lacks the Create Network button (only Admin → Network → Networks
+  has it). Horizon hides it when the expected capability/policy/quota isn't advertised by Neutron.
+- **Impact**: a project user cannot create a network from the standard Project panel — the ticket's
+  named workflow location.
+- **Follow-up**: identify what Neutron capability/policy/quota Horizon checks to render the Project
+  Create Network control.
+======= end
 
 ### F4 — Duplicate network listing in the Project panel (medium) — _stub + real (2026-07-23)_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
 - **Cause**: a single network shows **twice** in Project → Network → Networks. Ruled out: **not** a Neutron
@@ -180,7 +253,32 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   the row. (Commit `ce2cf14` previously touched "image delete idempotency"; re-verify.) Confirm whether
   it recurs in real mode (RGW-backed).
 
-### F7 — Launch Instance not completable via the dashboard (major) — _stub + real (2026-07-23)_
+### F7 — Launch Instance not completable via the dashboard (major) — _stub + real (2026-07-23)_ — ✅ **FIXED (SPEC-020 / #533, 2026-07-29)**
+
+> **Root: not one cause but four, and none of them quota.** The quota work restored the Launch button and the
+> wizard, but the wizard then failed for a chain of unrelated reasons, each invisible until the previous one
+> was fixed — Horizon abandons a request at its first failure:
+>
+> 1. **Networks step empty** — the wizard expands a network's `subnets` **ids** against a separately-scoped
+>    subnet list; `networkSubnetIDs` (no project predicate, unpaginated) and `ListSubnets` (project-scoped,
+>    paginated) disagreed, so a referenced id could be unresolvable and render a null row. `ListSubnets` is
+>    now scoped by the owning **network's** visibility. A unit test (`TestSubnetReferenceIntegrity`) caught
+>    this before the browser did.
+> 2. **Security-group step empty, 500** — `GET /v2.0/security-groups` omitted `security_group_rules`.
+>    openstacksdk's `to_dict()` emits that key unconditionally, so "absent" arrives as **null**, and Horizon's
+>    guard (`if 'security_group_rules' not in sg`) does not catch null → `'NoneType' object is not iterable`.
+> 3. **Then `500 "'protocol'"`** — with the array present, Horizon read each rule's fields as `sgr['protocol']`
+>    unconditionally; O3K emitted those keys only when non-NULL, and the seeded default group's egress rules
+>    have a NULL protocol. **A null value is fine; an absent key is not.**
+> 4. **Then `400 Security group <uuid> not found`** — once the SG list worked, the wizard started *sending*
+>    security groups, as **ids** (`setFinalSpecSecurityGroups` pushes `securityGroup.id` when Neutron is
+>    enabled). O3K resolved that field by name only. Upstream Nova with Neutron matches **name or UUID**.
+>
+> A fifth defect sat behind the Launch button itself: Horizon defaults **Create New Volume = Yes**, which
+> sends the image inside `block_device_mapping_v2` (`source_type: image`) with an empty `imageRef`. O3K
+> ignored that entry and errored the instance to **ERROR** with `invalid UUID length: 0`. It now adopts the
+> entry as the boot image — see **F16** for the limitation.
+
 - **Cause**: the Instances panel has **no "Launch Instance" button** (the wizard is only reachable via
   Project → Compute → Images → Launch). In that wizard the **Networks step won't let you select a
   network**, so the required step never validates and Launch stays disabled — no instance can be
@@ -201,8 +299,39 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   real browser remains unmeasured here.
 - **Follow-up**: (1) why the NG wizard's Networks step won't select an O3K network; (2) why Launch/Create
   action buttons are absent on Project panels (quota/limits/policy).
+- **Verified fixed**: stub + real. Real pass 2026-07-29 — `ui-vm` **ACTIVE**, address on `spec020-net`, a real
+  libvirt domain (`instance-<hex>`), and the serial console shows a genuine cirros boot from the RGW-backed
+  image. Both follow-up questions above are answered by the four roots in the box.
 
-### F8 — Horizon resource-*creation* UIs are broken while the APIs work (major) — _stub + real (2026-07-23)_
+### F8 — Horizon resource-*creation* UIs are broken while the APIs work (major) — _stub + real (2026-07-23)_ — ✅ **FIXED (SPEC-020 / #533, 2026-07-29)**
+
+> **Root: a Cinder route-registration bug — the "shared metadata root" hypothesis below was wrong for this
+> finding.** The Create Volume button appeared but did nothing, with **no traceback and no 500** anywhere.
+> Capturing the modal fetch itself was the only way to see it:
+>
+> ```
+> GET /dashboard/project/volumes/create/  →  200, Content-Length: 0
+> X-Horizon-Location: /dashboard/project/volumes/
+> Set-Cookie: messages=… "Unable to retrieve the volume group list.…failed to get group (HTTP 500)"
+> ```
+>
+> `CreateForm._populate_group_choices` calls `cinder.group_list`, which python-cinderclient issues as
+> `GET /v3/groups/detail`. O3K registered only `groups/:id`, so gin matched `"detail"` as a group id and
+> `GetGroup` answered **500**. Horizon converts any `group_list` error into a redirect, so the modal returned
+> an empty 200 with `X-Horizon-Location` and the browser navigated instead of opening a dialog — a button that
+> looks inert. `groups/detail` is now registered **before** `groups/:id`, and the group routes also exist under
+> `/v3/{project_id}`.
+>
+> **A wrong diagnosis is recorded here deliberately.** The first investigation concluded the cause was
+> oslo.policy scope enforcement, from an `openstack_auth` warning and a `volume:create` DEBUG line. Checking
+> `openstack_auth` at `stable/2025.2` disproved all three links: `domain_id` is set in the policy credentials
+> **unconditionally**; the "domain scoped token" warning comes from a path `check()` only consults for
+> `scope == 'identity'`; and the `enforce:` DEBUG line is logged on every evaluation, pass or fail. The lesson
+> is procedural — the failure was invisible in both the browser and O3K's log, and visible only in the HTTP
+> response between them.
+
+- **Note**: O3K's `/v3/extensions` (absent, 404) was also added during this work. It was a genuine missing
+  endpoint that Horizon's create-volume form probes, but it was **not** the blocker.
 - **Pattern**: across panels, O3K's APIs work (proven by CLI — network / volume / server all create fine),
   but Horizon's **create/write UIs fail**: Project → Networks has **no Create button** (F3); Project →
   Volumes Create button **opens no dialog** (T4); the Launch-Instance wizard **can't complete** / no Launch
@@ -236,6 +365,79 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   Pinpoint the failing column (likely `encrypted` / `volume_type` / `availability_zone` being null), then
   have O3K's Cinder populate those fields to non-null defaults (cf. upstream Cinder's volume schema).
 
+## Findings from the #533 pass (F10–F16)
+
+Surfaced while fixing F2/F3/F7/F8, in stub and real mode. **None is a regression from #532 or #533** —
+**F10–F13 and F15** are pre-existing and reproduce on the base commit; **F14** was introduced *and* fixed
+inside the pass (on `71aa00d` both `local_settings` copies carried `CSRF_COOKIE_HTTPONLY = True`, so there
+was no drift to inherit); **F16** is a documented limitation of the F7 fix.
+
+### F10 — `POST /v2.0/ports` 500s: bridge in the root namespace, TAP attached in a project namespace (major) — _real_ — ❌ **open**
+- **Cause**: `CreateNetwork` creates the Linux bridge in the **root** netns, deliberately, "for libvirt access"
+  (`internal/neutron/network.go:484`). `CreatePort` then attaches the TAP **inside** `light-ns-<project>`
+  (`ports.go:98`) — a namespace that is never created. Result:
+  `failed to attach tap-… to bridge br-… in namespace light-ns-…: Device does not exist`.
+- **Confirmed on the host**: the `br-*` bridges are present in the root namespace and `ip netns list` shows only
+  k3s's own `cni-*` entries — no `light-ns-*`.
+- **Why the dashboard still works**: Nova builds the domain's interface itself and never calls `CreatePort`,
+  which is why an instance reaches ACTIVE with an address while explicit `port create` fails.
+- **Also breaks**: `test/contract/neutron`'s `TestPortTopologyData_Contract`; and it is the likely root of the
+  guest's `169.254.169.254 request failed` / `no interfaces have a carrier` console lines.
+
+### F11 — Horizon cannot attach a router gateway: O3K models no external networks (medium) — _real_ — ❌ **open**
+- **Cause**: `router:external` is hard-coded `false` on every network object
+  (`internal/neutron/network.go:517,693,766`) and `GET /v2.0/networks?router:external=true` deliberately returns
+  `[]` (`network.go:636`). Horizon's router **Set Gateway** dialog populates its dropdown from exactly that
+  filter, so it is always empty.
+- **Impact**: north-south egress for a guest cannot be configured from the dashboard. The CLI path works —
+  `UpdateRouter` accepts `external_gateway_info` directly (`router.go:68`) — so this is a UI-surface gap, not a
+  missing capability.
+
+### F12 — No Horizon UI for EC2 credentials (low) — _real_ — ❌ **open by design**
+- O3K implements the EC2-credentials API and `/v3/s3tokens` (`internal/keystone/handlers.go:48,78-81`), but
+  Horizon exposes no panel for OS-EC2, so tenant S3 credentials are CLI-only. Upstream Horizon is the same;
+  recorded so the tenant-object-storage workflow isn't mistaken for a defect.
+
+### F13 — `POST /v3/projects` returns 500 (major) — _stub + real_ — ❌ **open**
+- **Impact**: a second project cannot be created, so **project switching has never been demonstrable** — the
+  #482 criterion above, originally attributed to a fixture limitation. It also blocks verifying the Overview
+  widget across a project switch (F2's residual) and the tenant-object-storage flow.
+- Reproduces on the base commit. Likely `domain_id: "default"` not resolved to a UUID.
+
+### F14 — `local_settings` drift between the compose config and the Helm chart (medium) — _real_ — ✅ **FIXED in-pass**
+- **Cause**: `deployments/horizon-chart/files/local_settings` is **generated** from
+  `deployments/horizon-config/local_settings` by `make horizon-chart-sync`, and **real mode reads the chart
+  copy**. A hand-edit to the compose copy left the two disagreeing.
+- **Symptom**: with the chart still carrying `CSRF_COOKIE_HTTPONLY = True`, Project → Compute → Key Pairs →
+  **Delete Key Pair** silently did nothing. Django logged `Forbidden (CSRF token missing.)`; O3K never saw the
+  request. Access-log tell: a **`200` with a non-empty body** on a `DELETE` where success is `204` empty.
+- **The CSRF effect is selective, which made it confusing**: with `True` still in place, `POST /api/nova/keypairs/`
+  returned **201** (import *and* generate) and the Angular launch wizard **succeeded** — only the delete failed.
+  Some Angular paths obtain the token other than from `document.cookie`. Do not infer a control works because a
+  neighbouring one does.
+- **Fix**: `make horizon-chart-sync`; both copies now `False`. Upstream Horizon does not set the flag and Django
+  documents it as offering "no practical protection".
+
+### F15 — `test/contract/nova` is stub-only and unusable as a real-mode gate (medium) — _real_ — ❌ **open**
+- The gophercloud suite assumes server create yields an instantly-`ACTIVE` instance. Under real libvirt its wait
+  loops expire, actions answer `409 instance must be active` instead of `202`/`400`, and the accumulated 30s
+  waits exceed the suite's own `-timeout 5m` (panic in `TestRemoveSecurityGroup_Contract`). Green in stub mode
+  the same day. `make test-contract` is therefore excluded from the real-mode runbook.
+
+### F16 — Boot-from-new-volume is adopted, not implemented (low) — _stub + real_ — ⚠️ **documented limitation**
+- Horizon's launch wizard defaults **Create New Volume = Yes** and sends the image via
+  `block_device_mapping_v2` (`source_type: image`, `destination_type: volume`) with an empty `imageRef`. O3K now
+  **adopts that entry as the boot image** so the wizard's default path reaches ACTIVE — but it does **not**
+  materialize a Cinder volume, so `volume_size` and `delete_on_termination` on that entry are ignored and no
+  volume appears under Project → Volumes. Real boot-from-new-volume belongs with SPEC-009's storage work.
+
+### Cosmetic observations (not findings)
+- The seeded Cinder volume type is named **`ceph-rbd`** ("Ceph RBD backed volumes") even when
+  `cinder.storageMode: local`. Misleading in the UI — it sent one investigation down a Ceph path before the
+  qcow2 under `/var/lib/o3k/volumes` disproved it. `GET /v3/types/default` correctly reports `__DEFAULT__`.
+- `POST /v2/images` stored `disk_format: raw` for an image created with `--disk-format qcow2`. Noticed in
+  passing, not investigated.
+
 ## Notes & scope
 
 - RBD / block Ceph out of scope (v1); real Ceph = RGW/S3 only.
@@ -255,6 +457,7 @@ from a Ceph-RGW image**, attached it to real Neutron networking with a reachable
 real **serial console** — SSH login succeeded (`uid=1000(cirros)`). Volume and server creation succeed via
 CLI. This is the exact backend chain the stub pass could not exercise, and it passed.
 
+<<<<<<< variant A
 **What doesn't.** The **Horizon dashboard is not usable for resource management.** Every create/write
 workflow through the UI fails: no Create-Network button in the Project panel (F3), a dead Create-Volume
 modal (F8), the Volumes list itself **500s** once a volume exists (F9), and the Launch-Instance wizard
@@ -293,6 +496,77 @@ coverage it counted is real, but it does not translate into a working dashboard 
   Horizon's row **Delete** buttons are part of this write-UI cluster — the F6 fix restores delete via the
   API/CLI, but the dashboard's delete action stays broken until #533.)*
 - **F1 (open — #534)** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy + configurable URL).
+>>>>>>> variant B
+**What doesn't (as of 2026-07-29).** **F1 only** — the noVNC console tab shows no guest (#534). The serial
+console works, so this is the console *plumbing*, not compute.
+
+**Superseded — what didn't work at the time of writing (2026-07-23).** Every create/write workflow through the
+UI failed: no Create-Network button (F3), a dead Create-Volume modal (F8), the Volumes list **500**-ing once a
+volume existed (F9), the Launch wizard unable to select a network (F7); plus networks listing **twice** (F4),
+image delete a **no-op** (F6), and the overview **limits widget** erroring (F2). #532 and #533 fixed all eight.
+
+**On the "common thread" this report proposed.** F8 argued the create UIs shared one root — quota/limits/type
+metadata Horizon reads up front. That held for **F2 and F3 only**. **F8's real root was a Cinder
+route-registration bug** (`groups/detail` shadowed by `groups/:id`, so `group_list` 500'd and Horizon redirected
+the modal away), and **F7's were three response-shape/request-parsing defects** plus the boot-from-volume BDM.
+The hypothesis was reasonable and it did direct the work usefully — but it understated the size of the job, and
+each defect was invisible until its predecessor was fixed, because Horizon abandons a request at the first
+failure. Anyone reading F8's "one fix likely re-enables several" should treat it as a starting hypothesis, not a
+finding.
+
+**Answer to #482.** O3K is a drop-in for the OpenStack API/CLI **and, after #532 and #533, the Horizon
+dashboard is usable for UI-driven resource management** — create a network, create a volume, launch an instance,
+then SSH into it, all from the dashboard, in stub and real mode. The remaining gaps are the noVNC console (F1 /
+#534) and the pre-existing defects F10–F13/F15.
+
+This does not rehabilitate the prior `HORIZON_FULL_COMPATIBILITY_REPORT.md` **"100% compatible / 342
+endpoints"** claim. That claim was never grounded in a browser-level check, and the sixteen findings in this
+report are what grounding it cost — endpoint coverage alone did not, and does not, imply a working dashboard.
+
+**Follow-ups:**
+- ✅ **F4, F5, F6, F9 — DONE (SPEC-019 / cloud-storage#532, 2026-07-24):** networks list once (F4); the `volume`
+  catalog alias advertises the configured host (F5); the Cinder volume response carries the full non-null
+  upstream field set (F9); Glance image delete removes the image with owner-or-admin authorization (F6).
+- ✅ **F2, F3, F7, F8 — DONE (SPEC-020 / cloud-storage#533, 2026-07-29):** the quota/limits read surface is
+  complete and self-consistent (one defaults source per service, all `detail`/`default` variants, real usage
+  counters); Cinder serves `groups/detail` and `os-quota-sets`, plus a new `/v3/extensions`; security groups
+  carry their rules array with the full key set; server create resolves security groups by **id or name**;
+  networks carry `project_id` with resolvable `subnets`. Verified in **both** modes. *(The row **Delete**
+  buttons noted under the old F6 follow-up work too — F14 explains why one of them appeared not to.)*
+- **F1 (open — #534)** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy +
+  configurable URL).
+- **F10, F11, F12, F13, F15 (open)** — pre-existing, surfaced by the #533 pass; see *Findings from the #533
+  pass*. **F13** (`POST /v3/projects` 500) is the highest value: it is the reason project switching has never
+  been demonstrated, and it blocks two other checks.
+- **F16** — boot-from-new-volume is adopted rather than implemented; belongs with SPEC-009 storage work.
+####### Ancestor
+**What doesn't.** The **Horizon dashboard is not usable for resource management.** Every create/write
+workflow through the UI fails: no Create-Network button in the Project panel (F3), a dead Create-Volume
+modal (F8), the Volumes list itself **500s** once a volume exists (F9), and the Launch-Instance wizard
+**can't select a network** (F7). Alongside: networks list **twice** (F4), image delete is a **no-op** (F6),
+the **noVNC console** is unwired (F1), and the overview **limits widget errors** (F2). The common thread
+(F8): Horizon's create flows and table renderers depend on quota/limits/type metadata and fully-populated
+resource fields that O3K under-serves — so buttons hide, modals don't open, wizard steps won't validate,
+and populated tables crash, even though the underlying APIs work.
+
+**Answer to #482.** O3K is a **drop-in for the OpenStack API/CLI**, but the **Horizon dashboard is _not_ a
+drop-in for UI-driven resource management** as of `feature/482 @ 5123591`. This **refutes the prior
+`HORIZON_FULL_COMPATIBILITY_REPORT.md` "100% compatible / 342 endpoints" claim** — the endpoint coverage it
+counted is real, but it does not translate into a working dashboard for creating resources.
+
+**Follow-ups** (separate tickets — this is verify-not-fix scope, as SPEC-016 spun off #524):
+- ✅ **F4, F5, F6, F9 — DONE (SPEC-019 / cloud-storage#532, 2026-07-24):** O3K Neutron now honors the
+  `shared`/`router:external`/project list filters so each network lists once (F4); the `volume` catalog alias
+  advertises the configured host, not `localhost` (F5); the Cinder volume response carries the full non-null
+  upstream field set so Horizon's volume table renders instead of 500-ing (F9); and Glance image delete
+  removes the image with owner-or-admin authorization, returning 404/403 appropriately (F6). Verified in
+  **both** stub and real mode.
+- **F8 cluster (open — #533)** — trace the Nova/Cinder/Neutron quota+limits+types calls Horizon makes
+  when opening each create UI; one root fix likely re-enables F2/F3/F7 and the volume-create modal. *(Note:
+  Horizon's row **Delete** buttons are part of this write-UI cluster — the F6 fix restores delete via the
+  API/CLI, but the dashboard's delete action stays broken until #533.)*
+- **F1 (open — #534)** — wire a real noVNC console (token store + libvirt VNC-port readback + real proxy + configurable URL).
+======= end
 
 **Reproducibility (SC-005 met).** Both passes are fully scripted in the two `HOST_TESTING*.md` runbooks;
 the real pass reuses the SPEC-014 `deployments/rook/setup-rook-rgw.sh` fixture.

@@ -227,6 +227,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		v21.GET("/os-quota-sets/:id", svc.GetQuotaSet)
 		v21.PUT("/os-quota-sets/:id", svc.UpdateQuotaSet)
 		v21.GET("/os-quota-sets/:id/defaults", svc.GetQuotaSetDefaults)
+		v21.GET("/os-quota-sets/:id/detail", svc.GetQuotaSetDetail)
 
 		// Console access
 		v21.POST("/servers/:id/remote-consoles", svc.GetRemoteConsole)
@@ -296,6 +297,18 @@ type CreateServerRequest struct {
 	} `json:"server"`
 }
 
+// isRootBootIndex reports whether a block_device_mapping_v2 boot_index marks the root
+// disk. boot_index 0 (or unset) is the root. Normalize across the representations the
+// JSON decoder yields: gin sets EnableDecoderUseNumber, so a numeric 0 arrives as
+// json.Number, not float64 — match on the rendered value to cover number/string/nil.
+func isRootBootIndex(bootIndex any) bool {
+	switch fmt.Sprintf("%v", bootIndex) {
+	case "0", "<nil>", "":
+		return true
+	}
+	return false
+}
+
 // bootVolumeID returns the root boot-from-volume id and its delete-on-termination
 // flag from a block_device_mapping_v2 (source_type=volume at boot_index 0), or
 // ("", false) if the VM boots from an image (SPEC-009 WS-5 / T041, FR-023).
@@ -304,16 +317,42 @@ func bootVolumeID(req *CreateServerRequest) (string, bool) {
 		if bdm.SourceType != "volume" || bdm.UUID == "" {
 			continue
 		}
-		// boot_index 0 (or unset) marks the root disk. Normalize across the
-		// representations the JSON decoder yields: gin sets
-		// EnableDecoderUseNumber, so a numeric 0 arrives as json.Number, not
-		// float64 — match on the rendered value to cover number/string/nil.
-		switch fmt.Sprintf("%v", bdm.BootIndex) {
-		case "0", "<nil>", "":
+		if isRootBootIndex(bdm.BootIndex) {
 			return bdm.UUID, bdm.DeleteOnTermination
 		}
 	}
 	return "", false
+}
+
+// bootImageRefFromBDM returns the image id carried by a root block_device_mapping_v2
+// entry with source_type=image, or "" if there is none.
+//
+// Horizon's Launch Instance wizard sends the image this way — not in imageRef —
+// whenever its "Create New Volume" toggle is on, which is the upstream default:
+//
+//	{"source_id": "", "block_device_mapping_v2":
+//	  [{"source_type": "image", "destination_type": "volume", "uuid": "<image>", "boot_index": "0"}]}
+//
+// O3K used to skip that entry (bootVolumeID only matches source_type=volume) and then
+// reject the empty imageRef, leaving the instance in ERROR — so a dashboard launch
+// failed on the wizard's default setting.
+//
+// LIMITATION: O3K boots the image directly rather than first materializing a volume
+// from it, so volume_size and delete_on_termination on this entry are ignored and no
+// volume appears in Cinder. That is enough for the instance to reach ACTIVE, which is
+// what the wizard's default path needs; true boot-from-new-volume is tracked
+// separately. An explicit imageRef and a real boot volume both take precedence — see
+// the caller in CreateServer.
+func bootImageRefFromBDM(req *CreateServerRequest) string {
+	for _, bdm := range req.Server.BlockDeviceMappingV2 {
+		if bdm.SourceType != "image" || bdm.UUID == "" {
+			continue
+		}
+		if isRootBootIndex(bdm.BootIndex) {
+			return bdm.UUID
+		}
+	}
+	return ""
 }
 
 // markInstanceError flags an instance ERROR (best-effort), used from the
@@ -337,6 +376,19 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		logger.Warn().Err(err).Msg("Invalid request body for server creation")
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
+	}
+
+	// Adopt the image from a root block_device_mapping_v2 (source_type=image) when the
+	// caller sent no imageRef — Horizon's launch wizard does this by default. Done once,
+	// here, so every downstream reader (the instances row, the libvirt boot path, the
+	// response body) sees one image source. A real boot volume still wins: only fall
+	// back to the image entry when there is no root source_type=volume BDM.
+	if req.Server.ImageRef == "" {
+		if rootVol, _ := bootVolumeID(&req); rootVol == "" {
+			if imageRef := bootImageRefFromBDM(&req); imageRef != "" {
+				req.Server.ImageRef = imageRef
+			}
+		}
 	}
 
 	projectID := c.GetString("project_id")
@@ -437,9 +489,22 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		if sg.Name == "" {
 			continue
 		}
+		// Resolve by id OR name. The field is spelled "name", but with Neutron as the
+		// network backend upstream Nova matches each entry against both the name and
+		// the UUID of the caller's security groups — and Horizon's launch wizard relies
+		// on it, pushing securityGroup.id whenever Neutron is enabled
+		// (launch-instance-model.service.js::setFinalSpecSecurityGroups). Matching on
+		// name alone rejected every dashboard launch with
+		// "Security group <uuid> not found." once the SG list started populating.
+		// id::text keeps a non-UUID identifier from erroring the comparison, as in
+		// neutron's GetSecurityGroup. An id match wins, so a group perversely named
+		// after another's UUID cannot shadow it.
 		var sgID string
 		sgErr := database.DB.QueryRow(c.Request.Context(),
-			"SELECT id FROM security_groups WHERE name = $1 AND project_id = $2",
+			`SELECT id FROM security_groups
+			 WHERE (id::text = $1 OR name = $1) AND project_id = $2
+			 ORDER BY (id::text = $1) DESC
+			 LIMIT 1`,
 			sg.Name, projectID,
 		).Scan(&sgID)
 		if errors.Is(sgErr, pgx.ErrNoRows) {
@@ -1247,6 +1312,9 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 			attached = append(attached, a)
 		}
 	}
+	// Closed eagerly, not deferred: the transaction below acquires its own pooled
+	// connection, and a deferred close would hold this cursor open across all of it. The
+	// rows are already drained into `attached`, so there is nothing left to read.
 	rows.Close()
 	if rErr := rows.Err(); rErr != nil {
 		logger.Error().Err(rErr).Str("instance_id", instanceUUID).Msg("delete: iterate volume attachments failed")
@@ -1974,38 +2042,39 @@ func (svc *Service) GetLimits(c *gin.Context) {
 		instancesUsed, coresUsed, ramUsed = 0, 0, 0
 	}
 
-	// Query project quotas from the quotas table (row-per-resource schema).
-	// Defaults are used for any resource not explicitly configured.
-	quotaDefaults := map[string]int{
-		"instances":            100,
-		"cores":                200,
-		"ram":                  512000,
-		"keypairs":             100,
-		"server_groups":        10,
-		"server_group_members": 10,
-		"floatingip":           10,
-		"security_groups":      50,
-		"security_group_rules": 100,
-	}
-	quotas := make(map[string]int)
-	for k, v := range quotaDefaults {
-		quotas[k] = v
+	// The remaining used-counters were hardcoded 0 while GetQuotaSet counted the same
+	// resources for real, so the Overview widget and the quota-set view disagreed about
+	// usage for floating IPs, security groups and server groups (FR-004; the same class
+	// of drift FR-003 fixed for the limits themselves). Counted here rather than shared
+	// with GetQuotaSet because that view reports a wider resource set; a scan failure
+	// degrades that counter to 0 and is logged, so the limits response still ships.
+	var floatingIPsUsed, securityGroupsUsed, serverGroupsUsed int
+	for _, q := range []struct {
+		label string
+		sql   string
+		dst   *int
+	}{
+		{"floating_ips", `SELECT COUNT(*) FROM floating_ips WHERE project_id = $1`, &floatingIPsUsed},
+		{"security_groups", `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, &securityGroupsUsed},
+		{"server_groups", `SELECT COUNT(*) FROM server_groups WHERE project_id = $1`, &serverGroupsUsed},
+	} {
+		if err := database.DB.QueryRow(ctx, q.sql, projectID).Scan(q.dst); err != nil {
+			log.Warn().Err(err).Str("resource", q.label).Str("project_id", projectID).
+				Msg("failed to query limits usage")
+			*q.dst = 0
+		}
 	}
 
-	quotaRows, err := database.DB.Query(ctx,
-		`SELECT resource, hard_limit FROM quotas WHERE project_id = $1`, projectID)
-	if err == nil {
-		defer quotaRows.Close()
-		for quotaRows.Next() {
-			var resource string
-			var hardLimit int
-			if scanErr := quotaRows.Scan(&resource, &hardLimit); scanErr == nil {
-				quotas[resource] = hardLimit
-			}
-		}
-		if err := quotaRows.Err(); err != nil {
-			log.Warn().Err(err).Msg("quotaRows iteration error; list may be truncated")
-		}
+	// Resolve limits through the shared helper (package defaults overlaid with the
+	// quotas table) so this view and the quota-set views always report the same value
+	// for a resource, and an admin's quota override is reflected here too (FR-003).
+	// This handler previously carried its own default map with instances/cores/ram at
+	// 100/200/512000 — ten times the quota-set defaults it silently disagreed with.
+	quotas, _, err := resolveQuotaLimits(ctx, projectID)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "get_limits").Msg("failed to resolve quota limits")
+		common.SendError(c, common.NewInternalServerError("failed to get limits"))
+		return
 	}
 
 	// Return limits response
@@ -2032,9 +2101,9 @@ func (svc *Service) GetLimits(c *gin.Context) {
 				"totalInstancesUsed":      instancesUsed,
 				"totalCoresUsed":          coresUsed,
 				"totalRAMUsed":            ramUsed,
-				"totalFloatingIpsUsed":    0,
-				"totalSecurityGroupsUsed": 0,
-				"totalServerGroupsUsed":   0,
+				"totalFloatingIpsUsed":    floatingIPsUsed,
+				"totalSecurityGroupsUsed": securityGroupsUsed,
+				"totalServerGroupsUsed":   serverGroupsUsed,
 			},
 		},
 	})

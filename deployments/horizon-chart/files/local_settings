@@ -97,7 +97,27 @@ SESSION_COOKIE_SECURE = False  # Set True with HTTPS
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = False     # Set True with HTTPS
-CSRF_COOKIE_HTTPONLY = True
+# MUST stay False in BOTH copies, and `make horizon-chart-sync` MUST be run after
+# changing it: deployments/horizon-config/local_settings is the source that compose
+# reads, and deployments/horizon-chart/files/local_settings is generated from it and is
+# what real mode (Helm) reads. Both paths are named explicitly because this comment is
+# copied verbatim into the generated file, where "this file" would mean the other one —
+# the drift recorded as F14 is exactly what that ambiguity produced.
+#
+# Horizon's AngularJS layer takes the CSRF token from document.cookie
+# (framework.module.js: xsrfCookieName = 'csrftoken'). HttpOnly hides it from JS, so
+# any write on that path goes out with no X-CSRFToken header and Django rejects it.
+#
+# The effect is SELECTIVE, measured in real mode 2026-07-29 with HttpOnly still True:
+#   - POST /api/nova/keypairs/  -> 201  (import and generate both fine)
+#   - the launch wizard's POST /api/nova/servers/ -> worked, instance reached ACTIVE
+#   - DELETE /api/nova/keypairs/{name} -> Django logged
+#     "Forbidden (CSRF token missing.)" and the panel silently did nothing
+# So some paths obtain the token another way and some do not; do not assume a given
+# control works just because a neighbouring one does. Django itself documents
+# HttpOnly on this cookie as offering "no practical protection", and upstream Horizon
+# does not set it.
+CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = 'Lax'
 
 # ==========================================

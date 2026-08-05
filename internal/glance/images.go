@@ -508,7 +508,7 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 		return
 	}
 
-	switch imageDeleteAuthz(common.HasRole(c, "admin"), owner, projectID, visibility) {
+	switch imageDeleteAuthz(common.HasRole(c, common.RoleAdmin), owner, projectID, visibility) {
 	case http.StatusNotFound:
 		common.SendError(c, common.NewNotFoundError("image"))
 		return

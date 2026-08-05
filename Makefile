@@ -1,4 +1,4 @@
-.PHONY: build run test chart-test clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check
+.PHONY: build run test chart-test clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui
 
 # Build variables
 BINARY_NAME=o3k
@@ -41,9 +41,13 @@ install-deps:
 	go mod tidy
 
 # Run tests
+# -count=1 disables Go's test cache. Without it a run that once passed keeps reporting
+# "ok (cached)" after the environment changes — TestMain's os.Getenv does not re-execute
+# on a cache hit — so this gate could exit 0 on code that crashes. Kept above the recipe
+# so make does not echo it on every run.
 test:
 	@echo "Running unit tests (excludes test/contract — use 'make test-contract' for those)..."
-	go test -v $$(go list ./... | grep -v '/test/contract')
+	go test -count=1 -v $$(go list ./... | grep -v '/test/contract')
 
 # Run contract tests (requires O3K to be running)
 test-contract:
@@ -74,6 +78,16 @@ test-performance:
 	@echo "Checking O3K is running..."
 	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running." && exit 1)
 	@bash test/performance_test.sh
+
+# Run the Horizon create/write UI regression probe (SPEC-020, cloud-storage#533)
+# Checks the API surface Horizon's create flows load before enabling a control. Retarget
+# with KEYSTONE_URL / NOVA_URL / NEUTRON_URL / CINDER_URL; the plain compose stack is
+# enough since these are API checks, no browser needed.
+test-horizon-ui:
+	@echo "Running Horizon create-UI regression probe..."
+	@echo "Checking O3K is running..."
+	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running. Run 'docker compose -f deployments/docker-compose.yml up -d' first." && exit 1)
+	@bash test/horizon_create_ui_test.sh
 
 # Run error handling tests
 test-errors:
@@ -130,7 +144,7 @@ horizon-chart-check:
 		fi
 
 # Run all tests (unit + chart + contract + integration + performance)
-test-all: test chart-test test-contract test-integration test-multi-tenant test-errors test-performance
+test-all: test chart-test test-contract test-integration test-multi-tenant test-errors test-horizon-ui test-performance
 	@echo ""
 	@echo "All tests completed!"
 
@@ -238,6 +252,7 @@ help:
 	@echo "  test-multi-tenant - Run multi-tenancy isolation tests"
 	@echo "  test-performance - Run performance and load tests"
 	@echo "  test-errors      - Run error handling tests"
+	@echo "  test-horizon-ui  - Run the Horizon create-UI regression probe (requires O3K running)"
 	@echo "  chart-test       - Run Helm chart tests (lint + template + unittest; no cluster)"
 	@echo "  horizon-chart-sync - Sync verification Horizon chart files/ from deployments/horizon-config/"
 	@echo "  horizon-chart-check - Fail if that synced copy is stale (non-destructive; run by chart-test)"

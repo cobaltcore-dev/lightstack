@@ -53,7 +53,7 @@ func ec2CredentialView(userID, tenantID, access, secret string) gin.H {
 // could read or mint another user's S3 credential and reach that tenant's RGW
 // namespace (SPEC-014 FR-007; mirrors the self-or-admin check in ChangePassword).
 func denyIfNotSelfOrAdmin(c *gin.Context, userID string) bool {
-	if c.GetString("user_id") != userID && !common.HasRole(c, "admin") {
+	if c.GetString("user_id") != userID && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("cannot manage another user's EC2 credentials"))
 		return true
 	}
@@ -76,7 +76,7 @@ func (svc *Service) CreateEC2Credential(c *gin.Context) {
 	if denyIfNotSelfOrAdmin(c, userID) {
 		return
 	}
-	isAdmin := common.HasRole(c, "admin")
+	isAdmin := common.HasRole(c, common.RoleAdmin)
 
 	var req struct {
 		TenantID string `json:"tenant_id"`
