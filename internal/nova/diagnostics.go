@@ -11,8 +11,10 @@ import (
 
 // GetServerDiagnostics handles GET /v2.1/servers/:id/diagnostics
 func (svc *Service) GetServerDiagnostics(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+	instanceID, projectID, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
+		return
+	}
 
 	// Query instance to verify it exists and belongs to project
 	var status, flavorID string
@@ -62,18 +64,8 @@ func (svc *Service) GetServerDiagnostics(c *gin.Context) {
 
 // ListInstanceActions handles GET /v2.1/servers/:id/os-instance-actions
 func (svc *Service) ListInstanceActions(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists and belongs to project
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
 
@@ -122,27 +114,17 @@ func (svc *Service) ListInstanceActions(c *gin.Context) {
 
 // GetInstanceAction handles GET /v2.1/servers/:id/os-instance-actions/:request_id
 func (svc *Service) GetInstanceAction(c *gin.Context) {
-	instanceID := c.Param("id")
-	requestID := c.Param("request_id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists and belongs to project
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
+	requestID := c.Param("request_id")
 
 	// Query specific action
 	var action, userID, projectIDStr, message string
 	var startTime time.Time
 
-	err = svc.pool.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		`SELECT action, user_id, project_id, start_time, message
 		 FROM instance_actions
 		 WHERE instance_id = $1 AND request_id = $2`,

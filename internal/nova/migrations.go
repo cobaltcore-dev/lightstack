@@ -10,9 +10,17 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ListMigrations handles GET /v2.1/:project_id/os-migrations
+// ListMigrations handles GET /v2.1/os-migrations — the deployment-wide list.
+//
+// Administrator-only (SPEC-023 FR-008e). It reports every project's instance
+// movements — server uuid, source and destination node, flavour changes — and is
+// scoped to no project, so a tenant reading it learns what every other tenant is
+// doing. The comment below already said as much; the check was simply missing.
 func (svc *Service) ListMigrations(c *gin.Context) {
 	// List all migrations (admin endpoint in real OpenStack)
+	if !requireAdmin(c, "os-migrations:index") {
+		return
+	}
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, server_uuid, source_node, dest_node, old_flavor_id, new_flavor_id,
 		       status, migration_type, created_at, updated_at
@@ -70,9 +78,20 @@ func (svc *Service) ListMigrations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"migrations": migrations})
 }
 
-// ListServerMigrations handles GET /v2.1/:project_id/servers/:id/migrations
+// The per-server migration handlers below take the ordinary owner-or-administrator
+// override, unlike the deployment-wide list above: these records belong to a
+// server, and that server has an owner (SPEC-023 FR-008g).
+//
+// Before SPEC-023 none of the four carried ANY check — no project predicate and
+// no role check — so any tenant could read, act on and delete another tenant's
+// server migration records.
+//
+// ListServerMigrations handles GET /v2.1/servers/:id/migrations
 func (svc *Service) ListServerMigrations(c *gin.Context) {
-	serverID := c.Param("id")
+	serverID, _, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
+		return
+	}
 
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, server_uuid, source_node, dest_node, old_flavor_id, new_flavor_id,
@@ -134,7 +153,10 @@ func (svc *Service) ListServerMigrations(c *gin.Context) {
 
 // GetServerMigration handles GET /v2.1/:project_id/servers/:id/migrations/:migration_id
 func (svc *Service) GetServerMigration(c *gin.Context) {
-	serverID := c.Param("id")
+	serverID, _, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
+		return
+	}
 	migrationID := c.Param("migration_id")
 
 	var id, serverUUID uuid.UUID
@@ -178,7 +200,10 @@ func (svc *Service) GetServerMigration(c *gin.Context) {
 
 // DeleteServerMigration handles DELETE /v2.1/:project_id/servers/:id/migrations/:migration_id
 func (svc *Service) DeleteServerMigration(c *gin.Context) {
-	serverID := c.Param("id")
+	serverID, ownerProject, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
+		return
+	}
 	migrationID := c.Param("migration_id")
 
 	// Delete (cancel) migration
@@ -198,12 +223,18 @@ func (svc *Service) DeleteServerMigration(c *gin.Context) {
 		return
 	}
 
+	// Recorded against the owning project under upstream's name for an abort
+	// (LIVE_MIGRATION_CANCEL), as ServerAction records its actions (SPEC-023 FR-007a).
+	recordInstanceAction(c, svc.pool, serverID, ownerProject, "live_migration_cancel")
 	c.Status(http.StatusNoContent)
 }
 
 // ServerMigrationAction handles POST /v2.1/:project_id/servers/:id/migrations/:migration_id/action
 func (svc *Service) ServerMigrationAction(c *gin.Context) {
-	serverID := c.Param("id")
+	serverID, ownerProject, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
+		return
+	}
 	migrationID := c.Param("migration_id")
 
 	var req map[string]any
@@ -232,6 +263,7 @@ func (svc *Service) ServerMigrationAction(c *gin.Context) {
 			return
 		}
 
+		recordInstanceAction(c, svc.pool, serverID, ownerProject, "live_migration_force_complete")
 		c.Status(http.StatusAccepted)
 		return
 	}

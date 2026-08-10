@@ -950,11 +950,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	}
 
 	// Log instance action
-	requestID := uuid.New().String()
+
 	if _, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO instance_actions (instance_id, action, request_id, user_id, project_id, start_time, message)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, instanceID, "create", requestID, userID, projectID, now, "Instance created"); err != nil {
+	`, instanceID, "create", requestID(c), userID, projectID, now, "Instance created"); err != nil {
 		log.Debug().Err(err).Str("instance_id", instanceID).Msg("failed to log instance action (non-critical)")
 	}
 
@@ -1240,7 +1240,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 // ListServers lists all servers (brief)
 func (svc *Service) ListServers(c *gin.Context) {
-	projectID := c.GetString("project_id")
+	filter := newServerFilter(c, "")
 
 	// Parse pagination parameters
 	limit := 1000 // Default limit
@@ -1256,25 +1256,52 @@ func (svc *Service) ListServers(c *gin.Context) {
 		}
 	}
 	if markerParam := c.Query("marker"); markerParam != "" {
-		// Marker-based pagination: get offset of marker UUID.
-		// Scan failures (including no-rows) leave offset at zero, which
-		// returns the full page — the same fallback we used before.
+		// Marker-based pagination: get the marker's offset in the SAME ordering
+		// and the SAME scope as the page query below. Under a cross-tenant view
+		// the marker may name another project's server, so the project predicate
+		// has to drop with it. A marker that does not resolve in this scope —
+		// another project's server, an absent one, a malformed reference — is
+		// refused with upstream's 400, never treated as no marker: that silently
+		// restarted the listing at page 1 (SPEC-023 contract L6).
+		// ROW_NUMBER is 1-based, so the marker's row number IS the count of rows
+		// up to and including it — exactly the offset that starts the next page.
+		// The previous `- 1` made the offset point AT the marker, so the marker
+		// row was returned again on every page boundary: walking the pages
+		// repeated a server rather than advancing past it. A marker is exclusive
+		// upstream (L5).
 		var markerOffset int
-		if err := svc.pool.QueryRow(c.Request.Context(),
-			`SELECT ROW_NUMBER() OVER (ORDER BY created_at DESC) - 1
-			 FROM instances WHERE project_id = $1 AND id = $2`,
-			projectID, markerParam,
-		).Scan(&markerOffset); err != nil {
-			log.Warn().Err(err).Str("marker", markerParam).Msg("failed to resolve pagination marker; ignoring")
+		// The marker predicate sits on the ranked subquery, not inside it, so it
+		// is appended after the scope's arguments rather than joined with them.
+		rank := &serverFilter{args: filter.args}
+		markerPlaceholder := rank.arg(markerParam)
+		err := svc.pool.QueryRow(c.Request.Context(),
+			`SELECT rn FROM (
+			   SELECT id, ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS rn
+			   FROM instances`+filter.where()+`
+			 ) ranked WHERE id::text = `+markerPlaceholder,
+			rank.args...,
+		).Scan(&markerOffset)
+		if errors.Is(err, pgx.ErrNoRows) {
+			common.SendError(c, common.NewBadRequestError(fmt.Sprintf("marker [%s] not found", markerParam)))
+			return
 		}
-		if markerOffset > 0 {
-			offset = markerOffset
+		if err != nil {
+			log.Error().Err(err).Str("marker", markerParam).Msg("failed to resolve pagination marker")
+			common.SendError(c, common.NewInternalServerError("failed to list servers"))
+			return
 		}
+		offset = markerOffset
 	}
 
+	// ORDER BY created_at alone is not a total order — created_at is not unique,
+	// and instances created by a script or a seed share it. Ties make page
+	// boundaries non-deterministic, which a cross-tenant listing makes far more
+	// likely. id is the primary key, so (created_at, id) is total (FR-005, L5).
+	where := filter.where()
 	rows, err := svc.pool.Query(c.Request.Context(),
-		"SELECT id, name FROM instances WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-		projectID, limit, offset,
+		"SELECT id, name, project_id FROM instances"+where+
+			" ORDER BY created_at DESC, id DESC"+filter.limitOffset(limit, offset),
+		filter.args...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_servers").Msg("database error")
@@ -1285,14 +1312,17 @@ func (svc *Service) ListServers(c *gin.Context) {
 
 	var servers []gin.H
 	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
+		var id, name, ownerProject string
+		if err := rows.Scan(&id, &name, &ownerProject); err != nil {
 			log.Warn().Err(err).Msg("failed to scan server row")
 			continue
 		}
+		// tenant_id on every entry: without it a cross-tenant listing is a flat
+		// list of servers with no way to tell whose they are (FR-006, L4).
 		servers = append(servers, gin.H{
-			"id":   id,
-			"name": name,
+			"id":        id,
+			"name":      name,
+			"tenant_id": ownerProject,
 			"links": []gin.H{
 				{"rel": "self", "href": fmt.Sprintf("%s/v2.1/servers/%s", common.BaseURL(c, 8774), id)},
 			},
@@ -1313,7 +1343,7 @@ func (svc *Service) ListServers(c *gin.Context) {
 
 // ListServersDetail lists all servers (detailed)
 func (svc *Service) ListServersDetail(c *gin.Context) {
-	projectID := c.GetString("project_id")
+	filter := newServerFilter(c, "i.")
 
 	// Parse pagination parameters
 	limit := 1000
@@ -1329,26 +1359,31 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
-
+	// Marker-based pagination. The marker is resolved in the SAME scope as the
+	// page query: under a cross-tenant view it may name another project's server.
+	// One that does not resolve in this scope is refused with upstream's 400,
+	// never treated as no marker — that silently restarted the listing at page 1
+	// (L6).
 	if marker := c.Query("marker"); marker != "" {
+		lookup := newServerFilter(c, "")
+		lookup.eq("id::text", marker)
 		var markerCreatedAt time.Time
+		var markerID string
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM instances WHERE id = $1 AND project_id = $2",
-			marker, projectID,
-		).Scan(&markerCreatedAt)
-		if err == nil {
-			markerCondition = fmt.Sprintf(" AND i.created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			"SELECT created_at, id::text FROM instances"+lookup.where(),
+			lookup.args...,
+		).Scan(&markerCreatedAt, &markerID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			common.SendError(c, common.NewBadRequestError(fmt.Sprintf("marker [%s] not found", marker)))
+			return
 		}
+		if err != nil {
+			log.Error().Err(err).Str("marker", marker).Msg("failed to resolve pagination marker")
+			common.SendError(c, common.NewInternalServerError("failed to list servers"))
+			return
+		}
+		filter.beforeKeyset("i.", markerCreatedAt, markerID)
 	}
-
-	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT i.id, i.name, i.status, i.power_state, i.project_id, i.user_id,
@@ -1357,10 +1392,9 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		       f.vcpus, f.ram_mb, f.disk_gb, f.name as flavor_name
 		FROM instances i
 		LEFT JOIN flavors f ON i.flavor_id = f.id
-		WHERE i.project_id = $1%s
-		ORDER BY i.created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+		%s
+		ORDER BY i.created_at DESC, i.id DESC%s
+	`, filter.where(), filter.limitOffset(limit, offset)), filter.args...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_servers_detail").Msg("database error")
@@ -1466,7 +1500,14 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"servers": servers})
 }
 
-// getInstanceAddresses retrieves network addresses for an instance from ports
+// getInstanceAddresses retrieves network addresses for an instance from ports.
+//
+// projectID MUST be the instance's OWNING project, not the caller's. Both call
+// sites read it from the instance row for exactly this reason: once an
+// administrator can view another project's server (SPEC-023 FR-004), passing the
+// caller's project here would find no ports and return an empty addresses dict —
+// a server that appears to have no network at all. Every sub-lookup feeding a
+// response has to widen with its parent.
 func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projectID string) (gin.H, error) {
 	addresses := gin.H{}
 
@@ -1523,24 +1564,25 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 
 // GetServer returns details for a single server
 func (svc *Service) GetServer(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+	// Owner-or-administrator: an administrator may show any project's server
+	// (SPEC-023 FR-004). The lookup below is then keyed on the resolved id and
+	// its owning project rather than on the caller's own.
+	instanceID, projectID, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
+		return
+	}
 
 	var id, name, status string
 	var userID, flavorID, imageID, keyName sql.NullString
 	var powerState int
 	var createdAt, updatedAt time.Time
 
-	// Try to find by ID first, then by name
-	// Use separate conditions to avoid type mismatch when id is UUID and param might be a name
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, status, power_state, project_id,
 		       user_id::text, flavor_id::text, image_id::text,
 		       created_at, updated_at, key_name
 		FROM instances
-		WHERE project_id = $2 AND (
-			(id::text = $1) OR (name = $1)
-		)
+		WHERE id = $1 AND project_id = $2
 	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projectID, &userID, &flavorID, &imageID, &createdAt, &updatedAt, &keyName)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1615,18 +1657,24 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	logger := middleware.GetLogger(c)
 	start := time.Now()
 
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+	// Owner-or-administrator: an administrator may delete any project's server
+	// (SPEC-023 FR-004). Note a *name* still never spans projects — targetInstance
+	// keeps name matching inside the caller's own project, so an administrator's
+	// `server delete web-1` cannot reach a different tenant's `web-1` (FR-005c).
+	instanceID, projectID, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
+		return
+	}
 
 	middleware.LogOperationStart(c, "delete", "server", instanceID)
+	recordInstanceAction(c, svc.pool, instanceID, projectID, "delete")
 
-	// Get the instance UUID + libvirt domain ID (support lookup by ID or name)
 	var instanceUUID string
 	var libvirtDomainID sql.NullString
 	var instanceImageID sql.NullString
 	queryStart := time.Now()
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, libvirt_domain_id, image_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
+		"SELECT id, libvirt_domain_id, image_id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&instanceUUID, &libvirtDomainID, &instanceImageID)
 	middleware.LogDatabaseQuery(c, "SELECT libvirt_domain_id", time.Since(queryStart), err)
@@ -1746,10 +1794,12 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		return
 	}
 
-	// Delete the instance row (support lookup by ID or name).
+	// Delete the instance row — by its resolved id alone: matching the name too
+	// would also delete a server named after this one's id, and leave its ports
+	// and attachments behind.
 	queryStart = time.Now()
 	_, err = tx.Exec(ctx,
-		"DELETE FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
+		"DELETE FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	)
 	middleware.LogDatabaseQuery(c, "DELETE instance", time.Since(queryStart), err)
@@ -1791,10 +1841,96 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// consoleActions are the actions dispatched BEFORE the shared resolve-and-record
+// step in ServerAction.
+//
+// They resolve their own target through resolveServerOr404 — the same
+// owner-or-administrator rule, not a weaker one — and stay out of the instance's
+// action history: reading a console or its boot log is not an action taken on
+// the server.
+var consoleActions = map[string]func(*Service, *gin.Context, any){
+	"os-getVNCConsole":    (*Service).GetVNCConsoleAction,
+	"os-getConsoleOutput": (*Service).GetConsoleOutputAction,
+	"os-getSerialConsole": (*Service).GetSerialConsoleAction,
+	"os-getSPICEConsole":  (*Service).GetSPICEConsoleAction,
+	"os-getRDPConsole":    (*Service).GetRDPConsoleAction,
+}
+
+// serverActions are the actions dispatched AFTER the target has been resolved
+// and authorized, keyed by the upstream action name.
+//
+// A table rather than an if-chain: with exactly one key per body (enforced in
+// ServerAction) there is no precedence to encode, so the ladder's ordering was
+// carrying no meaning — only the risk that a later branch became unreachable.
+// Membership is now the whole dispatch rule, and the recorded action name and
+// the handler invoked are read from the same key by construction.
+//
+// Every entry takes the RESOLVED instance id and OWNING project rather than
+// re-reading them: the target is resolved once, in ServerAction, and passing it
+// down is what stops the rule from being re-implemented ~25 times. Handlers that
+// do not need a value take it as _ so the signature stays uniform.
+var serverActions = map[string]func(*Service, *gin.Context, any, string, string){
+	"suspend":       func(s *Service, c *gin.Context, _ any, _, _ string) { s.SuspendInstance(c) },
+	"resume":        func(s *Service, c *gin.Context, _ any, _, _ string) { s.ResumeInstance(c) },
+	"shelve":        func(s *Service, c *gin.Context, _ any, _, _ string) { s.ShelveInstance(c) },
+	"shelveOffload": func(s *Service, c *gin.Context, _ any, _, _ string) { s.ShelveInstance(c) },
+	"unshelve":      func(s *Service, c *gin.Context, _ any, _, _ string) { s.UnshelveInstance(c) },
+	"confirmResize": func(s *Service, c *gin.Context, _ any, _, _ string) { s.ConfirmResizeInstance(c) },
+	"revertResize":  func(s *Service, c *gin.Context, _ any, _, _ string) { s.RevertResizeInstance(c) },
+	"evacuate":      func(s *Service, c *gin.Context, _ any, _, _ string) { s.EvacuateInstance(c) },
+	"migrate":       func(s *Service, c *gin.Context, _ any, _, _ string) { s.MigrateInstance(c) },
+	"restore":       func(s *Service, c *gin.Context, _ any, _, _ string) { s.RestoreInstance(c) },
+
+	"resize":      func(s *Service, c *gin.Context, d any, _, _ string) { s.ResizeInstanceAction(c, d) },
+	"createImage": func(s *Service, c *gin.Context, d any, _, _ string) { s.CreateImageAction(c, d) },
+
+	"rebuild": func(s *Service, c *gin.Context, d any, id, proj string) { s.RebuildInstanceAction(c, d, id, proj) },
+	"rescue":  func(s *Service, c *gin.Context, d any, id, proj string) { s.RescueInstanceAction(c, d, id, proj) },
+
+	"pause":       func(s *Service, c *gin.Context, _ any, id, proj string) { s.PauseInstanceAction(c, id, proj) },
+	"unpause":     func(s *Service, c *gin.Context, _ any, id, proj string) { s.UnpauseInstanceAction(c, id, proj) },
+	"lock":        func(s *Service, c *gin.Context, _ any, id, proj string) { s.LockInstanceAction(c, id, proj) },
+	"unlock":      func(s *Service, c *gin.Context, _ any, id, proj string) { s.UnlockInstanceAction(c, id, proj) },
+	"forceDelete": func(s *Service, c *gin.Context, _ any, id, proj string) { s.ForceDeleteInstanceAction(c, id, proj) },
+
+	// These read their body from the context rather than a parameter; left as-is
+	// so this refactor changes dispatch only.
+	"os-migrateLive":      func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.LiveMigrateInstance(c) },
+	"addSecurityGroup":    func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.AddSecurityGroup(c) },
+	"removeSecurityGroup": func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.RemoveSecurityGroup(c) },
+	"changePassword":      func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.ChangePassword(c) },
+	"createBackup":        func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.CreateBackupAction(c) },
+	"os-resetState":       func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.ResetStateAction(c) },
+
+	"os-resetNetwork": func(s *Service, c *gin.Context, _ any, _, _ string) { s.ResetNetworkAction(c) },
+}
+
+// setActionData passes an action's body to handlers that read it from the
+// context rather than taking it as a parameter.
+func setActionData(c *gin.Context, data any) { c.Set("action_data", data) }
+
+// lifecycleActions are the actions lifecycleAction performs on the guest's libvirt
+// domain. With consoleActions and serverActions they are every action ServerAction
+// accepts; anything else is refused before the target is resolved.
+var lifecycleActions = map[string]bool{"reboot": true, "os-stop": true, "os-start": true}
+
+// instanceActionName is the name a dispatched action is recorded under in the
+// server's action history: upstream's vocabulary (nova/compute/instance_actions.py),
+// so os-instance-actions reads as it does against Nova. Most actions are their
+// request key without the "os-" prefix; these two are not.
+func instanceActionName(action string) string {
+	switch action {
+	case "os-migrateLive":
+		return "live-migration" // LIVE_MIGRATION
+	case "forceDelete":
+		return "delete" // upstream's force_delete records DELETE
+	}
+	return strings.TrimPrefix(action, "os-")
+}
+
 // ServerAction performs an action on a server
 func (svc *Service) ServerAction(c *gin.Context) {
 	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
 
 	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1803,135 +1939,57 @@ func (svc *Service) ServerAction(c *gin.Context) {
 		return
 	}
 
-	log.Debug().Str("instance_id", instanceID).Str("project_id", projectID).Interface("action", req).Msg("ServerAction")
-
-	// Handle console actions first (don't require libvirt)
-	if vncConsole, ok := req["os-getVNCConsole"]; ok {
-		svc.GetVNCConsoleAction(c, vncConsole)
-		return
-	}
-	if consoleOutput, ok := req["os-getConsoleOutput"]; ok {
-		svc.GetConsoleOutputAction(c, consoleOutput)
-		return
-	}
-	if serialConsole, ok := req["os-getSerialConsole"]; ok {
-		svc.GetSerialConsoleAction(c, serialConsole)
-		return
-	}
-	if spiceConsole, ok := req["os-getSPICEConsole"]; ok {
-		svc.GetSPICEConsoleAction(c, spiceConsole)
-		return
-	}
-	if rdpConsole, ok := req["os-getRDPConsole"]; ok {
-		svc.GetRDPConsoleAction(c, rdpConsole)
+	// Exactly one action per request, as upstream's API documents — every action
+	// form in the Nova api-ref carries a single, required key.
+	//
+	// Without this, a body naming two actions was answered `202` after performing
+	// whichever the dispatch ladder below reached first and silently discarding
+	// the rest: a contradictory request accepted, partially executed, and reported
+	// as success. That is the same shape SPEC-023 removes elsewhere — the
+	// domain-scoped request answered `201` with no scope (FR-009).
+	//
+	// It also makes the dispatch deterministic by construction: with one key
+	// there is no map-iteration order to depend on, so the recorded action can
+	// never name something other than the action performed (FR-007).
+	if len(req) != 1 {
+		common.SendError(c, common.NewBadRequestError("exactly one action per request"))
 		return
 	}
 
-	// Handle advanced actions that don't require libvirt in all cases
-	if _, ok := req["suspend"]; ok {
-		svc.SuspendInstance(c)
-		return
-	} else if _, ok := req["resume"]; ok {
-		svc.ResumeInstance(c)
-		return
-	} else if _, ok := req["shelve"]; ok {
-		svc.ShelveInstance(c)
-		return
-	} else if _, ok := req["shelveOffload"]; ok {
-		svc.ShelveInstance(c) // Same as shelve for now
-		return
-	} else if _, ok := req["unshelve"]; ok {
-		svc.UnshelveInstance(c)
-		return
-	} else if resizeData, ok := req["resize"]; ok {
-		svc.ResizeInstanceAction(c, resizeData)
-		return
-	} else if _, ok := req["confirmResize"]; ok {
-		svc.ConfirmResizeInstance(c)
-		return
-	} else if _, ok := req["revertResize"]; ok {
-		svc.RevertResizeInstance(c)
-		return
-	} else if rebuildData, ok := req["rebuild"]; ok {
-		svc.RebuildInstanceAction(c, rebuildData)
-		return
-	} else if rescueData, ok := req["rescue"]; ok {
-		svc.RescueInstanceAction(c, rescueData)
-		return
-	} else if createImageData, ok := req["createImage"]; ok {
-		svc.CreateImageAction(c, createImageData)
-		return
-	} else if _, ok := req["pause"]; ok {
-		svc.PauseInstanceAction(c)
-		return
-	} else if _, ok := req["unpause"]; ok {
-		svc.UnpauseInstanceAction(c)
-		return
-	} else if _, ok := req["lock"]; ok {
-		svc.LockInstanceAction(c)
-		return
-	} else if _, ok := req["unlock"]; ok {
-		svc.UnlockInstanceAction(c)
-		return
-	} else if _, ok := req["forceDelete"]; ok {
-		svc.ForceDeleteInstanceAction(c)
-		return
-	} else if _, ok := req["evacuate"]; ok {
-		svc.EvacuateInstance(c)
-		return
-	} else if _, ok := req["migrate"]; ok {
-		svc.MigrateInstance(c)
-		return
-	} else if liveMigrate, ok := req["os-migrateLive"]; ok {
-		// Pass the parsed live migrate data through context
-		c.Set("action_data", liveMigrate)
-		svc.LiveMigrateInstance(c)
-		return
-	} else if addSG, ok := req["addSecurityGroup"]; ok {
-		c.Set("action_data", addSG)
-		svc.AddSecurityGroup(c)
-		return
-	} else if removeSG, ok := req["removeSecurityGroup"]; ok {
-		c.Set("action_data", removeSG)
-		svc.RemoveSecurityGroup(c)
-		return
-	} else if changePass, ok := req["changePassword"]; ok {
-		c.Set("action_data", changePass)
-		svc.ChangePassword(c)
-		return
-	} else if _, ok := req["restore"]; ok {
-		svc.RestoreInstance(c)
-		return
-	} else if createBackup, ok := req["createBackup"]; ok {
-		c.Set("action_data", createBackup)
-		svc.CreateBackupAction(c)
-		return
-	} else if resetState, ok := req["os-resetState"]; ok {
-		c.Set("action_data", resetState)
-		svc.ResetStateAction(c)
-		return
-	} else if _, ok := req["os-resetNetwork"]; ok {
-		svc.ResetNetworkAction(c)
+	// Exactly one key, so this IS the action — the name that gets recorded and
+	// the handler that runs are now read from the same place.
+	var action string
+	var actionData any
+	for k, v := range req {
+		action, actionData = k, v
+	}
+
+	log.Debug().Str("instance_id", instanceID).
+		Str("caller_project", c.GetString("project_id")).
+		Interface("action", req).Msg("ServerAction")
+
+	// Console actions run first — they resolve their own target and are not
+	// recorded as actions on the server.
+	if handler, ok := consoleActions[action]; ok {
+		handler(svc, c, actionData)
 		return
 	}
 
-	// Only reboot, os-stop and os-start are left. Refuse anything else now, before the
-	// instance is looked up and its console tokens revoked — the order upstream's
-	// dispatcher uses (nova/api/openstack/wsgi.py) — so a request naming no action this
-	// API knows cannot invalidate live console links, or become a 500 when the revoke
-	// fails closed.
-	_, reboot := req["reboot"]
-	_, stop := req["os-stop"]
-	_, start := req["os-start"]
-	if !reboot && !stop && !start {
+	// Refuse an action this API does not know now, before the instance is resolved,
+	// recorded or has its console tokens revoked — the order upstream's dispatcher uses
+	// (nova/api/openstack/wsgi.py) — so a request naming no action this API knows
+	// cannot invalidate live console links, or become a 500 when the revoke fails
+	// closed.
+	handler, known := serverActions[action]
+	if !known && !lifecycleActions[action] {
 		common.SendError(c, common.NewBadRequestError("unknown action"))
 		return
 	}
 	// A reboot's body is checked here too, for the same reason: a malformed one must not
 	// revoke the instance's console links on its way to a 400.
 	var hardReboot bool
-	if reboot {
-		hard, err := parseRebootType(req["reboot"])
+	if action == "reboot" {
+		hard, err := parseRebootType(actionData)
 		if err != nil {
 			common.SendError(c, common.NewBadRequestError(
 				"Invalid input for field/attribute reboot: "+err.Error()))
@@ -1940,15 +1998,70 @@ func (svc *Service) ServerAction(c *gin.Context) {
 		hardReboot = hard
 	}
 
-	// Get libvirt domain ID for remaining actions (support lookup by ID or name).
-	// The resolved UUID is also what console-token revocation keys on, since the
-	// caller may have addressed the instance by name.
+	// Authorize ONCE, here, for every remaining action this dispatches to
+	// (SPEC-023 FR-001, T017).
+	//
+	// The ~25 sub-handlers below each read c.GetString("project_id") and scope
+	// their own queries by it. Resolving the target in each of them would be 25
+	// chances for the rule to diverge. Instead the target is resolved once here and
+	// the context's project is rebound to the OWNING project for the rest of the
+	// request, so every sub-handler operates on the effective project without
+	// needing to know the rule exists.
+	//
+	// Rebinding is the correct semantics, not a shortcut: an administrator acting
+	// on a tenant's instance should have the resulting state, quota accounting and
+	// action record attributed to that tenant (FR-007), not to the administrator's
+	// own project. A non-administrator never reaches this line for an instance
+	// they do not own — targetInstance refuses first — so the rebind cannot widen
+	// anyone's authority.
+	//
+	// Placed AFTER the console actions above deliberately: those resolve their
+	// own target through the same helper and are reads, so they must not land in
+	// the action history this step writes.
+	//
+	// Actions gated to administrators only (evacuate, os-resetState) also check
+	// the role and resolve their own target; they do not rely on this.
+	ownedID, ownerProject, authorized := resolveServerOr404(c, svc.pool, instanceID)
+	if !authorized {
+		return
+	}
+	c.Set("project_id", ownerProject)
+	projectID := ownerProject
+	instanceID = ownedID
+
+	// Record against the OWNER, so the affected tenant can see what was done to
+	// their server and by whom — one call site for every action this dispatches
+	// to (SPEC-023 FR-007, FR-007a).
+	recordInstanceAction(c, svc.pool, instanceID, ownerProject, instanceActionName(action))
+
+	if known {
+		handler(svc, c, actionData, instanceID, projectID)
+		return
+	}
+
+	// Everything left is a libvirt lifecycle action (reboot, os-stop, os-start).
+	svc.lifecycleAction(c, action, instanceID, projectID, hardReboot)
+}
+
+// lifecycleAction performs the actions that reach the hypervisor directly —
+// reboot, os-stop, os-start. ServerAction has already refused every other action,
+// and a malformed reboot, before resolving the target; hardReboot is the reboot
+// type it parsed.
+//
+// Split out of ServerAction because it is the only branch that needs the guest's
+// libvirt domain.
+//
+// instanceID is already resolved and projectID is already the OWNING project.
+func (svc *Service) lifecycleAction(c *gin.Context, action, instanceID, projectID string, hardReboot bool) {
+	// The target is already resolved; this reads the guest's libvirt domain,
+	// which resolveServerOr404 does not carry. That resolved UUID is also what
+	// console-token revocation keys on below, since the caller may have
+	// addressed the instance by name (SPEC-021 FR-014).
 	var libvirtDomainID any
-	var resolvedInstanceID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
-		instanceID, projectID,
-	).Scan(&resolvedInstanceID, &libvirtDomainID)
+		"SELECT libvirt_domain_id FROM instances WHERE id = $1",
+		instanceID,
+	).Scan(&libvirtDomainID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		log.Warn().Str("instance_id", instanceID).Msg("Instance not found in ServerAction")
@@ -1971,7 +2084,7 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	// after: afterwards leaves a window where the old link is live against a
 	// restarting domain (SPEC-021 FR-014). A stop that completes later, or one the
 	// guest does itself, is caught by the reconciler's socket check (FR-014a).
-	if !svc.revokeConsoleTokens(c, resolvedInstanceID, "lifecycle action") {
+	if !svc.revokeConsoleTokens(c, instanceID, "lifecycle action") {
 		return
 	}
 
@@ -1985,14 +2098,15 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	// In stub mode, just update database status (don't call vmManager even if it exists)
 	if svc.libvirtMode == "stub" || libvirtDomainStr == "" {
 		// Handle actions in stub mode by updating database only
-		if _, ok := req["reboot"]; ok {
+		switch action {
+		case "reboot":
 			// Just mark as rebooting then active, under upstream's status for the type.
 			status := "REBOOT"
 			if hardReboot {
 				status = "HARD_REBOOT"
 			}
 			if _, err := svc.pool.Exec(c.Request.Context(),
-				"UPDATE instances SET status = $1, updated_at = $2 WHERE (id::text = $3 OR name = $3) AND project_id = $4",
+				"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
 				status, time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance REBOOT")
 			}
@@ -2007,20 +2121,20 @@ func (svc *Service) ServerAction(c *gin.Context) {
 				ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 				defer cancel()
 				if _, err := svc.pool.Exec(ctx,
-					"UPDATE instances SET status = $1, updated_at = $2 WHERE (id::text = $3 OR name = $3) AND project_id = $4",
+					"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
 					"ACTIVE", time.Now(), instanceID, projectID); err != nil {
 					log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE after reboot")
 				}
 			}()
-		} else if _, ok := req["os-stop"]; ok {
+		case "os-stop":
 			if _, err := svc.pool.Exec(c.Request.Context(),
-				"UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE (id::text = $4 OR name = $4) AND project_id = $5",
+				"UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE id = $4 AND project_id = $5",
 				"SHUTOFF", 4, time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance SHUTOFF")
 			}
-		} else if _, ok := req["os-start"]; ok {
+		case "os-start":
 			if _, err := svc.pool.Exec(c.Request.Context(),
-				"UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE (id::text = $4 OR name = $4) AND project_id = $5",
+				"UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE id = $4 AND project_id = $5",
 				"ACTIVE", 1, time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE on start")
 			}
@@ -2033,19 +2147,20 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	defer cancel()
 
 	// Handle different actions with real libvirt
-	if _, ok := req["reboot"]; ok {
+	switch action {
+	case "reboot":
 		if err := svc.vmManager.RebootVM(ctx, libvirtDomainStr, hardReboot); err != nil {
 			log.Error().Err(err).Str("operation", "reboot_vm").Msg("libvirt error")
 			common.SendError(c, startRefusal(err, "failed to reboot server"))
 			return
 		}
-	} else if _, ok := req["os-stop"]; ok {
+	case "os-stop":
 		if err := svc.vmManager.StopVM(ctx, libvirtDomainStr); err != nil {
 			log.Error().Err(err).Str("operation", "stop_vm").Msg("libvirt error")
 			common.SendError(c, common.NewInternalServerError("failed to stop server"))
 			return
 		}
-	} else if _, ok := req["os-start"]; ok {
+	case "os-start":
 		if err := svc.vmManager.StartVM(ctx, libvirtDomainStr); err != nil {
 			log.Error().Err(err).Str("operation", "start_vm").Msg("libvirt error")
 			common.SendError(c, startRefusal(err, "failed to start server"))
@@ -2586,17 +2701,10 @@ func (svc *Service) ListServices(c *gin.Context) {
 
 // GetServerMetadata returns metadata for a server (GET /v2.1/servers/:id/metadata)
 func (svc *Service) GetServerMetadata(c *gin.Context) {
-	serverID := c.Param("id")
-
-	// Check if server exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1)",
-		serverID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	// Owner-or-administrator, like every other server operation (SPEC-023
+	// FR-004). The follow-up queries use the resolved id.
+	serverID, _, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
 		return
 	}
 
@@ -2633,8 +2741,6 @@ func (svc *Service) GetServerMetadata(c *gin.Context) {
 
 // UpdateServerMetadata updates/merges server metadata (POST /v2.1/servers/:id/metadata)
 func (svc *Service) UpdateServerMetadata(c *gin.Context) {
-	serverID := c.Param("id")
-
 	var req struct {
 		Metadata map[string]string `json:"metadata" binding:"required"`
 	}
@@ -2644,15 +2750,10 @@ func (svc *Service) UpdateServerMetadata(c *gin.Context) {
 		return
 	}
 
-	// Check if server exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1)",
-		serverID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	// Owner-or-administrator (SPEC-023 FR-004); the writes below use the
+	// resolved id.
+	serverID, _, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
 		return
 	}
 
@@ -2705,8 +2806,6 @@ func (svc *Service) UpdateServerMetadata(c *gin.Context) {
 
 // ResetServerMetadata replaces all server metadata (PUT /v2.1/servers/:id/metadata)
 func (svc *Service) ResetServerMetadata(c *gin.Context) {
-	serverID := c.Param("id")
-
 	var req struct {
 		Metadata map[string]string `json:"metadata" binding:"required"`
 	}
@@ -2716,20 +2815,15 @@ func (svc *Service) ResetServerMetadata(c *gin.Context) {
 		return
 	}
 
-	// Check if server exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1)",
-		serverID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	// Owner-or-administrator (SPEC-023 FR-004); the replace below uses the
+	// resolved id.
+	serverID, _, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
 		return
 	}
 
 	// Delete all existing metadata then insert new metadata atomically
-	err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+	err := database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(c.Request.Context(),
 			"DELETE FROM instance_metadata WHERE instance_id = $1",
 			serverID,
@@ -2757,10 +2851,7 @@ func (svc *Service) ResetServerMetadata(c *gin.Context) {
 }
 
 // RebuildInstanceAction handles the rebuild action
-func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
+func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any, instanceID, projectID string) {
 	rebuildMap, ok := rebuildData.(map[string]any)
 	if !ok {
 		common.SendError(c, common.NewBadRequestError("invalid rebuild data"))
@@ -2859,10 +2950,7 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 }
 
 // RescueInstanceAction handles the rescue action
-func (svc *Service) RescueInstanceAction(c *gin.Context, rescueData any) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
+func (svc *Service) RescueInstanceAction(c *gin.Context, rescueData any, instanceID, projectID string) {
 	// Update instance status to RESCUE
 	now := time.Now()
 	_, err := svc.pool.Exec(c.Request.Context(),
@@ -2940,10 +3028,7 @@ func (svc *Service) CreateImageAction(c *gin.Context, createImageData any) {
 }
 
 // PauseInstanceAction handles the pause action
-func (svc *Service) PauseInstanceAction(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
+func (svc *Service) PauseInstanceAction(c *gin.Context, instanceID, projectID string) {
 	// Update instance status to PAUSED
 	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
@@ -2959,10 +3044,7 @@ func (svc *Service) PauseInstanceAction(c *gin.Context) {
 }
 
 // UnpauseInstanceAction handles the unpause action
-func (svc *Service) UnpauseInstanceAction(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
+func (svc *Service) UnpauseInstanceAction(c *gin.Context, instanceID, projectID string) {
 	// Update instance status to ACTIVE
 	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
@@ -2978,10 +3060,7 @@ func (svc *Service) UnpauseInstanceAction(c *gin.Context) {
 }
 
 // LockInstanceAction handles the lock action
-func (svc *Service) LockInstanceAction(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
+func (svc *Service) LockInstanceAction(c *gin.Context, instanceID, projectID string) {
 	// Update instance locked status
 	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET locked = true, updated_at = $1 WHERE id = $2 AND project_id = $3",
@@ -2997,10 +3076,7 @@ func (svc *Service) LockInstanceAction(c *gin.Context) {
 }
 
 // UnlockInstanceAction handles the unlock action
-func (svc *Service) UnlockInstanceAction(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
+func (svc *Service) UnlockInstanceAction(c *gin.Context, instanceID, projectID string) {
 	// Update instance locked status
 	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET locked = false, updated_at = $1 WHERE id = $2 AND project_id = $3",
@@ -3016,10 +3092,7 @@ func (svc *Service) UnlockInstanceAction(c *gin.Context) {
 }
 
 // ForceDeleteInstanceAction handles the forceDelete action
-func (svc *Service) ForceDeleteInstanceAction(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
+func (svc *Service) ForceDeleteInstanceAction(c *gin.Context, instanceID, projectID string) {
 	// Read in both modes: a found row is what proves this project owns the
 	// instance, and the console revoke below is not project-scoped.
 	var libvirtDomainID any

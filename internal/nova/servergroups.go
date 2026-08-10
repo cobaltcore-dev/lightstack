@@ -13,6 +13,12 @@ import (
 // ListServerGroups handles GET /v2.1/os-server-groups
 func (svc *Service) ListServerGroups(c *gin.Context) {
 	projectID := c.GetString("project_id")
+	// An unscoped token names no project, so it owns no server group. Bound as ""
+	// the empty project would fail the uuid cast and answer 500.
+	if projectID == "" {
+		c.JSON(http.StatusOK, gin.H{"server_groups": []gin.H{}})
+		return
+	}
 
 	rows, err := svc.pool.Query(c.Request.Context(),
 		`SELECT id, name, policies, members, project_id, created_at, updated_at
@@ -72,6 +78,13 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 		return
 	}
 
+	// An unscoped token has no project to create the group in.
+	if projectID == "" {
+		common.SendError(c, common.NewForbiddenError(
+			"a server group belongs to a project; use a project-scoped token"))
+		return
+	}
+
 	groupID := uuid.New().String()
 	now := time.Now()
 
@@ -102,6 +115,11 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 func (svc *Service) GetServerGroup(c *gin.Context) {
 	groupID := c.Param("id")
 	projectID := c.GetString("project_id")
+	// An unscoped token owns no server group (see ListServerGroups).
+	if projectID == "" {
+		common.SendError(c, common.NewNotFoundError("server group"))
+		return
+	}
 
 	var name, projectIDFromDB string
 	var policies []string
@@ -135,6 +153,11 @@ func (svc *Service) GetServerGroup(c *gin.Context) {
 func (svc *Service) DeleteServerGroup(c *gin.Context) {
 	groupID := c.Param("id")
 	projectID := c.GetString("project_id")
+	// An unscoped token owns no server group (see ListServerGroups).
+	if projectID == "" {
+		common.SendError(c, common.NewNotFoundError("server group"))
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM server_groups WHERE id = $1 AND project_id = $2",

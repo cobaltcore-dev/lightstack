@@ -175,6 +175,36 @@ func TestMetaDataJSON_NoKeyName_DB(t *testing.T) {
 	}
 }
 
+// TestMetaDataJSON_ServesServerMetadata_DB: the server's metadata reaches the guest as
+// meta_data.json's `meta`, as upstream serves it. The query named columns that do not
+// exist (`key`, `value` — the table has meta_key and meta_value), and its error was
+// swallowed, so every guest got an empty `meta`.
+func TestMetaDataJSON_ServesServerMetadata_DB(t *testing.T) {
+	requireDB(t)
+	instID := seedInstance(t, nil)
+	for k, v := range map[string]string{"role": "web", "tier": "1"} {
+		if _, err := testPool.Exec(context.Background(),
+			`INSERT INTO instance_metadata (instance_id, meta_key, meta_value) VALUES ($1,$2,$3)`,
+			instID, k, v); err != nil {
+			t.Fatalf("insert metadata %s: %v", k, err)
+		}
+	}
+
+	code, body := metaGet(newMetadataTestRouter(), "/openstack/latest/meta_data.json", instID)
+	if code != http.StatusOK {
+		t.Fatalf("meta_data.json: code=%d body=%s", code, body)
+	}
+	var md struct {
+		Meta map[string]string `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(body), &md); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if len(md.Meta) != 2 || md.Meta["role"] != "web" || md.Meta["tier"] != "1" {
+		t.Errorf("meta = %v, want map[role:web tier:1]", md.Meta)
+	}
+}
+
 // TestEC2PublicKeys_ScopedToBootKey_DB covers the EC2 tree cirros reads: the listing
 // names only the boot key at index 0, index 0 serves it, and there is no index 1.
 func TestEC2PublicKeys_ScopedToBootKey_DB(t *testing.T) {

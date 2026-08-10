@@ -199,11 +199,27 @@ pkg/                        # Public/reusable packages
 - All services except metadata use `middleware.AuthMiddleware()`
 - Token contains `user_id`, `project_id`, `roles` for authorization
 - No token database - tokens are stateless (HMAC-SHA256 signed)
+- **Two scope kinds exist and only two**: project-scoped and explicitly unscoped. A request for a
+  **domain** scope is refused with `400` naming it (SPEC-023) — Lightstack's role assignments bind a user
+  to a role within a *project*, so there is no domain-level grant to read. Note this is the
+  top-level `scope.domain`; the `scope.project.domain` qualifier every client sends is unaffected.
 
 **Project Isolation**:
 - All resources scoped by `project_id` from JWT token
 - Network namespaces per project for network isolation
 - Database queries auto-filter by `project_id`
+- **Except for the administrative override** (SPEC-023): a caller holding the `admin` role may act
+  on any project's *server*, matching upstream Nova's `admin_or_owner` default. Creation is not
+  overridable, and a server addressed by **name** never resolves outside the caller's own project —
+  Lightstack accepts a name where upstream accepts only a UUID, so a shared name must not become a way to
+  reach the wrong tenant's server.
+- Listings never widen implicitly. `?all_tenants` is the opt-in, administrators only; a
+  non-administrator passing it is silently ignored, not refused.
+- Surfaces belonging to the **deployment** rather than to a project — host aggregates, the
+  deployment-wide migration list, the aggregate usage report — are administrator-only. They have no
+  `project_id` to filter on, so they take a role gate instead of a scoping predicate.
+- Use `common.HasRole` / `common.RoleAdmin` for the role check and `nova.targetInstance` for the
+  server lookup; do not re-implement either.
 
 **Dependency Injection Pattern**: Every database-using service receives the process's one `*pgxpool.Pool` as the first parameter of its constructor, for example `nova.NewService(pool, libvirtURI, libvirtMode, cache)` in `internal/nova/handlers.go`. Handlers query through it with `svc.pool.Query(ctx, ...)`. Package-level helpers take the pool as a parameter, e.g. `database.WithTx(ctx, pool, fn)`. There is no process-wide handle. Tests hand services a pool of their own (see `internal/keystone/pool_injection_test.go`). See ADR-001.
 
@@ -446,8 +462,11 @@ if requestedVersion == "" {
 - PostgreSQL, migration `065_console_auth_tokens`. It is edited in place: nothing is deployed, and test databases are recreated. This amendment adds `domain_id`. Node-local: `<state_path>/console-tokens/` (the projection) and `<state_path>/console-sockets/` (QEMU-owned, 0750, sockets only). (021-real-novnc-console)
 - Go 1.26 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL). **No new modules.** (022-project-tenant-isolation)
 - External PostgreSQL. **One migration**, `072_groups_domain_id_uuid`: `groups.domain_id` (a `VARCHAR` with no foreign key since `010`) becomes `UUID NOT NULL REFERENCES domains(id)`, alias rows normalised, anything ambiguous stops the migration. Every other fix is behavioural. (022-project-tenant-isolation)
+- Go 1.26 (repo pins `go 1.26`; Constitution requires 1.21+) + Gin (HTTP), pgx/pgxpool (PostgreSQL), golang-jwt/v5. **No new modules.** Contract tests use the already-pinned `gophercloud v1.14.1`. (023-tenant-scoping-authz)
+- PostgreSQL — **no schema change, no migration**. `instance_actions.project_id` is already `UUID NOT NULL`; the change is which value is written to it. (023-tenant-scoping-authz)
 
 ## Recent Changes
+- 023-tenant-scoping-authz: plan — finish applying the admin override across compute's server operations (upstream `admin_or_owner`, creation excluded) + `all_tenants` opt-in; refuse domain-scoped auth with `400` instead of `201`-with-nothing; close the `os-simple-tenant-usage` cross-tenant leak; honour query filters on 6 identity collections. No new deps, no schema change, no migration (SPEC-023 plan)
 - 027-database-pool-injection: plan — remove the process-wide database handle. Every database-using constructor takes the `*pgxpool.Pool` first, and the 20 package-level helpers take it as a parameter. `WithTx(ctx, pool, fn)`. One commit, no API or schema change (SPEC-027 plan)
 - 026-rename-to-lightstack: plan — staged rename (8 stages, gates green per stage); spec dir stays **untracked** (it cannot shed its own 70 occurrences); real-mode host validation mandatory (stub mode never reaches the chain namer or the state root) (SPEC-026 plan)
 - 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)

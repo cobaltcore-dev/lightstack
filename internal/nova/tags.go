@@ -10,18 +10,8 @@ import (
 
 // ListServerTags returns all tags for a server
 func (svc *Service) ListServerTags(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify server exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("server"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
 
@@ -57,8 +47,10 @@ func (svc *Service) ListServerTags(c *gin.Context) {
 
 // ReplaceServerTags replaces all server tags
 func (svc *Service) ReplaceServerTags(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
+		return
+	}
 
 	var req struct {
 		Tags []string `json:"tags" binding:"required"`
@@ -69,20 +61,8 @@ func (svc *Service) ReplaceServerTags(c *gin.Context) {
 		return
 	}
 
-	// Verify server exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("server"))
-		return
-	}
-
 	// Delete all existing tags
-	_, err = svc.pool.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM server_tags WHERE instance_id = $1",
 		instanceID,
 	)
@@ -110,24 +90,14 @@ func (svc *Service) ReplaceServerTags(c *gin.Context) {
 
 // AddServerTag adds a single tag to a server
 func (svc *Service) AddServerTag(c *gin.Context) {
-	instanceID := c.Param("id")
-	tag := c.Param("tag")
-	projectID := c.GetString("project_id")
-
-	// Verify server exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("server"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
+	tag := c.Param("tag")
 
 	// Insert tag
-	_, err = svc.pool.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"INSERT INTO server_tags (instance_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING",
 		instanceID, tag,
 	)
@@ -142,21 +112,11 @@ func (svc *Service) AddServerTag(c *gin.Context) {
 
 // DeleteServerTag removes a single tag from a server
 func (svc *Service) DeleteServerTag(c *gin.Context) {
-	instanceID := c.Param("id")
-	tag := c.Param("tag")
-	projectID := c.GetString("project_id")
-
-	// Verify server exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("server"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
+	tag := c.Param("tag")
 
 	// Delete tag
 	result, err := svc.pool.Exec(c.Request.Context(),
@@ -179,23 +139,13 @@ func (svc *Service) DeleteServerTag(c *gin.Context) {
 
 // DeleteAllServerTags removes all tags from a server
 func (svc *Service) DeleteAllServerTags(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify server exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("server"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
 
 	// Delete all tags
-	_, err = svc.pool.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM server_tags WHERE instance_id = $1",
 		instanceID,
 	)
