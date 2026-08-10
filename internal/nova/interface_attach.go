@@ -27,8 +27,10 @@ type AttachInterfaceRequest struct {
 
 // AttachInterface attaches a network interface to an instance
 func (svc *Service) AttachInterface(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+	instanceID, projectID, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
+		return
+	}
 
 	var req AttachInterfaceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -174,6 +176,10 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	// In real mode, would hot-plug interface to libvirt VM
 	// For stub mode, just return success
 
+	// Recorded against the owning project once it has happened, so the tenant sees
+	// an administrator's change in their own history (SPEC-023 FR-007a).
+	recordInstanceAction(c, svc.pool, instanceID, projectID, "attach_interface")
+
 	c.JSON(http.StatusOK, gin.H{
 		"interfaceAttachment": gin.H{
 			"id":         attachmentID,
@@ -188,25 +194,15 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 
 // DetachInterface detaches a network interface from an instance
 func (svc *Service) DetachInterface(c *gin.Context) {
-	instanceID := c.Param("id")
-	portID := c.Param("port_id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists
-	var instanceExists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&instanceExists)
-
-	if err != nil || !instanceExists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	instanceID, ownerProject, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
+	portID := c.Param("port_id")
 
 	// Verify port is attached to this instance
 	var attachedInstanceID string
-	err = svc.pool.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT device_id FROM ports WHERE id = $1",
 		portID,
 	).Scan(&attachedInstanceID)
@@ -249,23 +245,14 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 	// In real mode, would hot-unplug interface from libvirt VM
 	// For stub mode, just return success
 
+	recordInstanceAction(c, svc.pool, instanceID, ownerProject, "detach_interface")
 	c.Status(http.StatusAccepted)
 }
 
 // ListInterfaceAttachments lists all network interfaces attached to an instance
 func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists
-	var instanceExists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&instanceExists)
-
-	if err != nil || !instanceExists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
 

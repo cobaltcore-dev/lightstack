@@ -534,6 +534,149 @@ else
     log_fail "Cross-project attach not tested: User2's server ('$SERVER2_ID') or User1's volume ('$VOL1_ID') is missing"
 fi
 
+# =============================================================================
+# Test 7: the administrative override (SPEC-023 US1, FR-019)
+#
+# Every check above is NEGATIVE — it asserts a tenant cannot reach another
+# tenant. A suite of only negative checks stays green if the override is quietly
+# re-narrowed to the caller's own project, which is the regression this feature
+# is most likely to suffer. So: one positive check, from the other direction.
+# =============================================================================
+log_test "Administrative override reaches another project's server"
+
+ADMIN_SEES=$(curl -s -o /dev/null -w "%{http_code}" \
+    "http://localhost:8774/v2.1/servers/$SERVER1_ID" \
+    -H "X-Auth-Token: $ADMIN_TOKEN")
+
+if [ "$ADMIN_SEES" = "200" ]; then
+    log_pass "Admin can show another project's server (HTTP 200)"
+else
+    log_fail "Admin got HTTP $ADMIN_SEES for another project's server; expected 200"
+fi
+
+# The default listing must NOT widen just because the caller is an admin —
+# that is the compatibility guarantee (FR-005).
+#
+# Anchored on the status AND on the response actually being a listing. "Is
+# SERVER1_ID absent?" alone is a check that cannot fail: `.servers[]?` swallows
+# the missing key, so an error body counts zero matches and PASSES. That is the
+# same shape #545 found throughout this suite — an assertion that stays green
+# when the request never succeeded.
+ADMIN_LIST=$(curl -s -w '\n%{http_code}' "http://localhost:8774/v2.1/servers" \
+    -H "X-Auth-Token: $ADMIN_TOKEN")
+ADMIN_LIST_CODE=$(printf '%s' "$ADMIN_LIST" | tail -n1)
+ADMIN_LIST_BODY=$(printf '%s' "$ADMIN_LIST" | sed '$d')
+ADMIN_IS_LISTING=$(printf '%s' "$ADMIN_LIST_BODY" | jq -r 'if has("servers") then "yes" else "no" end' 2>/dev/null || echo "no")
+ADMIN_DEFAULT=$(printf '%s' "$ADMIN_LIST_BODY" | jq --arg id "$SERVER1_ID" \
+    '[.servers[]? | select(.id == $id)] | length' 2>/dev/null || echo "")
+
+if [ "$ADMIN_LIST_CODE" != "200" ] || [ "$ADMIN_IS_LISTING" != "yes" ]; then
+    log_fail "Admin's default listing returned HTTP $ADMIN_LIST_CODE without a servers array; the scoping assertion cannot run"
+elif [ "$ADMIN_DEFAULT" = "0" ]; then
+    log_pass "Admin's default listing stays scoped to their own project"
+else
+    log_fail "Admin's default listing leaked another project's server without all_tenants"
+fi
+
+# ...and DOES widen on the explicit opt-in, including the bare form Horizon sends.
+ADMIN_ALL=$(curl -s "http://localhost:8774/v2.1/servers?all_tenants" \
+    -H "X-Auth-Token: $ADMIN_TOKEN" | jq --arg id "$SERVER1_ID" \
+    '[.servers[]? | select(.id == $id)] | length')
+
+if [ "$ADMIN_ALL" = "1" ]; then
+    log_pass "Admin's ?all_tenants listing spans projects"
+else
+    log_fail "Admin's ?all_tenants listing did not include another project's server"
+fi
+
+# A non-admin passing all_tenants is IGNORED, not refused: the answer must be
+# byte-identical to the same request without it, or the parameter's existence
+# leaks (FR-005b).
+#
+# Both halves are anchored on 200 first. Comparing two responses to each other
+# and to nothing else is a check that passes when BOTH fail: an expired or
+# unprivileged token makes the two error bodies identical, and the assertion
+# reports success for a request that never listed anything.
+U2_WITH=$(curl -s -w '\n%{http_code}' "http://localhost:8774/v2.1/servers?all_tenants=1" -H "X-Auth-Token: $USER2_TOKEN")
+U2_WITHOUT=$(curl -s -w '\n%{http_code}' "http://localhost:8774/v2.1/servers" -H "X-Auth-Token: $USER2_TOKEN")
+U2_WITH_CODE=$(printf '%s' "$U2_WITH" | tail -n1)
+U2_WITHOUT_CODE=$(printf '%s' "$U2_WITHOUT" | tail -n1)
+
+if [ "$U2_WITH_CODE" != "200" ] || [ "$U2_WITHOUT_CODE" != "200" ]; then
+    log_fail "Non-admin listing returned HTTP $U2_WITH_CODE / $U2_WITHOUT_CODE; expected 200 for both, so the comparison below would be vacuous"
+elif [ "$(printf '%s' "$U2_WITH" | sed '$d')" = "$(printf '%s' "$U2_WITHOUT" | sed '$d')" ]; then
+    log_pass "Non-admin's all_tenants is silently ignored, not refused"
+else
+    log_fail "Non-admin's answer changed with all_tenants — the gate is observable"
+fi
+
+# =============================================================================
+# Test 8: operator-only surfaces (SPEC-023 US6, FR-019a)
+#
+# Both directions. A gate that is added but never exercised as a SUCCESS is
+# indistinguishable from one that broke the endpoint outright.
+# =============================================================================
+log_test "Operator-only surfaces reject tenants and admit operators"
+
+for surface in "os-aggregates" "os-migrations" "os-simple-tenant-usage"; do
+    TENANT_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        "http://localhost:8774/v2.1/$surface" -H "X-Auth-Token: $USER1_TOKEN")
+    ADMIN_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        "http://localhost:8774/v2.1/$surface" -H "X-Auth-Token: $ADMIN_TOKEN")
+
+    if [ "$TENANT_CODE" = "403" ]; then
+        log_pass "$surface refuses a tenant (HTTP 403)"
+    else
+        log_fail "$surface returned HTTP $TENANT_CODE to a tenant; expected 403"
+    fi
+
+    if [ "$ADMIN_CODE" = "200" ]; then
+        log_pass "$surface still admits an operator (HTTP 200)"
+    else
+        log_fail "$surface returned HTTP $ADMIN_CODE to an operator; expected 200"
+    fi
+done
+
+# The privilege escalation specifically: creating a host aggregate reshapes the
+# deployment's scheduling topology and was open to any authenticated tenant.
+PWN_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "http://localhost:8774/v2.1/os-aggregates" \
+    -H "X-Auth-Token: $USER1_TOKEN" -H "Content-Type: application/json" \
+    -d '{"aggregate":{"name":"tenant-should-not-create-this","availability_zone":"nova"}}')
+
+if [ "$PWN_CODE" = "403" ]; then
+    log_pass "Tenant cannot create a host aggregate (HTTP 403)"
+else
+    log_fail "Tenant creating a host aggregate returned HTTP $PWN_CODE; expected 403"
+fi
+
+# =============================================================================
+# Test 9: domain scope is refused, not silently ignored (SPEC-023 US2)
+# =============================================================================
+log_test "Domain-scoped authentication is refused"
+
+DOMAIN_SCOPE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "http://localhost:35357/v3/auth/tokens" -H "Content-Type: application/json" \
+    -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"admin","password":"secret","domain":{"name":"Default"}}}},"scope":{"domain":{"name":"Default"}}}}')
+
+if [ "$DOMAIN_SCOPE_CODE" = "400" ]; then
+    log_pass "Domain-scoped auth is refused with HTTP 400"
+else
+    log_fail "Domain-scoped auth returned HTTP $DOMAIN_SCOPE_CODE; expected 400"
+fi
+
+# The regression guard: the nested domain QUALIFIER inside a project scope is
+# what every real client sends and must keep working.
+NESTED_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "http://localhost:35357/v3/auth/tokens" -H "Content-Type: application/json" \
+    -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"admin","password":"secret","domain":{"name":"Default"}}}},"scope":{"project":{"name":"default","domain":{"name":"Default"}}}}}')
+
+if [ "$NESTED_CODE" = "201" ]; then
+    log_pass "Project scope with a nested domain qualifier still authenticates"
+else
+    log_fail "Nested domain qualifier returned HTTP $NESTED_CODE; expected 201 — this breaks every client"
+fi
+
 # Cleanup is handled by the EXIT trap registered at the top of this script, so it
 # runs on a failed check or an aborted setup too — not only on the happy path this
 # block used to be reachable from (FR-017a).

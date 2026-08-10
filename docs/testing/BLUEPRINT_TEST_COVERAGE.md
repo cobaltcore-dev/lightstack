@@ -48,7 +48,7 @@
 | `revertResize` action | `RevertResizeInstance` | companion `{"revertResize": null}` → 202. |
 | `shelveOffload` action | `ShelveInstance` (dispatch `handlers.go:1194`) | step sending `{"shelveOffload": null}` — the `shelve` key is tested, this distinct branch is not. |
 
-**Note:** `PATCH /servers/{id}` shares `UpdateServer` with `PUT` (covered via gophercloud `servers.Update`); the PATCH verb itself is not independently exercised. `rbac_test.go.broken` is disabled and not counted as coverage.
+**Note:** `PATCH /servers/{id}` shares `UpdateServer` with `PUT` (covered via gophercloud `servers.Update`); the PATCH verb itself is not independently exercised. `rbac_test.go` was revived by SPEC-023: it had been disabled as `rbac_test.go.broken` because of a gophercloud API drift (`ResetState` takes a bare `ServerState` in v1.14.1, not the `ResetStateOpts` struct it was written against). Its reset-state and evacuate tests are the contract-level cover for FR-008a. Three of its five original tests were deliberately not revived — one never compiled and duplicated `TestQuotaWritesRequireAdmin`, one asserted only that an admin sees their own server (true with or without isolation), and one needed a `reader` role assignment the harness cannot make; cross-project coverage lives in `internal/nova/authz_test.go` instead.
 
 ## Neutron (Network v2.0) — 2 missing
 

@@ -173,34 +173,38 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 		"public_keys":       gin.H{}, // SSH keys
 	}
 
-	// Fetch custom metadata
+	// Fetch custom metadata. A failed query fails the request like the reads below
+	// it: swallowing it served every guest an empty `meta`.
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT key, value
+		SELECT meta_key, meta_value
 		FROM instance_metadata
 		WHERE instance_id = $1
 	`, instanceID)
-	if err == nil {
-		defer rows.Close()
-		metaMap := make(map[string]string)
-		for rows.Next() {
-			var key, value string
-			if err := rows.Scan(&key, &value); err != nil {
-				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to scan instance metadata row")
-				common.SendError(c, common.NewInternalServerError("failed to get instance metadata"))
-				return
-			}
-			metaMap[key] = value
-		}
-		// Fail rather than serve silently-incomplete instance metadata; cloud-init
-		// retries, whereas a missing key would look authoritative.
-		if err := rows.Err(); err != nil {
-			log.Error().Err(err).Str("instance_id", instanceID).Msg("instance metadata rows iteration error")
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to query instance metadata")
+		common.SendError(c, common.NewInternalServerError("failed to get instance metadata"))
+		return
+	}
+	defer rows.Close()
+	metaMap := make(map[string]string)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to scan instance metadata row")
 			common.SendError(c, common.NewInternalServerError("failed to get instance metadata"))
 			return
 		}
-		if len(metaMap) > 0 {
-			metadata["meta"] = metaMap
-		}
+		metaMap[key] = value
+	}
+	// Fail rather than serve silently-incomplete instance metadata; cloud-init
+	// retries, whereas a missing key would look authoritative.
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("instance metadata rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to get instance metadata"))
+		return
+	}
+	if len(metaMap) > 0 {
+		metadata["meta"] = metaMap
 	}
 
 	// Fetch the SSH key the instance was booted with. Upstream Nova keys this off

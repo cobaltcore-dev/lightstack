@@ -112,7 +112,9 @@ func TestInterfaceAttachGetsPastTheInstanceReadWithoutADomain(t *testing.T) {
 // The attach handlers used to check only ErrNoRows after reading the instance, so any
 // other failure — the NULL scan above, or the database going away — was swallowed and
 // the handler carried on with zero values. A cancelled request context stands in for
-// the outage: the read must fail the request, not be ignored.
+// the outage: the read must fail the request, not be ignored. The first read is the
+// owner-or-administrator resolve (resolveServerOr404, SPEC-023), so its failure is the
+// one the request reports.
 func TestVolumeAttachFailsOnAnInstanceReadError(t *testing.T) {
 	requireDB(t)
 	r := newNovaTestRouter()
@@ -128,7 +130,7 @@ func TestVolumeAttachFailsOnAnInstanceReadError(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "database error") {
-		t.Fatalf("status = %d, body = %s; want 500 database error from the instance read", w.Code, w.Body.String())
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "failed to look up instance") {
+		t.Fatalf("status = %d, body = %s; want 500 from the instance read", w.Code, w.Body.String())
 	}
 }

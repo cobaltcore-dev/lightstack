@@ -14,8 +14,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/console"
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -35,6 +33,14 @@ import (
 //
 // The client page and ?path= query are appended here rather than configured, so
 // they cannot drift from the deployed noVNC/websockify version.
+//
+// Every console surface resolves its target through resolveServerOr404, the same
+// owner-or-administrator rule as every other server operation (SPEC-023 FR-001,
+// FR-004): an administrator may open any project's console or read its boot log,
+// everyone else only their own, and "absent" and "someone else's" are both 404.
+// The console used to carry its own copy of that rule; it is no longer a special
+// case. The RESOLVED id — not the raw path parameter, which may be a name — is
+// what the token, the hypervisor readback and the serial log are keyed on.
 const (
 	consoleClientPage  = "/vnc_lite.html"
 	consoleTypeNoVNC   = "novnc"
@@ -149,19 +155,14 @@ func (svc *Service) getVNCConsoleResponse(c *gin.Context, consoleType string) {
 // wrapper around its own response shape.
 func (svc *Service) issueConsoleURL(c *gin.Context) (string, bool) {
 	ctx := c.Request.Context()
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
 
-	ownerProject, err := lookupConsoleInstance(c, svc.pool, instanceID, projectID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Deliberately the same answer for "absent" and "someone else's": a 403
-		// here would confirm the instance exists.
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return "", false
-	}
-	if err != nil {
-		log.Error().Err(err).Str("instance_id", instanceID).Msg("console: instance lookup failed")
-		common.SendError(c, common.NewInternalServerError("failed to look up instance"))
+	// Owner-or-administrator, resolved once and shared with every other server
+	// operation (SPEC-023 FR-001): without the override the Admin panel's Console
+	// tab is broken for every instance the administrator does not own. The owning
+	// project — not the caller's — is what the token is issued against, so an
+	// administrator's console lands in the affected tenant's records (FR-007).
+	instanceID, ownerProject, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
 		return "", false
 	}
 
@@ -197,31 +198,6 @@ func (svc *Service) issueConsoleURL(c *gin.Context) (string, bool) {
 	}
 
 	return buildConsoleURL(svc.consoleProxyBaseURL, c, token), true
-}
-
-// lookupConsoleInstance resolves an instance for a console request and returns the
-// project that owns it.
-//
-// One rule, one implementation, shared by BOTH console surfaces — the interactive
-// console and the serial log (FR-013). Upstream's policy for these is admin_or_owner:
-// an admin may address any project's instance, everyone else only their own. Without
-// the override the Admin panel's Console tab is broken for every instance the admin
-// does not own; with it in only one of the two handlers, an admin could open a
-// tenant's framebuffer while 404ing on that same instance's boot log.
-//
-// Returns pgx.ErrNoRows for both "absent" and "someone else's" so callers answer 404
-// either way: a 403 would confirm the instance exists.
-func lookupConsoleInstance(c *gin.Context, pool *pgxpool.Pool, instanceID, projectID string) (string, error) {
-	var ownerProject string
-	if common.HasRole(c, "admin") {
-		err := pool.QueryRow(c.Request.Context(),
-			"SELECT project_id FROM instances WHERE id = $1", instanceID).Scan(&ownerProject)
-		return ownerProject, err
-	}
-	err := pool.QueryRow(c.Request.Context(),
-		"SELECT project_id FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID).Scan(&ownerProject)
-	return ownerProject, err
 }
 
 // revokeConsoleTokens drops every console token of an instance, for use by any
@@ -450,24 +426,11 @@ func (svc *Service) ShowConsoleAuthToken(c *gin.Context) {
 // console: both are admin_or_owner, so an admin reading one tenant's framebuffer and
 // 404ing on the same instance's boot log would be incoherent.
 func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput any) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify the instance exists and the caller may see it, with the same admin
-	// override issueConsoleURL uses (FR-013).
-	_, err := lookupConsoleInstance(c, svc.pool, instanceID, projectID)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Absent and someone else's are the same answer: a 403 would confirm the
-		// instance exists.
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return
-	}
-	if err != nil {
-		// A failed lookup has not shown the caller may see this instance, and in real
-		// mode the output is its serial log: serve nothing.
-		log.Error().Err(err).Str("instance_id", instanceID).Msg("console output: instance lookup failed")
-		common.SendError(c, common.NewInternalServerError("failed to look up instance"))
+	// The same resolution issueConsoleURL uses (SPEC-021 FR-013, SPEC-023 FR-001):
+	// an administrator who may open a tenant's framebuffer must not 404 on that
+	// same instance's boot log.
+	instanceID, _, ok := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !ok {
 		return
 	}
 
@@ -481,8 +444,8 @@ func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput any) {
 
 	// In real mode, return the VM's captured serial console log (SPEC-009 WS-0).
 	if svc.libvirtMode == "real" {
-		// instanceID, not a re-scanned column: the lookup matched on id = $1, so they
-		// are the same value by construction.
+		// The resolved id, not the path parameter: the caller may have addressed
+		// the instance by name, and the log is stored under the UUID.
 		if out, rerr := hypervisor.ReadConsoleLog(instanceID, length); rerr == nil {
 			c.JSON(http.StatusOK, gin.H{"output": out})
 			return

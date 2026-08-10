@@ -51,8 +51,10 @@ type AttachVolumeRequest struct {
 
 // AttachVolume attaches a volume to an instance
 func (svc *Service) AttachVolume(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+	instanceID, projectID, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
+		return
+	}
 
 	var req AttachVolumeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -171,6 +173,10 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		}
 	}
 
+	// Recorded against the owning project once all of it has happened, so the
+	// tenant sees an administrator's change in their own history (SPEC-023 FR-007a).
+	recordInstanceAction(c, svc.pool, instanceID, projectID, "attach_volume")
+
 	c.JSON(http.StatusOK, gin.H{
 		"volumeAttachment": gin.H{
 			// Nova convention: the attachment id IS the volume id — clients (CLI,
@@ -189,17 +195,11 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 // attachment id IS the volume id; the Terraform provider reads the attachment
 // back by that id after create (SPEC-009 / SC-007).
 func (svc *Service) GetVolumeAttachment(c *gin.Context) {
-	instanceID := c.Param("id")
-	volumeID := c.Param("volume_id")
-	projectID := c.GetString("project_id")
-
-	var exists bool
-	if err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID).Scan(&exists); err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
+	volumeID := c.Param("volume_id")
 
 	var device string
 	var attachedAt time.Time
@@ -230,9 +230,11 @@ func (svc *Service) GetVolumeAttachment(c *gin.Context) {
 
 // DetachVolume detaches a volume from an instance
 func (svc *Service) DetachVolume(c *gin.Context) {
-	instanceID := c.Param("id")
+	instanceID, projectID, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
+		return
+	}
 	volumeID := c.Param("volume_id")
-	projectID := c.GetString("project_id")
 
 	// Verify instance exists and get libvirt domain ID
 	var libvirtDomainID string
@@ -312,23 +314,14 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 		return
 	}
 
+	recordInstanceAction(c, svc.pool, instanceID, projectID, "detach_volume")
 	c.Status(http.StatusAccepted)
 }
 
 // ListVolumeAttachments lists all volumes attached to an instance
 func (svc *Service) ListVolumeAttachments(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists
-	var exists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&exists)
-
-	if err != nil || !exists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	if !authorized {
 		return
 	}
 

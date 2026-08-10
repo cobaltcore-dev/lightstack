@@ -68,8 +68,13 @@ func LoggingMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Generate request ID
-		requestID := uuid.New().String()
+		// Generate request ID in OpenStack's shape: upstream request ids are
+		// `req-<uuid>`, which is what X-Openstack-Request-Id carries and what
+		// clients see echoed back from os-instance-actions. Generating it here
+		// rather than at each use means the log line, the instance-action record
+		// and any response header all carry the identical string, so an action
+		// can be correlated with the request that caused it.
+		requestID := "req-" + uuid.New().String()
 		c.Set("request_id", requestID)
 
 		// Start timer
