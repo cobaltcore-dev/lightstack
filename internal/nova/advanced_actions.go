@@ -474,10 +474,17 @@ func (svc *Service) RevertResizeInstance(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// EvacuateInstance handles evacuating an instance from a failed host
+// EvacuateInstance handles evacuating an instance from a failed host.
+//
+// Administrator-only, and therefore NOT scoped to the administrator's own
+// project: evacuating the instances of a failed host is the entire purpose, and
+// those instances belong to tenants. Before SPEC-023 this gated on the admin
+// role and then looked the instance up `AND project_id = $2` against the
+// caller's project, so it answered 404 for every instance the administrator did
+// not personally own — unusable for the situation it exists to handle
+// (FR-008a).
 func (svc *Service) EvacuateInstance(c *gin.Context) {
 	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
 
 	// Admin-only operation - check roles
 	if !common.HasRole(c, common.RoleAdmin) {
@@ -485,12 +492,7 @@ func (svc *Service) EvacuateInstance(c *gin.Context) {
 		return
 	}
 
-	var status string
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT status FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&status)
-
+	instanceUUID, _, err := targetInstance(c, instanceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
@@ -504,7 +506,7 @@ func (svc *Service) EvacuateInstance(c *gin.Context) {
 	_, err = database.DB.Exec(c.Request.Context(), `
 		UPDATE instances SET status = $1, task_state = $2, updated_at = $3
 		WHERE id = $4
-	`, "ACTIVE", "evacuating", time.Now(), instanceID)
+	`, "ACTIVE", "evacuating", time.Now(), instanceUUID)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "evacuate_instance").Msg("database error")
@@ -1223,10 +1225,16 @@ func (svc *Service) CreateBackupAction(c *gin.Context) {
 	})
 }
 
-// ResetStateAction resets instance state (admin operation)
+// ResetStateAction resets instance state (admin operation).
+//
+// Administrator-only, and therefore NOT scoped to the administrator's own
+// project — an operator resets the state of a *tenant's* stuck instance, which
+// is the only reason the operation exists. Before SPEC-023 the existence check
+// was scoped `AND project_id = $2` to the caller while the UPDATE below was not,
+// so the check was the only thing narrowing it and an administrator got 404 for
+// every instance they did not own (FR-008a).
 func (svc *Service) ResetStateAction(c *gin.Context) {
 	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
 
 	// Admin-only operation - check roles
 	if !common.HasRole(c, common.RoleAdmin) {
@@ -1253,14 +1261,11 @@ func (svc *Service) ResetStateAction(c *gin.Context) {
 		return
 	}
 
-	// Verify instance exists
-	var existsCheck bool
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&existsCheck)
-
-	if err != nil || !existsCheck {
+	// Resolve the instance across projects — the admin gate above already
+	// decided who may do this, and scoping the lookup to the caller would
+	// contradict it.
+	instanceUUID, _, err := targetInstance(c, instanceID)
+	if err != nil {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -1281,7 +1286,7 @@ func (svc *Service) ResetStateAction(c *gin.Context) {
 		UPDATE instances
 		SET status = $1, updated_at = $2
 		WHERE id = $3
-	`, statusUpper, time.Now(), instanceID)
+	`, statusUpper, time.Now(), instanceUUID)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "reset_state").Msg("database error")

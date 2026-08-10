@@ -1,5 +1,14 @@
 package nova
 
+// Host aggregates group hypervisors for scheduling. They belong to the
+// deployment, not to any project — the table has no project_id — so every
+// handler here is administrator-only (SPEC-023 FR-008f, US6).
+//
+// Before SPEC-023 there was no role check anywhere in this file: any
+// authenticated tenant could create, rename and delete aggregates and move
+// hypervisors between them. It was the one place in Nova where a tenant could
+// change something that was not theirs.
+
 import (
 	"encoding/json"
 	"errors"
@@ -18,6 +27,9 @@ import (
 
 // ListAggregates lists all host aggregates
 func (svc *Service) ListAggregates(c *gin.Context) {
+	if !requireAdmin(c, "os-aggregates:index") {
+		return
+	}
 	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT uuid, name, availability_zone, metadata, hosts, created_at, updated_at
 		FROM host_aggregates
@@ -81,6 +93,9 @@ func (svc *Service) ListAggregates(c *gin.Context) {
 
 // CreateAggregate creates a new host aggregate
 func (svc *Service) CreateAggregate(c *gin.Context) {
+	if !requireAdmin(c, "os-aggregates:create") {
+		return
+	}
 	var req struct {
 		Aggregate struct {
 			Name             string `json:"name" binding:"required"`
@@ -127,6 +142,9 @@ func (svc *Service) CreateAggregate(c *gin.Context) {
 
 // GetAggregate retrieves a specific host aggregate
 func (svc *Service) GetAggregate(c *gin.Context) {
+	if !requireAdmin(c, "os-aggregates:show") {
+		return
+	}
 	aggregateID := c.Param("id")
 
 	var (
@@ -177,6 +195,9 @@ func (svc *Service) GetAggregate(c *gin.Context) {
 
 // UpdateAggregate updates a host aggregate
 func (svc *Service) UpdateAggregate(c *gin.Context) {
+	if !requireAdmin(c, "os-aggregates:update") {
+		return
+	}
 	aggregateID := c.Param("id")
 
 	var req struct {
@@ -243,6 +264,9 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 
 // DeleteAggregate deletes a host aggregate
 func (svc *Service) DeleteAggregate(c *gin.Context) {
+	if !requireAdmin(c, "os-aggregates:delete") {
+		return
+	}
 	aggregateID := c.Param("id")
 
 	result, err := database.DB.Exec(c.Request.Context(),
@@ -266,6 +290,13 @@ func (svc *Service) DeleteAggregate(c *gin.Context) {
 
 // AggregateAction handles aggregate actions (add_host, remove_host, set_metadata)
 func (svc *Service) AggregateAction(c *gin.Context) {
+	// Gated here rather than in the three sub-handlers below: a gate placed on
+	// the recognised actions only would leave the unknown-action branch — and any
+	// action added later — reachable by any tenant (SPEC-023 FR-008f).
+	if !requireAdmin(c, "os-aggregates:action") {
+		return
+	}
+
 	aggregateID := c.Param("id")
 
 	var req map[string]any

@@ -15,8 +15,12 @@ import (
 
 // ListGroups handles GET /v3/groups
 func (svc *Service) ListGroups(c *gin.Context) {
+	var f listFilter
+	f.eq(c, "name", "name")
+	f.eqDomain(c, "domain_id", "domain_id")
 	rows, err := database.DB.Query(c.Request.Context(),
-		"SELECT id, name, domain_id, description, created_at FROM groups ORDER BY created_at DESC",
+		"SELECT id, name, domain_id, description, created_at FROM groups"+f.where()+
+			" ORDER BY created_at DESC", f.args...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_groups").Msg("Failed to query groups")

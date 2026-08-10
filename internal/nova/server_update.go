@@ -15,8 +15,10 @@ import (
 
 // UpdateServer handles PATCH /v2.1/servers/:id
 func (svc *Service) UpdateServer(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+	instanceID, projectID, authorized := resolveServerOr404(c, c.Param("id"))
+	if !authorized {
+		return
+	}
 
 	var req struct {
 		Server struct {

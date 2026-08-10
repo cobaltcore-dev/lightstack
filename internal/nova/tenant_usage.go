@@ -1,17 +1,29 @@
 package nova
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
-// ListTenantUsage handles GET /v2.1/os-simple-tenant-usage
+// ListTenantUsage handles GET /v2.1/os-simple-tenant-usage — the aggregate form.
+//
+// Administrator-only (SPEC-023 FR-008b). It reports EVERY project's consumption
+// broken down by project, so before this check any authenticated tenant could
+// enumerate how large every other tenant on the deployment was. Usage is derived
+// by grouping instances and has no owner row of its own, which is how it came to
+// have no ownership check at all.
 func (svc *Service) ListTenantUsage(c *gin.Context) {
+	if !requireAdmin(c, "os-simple-tenant-usage:index") {
+		return
+	}
+
 	// Query all projects with their instance counts and uptime
 	rows, err := database.DB.Query(c.Request.Context(),
 		`SELECT
@@ -67,9 +79,26 @@ func (svc *Service) ListTenantUsage(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"tenant_usages": tenantUsages})
 }
 
-// GetTenantUsage handles GET /v2.1/os-simple-tenant-usage/:id
+// GetTenantUsage handles GET /v2.1/os-simple-tenant-usage/:id — one project.
+//
+// The target is resolved through the shared quota-shaped resolver (SPEC-023
+// FR-008c): an administrator may name any project, everyone else is pinned to
+// their own regardless of what they pass. Before this the `:id` path parameter
+// went STRAIGHT into the query, so any tenant could read any named project's
+// consumption just by knowing its id.
+//
+// A non-administrator's foreign id is ignored rather than resolved, so the
+// endpoint cannot be used to probe which projects exist.
 func (svc *Service) GetTenantUsage(c *gin.Context) {
-	tenantID := c.Param("id")
+	tenantID, ok := common.QuotaTargetProject(c)
+	if !ok {
+		// Either the caller holds no project scope, or an administrator named a
+		// project that does not exist. Reporting zeroes here — which is what this
+		// did before — is indistinguishable from a real project owning no
+		// instances, and masks a malformed identifier as a success (FR-008d).
+		common.SendError(c, common.NewNotFoundError("project"))
+		return
+	}
 
 	// Query specific tenant usage
 	var totalInstances int
@@ -89,8 +118,16 @@ func (svc *Service) GetTenantUsage(c *gin.Context) {
 		tenantID,
 	).Scan(&totalInstances, &totalHours, &totalVCPUs, &totalMemoryMB, &totalLocalGB)
 
-	if err != nil {
-		// Return zero usage if no instances found
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		// A real error is reported, not flattened into zeroes. Only the no-rows
+		// case is legitimately zero: a project that exists and owns nothing
+		// (FR-008d).
+		log.Error().Err(err).Str("operation", "get_tenant_usage").Str("project", tenantID).
+			Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to read tenant usage"))
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
 		totalInstances = 0
 		totalHours = 0
 		totalVCPUs = 0

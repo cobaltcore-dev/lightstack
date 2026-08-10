@@ -1,6 +1,7 @@
 package keystone
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"strings"
@@ -174,12 +175,66 @@ func (svc *Service) GetVersion(c *gin.Context) {
 	})
 }
 
+// unsupportedScope reports the refusal a scope warrants, or nil when the scope
+// is one O3K supports (SPEC-023 FR-009 – FR-014).
+//
+// Two scope kinds exist and only two: project-scoped and explicitly unscoped. A
+// top-level domain scope is refused because role_assignments binds a user to a
+// role within a PROJECT, so there is no domain-level grant to read and nothing a
+// domain-scoped token could authorize.
+//
+// This is a function rather than an inline branch in AuthenticateToken because
+// the SUPPORTED forms cannot be asserted through the route: they fall through to
+// password or token authentication, which needs a live database. A test that has
+// to reach one is not testing this decision. The refusals still go through the
+// real route — they return before the fork and touch nothing.
+//
+// Placed here rather than in ScopeField.UnmarshalJSON because a decode error
+// surfaces as "invalid request body: ...", which conflates an unsupported scope
+// with malformed JSON and buries the reason.
+//
+// Note what is NOT resolved: the domain reference is never looked up. That is
+// deliberate and is what makes the refusal identical for a domain that exists,
+// one that does not, one the caller holds no role in, and a malformed identifier
+// — so the answer discloses nothing about which domains exist (FR-014). It also
+// means a malformed reference cannot reach a uuid-typed column and surface as a
+// 500.
+func unsupportedScope(scope *ScopeField) *common.OpenStackError {
+	// scope.Domain is the TOP-LEVEL domain scope, emphatically not the
+	// scope.project.domain qualifier every real client sends — that lives on
+	// scope.Project and is untouched here.
+	if scope == nil || scope.Domain == nil {
+		return nil
+	}
+	if scope.Project != nil {
+		return common.NewBadRequestError(
+			"scope may name either a project or a domain, not both")
+	}
+	// 400, not 401: the credentials may be perfectly good. A caller must be able
+	// to tell "what you asked for is unsupported" from "who you are is wrong"
+	// (FR-013) — the previous behaviour was a 201 carrying neither the scope
+	// asked for nor any roles, which told them nothing at all.
+	return common.NewBadRequestError(
+		"domain-scoped tokens are not supported; use a project scope or an unscoped token")
+}
+
 // AuthenticateToken handles token authentication (POST /v3/auth/tokens)
 func (svc *Service) AuthenticateToken(c *gin.Context) {
 	var req AuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Debug().Err(err).Str("path", c.Request.URL.Path).Msg("auth request parse failed")
 		common.SendError(c, common.NewBadRequestError("invalid request body: "+err.Error()))
+		return
+	}
+
+	// Refuse an unsupported scope ONCE, here, before the password/token fork
+	// below (SPEC-023 FR-009 – FR-014).
+	//
+	// Placed before the fork rather than in each authenticate path because FR-016
+	// requires the two to agree — one check satisfies that by construction, and
+	// those paths already carry duplicated scope logic that has drifted once.
+	if osErr := unsupportedScope(req.Auth.Scope); osErr != nil {
+		common.SendError(c, osErr)
 		return
 	}
 
@@ -323,8 +378,12 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 
 // ListUsers lists all users
 func (svc *Service) ListUsers(c *gin.Context) {
+	var f listFilter
+	f.eq(c, "name", "name")
+	f.eqDomain(c, "domain_id", "domain_id")
+	f.eqBool(c, "enabled", "enabled")
 	rows, err := database.DB.Query(c.Request.Context(),
-		"SELECT id, name, enabled, domain_id FROM users ORDER BY name",
+		"SELECT id, name, enabled, domain_id FROM users"+f.where()+" ORDER BY name", f.args...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_users").Msg("Failed to query users")
@@ -384,8 +443,12 @@ func (svc *Service) GetUser(c *gin.Context) {
 
 // ListProjects lists all projects
 func (svc *Service) ListProjects(c *gin.Context) {
+	var f listFilter
+	f.eq(c, "name", "name")
+	f.eqDomain(c, "domain_id", "domain_id")
+	f.eqBool(c, "enabled", "enabled")
 	rows, err := database.DB.Query(c.Request.Context(),
-		"SELECT id, name, description, enabled, domain_id FROM projects ORDER BY name",
+		"SELECT id, name, description, enabled, domain_id FROM projects"+f.where()+" ORDER BY name", f.args...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_projects").Msg("Failed to query projects")
@@ -396,19 +459,27 @@ func (svc *Service) ListProjects(c *gin.Context) {
 
 	var projects []gin.H
 	for rows.Next() {
-		var id, name, description, domainID string
+		var id, name string
+		// description and domain_id are NULLABLE in the schema, so scanning them
+		// into plain strings turns a legitimate row into a 500 for the whole
+		// collection — one project without a domain made GET /v3/projects fail
+		// entirely. Read them as nullable and render the zero value.
+		var description, domainID sql.NullString
 		var enabled bool
 		if err := rows.Scan(&id, &name, &description, &enabled, &domainID); err != nil {
 			log.Error().Err(err).Str("operation", "list_projects_scan").Msg("Failed to scan project row")
 			common.SendError(c, common.NewInternalServerError("failed to read projects"))
 			return
 		}
+		// .String, not the NullString itself — marshalling the struct would emit
+		// {"String":"","Valid":false} and change the response shape for every
+		// client.
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description,
+			"description": description.String,
 			"enabled":     enabled,
-			"domain_id":   domainID,
+			"domain_id":   domainID.String,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -621,8 +692,10 @@ func (svc *Service) DeleteProject(c *gin.Context) {
 
 // ListRoles lists all roles
 func (svc *Service) ListRoles(c *gin.Context) {
+	var f listFilter
+	f.eq(c, "name", "name")
 	rows, err := database.DB.Query(c.Request.Context(),
-		"SELECT id, name FROM roles ORDER BY name",
+		"SELECT id, name FROM roles"+f.where()+" ORDER BY name", f.args...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_roles").Msg("Failed to query roles")

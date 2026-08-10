@@ -27,8 +27,10 @@ type AttachInterfaceRequest struct {
 
 // AttachInterface attaches a network interface to an instance
 func (svc *Service) AttachInterface(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+	instanceID, projectID, authorized := resolveServerOr404(c, c.Param("id"))
+	if !authorized {
+		return
+	}
 
 	var req AttachInterfaceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -183,25 +185,15 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 
 // DetachInterface detaches a network interface from an instance
 func (svc *Service) DetachInterface(c *gin.Context) {
-	instanceID := c.Param("id")
-	portID := c.Param("port_id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists
-	var instanceExists bool
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&instanceExists)
-
-	if err != nil || !instanceExists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	instanceID, _, authorized := resolveServerOr404(c, c.Param("id"))
+	if !authorized {
 		return
 	}
+	portID := c.Param("port_id")
 
 	// Verify port is attached to this instance
 	var attachedInstanceID string
-	err = database.DB.QueryRow(c.Request.Context(),
+	err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT device_id FROM ports WHERE id = $1",
 		portID,
 	).Scan(&attachedInstanceID)
@@ -249,18 +241,8 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 
 // ListInterfaceAttachments lists all network interfaces attached to an instance
 func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	// Verify instance exists
-	var instanceExists bool
-	err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&instanceExists)
-
-	if err != nil || !instanceExists {
-		common.SendError(c, common.NewNotFoundError("instance"))
+	instanceID, _, authorized := resolveServerOr404(c, c.Param("id"))
+	if !authorized {
 		return
 	}
 

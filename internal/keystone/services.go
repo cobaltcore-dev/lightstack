@@ -16,11 +16,12 @@ import (
 
 // ListServices returns all services in the catalog
 func (svc *Service) ListServices(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
-		SELECT id, type, name, description, enabled, created_at, updated_at
-		FROM services
-		ORDER BY name
-	`)
+	var f listFilter
+	f.eq(c, "type", "type")
+	f.eq(c, "name", "name")
+	rows, err := database.DB.Query(c.Request.Context(),
+		"SELECT id, type, name, description, enabled, created_at, updated_at FROM services"+
+			f.where()+" ORDER BY name", f.args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_services").Msg("Failed to query services")
 		common.SendError(c, common.NewInternalServerError("failed to query services"))
@@ -270,12 +271,14 @@ func (svc *Service) UpdateService(c *gin.Context) {
 
 // ListEndpoints returns all endpoints in the catalog
 func (svc *Service) ListEndpoints(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
-		SELECT e.id, e.service_id, e.interface, e.url, e.region, e.enabled, s.type, s.name
-		FROM endpoints e
-		JOIN services s ON e.service_id = s.id
-		ORDER BY s.name, e.interface
-	`)
+	var f listFilter
+	f.eq(c, "interface", "e.interface")
+	f.eq(c, "service_id", "e.service_id")
+	f.eq(c, "region_id", "e.region")
+	rows, err := database.DB.Query(c.Request.Context(),
+		"SELECT e.id, e.service_id, e.interface, e.url, e.region, e.enabled, s.type, s.name "+
+			"FROM endpoints e JOIN services s ON e.service_id = s.id"+f.where()+
+			" ORDER BY s.name, e.interface", f.args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_endpoints").Msg("Failed to query endpoints")
 		common.SendError(c, common.NewInternalServerError("failed to query endpoints"))

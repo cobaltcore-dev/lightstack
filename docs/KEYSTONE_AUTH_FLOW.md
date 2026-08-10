@@ -418,6 +418,33 @@ Service catalog is **dynamic** - no hardcoded URLs in Horizon:
 
 ## Multi-Tenancy
 
+### Token scope kinds
+
+O3K issues exactly two kinds of token, and no others:
+
+| Scope | Request | Result |
+|---|---|---|
+| **Project-scoped** | `"scope": {"project": {...}}` | a token carrying `project_id` and the roles held there |
+| **Unscoped** | `"scope": "unscoped"`, or no `scope` key | a token carrying no project and no roles |
+| ~~Domain-scoped~~ | `"scope": {"domain": {...}}` | **refused with `400`** naming the scope as unsupported |
+
+A domain scope is refused rather than honoured because role assignments bind a user to a role within
+a **project** — there is no domain-level grant to read, and nothing a domain-scoped token could
+authorize. Before SPEC-023 such a request was answered `201` with a token carrying neither the scope
+asked for nor any roles, so a client could not tell it had been ignored and failed later for reasons
+that pointed nowhere.
+
+The refusal is deliberately **uniform**: the domain reference is never resolved, so a domain that
+exists, one that does not, one the caller holds no role in, and a malformed identifier all produce
+the same answer. Nothing about which domains exist is disclosed.
+
+> **Not to be confused with the domain qualifier.** `scope.project.domain` says *which* project is
+> meant and is what Horizon, Terraform and `python-openstackclient` send on every authentication.
+> Only the **top-level** `scope.domain` is refused.
+
+Naming both a project and a domain in one scope is refused as contradictory rather than resolved by
+precedence.
+
 ### Project-Based Isolation
 
 Every token is scoped to a **project** (tenant):

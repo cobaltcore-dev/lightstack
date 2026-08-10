@@ -62,6 +62,20 @@ type ScopeField struct {
 			ID   string `json:"id"`
 		} `json:"domain,omitempty"`
 	}
+	// Domain is the TOP-LEVEL domain scope — `{"scope":{"domain":{...}}}` — and
+	// is parsed only so it can be refused (SPEC-023 FR-009). O3K issues no
+	// domain-scoped token: role_assignments binds a user to a role within a
+	// PROJECT, so there is no domain-level grant to read and nothing a
+	// domain-scoped token could authorize.
+	//
+	// This is emphatically NOT Project.Domain above, which qualifies WHICH
+	// project is meant and is what Horizon, Terraform and python-openstackclient
+	// send on every single authentication. Confusing the two would refuse every
+	// client in existence.
+	Domain *struct {
+		Name string `json:"name"`
+		ID   string `json:"id"`
+	}
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for ScopeField
@@ -83,11 +97,19 @@ func (s *ScopeField) UnmarshalJSON(data []byte) error {
 				ID   string `json:"id"`
 			} `json:"domain,omitempty"`
 		} `json:"project,omitempty"`
+		// Decoded, never honoured — see ScopeField.Domain. Refusal happens in the
+		// handler rather than here: a decode error becomes "invalid request body",
+		// which would conflate an unsupported scope with malformed JSON.
+		Domain *struct {
+			Name string `json:"name"`
+			ID   string `json:"id"`
+		} `json:"domain,omitempty"`
 	}
 	if err := json.Unmarshal(data, &temp); err != nil {
 		return err
 	}
 	s.Project = temp.Project
+	s.Domain = temp.Domain
 	s.IsUnscoped = false
 	return nil
 }
