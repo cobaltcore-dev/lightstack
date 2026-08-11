@@ -60,6 +60,13 @@ type DHCPConfig struct {
 	DHCPRangeStart string
 	DHCPRangeEnd   string
 	LeaseTime      string
+	// MetadataNextHop is the address guests should route 169.254.169.254 through when the subnet has
+	// no gateway — the bridge's own on-link address. The metadata route and the default route are
+	// separate concerns: a subnet created with `--gateway none` is declining a default route, not
+	// declining instance metadata (SPEC-024 / cloud-storage#546 FR-023a). Ignored when GatewayIP is
+	// set, which already serves as the next hop for both.
+	MetadataNextHop string
+
 	// HostReservations pins MAC->IP so a respawned dnsmasq hands each VM the
 	// same IP its port already has (SPEC-009 WS-2: stable IP across restart).
 	HostReservations []DHCPHostReservation
@@ -238,7 +245,8 @@ dhcp-range={{ .DHCPRangeStart }},{{ .DHCPRangeEnd }},{{ .LeaseTime }}
 dhcp-leasefile={{ .LeaseFile }}
 pid-file={{ .PIDFile }}
 {{ if .GatewayIP }}dhcp-option=3,{{ .GatewayIP }}
-dhcp-option=121,169.254.169.254/32,{{ .GatewayIP }},0.0.0.0/0,{{ .GatewayIP }}{{ end }}
+dhcp-option=121,169.254.169.254/32,{{ .GatewayIP }},0.0.0.0/0,{{ .GatewayIP }}
+{{ else if .MetadataNextHop }}dhcp-option=121,169.254.169.254/32,{{ .MetadataNextHop }}{{ end }}
 {{ range .DNSServers }}dhcp-option=6,{{ . }}
 {{ end }}
 {{ range .HostReservations }}dhcp-host={{ .MAC }},{{ .IP }}

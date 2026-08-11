@@ -212,7 +212,10 @@ func main() {
 	if networkingMode != "stub" {
 		networkReconciler = neutron.NewNetworkReconciler(neutronService, cfg.Neutron.ReconcileInterval)
 		go networkReconciler.Start(ctx)
-		log.Printf("Real-mode network reconciler started (interval: %s)", cfg.Neutron.ReconcileInterval)
+		// The EFFECTIVE interval, not the configured one: NewNetworkReconciler clamps anything <= 0
+		// to 30s, so logging the config made a default deployment print "interval: 0s" and read as
+		// though periodic reconciliation were off (cloud-storage#546).
+		log.Printf("Real-mode network reconciler started (interval: %s)", networkReconciler.PollInterval())
 	}
 
 	// Set default storage mode if not specified
@@ -625,6 +628,11 @@ func createNovaServer(cfg *common.Config, svc *nova.Service, authService *keysto
 
 func createNeutronServer(cfg *common.Config, svc *neutron.Service, authService *keystone.AuthService) *http.Server {
 	r := gin.New()
+	// FIRST, and on the engine rather than the route group: Neutron answers in its own error
+	// envelope, and the paths that need it most do not run inside a group — AuthMiddleware aborts
+	// below, and NoRoute/NoMethod are engine-level. Ahead of ErrorHandlingMiddleware so a recovered
+	// panic renders through it too (SPEC-024 FR-006/FR-008).
+	r.Use(neutron.ErrorEnvelope())
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())

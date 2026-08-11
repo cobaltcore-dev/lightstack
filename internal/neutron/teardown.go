@@ -112,12 +112,20 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 			fail(svc.dhcpManager.StopDHCP(id), "stop dnsmasq")
 			if len(id) >= 8 {
 				bridge := "br-" + id[:8]
-				var gw string
+				// gateway_ip is nullable, and the DNAT hangs off the bridge's address rather than off
+				// a gateway per se — so a gatewayless subnet still has one to remove. Scanning into a
+				// plain string failed here and left the DNAT behind while reporting a teardown error
+				// (SPEC-024 FR-023a); cidr is selected so the same address applyDHCPForNetwork chose
+				// can be reconstructed.
+				var gw *string
+				var cidr string
 				if e := database.DB.QueryRow(ctx,
-					`SELECT gateway_ip FROM subnets WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, id).Scan(&gw); e != nil && !errors.Is(e, pgx.ErrNoRows) {
+					`SELECT gateway_ip, cidr FROM subnets WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, id).Scan(&gw, &cidr); e != nil && !errors.Is(e, pgx.ErrNoRows) {
 					fail(e, "query gateway_ip")
-				} else if gw != "" {
-					fail(svc.mdRedirect.Remove(bridge, gw), "remove metadata DNAT")
+				} else if e == nil {
+					if addr := bridgeAddrFor(gw, cidr); addr != "" {
+						fail(svc.mdRedirect.Remove(bridge, addr), "remove metadata DNAT")
+					}
 				}
 				fail(svc.brManager.DeleteBridge(bridge, false, ""), "delete bridge")
 			}

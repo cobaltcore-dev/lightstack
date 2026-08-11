@@ -49,9 +49,14 @@ Cannot get interface MTU on 'br-3426f435': No such device
 **Code Change** (already implemented in ports.go and network.go):
 ```go
 // Create TAP and bridge in default namespace (not project namespace)
-svc.tapManager.CreateTAPDevice(tapName, false, "")  // false = default namespace
-svc.brManager.CreateBridge(bridgeName, false, "")   // false = default namespace
+svc.tapManager.CreateTAPDevice(tapName)            // no namespace parameter exists
+svc.brManager.CreateBridge(bridgeName, false, "")  // false = default namespace
 ```
+
+`TAPDeviceManager` takes no namespace argument at all — the in-namespace variant was removed once its
+last caller went away, so a TAP can only be created beside the bridge. `BridgeManager` keeps the
+parameters because the auto-allocated-topology path still creates its bridge inside
+`light-ns-<project>`.
 
 ### Issue: "Failed to get write lock: Is another process using the image"
 

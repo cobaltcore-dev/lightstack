@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -136,7 +137,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 		"name":              name,
 		"hostname":          hostname,
 		"project_id":        projectID,
-		"availability_zone": "nova", // Default AZ
+		"availability_zone": defaultAvailabilityZone,
 		"launch_index":      0,
 		"meta":              gin.H{}, // Custom metadata key-value pairs
 		"public_keys":       gin.H{}, // SSH keys
@@ -322,85 +323,246 @@ func (svc *Service) GetVendorDataJSON(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
+// defaultAvailabilityZone and rootBlockDevice are the single-node deployment's fixed answers. Named
+// rather than inlined so the EC2 tree and the OpenStack JSON view cannot drift apart.
+const (
+	defaultAvailabilityZone = "nova"
+	rootBlockDevice         = "vda"
+)
+
+// ec2Request is what one node of the EC2 tree needs to answer: the service, the request, and the
+// instance already resolved from its source address. Passed as a value so a handler is a plain
+// func(ec2Request) and the tree below can be a package-level map rather than closures rebuilt per
+// request.
+//
+// The context is derived on demand rather than stored, so nothing holds a context in a struct.
+type ec2Request struct {
+	svc        *Service
+	c          *gin.Context
+	instanceID string
+}
+
+func (r ec2Request) ctx() context.Context { return r.c.Request.Context() }
+func (r ec2Request) ok(body string)       { r.c.String(http.StatusOK, body) }
+func (r ec2Request) notFound()            { r.c.String(http.StatusNotFound, "") }
+
+// serverError reports a read that failed, as distinct from a key that is absent. Serving a short
+// list would boot the guest without its SSH key and lock the user out; an error makes cloud-init
+// retry (the rule #549 established for every metadata read).
+func (r ec2Request) serverError() { r.c.String(http.StatusInternalServerError, "") }
+
+// ec2Entry is one node of the EC2 metadata tree.
+type ec2Entry struct {
+	// dir marks a subtree. EC2 lists those with a trailing slash, which is how a datasource knows to
+	// descend rather than read.
+	dir bool
+	// hidden serves a key without advertising it. Only public-ipv4 uses this: a guest with no
+	// floating IP genuinely has no public address, and listing a key that then 404s is the exact
+	// thing the listing exists to prevent.
+	hidden bool
+	serve  func(ec2Request)
+}
+
+// ec2Tree maps a metadata path to the node that answers it.
+//
+// A map rather than a switch because the root listing is DERIVED from it (buildEC2RootListing).
+// Previously the listing was a hand-maintained slice that a comment asked you to keep in step with
+// the cases below it, and the test named for that invariant restated the same literals a third time
+// without ever fetching them — so nothing actually enforced it. Now a key cannot be served without
+// being listed, or listed without being served, because there is one description of both.
+//
+// Sub-paths carry a "/" in their key and are therefore never top-level listed; the parent's own
+// entry enumerates them. Handlers are shared where the answer is the same (three names for the
+// hostname, two for the boot disk) instead of the bodies being repeated.
+var ec2Tree = map[string]ec2Entry{
+	"instance-id":      {serve: ec2InstanceID},
+	"hostname":         {serve: ec2Hostname},
+	"local-hostname":   {serve: ec2Hostname},
+	"public-hostname":  {serve: ec2Hostname},
+	"instance-type":    {serve: ec2InstanceType},
+	"local-ipv4":       {serve: ec2LocalIPv4},
+	"ami-launch-index": {serve: ec2AMILaunchIndex},
+	"public-ipv4":      {hidden: true, serve: ec2PublicIPv4},
+
+	"placement":                   {dir: true, serve: ec2Placement},
+	"placement/availability-zone": {serve: ec2AvailabilityZone},
+
+	"block-device-mapping":      {dir: true, serve: ec2BlockDeviceMapping},
+	"block-device-mapping/ami":  {serve: ec2BootDisk},
+	"block-device-mapping/root": {serve: ec2BootDisk},
+
+	// The indexed children (public-keys/<n>[/openssh-key]) depend on how many keys the instance has,
+	// so they cannot be map keys and are handled by the prefix branch in GetEC2MetaData.
+	"public-keys": {dir: true, serve: ec2PublicKeyIndex},
+}
+
+// ec2RootListing is the response for the tree root, built once at init from ec2Tree.
+var ec2RootListing = buildEC2RootListing()
+
+// buildEC2RootListing renders the top-level entries: every non-hidden key without a "/", a trailing
+// slash on the subtrees, sorted so the output is stable.
+//
+// It also rejects a node with no handler. That can only come from an editing mistake, and the
+// alternatives are both bad: dispatching to it panics on a nil func, while skipping it would leave a
+// key advertised by this very listing and then answering 404 — the mismatch the listing exists to
+// prevent. Failing at init means such a tree cannot start, let alone ship. No unit test asserts this,
+// deliberately: the package would not load for the test to run.
+func buildEC2RootListing() string {
+	names := make([]string, 0, len(ec2Tree))
+	for path, entry := range ec2Tree {
+		if entry.serve == nil {
+			panic("ec2Tree: entry " + path + " has no serve func")
+		}
+		if entry.hidden || strings.Contains(path, "/") {
+			continue
+		}
+		if entry.dir {
+			path += "/"
+		}
+		names = append(names, path)
+	}
+	sort.Strings(names)
+	return strings.Join(names, "\n")
+}
+
+func ec2InstanceID(r ec2Request) { r.ok(r.instanceID) }
+
+// ec2Hostname answers hostname, local-hostname and public-hostname alike. O3K models no separate
+// public DNS name, and returning the same value is what a flat single-node deployment means — not a
+// placeholder.
+func ec2Hostname(r ec2Request) {
+	var hostname string
+	if err := database.DB.QueryRow(r.ctx(),
+		`SELECT name FROM instances WHERE id = $1`, r.instanceID).Scan(&hostname); err != nil {
+		r.notFound()
+		return
+	}
+	r.ok(hostname)
+}
+
+func ec2InstanceType(r ec2Request) {
+	var flavorName string
+	if err := database.DB.QueryRow(r.ctx(), `
+		SELECT f.name FROM instances i JOIN flavors f ON i.flavor_id = f.id WHERE i.id = $1
+	`, r.instanceID).Scan(&flavorName); err != nil {
+		r.notFound()
+		return
+	}
+	r.ok(flavorName)
+}
+
+// ec2LocalIPv4: the request's source IP is the instance's fixed IP.
+func ec2LocalIPv4(r ec2Request) { r.ok(r.c.ClientIP()) }
+
+// ec2AMILaunchIndex: O3K creates one instance per request, so the index is always 0. Constant rather
+// than absent — a datasource that asks for it treats a 404 as a failed boot step.
+func ec2AMILaunchIndex(r ec2Request) { r.ok("0") }
+
+// ec2PublicIPv4 answers only when a floating IP is actually associated. Mirroring local-ipv4 here
+// would tell a guest it has a routable address when it does not, so an unassociated instance gets
+// 404 — the same distinction upstream makes, and why this entry is hidden from the listing.
+func ec2PublicIPv4(r ec2Request) {
+	var fip string
+	err := database.DB.QueryRow(r.ctx(), `
+		SELECT f.floating_ip_address
+		FROM floating_ips f
+		JOIN ports p ON p.id = f.port_id
+		WHERE p.device_id = $1 AND f.port_id IS NOT NULL
+		LIMIT 1
+	`, r.instanceID).Scan(&fip)
+	if err != nil || fip == "" {
+		r.notFound()
+		return
+	}
+	r.ok(fip)
+}
+
+func ec2Placement(r ec2Request) { r.ok("availability-zone") }
+
+// ec2AvailabilityZone: "nova" is the same default GetMetaDataJSON reports. O3K has no per-instance AZ
+// column, so the two views agree by construction rather than by coincidence.
+func ec2AvailabilityZone(r ec2Request) { r.ok(defaultAvailabilityZone) }
+
+func ec2BlockDeviceMapping(r ec2Request) { r.ok(strings.Join([]string{"ami", "root"}, "\n")) }
+
+// ec2BootDisk answers both ami and root. O3K attaches the root disk as the first virtio device and
+// models no ephemeral or swap mapping, so there is nothing else to enumerate.
+func ec2BootDisk(r ec2Request) { r.ok(rootBlockDevice) }
+
+// ec2PublicKeyIndex lists the instance's keys as "<n>=<name>", EC2's index format.
+func ec2PublicKeyIndex(r ec2Request) {
+	keys, err := r.svc.publicKeysForInstance(r.ctx(), r.instanceID)
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", r.instanceID).Msg("failed to read public keys")
+		r.serverError()
+		return
+	}
+	lines := make([]string, 0, len(keys))
+	for i, k := range keys {
+		lines = append(lines, fmt.Sprintf("%d=%s", i, k.name))
+	}
+	r.ok(strings.Join(lines, "\n"))
+}
+
+// ec2PublicKey serves the indexed children of public-keys/, which vary with the instance and so
+// cannot be tree entries: "<n>" answers "openssh-key", "<n>/openssh-key" answers the key itself.
+func ec2PublicKey(r ec2Request, sub string) {
+	parts := strings.Split(sub, "/")
+	idx, perr := strconv.Atoi(parts[0])
+	keys, err := r.svc.publicKeysForInstance(r.ctx(), r.instanceID)
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", r.instanceID).Msg("failed to read public keys")
+		r.serverError()
+		return
+	}
+	if perr != nil || idx < 0 || idx >= len(keys) {
+		r.notFound()
+		return
+	}
+	switch {
+	case len(parts) == 1 || parts[1] == "":
+		r.ok("openssh-key")
+	case parts[1] == "openssh-key":
+		r.ok(keys[idx].key)
+	default:
+		r.notFound()
+	}
+}
+
 // GetEC2MetaData serves the EC2-style metadata tree — the datasource cirros and
 // most cloud images use — including the public-keys subtree that injects the SSH
-// key (SPEC-009 WS-4 / T026). Dispatches on the wildcard path.
+// key (SPEC-009 WS-4 / T026). Dispatches on the wildcard path via ec2Tree.
 func (svc *Service) GetEC2MetaData(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
 		c.String(http.StatusNotFound, "")
 		return
 	}
-	ctx := c.Request.Context()
+	r := ec2Request{svc: svc, c: c, instanceID: instanceID}
+
+	// Trim strips leading AND trailing slashes, so "placement/" arrives as "placement" — which is why
+	// the tree needs no trailing-slash variants. The switch this replaced carried three such cases;
+	// none of them could ever match.
 	path := strings.Trim(c.Param("path"), "/")
 
-	switch {
-	case path == "":
-		c.String(http.StatusOK, strings.Join([]string{
-			"hostname", "instance-id", "instance-type", "local-ipv4", "public-keys/",
-		}, "\n"))
-	case path == "instance-id":
-		c.String(http.StatusOK, instanceID)
-	case path == "hostname":
-		var hostname string
-		if err := database.DB.QueryRow(ctx, `SELECT name FROM instances WHERE id = $1`, instanceID).Scan(&hostname); err == nil {
-			c.String(http.StatusOK, hostname)
-		} else {
-			c.String(http.StatusNotFound, "")
-		}
-	case path == "instance-type":
-		var flavorName string
-		if err := database.DB.QueryRow(ctx, `
-			SELECT f.name FROM instances i JOIN flavors f ON i.flavor_id = f.id WHERE i.id = $1
-		`, instanceID).Scan(&flavorName); err == nil {
-			c.String(http.StatusOK, flavorName)
-		} else {
-			c.String(http.StatusNotFound, "")
-		}
-	case path == "local-ipv4":
-		// The request's source IP is the instance's fixed IP.
-		c.String(http.StatusOK, c.ClientIP())
-	case path == "public-keys" || path == "public-keys/":
-		keys, err := svc.publicKeysForInstance(ctx, instanceID)
-		if err != nil {
-			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to read public keys")
-			c.String(http.StatusInternalServerError, "")
-			return
-		}
-		lines := make([]string, 0, len(keys))
-		for i, k := range keys {
-			lines = append(lines, fmt.Sprintf("%d=%s", i, k.name))
-		}
-		c.String(http.StatusOK, strings.Join(lines, "\n"))
-	case strings.HasPrefix(path, "public-keys/"):
-		// public-keys/<index> -> "openssh-key"; public-keys/<index>/openssh-key -> the key
-		parts := strings.Split(strings.TrimPrefix(path, "public-keys/"), "/")
-		idx, perr := strconv.Atoi(parts[0])
-		keys, err := svc.publicKeysForInstance(ctx, instanceID)
-		if err != nil {
-			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to read public keys")
-			c.String(http.StatusInternalServerError, "")
-			return
-		}
-		if perr != nil || idx < 0 || idx >= len(keys) {
-			c.String(http.StatusNotFound, "")
-			return
-		}
-		switch {
-		case len(parts) == 1 || parts[1] == "":
-			c.String(http.StatusOK, "openssh-key")
-		case parts[1] == "openssh-key":
-			c.String(http.StatusOK, keys[idx].key)
-		default:
-			c.String(http.StatusNotFound, "")
-		}
-	default:
-		c.String(http.StatusNotFound, "")
+	if path == "" {
+		r.ok(ec2RootListing)
+		return
 	}
+	// One lookup, via comma-ok. Every entry is known to have a handler because buildEC2RootListing
+	// refuses a tree containing one that does not, so this cannot dispatch to a nil func.
+	if entry, ok := ec2Tree[path]; ok {
+		entry.serve(r)
+		return
+	}
+	// The only paths the tree cannot name: public-keys/<n>[/openssh-key], which vary per instance.
+	if sub, found := strings.CutPrefix(path, "public-keys/"); found {
+		ec2PublicKey(r, sub)
+		return
+	}
+	r.notFound()
 }
 
-// publicKeysForInstance returns the instance's SSH keypair — scoped to the
-// instance's key_name, not every key the owner has — for the EC2 public-keys tree.
 // publicKeysForInstance returns the SSH keys cloud-init should inject. It reports an
 // error rather than a short list when the read fails: a truncated list boots the guest
 // without its key and locks the user out, whereas an error lets the caller fail so

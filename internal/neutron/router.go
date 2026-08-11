@@ -199,6 +199,10 @@ func (svc *Service) CreateRouter(c *gin.Context) {
 	// Serialize external gateway info to JSON
 	var gatewayInfoJSON []byte
 	if req.Router.ExternalGatewayInfo != nil {
+		networkID, ok := gatewayNetworkID(c, req.Router.ExternalGatewayInfo)
+		if !ok || !requireExternalNetwork(c, networkID, "a router gateway") {
+			return
+		}
 		gatewayInfoJSON, _ = json.Marshal(req.Router.ExternalGatewayInfo)
 	}
 
@@ -335,6 +339,10 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 	}
 
 	if req.Router.ExternalGatewayInfo != nil {
+		networkID, ok := gatewayNetworkID(c, *req.Router.ExternalGatewayInfo)
+		if !ok || !requireExternalNetwork(c, networkID, "a router gateway") {
+			return
+		}
 		gatewayInfoJSON, _ := json.Marshal(*req.Router.ExternalGatewayInfo)
 		updates = append(updates, fmt.Sprintf("external_gateway_info = $%d", argID))
 		args = append(args, gatewayInfoJSON)
@@ -663,4 +671,69 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 	}
 
 	return nil
+}
+
+// requireExternalNetwork refuses a network that is not marked external, writing the refusal itself
+// (SPEC-024 / cloud-storage#546 F11, FR-034).
+//
+// Any network was previously accepted as a gateway — configureExternalGateway only ever looked up a
+// subnet on it — so a tenant could point a router at an arbitrary network and O3K would try to
+// masquerade out of it.
+//
+// Applies to NEW create/update requests only. Gateways stored before migration 066 keep working and
+// the reconciler keeps asserting their NAT, because the column defaults to false and an upgrade must
+// not silently withdraw working guest egress (FR-035a).
+//
+// It takes the id rather than the gateway blob so the floating-IP caller, which has a plain string,
+// does not have to wrap it in a throwaway map (branch review 2026-08-13, SRC-7).
+func requireExternalNetwork(c *gin.Context, networkID, use string) bool {
+	if networkID == "" {
+		common.SendError(c, common.NewBadRequestError("a network_id is required to name "+use))
+		return false
+	}
+
+	// Scoped to what the caller may see — owner OR shared OR external, the same predicate GetNetwork
+	// and ListDHCPAgentsOnNetwork use. Unscoped, this answered 400 ("not an external network") for a
+	// network the caller cannot see and 404 for one that does not exist, so the pair distinguished
+	// existence and made the endpoint an oracle (branch review 2026-08-13, SRC-4). Nothing usable is
+	// hidden by this: a network that qualifies as a gateway is external, and external is itself one
+	// of the three ways to be visible (FR-033a).
+	var external bool
+	err := database.DB.QueryRow(c.Request.Context(), `
+		SELECT external FROM networks
+		WHERE id::text = $1 AND (project_id = $2 OR shared = true OR external = true)`,
+		networkID, c.GetString("project_id")).Scan(&external)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("network"))
+		return false
+	}
+	if err != nil {
+		log.Error().Err(err).Str("network_id", networkID).Msg("failed to check external network")
+		common.SendError(c, common.NewInternalServerError("failed to verify external network"))
+		return false
+	}
+	if !external {
+		common.SendError(c, common.NewBadRequestError(
+			"Network "+networkID+" is not an external network and cannot be used as "+use))
+		return false
+	}
+	return true
+}
+
+// gatewayNetworkID extracts the network a router's external_gateway_info names.
+//
+// A missing, empty or non-string network_id is refused rather than waved through. It used to return
+// "true, someone else will report it" — but nobody did: CreateRouter persists the gateway before
+// calling configureExternalGateway and then swallows that function's error, so the router was
+// created with 201 carrying a gateway that had never been validated, which reconcileNAT then treated
+// as real forever (branch review 2026-08-13, SRC-3). Reporting 201 for a request the server did not
+// honour is the defect class this feature exists to remove.
+func gatewayNetworkID(c *gin.Context, gatewayInfo map[string]any) (string, bool) {
+	networkID, ok := gatewayInfo["network_id"].(string)
+	if !ok || networkID == "" {
+		common.SendError(c, common.NewBadRequestError(
+			"external_gateway_info requires a non-empty string network_id"))
+		return "", false
+	}
+	return networkID, true
 }

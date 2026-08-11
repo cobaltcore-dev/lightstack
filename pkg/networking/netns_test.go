@@ -74,7 +74,7 @@ func TestTAPManagerStubMode(t *testing.T) {
 	tapName := "tap-test123"
 
 	// Create TAP device
-	if err := mgr.CreateTAPDevice(tapName, false, ""); err != nil {
+	if err := mgr.CreateTAPDevice(tapName); err != nil {
 		t.Fatalf("Failed to create TAP device: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestTAPManagerStubMode(t *testing.T) {
 	}
 
 	// Delete TAP device
-	if err := mgr.DeleteTAPDevice(tapName, false, ""); err != nil {
+	if err := mgr.DeleteTAPDevice(tapName); err != nil {
 		t.Fatalf("Failed to delete TAP device: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestNetworkLifecycleStub(t *testing.T) {
 
 	// 3. Create TAP device for port
 	tapName := "tap-" + portID[:8]
-	if err := tapMgr.CreateTAPDevice(tapName, false, ""); err != nil {
+	if err := tapMgr.CreateTAPDevice(tapName); err != nil {
 		t.Fatalf("Failed to create TAP device: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestNetworkLifecycleStub(t *testing.T) {
 	}
 
 	// 5. Cleanup - delete in reverse order
-	if err := tapMgr.DeleteTAPDevice(tapName, false, ""); err != nil {
+	if err := tapMgr.DeleteTAPDevice(tapName); err != nil {
 		t.Fatalf("Failed to delete TAP device: %v", err)
 	}
 

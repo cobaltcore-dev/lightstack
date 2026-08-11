@@ -206,7 +206,10 @@ pkg/                        # Public/reusable packages
 
 **Project Isolation**:
 - All resources scoped by `project_id` from JWT token
-- Network namespaces per project for network isolation
+- Per-network L2 isolation comes from one Linux bridge per network. Per-project network namespaces
+  (`light-ns-<project>`) remain only for auto-allocated topology and the VXLAN coordinator — guest
+  ports and their bridges live in the **root** namespace, because libvirt, dnsmasq and the egress NAT
+  rules all need to reach them there (SPEC-024 F10)
 - Database queries auto-filter by `project_id`
 - **Except for the administrative override** (SPEC-023): a caller holding the `admin` role may act
   on any project's *server*, matching upstream Nova's `admin_or_owner` default. Creation is not
@@ -460,8 +463,11 @@ if requestedVersion == "" {
 - External PostgreSQL. **No schema change, no migration** — every fix is behavioural. (022-project-tenant-isolation)
 - Go 1.26 (repo pins `go 1.26`; Constitution requires 1.21+) + Gin (HTTP), pgx/pgxpool (PostgreSQL), golang-jwt/v5. **No new modules.** Contract tests use the already-pinned `gophercloud v1.14.1`. (023-tenant-scoping-authz)
 - PostgreSQL — **no schema change, no migration**. `instance_actions.project_id` is already `UUID NOT NULL`; the change is which value is written to it. (023-tenant-scoping-authz)
+- Go 1.26 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL), `vishvananda/netlink` (real-mode bridge/TAP), `google/uuid`. **No new modules.** (024-neutron-api-fidelity-realmode)
+- External PostgreSQL. **One** migration `066_neutron_external_networks` adds `networks.external BOOLEAN NOT NULL DEFAULT false` (reversible). The other five defects need no schema change — `subnets.gateway_ip` and `security_group_rules.port_range_min/max` are already nullable; the API just refuses to produce those states. (024-neutron-api-fidelity-realmode)
 
 ## Recent Changes
+- 024-neutron-api-fidelity-realmode: plan — six Neutron defects (B6/B9/B10/B11/F10/F11). B10 is **one** change, not 244: every error path already funnels through `common.SendError`, so marking the Neutron route group converts handlers, auth middleware, panic recovery, unrouted-404 and 405 together. F10 = TAP moves to the **root** namespace (bridge, dnsmasq and SNAT are already there) + stub attach stops trusting a process-local map. B11 = honour a named project for admins, `400` otherwise (upstream `neutron_lib` rule, deliberately unlike #549's compute refusal). F11 = migration `066` + external as a **third** visibility disjunct (not requiring `shared`), with pre-existing gateways grandfathered (SPEC-024 plan)
 - 023-tenant-scoping-authz: plan — finish applying the admin override across compute's server operations (upstream `admin_or_owner`, creation excluded) + `all_tenants` opt-in; refuse domain-scoped auth with `400` instead of `201`-with-nothing; close the `os-simple-tenant-usage` cross-tenant leak; honour query filters on 6 identity collections. No new deps, no schema change, no migration (SPEC-023 plan)
 - 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)
 - 011-ensure-storage-subdirs: fix real-mode storage-subdir gap (cloud-storage#510) — Glance no longer falls back to `~/.o3k`; chart initContainer pre-creates node-local subdirs (SPEC-011 plan)

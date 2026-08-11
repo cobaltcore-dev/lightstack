@@ -5,6 +5,7 @@ import (
 
 	contract "github.com/cobaltcore-dev/o3k/test/contract"
 	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/external"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
@@ -139,10 +140,19 @@ func TestNeutronFloatingIPCreate_Contract(t *testing.T) {
 
 	client := contract.SetupNeutronClient(t)
 
-	// Create external network
-	extNetwork, err := networks.Create(client, networks.CreateOpts{
-		Name:         "test-external-network",
-		AdminStateUp: gophercloud.Enabled,
+	// Create external network.
+	//
+	// This now actually sets router:external, which the comment always claimed but the API could not
+	// express until SPEC-024 F11 modelled external networks. A floating IP is an address on the
+	// deployment's boundary network, so allocating one from an ordinary tenant network is refused
+	// (FR-035) — as it is upstream.
+	isExternal := true
+	extNetwork, err := networks.Create(client, external.CreateOptsExt{
+		CreateOptsBuilder: networks.CreateOpts{
+			Name:         "test-external-network",
+			AdminStateUp: gophercloud.Enabled,
+		},
+		External: &isExternal,
 	}).Extract()
 	require.NoError(t, err, "Failed to create external network")
 	defer networks.Delete(client, extNetwork.ID)

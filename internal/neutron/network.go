@@ -3,6 +3,7 @@ package neutron
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -451,7 +452,73 @@ type CreateNetworkRequest struct {
 		Name         string `json:"name" binding:"required"`
 		AdminStateUp *bool  `json:"admin_state_up"`
 		Shared       *bool  `json:"shared"`
+		// Both spellings of the owning project. Neither was declared before, so the value a client
+		// sent was discarded by ShouldBindJSON and never reached the handler: the request was
+		// answered 201 with the network in the CALLER's project (cloud-storage#546 B11). Nothing was
+		// being ignored — the field did not exist.
+		ProjectID *string `json:"project_id"`
+		TenantID  *string `json:"tenant_id"`
+		// Administrator-only, matching upstream's `create_network:router:external` -> ADMIN. Was
+		// hard-coded false in every response and unsettable, so no network could serve as a router
+		// gateway or floating-IP pool and Horizon's Set Gateway dropdown was always empty (F11).
+		External *bool `json:"router:external"`
 	} `json:"network"`
+}
+
+// resolveNetworkOwner decides which project a new network belongs to, and writes the refusal itself
+// when the request is not allowed — so the caller only has to `return`.
+//
+// Mirrors upstream, read from neutron_lib/api/attributes.py (its API reference documents none of
+// this):
+//
+//   - populate_project_info: one spelling populates the other; both present and different is a 400.
+//   - _validate_privileges: a project differing from the authenticated one is a 400 unless
+//     context.can_set_project_id, which is `is_admin or is_service_role or …`.
+//
+// O3K has no service-account concept, so administrator is the whole privileged set. All three ways of
+// getting this attribute wrong return the SAME status (400), so a client has one rule rather than
+// three, and none of them discloses whether another project exists (FR-012-FR-016).
+//
+// This deliberately differs from the compute service, which refuses cross-project server creation
+// outright: upstream Nova has no such attribute to honour while upstream Neutron does. Fidelity is
+// per-service (spec A10/A11) — do not "correct" the asymmetry.
+func (svc *Service) resolveNetworkOwner(c *gin.Context, req CreateNetworkRequest, caller string) (string, bool) {
+	requested := req.Network.ProjectID
+	if requested == nil {
+		requested = req.Network.TenantID
+	} else if req.Network.TenantID != nil && *req.Network.TenantID != *requested {
+		common.SendError(c, common.NewBadRequestError("'project_id' and 'tenant_id' do not match"))
+		return "", false
+	}
+
+	if requested == nil || *requested == "" || *requested == caller {
+		return caller, true
+	}
+
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewBadRequestError(
+			"Specifying 'project_id' other than the authenticated project in request is not allowed for the current user."))
+		return "", false
+	}
+
+	// Resolve before the insert so the foreign key never surfaces as a 500, and so a malformed id is
+	// a bad request naming the field rather than a Postgres type error.
+	if uuid.Validate(*requested) != nil {
+		common.SendError(c, common.NewBadRequestError("invalid project_id"))
+		return "", false
+	}
+	var exists bool
+	if err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)", *requested).Scan(&exists); err != nil {
+		log.Error().Err(err).Str("operation", "resolve_network_owner").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to create network"))
+		return "", false
+	}
+	if !exists {
+		common.SendError(c, common.NewBadRequestError("invalid project_id"))
+		return "", false
+	}
+	return *requested, true
 }
 
 // CreateNetwork creates a new network
@@ -462,7 +529,15 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 		return
 	}
 
-	projectID := c.GetString("project_id")
+	caller := c.GetString("project_id")
+	projectID, ok := svc.resolveNetworkOwner(c, req, caller)
+	if !ok {
+		return
+	}
+	if projectID != caller {
+		log.Info().Str("caller_project", caller).Str("target_project", projectID).
+			Msg("administrator creating a network into another project")
+	}
 	networkID := uuid.New().String()
 	bridgeName := "br-" + networkID[:8]
 
@@ -476,7 +551,21 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 		shared = *req.Network.Shared
 	}
 
-	// Create bridge in default namespace (not project namespace) for libvirt access
+	// Designating a network as the deployment's boundary to the outside is an operator decision, not
+	// a tenant one — administrator-only even for the owner (FR-033).
+	external := false
+	if req.Network.External != nil {
+		if *req.Network.External && !common.HasRole(c, common.RoleAdmin) {
+			common.SendError(c, common.NewForbiddenError("only an administrator may set router:external"))
+			return
+		}
+		external = *req.Network.External
+	}
+
+	// Create bridge in the default namespace (not the project namespace) so libvirt can reach it.
+	//
+	// This is also why a port's TAP goes there — see CreatePort. Keeping the two apart is what broke
+	// port creation in real mode (SPEC-024 F10); do not move one without the other.
 	if err := svc.brManager.CreateBridge(bridgeName, false, ""); err != nil {
 		log.Error().Err(err).Str("operation", "create_bridge").Str("bridge", bridgeName).Msg("failed to create bridge")
 		common.SendError(c, common.NewInternalServerError("failed to create bridge"))
@@ -495,9 +584,9 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 	}
 
 	_, err := database.DB.Exec(c.Request.Context(), `
-		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, network_type, mtu, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, networkID, req.Network.Name, projectID, adminStateUp, "ACTIVE", shared, networkType, mtu, now, now)
+		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, external, network_type, mtu, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`, networkID, req.Network.Name, projectID, adminStateUp, "ACTIVE", shared, external, networkType, mtu, now, now)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_network").Msg("database error")
@@ -514,7 +603,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 			"admin_state_up":  adminStateUp,
 			"status":          "ACTIVE",
 			"shared":          shared,
-			"router:external": false,
+			"router:external": external,
 			"mtu":             mtu,
 			"subnets":         []string{},
 			"created_at":      now.Format(time.RFC3339),
@@ -546,14 +635,17 @@ func neutronBool(s string) (val bool, present bool) {
 }
 
 // networkListDecision maps the `shared` and `router:external` query filters to a
-// shared-filter mode and an empty flag. router:external=true yields empty because
-// O3K models no external/provider networks; honoring these filters is what makes
-// Horizon's project/shared/external sub-queries disjoint so each network renders
-// exactly once (F4, FR-009/010/012).
+// shared-filter mode and an empty flag. Honouring these filters is what makes Horizon's
+// project/shared/external sub-queries disjoint so each network renders exactly once
+// (F4, FR-009/010/012).
+//
+// `router:external` used to force an empty result because O3K modelled no external networks; it is a
+// real predicate since SPEC-024 F11, applied in buildNetworkListFilter.
 func networkListDecision(sharedParam, routerExternalParam string) (sf sharedFilter, empty bool) {
-	if ext, ok := neutronBool(routerExternalParam); ok && ext {
-		return sharedAny, true
-	}
+	// router:external is now a real predicate applied by buildNetworkListFilter, so it no longer
+	// forces an empty result. Kept in the signature because the two filters are read together and
+	// Horizon sends them together (F11, FR-032).
+	_ = routerExternalParam
 	switch b, ok := neutronBool(sharedParam); {
 	case ok && b:
 		return sharedOnly, false
@@ -566,8 +658,8 @@ func networkListDecision(sharedParam, routerExternalParam string) (sf sharedFilt
 
 // buildNetworkListFilter builds the WHERE conditions and positional args for the
 // network list from the caller's project and the neutron list filters Horizon sends
-// (F4). It honors `shared` (only/exclude shared), `router:external` (empty result —
-// O3K models no external networks), and `tenant_id`/`project_id` (narrowing within the
+// (F4). It honors `shared` (only/exclude shared), `router:external` (a real predicate since
+// SPEC-024 F11), and `tenant_id`/`project_id` (narrowing within the
 // caller's authorized scope), plus the id/name filters the Terraform provider uses.
 // Placeholders are numbered from $1; `empty` means the query must return nothing. The
 // caller continues numbering marker/pagination args from $(len(args)+1). Pure — no DB.
@@ -584,9 +676,20 @@ func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantPara
 		conds = append(conds, fmt.Sprintf("(project_id = $%d AND shared = false)", argIdx))
 		args = append(args, caller)
 		argIdx++
-	default: // sharedAny — the caller's own networks OR any shared network
-		conds = append(conds, fmt.Sprintf("(project_id = $%d OR shared = true)", argIdx))
+	default: // the caller's own networks, OR any shared network, OR any external network
+		// `external` is a THIRD INDEPENDENT disjunct — deliberately not `AND shared`. An external
+		// network is the deployment's boundary to the outside and every tenant needs to see it to
+		// select it as a router gateway; requiring `shared` as well would leave the tenant-facing
+		// Set Gateway dropdown empty and fix F11 for administrators only (FR-033a). Read-only:
+		// visibility confers no authority (FR-033b, and #545's rule for shared networks).
+		conds = append(conds, fmt.Sprintf("(project_id = $%d OR shared = true OR external = true)", argIdx))
 		args = append(args, caller)
+		argIdx++
+	}
+
+	if ext, ok := neutronBool(routerExternalParam); ok {
+		conds = append(conds, fmt.Sprintf("external = $%d", argIdx))
+		args = append(args, ext)
 		argIdx++
 	}
 	if tenantParam != "" {
@@ -604,6 +707,83 @@ func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantPara
 		args = append(args, nameParam)
 	}
 	return conds, args, false
+}
+
+// optionalString decodes a JSON field that may be absent, explicitly null, or a string, keeping the
+// three apart — which `*string` alone cannot do, because both absent and null decode to nil.
+//
+// Returns (value, present, err): present is false only when the key was omitted entirely.
+func optionalString(raw json.RawMessage) (value *string, present bool, err error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if string(raw) == "null" {
+		return nil, true, nil
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, true, err
+	}
+	return &v, true, nil
+}
+
+// subnetFilterParams carries the raw query values the subnet listing honours, so the builder below
+// stays pure and unit-testable without a gin context (SPEC-024 B6).
+type subnetFilterParams struct {
+	NetworkID  string
+	ID         string
+	Name       string
+	CIDR       string
+	IPVersion  string
+	EnableDHCP string
+	ProjectID  string
+}
+
+// buildSubnetListFilter turns the contracted subnet filters into WHERE conditions and positional
+// args, numbered from startIdx. Pure — no DB.
+//
+// ListSubnets previously parsed only limit/offset/marker and applied NO client filter at all, so
+// `openstack subnet list --network X` returned every visible subnet and the client had to filter
+// locally (cloud-storage#546 B6, FR-019/FR-020). This mirrors buildNetworkListFilter.
+//
+// Only these seven are advertised. An unrecognized parameter must leave the result UNCHANGED rather
+// than becoming an accidental predicate: quietly returning fewer rows than asked for is the defect
+// class this feature exists to remove (FR-020a). The same applies to a value that does not parse —
+// an unparseable ip_version is ignored, not treated as a match-nothing.
+func buildSubnetListFilter(p subnetFilterParams, startIdx int) (conds []string, args []any) {
+	argIdx := startIdx
+
+	add := func(cond string, val any) {
+		conds = append(conds, fmt.Sprintf(cond, argIdx))
+		args = append(args, val)
+		argIdx++
+	}
+
+	// id and network_id are compared as text so a non-UUID identifier cannot error the whole query.
+	if p.NetworkID != "" {
+		add("s.network_id::text = $%d", p.NetworkID)
+	}
+	if p.ID != "" {
+		add("s.id::text = $%d", p.ID)
+	}
+	if p.Name != "" {
+		add("s.name = $%d", p.Name)
+	}
+	if p.CIDR != "" {
+		add("s.cidr = $%d", p.CIDR)
+	}
+	if p.IPVersion != "" {
+		if v, err := strconv.Atoi(p.IPVersion); err == nil {
+			add("s.ip_version = $%d", v)
+		}
+	}
+	if b, ok := neutronBool(p.EnableDHCP); ok {
+		add("s.enable_dhcp = $%d", b)
+	}
+	if p.ProjectID != "" {
+		add("s.project_id::text = $%d", p.ProjectID)
+	}
+	return conds, args
 }
 
 // ListNetworks lists all networks
@@ -633,7 +813,8 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	}
 	conds, queryArgs, empty := buildNetworkListFilter(projectID, c.Query("shared"), c.Query("router:external"), tenant, c.Query("id"), c.Query("name"))
 	if empty {
-		// router:external=true — O3K models no external networks.
+		// No filter combination produces this today; kept so a future filter can short-circuit
+		// without re-plumbing the caller.
 		c.JSON(http.StatusOK, gin.H{"networks": []gin.H{}})
 		return
 	}
@@ -657,7 +838,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
 		FROM networks
 		WHERE %s
 		ORDER BY created_at DESC, id DESC
@@ -673,25 +854,29 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	var networks []gin.H
 	for rows.Next() {
-		var id, name, status string
-		var adminStateUp, shared bool
+		var id, name, status, owner string
+		var adminStateUp, shared, external bool
 		var mtu int
 		var createdAt, updatedAt time.Time
 
-		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt); err != nil {
-			log.Warn().Err(err).Str("operation", "ListNetworks").Msg("failed to scan row")
+		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external); err != nil {
+			log.Warn().Err(err).Str("network_id", id).Msg("skipping unreadable network row")
 			continue
 		}
 
+		// tenant_id from the row, not the caller: this listing can legitimately contain a SHARED
+		// network owned by another project, and reporting the caller would tell them a foreign
+		// resource is theirs (cloud-storage#546 B11, FR-017). #545 applied this to subnets and left
+		// networks behind.
 		networks = append(networks, gin.H{
 			"id":              id,
 			"name":            name,
-			"tenant_id":       projectID,
-			"project_id":      projectID,
+			"tenant_id":       owner,
+			"project_id":      owner,
 			"admin_state_up":  adminStateUp,
 			"status":          status,
 			"shared":          shared,
-			"router:external": false,
+			"router:external": external,
 			"mtu":             mtu,
 			"created_at":      createdAt.Format(time.RFC3339),
 			"updated_at":      updatedAt.Format(time.RFC3339),
@@ -721,17 +906,33 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"networks": networks})
 }
 
+// networkCacheKey names a cached network entry, scoped to the caller.
+//
+// The caller is part of the key because GetNetwork reads the cache BEFORE applying its visibility
+// predicate (owner OR shared OR external). Keyed on the network alone, the first fetch by an owner
+// populated an entry that any authenticated caller knowing the id could then read for the whole TTL,
+// where the uncached answer is 404 — and since #546 made the body report the row's real owner rather
+// than the caller's, that leak names the owner too (branch review 2026-08-13, SRC-1).
+//
+// Scoping the key rather than re-checking on hit keeps a hit free of database work, at the cost of
+// one entry per (caller, network) pair — a shared or external network is cached once per project
+// that asks for it, which is the price of the lookup preceding the check.
+func networkCacheKey(projectID, networkID string) string {
+	return "network:" + projectID + ":" + networkID
+}
+
 // GetNetwork returns a single network
 func (svc *Service) GetNetwork(c *gin.Context) {
 	networkID := c.Param("id")
 	projectID := c.GetString("project_id")
 	ctx := c.Request.Context()
 
-	// Try cache first
+	// Try cache first. The key is scoped to the caller (see networkCacheKey): this lookup happens
+	// BEFORE the visibility predicate below, so a key naming only the network would serve one
+	// tenant's entry to another.
 	if svc.cache != nil {
-		cacheKey := "network:" + networkID
 		var cached gin.H
-		if err := svc.cache.Get(ctx, cacheKey, &cached); err == nil {
+		if err := svc.cache.Get(ctx, networkCacheKey(projectID, networkID), &cached); err == nil {
 			// subnets are queried fresh so they reflect later subnet changes
 			if id, ok := cached["id"].(string); ok {
 				subnetIDs, subErr := svc.networkSubnetIDs(ctx, id)
@@ -748,17 +949,17 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	}
 
 	// Cache miss - query database
-	var id, name, status string
-	var adminStateUp, shared bool
+	var id, name, status, owner string
+	var adminStateUp, shared, external bool
 	var mtu int
 	var createdAt, updatedAt time.Time
 
 	err := database.DB.QueryRow(ctx, `
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
 		FROM networks
-		WHERE (id::text = $1 OR name = $1) AND (project_id = $2 OR shared = true)
+		WHERE (id::text = $1 OR name = $1) AND (project_id = $2 OR shared = true OR external = true)
 		LIMIT 1
-	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt)
+	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -770,24 +971,28 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		return
 	}
 
+	// tenant_id from the row, not the caller — this handler can return a SHARED network owned by
+	// another project (B11, FR-017).
 	network := gin.H{
 		"id":              id,
 		"name":            name,
-		"tenant_id":       projectID,
-		"project_id":      projectID,
+		"tenant_id":       owner,
+		"project_id":      owner,
 		"admin_state_up":  adminStateUp,
 		"status":          status,
 		"shared":          shared,
-		"router:external": false,
+		"router:external": external,
 		"mtu":             mtu,
 		"created_at":      createdAt.Format(time.RFC3339),
 		"updated_at":      updatedAt.Format(time.RFC3339),
 	}
 
 	// Store in cache (30min TTL per config) before adding the dynamic subnet
-	// list, so cached entries never carry a stale subnets field.
+	// list, so cached entries never carry a stale subnets field. Written under the SAME
+	// caller-scoped key the read above uses, so an entry can only ever be served back to a caller
+	// entitled to it.
 	if svc.cache != nil {
-		svc.cache.TrySet(ctx, "network:"+id, network, 30*time.Minute)
+		svc.cache.TrySet(ctx, networkCacheKey(projectID, id), network, 30*time.Minute)
 	}
 
 	subnetIDs, err := svc.networkSubnetIDs(ctx, id)
@@ -835,13 +1040,21 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err := database.DB.Exec(ctx,
-		"DELETE FROM networks WHERE id = $1 AND project_id = $2",
+	tag, err := database.DB.Exec(ctx,
+		"DELETE FROM networks WHERE id::text = $1 AND project_id = $2",
 		networkID, projectID,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_network").Str("network_id", networkID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete network"))
+		return
+	}
+	// Matching no row means the caller does not own it — now reachable because a network they can
+	// merely SEE (shared, or external per FR-033a) is not one they may remove. Reporting 204 for a
+	// delete that deleted nothing is the dishonest-success defect this feature exists to remove
+	// (FR-033b). 404 rather than 403, matching the non-disclosure rule used elsewhere.
+	if tag.RowsAffected() == 0 {
+		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
 
@@ -863,6 +1076,7 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 		Network struct {
 			Name         *string `json:"name"`
 			AdminStateUp *bool   `json:"admin_state_up"`
+			External     *bool   `json:"router:external"`
 		} `json:"network"`
 	}
 
@@ -871,9 +1085,21 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 		return
 	}
 
+	isAdmin := common.HasRole(c, common.RoleAdmin)
+	if req.Network.External != nil && !isAdmin {
+		common.SendError(c, common.NewForbiddenError("only an administrator may set router:external"))
+		return
+	}
+
 	updates := []string{}
 	args := []any{}
 	argID := 1
+
+	if req.Network.External != nil {
+		updates = append(updates, fmt.Sprintf("external = $%d", argID))
+		args = append(args, *req.Network.External)
+		argID++
+	}
 
 	if req.Network.Name != nil {
 		updates = append(updates, fmt.Sprintf("name = $%d", argID))
@@ -896,32 +1122,114 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 	args = append(args, time.Now())
 	argID++
 
-	args = append(args, networkID, projectID)
+	// The owner predicate is what scopes this to the caller — but an administrator setting
+	// router:external on a TENANT's network would then match zero rows and still be answered 200,
+	// the same dishonest-success defect as B11 inside the fix for a different one (research R6.4).
+	// Marking a network external is a deployment-level decision, so an administrator is exempt.
+	args = append(args, networkID)
+	query := fmt.Sprintf("UPDATE networks SET %s WHERE id::text = $%d",
+		updateString(updates), argID)
+	if !isAdmin {
+		args = append(args, projectID)
+		query += fmt.Sprintf(" AND project_id = $%d", argID+1)
+	}
 
-	query := fmt.Sprintf("UPDATE networks SET %s WHERE id = $%d AND project_id = $%d",
-		updateString(updates), argID, argID+1)
-
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
+	tag, err := database.DB.Exec(c.Request.Context(), query, args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_network").Str("network_id", networkID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update network"))
 		return
 	}
+	// As in DeleteNetwork: an update that matched no row must not be answered 200. Reachable now that
+	// a caller can see a network they do not own (FR-033a/b).
+	if tag.RowsAffected() == 0 {
+		common.SendError(c, common.NewNotFoundError("network"))
+		return
+	}
 
-	// Return updated network
-	svc.GetNetwork(c)
+	// The response must be built with the same authority that performed the write.
+	//
+	// Delegating to GetNetwork looks natural and is wrong: its scope is
+	// (project_id = caller OR shared OR external) with no administrator exemption, so an
+	// administrator's successful write to another project's network came back 404 — the row updated
+	// and the caller was told it did not exist. Only `router:external = true` escaped it, because that
+	// write happens to make the row match the `external` disjunct; renaming, and unmarking external,
+	// both applied and reported not-found. That is the mirror image of the zero-rows defect above:
+	// there, a write that did nothing reported success; here, a write that did something reported
+	// failure. Both are the dishonest answers this feature exists to remove.
+	//
+	// Reading the row back by id is not a general "administrators may read any network" grant — the
+	// question of a cross-project network read stays open. It is narrower: the answer to your own
+	// successful write.
+	if svc.cache != nil {
+		svc.cache.TryDelete(c.Request.Context(), "network:"+networkID)
+	}
+	svc.writeNetworkResponse(c, networkID)
+}
+
+// writeNetworkResponse emits a network by id with no visibility predicate, for the caller that just
+// wrote it (see UpdateNetwork). Ownership was already decided by the write.
+func (svc *Service) writeNetworkResponse(c *gin.Context, networkID string) {
+	var id, name, status, owner string
+	var adminStateUp, shared, external bool
+	var mtu int
+	var createdAt, updatedAt time.Time
+
+	err := database.DB.QueryRow(c.Request.Context(), `
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
+		FROM networks
+		WHERE id::text = $1
+		LIMIT 1
+	`, networkID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("network"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "read_back_network").Str("network_id", networkID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to read network"))
+		return
+	}
+
+	subnets, err := svc.networkSubnetIDs(c.Request.Context(), id)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "read_back_network").Str("network_id", id).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to read network"))
+		return
+	}
+
+	network := gin.H{
+		"id":              id,
+		"name":            name,
+		"tenant_id":       owner,
+		"project_id":      owner,
+		"admin_state_up":  adminStateUp,
+		"status":          status,
+		"shared":          shared,
+		"router:external": external,
+		"mtu":             mtu,
+		"created_at":      createdAt.Format(time.RFC3339),
+		"updated_at":      updatedAt.Format(time.RFC3339),
+		"subnets":         subnets,
+	}
+	c.JSON(http.StatusOK, gin.H{"network": network})
 }
 
 // CreateSubnetRequest represents a subnet creation request
 type CreateSubnetRequest struct {
 	Subnet struct {
-		Name           string   `json:"name"`
-		NetworkID      string   `json:"network_id" binding:"required"`
-		CIDR           string   `json:"cidr" binding:"required"`
-		GatewayIP      string   `json:"gateway_ip"`
-		IPVersion      int      `json:"ip_version"`
-		EnableDHCP     *bool    `json:"enable_dhcp"`
-		DNSNameservers []string `json:"dns_nameservers"`
+		Name      string `json:"name"`
+		NetworkID string `json:"network_id" binding:"required"`
+		CIDR      string `json:"cidr" binding:"required"`
+		// Raw, so an explicit null is distinguishable from an omitted attribute: omitted means
+		// "choose one for me", null means "no gateway". As a plain string the two were identical and
+		// both got an invented address, so `--gateway none` was silently overwritten and a gatewayless
+		// subnet was unreachable through the API (SPEC-024 B6, FR-023).
+		GatewayIP      json.RawMessage `json:"gateway_ip"`
+		IPVersion      int             `json:"ip_version"`
+		EnableDHCP     *bool           `json:"enable_dhcp"`
+		DNSNameservers []string        `json:"dns_nameservers"`
 	} `json:"subnet"`
 }
 
@@ -1052,10 +1360,16 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 		return
 	}
 
-	gatewayIP := req.Subnet.GatewayIP
-	if gatewayIP == "" {
-		// Use first IP as gateway
-		gatewayIP = incrementIP(ipNet.IP, 1).String()
+	// Three states, per FR-023: omitted -> choose the first host address (unchanged behaviour);
+	// explicit null -> no gateway; explicit value -> as given.
+	gatewayIP, present, err := optionalString(req.Subnet.GatewayIP)
+	if err != nil {
+		common.SendError(c, common.NewBadRequestError("invalid gateway_ip"))
+		return
+	}
+	if !present {
+		auto := incrementIP(ipNet.IP, 1).String()
+		gatewayIP = &auto
 	}
 
 	// Insert into database
@@ -1123,22 +1437,45 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
 	var queryArgs []any
 	queryArgs = append(queryArgs, projectID)
 	argIdx := 2
 
+	// Client filters (B6). Both spellings of the project attribute map onto project_id.
+	tenant := c.Query("tenant_id")
+	if tenant == "" {
+		tenant = c.Query("project_id")
+	}
+	filterConds, filterArgs := buildSubnetListFilter(subnetFilterParams{
+		NetworkID:  c.Query("network_id"),
+		ID:         c.Query("id"),
+		Name:       c.Query("name"),
+		CIDR:       c.Query("cidr"),
+		IPVersion:  c.Query("ip_version"),
+		EnableDHCP: c.Query("enable_dhcp"),
+		ProjectID:  tenant,
+	}, argIdx)
+	extraConds := ""
+	for _, cond := range filterConds {
+		extraConds += " AND " + cond
+	}
+	queryArgs = append(queryArgs, filterArgs...)
+	argIdx += len(filterArgs)
+
+	// Marker-based pagination on a TOTAL order. `created_at` alone is not unique, so ties made the
+	// page boundary unstable and a walk could repeat or skip rows — the same defect #549 found in the
+	// compute listings. ListNetworks already pages on (created_at, id); FR-025 requires the same here.
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := database.DB.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM subnets WHERE id = $1",
+			"SELECT created_at, id FROM subnets WHERE id::text = $1",
 			marker,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND s.created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			extraConds += fmt.Sprintf(" AND (s.created_at, s.id) < ($%d, $%d)", argIdx, argIdx+1)
+			queryArgs = append(queryArgs, markerCreatedAt, markerID)
+			argIdx += 2
 		}
 	}
 
@@ -1155,9 +1492,9 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 		-- subnets array against this listing, fails to resolve an id, and renders a
 		-- null row that breaks the launch wizard (SPEC-020 FR-007).
 		WHERE (s.project_id = $1 OR n.project_id = $1 OR n.shared = true)%s
-		ORDER BY s.created_at DESC
+		ORDER BY s.created_at DESC, s.id DESC
 		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+	`, extraConds, argIdx, argIdx+1), queryArgs...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_subnets").Msg("database error")
@@ -1168,14 +1505,21 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 
 	var subnets []gin.H
 	for rows.Next() {
-		var id, name, networkID, cidr, gatewayIP, owner string
+		var id, name, networkID, cidr, owner string
+		// gateway_ip is nullable (migration 001) and a subnet may legitimately have none. Scanning it
+		// into a plain string failed on NULL, and the bare `continue` below then removed the row from
+		// the listing with no log and no error — a resource that exists, is authorized, and simply did
+		// not appear (cloud-storage#546 B6, FR-021/FR-022).
+		var gatewayIP *string
 		var ipVersion int
 		var enableDHCP bool
 		var dnsNameservers []string
 		var createdAt, updatedAt time.Time
 
 		if err := rows.Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner); err != nil {
-			log.Warn().Err(err).Str("operation", "ListSubnets").Msg("failed to scan row")
+			// Log and keep serving: one unreadable row must not blank every caller's subnet list,
+			// including the dashboard's, and must not vanish silently either (FR-024).
+			log.Warn().Err(err).Str("subnet_id", id).Msg("skipping unreadable subnet row")
 			continue
 		}
 
@@ -1221,7 +1565,8 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	subnetID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	var id, name, networkID, cidr, gatewayIP, owner string
+	var id, name, networkID, cidr, owner string
+	var gatewayIP *string // nullable: a subnet may have no gateway (B6)
 	var ipVersion int
 	var enableDHCP bool
 	var dnsNameservers []string
@@ -1345,10 +1690,19 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	var req struct {
 		Subnet struct {
 			Name *string `json:"name"`
+			// Raw for the same reason as CreateSubnet: an explicit null clears the gateway, an
+			// omitted key leaves it alone (FR-023, contract S14).
+			GatewayIP json.RawMessage `json:"gateway_ip"`
 		} `json:"subnet"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+
+	newGateway, gatewayGiven, err := optionalString(req.Subnet.GatewayIP)
+	if err != nil {
+		common.SendError(c, common.NewBadRequestError("invalid gateway_ip"))
 		return
 	}
 
@@ -1359,7 +1713,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	// removing, so a scope that allows the delete and refuses the rename would be an
 	// odd place to draw a line (SPEC-022 FR-013a).
 	var resolvedID, currentName string
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err = database.DB.QueryRow(c.Request.Context(), `
 		SELECT s.id, s.name
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
@@ -1387,10 +1741,28 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	// project_id here too would make a network owner's rename a silent no-op: 200 with
 	// the old name still stored, because the two predicates disagree (the same trap
 	// DeleteSubnet had).
-	_, err = database.DB.Exec(c.Request.Context(),
-		"UPDATE subnets SET name = $1 WHERE id = $2",
-		currentName, resolvedID,
-	)
+	// gateway_ip is only touched when the key was supplied; an explicit null clears it (S14).
+	switch {
+	case gatewayGiven:
+		_, err = database.DB.Exec(c.Request.Context(),
+			"UPDATE subnets SET name = $1, gateway_ip = $2 WHERE id = $3",
+			currentName, newGateway, resolvedID,
+		)
+	case req.Subnet.Name != nil:
+		_, err = database.DB.Exec(c.Request.Context(),
+			"UPDATE subnets SET name = $1 WHERE id = $2",
+			currentName, resolvedID,
+		)
+	default:
+		// Nothing was supplied, so nothing is written. This used to issue
+		// `UPDATE subnets SET name = <the name just read>` — a statement that changed no column and
+		// did not even touch updated_at (second review, AGY-2).
+		//
+		// The request still SUCCEEDS: upstream Neutron accepts an empty update and answers 200 with
+		// the unchanged resource, and Terraform and Horizon both send updates that can reduce to
+		// nothing. Refusing with 400 — the second review's suggestion — would have been an API
+		// compatibility regression, which this project's first principle forbids.
+	}
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update subnet"))
@@ -1400,7 +1772,8 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	// Return updated subnet. tenant_id comes from the row, not from the caller: now
 	// that a network's owner may rename a subnet belonging to another project, the two
 	// differ, and reporting the caller would tell them the resource is theirs.
-	var networkID, cidr, gatewayIP, owner string
+	var networkID, cidr, owner string
+	var gatewayIP *string // nullable: a subnet may have no gateway (B6)
 	var ipVersion int
 	var enableDHCP bool
 	var dnsNameservers []string

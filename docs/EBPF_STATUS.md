@@ -127,9 +127,9 @@ CREATE TABLE port_security_groups (
 
 **What's Needed**:
 ```go
-// After TAP device is created (internal/neutron/ports.go:82):
+// After TAP device is created (see CreatePort in internal/neutron/ports.go):
 tapName := "tap-" + portID[:8]
-svc.tapManager.CreateTAPDevice(tapName, true, nsName)
+svc.tapManager.CreateTAPDevice(tapName)
 
 // MISSING: Attach XDP program
 if svc.sgManager.mode == "ebpf" {

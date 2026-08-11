@@ -358,12 +358,12 @@ func (m *BridgeManager) ListManagedBridges() ([]string, error) {
 // AttachToBridge attaches an interface to a bridge
 func (m *BridgeManager) AttachToBridge(ifName, bridgeName string, inNamespace bool, nsName string) error {
 	if m.mode == "stub" {
-		// Just verify bridge exists in stub mode
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if !m.stubBridges[bridgeName] {
-			return fmt.Errorf("bridge %s does not exist", bridgeName)
-		}
+		// Deliberately does NOT gate on stubBridges. That map is process-local bookkeeping —
+		// written by createBridgeStub, never persisted, never rebuilt — so gating on it made port
+		// creation fail for every network created before the current process, with a 500 reading
+		// "failed to attach TAP to bridge" (SPEC-024 / cloud-storage#546 F10). The recorded network
+		// is the authority for what exists; in stub mode there is no kernel object to attach to and
+		// nothing to verify (FR-002).
 		return nil
 	}
 
@@ -409,8 +409,16 @@ func NewTAPDeviceManager(mode string) *TAPDeviceManager {
 	}
 }
 
-// CreateTAPDevice creates a TAP device
-func (m *TAPDeviceManager) CreateTAPDevice(tapName string, inNamespace bool, nsName string) error {
+// CreateTAPDevice creates a TAP device in the namespace o3k itself runs in, which is where the
+// bridge, dnsmasq and the egress SNAT rules also live.
+//
+// There is deliberately no namespace parameter. The in-namespace variant served only the retired
+// light-ns-<project> placement, and its last caller went away with the F10 fix (SPEC-024 /
+// cloud-storage#546): guest TAPs must sit beside their bridge, and per-network layer-2 isolation
+// comes from one bridge per network rather than from a namespace per project. Taking the parameter
+// while ignoring it invited the inverse defect — a caller naming a namespace and being silently
+// placed elsewhere.
+func (m *TAPDeviceManager) CreateTAPDevice(tapName string) error {
 	if m.mode == "stub" {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -419,23 +427,6 @@ func (m *TAPDeviceManager) CreateTAPDevice(tapName string, inNamespace bool, nsN
 	}
 
 	// Both iptables and eBPF use real TAP devices
-	if inNamespace {
-		cmd := exec.Command("ip", "netns", "exec", nsName, "ip", "tuntap", "add", tapName, "mode", "tap")
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to create TAP device %s in namespace %s: %w, output: %s", tapName, nsName, err, string(output))
-		}
-
-		// Bring TAP device up
-		cmd = exec.Command("ip", "netns", "exec", nsName, "ip", "link", "set", tapName, "up")
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to bring up TAP device %s in namespace %s: %w, output: %s", tapName, nsName, err, string(output))
-		}
-		return nil
-	}
-
-	// Create TAP device in default namespace
 	cmd := exec.Command("ip", "tuntap", "add", tapName, "mode", "tap")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to create TAP device %s: %w", tapName, err)
@@ -446,8 +437,8 @@ func (m *TAPDeviceManager) CreateTAPDevice(tapName string, inNamespace bool, nsN
 	return cmd.Run()
 }
 
-// DeleteTAPDevice deletes a TAP device
-func (m *TAPDeviceManager) DeleteTAPDevice(tapName string, inNamespace bool, nsName string) error {
+// DeleteTAPDevice deletes a TAP device. Namespace-free, for the reason CreateTAPDevice gives.
+func (m *TAPDeviceManager) DeleteTAPDevice(tapName string) error {
 	if m.mode == "stub" {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -455,27 +446,6 @@ func (m *TAPDeviceManager) DeleteTAPDevice(tapName string, inNamespace bool, nsN
 		return nil
 	}
 
-	if inNamespace {
-		cmd := exec.Command("ip", "netns", "exec", nsName, "ip", "link", "delete", tapName)
-		return cmd.Run()
-	}
-
 	cmd := exec.Command("ip", "link", "delete", tapName)
-	return cmd.Run()
-}
-
-// MoveTAPToNamespace moves a TAP device to a namespace
-func (m *TAPDeviceManager) MoveTAPToNamespace(tapName, nsName string) error {
-	if m.mode == "stub" {
-		// Just verify TAP exists in stub mode
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		if !m.stubTAPs[tapName] {
-			return fmt.Errorf("TAP device %s does not exist", tapName)
-		}
-		return nil
-	}
-
-	cmd := exec.Command("ip", "link", "set", tapName, "netns", nsName)
 	return cmd.Run()
 }

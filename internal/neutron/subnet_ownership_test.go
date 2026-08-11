@@ -117,10 +117,11 @@ func TestCreateSubnetEntitlement(t *testing.T) {
 	// status-only check. Left empty for the 201 rows — their shape is covered by
 	// TestCreateSubnetOwnNetworkResponseShape.
 	//
-	// These are Nova-shaped (`itemNotFound`/`forbidden`/`badRequest`) because Neutron
-	// currently uses the shared envelope. That is a tracked defect — cloud-storage#546 B10,
-	// upstream emits `{"NeutronError": {type, message, detail}}` — so when B10 lands these
-	// three values change with it, deliberately and visibly rather than silently.
+	// All three are `NeutronError` now that B10 has landed (cloud-storage#546, FR-006): the
+	// network service emits upstream's `{"NeutronError": {type, message, detail}}` on every
+	// failing path, so the refusal shape no longer varies by status. They were previously
+	// Nova-shaped (`itemNotFound`/`forbidden`/`badRequest`), and this test failing on the
+	// rebase is exactly the "deliberately and visibly" the earlier note asked for.
 	tests := []struct {
 		name      string
 		networkID string
@@ -130,12 +131,12 @@ func TestCreateSubnetEntitlement(t *testing.T) {
 		wantKey   string
 	}{
 		{"1: own network", ownB, hdr(tenantB, "member"), "10.90.1.0/24", http.StatusCreated, ""},
-		{"2: foreign private network", foreignPrivate, hdr(tenantB, "member"), "10.90.2.0/24", http.StatusNotFound, "itemNotFound"},
-		{"3: foreign shared network", foreignShared, hdr(tenantB, "member"), "10.90.3.0/24", http.StatusForbidden, "forbidden"},
+		{"2: foreign private network", foreignPrivate, hdr(tenantB, "member"), "10.90.2.0/24", http.StatusNotFound, "NeutronError"},
+		{"3: foreign shared network", foreignShared, hdr(tenantB, "member"), "10.90.3.0/24", http.StatusForbidden, "NeutronError"},
 		{"4: admin on a foreign network", foreignPrivate, hdr(tenantB, "member", "admin"), "10.90.4.0/24", http.StatusCreated, ""},
 		{"5: admin on own network", ownBForAdmin, hdr(tenantB, "admin"), "10.90.5.0/24", http.StatusCreated, ""},
-		{"6: well-formed id naming nothing", "11111111-1111-1111-1111-111111111111", hdr(tenantB, "member"), "10.90.6.0/24", http.StatusNotFound, "itemNotFound"},
-		{"7: malformed id", "not-a-uuid", hdr(tenantB, "member"), "10.90.7.0/24", http.StatusBadRequest, "badRequest"},
+		{"6: well-formed id naming nothing", "11111111-1111-1111-1111-111111111111", hdr(tenantB, "member"), "10.90.6.0/24", http.StatusNotFound, "NeutronError"},
+		{"7: malformed id", "not-a-uuid", hdr(tenantB, "member"), "10.90.7.0/24", http.StatusBadRequest, "NeutronError"},
 	}
 
 	for _, tc := range tests {

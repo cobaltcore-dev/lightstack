@@ -27,13 +27,10 @@ func (svc *Service) GetAutoAllocatedTopology(c *gin.Context) {
 	`, projectID).Scan(&networkID, &networkName)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		c.JSON(http.StatusNotFound, gin.H{
-			"NeutronError": gin.H{
-				"type":    "AutoAllocationNotAvailable",
-				"message": "auto-allocated topology not available",
-				"detail":  "",
-			},
-		})
+		// Hand-rolled here long before the rest of the service emitted Neutron's envelope. Now that
+		// the shared path does, keeping a second copy would leave two descriptions of one shape free
+		// to drift — the defect B9 is, in a different place (SPEC-024 FR-009).
+		common.SendError(c, common.NewNotFoundError("auto-allocated topology"))
 		return
 	}
 

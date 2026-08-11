@@ -58,6 +58,14 @@ func (r *NetworkReconciler) Start(ctx context.Context) {
 	}
 }
 
+// PollInterval returns the interval the reconciler actually runs at, after the clamp below.
+//
+// Callers used to log the *configured* value, so a deployment that left it unset printed
+// "interval: 0s" and read as though periodic reconciliation were disabled — it is not (#546).
+// Exposing the effective value keeps the clamp in one place rather than duplicating it at the
+// log site, where the two could drift.
+func (r *NetworkReconciler) PollInterval() time.Duration { return r.pollInterval }
+
 // Stop ends the reconcile loop.
 func (r *NetworkReconciler) Stop() { close(r.stopChan) }
 
@@ -72,6 +80,8 @@ func (r *NetworkReconciler) reconcile(ctx context.Context) {
 // NAT — so VM internet access and floating-IP reachability survive an O3K
 // control-plane restart (SPEC-009 WS-3 / T035). Idempotent.
 func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
+	r.reportGrandfatheredGateways(ctx)
+
 	// Egress: internal subnets behind a router that has an external gateway.
 	var cidrs []string
 	if rows, err := database.DB.Query(ctx, `
@@ -250,7 +260,11 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 	if svc.mode == "stub" {
 		return
 	}
-	var cidr, gatewayIP string
+	var cidr string
+	// gateway_ip is nullable and a subnet may legitimately have none. Scanning it into a plain string
+	// made this Scan fail on such a subnet, and the early return then left it with NO DHCP at all —
+	// silently (SPEC-024 / cloud-storage#546 FR-023a).
+	var gatewayIP *string
 	var dns []string
 	if err := database.DB.QueryRow(ctx, `
 		SELECT cidr, gateway_ip, dns_nameservers FROM subnets
@@ -263,13 +277,18 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 		return
 	}
 	bridgeName := "br-" + networkID[:8]
-	// Bridge is in the default namespace; give it the gateway IP (so dnsmasq has
-	// an address in the subnet to serve) and the 169.254.169.254 DNAT.
+
+	// The bridge needs an address in the subnet whether or not the subnet advertises a gateway:
+	// dnsmasq binds to it, and the metadata DNAT hangs off it. With a gateway that address IS the
+	// gateway; without one we still take the first host address, but only as the bridge's own
+	// on-link address — it is never advertised as a default route (FR-023a).
+	bridgeAddr := bridgeAddrFor(gatewayIP, cidr)
+
 	ones, _ := ipNet.Mask.Size()
-	if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", gatewayIP, ones)); err != nil {
+	if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", bridgeAddr, ones)); err != nil {
 		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: bridge IP ensure")
 	}
-	if err := svc.mdRedirect.Ensure(bridgeName, gatewayIP); err != nil {
+	if err := svc.mdRedirect.Ensure(bridgeName, bridgeAddr); err != nil {
 		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: metadata redirect ensure")
 	}
 
@@ -279,10 +298,13 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 
 	dhcpStart, dhcpEnd := dhcpRange(ipNet)
 	cfg := networking.DHCPConfig{
-		NetworkID:        networkID,
-		BridgeName:       bridgeName,
-		SubnetCIDR:       cidr,
-		GatewayIP:        gatewayIP,
+		NetworkID:  networkID,
+		BridgeName: bridgeName,
+		SubnetCIDR: cidr,
+		// Empty when the subnet has no gateway: no default route is advertised. The metadata route
+		// is carried separately so it survives that case (FR-023a).
+		GatewayIP:        derefOr(gatewayIP, ""),
+		MetadataNextHop:  bridgeAddr,
 		DNSServers:       dns,
 		DHCPRangeStart:   dhcpStart,
 		DHCPRangeEnd:     dhcpEnd,
@@ -361,4 +383,57 @@ func dhcpRange(ipNet *net.IPNet) (string, string) {
 		end = last
 	}
 	return start.String(), end.String()
+}
+
+// bridgeAddrFor returns the address the network's bridge carries for a subnet: the gateway when the
+// subnet has one, otherwise the first host address of its CIDR.
+//
+// The bridge needs an address in the subnet regardless — dnsmasq binds to it and the metadata DNAT
+// hangs off it — but for a gatewayless subnet that address is the bridge's own and is never
+// advertised as a default route (SPEC-024 FR-023a). Shared by the apply and teardown paths so both
+// agree on which address to add and remove.
+func bridgeAddrFor(gatewayIP *string, cidr string) string {
+	if gatewayIP != nil && *gatewayIP != "" {
+		return *gatewayIP
+	}
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return ""
+	}
+	return incrementIP(ipNet.IP, 1).String()
+}
+
+// reportGrandfatheredGateways logs any router whose gateway network is not marked external.
+//
+// Migration 066 added networks.external defaulting to false, so every gateway configured before it
+// looks invalid to the new validation. Those keep working — this reconcile pass deliberately does NOT
+// learn the check, because withdrawing SNAT here would silently remove working guest egress on
+// upgrade (FR-035a). Logging them instead makes the condition discoverable so an operator can mark
+// the network and converge deliberately rather than finding out later (FR-035b).
+func (r *NetworkReconciler) reportGrandfatheredGateways(ctx context.Context) {
+	rows, err := database.DB.Query(ctx, `
+		SELECT rt.id, n.id, n.name
+		FROM routers rt
+		JOIN networks n ON n.id::text = rt.external_gateway_info->>'network_id'
+		WHERE rt.external_gateway_info IS NOT NULL
+		  AND rt.external_gateway_info::text <> 'null'
+		  AND n.external = false`)
+	if err != nil {
+		log.Debug().Err(err).Msg("reconcile: failed to check grandfathered gateways")
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var routerID, networkID, networkName string
+		if err := rows.Scan(&routerID, &networkID, &networkName); err != nil {
+			continue
+		}
+		log.Warn().
+			Str("router_id", routerID).
+			Str("network_id", networkID).
+			Str("network_name", networkName).
+			Msg("router gateway network is not marked router:external; kept working (grandfathered), " +
+				"but a NEW gateway on it would be refused — mark it external to converge")
+	}
 }
