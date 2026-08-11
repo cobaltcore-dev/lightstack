@@ -68,9 +68,12 @@ func TestNeutronBool(t *testing.T) {
 // network_list_for_tenant sends so its sub-queries are disjoint and each network
 // renders once (F4, FR-009/010/012). Pure — no DB.
 func TestNetworkListDecision(t *testing.T) {
-	// router:external=true → empty result set (Lightstack models no external networks).
-	if _, empty := networkListDecision("", "true"); !empty {
-		t.Error("router:external=true should yield an empty result")
+	// SPEC-024 F11 changed this assertion, deliberately: router:external=true used to force an EMPTY
+	// result because Lightstack modelled no external networks, which is why Horizon's Set Gateway dropdown
+	// was always empty. It is now a real predicate applied by buildNetworkListFilter, so the decision
+	// function must NOT short-circuit (FR-032).
+	if sf, empty := networkListDecision("", "true"); empty || sf != sharedAny {
+		t.Errorf("router:external=true → (%v, empty=%v), want (sharedAny, false) — it is a predicate now, not an empty result", sf, empty)
 	}
 	// shared=true → only shared networks.
 	if sf, empty := networkListDecision("true", ""); sf != sharedOnly || empty {
@@ -95,17 +98,33 @@ func TestNetworkListDecision(t *testing.T) {
 func TestBuildNetworkListFilter(t *testing.T) {
 	const caller = "proj-A"
 
-	// router:external=true → empty result set (no external networks modeled).
-	if _, _, empty := buildNetworkListFilter(caller, "", "true", "", "", ""); !empty {
-		t.Error("router:external=true should yield empty=true")
+	// SPEC-024 F11: router:external is a real predicate now, complementary rather than always-empty
+	// (FR-032, contract X6). The old assertion — empty=true — encoded the defect.
+	conds, args, empty := buildNetworkListFilter(caller, "", "true", "", "", "")
+	if empty {
+		t.Fatal("router:external=true must no longer force an empty result")
+	}
+	if where := strings.Join(conds, " AND "); where != "(project_id = $1 OR shared = true OR external = true) AND external = $2" {
+		t.Errorf("router:external=true where = %q", where)
+	}
+	if len(args) != 2 || args[1] != true {
+		t.Errorf("router:external=true args = %v, want [caller true]", args)
 	}
 
-	// Default (no filters): scope = caller's own OR shared, one arg (the caller).
-	conds, args, empty := buildNetworkListFilter(caller, "", "", "", "", "")
+	// ...and its complement.
+	_, args, _ = buildNetworkListFilter(caller, "", "false", "", "", "")
+	if len(args) != 2 || args[1] != false {
+		t.Errorf("router:external=false args = %v, want [caller false]", args)
+	}
+
+	// Default (no filters): scope = caller's own OR shared OR external, one arg (the caller).
+	// `external` is a THIRD INDEPENDENT disjunct — it must not require `shared`, or a tenant cannot
+	// see the external network they need to pick as a router gateway (FR-033a).
+	conds, args, empty = buildNetworkListFilter(caller, "", "", "", "", "")
 	if empty {
 		t.Fatal("default filter should not be empty")
 	}
-	if where := strings.Join(conds, " AND "); where != "(project_id = $1 OR shared = true)" {
+	if where := strings.Join(conds, " AND "); where != "(project_id = $1 OR shared = true OR external = true)" {
 		t.Errorf("default where = %q", where)
 	}
 	if len(args) != 1 || args[0] != caller {
@@ -135,5 +154,78 @@ func TestBuildNetworkListFilter(t *testing.T) {
 	}
 	if len(args) != 3 {
 		t.Errorf("tenant+name args = %v, want 3", args)
+	}
+}
+
+// TestBuildSubnetListFilter — SPEC-024 (cloud-storage#546) B6, FR-019/FR-020.
+//
+// The subnet listing applied no client filter at all. This mirrors TestBuildNetworkListFilter above:
+// a pure function, placeholders numbered from $1, testable without a database — which is what makes
+// the seven contracted filters cheap to pin.
+func TestBuildSubnetListFilter(t *testing.T) {
+	tests := []struct {
+		name      string
+		params    subnetFilterParams
+		wantConds []string
+		wantArgs  []any
+	}{
+		{
+			name:      "no filters",
+			params:    subnetFilterParams{},
+			wantConds: nil,
+			wantArgs:  nil,
+		},
+		{
+			name:      "network only",
+			params:    subnetFilterParams{NetworkID: "net-1"},
+			wantConds: []string{"s.network_id::text = $1"},
+			wantArgs:  []any{"net-1"},
+		},
+		{
+			name:      "network and name number sequentially",
+			params:    subnetFilterParams{NetworkID: "net-1", Name: "sub-a"},
+			wantConds: []string{"s.network_id::text = $1", "s.name = $2"},
+			wantArgs:  []any{"net-1", "sub-a"},
+		},
+		{
+			name:      "explicit enable_dhcp false is a filter, not an absence",
+			params:    subnetFilterParams{EnableDHCP: "false"},
+			wantConds: []string{"s.enable_dhcp = $1"},
+			wantArgs:  []any{false},
+		},
+		{
+			name:      "unparseable ip_version is ignored rather than narrowing the result",
+			params:    subnetFilterParams{IPVersion: "not-a-number"},
+			wantConds: nil,
+			wantArgs:  nil,
+		},
+		{
+			name:      "project spelling maps onto project_id",
+			params:    subnetFilterParams{ProjectID: "proj-1"},
+			wantConds: []string{"s.project_id::text = $1"},
+			wantArgs:  []any{"proj-1"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			conds, args := buildSubnetListFilter(tc.params, 1)
+			if len(conds) != len(tc.wantConds) {
+				t.Fatalf("conds = %v, want %v", conds, tc.wantConds)
+			}
+			for i := range conds {
+				if conds[i] != tc.wantConds[i] {
+					t.Errorf("conds[%d] = %q, want %q", i, conds[i], tc.wantConds[i])
+				}
+			}
+			if len(args) != len(tc.wantArgs) {
+				t.Fatalf("args = %v, want %v", args, tc.wantArgs)
+			}
+			for i := range args {
+				if args[i] != tc.wantArgs[i] {
+					t.Errorf("args[%d] = %#v, want %#v", i, args[i], tc.wantArgs[i])
+				}
+			}
+		})
 	}
 }

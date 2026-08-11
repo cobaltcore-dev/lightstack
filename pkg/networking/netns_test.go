@@ -39,7 +39,7 @@ func TestBridgeManagerStubMode(t *testing.T) {
 	bridgeName := "br-test123"
 
 	// Create bridge
-	if err := mgr.CreateBridge(bridgeName, false, ""); err != nil {
+	if err := mgr.CreateBridge(bridgeName); err != nil {
 		t.Fatalf("Failed to create bridge: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestBridgeManagerStubMode(t *testing.T) {
 	}
 
 	// Delete bridge
-	if err := mgr.DeleteBridge(bridgeName, false, ""); err != nil {
+	if err := mgr.DeleteBridge(bridgeName); err != nil {
 		t.Fatalf("Failed to delete bridge: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestTAPManagerStubMode(t *testing.T) {
 	tapName := "tap-test123"
 
 	// Create TAP device
-	if err := mgr.CreateTAPDevice(tapName, false, ""); err != nil {
+	if err := mgr.CreateTAPDevice(tapName); err != nil {
 		t.Fatalf("Failed to create TAP device: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestTAPManagerStubMode(t *testing.T) {
 	}
 
 	// Delete TAP device
-	if err := mgr.DeleteTAPDevice(tapName, false, ""); err != nil {
+	if err := mgr.DeleteTAPDevice(tapName); err != nil {
 		t.Fatalf("Failed to delete TAP device: %v", err)
 	}
 
@@ -119,27 +119,27 @@ func TestNetworkLifecycleStub(t *testing.T) {
 
 	// 2. Create bridge for network
 	bridgeName := "br-" + networkID[:8]
-	if err := brMgr.CreateBridge(bridgeName, false, ""); err != nil {
+	if err := brMgr.CreateBridge(bridgeName); err != nil {
 		t.Fatalf("Failed to create bridge: %v", err)
 	}
 
 	// 3. Create TAP device for port
 	tapName := "tap-" + portID[:8]
-	if err := tapMgr.CreateTAPDevice(tapName, false, ""); err != nil {
+	if err := tapMgr.CreateTAPDevice(tapName); err != nil {
 		t.Fatalf("Failed to create TAP device: %v", err)
 	}
 
 	// 4. Attach TAP to bridge
-	if err := brMgr.AttachToBridge(tapName, bridgeName, false, ""); err != nil {
+	if err := brMgr.AttachToBridge(tapName, bridgeName); err != nil {
 		t.Fatalf("Failed to attach TAP to bridge: %v", err)
 	}
 
 	// 5. Cleanup - delete in reverse order
-	if err := tapMgr.DeleteTAPDevice(tapName, false, ""); err != nil {
+	if err := tapMgr.DeleteTAPDevice(tapName); err != nil {
 		t.Fatalf("Failed to delete TAP device: %v", err)
 	}
 
-	if err := brMgr.DeleteBridge(bridgeName, false, ""); err != nil {
+	if err := brMgr.DeleteBridge(bridgeName); err != nil {
 		t.Fatalf("Failed to delete bridge: %v", err)
 	}
 

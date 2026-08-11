@@ -168,6 +168,13 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 	projectID := c.GetString("project_id")
 	floatingIPID := uuid.New().String()
 
+	// A floating IP is an address on the deployment's boundary network, so its network must actually
+	// be one. Any network was previously accepted (F11, FR-035); pre-migration allocations are
+	// grandfathered because only new requests are checked (FR-035a).
+	if !requireExternalNetwork(c, svc.pool, req.FloatingIP.FloatingNetworkID, "a floating-IP pool") {
+		return
+	}
+
 	// Get external network subnet to allocate IP from
 	var subnetCIDR string
 	err := svc.pool.QueryRow(c.Request.Context(),

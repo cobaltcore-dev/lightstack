@@ -16,8 +16,8 @@ func TestPortForwardingLifecycle_Contract(t *testing.T) {
 	client := contract.SetupNeutronClient(t)
 
 	// Create test network for port forwarding
-	network, subnet, port, router, floatingIP := setupPortForwardingPrerequisites(t, client)
-	defer cleanupPortForwardingPrerequisites(t, client, network.ID, subnet.ID, port.ID, router.ID, floatingIP.ID)
+	network, subnet, port, router, floatingIP, extNetwork, extSubnet := setupPortForwardingPrerequisites(t, client)
+	defer cleanupPortForwardingPrerequisites(t, client, network.ID, subnet.ID, port.ID, router.ID, floatingIP.ID, extNetwork.ID, extSubnet.ID)
 
 	// 1. Create port forwarding
 	createOpts := map[string]interface{}{
@@ -135,8 +135,8 @@ func TestPortForwardingValidation_Contract(t *testing.T) {
 
 	client := contract.SetupNeutronClient(t)
 
-	network, subnet, port, router, floatingIP := setupPortForwardingPrerequisites(t, client)
-	defer cleanupPortForwardingPrerequisites(t, client, network.ID, subnet.ID, port.ID, router.ID, floatingIP.ID)
+	network, subnet, port, router, floatingIP, extNetwork, extSubnet := setupPortForwardingPrerequisites(t, client)
+	defer cleanupPortForwardingPrerequisites(t, client, network.ID, subnet.ID, port.ID, router.ID, floatingIP.ID, extNetwork.ID, extSubnet.ID)
 
 	// Test invalid protocol
 	createOpts := map[string]interface{}{
@@ -203,7 +203,7 @@ func TestPortForwardingValidation_Contract(t *testing.T) {
 }
 
 // setupPortForwardingPrerequisites creates network, port, router, and floating IP for testing
-func setupPortForwardingPrerequisites(t *testing.T, client *gophercloud.ServiceClient) (network, subnet, port, router, floatingIP struct{ ID string }) {
+func setupPortForwardingPrerequisites(t *testing.T, client *gophercloud.ServiceClient) (network, subnet, port, router, floatingIP, extNetwork, extSubnet struct{ ID string }) {
 	t.Helper()
 
 	// Create external network
@@ -253,6 +253,7 @@ func setupPortForwardingPrerequisites(t *testing.T, client *gophercloud.ServiceC
 		nil,
 	)
 	require.NoError(t, err, "Failed to create external subnet")
+	extSubnetID := extSubnetResult.Subnet.ID
 
 	// Create internal network
 	netOpts := map[string]interface{}{
@@ -394,11 +395,17 @@ func setupPortForwardingPrerequisites(t *testing.T, client *gophercloud.ServiceC
 	require.NoError(t, err, "Failed to create floating IP")
 	floatingIP.ID = fipResult.FloatingIP.ID
 
-	return network, subnet, port, router, floatingIP
+	// The external network and its subnet are returned too, not discarded. Leaving them out is what
+	// leaked one external network per run: cleanup can only delete what it is told about, and these two
+	// were created here and then dropped on the floor.
+	extNetwork.ID = extNetID
+	extSubnet.ID = extSubnetID
+
+	return network, subnet, port, router, floatingIP, extNetwork, extSubnet
 }
 
 // cleanupPortForwardingPrerequisites deletes all test resources
-func cleanupPortForwardingPrerequisites(t *testing.T, client *gophercloud.ServiceClient, networkID, subnetID, portID, routerID, floatingIPID string) {
+func cleanupPortForwardingPrerequisites(t *testing.T, client *gophercloud.ServiceClient, networkID, subnetID, portID, routerID, floatingIPID, extNetworkID, extSubnetID string) {
 	t.Helper()
 
 	// Delete floating IP
@@ -437,5 +444,17 @@ func cleanupPortForwardingPrerequisites(t *testing.T, client *gophercloud.Servic
 	// Delete network
 	if networkID != "" {
 		client.Delete(client.ServiceURL("networks", networkID), nil)
+	}
+
+	// The external network and its subnet, last: the router used the network as its gateway and the
+	// floating IP was allocated from it, so both must already be gone. Subnet before network, because
+	// DeleteNetwork refuses a network that still has one (409) — which is why these leaked visibly
+	// rather than silently once SPEC-024 F11 made router:external real. Before that the attribute was
+	// dropped at bind time, so this fixture's "external" network was an ordinary one despite the name.
+	if extSubnetID != "" {
+		client.Delete(client.ServiceURL("subnets", extSubnetID), nil)
+	}
+	if extNetworkID != "" {
+		client.Delete(client.ServiceURL("networks", extNetworkID), nil)
 	}
 }

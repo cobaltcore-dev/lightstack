@@ -161,6 +161,15 @@ func TestTopologyWithRouter_Contract(t *testing.T) {
 func TestTopologyNetworkList_Contract(t *testing.T) {
 	client := setupNetworkClient(t)
 
+	// Create the network the listing must contain. The database seeds none, and relying on one left
+	// behind by an earlier test fails as soon as that test cleans up after itself.
+	created, err := networks.Create(client, networks.CreateOpts{
+		Name:         "topology-list-network",
+		AdminStateUp: gophercloud.Enabled,
+	}).Extract()
+	require.NoError(t, err, "Failed to create network")
+	defer networks.Delete(client, created.ID)
+
 	// List all networks
 	allPages, err := networks.List(client, nil).AllPages()
 	require.NoError(t, err, "Failed to list networks")
@@ -169,7 +178,9 @@ func TestTopologyNetworkList_Contract(t *testing.T) {
 	require.NoError(t, err, "Failed to extract networks")
 
 	// Verify each network has required fields for topology
+	found := false
 	for _, network := range networkList {
+		found = found || network.ID == created.ID
 		assert.NotEmpty(t, network.ID, "Network should have ID")
 		assert.NotEmpty(t, network.Name, "Network should have name")
 		assert.NotEmpty(t, network.Status, "Network should have status")
@@ -180,7 +191,7 @@ func TestTopologyNetworkList_Contract(t *testing.T) {
 		t.Logf("Network %s: Subnets=%d", network.Name, len(network.Subnets))
 	}
 
-	assert.Greater(t, len(networkList), 0, "Should have at least one network")
+	assert.True(t, found, "The network created above should be listed")
 	t.Logf("Total networks for topology: %d", len(networkList))
 }
 

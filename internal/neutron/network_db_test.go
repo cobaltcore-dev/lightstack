@@ -58,8 +58,19 @@ func requireDB(t *testing.T) {
 const seededProjectID = "00000000-0000-0000-0000-000000000002"
 
 func newNeutronTestRouter() *gin.Engine {
+	r, _ := newNeutronTestRouterWithService()
+	return r
+}
+
+// newNeutronTestRouterWithService also hands back the Service the routes are bound to, for the tests
+// that assert on state the handlers keep outside the response — DHCP bookkeeping, for instance.
+func newNeutronTestRouterWithService() (*gin.Engine, *Service) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
+	// Mirror production: the envelope marker goes on the engine, first, so error bodies in these
+	// tests are the ones a client actually receives (SPEC-024 US2). See error_envelope_test.go for
+	// a router that also wires NoRoute/NoMethod, which this one deliberately does not.
+	r.Use(ErrorEnvelope())
 	r.Use(func(c *gin.Context) {
 		if p := c.GetHeader("X-Test-Project"); p != "" {
 			c.Set("project_id", p)
@@ -68,8 +79,9 @@ func newNeutronTestRouter() *gin.Engine {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	NewService(testPool, "stub", nil).RegisterRoutes(&r.RouterGroup)
-	return r
+	svc := NewService(testPool, "stub", nil)
+	svc.RegisterRoutes(&r.RouterGroup)
+	return r, svc
 }
 
 func doReq(r *gin.Engine, method, path string, headers map[string]string) (int, string) {
@@ -104,9 +116,12 @@ func hasNet(nets []map[string]any, name string) bool {
 
 // TestListNetworksFilters_DB exercises the F4 wiring against Postgres: with one
 // project-owned non-shared network and one shared network, the `shared` filter must
-// return disjoint sets, `router:external=true` must be empty, and every network must
-// carry `router:external`. Catches a regression in the query the pure filter test
-// cannot (e.g. the WHERE never reaching the DB, or the attribute dropped from the row).
+// return disjoint sets, and every network must carry `router:external`. Catches a
+// regression in the query the pure filter test cannot (e.g. the WHERE never reaching
+// the DB, or the attribute dropped from the row).
+//
+// The router:external half was rewritten by SPEC-024 F11: it asserted an empty result,
+// which was the defect, and now asserts the two filters are complements.
 func TestListNetworksFilters_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -131,8 +146,8 @@ func TestListNetworksFilters_DB(t *testing.T) {
 		t.Errorf("shared=true returned own=%v shared=%v; want shared only", hasNet(nets, ownName), hasNet(nets, shdName))
 	}
 	for _, n := range nets {
-		if v, ok := n["router:external"]; !ok || v != false {
-			t.Errorf("network %v missing router:external=false (got %v)", n["name"], v)
+		if _, ok := n["router:external"]; !ok {
+			t.Errorf("network %v is missing the router:external key", n["name"])
 		}
 	}
 
@@ -143,9 +158,34 @@ func TestListNetworksFilters_DB(t *testing.T) {
 		t.Errorf("shared=false returned own=%v shared=%v; want own only", hasNet(nets, ownName), hasNet(nets, shdName))
 	}
 
-	// router:external=true → empty (Lightstack models no external networks).
+	// SPEC-024 F11: router:external is a real filter now. It used to force an empty result because
+	// Lightstack modelled no external networks — the defect that left Horizon's Set Gateway dropdown empty.
+	// Asserting a global count of 0 was also fragile: it depended on no other test or fixture ever
+	// creating one. The property that actually matters is that the two filters are complements over
+	// networks this test controls.
+	extName := "spec024-db-ext-" + uuid.New().String()[:8]
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, external, network_type, mtu, created_at, updated_at)
+		VALUES ($1, $2, $3, true, 'ACTIVE', false, true, 'flat', 1500, now(), now())
+	`, uuid.New().String(), extName, seededProjectID); err != nil {
+		t.Fatalf("seed external network: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM networks WHERE name = $1", extName) //nolint:errcheck // best-effort cleanup
+	})
+
 	_, body = doReq(r, http.MethodGet, "/v2.0/networks?router:external=true", hdr)
-	if nets = networksFromBody(t, body); len(nets) != 0 {
-		t.Errorf("router:external=true returned %d networks; want 0", len(nets))
+	nets = networksFromBody(t, body)
+	if !hasNet(nets, extName) {
+		t.Error("router:external=true did not return the external network — F11's empty dropdown")
+	}
+	if hasNet(nets, ownName) {
+		t.Error("router:external=true returned a non-external network")
+	}
+
+	_, body = doReq(r, http.MethodGet, "/v2.0/networks?router:external=false", hdr)
+	nets = networksFromBody(t, body)
+	if hasNet(nets, extName) {
+		t.Error("the two router:external filters are not complements")
 	}
 }

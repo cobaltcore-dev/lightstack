@@ -13,6 +13,16 @@ type OpenStackError struct {
 	Code       string
 	Message    string
 	Details    string // Optional additional details
+
+	// Resource is the kind of thing the error is about ("network", "subnet", …), kept separate
+	// from Message because Neutron names the *condition* rather than describing it: its error
+	// bodies carry a `type` of "NetworkNotFound" where this envelope carries a `code` of
+	// "itemNotFound" (SPEC-024 FR-007). Deriving that name needs the resource on its own, and the
+	// constructors below format it into Message and would otherwise discard it.
+	//
+	// Optional and purely additive: empty for the errors that are not about a specific resource,
+	// and read by nothing except the Neutron type table.
+	Resource string
 }
 
 func (e *OpenStackError) Error() string {
@@ -38,8 +48,17 @@ func (e *OpenStackError) ToJSON() gin.H {
 	}
 }
 
-// SendError sends an OpenStack-formatted error response
+// SendError sends an OpenStack-formatted error response.
+//
+// The envelope is chosen from the request, not the call site: Neutron's differs from every other
+// service's in both wrapper and field set, and marking the request once per engine converts every
+// error path — handlers, auth aborts, panic recovery, NoRoute, NoMethod — without touching any of the
+// call sites (SPEC-024 FR-006/FR-008). See neutron_errors.go.
 func SendError(c *gin.Context, err *OpenStackError) {
+	if usesNeutronEnvelope(c) {
+		c.JSON(err.StatusCode, err.NeutronJSON())
+		return
+	}
 	c.JSON(err.StatusCode, err.ToJSON())
 }
 
@@ -66,6 +85,7 @@ func NewNotFoundError(resource string) *OpenStackError {
 		StatusCode: http.StatusNotFound,
 		Code:       "itemNotFound",
 		Message:    fmt.Sprintf("%s could not be found.", resource),
+		Resource:   resource,
 	}
 }
 
@@ -76,6 +96,7 @@ func NewResourceNotFoundError(resourceType, resourceID string) *OpenStackError {
 		Code:       "itemNotFound",
 		Message:    fmt.Sprintf("%s %s could not be found.", resourceType, resourceID),
 		Details:    fmt.Sprintf("The requested %s does not exist or has been deleted.", resourceType),
+		Resource:   resourceType,
 	}
 }
 
@@ -83,13 +104,18 @@ func NewResourceNotFoundError(resourceType, resourceID string) *OpenStackError {
 // "<Resource>NotFound" text verbatim ("Could not find <resource>: <id>."), so
 // identity endpoints that reference a resource by id don't diverge from
 // Keystone's message text. Only the message + status are Keystone-exact; the
-// envelope stays Lightstack's Nova-style form (envelope divergence tracked in
-// cloud-storage#518).
+// envelope stays Lightstack's Nova-style form.
+//
+// (The identity envelope divergence has no ticket of its own. It was previously attributed here to
+// cloud-storage#518, which is the S3 access-key enumeration oracle — an unrelated issue. The Neutron
+// half of the same family was fixed by SPEC-024 / cloud-storage#546 B10; identity was explicitly left
+// out of that scope.)
 func NewIdentityNotFoundError(resource, id string) *OpenStackError {
 	return &OpenStackError{
 		StatusCode: http.StatusNotFound,
 		Code:       "itemNotFound",
 		Message:    fmt.Sprintf("Could not find %s: %s.", resource, id),
+		Resource:   resource,
 	}
 }
 
@@ -127,6 +153,7 @@ func NewResourceConflictError(resourceType, resourceName, reason string) *OpenSt
 		Code:       "conflict",
 		Message:    fmt.Sprintf("%s '%s' already exists", resourceType, resourceName),
 		Details:    reason,
+		Resource:   resourceType,
 	}
 }
 
@@ -242,6 +269,7 @@ func NewQuotaExceededError(resource string) *OpenStackError {
 		StatusCode: http.StatusRequestEntityTooLarge,
 		Code:       "overLimit",
 		Message:    fmt.Sprintf("Quota exceeded for resource: %s", resource),
+		Resource:   resource,
 	}
 }
 

@@ -64,6 +64,17 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
+	// Any OTHER error had to be handled too (second review, AGY-1). A network_id that is not a UUID
+	// fails the cast rather than matching no row, so it is not ErrNoRows — and going unchecked it
+	// fell through with networkID empty, all the way to `"br-" + req.Port.NetworkID[:8]`, which
+	// panicked on anything shorter than 8 characters. AllocatePortForInstance, which runs the very
+	// same lookup for the instance-boot path, has always checked both; the two disagreeing is the
+	// asymmetry #546 noted between these paths.
+	if err != nil {
+		log.Warn().Err(err).Str("network_id", req.Port.NetworkID).Msg("port create: unusable network_id")
+		common.SendError(c, common.NewNotFoundError("network"))
+		return
+	}
 
 	// Get subnet to allocate IP
 	var subnetID, cidr string
@@ -86,20 +97,39 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	fixedIPsJSON, _ := json.Marshal(fixedIPs)
 
-	// Create TAP device in namespace
-	nsName := svc.nsManager.GetNamespaceName(projectID)
-	if err := svc.tapManager.CreateTAPDevice(tapName, true, nsName); err != nil {
+	// Create the TAP where the bridge is — the namespace Lightstack runs in. CreateTAPDevice no longer takes
+	// a namespace at all, so this placement is now a property of the API rather than of the call.
+	//
+	// This used to place the TAP inside light-ns-<project> while CreateNetwork built the bridge in
+	// the root namespace "for libvirt access" — and nothing on this path ever created that namespace,
+	// so the attach could not succeed (SPEC-024 / cloud-storage#546 F10). The direction of the fix is
+	// forced rather than chosen: the bridge (network.go), dnsmasq (reconciler.go, empty nsName) and
+	// the egress SNAT rules are all already in the root namespace, so the TAP was the lone outlier.
+	// Moving the bridge the other way would break libvirt's access to it, orphan dnsmasq and the NAT
+	// rules, and need a veth pair per network.
+	//
+	// Per-network layer-2 isolation is unaffected: it comes from one bridge per network, not from a
+	// namespace per project.
+	if err := svc.tapManager.CreateTAPDevice(tapName); err != nil {
 		log.Error().Err(err).Str("operation", "create_tap_device").Str("tap", tapName).Msg("failed to create TAP device")
-		common.SendError(c, common.NewInternalServerError("failed to create TAP device"))
+		common.SendError(c, common.NewInternalServerError("failed to create TAP device "+tapName))
 		return
 	}
 
-	// Attach TAP to bridge
+	// Attach TAP to the network's bridge, in the same namespace it was just created in.
+	//
+	// Ensure the bridge first, as AllocatePortForInstance already does on the instance-boot path:
+	// in real mode the kernel object is gone after a host reboot until the reconciler's next pass,
+	// and FR-001 requires port creation to succeed on any recorded network rather than depending on
+	// that timing. Idempotent — an existing bridge is not an error.
 	bridgeName := "br-" + req.Port.NetworkID[:8]
-	if err := svc.brManager.AttachToBridge(tapName, bridgeName, true, nsName); err != nil {
-		log.Error().Err(err).Str("operation", "attach_tap_to_bridge").Str("tap", tapName).Msg("failed to attach TAP to bridge")
-		_ = svc.tapManager.DeleteTAPDevice(tapName, true, nsName)
-		common.SendError(c, common.NewInternalServerError("failed to attach TAP to bridge"))
+	if err := svc.brManager.CreateBridge(bridgeName); err != nil {
+		log.Debug().Err(err).Str("bridge", bridgeName).Msg("ensure bridge before attach (may already exist)")
+	}
+	if err := svc.brManager.AttachToBridge(tapName, bridgeName); err != nil {
+		log.Error().Err(err).Str("operation", "attach_tap_to_bridge").Str("tap", tapName).Str("bridge", bridgeName).Msg("failed to attach TAP to bridge")
+		_ = svc.tapManager.DeleteTAPDevice(tapName)
+		common.SendError(c, common.NewInternalServerError("failed to attach TAP "+tapName+" to bridge "+bridgeName))
 		return
 	}
 
@@ -113,7 +143,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_port").Msg("database error")
-		_ = svc.tapManager.DeleteTAPDevice(tapName, true, nsName)
+		_ = svc.tapManager.DeleteTAPDevice(tapName)
 		common.SendError(c, common.NewInternalServerError("failed to create port"))
 		return
 	}
@@ -124,7 +154,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		if _, err := svc.pool.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID); err != nil {
 			log.Warn().Err(err).Str("port_id", portID).Msg("rollback: failed to delete port after " + reason)
 		}
-		if err := svc.tapManager.DeleteTAPDevice(tapName, true, nsName); err != nil {
+		if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
 			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("rollback: failed to delete TAP after " + reason)
 		}
 	}
@@ -154,9 +184,17 @@ func (svc *Service) CreatePort(c *gin.Context) {
 			sgID, projectID,
 		).Scan(&exists)
 
-		if err != nil || !exists {
+		if err != nil {
 			rollbackPort("security-group lookup failure")
-			common.SendError(c, common.NewNotFoundError(fmt.Sprintf("security group %s", sgID)))
+			log.Error().Err(err).Str("operation", "create_port").Str("sg_id", sgID).Msg("failed to look up security group")
+			common.SendError(c, common.NewInternalServerError("failed to look up security group"))
+			return
+		}
+		if !exists {
+			rollbackPort("unknown security group")
+			// The resource and its id separately: folded into one string, the resource missed the
+			// envelope's type table and came back as a plain NotFound (FR-007).
+			common.SendError(c, common.NewResourceNotFoundError("security group", sgID))
 			return
 		}
 
@@ -470,8 +508,33 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	portID := c.Param("id")
 	projectID := c.GetString("project_id")
 
+	// Resolve the port BEFORE deriving anything from its id (second review, AGY-1).
+	//
+	// `tapName := "tap-" + portID[:8]` used to be the third statement of this handler, ahead of every
+	// lookup, so DELETE /v2.0/ports/p1 sliced out of range and panicked — recovered into a 500 for a
+	// request that names no port. Comparing as text rather than casting to uuid means a malformed id
+	// simply matches nothing instead of erroring the query, which was a second 500 on the same path.
+	//
+	// Resolving first also stops the handler reporting 204 for a port it never found: the dishonest
+	// success FR-033b removed from DeleteNetwork, still present here because the sweep that fixed
+	// that one did not reach its siblings.
+	var resolvedID string
+	err := svc.pool.QueryRow(c.Request.Context(),
+		"SELECT id::text FROM ports WHERE id::text = $1 AND project_id = $2",
+		portID, projectID,
+	).Scan(&resolvedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("port"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_port").Str("port_id", portID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to delete port"))
+		return
+	}
+	portID = resolvedID
+
 	tapName := "tap-" + portID[:8]
-	nsName := svc.nsManager.GetNamespaceName(projectID)
 
 	// Detach XDP program if eBPF mode
 	if svc.sgManager != nil && svc.mode == "ebpf" {
@@ -500,10 +563,10 @@ func (svc *Service) DeletePort(c *gin.Context) {
 		}
 	}
 
-	// Delete TAP device (best-effort: a leftover TAP is hygiene, not
-	// correctness — the port row is about to be deleted).
-	if err := svc.tapManager.DeleteTAPDevice(tapName, true, nsName); err != nil {
-		log.Warn().Err(err).Str("tap", tapName).Str("namespace", nsName).Msg("failed to delete TAP device")
+	// Delete TAP device from the DEFAULT namespace, where CreatePort put it (F10). Best-effort: a
+	// leftover TAP is hygiene, not correctness — the port row is about to be deleted.
+	if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
+		log.Warn().Err(err).Str("tap", tapName).Msg("failed to delete TAP device")
 	}
 
 	// Remove FDB entry if VXLAN is enabled
@@ -514,12 +577,12 @@ func (svc *Service) DeletePort(c *gin.Context) {
 		}
 	}
 
-	// Delete from database
-	_, err := svc.pool.Exec(c.Request.Context(),
+	// Delete from database. The row was resolved above, so this deletes by an id already known to
+	// exist and to belong to the caller.
+	if _, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM ports WHERE id = $1 AND project_id = $2",
 		portID, projectID,
-	)
-	if err != nil {
+	); err != nil {
 		log.Error().Err(err).Str("operation", "delete_port").Str("port_id", portID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete port"))
 		return
@@ -1058,30 +1121,17 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 	ruleID := uuid.New().String()
 
-	protocol := ""
-	if req.SecurityGroupRule.Protocol != nil {
-		protocol = *req.SecurityGroupRule.Protocol
-	}
-
-	portMin := 0
-	if req.SecurityGroupRule.PortRangeMin != nil {
-		portMin = *req.SecurityGroupRule.PortRangeMin
-	}
-
-	portMax := 0
-	if req.SecurityGroupRule.PortRangeMax != nil {
-		portMax = *req.SecurityGroupRule.PortRangeMax
-	}
-
-	remoteIP := ""
-	if req.SecurityGroupRule.RemoteIPPrefix != nil {
-		remoteIP = *req.SecurityGroupRule.RemoteIPPrefix
-	}
-
-	remoteGroup := ""
-	if req.SecurityGroupRule.RemoteGroupID != nil {
-		remoteGroup = *req.SecurityGroupRule.RemoteGroupID
-	}
+	// The optional attributes stay POINTERS all the way to storage and to the response.
+	//
+	// They arrive as pointers already (the request struct above), and flattening them to ""/0
+	// sentinels here is what made this the fourth and only disagreeing emitter: unset came back as
+	// "" and 0 while every read reported null, and — worse — `Valid: portMin > 0` stored a deliberate
+	// port 0, a legitimate ICMP type, as NULL (SPEC-024 / cloud-storage#546 B9, FR-026-028).
+	protocol := req.SecurityGroupRule.Protocol
+	portMin := req.SecurityGroupRule.PortRangeMin
+	portMax := req.SecurityGroupRule.PortRangeMax
+	remoteIP := req.SecurityGroupRule.RemoteIPPrefix
+	remoteGroup := req.SecurityGroupRule.RemoteGroupID
 
 	etherType := "IPv4"
 	if req.SecurityGroupRule.EtherType != "" {
@@ -1090,15 +1140,17 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 	// Add iptables rule
 	if svc.sgManager != nil {
+		// networking.SecurityGroupRule is value-typed because a kernel rule cannot express
+		// "unset" — a defaulted zero here is correct and is the only place a sentinel belongs.
 		rule := networking.SecurityGroupRule{
 			ID:             ruleID,
 			Direction:      req.SecurityGroupRule.Direction,
 			EtherType:      etherType,
-			Protocol:       protocol,
-			PortRangeMin:   portMin,
-			PortRangeMax:   portMax,
-			RemoteIPPrefix: remoteIP,
-			RemoteGroupID:  remoteGroup,
+			Protocol:       derefOr(protocol, ""),
+			PortRangeMin:   derefOr(portMin, 0),
+			PortRangeMax:   derefOr(portMax, 0),
+			RemoteIPPrefix: derefOr(remoteIP, ""),
+			RemoteGroupID:  derefOr(remoteGroup, ""),
 		}
 
 		// A seeded SG (e.g. the project default SG, created via migration rather
@@ -1120,11 +1172,8 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 		INSERT INTO security_group_rules (id, security_group_id, direction, ethertype, protocol, port_range_min, port_range_max, remote_ip_prefix, remote_group_id, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, ruleID, req.SecurityGroupRule.SecurityGroupID, req.SecurityGroupRule.Direction, etherType,
-		sql.NullString{String: protocol, Valid: protocol != ""},
-		sql.NullInt32{Int32: int32(portMin), Valid: portMin > 0},
-		sql.NullInt32{Int32: int32(portMax), Valid: portMax > 0},
-		sql.NullString{String: remoteIP, Valid: remoteIP != ""},
-		sql.NullString{String: remoteGroup, Valid: remoteGroup != ""},
+		nullStringFrom(protocol), nullInt32From(portMin), nullInt32From(portMax),
+		nullStringFrom(remoteIP), nullStringFrom(remoteGroup),
 		now)
 
 	if err != nil {
@@ -1149,6 +1198,8 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 			"remote_ip_prefix":  remoteIP,
 			"remote_group_id":   remoteGroup,
 			"created_at":        now.Format(time.RFC3339),
+			// The five above are pointers: a nil marshals to JSON null, which is what the group
+			// list, the rule list and the rule-by-id view have always reported (B9).
 		},
 	})
 }
@@ -1408,7 +1459,10 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		portSGs = []string{defaultSG}
 	}
 
-	// Create TAP device in default namespace (not project namespace) for libvirt access.
+	// Create the TAP beside the bridge, in the namespace Lightstack runs in, for libvirt access.
+	// CreateTAPDevice no longer takes a namespace at all, so that placement is a property of the
+	// API rather than of the call (SPEC-024 / cloud-storage#546 F10); this path was already
+	// correct and is what CreatePort was made to match.
 	// The host-side work happens before the database transaction below, so every
 	// error return after the TAP exists must release it, or a retried boot leaves an
 	// orphan tap-<id> on the host per attempt (mirrors CreatePort's rollbackPort).
@@ -1418,25 +1472,24 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		if svc.mode == "stub" {
 			return
 		}
-		if err := svc.tapManager.DeleteTAPDevice(tapName, false, ""); err != nil {
+		if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
 			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("rollback: failed to delete TAP after " + reason)
 		}
 	}
 	if svc.mode != "stub" {
-		// Create TAP device in default namespace
-		if err := svc.tapManager.CreateTAPDevice(tapName, false, ""); err != nil {
+		if err := svc.tapManager.CreateTAPDevice(tapName); err != nil {
 			return nil, fmt.Errorf("failed to create TAP device: %w", err)
 		}
 
 		// Ensure bridge exists in default namespace
 		bridgeName := "br-" + networkID[:8]
-		if err := svc.brManager.CreateBridge(bridgeName, false, ""); err != nil {
+		if err := svc.brManager.CreateBridge(bridgeName); err != nil {
 			// Bridge might already exist, log but don't fail
 			log.Debug().Err(err).Str("bridge", bridgeName).Msg("bridge creation returned error (may already exist)")
 		}
 
 		// Attach TAP to bridge in default namespace
-		if err := svc.brManager.AttachToBridge(tapName, bridgeName, false, ""); err != nil {
+		if err := svc.brManager.AttachToBridge(tapName, bridgeName); err != nil {
 			releaseTAP("bridge attach failure")
 			return nil, fmt.Errorf("failed to attach TAP to bridge: %w", err)
 		}
@@ -1480,7 +1533,9 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// Apply the dnsmasq reservation for this new port now (synchronously) so the
 	// VM about to boot leases its neutron-assigned fixed IP, not a dynamic one
 	// (SPEC-009 WS-2/WS-4 — keeps OpenStack's view and the guest in agreement).
-	svc.applyDHCPForNetwork(ctx, networkID, true)
+	if _, _, err := svc.applyDHCPForNetwork(ctx, networkID, true); err != nil {
+		log.Warn().Err(err).Str("port_id", portID).Msg("failed to apply this port's DHCP reservation")
+	}
 
 	return &PortInfo{
 		ID:        portID,
@@ -1558,4 +1613,36 @@ func (svc *Service) fetchSecurityGroupRulesForPort(ctx context.Context, security
 	}
 
 	return rules, nil
+}
+
+// Small helpers for the three-valued optional attributes of a security-group rule (SPEC-024 B9).
+//
+// The wire distinguishes absent, an explicit zero/empty, and a real value; the columns are nullable
+// and can hold all three. These keep that distinction intact instead of collapsing it into a
+// sentinel, which is what made the create response disagree with every read.
+
+// nullStringFrom maps a nil pointer to SQL NULL, and any supplied value — including "" — to itself.
+func nullStringFrom(v *string) sql.NullString {
+	if v == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *v, Valid: true}
+}
+
+// nullInt32From maps a nil pointer to SQL NULL, and any supplied value — including a deliberate 0,
+// a valid ICMP type — to itself. The previous `Valid: portMin > 0` silently discarded that zero.
+func nullInt32From(v *int) sql.NullInt32 {
+	if v == nil {
+		return sql.NullInt32{}
+	}
+	return sql.NullInt32{Int32: int32(*v), Valid: true} //nolint:gosec // port/ICMP values are bounded by validation
+}
+
+// derefOr flattens a pointer for consumers that cannot express "unset" — currently only the kernel
+// rule builder. Deliberately not used on any storage or response path.
+func derefOr[T any](v *T, fallback T) T {
+	if v == nil {
+		return fallback
+	}
+	return *v
 }

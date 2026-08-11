@@ -103,16 +103,67 @@ func (svc *Service) GetAgent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"agent": agent})
 }
 
+// ListDHCPAgentsOnNetwork returns the DHCP agents hosting a network — always none.
+//
+// Lightstack serves DHCP by running dnsmasq directly on the node, not by scheduling a network onto an
+// agent, so it hosts no DHCP agents and says so. That matches GET /v2.0/agents, which reports the
+// same because nothing ever populates neutron_agents.
+//
+// It exists because Horizon's admin Network list assigns its **Project** column inside a block
+// guarded by `is_dhcp_agent_scheduler_supported`, and that same block fetches each network's agents.
+// With the alias advertised but this endpoint missing, every row raised an error pop-up; with
+// neither, the ownership column rendered "-" for every network even though the API returned the
+// right owner (SPEC-024 host pass, finding 2).
+//
+// Scheduling (POST/DELETE) is deliberately absent: there is no agent to schedule onto, so the honest
+// answer to a schedule request is that the route does not exist.
+func (svc *Service) ListDHCPAgentsOnNetwork(c *gin.Context) {
+	networkID := c.Param("id")
+	projectID := c.GetString("project_id")
+
+	// Owner or shared or external, the same predicate GetNetwork uses (FR-033a) — a network the
+	// caller cannot see must not be distinguishable here from one that does not exist.
+	var exists bool
+	err := svc.pool.QueryRow(c.Request.Context(), `
+		SELECT EXISTS(
+			SELECT 1 FROM networks
+			WHERE (id::text = $1 OR name = $1)
+			  AND (project_id = $2 OR shared = true OR external = true)
+		)`, networkID, projectID).Scan(&exists)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_dhcp_agents_on_network").Str("network_id", networkID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list agents"))
+		return
+	}
+	if !exists {
+		common.SendError(c, common.NewNotFoundError("network"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"agents": []map[string]any{}})
+}
+
 // ListL3AgentsOnRouter returns L3 agents hosting a specific router
 func (svc *Service) ListL3AgentsOnRouter(c *gin.Context) {
 	routerID := c.Param("id")
 
-	// Verify router exists
+	// Scoped to the caller's own routers, as every other router handler is. Unscoped, this answered
+	// 200 with an empty list for another project's router and 404 for an id belonging to none — the
+	// pair distinguishes existence, so the endpoint was a probe for routers the caller may not see.
+	// The empty body discloses nothing further, but the fact of existence is already one bit more
+	// than a non-owner is entitled to, and the sibling ListDHCPAgentsOnNetwork already scopes.
+	//
+	// Compared as text so a malformed id matches nothing rather than erroring the query into a 500.
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM routers WHERE id = $1)",
-		routerID).Scan(&exists)
-	if err != nil || !exists {
+		"SELECT EXISTS(SELECT 1 FROM routers WHERE id::text = $1 AND project_id = $2)",
+		routerID, c.GetString("project_id")).Scan(&exists)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_l3_agents_on_router").Str("router_id", routerID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list agents"))
+		return
+	}
+	if !exists {
 		common.SendError(c, common.NewNotFoundError("router"))
 		return
 	}
@@ -183,12 +234,20 @@ func (svc *Service) AddL3AgentToRouter(c *gin.Context) {
 		return
 	}
 
-	// Verify router exists
+	// Scoped like the GET above, and for a stronger reason: this one WRITES. Unscoped it would let a
+	// caller schedule an agent onto another project's router. Nothing exploitable follows today —
+	// neutron_agents is never populated, so the agent check below refuses first — but that is
+	// incidental cover, not a decision, and a read path must not end up better protected than a write.
 	var routerExists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM routers WHERE id = $1)",
-		routerID).Scan(&routerExists)
-	if err != nil || !routerExists {
+		"SELECT EXISTS(SELECT 1 FROM routers WHERE id::text = $1 AND project_id = $2)",
+		routerID, c.GetString("project_id")).Scan(&routerExists)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "add_l3_agent_to_router").Str("router_id", routerID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to add agent to router"))
+		return
+	}
+	if !routerExists {
 		common.SendError(c, common.NewNotFoundError("router"))
 		return
 	}

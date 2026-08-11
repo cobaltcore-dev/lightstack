@@ -16,7 +16,6 @@ type VXLANCoordinator struct {
 	pool          *pgxpool.Pool
 	vxlanManager  *networking.VXLANManager
 	nodeRegistry  *compute.NodeRegistry
-	nsManager     *networking.NetworkNamespaceManager
 	pollInterval  time.Duration
 	vniRangeStart int
 	vniRangeEnd   int
@@ -28,7 +27,6 @@ func NewVXLANCoordinator(
 	pool *pgxpool.Pool,
 	vxlanManager *networking.VXLANManager,
 	nodeRegistry *compute.NodeRegistry,
-	nsManager *networking.NetworkNamespaceManager,
 	pollInterval time.Duration,
 	vniRangeStart, vniRangeEnd int,
 ) *VXLANCoordinator {
@@ -40,7 +38,6 @@ func NewVXLANCoordinator(
 		pool:          pool,
 		vxlanManager:  vxlanManager,
 		nodeRegistry:  nodeRegistry,
-		nsManager:     nsManager,
 		pollInterval:  pollInterval,
 		vniRangeStart: vniRangeStart,
 		vniRangeEnd:   vniRangeEnd,
@@ -118,10 +115,18 @@ func (vc *VXLANCoordinator) syncNetworks(ctx context.Context) {
 			continue
 		}
 
-		// Attach to bridge
+		// Attach to the network's bridge, in the namespace Lightstack runs in — where the bridge and the guest
+		// TAPs are, and where every other VXLANManager method already looks.
+		//
+		// This used to move the device into light-ns-<project> and attach it to a bridge there, which
+		// put it out of reach of its own manager: CreateVXLAN, DeleteVXLAN, AddFDBEntry and
+		// RemoveFDBEntry all resolve it with netlink.LinkByName in the root namespace. So FDB entries
+		// could not be installed at all (no cross-node forwarding, which is the entire point),
+		// DeleteVXLAN reported success while leaking the device, and CreateVXLAN's existence check
+		// missed it and rebuilt it every pass. The guests were never on the namespaced bridge either
+		// (SPEC-024 / cloud-storage#546 F10).
 		bridgeName := "br-" + networkID[:8]
-		nsName := vc.nsManager.GetNamespaceName(projectID)
-		if err := vc.vxlanManager.AttachToBridge(networkID, bridgeName, true, nsName); err != nil {
+		if err := vc.vxlanManager.AttachToBridge(networkID, bridgeName); err != nil {
 			log.Error().Err(err).Str("network_id", networkID).Msg("failed to attach VXLAN to bridge")
 		}
 	}

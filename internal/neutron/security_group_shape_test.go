@@ -242,7 +242,13 @@ func TestSecurityGroupRuleCarriesEveryKeyHorizonDereferences(t *testing.T) {
 //
 // A stock database only supplies the NULL case (all three seeded rules have NULL
 // remote_ip_prefix and remote_group_id), so the non-NULL case is created here.
-func TestRuleValuesAgreeAcrossAllThreeEmitters(t *testing.T) {
+// TestRuleValuesAgreeAcrossAllFourEmitters — SPEC-024 (cloud-storage#546) B9.
+//
+// #533 aligned three emitters and the create response was never in scope, which is what the old name
+// of this test recorded. A rule created with the optional fields unset came back with "" and 0 from
+// the create and null from every subsequent read: the same rule described two ways, which breaks any
+// client that round-trips or diffs it.
+func TestRuleValuesAgreeAcrossAllFourEmitters(t *testing.T) {
 	requireDB(t)
 	r := newNeutronTestRouter()
 	hdr := neutronAuthHdr(seededProjectID, true)
@@ -265,14 +271,12 @@ func TestRuleValuesAgreeAcrossAllThreeEmitters(t *testing.T) {
 		t.Fatalf("create rule: code=%d body=%s; want 201", code, body)
 	}
 	var created struct {
-		Rule struct {
-			ID string `json:"id"`
-		} `json:"security_group_rule"`
+		Rule map[string]any `json:"security_group_rule"`
 	}
 	if err := json.Unmarshal([]byte(body), &created); err != nil {
 		t.Fatalf("parse created rule: %v; body=%s", err, body)
 	}
-	populated := created.Rule.ID
+	populated, _ := created.Rule["id"].(string)
 	if populated == "" {
 		t.Fatalf("created rule has no id; body=%s", body)
 	}
@@ -321,6 +325,15 @@ func TestRuleValuesAgreeAcrossAllThreeEmitters(t *testing.T) {
 			if string(n) != string(f) || string(n) != string(g) {
 				t.Errorf("rule %s key %q disagrees across emitters: group-list=%s rule-list=%s rule-by-id=%s",
 					ruleID, key, n, f, g)
+			}
+
+			// The fourth emitter: the create response, for the rule this test created.
+			if ruleID == populated {
+				cr, _ := json.Marshal(created.Rule[key])
+				if string(cr) != string(g) {
+					t.Errorf("rule %s key %q: create response=%s but rule-by-id=%s — B9, the create path is the fourth emitter",
+						ruleID, key, cr, g)
+				}
 			}
 		}
 	}
@@ -484,5 +497,102 @@ func TestSecurityGroupRuleUnknownIDIs404(t *testing.T) {
 		neutronAuthHdr(seededProjectID, true))
 	if code != http.StatusNotFound {
 		t.Errorf("GET unknown security-group-rule: code=%d body=%s; want 404", code, body)
+	}
+}
+
+// TestUnsetRuleOptionalsAreNullInTheCreateResponse — contracts G1 and G2.
+//
+// The narrow case B9 is actually about: nothing optional supplied. The create response reported ""
+// for the remote fields and 0 for the port bounds, where every read reports null. 0 is not "unset" —
+// it describes a different rule.
+func TestUnsetRuleOptionalsAreNullInTheCreateResponse(t *testing.T) {
+	requireDB(t)
+	r := newNeutronTestRouter()
+	hdr := neutronAuthHdr(seededProjectID, true)
+	sgID := seededDefaultGroupID(t, r, hdr)
+
+	code, body := doReqBody(r, http.MethodPost, "/v2.0/security-group-rules",
+		`{"security_group_rule":{"security_group_id":"`+sgID+`","direction":"ingress","ethertype":"IPv4"}}`, hdr)
+	if code != http.StatusCreated {
+		t.Fatalf("create rule: code=%d body=%s; want 201", code, body)
+	}
+	var created struct {
+		Rule map[string]any `json:"security_group_rule"`
+	}
+	if err := json.Unmarshal([]byte(body), &created); err != nil {
+		t.Fatalf("parse created rule: %v; body=%s", err, body)
+	}
+	ruleID, _ := created.Rule["id"].(string)
+	t.Cleanup(func() {
+		doReq(r, http.MethodDelete, "/v2.0/security-group-rules/"+ruleID, hdr) //nolint:errcheck // best-effort fixture cleanup
+	})
+
+	for _, key := range []string{"remote_ip_prefix", "remote_group_id", "port_range_min", "port_range_max", "protocol"} {
+		got, present := created.Rule[key]
+		if !present {
+			t.Errorf("key %q absent from the create response; clients index it directly", key)
+			continue
+		}
+		if got != nil {
+			t.Errorf("create response %q = %#v, want null for an unset optional — this is B9", key, got)
+		}
+	}
+}
+
+// TestDeliberateZeroPortSurvivesStorage — contract G6 / FR-028.
+//
+// Port 0 is a legitimate ICMP type, so it must round-trip as 0 rather than becoming null. This is the
+// half spec A6 left open: the columns are nullable and can hold it, but the write path could not
+// express it — `Valid: portMin > 0` stored a real 0 as NULL. Reporting it correctly while storing NULL
+// would still be wrong, so this asserts the value after a re-read, not just the echo.
+func TestDeliberateZeroPortSurvivesStorage(t *testing.T) {
+	requireDB(t)
+	r := newNeutronTestRouter()
+	hdr := neutronAuthHdr(seededProjectID, true)
+	sgID := seededDefaultGroupID(t, r, hdr)
+
+	code, body := doReqBody(r, http.MethodPost, "/v2.0/security-group-rules",
+		`{"security_group_rule":{"security_group_id":"`+sgID+`","direction":"ingress","ethertype":"IPv4",`+
+			`"protocol":"icmp","port_range_min":0,"port_range_max":0}}`, hdr)
+	if code != http.StatusCreated {
+		t.Fatalf("create rule: code=%d body=%s; want 201", code, body)
+	}
+	var created struct {
+		Rule map[string]any `json:"security_group_rule"`
+	}
+	if err := json.Unmarshal([]byte(body), &created); err != nil {
+		t.Fatalf("parse created rule: %v; body=%s", err, body)
+	}
+	ruleID, _ := created.Rule["id"].(string)
+	t.Cleanup(func() {
+		doReq(r, http.MethodDelete, "/v2.0/security-group-rules/"+ruleID, hdr) //nolint:errcheck // best-effort fixture cleanup
+	})
+
+	for _, key := range []string{"port_range_min", "port_range_max"} {
+		got := created.Rule[key]
+		if got == nil {
+			t.Errorf("create response %q = null, want 0 — a deliberate zero is not 'unset'", key)
+			continue
+		}
+		if n, ok := got.(float64); !ok || n != 0 {
+			t.Errorf("create response %q = %#v, want 0", key, got)
+		}
+	}
+
+	// Re-read: proves the zero reached storage rather than only the response.
+	code, body = doReq(r, http.MethodGet, "/v2.0/security-group-rules/"+ruleID, hdr)
+	if code != http.StatusOK {
+		t.Fatalf("get rule: code=%d body=%s; want 200", code, body)
+	}
+	var one struct {
+		Rule map[string]any `json:"security_group_rule"`
+	}
+	if err := json.Unmarshal([]byte(body), &one); err != nil {
+		t.Fatalf("parse rule: %v; body=%s", err, body)
+	}
+	for _, key := range []string{"port_range_min", "port_range_max"} {
+		if one.Rule[key] == nil {
+			t.Errorf("stored %q came back null, want 0 — `Valid: portMin > 0` discarded a real zero", key)
+		}
 	}
 }

@@ -8,14 +8,17 @@ import (
 // GetNetwork's cache was keyed on the network id alone, and the lookup runs BEFORE the scoping
 // predicate that the database path applies. So once an owner had fetched a private network, any
 // authenticated caller that knew its id got 200 with the full object for the whole TTL, where the
-// uncached answer is 404. Raised on PR #79; the same defect is SRC-1 on the #546 branch, and this
-// key matches the fix that landed there.
+// uncached answer is 404 (branch review 2026-08-13, SRC-1).
+//
+// Making the cached body caller-independent — which #546 did, by reporting the row's owner rather
+// than the caller's — fixed the CONTENT but not the authorization: a caller-independent body served
+// to a caller who may not see it is still a disclosure, and now it names the real owner too.
 //
 // WHAT THIS TEST DOES AND DOES NOT PROVE. It pins the key, not the end-to-end isolation: pkg/cache
 // talks to a real Redis and there is none in CI, so an end-to-end test would either add a dependency
-// or skip forever — a check that cannot fail. The isolation follows from the key: a caller can only
-// read an entry it could have written. The regression this guards is someone dropping the project
-// from the key.
+// or skip forever — a check that cannot fail, which is the pattern this branch's review objected to
+// twice. The isolation follows from the key: a caller can only read an entry it could have written.
+// The regression this guards is someone dropping the project from the key.
 func TestNetworkCacheKeyIsScopedToTheCaller(t *testing.T) {
 	const netID = "9f1c2f3a-0000-4000-8000-000000000001"
 	const projectA = "00000000-0000-0000-0000-000000000002"
@@ -45,9 +48,9 @@ func TestNetworkCacheKeyIsScopedToTheCaller(t *testing.T) {
 	}
 }
 
-// Entries are per caller, so DeleteNetwork must evict every project's view of the network, not
-// only the deleter's. The eviction is a pattern; this pins that the pattern actually covers a key
-// the writer could have produced.
+// Entries are per caller, so DeleteNetwork and UpdateNetwork must evict every project's view of
+// the network, not only the writer's. The eviction is a pattern; this pins that the pattern
+// actually covers a key the writer could have produced.
 func TestNetworkCacheInvalidationPatternCoversEveryCaller(t *testing.T) {
 	const netID = "9f1c2f3a-0000-4000-8000-000000000001"
 	const pattern = "network:*:" + netID
@@ -58,8 +61,8 @@ func TestNetworkCacheInvalidationPatternCoversEveryCaller(t *testing.T) {
 	} {
 		key := networkCacheKey(project, netID)
 		if !matchesRedisGlob(pattern, key) {
-			t.Errorf("DeleteNetwork evicts %q, which does not match %q written for project %s — "+
-				"that project keeps serving the deleted network until the TTL expires",
+			t.Errorf("the writers evict %q, which does not match %q written for project %s — "+
+				"that project keeps serving the stale network until the TTL expires",
 				pattern, key, project)
 		}
 	}

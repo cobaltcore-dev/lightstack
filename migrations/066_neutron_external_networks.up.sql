@@ -1,0 +1,15 @@
+-- SPEC-024 (cloud-storage#546) F11 — model external networks.
+--
+-- Until now `router:external` was hard-coded false in every network response and a query for
+-- external networks returned an empty list, so Horizon's router "Set Gateway" dropdown was always
+-- empty and guest egress could not be configured from the UI at all.
+--
+-- NOT NULL DEFAULT false: a network is external or it is not; there is no third state that any
+-- requirement models, and a nullable column would invent a "don't know".
+--
+-- No back-fill, deliberately. Every pre-existing network becomes external = false, which means router
+-- gateways and floating IPs configured before this migration would fail the new validation. That is
+-- handled in code by grandfathering them (validate new requests only, FR-035a) rather than here:
+-- marking networks external retroactively would grant an administrator-only, tenant-visible attribute
+-- to networks no operator ever designated.
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS external BOOLEAN NOT NULL DEFAULT false;
