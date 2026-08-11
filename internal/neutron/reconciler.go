@@ -3,11 +3,13 @@ package neutron
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
+	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -57,6 +59,14 @@ func (r *NetworkReconciler) Start(ctx context.Context) {
 	}
 }
 
+// PollInterval returns the interval the reconciler actually runs at, after the clamp below.
+//
+// Callers used to log the *configured* value, so a deployment that left it unset printed
+// "interval: 0s" and read as though periodic reconciliation were disabled — it is not (#546).
+// Exposing the effective value keeps the clamp in one place rather than duplicating it at the
+// log site, where the two could drift.
+func (r *NetworkReconciler) PollInterval() time.Duration { return r.pollInterval }
+
 // Stop ends the reconcile loop.
 func (r *NetworkReconciler) Stop() { close(r.stopChan) }
 
@@ -71,6 +81,8 @@ func (r *NetworkReconciler) reconcile(ctx context.Context) {
 // NAT — so VM internet access and floating-IP reachability survive a Lightstack
 // control-plane restart (SPEC-009 WS-3 / T035). Idempotent.
 func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
+	r.reportGrandfatheredGateways(ctx)
+
 	// Egress: internal subnets behind a router that has an external gateway.
 	var cidrs []string
 	if rows, err := r.svc.pool.Query(ctx, `
@@ -152,24 +164,28 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 		return
 	}
 	var ids []string
+	scanFailed := false
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			log.Warn().Err(err).Str("operation", "reconcileNetworks").Msg("failed to scan row")
-		} else {
-			ids = append(ids, id)
+			scanFailed = true
+			continue
 		}
+		ids = append(ids, id)
 	}
 	rows.Close()
-	// Don't reconcile from a known-incomplete list; the next periodic pass retries.
+	// A short list is safe to ENSURE from and unsafe to PRUNE from, so the two halves of this pass are
+	// guarded separately. This used to skip only on rows.Err(), which left the more likely case — one
+	// unreadable row, logged and stepped over — feeding a short list straight into the prune below.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("reconcile: networks rows error; skipping this pass")
-		return
+		log.Error().Err(err).Msg("reconcile: networks rows error")
+		scanFailed = true
 	}
 
 	for _, networkID := range ids {
 		bridgeName := "br-" + networkID[:8]
-		if err := r.svc.brManager.CreateBridge(bridgeName, false, ""); err != nil {
+		if err := r.svc.brManager.CreateBridge(bridgeName); err != nil {
 			log.Debug().Err(err).Str("network_id", networkID).Str("bridge", bridgeName).Msg("reconcile: bridge ensure (likely already present)")
 		}
 	}
@@ -178,6 +194,16 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 	// bridge persists in the kernel and keeps claiming its subnet gateway IP,
 	// colliding with a later network on the same CIDR (the recurring single-node
 	// stale-bridge problem). Delete those bridges and stop their dnsmasq.
+	//
+	// Both steps below read "not in the list" as "deleted", so neither may run against a list known
+	// to be short: a network that was merely unread would lose its bridge and have its dnsmasq
+	// stopped — taking DHCP away from running guests. Skipping only defers the hygiene to the next
+	// pass, which is the same trade reconcileSubnets makes for the metadata redirect.
+	if scanFailed {
+		log.Warn().Msg("reconcile: network enumeration incomplete; skipping bridge and DHCP prune this pass")
+		return
+	}
+
 	active := make(map[string]bool, len(ids))
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -193,7 +219,7 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 			if want[b] {
 				continue
 			}
-			if err := r.svc.brManager.DeleteBridge(b, false, ""); err != nil {
+			if err := r.svc.brManager.DeleteBridge(b); err != nil {
 				log.Debug().Err(err).Str("bridge", b).Msg("reconcile: prune stale bridge")
 			} else {
 				log.Info().Str("bridge", b).Msg("reconcile: pruned stale bridge (network deleted)")
@@ -208,7 +234,8 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 // restart. It delegates to applyDHCPForNetwork(restart=false), which is
 // idempotent (IsRunning guard) while still self-healing a dnsmasq that was
 // killed out-of-band (SC-010) and re-asserting the bridge IP + metadata DNAT
-// every pass (SPEC-009 WS-4 / T029).
+// every pass (SPEC-009 WS-4 / T029). It then prunes the metadata DNAT rules that
+// pass did NOT assert, reclaiming what the delete paths leaked.
 func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
 	rows, err := r.svc.pool.Query(ctx,
 		`SELECT DISTINCT network_id FROM subnets WHERE enable_dhcp = true`)
@@ -217,22 +244,58 @@ func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
 		return
 	}
 	var networkIDs []string
+	scanFailed := false
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			// Logged so the bad row is discoverable (#549), and recorded so the prune below cannot
+			// treat a short list as authoritative (#546). Both halves are needed: the log alone
+			// leaves the prune destructive, the flag alone leaves the cause invisible.
 			log.Warn().Err(err).Str("operation", "reconcileSubnets").Msg("failed to scan row")
-		} else {
-			networkIDs = append(networkIDs, id)
+			scanFailed = true
+			continue
 		}
+		networkIDs = append(networkIDs, id)
 	}
 	rows.Close()
-	// Don't reconcile from a known-incomplete list; the next periodic pass retries.
+	// A short list is safe to ASSERT from and unsafe to PRUNE from, so the two halves of this pass
+	// are treated differently rather than the whole pass being abandoned (#549 returned here).
+	// Re-applying DHCP for the networks that were read is idempotent and only ever adds; the ones
+	// missed are picked up next pass. Pruning against the same short list would delete the
+	// metadata redirect out from under a network that was merely unread.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("reconcile: subnets rows error; skipping this pass")
+		log.Error().Err(err).Msg("reconcile: subnets rows error")
+		scanFailed = true
+	}
+
+	// bridge -> the address applyDHCPForNetwork pointed the redirect at. Collected from the calls
+	// themselves rather than re-derived from a second query, so the two can never disagree about
+	// which address a gatewayless subnet got and prune a rule that was just asserted.
+	desired := make(map[string]string, len(networkIDs))
+	for _, networkID := range networkIDs {
+		bridge, addr, err := r.svc.applyDHCPForNetwork(ctx, networkID, false)
+		if err != nil {
+			log.Warn().Err(err).Str("network_id", networkID).Msg("reconcile: failed to read DHCP state")
+			scanFailed = true
+			continue
+		}
+		if bridge != "" && addr != "" {
+			desired[bridge] = addr
+		}
+	}
+
+	// A partial read is not a prune input: pruning against a set that is missing a network — one
+	// the enumeration skipped, or one whose subnet could not be read — deletes the metadata redirect
+	// out from under it, which breaks cloud-init for its guests until the next clean pass. Skipping
+	// a pass only defers hygiene.
+	if scanFailed {
+		log.Warn().Msg("reconcile: subnet state incomplete; skipping metadata DNAT prune this pass")
 		return
 	}
-	for _, networkID := range networkIDs {
-		r.svc.applyDHCPForNetwork(ctx, networkID, false)
+	if removed, err := r.svc.mdRedirect.Prune(desired); err != nil {
+		log.Debug().Err(err).Msg("reconcile: metadata DNAT prune")
+	} else if removed > 0 {
+		log.Info().Int("rules", removed).Msg("reconcile: pruned stale metadata DNAT rules (network or gateway gone)")
 	}
 }
 
@@ -245,43 +308,65 @@ func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
 // from port allocation and subnet create (Constitution II). With restart=false
 // (the reconciler) it only starts dnsmasq if it is not already running, but
 // always re-asserts the bridge IP and metadata redirect. Best-effort.
-func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, restart bool) {
+//
+// Returns the bridge and the address it pointed the metadata redirect at, or two empty strings when
+// it asserted nothing (stub mode, no DHCP-enabled subnet, unusable CIDR). The reconciler collects
+// these into the desired set it prunes against, so what gets kept is exactly what got asserted.
+// The error reports a subnet that could not be READ, which is not the same as there being none: the
+// reconciler must not prune against a set missing a network it merely failed to read.
+func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, restart bool) (string, string, error) {
 	if svc.mode == "stub" {
-		return
+		return "", "", nil
 	}
-	var cidr, gatewayIP string
+	var cidr string
+	// gateway_ip is nullable and a subnet may legitimately have none. Scanning it into a plain string
+	// made this Scan fail on such a subnet, and the early return then left it with NO DHCP at all —
+	// silently (SPEC-024 / cloud-storage#546 FR-023a).
+	var gatewayIP *string
 	var dns []string
-	if err := svc.pool.QueryRow(ctx, `
+	err := svc.pool.QueryRow(ctx, `
 		SELECT cidr, gateway_ip, dns_nameservers FROM subnets
-		WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns); err != nil {
-		return // no DHCP-enabled subnet for this network — nothing to do
+		WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil // no DHCP-enabled subnet for this network — nothing to do
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("read DHCP subnet of network %s: %w", networkID, err)
 	}
 	_, ipNet, perr := net.ParseCIDR(cidr)
 	if perr != nil {
 		log.Warn().Err(perr).Str("network_id", networkID).Str("cidr", cidr).Msg("dhcp apply: bad subnet CIDR; skipping")
-		return
+		return "", "", nil
 	}
 	bridgeName := "br-" + networkID[:8]
-	// Bridge is in the default namespace; give it the gateway IP (so dnsmasq has
-	// an address in the subnet to serve) and the 169.254.169.254 DNAT.
+
+	// The bridge needs an address in the subnet whether or not the subnet advertises a gateway:
+	// dnsmasq binds to it, and the metadata DNAT hangs off it. With a gateway that address IS the
+	// gateway; without one we still take the first host address, but only as the bridge's own
+	// on-link address — it is never advertised as a default route (FR-023a).
+	bridgeAddr := bridgeAddrFor(gatewayIP, cidr)
+
 	ones, _ := ipNet.Mask.Size()
-	if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", gatewayIP, ones)); err != nil {
+	if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", bridgeAddr, ones)); err != nil {
 		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: bridge IP ensure")
 	}
-	if err := svc.mdRedirect.Ensure(bridgeName, gatewayIP); err != nil {
+	if err := svc.mdRedirect.Ensure(bridgeName, bridgeAddr); err != nil {
 		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: metadata redirect ensure")
 	}
 
 	if !restart && svc.dhcpManager.IsRunning(networkID) {
-		return // already serving — idempotent
+		return bridgeName, bridgeAddr, nil // already serving — idempotent, but the redirect above is ours
 	}
 
 	dhcpStart, dhcpEnd := dhcpRange(ipNet)
 	cfg := networking.DHCPConfig{
-		NetworkID:        networkID,
-		BridgeName:       bridgeName,
-		SubnetCIDR:       cidr,
-		GatewayIP:        gatewayIP,
+		NetworkID:  networkID,
+		BridgeName: bridgeName,
+		SubnetCIDR: cidr,
+		// Empty when the subnet has no gateway: no default route is advertised. The metadata route
+		// is carried separately so it survives that case (FR-023a).
+		GatewayIP:        derefOr(gatewayIP, ""),
+		MetadataNextHop:  bridgeAddr,
 		DNSServers:       dns,
 		DHCPRangeStart:   dhcpStart,
 		DHCPRangeEnd:     dhcpEnd,
@@ -293,15 +378,17 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 	// on this network can't interleave the kill/start (SPEC-009 WS-2).
 	var dhcpErr error
 	if restart {
-		dhcpErr = svc.dhcpManager.RestartDHCP(cfg, "")
+		dhcpErr = svc.dhcpManager.RestartDHCP(cfg)
 	} else {
-		dhcpErr = svc.dhcpManager.EnsureDHCP(cfg, "")
+		dhcpErr = svc.dhcpManager.EnsureDHCP(cfg)
 	}
 	if dhcpErr != nil {
 		log.Warn().Err(dhcpErr).Str("network_id", networkID).Msg("dhcp apply: failed to (re)start DHCP")
 	} else {
 		log.Info().Str("network_id", networkID).Int("reservations", len(cfg.HostReservations)).Bool("restart", restart).Msg("dhcp apply: server (re)started from DB state")
 	}
+	// The redirect was asserted before DHCP and stands whether or not dnsmasq came up.
+	return bridgeName, bridgeAddr, nil
 }
 
 // dhcpReservations builds MAC->IP dnsmasq reservations from the network's ports
@@ -360,4 +447,66 @@ func dhcpRange(ipNet *net.IPNet) (string, string) {
 		end = last
 	}
 	return start.String(), end.String()
+}
+
+// bridgeAddrFor returns the address the network's bridge carries for a subnet: the gateway when the
+// subnet has one, otherwise the first host address of its CIDR.
+//
+// The bridge needs an address in the subnet regardless — dnsmasq binds to it and the metadata DNAT
+// hangs off it — but for a gatewayless subnet that address is the bridge's own and is never
+// advertised as a default route (SPEC-024 FR-023a). Shared by the apply and teardown paths so both
+// agree on which address to add and remove.
+func bridgeAddrFor(gatewayIP *string, cidr string) string {
+	if gatewayIP != nil && *gatewayIP != "" {
+		return *gatewayIP
+	}
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return ""
+	}
+	return incrementIP(ipNet.IP, 1).String()
+}
+
+// reportGrandfatheredGateways logs any router whose gateway network is not marked external.
+//
+// Migration 066 added networks.external defaulting to false, so every gateway configured before it
+// looks invalid to the new validation. Those keep working — this reconcile pass deliberately does NOT
+// learn the check, because withdrawing SNAT here would silently remove working guest egress on
+// upgrade (FR-035a). Logging them instead makes the condition discoverable so an operator can mark
+// the network and converge deliberately rather than finding out later (FR-035b).
+func (r *NetworkReconciler) reportGrandfatheredGateways(ctx context.Context) {
+	rows, err := r.svc.pool.Query(ctx, `
+		SELECT rt.id, n.id, n.name
+		FROM routers rt
+		JOIN networks n ON n.id::text = rt.external_gateway_info->>'network_id'
+		WHERE rt.external_gateway_info IS NOT NULL
+		  AND rt.external_gateway_info::text <> 'null'
+		  AND n.external = false`)
+	if err != nil {
+		log.Debug().Err(err).Msg("reconcile: failed to check grandfathered gateways")
+		return
+	}
+	defer rows.Close()
+
+	// Scan and iteration failures are logged, not swallowed. Warning the operator IS this function's
+	// output (FR-035b), so a row dropped in silence is not a degraded result — it is the whole result
+	// going missing, and its silence reads as "nothing to converge". Same rule ListSubnets follows for
+	// the same reason (FR-024): keep serving the rest, but say what was skipped.
+	for rows.Next() {
+		var routerID, networkID, networkName string
+		if err := rows.Scan(&routerID, &networkID, &networkName); err != nil {
+			log.Warn().Err(err).Msg("reconcile: skipping unreadable grandfathered-gateway row")
+			continue
+		}
+		log.Warn().
+			Str("router_id", routerID).
+			Str("network_id", networkID).
+			Str("network_name", networkName).
+			Msg("router gateway network is not marked router:external; kept working (grandfathered), " +
+				"but a NEW gateway on it would be refused — mark it external to converge")
+	}
+	if err := rows.Err(); err != nil {
+		log.Warn().Err(err).Msg("reconcile: grandfathered-gateway scan incomplete — some routers may " +
+			"need converging without having been reported")
+	}
 }

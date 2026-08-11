@@ -11,15 +11,33 @@ import (
 
 	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/google/uuid"
+	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// Helper to create test port in database (bypasses bridge issues)
-func createDBPort(t *testing.T, name string) string {
+// createTrunkNetwork creates the network the test's ports live on. The database seeds none, and
+// relying on one left behind by an earlier test fails as soon as that test cleans up after itself.
+func createTrunkNetwork(t *testing.T, client *gophercloud.ServiceClient) string {
+	t.Helper()
+	network, err := networks.Create(client, networks.CreateOpts{
+		Name:         "trunk-test-network",
+		AdminStateUp: gophercloud.Enabled,
+	}).Extract()
+	require.NoError(t, err, "Failed to create network")
+	t.Cleanup(func() { networks.Delete(client, network.ID) })
+	return network.ID
+}
+
+// Helper to create test port in database (bypasses bridge issues). A failed insert fails the test
+// here rather than surfacing later as a trunk that cannot reference its port.
+func createDBPort(t *testing.T, networkID, name string) string {
+	t.Helper()
 	portID := uuid.New().String()
-	cmd := fmt.Sprintf(`docker exec lightstack-postgres psql -U lightstack -d lightstack -c "INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at) SELECT '%s', '%s', id, (SELECT id FROM projects WHERE name='default' LIMIT 1), '00:00:00:00:00:00', true, 'ACTIVE', '[]', NOW(), NOW() FROM networks LIMIT 1 ON CONFLICT DO NOTHING;"`, portID, name)
-	exec.Command("sh", "-c", cmd).Run()
+	cmd := fmt.Sprintf(`docker exec lightstack-postgres psql -U lightstack -d lightstack -c "INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at) VALUES ('%s', '%s', '%s', (SELECT id FROM projects WHERE name='default' LIMIT 1), '00:00:00:00:00:00', true, 'ACTIVE', '[]', NOW(), NOW());"`, portID, name, networkID)
+	out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
+	require.NoError(t, err, "Failed to insert port: %s", out)
 	return portID
 }
 
@@ -28,7 +46,7 @@ func TestTrunkBasicCRUD(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 	client := contract.SetupNeutronClient(t)
 
-	portID := createDBPort(t, "test-trunk-port")
+	portID := createDBPort(t, createTrunkNetwork(t, client), "test-trunk-port")
 
 	// CREATE
 	createReq := map[string]interface{}{
@@ -44,7 +62,7 @@ func TestTrunkBasicCRUD(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	respBody, _ := io.ReadAll(resp.Body)
 	var createResult struct {
@@ -102,8 +120,9 @@ func TestTrunkSubports(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 	client := contract.SetupNeutronClient(t)
 
-	parentPort := createDBPort(t, "trunk-parent")
-	subPort := createDBPort(t, "trunk-sub")
+	networkID := createTrunkNetwork(t, client)
+	parentPort := createDBPort(t, networkID, "trunk-parent")
+	subPort := createDBPort(t, networkID, "trunk-sub")
 
 	// Create trunk
 	createReq := map[string]interface{}{
@@ -119,6 +138,7 @@ func TestTrunkSubports(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	respBody, _ := io.ReadAll(resp.Body)
 	var createResult struct {

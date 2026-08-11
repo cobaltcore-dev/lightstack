@@ -247,7 +247,19 @@ func LogDatabaseQuery(c *gin.Context, query string, duration time.Duration, err 
 		Msg("database query")
 }
 
-// RecoveryMiddleware handles panics
+// RecoveryMiddleware handles panics.
+//
+// It renders through common.SendError rather than gin's AbortWithStatus, which writes a status and
+// no body at all. This is the only recover that runs: deferred recovers unwind innermost-first, and
+// every service registers this middleware after ErrorHandlingMiddleware (cmd/lightstack/main.go), so
+// its recover is the inner one and fires first — ErrorHandlingMiddleware's then sees nil. Keep it
+// after that one if the chain changes. A panic therefore used to answer with a bodiless 500 on every
+// service, and on Neutron it also escaped the NeutronError envelope that FR-008 requires on *every*
+// failing path (branch review 2026-08-13, SRC-2).
+//
+// SendError picks the envelope from the request, so Neutron gets NeutronError and the other services
+// get their existing compute-style body — each service keeps its own shape, and none of them keeps
+// the empty one.
 func RecoveryMiddleware() gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		log.Error().
@@ -255,7 +267,8 @@ func RecoveryMiddleware() gin.HandlerFunc {
 			Str("method", c.Request.Method).
 			Str("path", c.Request.URL.Path).
 			Msg("panic recovered")
-		c.AbortWithStatus(500)
+		common.SendError(c, common.NewInternalServerError("internal server error"))
+		c.Abort()
 	})
 }
 

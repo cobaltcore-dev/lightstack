@@ -95,35 +95,33 @@ sudo dnf install -y iproute iptables bridge-utils dnsmasq
 
 ### How It Works
 
-1. **Network Namespace Isolation**
+1. **Layer-2 Isolation via One Bridge per Network**
+
+   Isolation comes from the bridge, not from a namespace per project. Everything below runs in the
+   namespace Lightstack itself runs in, because libvirt has to reach the bridges and TAPs there
+   (SPEC-024 / cloud-storage#546 F10). Lightstack no longer creates `light-ns-<project_id>` at all.
+
    ```bash
-   # One namespace per project
-   ip netns add light-ns-<project_id>
+   ip link add br-<network_id> type bridge
+   ip link set br-<network_id> up
    ```
 
-2. **Bridge per Network**
-   ```bash
-   # Inside each namespace
-   ip netns exec light-ns-<project_id> ip link add br-<network_id> type bridge
-   ip netns exec light-ns-<project_id> ip link set br-<network_id> up
-   ```
-
-3. **TAP Devices for VMs**
+2. **TAP Devices for VMs**
    ```bash
    # Create TAP for each VM interface
    ip tuntap add tap-<port_id> mode tap
    ip link set tap-<port_id> master br-<network_id>
    ```
 
-4. **DHCP with dnsmasq**
+3. **DHCP with dnsmasq**
    ```bash
    # One dnsmasq per network
-   ip netns exec light-ns-<project_id> dnsmasq \
+   dnsmasq \
      --interface=br-<network_id> \
      --dhcp-range=192.168.1.10,192.168.1.200,24h
    ```
 
-5. **Security Groups with iptables**
+4. **Security Groups with iptables**
    ```bash
    # Create chain per security group
    iptables -t filter -N lightstack-SG-<sg_id>
@@ -202,28 +200,23 @@ zgrep CONFIG_BPF /proc/config.gz | grep -E '(BPF|XDP)'
 
 ### How It Works
 
-1. **Network Namespace Isolation** (same as iptables mode)
+1. **Bridge per Network** (same as iptables mode)
    ```bash
-   ip netns add light-ns-<project_id>
+   ip link add br-<network_id> type bridge
    ```
 
-2. **Bridge per Network** (same as iptables mode)
-   ```bash
-   ip netns exec light-ns-<project_id> ip link add br-<network_id> type bridge
-   ```
-
-3. **TAP Devices** (same as iptables mode)
+2. **TAP Devices** (same as iptables mode)
    ```bash
    ip tuntap add tap-<port_id> mode tap
    ip link set tap-<port_id> master br-<network_id>
    ```
 
-4. **DHCP** (same as iptables mode)
+3. **DHCP** (same as iptables mode)
    ```bash
-   ip netns exec light-ns-<project_id> dnsmasq --interface=br-<network_id> ...
+   dnsmasq --interface=br-<network_id> ...
    ```
 
-5. **Security Groups with eBPF**
+4. **Security Groups with eBPF**
    ```bash
    # Compile and load eBPF program
    clang -O2 -target bpf -c security_group.c -o security_group.o
@@ -394,11 +387,8 @@ sudo go run cmd/lightstack/main.go --config config/lightstack.yaml
 # Create network
 openstack network create test-network
 
-# Verify namespace created
-sudo ip netns list | grep light-ns
-
-# Verify bridge created
-sudo ip netns exec light-ns-<project_id> ip link show | grep br-
+# Verify bridge created (no namespace is created; the bridge is where Lightstack runs)
+ip link show type bridge | grep br-
 ```
 
 ### Test eBPF Mode (Linux 4.18+ only)
