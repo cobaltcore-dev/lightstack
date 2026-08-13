@@ -26,6 +26,18 @@ are in [HOST_TESTING_REAL_MODE.md](./HOST_TESTING_REAL_MODE.md).
 | F11 — gateway/floating-IP validation, and cross-project read-only visibility | S10 |
 | SC-011 — no previously passing check regressed | S11 |
 
+**Follow-up findings (2026-08-13) — not part of #546.** Found during the real-mode host pass and
+fixed on this branch as a separate commit. Each step below carries the context it needs.
+
+| Acceptance criterion | Proved by |
+|---|---|
+| Finding 1 — a short network id is refused, not a panic to `500` | S12 |
+| Finding 2 — `dhcp_agent_scheduler` is advertised and its endpoint answers | S13 |
+
+Finding 1's substance — metadata DNAT rules being reclaimed — is **mode-gated and cannot be proved
+here**. `MetadataRedirect` is a no-op in stub mode, so a stub stack writes no iptables rules to leak.
+That half is [HOST_TESTING_REAL_MODE.md](./HOST_TESTING_REAL_MODE.md) R10.
+
 ---
 
 ## 0. Prerequisites
@@ -273,6 +285,77 @@ contract suites `ok`; `0 issues`.
 The reset runs before **every** contract package, not once, because
 `test/contract/keystone/password_test.go` rotates the password again mid-suite — so a single reset at
 the top leaves everything after keystone failing to authenticate.
+
+S11's unit line also covers the follow-up findings below: their tests live in `internal/neutron` and
+`pkg/networking`, both inside `./internal/... ./pkg/...`.
+
+---
+
+## 2b. Follow-up findings (2026-08-13, not #546)
+
+Both were found during the real-mode host pass and fixed as a separate commit. Run these after S11;
+neither creates a fixture the teardown does not already remove.
+
+### S12 — A short network id is refused, not a crash (finding 1)
+
+`DeleteNetwork` derives the bridge name by slicing the first 8 characters of the path parameter. It
+did that **before** checking anything, so an id shorter than 8 characters sliced out of range, and
+the panic-recovery middleware turned a request that should simply match no row into a `500`.
+
+```bash
+for id in foo ab 1234567 12345678 00000000-0000-0000-0000-999999999999; do printf '%-46s %s\n' "DELETE /networks/$id" "$(curl -s -H "X-Auth-Token: $T" -o /tmp/546-del-$id.json -w '%{http_code}' -X DELETE "http://localhost:9696/v2.0/networks/$id") $(jq -rc '[(keys|first), .NeutronError.type]' /tmp/546-del-$id.json 2>/dev/null || echo '<empty body>')"; done
+docker logs --since 5m o3k 2>&1 | grep -c 'slice bounds out of range' || true
+```
+
+**Expect:** every line is `404 ["NeutronError","NetworkNotFound"]`. None is `500`, and none prints
+`<empty body>`.
+
+Both halves of each line matter. When this step was written `RecoveryMiddleware` ended in
+`c.AbortWithStatus(500)`, which writes **no body at all** — so before the fix these requests returned
+a bodiless `500` that also silently escaped B10's envelope guarantee, and the status code alone would
+not have distinguished that from an ordinary internal error. That middleware now renders through
+`common.SendError` (branch review SRC-2), so a panic carries an envelope too; the body assertion here
+still earns its place, because it is what distinguishes "matched no row" from "crashed and recovered".
+
+The log count is the independent check: a recovered panic still logs `panic recovered` with the
+runtime error, so a `404` reached by crashing on some other path would show up here even when the
+status looks right. **`0`** is the pass. The grep is deliberately the exact runtime message rather
+than `panic`, because S2 and `make test-errors` exercise the panic path on purpose and a broader
+pattern would match those.
+
+The 8-character boundary is what the loop probes: `1234567` is the longest id that used to panic and
+`12345678` the shortest that never did, so a fix that guarded the wrong comparison shows up as one
+line out of place rather than passing by luck.
+
+### S13 — The DHCP-agent-scheduler alias and its endpoint (finding 2)
+
+Horizon's admin Network list assigns its **Project** column inside a block guarded by
+DHCP-agent-scheduler support — an unrelated capability that happens to share the loop — so without the
+alias every row rendered `-` while the API returned the right owner. The alias alone would have made
+it *worse*: the same block fetches each network's agents, so a missing endpoint raises an error pop-up
+per row. Both halves are asserted here; the column itself needs Horizon (real-mode R11).
+
+`$NID` comes from S8 and is the network owned by `$OTHER`.
+
+```bash
+curl -s -H "X-Auth-Token: $T" http://localhost:9696/v2.0/extensions | jq -r '[.extensions[].alias] | sort | join(" ")'
+printf '%-26s %s\n' "own network" "$(curl -s -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/networks/$NET_A/dhcp-agents" | jq -c '[(.agents|length), (.agents|type)]')"
+printf '%-26s %s\n' "external network" "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/networks/$EXT/dhcp-agents")"
+printf '%-26s %s\n' "unknown network" "$(curl -s -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/networks/00000000-0000-0000-0000-999999999999/dhcp-agents" | jq -c '[(keys|first), .NeutronError.type]')"
+printf '%-26s %s\n' "another project's" "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/networks/$NID/dhcp-agents")"
+echo "agents collection: $(curl -s -H "X-Auth-Token: $T" http://localhost:9696/v2.0/agents | jq -c '.agents | length')"
+```
+
+**Expect:** the alias list contains `dhcp_agent_scheduler` alongside the seven that were already there.
+Then `own network` reads `[0,"array"]` — an **empty array**, not `null` and not a missing key, which is
+what Horizon needs to render `0` rather than raise; `external network` is `200`, since visibility is
+owner-or-shared-or-external; `unknown network` is `["NeutronError","NetworkNotFound"]` in Neutron's
+envelope; `another project's` is **`404`**, so the endpoint cannot be used to probe for networks the
+caller cannot see. The last line is `0`, which is why an empty list is the honest answer here —
+`neutron_agents` is created by migration `038` and seeded by nothing.
+
+An alias that is present while the endpoint 404s is the combination to watch for: it is worse than
+neither, and it is exactly what advertising the capability alone would produce.
 
 ---
 

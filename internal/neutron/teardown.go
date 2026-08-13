@@ -2,12 +2,10 @@ package neutron
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/cobaltcore-dev/o3k/internal/database"
 	"github.com/cobaltcore-dev/o3k/pkg/networking"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,7 +18,7 @@ import (
 //  1. floating-IP DNAT (+ the /32 on the uplink) and per-VM ingress SG filters
 //  2. egress SNAT for internal subnets behind an external-gateway router
 //     2b. per-security-group iptables chains (O3K-SG-*), best-effort
-//  3. per network: stop dnsmasq, remove the 169.254.169.254 DNAT, delete the bridge
+//  3. every 169.254.169.254 DNAT this node wrote, then per network: stop dnsmasq, delete the bridge
 //  4. router namespaces, then tenant/project namespaces
 //
 // Best-effort per resource (an already-absent rule is fine and not counted); returns
@@ -104,30 +102,27 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 		}
 	}
 
-	// 3. Per network: stop dnsmasq, remove the metadata DNAT, delete the host bridge.
+	// 3. Every metadata DNAT this node wrote, in one sweep.
+	//
+	// Not enumerated per network like everything else here: the rules outlive the rows, so a
+	// database that was recreated (or a network deleted by a path that leaked) would leave rules no
+	// enumeration can name. Pruning against an empty desired set removes exactly the rules matching
+	// the shape Ensure writes, which is what "the host footprint goes away with the product" means
+	// (SPEC-024 host pass, finding 1).
+	if removed, err := svc.mdRedirect.Prune(nil); err != nil {
+		fail(err, "remove metadata DNAT rules")
+	} else if removed > 0 {
+		log.Info().Int("rules", removed).Msg("teardown network: reclaimed metadata DNAT rules")
+	}
+
+	// 3b. Per network: stop dnsmasq, delete the host bridge.
 	if netIDs, err := queryStrings(ctx, `SELECT id FROM networks`); err != nil {
 		fail(err, "enumerate networks")
 	} else {
 		for _, id := range netIDs {
 			fail(svc.dhcpManager.StopDHCP(id), "stop dnsmasq")
 			if len(id) >= 8 {
-				bridge := "br-" + id[:8]
-				// gateway_ip is nullable, and the DNAT hangs off the bridge's address rather than off
-				// a gateway per se — so a gatewayless subnet still has one to remove. Scanning into a
-				// plain string failed here and left the DNAT behind while reporting a teardown error
-				// (SPEC-024 FR-023a); cidr is selected so the same address applyDHCPForNetwork chose
-				// can be reconstructed.
-				var gw *string
-				var cidr string
-				if e := database.DB.QueryRow(ctx,
-					`SELECT gateway_ip, cidr FROM subnets WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, id).Scan(&gw, &cidr); e != nil && !errors.Is(e, pgx.ErrNoRows) {
-					fail(e, "query gateway_ip")
-				} else if e == nil {
-					if addr := bridgeAddrFor(gw, cidr); addr != "" {
-						fail(svc.mdRedirect.Remove(bridge, addr), "remove metadata DNAT")
-					}
-				}
-				fail(svc.brManager.DeleteBridge(bridge, false, ""), "delete bridge")
+				fail(svc.brManager.DeleteBridge("br-"+id[:8], false, ""), "delete bridge")
 			}
 		}
 	}

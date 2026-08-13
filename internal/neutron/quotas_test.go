@@ -196,9 +196,16 @@ func TestListExtensions_AdvertisesQuotaDetails(t *testing.T) {
 	// The exact set FR-013 names, now that the trace has closed it. Asserting the whole
 	// set rather than only the addition covers FR-013's second half too — "only aliases
 	// O3K genuinely implements may be advertised" — which a presence check cannot.
+	//
+	// dhcp_agent_scheduler joins it for Horizon's admin Project column (SPEC-024 host pass,
+	// finding 2). It is advertised on the strength of GET /networks/{id}/dhcp-agents, which
+	// answers with the empty list a node running dnsmasq directly genuinely has — the closed-set
+	// rule above is what forces the endpoint and the alias to land together, since the alias alone
+	// turns a blank column into an error pop-up per network row.
 	want := map[string]bool{
 		"security-group": true, "router": true, "port-security": true,
 		"binding": true, "provider": true, "quotas": true, "quota_details": true,
+		"dhcp_agent_scheduler": true,
 	}
 	got := map[string]bool{}
 	for _, e := range env.Extensions {

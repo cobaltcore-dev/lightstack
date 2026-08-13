@@ -104,6 +104,46 @@ func (svc *Service) GetAgent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"agent": agent})
 }
 
+// ListDHCPAgentsOnNetwork returns the DHCP agents hosting a network — always none.
+//
+// O3K serves DHCP by running dnsmasq directly on the node, not by scheduling a network onto an
+// agent, so it hosts no DHCP agents and says so. That matches GET /v2.0/agents, which reports the
+// same because nothing ever populates neutron_agents.
+//
+// It exists because Horizon's admin Network list assigns its **Project** column inside a block
+// guarded by `is_dhcp_agent_scheduler_supported`, and that same block fetches each network's agents.
+// With the alias advertised but this endpoint missing, every row raised an error pop-up; with
+// neither, the ownership column rendered "-" for every network even though the API returned the
+// right owner (SPEC-024 host pass, finding 2).
+//
+// Scheduling (POST/DELETE) is deliberately absent: there is no agent to schedule onto, so the honest
+// answer to a schedule request is that the route does not exist.
+func (svc *Service) ListDHCPAgentsOnNetwork(c *gin.Context) {
+	networkID := c.Param("id")
+	projectID := c.GetString("project_id")
+
+	// Owner or shared or external, the same predicate GetNetwork uses (FR-033a) — a network the
+	// caller cannot see must not be distinguishable here from one that does not exist.
+	var exists bool
+	err := database.DB.QueryRow(c.Request.Context(), `
+		SELECT EXISTS(
+			SELECT 1 FROM networks
+			WHERE (id::text = $1 OR name = $1)
+			  AND (project_id = $2 OR shared = true OR external = true)
+		)`, networkID, projectID).Scan(&exists)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_dhcp_agents_on_network").Str("network_id", networkID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list agents"))
+		return
+	}
+	if !exists {
+		common.SendError(c, common.NewNotFoundError("network"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"agents": []map[string]any{}})
+}
+
 // ListL3AgentsOnRouter returns L3 agents hosting a specific router
 func (svc *Service) ListL3AgentsOnRouter(c *gin.Context) {
 	routerID := c.Param("id")

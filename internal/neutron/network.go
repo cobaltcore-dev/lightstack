@@ -237,6 +237,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		v2.GET("/agents/:id", svc.GetAgent)
 		v2.GET("/routers/:id/l3-agents", svc.ListL3AgentsOnRouter)
 		v2.POST("/routers/:id/l3-agents", svc.AddL3AgentToRouter)
+		v2.GET("/networks/:id/dhcp-agents", svc.ListDHCPAgentsOnNetwork)
 	}
 }
 
@@ -316,6 +317,19 @@ func (svc *Service) ListExtensions(c *gin.Context) {
 				"name":        "Quota management support",
 				"description": "Expose resource quotas",
 				"updated":     "2012-07-29T10:00:00-00:00",
+				"links":       []gin.H{},
+			},
+			{
+				// Horizon's admin Network list assigns its Project column inside a block guarded by
+				// this alias — an unrelated capability, but the same loop — so without it the
+				// ownership column rendered "-" for every network while the API returned the right
+				// owner (SPEC-024 host pass, finding 2). The guard also fetches each network's
+				// agents, so the alias is only honest alongside GET /networks/{id}/dhcp-agents;
+				// O3K hosts none and reports an empty list.
+				"alias":       "dhcp_agent_scheduler",
+				"name":        "DHCP Agent Scheduler",
+				"description": "Schedule networks among dhcp agents",
+				"updated":     "2013-02-07T10:00:00-00:00",
 				"links":       []gin.H{},
 			},
 			{
@@ -1029,14 +1043,29 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 		return
 	}
 
-	bridgeName := "br-" + networkID[:8]
+	// Only an id names a bridge. This handler deletes by id (never by name), but it used to slice
+	// the raw path parameter unguarded, so DELETE /v2.0/networks/foo panicked out of range and the
+	// recovery middleware turned it into a 500 — for a request that should simply not match a row.
+	if len(networkID) >= 8 {
+		bridgeName := "br-" + networkID[:8]
 
-	// Delete the bridge from the DEFAULT namespace, where it was created (real
-	// mode). Deleting it also drops its gateway IP — leaving it behind would
-	// leak a duplicate 10.x gateway onto the host and split routing across stale
-	// bridges (SPEC-009). Best-effort: the network row is about to be deleted.
-	if err := svc.brManager.DeleteBridge(bridgeName, false, ""); err != nil {
-		log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to delete network bridge")
+		// Remove the metadata DNAT before the bridge, so the rule never outlives the interface it is
+		// keyed on. Left behind it is inert until a later network draws a UUID with the same first 8
+		// hex chars and reuses the bridge name — then the stale rule, being earlier in the ordered
+		// PREROUTING chain, wins and sends that network's guests to a gateway that no longer exists
+		// (SPEC-024 host pass, finding 1). The subnets are already gone by now, which is why this is
+		// keyed on the bridge rather than on a gateway address.
+		if err := svc.mdRedirect.RemoveForBridge(bridgeName); err != nil {
+			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to remove metadata DNAT")
+		}
+
+		// Delete the bridge from the DEFAULT namespace, where it was created (real
+		// mode). Deleting it also drops its gateway IP — leaving it behind would
+		// leak a duplicate 10.x gateway onto the host and split routing across stale
+		// bridges (SPEC-009). Best-effort: the network row is about to be deleted.
+		if err := svc.brManager.DeleteBridge(bridgeName, false, ""); err != nil {
+			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to delete network bridge")
+		}
 	}
 
 	// Delete from database
@@ -1679,7 +1708,38 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		return
 	}
 
+	svc.removeMetadataRedirectIfLastDHCPSubnet(c.Request.Context(), networkID)
+
 	c.Status(http.StatusNoContent)
+}
+
+// removeMetadataRedirectIfLastDHCPSubnet reclaims a network's metadata DNAT once its last
+// DHCP-enabled subnet is gone. The bridge survives subnet deletion, so nothing else would remove
+// the rule until the network itself is deleted — and iptables outlives the pod, the release and the
+// database (SPEC-024 host pass, finding 1).
+//
+// Gated on the remaining count rather than fired unconditionally: a network with two DHCP subnets
+// still needs the redirect after one of them goes, and removing it would break cloud-init for its
+// running guests until the next reconcile pass. Called after the DELETE, so the count is post-state.
+func (svc *Service) removeMetadataRedirectIfLastDHCPSubnet(ctx context.Context, networkID string) {
+	if svc.mode == "stub" || len(networkID) < 8 {
+		return
+	}
+	var remaining int
+	if err := database.DB.QueryRow(ctx,
+		"SELECT COUNT(*) FROM subnets WHERE network_id = $1 AND enable_dhcp = true", networkID,
+	).Scan(&remaining); err != nil {
+		// Unknown post-state. Leaving the rule is the safe side: the reconciler prunes it if it is
+		// genuinely orphaned, whereas removing it wrongly is a live metadata outage.
+		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to count remaining DHCP subnets; leaving metadata DNAT")
+		return
+	}
+	if remaining > 0 {
+		return
+	}
+	if err := svc.mdRedirect.RemoveForBridge("br-" + networkID[:8]); err != nil {
+		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to remove metadata DNAT")
+	}
 }
 
 // UpdateSubnet updates a subnet

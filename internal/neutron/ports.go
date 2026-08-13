@@ -63,6 +63,17 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
+	// Any OTHER error had to be handled too (second review, AGY-1). A network_id that is not a UUID
+	// fails the cast rather than matching no row, so it is not ErrNoRows — and going unchecked it
+	// fell through with networkID empty, all the way to `"br-" + req.Port.NetworkID[:8]`, which
+	// panicked on anything shorter than 8 characters. AllocatePortForInstance, which runs the very
+	// same lookup for the instance-boot path, has always checked both; the two disagreeing is the
+	// asymmetry #546 noted between these paths.
+	if err != nil {
+		log.Warn().Err(err).Str("network_id", req.Port.NetworkID).Msg("port create: unusable network_id")
+		common.SendError(c, common.NewNotFoundError("network"))
+		return
+	}
 
 	// Get subnet to allocate IP
 	var subnetID, cidr string
@@ -461,6 +472,32 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	portID := c.Param("id")
 	projectID := c.GetString("project_id")
 
+	// Resolve the port BEFORE deriving anything from its id (second review, AGY-1).
+	//
+	// `tapName := "tap-" + portID[:8]` used to be the third statement of this handler, ahead of every
+	// lookup, so DELETE /v2.0/ports/p1 sliced out of range and panicked — recovered into a 500 for a
+	// request that names no port. Comparing as text rather than casting to uuid means a malformed id
+	// simply matches nothing instead of erroring the query, which was a second 500 on the same path.
+	//
+	// Resolving first also stops the handler reporting 204 for a port it never found: the dishonest
+	// success FR-033b removed from DeleteNetwork, still present here because the sweep that fixed
+	// that one did not reach its siblings.
+	var resolvedID string
+	err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT id::text FROM ports WHERE id::text = $1 AND project_id = $2",
+		portID, projectID,
+	).Scan(&resolvedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("port"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_port").Str("port_id", portID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to delete port"))
+		return
+	}
+	portID = resolvedID
+
 	tapName := "tap-" + portID[:8]
 
 	// Detach XDP program if eBPF mode
@@ -504,12 +541,12 @@ func (svc *Service) DeletePort(c *gin.Context) {
 		}
 	}
 
-	// Delete from database
-	_, err := database.DB.Exec(c.Request.Context(),
+	// Delete from database. The row was resolved above, so this deletes by an id already known to
+	// exist and to belong to the caller.
+	if _, err = database.DB.Exec(c.Request.Context(),
 		"DELETE FROM ports WHERE id = $1 AND project_id = $2",
 		portID, projectID,
-	)
-	if err != nil {
+	); err != nil {
 		log.Error().Err(err).Str("operation", "delete_port").Str("port_id", portID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete port"))
 		return

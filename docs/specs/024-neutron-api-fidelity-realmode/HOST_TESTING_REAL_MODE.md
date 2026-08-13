@@ -31,6 +31,14 @@ create host network namespaces.
 | #546 (2026-08-12) — the reconciler logs its **effective** interval, not `0s` | R8 |
 | SC-011 — Glance on RGW and the other services still work | R9 |
 
+**Follow-up findings (2026-08-13) — not part of #546.** Found during this host pass and fixed on this
+branch as a separate commit. Each step below carries the context it needs.
+
+| Acceptance criterion | Proved by |
+|---|---|
+| Finding 1 — metadata DNAT rules are reclaimed on delete, by the reconciler, and at teardown | R10, and the teardown check in §3 |
+| Finding 2 — Horizon's admin **Project** column shows the owning project | R11 |
+
 ---
 
 ## 0. Prerequisites
@@ -204,8 +212,8 @@ namespace fix did not take effect in this deployment — re-check the mode read-
 openstack server create --flavor m1.small --image cirros --network "$NET" rt-guest >/dev/null
 for i in $(seq 1 60); do s=$(openstack server show rt-guest -f value -c status); test "$s" = ACTIVE && break; sleep 5; done
 openstack server show rt-guest -f value -c status -c addresses
-sleep 45
-openstack console log show rt-guest 2>/dev/null > /tmp/rt-guest.console
+for i in $(seq 1 36); do openstack console log show rt-guest 2>/dev/null > /tmp/rt-guest.console; grep -q '=== cirros: current=' /tmp/rt-guest.console && break; sleep 5; done
+grep -q '=== cirros: current=' /tmp/rt-guest.console && echo "boot finished: $(grep -o 'uptime=[0-9.]*' /tmp/rt-guest.console | tail -1)" || echo "BOOT DID NOT FINISH within 180s — the counters below are inconclusive, not a failure"
 echo "metadata route delivered: $(grep -c 'ip-route:169.254.169.254' /tmp/rt-guest.console)"
 echo "instance-id consumed:     $(grep -c 'instance-id: ' /tmp/rt-guest.console)"
 echo "failed, excluding public-ipv4: $(grep 'failed to get http://169.254.169.254' /tmp/rt-guest.console | grep -vc 'public-ipv4')"
@@ -224,7 +232,20 @@ correct outcome, so counting it as a failure would make this step unpassable. At
 (R5) and it goes away.
 
 `instance-id consumed` is the strongest single signal here: it means the guest did not merely reach
-the service, it parsed and used the response.
+the service, it parsed and used the response. The `=== datasource: ec2 net ===` block it comes from
+resolves several keys (`instance-id`, `local-hostname`, `availability-zone`), so a populated block is
+also the cheapest confirmation that the metadata service answers more than one key.
+
+**The wait polls rather than sleeping a fixed interval, deliberately** (2026-08-13). It waits for the
+`=== cirros: current=… uptime=… ===` line, which cirros emits at the end of its init — *after* the
+datasource block. A fixed `sleep 45` was structurally too short: it starts when the server reports
+`ACTIVE`, which is before the guest has finished booting, and an observed run needed `uptime=45.09`
+of guest time plus console-flush lag on top of that. The failure mode it produced is the one worth
+avoiding: the log was captured with only `checking http://169.254.169.254/…` in it, so two counters
+read `0` and the third read `0` **vacuously** — nothing had been attempted yet, which looks identical
+to everything having succeeded. Waiting for the boot-summary marker makes all three honest, and the
+explicit `BOOT DID NOT FINISH` line keeps "still booting" distinguishable from "booted and metadata
+failed" instead of leaving it to judgement.
 
 Read those two numbers rather than eyeballing the log, because two lines look alarming and are not:
 
@@ -248,8 +269,8 @@ openstack subnet create rt-sub-nogw --network "$NET2" --subnet-range 10.244.20.0
 openstack server create --flavor m1.small --image cirros --network "$NET2" rt-guest2 >/dev/null
 for i in $(seq 1 60); do s=$(openstack server show rt-guest2 -f value -c status); test "$s" = ACTIVE && break; sleep 5; done
 sudo find /var/lib/o3k -name '*.conf' -exec grep -H dhcp-option {} + 2>/dev/null || echo 'no dnsmasq config found yet'
-sleep 45
-openstack console log show rt-guest2 2>/dev/null > /tmp/rt-guest2.console
+for i in $(seq 1 36); do openstack console log show rt-guest2 2>/dev/null > /tmp/rt-guest2.console; grep -q '=== cirros: current=' /tmp/rt-guest2.console && break; sleep 5; done
+grep -q '=== cirros: current=' /tmp/rt-guest2.console && echo "boot finished: $(grep -o 'uptime=[0-9.]*' /tmp/rt-guest2.console | tail -1)" || echo "BOOT DID NOT FINISH within 180s — the counters below are inconclusive, not a failure"
 echo "instance-id consumed:          $(grep -c 'instance-id: ' /tmp/rt-guest2.console)"
 echo "failed, excluding public-ipv4: $(grep 'failed to get http://169.254.169.254' /tmp/rt-guest2.console | grep -vc 'public-ipv4')"
 echo "default route advertised:      $(grep -c 'default via' /tmp/rt-guest2.console)"
@@ -324,10 +345,20 @@ echo "wanted: $OTHER"
 curl -s -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/networks?router:external=true" | jq -c '[.networks[] | {name, project_id}]'
 ```
 
-**Expect:** `stored` equals `wanted`. In Horizon, **Admin → Network → Networks** lists `rt-ext` with
-its owning project rather than the caller's. As an administrator `openstack network show rt-b11` now
-returns 404 — a known, deliberate gap (no administrator override on network read); read the stored
-value above instead.
+**Expect:** `stored` equals `wanted`, and the listed networks carry their owning project rather than
+the caller's. Those two — the API and the row behind it — are what FR-017 says; read the verdict from
+them.
+
+As an administrator `openstack network show rt-b11` returns 404 — a known, deliberate gap (no
+administrator override on network read); read the stored value above instead.
+
+Horizon's **Admin → Network → Networks** Project column is a *secondary* observation, not the
+assertion. Upstream assigns that column inside a block guarded by DHCP-agent-scheduler support, so
+until the 2026-08-13 follow-up it rendered `-` for every row while the API answered correctly —
+the column was testing Horizon's agent-scheduler coupling, not this feature. With
+`dhcp_agent_scheduler` advertised and `GET /networks/{id}/dhcp-agents` answering, it should now show
+the owning project and `0` agents; a blank column is a Horizon-side regression to chase separately,
+and never on its own a B11 failure.
 
 ### R8 — The reconciler logs its effective interval (#546, 2026-08-12)
 
@@ -375,6 +406,133 @@ assumptions hold.
 
 ---
 
+## 2b. Follow-up findings (2026-08-13, not #546)
+
+Found during this host pass and fixed as a separate commit. Run these after R9. R10 needs `sudo` to
+read and write the `nat` table, and R11 needs the Horizon deployment from 1.2.
+
+### R10 — Metadata DNAT rules are reclaimed, not accumulated (finding 1)
+
+One rule per tenant bridge redirects `169.254.169.254:80` to the host metadata service. They were
+written by the DHCP apply path and removed **only** by the pre-delete purge, so every other route —
+`helm uninstall` without the hook, a recreated Postgres volume, a redeploy, an ordinary network
+delete — leaked one. On a host redeployed a few times in an afternoon: 101 rules, 98 of them naming
+bridges that no longer existed.
+
+Stale rules are inert *until* a later network draws a UUID sharing its first 8 hex characters with a
+deleted one and so reuses the bridge name. `PREROUTING` is ordered and the stale rule is earlier, so
+it wins: that network's guests are sent to a gateway that no longer exists. Metadata breaks, nothing
+logs an error. **R10c is that case**, and it is the reason the reconciler compares destinations rather
+than merely asking whether each rule's bridge is still alive.
+
+#### R10a — The census, and reclaim on delete
+
+```bash
+echo "total: $(sudo iptables -t nat -S PREROUTING | grep -c '169.254.169.254')"
+sudo iptables -t nat -S PREROUTING | grep '169.254.169.254' | while read -r rule; do br=$(printf '%s\n' "$rule" | grep -o 'br-[0-9a-f]*' | head -1); ip link show "$br" >/dev/null 2>&1 && echo "LIVE  $br" || echo "STALE $br"; done
+export NET3=$(openstack network create rt-net-md -f value -c id)
+openstack subnet create rt-sub-md --network "$NET3" --subnet-range 10.244.30.0/24 >/dev/null
+export BR3=br-$(printf '%s' "$NET3" | cut -c1-8)
+sleep 3
+echo "after create: $(sudo iptables -t nat -S PREROUTING | grep -c "$BR3") rule(s) for $BR3"
+openstack subnet delete rt-sub-md && openstack network delete rt-net-md && echo "deleted"
+sleep 3
+echo "after delete: $(sudo iptables -t nat -S PREROUTING | grep -c "$BR3") rule(s) for $BR3"
+```
+
+**Expect:** the census prints only `LIVE` lines — on a host carrying leaks from before this fix the
+first reconcile pass after deploying this build will already have cleared them, so a `STALE` line here
+means the prune is not running. Then `after create` is **1** and `after delete` is **0**, with no wait
+for the reconciler: both delete paths remove the rule at source.
+
+`grep -c` prints `0` and exits non-zero when nothing matches, which is fine inside `$(…)` — the count
+is what is read, not the exit status.
+
+#### R10b — The reconciler reclaims a rule the delete paths never saw
+
+This is the case that matters on a real host: iptables outlives the pod, the release and the database,
+so a rule can survive with nothing left to name it. A hand-written rule for a bridge that does not
+exist stands in for one whose network row is long gone.
+
+```bash
+sudo iptables -t nat -A PREROUTING -d 169.254.169.254/32 -i br-deadbeef -p tcp --dport 80 -j DNAT --to-destination 10.99.99.1:8775
+sudo iptables -t nat -A PREROUTING -d 169.254.169.254/32 -i br-0123456789ab -p tcp --dport 80 -j DNAT --to-destination 10.99.99.2:8775
+echo "planted, waiting 40s for a reconcile pass"
+sleep 40
+echo "ours (br-deadbeef):   $(sudo iptables -t nat -S PREROUTING | grep -c 'br-deadbeef')"
+echo "decoy (docker shape): $(sudo iptables -t nat -S PREROUTING | grep -c 'br-0123456789ab')"
+kubectl -n o3k logs deploy/o3k-o3k | grep 'pruned stale metadata DNAT' | tail -2
+```
+
+**Expect:** `ours` is **0** — the reconciler reclaimed it — and `decoy` is **1**. The log line reports
+the count it removed.
+
+The decoy is the important half. `br-0123456789ab` is a **docker**-shaped bridge name (12 hex, not 8),
+so it fails the `isManagedBridge` check even though every other element of the rule matches ours. It
+must survive: `nat/PREROUTING` is shared with k3s/kube-proxy, docker and o3k's own floating-IP DNAT,
+and a sweep that deleted a foreign rule would be a far worse defect than the leak it fixes. If the
+decoy disappears, **stop** — the match has been widened. Remove it by hand when done:
+
+```bash
+sudo iptables -t nat -D PREROUTING -d 169.254.169.254/32 -i br-0123456789ab -p tcp --dport 80 -j DNAT --to-destination 10.99.99.2:8775
+```
+
+#### R10c — A live bridge pointing at the wrong gateway is corrected
+
+The collision case, reproduced deterministically: a rule for a bridge that **does** exist, pointing
+somewhere it should not, inserted at position 1 so it precedes the real one exactly as an older rule
+would. A sweep keyed on "does this interface still exist" keeps this forever.
+
+`$NET` and its `10.244.10.0/24` subnet come from 1.3, so the correct destination is `10.244.10.1:8775`.
+
+```bash
+export BR=br-$(printf '%s' "$NET" | cut -c1-8)
+sudo iptables -t nat -I PREROUTING 1 -d 169.254.169.254/32 -i "$BR" -p tcp --dport 80 -j DNAT --to-destination 10.99.99.3:8775
+echo "--- immediately after planting, in chain order ---"
+sudo iptables -t nat -S PREROUTING | grep "$BR"
+echo "waiting 40s for a reconcile pass"
+sleep 40
+echo "--- after the prune ---"
+sudo iptables -t nat -S PREROUTING | grep "$BR"
+```
+
+**Expect:** two rules for `$BR` immediately after planting, the bogus `10.99.99.3:8775` one **first**.
+After the pass exactly **one** remains, and it is the `10.244.10.1:8775` one. A run that leaves both,
+or leaves the wrong one, is the 1.4a defect still present.
+
+If R3's guest is still running, `openstack console log show rt-guest | tail` between the two states is
+worth a glance: while the bogus rule is first, a fresh metadata fetch from that guest has nowhere to
+go. Nothing logs an error on either side — which is the point.
+
+### R11 — Horizon's admin Project column shows the owner (finding 2)
+
+The API returned the right owner all along; Horizon blanked the column because upstream assigns it
+inside a block guarded by `is_dhcp_agent_scheduler_supported`, and O3K did not advertise that alias.
+The same block fetches each network's agents, so the alias without the endpoint would have traded a
+blank column for an error pop-up per row — R11 checks both, then the page.
+
+`HOST_TESTING.md` S13 asserts the API contract in full. This step is the half that needs a browser.
+
+```bash
+curl -s -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/extensions" | jq -r '[.extensions[].alias] | sort | join(" ")'
+curl -s -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/networks/$NET/dhcp-agents" | jq -c '[(.agents|length), (.agents|type)]'
+curl -s -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/networks" | jq -c '[.networks[] | {name, tenant_id}]'
+echo "Horizon: http://$NODE_IP:30080/dashboard/"
+```
+
+**Expect:** `dhcp_agent_scheduler` in the alias list, `[0,"array"]` from the endpoint, and correct
+`tenant_id` values.
+
+Then in the browser as `admin` / `secret`: **Admin → Network → Networks**. Every row shows its owning
+project in the **Project** column and `0` in **DHCP Agents** — not `-`, and **no error pop-up**. The
+pop-up is the failure mode to watch for: it means the alias is advertised and the endpoint is not.
+
+`rt-b11` from R7 should show `rt-other` here rather than `default`, which is the same ownership claim
+R7 reads from the API and the database — the column agreeing with them is the point of this step, and
+R7 remains the assertion.
+
+---
+
 ## 3. Teardown steps
 
 Removes the fixtures, both deployments, and both clusters' feature state. The Postgres container and
@@ -389,8 +547,8 @@ openstack router remove subnet rt-router rt-sub 2>/dev/null || true
 openstack router delete rt-router rt-router-nogw 2>/dev/null || true
 openstack port delete rt-p1 2>/dev/null || true
 openstack volume delete rt-vol 2>/dev/null || true
-openstack subnet delete rt-sub rt-sub-nogw rt-ext-sub 2>/dev/null || true
-openstack network delete rt-net rt-net-nogw rt-ext rt-b11 2>/dev/null || true
+openstack subnet delete rt-sub rt-sub-nogw rt-ext-sub rt-sub-md 2>/dev/null || true
+openstack network delete rt-net rt-net-nogw rt-ext rt-b11 rt-net-md 2>/dev/null || true
 openstack image delete cirros 2>/dev/null || true
 openstack project delete rt-other 2>/dev/null || true
 helm uninstall horizon -n o3k 2>/dev/null || true
@@ -398,19 +556,50 @@ helm uninstall o3k -n o3k 2>/dev/null || true
 kubectl delete ns o3k --ignore-not-found
 for t in $(ip -br link | grep -o "^tap-[0-9a-f]*"); do ip -o link show "$t" | grep -q "master " || sudo ip link delete "$t"; done
 ip -br link | grep -E '^(br-|tap-)' || echo "no o3k interfaces left"
+sudo iptables -t nat -D PREROUTING -d 169.254.169.254/32 -i br-0123456789ab -p tcp --dport 80 -j DNAT --to-destination 10.99.99.2:8775 2>/dev/null || true
+echo "metadata DNAT rules left: $(sudo iptables -t nat -S PREROUTING | grep -c '169.254.169.254')"
 unset KUBECONFIG
 deployments/rook/setup-rook-rgw.sh --delete 2>/dev/null || true
 rm -f /tmp/o3k-spec024.tar /tmp/cirros.img /tmp/rgw.env
 ```
 
-**Pass =** `kubectl get ns` no longer lists `o3k`, `minikube profile list` no longer lists `rook`, and
-no `br-*` or `tap-*` interface remains.
+**Pass =** `kubectl get ns` no longer lists `o3k`, `minikube profile list` no longer lists `rook`, no
+`br-*` or `tap-*` interface remains, and **`metadata DNAT rules left: 0`**.
 
 The TAP sweep is not cosmetic. Bridges and TAPs are **host kernel objects**: they outlive the pod, the
 Helm release and the namespace, so nothing in `helm uninstall` removes them and they accumulate across
 redeploys. The rule is "a TAP with no `master` is not attached to any bridge, so no live port owns it";
 a TAP for a running guest has a master and is left alone. `sudo` is required — they are root-owned. k3s
 pod networking uses `veth*` inside the `cni-*` namespaces and is untouched.
+
+The explicit `-D` before it removes **R10b's decoy** — the deliberately foreign, docker-shaped rule
+that o3k must never touch. It is only reachable by hand, so leaving it would make the count below read
+`1` and look like a leak when it is the opposite.
+
+The DNAT count is the same class of check, and the one the 2026-08-13 follow-up added. It is `0`
+because `helm uninstall o3k` fires the SPEC-010 `pre-delete` purge job
+(`charts/o3k/templates/teardown-purge-job.yaml` runs `o3k cleanup`), whose network purge now sweeps
+every rule matching the shape it writes rather than enumerating one per surviving network row — so it
+also reclaims rules whose rows are already gone. A non-zero count means the hook did not run — check
+`kubectl -n o3k get jobs` before the namespace goes — and these remove what is left by hand:
+
+```bash
+sudo iptables -t nat -S PREROUTING | grep '169.254.169.254' | while read -r rule; do br=$(printf '%s\n' "$rule" | grep -o 'br-[0-9a-f]*' | head -1); ip link show "$br" >/dev/null 2>&1 || sudo iptables -t nat ${=rule/-A/-D}; done
+sudo iptables -t nat -S PREROUTING | grep -c '169.254.169.254'
+```
+
+Dry-run it first by swapping `sudo iptables -t nat` for `echo iptables -t nat`; expect several
+separate words starting `-D PREROUTING`, not one long string. The `${=rule…}` is load-bearing: the `=`
+forces word splitting, which zsh does **not** do on an unquoted expansion the way bash does, and
+without it `iptables` receives the whole rule as a single argument and fails with *"chain name … too
+long"*. This only deletes rules whose **bridge is gone**, so it is safe to run with the stack up.
+
+**Do not** reach for `iptables-save | grep -v … | iptables-restore`: k3s/kube-proxy keeps its rules in
+the same table and a restore would clobber them.
+
+If you removed k3s entirely instead of uninstalling the release, the count will read `0` for an
+unrelated reason — `k3s-killall.sh` flushes iptables wholesale — so the check only means something on
+a teardown that went through `helm uninstall`.
 
 ---
 
