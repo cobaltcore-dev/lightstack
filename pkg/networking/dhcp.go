@@ -79,7 +79,7 @@ type DHCPHostReservation struct {
 }
 
 // StartDHCP starts a DHCP server for a network
-func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
+func (m *DHCPManager) StartDHCP(config DHCPConfig) error {
 	if m.mode == "stub" {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -106,14 +106,10 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 		"--log-facility=-", // Log to stderr
 	}
 
-	// Start dnsmasq in namespace
-	var cmd *exec.Cmd
-	if nsName != "" {
-		fullArgs := append([]string{"netns", "exec", nsName, "dnsmasq"}, args...)
-		cmd = exec.Command("ip", fullArgs...)
-	} else {
-		cmd = exec.Command("dnsmasq", args...)
-	}
+	// Start dnsmasq in the namespace o3k itself runs in, alongside the bridge it serves. No namespace
+	// parameter: the bridge cannot be anywhere else (see BridgeManager.CreateBridge), so neither can
+	// this (SPEC-024 / cloud-storage#546 F10).
+	cmd := exec.Command("dnsmasq", args...)
 
 	// Surface dnsmasq's own log/errors (it logs to stderr via --log-facility=-)
 	// so a failed launch is not silent.
@@ -179,14 +175,14 @@ func (m *DHCPManager) StopDHCP(networkID string) error {
 // starts a new one. The whole kill+start is serialized so concurrent port
 // allocations on the same network can't interleave and leave dnsmasq dead
 // (SPEC-009 WS-2).
-func (m *DHCPManager) RestartDHCP(config DHCPConfig, nsName string) error {
+func (m *DHCPManager) RestartDHCP(config DHCPConfig) error {
 	if m.mode == "stub" {
-		return m.StartDHCP(config, nsName)
+		return m.StartDHCP(config)
 	}
 	m.restartMu.Lock()
 	defer m.restartMu.Unlock()
 	m.killProcess(config.NetworkID) // keep the lease file so leases survive the reload
-	return m.StartDHCP(config, nsName)
+	return m.StartDHCP(config)
 }
 
 // EnsureDHCP guarantees exactly one dnsmasq serves the network without
@@ -197,9 +193,9 @@ func (m *DHCPManager) RestartDHCP(config DHCPConfig, nsName string) error {
 // (and itself) via restartMu so a periodic reconcile and a concurrent
 // port-allocation reload can't each spawn a dnsmasq on the same bridge
 // (SPEC-009 WS-2).
-func (m *DHCPManager) EnsureDHCP(config DHCPConfig, nsName string) error {
+func (m *DHCPManager) EnsureDHCP(config DHCPConfig) error {
 	if m.mode == "stub" {
-		return m.StartDHCP(config, nsName)
+		return m.StartDHCP(config)
 	}
 	m.restartMu.Lock()
 	defer m.restartMu.Unlock()
@@ -207,7 +203,7 @@ func (m *DHCPManager) EnsureDHCP(config DHCPConfig, nsName string) error {
 		return nil // already serving and tracked — idempotent
 	}
 	m.killProcess(config.NetworkID) // reap a stale orphan from a previous o3k before starting
-	return m.StartDHCP(config, nsName)
+	return m.StartDHCP(config)
 }
 
 // PruneDHCP stops any tracked dnsmasq whose network is no longer active (its DB

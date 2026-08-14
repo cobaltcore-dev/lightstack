@@ -165,22 +165,22 @@ func TestGetVXLANName(t *testing.T) {
 	}
 }
 
+// The namespaced variant this used to also exercise is gone: it moved the interface out of reach of
+// every other VXLANManager method, so there is no longer a second placement to cover (SPEC-024 /
+// cloud-storage#546 F10). Idempotence is asserted instead — the coordinator re-attaches every poll.
 func TestAttachToBridgeStubMode(t *testing.T) {
 	mgr := NewVXLANManager("stub", 4789)
 
 	networkID := "test-network-123"
 	bridgeName := "br-test"
-	nsName := "test-ns"
 
 	// Should be no-op in stub mode
-	err := mgr.AttachToBridge(networkID, bridgeName, false, nsName)
-	if err != nil {
+	if err := mgr.AttachToBridge(networkID, bridgeName); err != nil {
 		t.Errorf("AttachToBridge failed in stub mode: %v", err)
 	}
 
-	err = mgr.AttachToBridge(networkID, bridgeName, true, nsName)
-	if err != nil {
-		t.Errorf("AttachToBridge with namespace failed in stub mode: %v", err)
+	if err := mgr.AttachToBridge(networkID, bridgeName); err != nil {
+		t.Errorf("AttachToBridge is not idempotent in stub mode: %v", err)
 	}
 }
 

@@ -455,11 +455,6 @@ func (svc *Service) GetQuotaDetails(c *gin.Context) {
 	c.JSON(200, gin.H{"quota": quota})
 }
 
-// GetNamespaceManager returns the namespace manager (for VXLAN coordinator)
-func (svc *Service) GetNamespaceManager() *networking.NetworkNamespaceManager {
-	return svc.nsManager
-}
-
 // CreateNetworkRequest represents a network creation request
 type CreateNetworkRequest struct {
 	Network struct {
@@ -580,7 +575,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 	//
 	// This is also why a port's TAP goes there — see CreatePort. Keeping the two apart is what broke
 	// port creation in real mode (SPEC-024 F10); do not move one without the other.
-	if err := svc.brManager.CreateBridge(bridgeName, false, ""); err != nil {
+	if err := svc.brManager.CreateBridge(bridgeName); err != nil {
 		log.Error().Err(err).Str("operation", "create_bridge").Str("bridge", bridgeName).Msg("failed to create bridge")
 		common.SendError(c, common.NewInternalServerError("failed to create bridge"))
 		return
@@ -1063,7 +1058,7 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 		// mode). Deleting it also drops its gateway IP — leaving it behind would
 		// leak a duplicate 10.x gateway onto the host and split routing across stale
 		// bridges (SPEC-009). Best-effort: the network row is about to be deleted.
-		if err := svc.brManager.DeleteBridge(bridgeName, false, ""); err != nil {
+		if err := svc.brManager.DeleteBridge(bridgeName); err != nil {
 			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to delete network bridge")
 		}
 	}

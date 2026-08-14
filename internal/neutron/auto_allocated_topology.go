@@ -102,17 +102,21 @@ func (svc *Service) CreateAutoAllocatedTopology(c *gin.Context) {
 		return
 	}
 
-	// Create namespace and bridge if in real mode. Bridge creation
-	// failures are logged but not surfaced — the DB rows are already
-	// committed and a missing bridge will be retried on the next port
-	// plug.
+	// Create the bridge if in real mode, in the namespace o3k runs in — where the port path, the
+	// reconciler, dnsmasq and the egress SNAT rules all put it. Bridge creation failures are logged but
+	// not surfaced: the DB rows are already committed, and a missing bridge is retried on the next port
+	// plug and on every reconciler pass.
+	//
+	// This used to create light-ns-<project> and build the bridge inside it, which produced a SECOND
+	// bridge of the same name that nothing could reach. BridgeManager.EnsureBridgeIP and
+	// ListManagedBridges are netlink-only, so a namespaced bridge could never be given its gateway
+	// address and was invisible to the reconciler's prune, while the guest TAPs, dnsmasq and the NAT
+	// rules all lived on the root-namespace bridge of the same name. Same defect as the port path, one
+	// path later (SPEC-024 / cloud-storage#546 F10).
 	if svc.mode != "stub" {
-		if err := svc.nsManager.CreateNamespace(projectID); err == nil {
-			bridgeName := "br-" + networkID[:8]
-			nsName := svc.nsManager.GetNamespaceName(projectID)
-			if err := svc.brManager.CreateBridge(bridgeName, true, nsName); err != nil {
-				log.Warn().Err(err).Str("bridge", bridgeName).Str("namespace", nsName).Msg("failed to create auto-allocated bridge")
-			}
+		bridgeName := "br-" + networkID[:8]
+		if err := svc.brManager.CreateBridge(bridgeName); err != nil {
+			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to create auto-allocated bridge")
 		}
 	}
 
@@ -174,9 +178,8 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 	// hygiene issue, not a correctness one.
 	if svc.mode != "stub" {
 		bridgeName := "br-" + networkID[:8]
-		nsName := svc.nsManager.GetNamespaceName(projectID)
-		if err := svc.brManager.DeleteBridge(bridgeName, true, nsName); err != nil {
-			log.Warn().Err(err).Str("bridge", bridgeName).Str("namespace", nsName).Msg("failed to delete auto-allocated bridge")
+		if err := svc.brManager.DeleteBridge(bridgeName); err != nil {
+			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to delete auto-allocated bridge")
 		}
 	}
 

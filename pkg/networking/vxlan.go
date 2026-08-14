@@ -3,7 +3,6 @@ package networking
 import (
 	"fmt"
 	"net"
-	"os/exec"
 	"strings"
 	"sync"
 
@@ -240,55 +239,46 @@ func (m *VXLANManager) removeFDBEntryReal(networkID, macAddress string) error {
 	return nil
 }
 
-// AttachToBridge attaches VXLAN interface to a bridge
-// This allows VMs on the bridge to communicate over the VXLAN tunnel
-func (m *VXLANManager) AttachToBridge(networkID, bridgeName string, inNamespace bool, nsName string) error {
+// AttachToBridge attaches the VXLAN interface to a bridge, so VMs on that bridge can communicate over
+// the tunnel.
+//
+// There is deliberately no namespace parameter. Every other method on this type — CreateVXLAN,
+// DeleteVXLAN, AddFDBEntry, RemoveFDBEntry — resolves the interface with netlink.LinkByName in the
+// namespace o3k runs in, so moving it elsewhere put it beyond its own manager's reach: FDB entries
+// could not be installed at all, DeleteVXLAN reported success while leaking the device, and
+// CreateVXLAN's existence check missed it and rebuilt it on the next pass (SPEC-024 /
+// cloud-storage#546 F10).
+func (m *VXLANManager) AttachToBridge(networkID, bridgeName string) error {
 	if m.mode == "stub" {
 		return nil // No-op in stub mode
 	}
-	return m.attachToBridgeReal(networkID, bridgeName, inNamespace, nsName)
+	return m.attachToBridgeReal(networkID, bridgeName)
 }
 
 // attachToBridgeReal attaches VXLAN interface to bridge
-func (m *VXLANManager) attachToBridgeReal(networkID, bridgeName string, inNamespace bool, nsName string) error {
+func (m *VXLANManager) attachToBridgeReal(networkID, bridgeName string) error {
 	vxlanName := m.GetVXLANName(networkID)
 
-	if inNamespace {
-		// First, move VXLAN interface to namespace if not already there
-		cmd := exec.Command("ip", "link", "set", vxlanName, "netns", nsName)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			// Ignore error if already in namespace
-			if !strings.Contains(string(output), "Cannot find device") {
-				return fmt.Errorf("failed to move VXLAN to namespace: %w, output: %s", err, output)
-			}
-		}
+	vxlanLink, err := netlink.LinkByName(vxlanName)
+	if err != nil {
+		return fmt.Errorf("failed to find VXLAN interface: %w", err)
+	}
 
-		// Attach to bridge in namespace
-		cmd = exec.Command("ip", "netns", "exec", nsName, "ip", "link", "set", vxlanName, "master", bridgeName)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to attach VXLAN to bridge: %w, output: %s", err, output)
-		}
+	bridgeLink, err := netlink.LinkByName(bridgeName)
+	if err != nil {
+		return fmt.Errorf("failed to find bridge: %w", err)
+	}
 
-		// Ensure VXLAN interface is up in namespace
-		cmd = exec.Command("ip", "netns", "exec", nsName, "ip", "link", "set", vxlanName, "up")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to bring up VXLAN in namespace: %w, output: %s", err, output)
-		}
-	} else {
-		// Attach to bridge in default namespace
-		vxlanLink, err := netlink.LinkByName(vxlanName)
-		if err != nil {
-			return fmt.Errorf("failed to find VXLAN interface: %w", err)
-		}
+	// Checked assertion: an unchecked one panics when the name resolves to something that is not a
+	// bridge, which is reachable now that both links are looked up in the shared root namespace.
+	// BridgeManager.AttachToBridge already guards this the same way.
+	br, ok := bridgeLink.(*netlink.Bridge)
+	if !ok {
+		return fmt.Errorf("link %s is not a bridge (got %T)", bridgeName, bridgeLink)
+	}
 
-		bridgeLink, err := netlink.LinkByName(bridgeName)
-		if err != nil {
-			return fmt.Errorf("failed to find bridge: %w", err)
-		}
-
-		if err := netlink.LinkSetMaster(vxlanLink, bridgeLink.(*netlink.Bridge)); err != nil {
-			return fmt.Errorf("failed to attach VXLAN to bridge: %w", err)
-		}
+	if err := netlink.LinkSetMaster(vxlanLink, br); err != nil {
+		return fmt.Errorf("failed to attach VXLAN to bridge: %w", err)
 	}
 
 	return nil

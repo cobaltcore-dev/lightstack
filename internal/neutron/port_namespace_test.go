@@ -99,14 +99,14 @@ func TestCreatePortPlacesTapWhereTheBridgeIs(t *testing.T) {
 	taps := networking.NewTAPDeviceManager("stub")
 
 	// The bridge path: root namespace, as network.go does for libvirt's benefit.
-	if err := br.CreateBridge("br-placement", false, ""); err != nil {
+	if err := br.CreateBridge("br-placement"); err != nil {
 		t.Fatalf("create bridge in root ns: %v", err)
 	}
 	if err := taps.CreateTAPDevice("tap-placement"); err != nil {
 		t.Fatalf("create tap: %v", err)
 	}
 	// The attach must name the same placement the bridge was created with.
-	if err := br.AttachToBridge("tap-placement", "br-placement", false, ""); err != nil {
+	if err := br.AttachToBridge("tap-placement", "br-placement"); err != nil {
 		t.Fatalf("attach in root ns: %v", err)
 	}
 }

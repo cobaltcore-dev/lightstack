@@ -122,10 +122,10 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	// and FR-001 requires port creation to succeed on any recorded network rather than depending on
 	// that timing. Idempotent — an existing bridge is not an error.
 	bridgeName := "br-" + req.Port.NetworkID[:8]
-	if err := svc.brManager.CreateBridge(bridgeName, false, ""); err != nil {
+	if err := svc.brManager.CreateBridge(bridgeName); err != nil {
 		log.Debug().Err(err).Str("bridge", bridgeName).Msg("ensure bridge before attach (may already exist)")
 	}
-	if err := svc.brManager.AttachToBridge(tapName, bridgeName, false, ""); err != nil {
+	if err := svc.brManager.AttachToBridge(tapName, bridgeName); err != nil {
 		log.Error().Err(err).Str("operation", "attach_tap_to_bridge").Str("tap", tapName).Str("bridge", bridgeName).Msg("failed to attach TAP to bridge")
 		_ = svc.tapManager.DeleteTAPDevice(tapName)
 		common.SendError(c, common.NewInternalServerError("failed to attach TAP "+tapName+" to bridge "+bridgeName))
@@ -1388,13 +1388,13 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 
 		// Ensure bridge exists in default namespace
 		bridgeName := "br-" + networkID[:8]
-		if err := svc.brManager.CreateBridge(bridgeName, false, ""); err != nil {
+		if err := svc.brManager.CreateBridge(bridgeName); err != nil {
 			// Bridge might already exist, log but don't fail
 			log.Debug().Err(err).Str("bridge", bridgeName).Msg("bridge creation returned error (may already exist)")
 		}
 
 		// Attach TAP to bridge in default namespace
-		if err := svc.brManager.AttachToBridge(tapName, bridgeName, false, ""); err != nil {
+		if err := svc.brManager.AttachToBridge(tapName, bridgeName); err != nil {
 			return nil, fmt.Errorf("failed to attach TAP to bridge: %w", err)
 		}
 	}

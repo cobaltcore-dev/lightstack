@@ -39,7 +39,7 @@ func TestBridgeManagerStubMode(t *testing.T) {
 	bridgeName := "br-test123"
 
 	// Create bridge
-	if err := mgr.CreateBridge(bridgeName, false, ""); err != nil {
+	if err := mgr.CreateBridge(bridgeName); err != nil {
 		t.Fatalf("Failed to create bridge: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestBridgeManagerStubMode(t *testing.T) {
 	}
 
 	// Delete bridge
-	if err := mgr.DeleteBridge(bridgeName, false, ""); err != nil {
+	if err := mgr.DeleteBridge(bridgeName); err != nil {
 		t.Fatalf("Failed to delete bridge: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func TestNetworkLifecycleStub(t *testing.T) {
 
 	// 2. Create bridge for network
 	bridgeName := "br-" + networkID[:8]
-	if err := brMgr.CreateBridge(bridgeName, false, ""); err != nil {
+	if err := brMgr.CreateBridge(bridgeName); err != nil {
 		t.Fatalf("Failed to create bridge: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestNetworkLifecycleStub(t *testing.T) {
 	}
 
 	// 4. Attach TAP to bridge
-	if err := brMgr.AttachToBridge(tapName, bridgeName, false, ""); err != nil {
+	if err := brMgr.AttachToBridge(tapName, bridgeName); err != nil {
 		t.Fatalf("Failed to attach TAP to bridge: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestNetworkLifecycleStub(t *testing.T) {
 		t.Fatalf("Failed to delete TAP device: %v", err)
 	}
 
-	if err := brMgr.DeleteBridge(bridgeName, false, ""); err != nil {
+	if err := brMgr.DeleteBridge(bridgeName); err != nil {
 		t.Fatalf("Failed to delete bridge: %v", err)
 	}
 

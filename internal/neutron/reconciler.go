@@ -184,7 +184,7 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 
 	for _, networkID := range ids {
 		bridgeName := "br-" + networkID[:8]
-		if err := r.svc.brManager.CreateBridge(bridgeName, false, ""); err != nil {
+		if err := r.svc.brManager.CreateBridge(bridgeName); err != nil {
 			log.Debug().Err(err).Str("network_id", networkID).Str("bridge", bridgeName).Msg("reconcile: bridge ensure (likely already present)")
 		}
 	}
@@ -218,7 +218,7 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 			if want[b] {
 				continue
 			}
-			if err := r.svc.brManager.DeleteBridge(b, false, ""); err != nil {
+			if err := r.svc.brManager.DeleteBridge(b); err != nil {
 				log.Debug().Err(err).Str("bridge", b).Msg("reconcile: prune stale bridge")
 			} else {
 				log.Info().Str("bridge", b).Msg("reconcile: pruned stale bridge (network deleted)")
@@ -364,9 +364,9 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 	// on this network can't interleave the kill/start (SPEC-009 WS-2).
 	var dhcpErr error
 	if restart {
-		dhcpErr = svc.dhcpManager.RestartDHCP(cfg, "")
+		dhcpErr = svc.dhcpManager.RestartDHCP(cfg)
 	} else {
-		dhcpErr = svc.dhcpManager.EnsureDHCP(cfg, "")
+		dhcpErr = svc.dhcpManager.EnsureDHCP(cfg)
 	}
 	if dhcpErr != nil {
 		log.Warn().Err(dhcpErr).Str("network_id", networkID).Msg("dhcp apply: failed to (re)start DHCP")

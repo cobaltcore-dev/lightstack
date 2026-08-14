@@ -190,7 +190,6 @@ func main() {
 		vxlanCoordinator = neutron.NewVXLANCoordinator(
 			vxlanManager,
 			nodeRegistry,
-			neutronService.GetNamespaceManager(),
 			cfg.Neutron.CoordinationPollInterval,
 			cfg.Neutron.VNIRangeStart,
 			cfg.Neutron.VNIRangeEnd,

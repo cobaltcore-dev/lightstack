@@ -206,10 +206,13 @@ pkg/                        # Public/reusable packages
 
 **Project Isolation**:
 - All resources scoped by `project_id` from JWT token
-- Per-network L2 isolation comes from one Linux bridge per network. Per-project network namespaces
-  (`light-ns-<project>`) remain only for auto-allocated topology and the VXLAN coordinator — guest
-  ports and their bridges live in the **root** namespace, because libvirt, dnsmasq and the egress NAT
-  rules all need to reach them there (SPEC-024 F10)
+- Per-network L2 isolation comes from one Linux bridge per network, **not** from a namespace per
+  project. Nothing creates per-project namespaces (`light-ns-<project>`) any more — bridges, TAPs,
+  dnsmasq, the VXLAN devices and the egress NAT rules all live in the namespace o3k itself runs in,
+  because libvirt has to reach them there (SPEC-024 F10). `NetworkNamespaceManager` survives only so
+  teardown can reclaim what older deployments left behind. Router namespaces (`qrouter-*`,
+  `RouterManager`) are separate and still live. `BridgeManager`, `TAPDeviceManager` and
+  `VXLANManager.AttachToBridge` take **no namespace argument** — do not add one back
 - Database queries auto-filter by `project_id`
 - **Except for the administrative override** (SPEC-023): a caller holding the `admin` role may act
   on any project's *server*, matching upstream Nova's `admin_or_owner` default. Creation is not

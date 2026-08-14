@@ -40,23 +40,22 @@ Cannot get interface MTU on 'br-3426f435': No such device
 
 **Root Cause**: Bridges were created inside project network namespaces, but libvirt runs on the host and cannot access namespaced bridges.
 
-**Solution**: TAP devices and bridges must be created in the default namespace (not project namespaces) for libvirt access. This is the correct architecture:
-- TAP devices: created in default namespace
-- Bridges: created in default namespace  
-- VMs: connect via bridges in default namespace
-- Network isolation: handled via security groups and VXLAN, not namespaces
+**Solution**: TAP devices and bridges are created in the namespace o3k itself runs in, for libvirt access. This is the correct architecture:
+- TAP devices, bridges, dnsmasq, VXLAN devices and egress NAT: all in the namespace o3k runs in
+- VMs: connect via those bridges
+- Per-network layer-2 isolation: one bridge per network — not a namespace per project
+- Nothing creates `light-ns-<project>` any more; teardown only reclaims what older deployments left
 
 **Code Change** (already implemented in ports.go and network.go):
 ```go
-// Create TAP and bridge in default namespace (not project namespace)
-svc.tapManager.CreateTAPDevice(tapName)            // no namespace parameter exists
-svc.brManager.CreateBridge(bridgeName, false, "")  // false = default namespace
+// Create TAP and bridge where libvirt can reach them
+svc.tapManager.CreateTAPDevice(tapName)
+svc.brManager.CreateBridge(bridgeName)
 ```
 
-`TAPDeviceManager` takes no namespace argument at all — the in-namespace variant was removed once its
-last caller went away, so a TAP can only be created beside the bridge. `BridgeManager` keeps the
-parameters because the auto-allocated-topology path still creates its bridge inside
-`light-ns-<project>`.
+`TAPDeviceManager`, `BridgeManager` and `VXLANManager.AttachToBridge` take **no namespace argument** —
+the in-namespace variants were removed once their last callers went away, so these devices can only be
+placed beside each other. Router namespaces (`qrouter-*`) are separate and still in use.
 
 ### Issue: "Failed to get write lock: Is another process using the image"
 
