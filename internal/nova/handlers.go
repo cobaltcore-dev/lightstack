@@ -935,14 +935,14 @@ func (svc *Service) ListServers(c *gin.Context) {
 		var markerOffset int
 		// The marker predicate sits on the ranked subquery, not inside it, so it
 		// is appended after the scope's arguments rather than joined with them.
-		rank := &serverFilter{args: filter.args}
-		markerPlaceholder := rank.arg(markerParam)
+		rank := filter.CloneArgs()
+		markerPlaceholder := rank.Arg(markerParam)
 		if err := database.DB.QueryRow(c.Request.Context(),
 			`SELECT rn FROM (
 			   SELECT id, ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS rn
-			   FROM instances`+filter.where()+`
+			   FROM instances`+filter.Where()+`
 			 ) ranked WHERE id::text = `+markerPlaceholder,
-			rank.args...,
+			rank.Args()...,
 		).Scan(&markerOffset); err != nil {
 			log.Warn().Err(err).Str("marker", markerParam).Msg("failed to resolve pagination marker; ignoring")
 		}
@@ -955,11 +955,11 @@ func (svc *Service) ListServers(c *gin.Context) {
 	// and instances created by a script or a seed share it. Ties make page
 	// boundaries non-deterministic, which a cross-tenant listing makes far more
 	// likely. id is the primary key, so (created_at, id) is total (FR-005, L5).
-	where := filter.where()
+	where := filter.Where()
 	rows, err := database.DB.Query(c.Request.Context(),
 		"SELECT id, name, project_id FROM instances"+where+
 			" ORDER BY created_at DESC, id DESC"+filter.limitOffset(limit, offset),
-		filter.args...,
+		filter.Args()...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_servers").Msg("database error")
@@ -1025,12 +1025,12 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		// cross-tenant view it may name another project's server, and a marker
 		// that fails to resolve here silently returns page 1 (L6).
 		lookup := newServerFilter(c, "")
-		lookup.eq("id::text", marker)
+		lookup.Eq("id::text", marker)
 		var markerCreatedAt time.Time
 		var markerID string
 		err := database.DB.QueryRow(c.Request.Context(),
-			"SELECT created_at, id::text FROM instances"+lookup.where(),
-			lookup.args...,
+			"SELECT created_at, id::text FROM instances"+lookup.Where(),
+			lookup.Args()...,
 		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
 			filter.beforeKeyset("i.", markerCreatedAt, markerID)
@@ -1048,7 +1048,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		LEFT JOIN flavors f ON i.flavor_id = f.id
 		%s
 		ORDER BY i.created_at DESC, i.id DESC%s
-	`, filter.where(), filter.limitOffset(limit, offset)), filter.args...)
+	`, filter.Where(), filter.limitOffset(limit, offset)), filter.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_servers_detail").Msg("database error")

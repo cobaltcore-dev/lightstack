@@ -263,34 +263,35 @@ func (svc *Service) ListImages(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	f := &common.SQLFilter{}
+	f.Cond("(visibility = 'public' OR project_id = " + f.Arg(projectID) + ")")
 
+	// Marker-based pagination over a TOTAL order.
+	//
+	// This used to order by created_at alone and resolve the marker to `created_at < $n`. created_at
+	// is not unique — images uploaded by one script or seed share it — so the order was undefined
+	// among ties AND the predicate excluded every row sharing the marker's timestamp rather than only
+	// those before it, silently dropping the marker's siblings from the walk. id is the primary key,
+	// so (created_at, id) is total and the composite comparison is exclusive of exactly one row.
+	// Same defect and same fix as the compute listings in #549.
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := database.DB.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM images WHERE id = $1",
+			"SELECT created_at, id FROM images WHERE id = $1",
 			marker,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
-
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	where := f.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
+	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT id, name, status, visibility, size_bytes, disk_format, container_format, min_disk_gb, min_ram_mb, created_at, updated_at
-		FROM images
-		WHERE (visibility = 'public' OR project_id = $1)%s
-		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+		FROM images`+where+`
+		ORDER BY created_at DESC, id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_images").Msg("failed to query images")

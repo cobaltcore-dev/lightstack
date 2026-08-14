@@ -189,45 +189,33 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 	}
 
 	// Build update query dynamically
-	updates := []string{}
-	args := []any{}
-	argCount := 1
+	u := &common.SQLUpdate{}
 
+	// The placeholders here used to be built as `"$" + string(rune('0'+argCount))`, which produces a
+	// digit only while the count stays below ten — the tenth argument would have rendered "$:" and
+	// the query would have failed to parse. Three assignments never reached it, but the next one
+	// added would have. Arg has no such ceiling.
 	if name, ok := req.Domain["name"].(string); ok {
-		updates = append(updates, "name = $"+string(rune('0'+argCount)))
-		args = append(args, name)
-		argCount++
+		u.Set("name", name)
 	}
 
 	if description, ok := req.Domain["description"].(string); ok {
-		updates = append(updates, "description = $"+string(rune('0'+argCount)))
-		args = append(args, description)
-		argCount++
+		u.Set("description", description)
 	}
 
 	if enabled, ok := req.Domain["enabled"].(bool); ok {
-		updates = append(updates, "enabled = $"+string(rune('0'+argCount)))
-		args = append(args, enabled)
-		argCount++
+		u.Set("enabled", enabled)
 	}
 
-	updates = append(updates, "updated_at = $"+string(rune('0'+argCount)))
-	args = append(args, time.Now())
-	argCount++
+	// Counted before updated_at is added, so "nothing was asked for" stays distinguishable from
+	// "only the timestamp would change" — the condition the guard below relies on.
+	changed := !u.Empty()
+	u.Set("updated_at", time.Now())
 
-	args = append(args, domainID)
+	if changed { // more than just updated_at
+		query := "UPDATE domains SET " + u.Assignments() + " WHERE id = " + u.Arg(domainID)
 
-	if len(updates) > 1 { // More than just updated_at
-		query := "UPDATE domains SET "
-		for i, update := range updates {
-			if i > 0 {
-				query += ", "
-			}
-			query += update
-		}
-		query += " WHERE id = $" + string(rune('0'+argCount))
-
-		_, err = database.DB.Exec(c.Request.Context(), query, args...)
+		_, err = database.DB.Exec(c.Request.Context(), query, u.Args()...)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "update_domain").Str("domain_id", domainID).Msg("Failed to update domain")
 			common.SendError(c, common.NewInternalServerError("failed to update domain"))

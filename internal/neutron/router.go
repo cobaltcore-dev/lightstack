@@ -87,35 +87,33 @@ func (svc *Service) ListRouters(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	f := &common.SQLFilter{}
+	f.Eq("project_id", projectID)
 
+	// Marker paging over a TOTAL order. created_at alone is not unique, so the order was undefined
+	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
+	// only those before it — a page walk silently dropped them. id is the primary key, so
+	// (created_at, id) is total (as #549 established for compute).
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := database.DB.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM routers WHERE id = $1 AND project_id = $2",
+			"SELECT created_at, id FROM routers WHERE id = $1 AND project_id = $2",
 			marker, projectID,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
+	where := f.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
 
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
 		       distributed, ha, created_at, updated_at
-		FROM routers
-		WHERE project_id = $1%s
-		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+		FROM routers`+where+`
+		ORDER BY created_at DESC, id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_routers").Msg("database error")
@@ -322,20 +320,14 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 		return
 	}
 
-	updates := []string{}
-	args := []any{}
-	argID := 1
+	u := &common.SQLUpdate{}
 
 	if req.Router.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argID))
-		args = append(args, *req.Router.Name)
-		argID++
+		u.Set("name", *req.Router.Name)
 	}
 
 	if req.Router.AdminStateUp != nil {
-		updates = append(updates, fmt.Sprintf("admin_state_up = $%d", argID))
-		args = append(args, *req.Router.AdminStateUp)
-		argID++
+		u.Set("admin_state_up", *req.Router.AdminStateUp)
 	}
 
 	if req.Router.ExternalGatewayInfo != nil {
@@ -344,9 +336,7 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 			return
 		}
 		gatewayInfoJSON, _ := json.Marshal(*req.Router.ExternalGatewayInfo)
-		updates = append(updates, fmt.Sprintf("external_gateway_info = $%d", argID))
-		args = append(args, gatewayInfoJSON)
-		argID++
+		u.Set("external_gateway_info", gatewayInfoJSON)
 
 		// Configure external gateway
 		if err := svc.configureExternalGateway(c.Request.Context(), routerID, *req.Router.ExternalGatewayInfo); err != nil {
@@ -354,21 +344,17 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 		}
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no updates provided"))
 		return
 	}
 
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", argID))
-	args = append(args, time.Now())
-	argID++
+	u.Set("updated_at", time.Now())
 
-	args = append(args, routerID, projectID)
+	query := "UPDATE routers SET " + u.Assignments() +
+		" WHERE id = " + u.Arg(routerID) + " AND project_id = " + u.Arg(projectID)
 
-	query := fmt.Sprintf("UPDATE routers SET %s WHERE id = $%d AND project_id = $%d",
-		updateString(updates), argID, argID+1)
-
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
+	_, err := database.DB.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_router").Str("router_id", routerID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update router"))

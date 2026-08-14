@@ -2,7 +2,6 @@ package nova
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -14,34 +13,18 @@ import (
 // about scope — a disagreement that previously made a cross-tenant marker fail to
 // resolve and silently return page 1.
 //
-// Placeholder numbers are always derived from len(args) as each value is
-// appended, never counted by hand. The earlier form emitted a fixed
+// The accumulation is common.SQLFilter, shared with Keystone's identity filters
+// and Neutron's listings. The earlier form emitted a fixed
 // " WHERE project_id = $n" and left callers to compensate: one rewrote the
 // generated SQL with strings.Replace to add a table alias, another wrapped it in
 // a closure to decide between WHERE and AND. Both were the caller working around
 // what the helper could not say, and the string rewrite would have silently
 // patched the wrong token the moment a second predicate appeared.
 //
-// This is the same shape keystone's listFilter uses for identity collections.
-// The two are deliberately not yet merged: the shared core is ~17 lines, and
-// extracting it needs accessors that exist only to satisfy embedding across a
-// package boundary. Revisit when a third service grows a filter.
+// Only the two methods below are peculiar to compute: a composite keyset over the
+// listing's sort key, and the paging clause.
 type serverFilter struct {
-	conds []string
-	args  []any
-}
-
-// arg appends a value and returns its placeholder, so a predicate written inline
-// can never disagree with the argument list it reads from.
-func (f *serverFilter) arg(v any) string {
-	f.args = append(f.args, v)
-	return fmt.Sprintf("$%d", len(f.args))
-}
-
-// eq appends `column = $n`. column carries its own table alias where the query
-// needs one, so the caller never rewrites the rendered SQL to add it.
-func (f *serverFilter) eq(column string, v any) {
-	f.conds = append(f.conds, column+" = "+f.arg(v))
+	common.SQLFilter
 }
 
 // beforeKeyset appends a keyset comparison over (created_at, id) — the exclusive
@@ -51,24 +34,14 @@ func (f *serverFilter) eq(column string, v any) {
 // unique, so a plain `<` can skip or repeat rows sharing a timestamp, which a
 // cross-tenant listing makes far more likely (FR-005).
 func (f *serverFilter) beforeKeyset(alias string, createdAt time.Time, id string) {
-	f.args = append(f.args, createdAt, id)
-	f.conds = append(f.conds, fmt.Sprintf("(%screated_at, %sid) < ($%d, $%d)",
-		alias, alias, len(f.args)-1, len(f.args)))
-}
-
-// where renders the accumulated predicates, or "" when there are none.
-func (f *serverFilter) where() string {
-	if len(f.conds) == 0 {
-		return ""
-	}
-	return " WHERE " + strings.Join(f.conds, " AND ")
+	f.Cond(fmt.Sprintf("(%screated_at, %sid) < (%s, %s)",
+		alias, alias, f.Arg(createdAt), f.Arg(id)))
 }
 
 // limitOffset appends the paging values and renders the clause that reads them,
 // so the two cannot drift apart.
 func (f *serverFilter) limitOffset(limit, offset int) string {
-	f.args = append(f.args, limit, offset)
-	return fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(f.args)-1, len(f.args))
+	return fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
 }
 
 // newServerFilter starts a filter scoped to the caller's project, unless the
@@ -93,6 +66,6 @@ func newServerFilter(c *gin.Context, alias string) *serverFilter {
 	if common.QueryFlag(c, "all_tenants") && common.HasRole(c, common.RoleAdmin) {
 		return f
 	}
-	f.eq(alias+"project_id", c.GetString("project_id"))
+	f.Eq(alias+"project_id", c.GetString("project_id"))
 	return f
 }

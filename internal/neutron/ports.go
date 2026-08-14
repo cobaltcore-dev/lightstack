@@ -272,22 +272,22 @@ func (svc *Service) ListPorts(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	pf := &common.SQLFilter{}
+	pf.Cond("(p.project_id = " + pf.Arg(projectID) + " OR n.shared = true)")
 
+	// Marker paging over a TOTAL order. p.created_at alone is not unique, so the order was undefined
+	// among ties AND `p.created_at < $n` excluded every port sharing the marker's timestamp rather
+	// than only those before it — ports created by one boot share it (as #549 established for
+	// compute).
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := database.DB.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM ports WHERE id = $1",
+			"SELECT created_at, id FROM ports WHERE id = $1",
 			marker,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND p.created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			pf.Cond(fmt.Sprintf("(p.created_at, p.id) < (%s, %s)", pf.Arg(markerCreatedAt), pf.Arg(markerID)))
 		}
 	}
 
@@ -295,31 +295,25 @@ func (svc *Service) ListPorts(c *gin.Context) {
 	// `openstack server add floating ip` finds a server's port — without it the
 	// client gets every port on the network and may grab the wrong one (e.g. the
 	// router interface), associating the FIP to the gateway instead of the VM.
-	var filterCondition string
-	for _, f := range []struct{ col, val string }{
+	for _, filter := range []struct{ col, val string }{
 		{"p.device_id", c.Query("device_id")},
 		{"p.network_id", c.Query("network_id")},
 		{"p.device_owner", c.Query("device_owner")},
 		{"p.mac_address", c.Query("mac_address")},
 		{"p.id", c.Query("id")},
 	} {
-		if f.val != "" {
-			filterCondition += fmt.Sprintf(" AND %s = $%d", f.col, argIdx)
-			queryArgs = append(queryArgs, f.val)
-			argIdx++
+		if filter.val != "" {
+			pf.Eq(filter.col, filter.val)
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
-
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	where := pf.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", pf.Arg(limit), pf.Arg(offset))
+	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
 		FROM ports p
-		JOIN networks n ON p.network_id = n.id
-		WHERE (p.project_id = $1 OR n.shared = true)%s%s
-		ORDER BY p.created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, markerCondition, filterCondition, argIdx, argIdx+1), queryArgs...)
+		JOIN networks n ON p.network_id = n.id`+where+`
+		ORDER BY p.created_at DESC, p.id DESC`+limitOffset, pf.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_ports").Msg("database error")
@@ -574,49 +568,35 @@ func (svc *Service) UpdatePort(c *gin.Context) {
 		return
 	}
 
-	updates := []string{}
-	args := []any{}
-	argID := 1
+	u := &common.SQLUpdate{}
 
 	if req.Port.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argID))
-		args = append(args, *req.Port.Name)
-		argID++
+		u.Set("name", *req.Port.Name)
 	}
 
 	if req.Port.AdminStateUp != nil {
-		updates = append(updates, fmt.Sprintf("admin_state_up = $%d", argID))
-		args = append(args, *req.Port.AdminStateUp)
-		argID++
+		u.Set("admin_state_up", *req.Port.AdminStateUp)
 	}
 
 	if req.Port.DeviceID != nil {
-		updates = append(updates, fmt.Sprintf("device_id = $%d", argID))
-		args = append(args, *req.Port.DeviceID)
-		argID++
+		u.Set("device_id", *req.Port.DeviceID)
 	}
 
 	if req.Port.DeviceOwner != nil {
-		updates = append(updates, fmt.Sprintf("device_owner = $%d", argID))
-		args = append(args, *req.Port.DeviceOwner)
-		argID++
+		u.Set("device_owner", *req.Port.DeviceOwner)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no updates provided"))
 		return
 	}
 
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", argID))
-	args = append(args, time.Now())
-	argID++
+	u.Set("updated_at", time.Now())
 
-	args = append(args, portID, projectID)
+	query := "UPDATE ports SET " + u.Assignments() +
+		" WHERE id = " + u.Arg(portID) + " AND project_id = " + u.Arg(projectID)
 
-	query := fmt.Sprintf("UPDATE ports SET %s WHERE id = $%d AND project_id = $%d",
-		updateString(updates), argID, argID+1)
-
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
+	_, err := database.DB.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_port").Str("port_id", portID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update port"))

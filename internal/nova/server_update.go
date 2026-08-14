@@ -2,7 +2,6 @@ package nova
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -62,35 +61,22 @@ func (svc *Service) UpdateServer(c *gin.Context) {
 	}
 
 	// Build update query dynamically based on what's being updated
-	updates := []string{}
-	params := []any{instanceID, projectID}
-	paramIndex := 3
+	u := &common.SQLUpdate{}
 
 	if req.Server.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", paramIndex))
-		params = append(params, *req.Server.Name)
+		u.Set("name", *req.Server.Name)
 		currentName = *req.Server.Name
-		paramIndex++
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		// No updates requested, just return current state
 	} else {
-		// Add updated_at
-		updates = append(updates, fmt.Sprintf("updated_at = $%d", paramIndex))
-		params = append(params, time.Now())
+		u.Set("updated_at", time.Now())
 
-		// Build and execute update query
-		query := "UPDATE instances SET "
-		for i, update := range updates {
-			if i > 0 {
-				query += ", "
-			}
-			query += update
-		}
-		query += " WHERE id = $1 AND project_id = $2"
+		query := "UPDATE instances SET " + u.Assignments() +
+			" WHERE id = " + u.Arg(instanceID) + " AND project_id = " + u.Arg(projectID)
 
-		_, err = database.DB.Exec(c.Request.Context(), query, params...)
+		_, err = database.DB.Exec(c.Request.Context(), query, u.Args()...)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "update_server").Msg("database error")
 			common.SendError(c, common.NewInternalServerError("failed to update server"))

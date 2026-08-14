@@ -12,9 +12,7 @@ package nova
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -225,32 +223,25 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 	}
 
 	// Build update query
-	updates := []string{}
-	args := []any{}
-	argPos := 1
+	u := &common.SQLUpdate{}
 
 	if req.Aggregate.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argPos))
-		args = append(args, *req.Aggregate.Name)
-		argPos++
+		u.Set("name", *req.Aggregate.Name)
 	}
 
 	if req.Aggregate.AvailabilityZone != nil {
-		updates = append(updates, fmt.Sprintf("availability_zone = $%d", argPos))
-		args = append(args, *req.Aggregate.AvailabilityZone)
-		argPos++
+		u.Set("availability_zone", *req.Aggregate.AvailabilityZone)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
-	args = append(args, time.Now(), aggregateID)
-	query := fmt.Sprintf("UPDATE host_aggregates SET %s, updated_at = $%d WHERE uuid = $%d",
-		strings.Join(updates, ", "), argPos, argPos+1)
+	u.Set("updated_at", time.Now())
+	query := "UPDATE host_aggregates SET " + u.Assignments() + " WHERE uuid = " + u.Arg(aggregateID)
 
-	_, err = database.DB.Exec(c.Request.Context(), query, args...)
+	_, err = database.DB.Exec(c.Request.Context(), query, u.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_aggregate").Msg("database error")

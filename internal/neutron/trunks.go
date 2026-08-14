@@ -1,7 +1,6 @@
 package neutron
 
 import (
-	"fmt"
 	"net/http"
 	"time"
 
@@ -243,42 +242,27 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 	}
 
 	// Build UPDATE query dynamically
-	updates := []string{}
-	args := []any{}
-	argPos := 1
+	u := &common.SQLUpdate{}
 
 	if name, ok := req.Trunk["name"].(string); ok {
-		updates = append(updates, "name = "+fmt.Sprintf("$%d", argPos))
-		args = append(args, name)
-		argPos++
+		u.Set("name", name)
 	}
 
 	if description, ok := req.Trunk["description"].(string); ok {
-		updates = append(updates, "description = "+fmt.Sprintf("$%d", argPos))
-		args = append(args, description)
-		argPos++
+		u.Set("description", description)
 	}
 
 	if adminStateUp, ok := req.Trunk["admin_state_up"].(bool); ok {
-		updates = append(updates, "admin_state_up = "+fmt.Sprintf("$%d", argPos))
-		args = append(args, adminStateUp)
-		argPos++
+		u.Set("admin_state_up", adminStateUp)
 	}
 
-	if len(updates) > 0 {
-		updates = append(updates, "updated_at = "+fmt.Sprintf("$%d", argPos))
-		args = append(args, time.Now())
-		argPos++
+	if !u.Empty() {
+		u.Set("updated_at", time.Now())
 
-		args = append(args, trunkID, projectID)
+		query := "UPDATE trunks SET " + u.Assignments() +
+			" WHERE id = " + u.Arg(trunkID) + " AND project_id = " + u.Arg(projectID)
 
-		query := "UPDATE trunks SET " + updates[0]
-		for i := 1; i < len(updates); i++ {
-			query += ", " + updates[i]
-		}
-		query += fmt.Sprintf(" WHERE id = $%d AND project_id = $%d", argPos, argPos+1)
-
-		_, err = database.DB.Exec(c.Request.Context(), query, args...)
+		_, err = database.DB.Exec(c.Request.Context(), query, u.Args()...)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "update_trunk").Msg("failed to update trunk")
 			common.SendError(c, common.NewInternalServerError("failed to update trunk"))

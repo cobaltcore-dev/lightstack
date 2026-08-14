@@ -275,8 +275,10 @@ same two `SELECT`s. Do not start before Phase 7 is complete.
 
 ### Host validation (real mode — needs genuine root; rootless podman cannot create host namespaces)
 
-- [ ] T092 Verify US1's real-mode half (P5, P6, P11) on a privileged Linux host: the TAP and its bridge share a namespace, a booted guest gets an address and reaches `169.254.169.254`, and repeated create/delete leaks no TAPs (FR-003, FR-004)
-- [ ] T093 Verify US4's gatewayless path (P13) on the same host: a guest on a **gatewayless** subnet gets an address, reaches metadata, and has no default route (FR-023a)
+*Completed on k3s 2026-08-13; R1–R11 of `HOST_TESTING_REAL_MODE.md` all pass. Evidence: `EVIDENCE.md` Phase 10.*
+
+- [X] T092 Verify US1's real-mode half (P5, P6, P11) on a privileged Linux host: the TAP and its bridge share a namespace, a booted guest gets an address and reaches `169.254.169.254`, and repeated create/delete leaks no TAPs (FR-003, FR-004)
+- [X] T093 Verify US4's gatewayless path (P13) on the same host: a guest on a **gatewayless** subnet gets an address, reaches metadata, and has no default route (FR-023a)
 - [X] T094 Verify US6's egress (X17) on the same host: guest egress through an external gateway reaches the outside and a floating IP from that network reaches the guest (FR-036)
 - [X] T095 Verify US6's dashboard dropdown (X16): Horizon's router *Set Gateway* dialog offers the external network, via `test/horizon_compat_test.sh` (FR-037)
 - [X] T096 Verify US3's Horizon-visible half of ownership in `test/horizon_compat_test.sh` — a shared network shows its real owner

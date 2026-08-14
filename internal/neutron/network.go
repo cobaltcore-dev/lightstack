@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -672,50 +671,39 @@ func networkListDecision(sharedParam, routerExternalParam string) (sf sharedFilt
 // caller's authorized scope), plus the id/name filters the Terraform provider uses.
 // Placeholders are numbered from $1; `empty` means the query must return nothing. The
 // caller continues numbering marker/pagination args from $(len(args)+1). Pure — no DB.
-func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantParam, idParam, nameParam string) (conds []string, args []any, empty bool) {
+func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantParam, idParam, nameParam string) (f *common.SQLFilter, empty bool) {
 	sf, empty := networkListDecision(sharedParam, routerExternalParam)
 	if empty {
-		return nil, nil, true
+		return nil, true
 	}
-	argIdx := 1
+	f = &common.SQLFilter{}
 	switch sf {
 	case sharedOnly:
-		conds = append(conds, "shared = true")
+		f.Cond("shared = true")
 	case nonSharedOnly:
-		conds = append(conds, fmt.Sprintf("(project_id = $%d AND shared = false)", argIdx))
-		args = append(args, caller)
-		argIdx++
+		f.Cond("(project_id = " + f.Arg(caller) + " AND shared = false)")
 	default: // the caller's own networks, OR any shared network, OR any external network
 		// `external` is a THIRD INDEPENDENT disjunct — deliberately not `AND shared`. An external
 		// network is the deployment's boundary to the outside and every tenant needs to see it to
 		// select it as a router gateway; requiring `shared` as well would leave the tenant-facing
 		// Set Gateway dropdown empty and fix F11 for administrators only (FR-033a). Read-only:
 		// visibility confers no authority (FR-033b, and #545's rule for shared networks).
-		conds = append(conds, fmt.Sprintf("(project_id = $%d OR shared = true OR external = true)", argIdx))
-		args = append(args, caller)
-		argIdx++
+		f.Cond("(project_id = " + f.Arg(caller) + " OR shared = true OR external = true)")
 	}
 
 	if ext, ok := neutronBool(routerExternalParam); ok {
-		conds = append(conds, fmt.Sprintf("external = $%d", argIdx))
-		args = append(args, ext)
-		argIdx++
+		f.Eq("external", ext)
 	}
 	if tenantParam != "" {
-		conds = append(conds, fmt.Sprintf("project_id = $%d", argIdx))
-		args = append(args, tenantParam)
-		argIdx++
+		f.Eq("project_id", tenantParam)
 	}
 	if idParam != "" {
-		conds = append(conds, fmt.Sprintf("id::text = $%d", argIdx))
-		args = append(args, idParam)
-		argIdx++
+		f.Eq("id::text", idParam)
 	}
 	if nameParam != "" {
-		conds = append(conds, fmt.Sprintf("name = $%d", argIdx))
-		args = append(args, nameParam)
+		f.Eq("name", nameParam)
 	}
-	return conds, args, false
+	return f, false
 }
 
 // optionalString decodes a JSON field that may be absent, explicitly null, or a string, keeping the
@@ -759,40 +747,31 @@ type subnetFilterParams struct {
 // than becoming an accidental predicate: quietly returning fewer rows than asked for is the defect
 // class this feature exists to remove (FR-020a). The same applies to a value that does not parse —
 // an unparseable ip_version is ignored, not treated as a match-nothing.
-func buildSubnetListFilter(p subnetFilterParams, startIdx int) (conds []string, args []any) {
-	argIdx := startIdx
-
-	add := func(cond string, val any) {
-		conds = append(conds, fmt.Sprintf(cond, argIdx))
-		args = append(args, val)
-		argIdx++
-	}
-
+func addSubnetListFilter(f *common.SQLFilter, p subnetFilterParams) {
 	// id and network_id are compared as text so a non-UUID identifier cannot error the whole query.
 	if p.NetworkID != "" {
-		add("s.network_id::text = $%d", p.NetworkID)
+		f.Eq("s.network_id::text", p.NetworkID)
 	}
 	if p.ID != "" {
-		add("s.id::text = $%d", p.ID)
+		f.Eq("s.id::text", p.ID)
 	}
 	if p.Name != "" {
-		add("s.name = $%d", p.Name)
+		f.Eq("s.name", p.Name)
 	}
 	if p.CIDR != "" {
-		add("s.cidr = $%d", p.CIDR)
+		f.Eq("s.cidr", p.CIDR)
 	}
 	if p.IPVersion != "" {
 		if v, err := strconv.Atoi(p.IPVersion); err == nil {
-			add("s.ip_version = $%d", v)
+			f.Eq("s.ip_version", v)
 		}
 	}
 	if b, ok := neutronBool(p.EnableDHCP); ok {
-		add("s.enable_dhcp = $%d", b)
+		f.Eq("s.enable_dhcp", b)
 	}
 	if p.ProjectID != "" {
-		add("s.project_id::text = $%d", p.ProjectID)
+		f.Eq("s.project_id::text", p.ProjectID)
 	}
-	return conds, args
 }
 
 // ListNetworks lists all networks
@@ -820,14 +799,13 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	if tenant == "" {
 		tenant = c.Query("project_id")
 	}
-	conds, queryArgs, empty := buildNetworkListFilter(projectID, c.Query("shared"), c.Query("router:external"), tenant, c.Query("id"), c.Query("name"))
+	f, empty := buildNetworkListFilter(projectID, c.Query("shared"), c.Query("router:external"), tenant, c.Query("id"), c.Query("name"))
 	if empty {
 		// No filter combination produces this today; kept so a future filter can short-circuit
 		// without re-plumbing the caller.
 		c.JSON(http.StatusOK, gin.H{"networks": []gin.H{}})
 		return
 	}
-	argIdx := len(queryArgs) + 1
 
 	// Marker-based pagination
 	if marker := c.Query("marker"); marker != "" {
@@ -838,21 +816,20 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 			marker,
 		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			conds = append(conds, fmt.Sprintf("(created_at, id) < ($%d, $%d)", argIdx, argIdx+1))
-			queryArgs = append(queryArgs, markerCreatedAt, markerID)
-			argIdx += 2
+			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
-
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	// Rendered in statement order — predicates, then paging — so the arguments are appended in the
+	// order the placeholders read them. Written inline as one Sprintf it would depend on Go's
+	// left-to-right argument evaluation to come out right, which is guaranteed but not obvious.
+	where := f.Conds()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
+	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
 		FROM networks
-		WHERE %s
-		ORDER BY created_at DESC, id DESC
-		LIMIT $%d OFFSET $%d
-	`, strings.Join(conds, " AND "), argIdx, argIdx+1), queryArgs...)
+		WHERE `+where+`
+		ORDER BY created_at DESC, id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_networks").Msg("database error")
@@ -1115,50 +1092,37 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 		return
 	}
 
-	updates := []string{}
-	args := []any{}
-	argID := 1
+	u := &common.SQLUpdate{}
 
 	if req.Network.External != nil {
-		updates = append(updates, fmt.Sprintf("external = $%d", argID))
-		args = append(args, *req.Network.External)
-		argID++
+		u.Set("external", *req.Network.External)
 	}
 
 	if req.Network.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argID))
-		args = append(args, *req.Network.Name)
-		argID++
+		u.Set("name", *req.Network.Name)
 	}
 
 	if req.Network.AdminStateUp != nil {
-		updates = append(updates, fmt.Sprintf("admin_state_up = $%d", argID))
-		args = append(args, *req.Network.AdminStateUp)
-		argID++
+		u.Set("admin_state_up", *req.Network.AdminStateUp)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no updates provided"))
 		return
 	}
 
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", argID))
-	args = append(args, time.Now())
-	argID++
+	u.Set("updated_at", time.Now())
 
 	// The owner predicate is what scopes this to the caller — but an administrator setting
 	// router:external on a TENANT's network would then match zero rows and still be answered 200,
 	// the same dishonest-success defect as B11 inside the fix for a different one (research R6.4).
 	// Marking a network external is a deployment-level decision, so an administrator is exempt.
-	args = append(args, networkID)
-	query := fmt.Sprintf("UPDATE networks SET %s WHERE id::text = $%d",
-		updateString(updates), argID)
+	query := "UPDATE networks SET " + u.Assignments() + " WHERE id::text = " + u.Arg(networkID)
 	if !isAdmin {
-		args = append(args, projectID)
-		query += fmt.Sprintf(" AND project_id = $%d", argID+1)
+		query += " AND project_id = " + u.Arg(projectID)
 	}
 
-	tag, err := database.DB.Exec(c.Request.Context(), query, args...)
+	tag, err := database.DB.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_network").Str("network_id", networkID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update network"))
@@ -1461,16 +1425,24 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 		}
 	}
 
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	f := &common.SQLFilter{}
+
+	// Scope by the owning NETWORK's visibility, not only the subnet's own project_id. A network
+	// response lists every subnet of that network (networkSubnetIDs applies no project predicate), so
+	// anything visible there must be listable here too — otherwise Horizon expands the network's
+	// subnets array against this listing, fails to resolve an id, and renders a null row that breaks
+	// the launch wizard (SPEC-020 FR-007).
+	//
+	// One argument read by two placeholders, so it is appended once and the placeholder reused.
+	caller := f.Arg(projectID)
+	f.Cond("(s.project_id = " + caller + " OR n.project_id = " + caller + " OR n.shared = true)")
 
 	// Client filters (B6). Both spellings of the project attribute map onto project_id.
 	tenant := c.Query("tenant_id")
 	if tenant == "" {
 		tenant = c.Query("project_id")
 	}
-	filterConds, filterArgs := buildSubnetListFilter(subnetFilterParams{
+	addSubnetListFilter(f, subnetFilterParams{
 		NetworkID:  c.Query("network_id"),
 		ID:         c.Query("id"),
 		Name:       c.Query("name"),
@@ -1478,13 +1450,7 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 		IPVersion:  c.Query("ip_version"),
 		EnableDHCP: c.Query("enable_dhcp"),
 		ProjectID:  tenant,
-	}, argIdx)
-	extraConds := ""
-	for _, cond := range filterConds {
-		extraConds += " AND " + cond
-	}
-	queryArgs = append(queryArgs, filterArgs...)
-	argIdx += len(filterArgs)
+	})
 
 	// Marker-based pagination on a TOTAL order. `created_at` alone is not unique, so ties made the
 	// page boundary unstable and a walk could repeat or skip rows — the same defect #549 found in the
@@ -1497,28 +1463,18 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 			marker,
 		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			extraConds += fmt.Sprintf(" AND (s.created_at, s.id) < ($%d, $%d)", argIdx, argIdx+1)
-			queryArgs = append(queryArgs, markerCreatedAt, markerID)
-			argIdx += 2
+			f.Cond(fmt.Sprintf("(s.created_at, s.id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
-
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	// Rendered in statement order so the arguments land in placeholder order.
+	where := f.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
+	rows, err := database.DB.Query(c.Request.Context(), `
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at, s.project_id
 		FROM subnets s
-		JOIN networks n ON s.network_id = n.id
-		-- Scope by the owning NETWORK's visibility, not only the subnet's own
-		-- project_id. A network response lists every subnet of that network
-		-- (networkSubnetIDs applies no project predicate), so anything visible there
-		-- must be listable here too — otherwise Horizon expands the network's
-		-- subnets array against this listing, fails to resolve an id, and renders a
-		-- null row that breaks the launch wizard (SPEC-020 FR-007).
-		WHERE (s.project_id = $1 OR n.project_id = $1 OR n.shared = true)%s
-		ORDER BY s.created_at DESC, s.id DESC
-		LIMIT $%d OFFSET $%d
-	`, extraConds, argIdx, argIdx+1), queryArgs...)
+		JOIN networks n ON s.network_id = n.id`+where+`
+		ORDER BY s.created_at DESC, s.id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_subnets").Msg("database error")
@@ -1939,8 +1895,8 @@ func broadcast(ipNet *net.IPNet) net.IP {
 // channel — but the list is not advisory: Horizon expands each id against the subnet
 // listing and renders a null row for any it cannot resolve, which is the launch-wizard
 // failure FR-007 exists to fix. A short list is therefore indistinguishable from a
-// network whose subnets were deleted, and answering 500 is the honest outcome. All three
-// callers assemble a response and can report it.
+// network whose subnets were deleted, and answering 500 is the honest outcome. Every
+// caller assembles a response and can report it.
 func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) ([]string, error) {
 	ids := []string{}
 	rows, err := database.DB.Query(ctx,
@@ -1977,17 +1933,6 @@ func subnetAllocationPools(cidr string) []gin.H {
 			"end":   decrementIP(broadcast(ipNet), 1).String(),
 		},
 	}
-}
-
-func updateString(updates []string) string {
-	result := ""
-	for i, update := range updates {
-		if i > 0 {
-			result += ", "
-		}
-		result += update
-	}
-	return result
 }
 
 func generateMAC() string {

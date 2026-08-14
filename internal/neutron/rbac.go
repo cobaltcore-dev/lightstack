@@ -1,9 +1,7 @@
 package neutron
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -148,30 +146,24 @@ func (svc *Service) UpdateRBACPolicy(c *gin.Context) {
 	}
 
 	// Build update query
-	updates := []string{}
-	args := []any{}
-	argPos := 1
+	u := &common.SQLUpdate{}
 
 	if req.RBACPolicy.TargetTenant != nil {
-		updates = append(updates, fmt.Sprintf("target_tenant = $%d", argPos))
-		args = append(args, *req.RBACPolicy.TargetTenant)
-		argPos++
+		u.Set("target_tenant", *req.RBACPolicy.TargetTenant)
 	}
 
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", argPos))
-	args = append(args, time.Now())
-	argPos++
-
-	if len(updates) == 1 { // Only updated_at
+	// Checked BEFORE updated_at is added, so "nothing was asked for" is the empty case rather than
+	// a count of one that a later assignment would silently shift.
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
+	u.Set("updated_at", time.Now())
 
-	args = append(args, policyID, projectID)
-	query := fmt.Sprintf("UPDATE rbac_policies SET %s WHERE id = $%d AND project_id = $%d",
-		strings.Join(updates, ", "), argPos, argPos+1)
+	query := "UPDATE rbac_policies SET " + u.Assignments() +
+		" WHERE id = " + u.Arg(policyID) + " AND project_id = " + u.Arg(projectID)
 
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
+	_, err := database.DB.Exec(c.Request.Context(), query, u.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_rbac_policy").Msg("failed to update RBAC policy")

@@ -557,7 +557,7 @@ parallel run contends on it. Also pre-existing.
 
 | SC | Status |
 |---|---|
-| SC-001 network→subnet→port→guest path | **stub verified**; guest half is host-only (T092) |
+| SC-001 network→subnet→port→guest path | **stub verified**; guest half **verified on k3s** 2026-08-13 (Phase 10, R3) |
 | SC-002 port creation on any recorded network | **met** — including across a restart |
 | SC-003 100% Neutron envelope, 0% compute | **met** — handlers, auth, NoRoute, NoMethod, panic |
 | SC-004 full suite passes | **met for every suite runnable here** — see caveat below |
@@ -565,7 +565,7 @@ parallel run contends on it. Also pre-existing.
 | SC-006 filtered subnet listing exact | **met** for all seven filters |
 | SC-007 gatewayless subnet visible/readable | **met** |
 | SC-008 all four rule descriptions agree | **met**, populated and unset |
-| SC-009 egress configurable from the dashboard | **partially** — the API half is met (external networks exist, are listed, and are validated); the Horizon dropdown itself is X16/T092, host-only |
+| SC-009 egress configurable from the dashboard | **met** — API half plus the Horizon *Set Gateway* dropdown, **verified on k3s** 2026-08-13 (Phase 10, R6) |
 | SC-010 recorded before/after per defect | **met** — the table above |
 | SC-011 no previously passing check regressed | **met** — see the two deliberate test updates below |
 
@@ -600,12 +600,13 @@ go test -v ./internal/neutron/...       72 PASS   (baseline 34)
 17 files modified, 14 new (2 migration, 8 unit-test, 2 contract-test, 2 source). Migration `066` is
 the feature's only schema change and round-trips cleanly.
 
-### Still outstanding — host-only
+### Still outstanding — host-only *(closed 2026-08-13, see Phase 10)*
 
-**T092/T093** need a privileged Linux host (real root; rootless podman cannot create host network
+**T092/T093** needed a privileged Linux host (real root; rootless podman cannot create host network
 namespaces): P5/P6/P11 (TAP and bridge co-located, guest gets DHCP and reaches metadata, no leaked
 TAPs), P13 (gatewayless subnet still reaches metadata), X16 (Horizon Set Gateway dropdown), X17
-(guest egress and floating-IP reachability).
+(guest egress and floating-IP reachability). All were run on k3s and passed — recorded in **Phase 10**
+at the end of this file.
 
 ---
 
@@ -670,3 +671,57 @@ projects from an interrupted #549 run. Those tests seed by name and do not clean
 abandoned run poisons every later one. Removed (2 projects and their instances, networks, subnets,
 ports); the suite is clean again. Same family as the known shared-postgres hazard, and another item for
 the test-harness ticket (#548).
+
+---
+
+## Phase 10 — Real-mode host validation on k3s (T092, T093), 2026-08-13
+
+The two remaining tasks needed a privileged Linux host. Run against `charts/o3k` on k3s with
+`libvirt_mode: real`, `networking_mode: iptables`, Glance on Rook RGW — the topology
+`HOST_TESTING_REAL_MODE.md` describes. Steps R1–R11 all pass.
+
+### T092 — US1's real-mode half
+
+| Probe | Result |
+|---|---|
+| **P5** TAP and bridge co-located (R1) | `openstack port create` → `633fd078-…`; `tap-633fd078` **and** `br-b8223add` both present in the root namespace; `ip netns list` shows only k3s's `cni-*` — no `light-ns-*`. The TAP name is `"tap-" + portID[:8]`, so the device is demonstrably *this* port's |
+| **P6** guest boots and reaches metadata (R3) | `ACTIVE` with `10.244.10.60` from `rt-sub` — not `addresses: {}`. Console: `ip-route:169.254.169.254 via 10.244.10.1` (DHCP option 121 delivered), `=== datasource: ec2 net ===` populated with `instance-id`, `local-hostname: rt-guest`, `availability-zone: nova`. The guest did not merely reach the service, it parsed and used the answer |
+| **P11** no leaked TAPs | Confirmed on the same pass: after a contract run that creates and deletes ports, the TAP count matched the live port count with zero orphans. The orphaned `tap-*` devices also seen on that host came from tearing the environment down *underneath* the service (k3s removed, database recreated), so nothing was ever asked to remove them — not a leak on the create/delete path |
+| Contract corroboration (R2) | The five tests the ticket named on 2026-08-12 — `TestNeutronPortCreate_Contract`, `TestNeutronNetworkLifecycle_Contract`, `TestPortForwardingLifecycle_Contract`, `TestPortForwardingValidation_Contract`, `TestPortTopologyData_Contract` — all `--- PASS` against this real-mode stack |
+
+### T093 — US4's gatewayless path (P13, FR-023a)
+
+The dnsmasq configuration is the direct evidence, because it shows the split the old template could
+not express:
+
+| Network | `dhcp-option=3` (router) | `dhcp-option=121` |
+|---|---|---|
+| `rt-net` (gatewayed) | `3,10.244.10.1` | `121,169.254.169.254/32,10.244.10.1,`**`0.0.0.0/0,10.244.10.1`** |
+| `rt-net-nogw` | **absent** | `121,169.254.169.254/32,10.244.20.1` — no default leg |
+
+Guest side: `instance-id consumed: 1`, `failed to get …` (excluding `public-ipv4`) `: 0`, and
+`default route advertised: 0`. That combination — a lease, a host route to `169.254.169.254`, **no**
+default route, and a *consumed* instance-id — can only occur if FR-023a holds. The gatewayed network
+keeps both options, so the ordinary case did not regress (P15).
+
+### The rest of the pass, for completeness
+
+| Step | Result |
+|---|---|
+| R5 (X17, FR-036) | `-A POSTROUTING -s 10.244.10.0/24 -o enp1s0 -j MASQUERADE`; floating IP `192.0.2.100` allocated from the external subnet. The uplink was auto-detected — no operator-created `br-ex` |
+| R6 (X16, FR-037) | `?router:external=true` returns `rt-ext`; Horizon's *Set Gateway* dropdown offers it |
+| R7 (FR-017) | Network created with `project_id=$OTHER` is **stored** in `$OTHER`; listings carry the row's owner |
+| R8 | `Real-mode network reconciler started (interval: 30s)` — the effective value, not `0s` |
+| R9 (SC-011) | Glance object `images/image-d982089b-….raw` at 20.4 MiB matches `image show` size `21430272` — proof RGW was used, not the local fallback. Five contract suites `ok`, volume `available`, both guests `ACTIVE` |
+
+### Two caveats worth keeping
+
+**`test/contract/nova` is excluded from R9 deliberately.** Four of its tests assert *stub-mode*
+behaviour (`501` for consoles, `400` for a short password, a stub-instance migrate) and cannot pass
+against live libvirt guests. That is a gap in the suite, not the product — the same package returns
+`ok` against this stack before any guest is booted.
+
+**R7's Horizon column is a secondary observation, not the assertion.** Upstream assigns the admin
+Project column inside a block guarded by DHCP-agent-scheduler support, so it rendered `-` for every
+row while the API answered correctly. FR-017 is read from the API and the database; the column is
+covered separately by the follow-up work below.

@@ -58,17 +58,17 @@ func TestNewServerFilterScope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newServerFilter(serverFilterCtx(tc.query, project, tc.admin), "")
-			if got := f.where(); got != tc.wantWhere {
+			if got := f.Where(); got != tc.wantWhere {
 				t.Errorf("where() = %q, want %q", got, tc.wantWhere)
 			}
 			if tc.wantWhere == "" {
-				if len(f.args) != 0 {
-					t.Errorf("args = %v, want none — a widened listing binds no project", f.args)
+				if len(f.Args()) != 0 {
+					t.Errorf("args = %v, want none — a widened listing binds no project", f.Args())
 				}
 				return
 			}
-			if len(f.args) != 1 || f.args[0] != project {
-				t.Errorf("args = %v, want [%q]", f.args, project)
+			if len(f.Args()) != 1 || f.Args()[0] != project {
+				t.Errorf("args = %v, want [%q]", f.Args(), project)
 			}
 		})
 	}
@@ -80,8 +80,8 @@ func TestNewServerFilterScope(t *testing.T) {
 func TestNewServerFilterAlias(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	f := newServerFilter(serverFilterCtx("", "p1", false), "i.")
-	if want := " WHERE i.project_id = $1"; f.where() != want {
-		t.Errorf("where() = %q, want %q", f.where(), want)
+	if want := " WHERE i.project_id = $1"; f.Where() != want {
+		t.Errorf("where() = %q, want %q", f.Where(), want)
 	}
 }
 
@@ -97,11 +97,11 @@ func TestBeforeKeysetIsComposite(t *testing.T) {
 	f.beforeKeyset("i.", at, id)
 
 	want := " WHERE i.project_id = $1 AND (i.created_at, i.id) < ($2, $3)"
-	if got := f.where(); got != want {
+	if got := f.Where(); got != want {
 		t.Errorf("where() = %q, want %q", got, want)
 	}
-	if len(f.args) != 3 || f.args[1] != at || f.args[2] != id {
-		t.Errorf("args = %v, want [p1 %v %q] — the keyset values must follow the scope", f.args, at, id)
+	if len(f.Args()) != 3 || f.Args()[1] != at || f.Args()[2] != id {
+		t.Errorf("args = %v, want [p1 %v %q] — the keyset values must follow the scope", f.Args(), at, id)
 	}
 }
 
@@ -119,8 +119,8 @@ func TestLimitOffsetContinuesTheNumbering(t *testing.T) {
 	if want := " LIMIT $4 OFFSET $5"; clause != want {
 		t.Errorf("limitOffset() = %q, want %q", clause, want)
 	}
-	if len(f.args) != 5 || f.args[3] != 25 || f.args[4] != 50 {
-		t.Errorf("args = %v, want [p1 %v b1 25 50]", f.args, at)
+	if len(f.Args()) != 5 || f.Args()[3] != 25 || f.Args()[4] != 50 {
+		t.Errorf("args = %v, want [p1 %v b1 25 50]", f.Args(), at)
 	}
 }
 
@@ -132,8 +132,8 @@ func TestLimitOffsetOnAWidenedListing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	f := newServerFilter(serverFilterCtx("all_tenants", "p1", true), "")
 
-	if f.where() != "" {
-		t.Fatalf("where() = %q, want empty — this case exists to test the unscoped path", f.where())
+	if f.Where() != "" {
+		t.Fatalf("where() = %q, want empty — this case exists to test the unscoped path", f.Where())
 	}
 	if want := " LIMIT $1 OFFSET $2"; f.limitOffset(10, 0) != want {
 		t.Errorf("limitOffset() = %q, want %q", f.limitOffset(10, 0), want)
@@ -144,10 +144,10 @@ func TestLimitOffsetOnAWidenedListing(t *testing.T) {
 // dangling keyword or a "WHERE true" that every later predicate has to append to.
 func TestServerFilterEmpty(t *testing.T) {
 	var f serverFilter
-	if f.where() != "" {
-		t.Errorf("where() = %q, want empty", f.where())
+	if f.Where() != "" {
+		t.Errorf("where() = %q, want empty", f.Where())
 	}
-	if len(f.args) != 0 {
-		t.Errorf("args = %v, want none", f.args)
+	if len(f.Args()) != 0 {
+		t.Errorf("args = %v, want none", f.Args())
 	}
 }

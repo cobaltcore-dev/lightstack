@@ -383,7 +383,7 @@ func (svc *Service) ListUsers(c *gin.Context) {
 	f.eqDomain(c, "domain_id", "domain_id")
 	f.eqBool(c, "enabled", "enabled")
 	rows, err := database.DB.Query(c.Request.Context(),
-		"SELECT id, name, enabled, domain_id FROM users"+f.where()+" ORDER BY name", f.args...,
+		"SELECT id, name, enabled, domain_id FROM users"+f.Where()+" ORDER BY name", f.Args()...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_users").Msg("Failed to query users")
@@ -448,7 +448,7 @@ func (svc *Service) ListProjects(c *gin.Context) {
 	f.eqDomain(c, "domain_id", "domain_id")
 	f.eqBool(c, "enabled", "enabled")
 	rows, err := database.DB.Query(c.Request.Context(),
-		"SELECT id, name, description, enabled, domain_id FROM projects"+f.where()+" ORDER BY name", f.args...,
+		"SELECT id, name, description, enabled, domain_id FROM projects"+f.Where()+" ORDER BY name", f.Args()...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_projects").Msg("Failed to query projects")
@@ -608,33 +608,24 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 	}
 
 	// Build dynamic update query
-	updates := []string{}
-	args := []any{}
-	argIdx := 1
+	u := &common.SQLUpdate{}
 
 	if req.Project.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argIdx))
-		args = append(args, *req.Project.Name)
-		argIdx++
+		u.Set("name", *req.Project.Name)
 	}
 	if req.Project.Description != nil {
-		updates = append(updates, fmt.Sprintf("description = $%d", argIdx))
-		args = append(args, *req.Project.Description)
-		argIdx++
+		u.Set("description", *req.Project.Description)
 	}
 	if req.Project.Enabled != nil {
-		updates = append(updates, fmt.Sprintf("enabled = $%d", argIdx))
-		args = append(args, *req.Project.Enabled)
-		argIdx++
+		u.Set("enabled", *req.Project.Enabled)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
-	updates = append(updates, "updated_at = NOW()")
-	args = append(args, projectID)
+	u.SetExpr("updated_at = NOW()")
 
 	// One statement, not an UPDATE followed by a SELECT: the UPDATE both resolves
 	// existence and hands back the row it wrote, so there is no window in which a
@@ -642,13 +633,13 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 	// every column the response needs, because a partial PATCH must still echo the
 	// columns it did not touch (upstream Keystone returns the whole project). A miss
 	// is pgx.ErrNoRows, which notFoundOr500 maps to the verbatim 404.
-	query := fmt.Sprintf(
-		"UPDATE projects SET %s WHERE id = $%d RETURNING name, description, domain_id, enabled",
-		joinUpdates(updates), argIdx)
+	query := "UPDATE projects SET " + u.Assignments() +
+		" WHERE id = " + u.Arg(projectID) +
+		" RETURNING name, description, domain_id, enabled"
 
 	var name, description, domainID string
 	var enabled bool
-	err := database.DB.QueryRow(c.Request.Context(), query, args...).
+	err := database.DB.QueryRow(c.Request.Context(), query, u.Args()...).
 		Scan(&name, &description, &domainID, &enabled)
 	if err != nil {
 		notFoundOr500(c, err, "project", projectID)
@@ -695,7 +686,7 @@ func (svc *Service) ListRoles(c *gin.Context) {
 	var f listFilter
 	f.eq(c, "name", "name")
 	rows, err := database.DB.Query(c.Request.Context(),
-		"SELECT id, name FROM roles"+f.where()+" ORDER BY name", f.args...,
+		"SELECT id, name FROM roles"+f.Where()+" ORDER BY name", f.Args()...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_roles").Msg("Failed to query roles")
@@ -805,29 +796,23 @@ func (svc *Service) UpdateRole(c *gin.Context) {
 	}
 
 	// Build dynamic update query
-	updates := []string{}
-	args := []any{}
-	argIdx := 1
+	u := &common.SQLUpdate{}
 
 	if req.Role.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argIdx))
-		args = append(args, *req.Role.Name)
-		argIdx++
+		u.Set("name", *req.Role.Name)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
-	args = append(args, roleID)
-
 	// Single statement for the same reason as UpdateProject: the UPDATE resolves
 	// existence and returns the row it wrote, so no write-then-read window remains.
-	query := fmt.Sprintf("UPDATE roles SET %s WHERE id = $%d RETURNING name", joinUpdates(updates), argIdx)
+	query := "UPDATE roles SET " + u.Assignments() + " WHERE id = " + u.Arg(roleID) + " RETURNING name"
 
 	var name string
-	err := database.DB.QueryRow(c.Request.Context(), query, args...).Scan(&name)
+	err := database.DB.QueryRow(c.Request.Context(), query, u.Args()...).Scan(&name)
 	if err != nil {
 		notFoundOr500(c, err, "role", roleID)
 		return
@@ -992,30 +977,24 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 	projectID := c.Query("scope.project.id")
 	roleID := c.Query("role.id")
 
-	// Build dynamic query
-	query := `SELECT ra.user_id, ra.project_id, ra.role_id, r.name as role_name
-	          FROM role_assignments ra
-	          INNER JOIN roles r ON ra.role_id = r.id
-	          WHERE 1=1`
-	args := []any{}
-	argIdx := 1
-
+	// Build dynamic query. The `WHERE 1=1` placeholder the conditions used to hang off is gone:
+	// SQLFilter renders the whole clause, or nothing at all when no filter was asked for.
+	var f common.SQLFilter
 	if userID != "" {
-		query += fmt.Sprintf(" AND ra.user_id = $%d", argIdx)
-		args = append(args, userID)
-		argIdx++
+		f.Eq("ra.user_id", userID)
 	}
 	if projectID != "" {
-		query += fmt.Sprintf(" AND ra.project_id = $%d", argIdx)
-		args = append(args, projectID)
-		argIdx++
+		f.Eq("ra.project_id", projectID)
 	}
 	if roleID != "" {
-		query += fmt.Sprintf(" AND ra.role_id = $%d", argIdx)
-		args = append(args, roleID)
+		f.Eq("ra.role_id", roleID)
 	}
 
-	rows, err := database.DB.Query(c.Request.Context(), query, args...)
+	query := `SELECT ra.user_id, ra.project_id, ra.role_id, r.name as role_name
+	          FROM role_assignments ra
+	          INNER JOIN roles r ON ra.role_id = r.id` + f.Where()
+
+	rows, err := database.DB.Query(c.Request.Context(), query, f.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_role_assignments").Msg("Failed to query role assignments")
 		common.SendError(c, common.NewInternalServerError("failed to query role assignments"))
@@ -1187,29 +1166,19 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 	}
 
 	// Build dynamic UPDATE query
-	updates := []string{}
-	args := []any{userID}
-	argIndex := 2
+	u := &common.SQLUpdate{}
 
 	if req.User.Name != nil {
-		updates = append(updates, "name = $"+fmt.Sprint(argIndex))
-		args = append(args, *req.User.Name)
-		argIndex++
+		u.Set("name", *req.User.Name)
 	}
 	if req.User.Email != nil {
-		updates = append(updates, "email = $"+fmt.Sprint(argIndex))
-		args = append(args, *req.User.Email)
-		argIndex++
+		u.Set("email", *req.User.Email)
 	}
 	if req.User.Description != nil {
-		updates = append(updates, "description = $"+fmt.Sprint(argIndex))
-		args = append(args, *req.User.Description)
-		argIndex++
+		u.Set("description", *req.User.Description)
 	}
 	if req.User.Enabled != nil {
-		updates = append(updates, "enabled = $"+fmt.Sprint(argIndex))
-		args = append(args, *req.User.Enabled)
-		argIndex++
+		u.Set("enabled", *req.User.Enabled)
 	}
 	if req.User.Password != nil {
 		hashedBytes, err := svc.authService.HashPassword(*req.User.Password)
@@ -1218,21 +1187,20 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 			common.SendError(c, common.NewInternalServerError("failed to hash password"))
 			return
 		}
-		updates = append(updates, "password_hash = $"+fmt.Sprint(argIndex))
-		args = append(args, string(hashedBytes))
+		u.Set("password_hash", string(hashedBytes))
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
 	// Add updated_at timestamp
-	updates = append(updates, "updated_at = CURRENT_TIMESTAMP")
+	u.SetExpr("updated_at = CURRENT_TIMESTAMP")
 
 	// Execute update
-	query := "UPDATE users SET " + strings.Join(updates, ", ") + " WHERE id = $1"
-	_, err = database.DB.Exec(c.Request.Context(), query, args...)
+	query := "UPDATE users SET " + u.Assignments() + " WHERE id = " + u.Arg(userID)
+	_, err = database.DB.Exec(c.Request.Context(), query, u.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_user").Str("user_id", userID).Msg("Failed to update user")

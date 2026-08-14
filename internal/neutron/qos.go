@@ -2,9 +2,7 @@ package neutron
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/o3k/internal/common"
@@ -196,38 +194,29 @@ func (svc *Service) UpdateQoSPolicy(c *gin.Context) {
 	}
 
 	// Build update query
-	updates := []string{}
-	args := []any{}
-	argPos := 1
+	u := &common.SQLUpdate{}
 
 	if req.Policy.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argPos))
-		args = append(args, *req.Policy.Name)
-		argPos++
+		u.Set("name", *req.Policy.Name)
 	}
 
 	if req.Policy.Description != nil {
-		updates = append(updates, fmt.Sprintf("description = $%d", argPos))
-		args = append(args, *req.Policy.Description)
-		argPos++
+		u.Set("description", *req.Policy.Description)
 	}
 
 	if req.Policy.Shared != nil {
-		updates = append(updates, fmt.Sprintf("shared = $%d", argPos))
-		args = append(args, *req.Policy.Shared)
-		argPos++
+		u.Set("shared", *req.Policy.Shared)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
-	args = append(args, time.Now(), policyID)
-	query := fmt.Sprintf("UPDATE qos_policies SET %s, updated_at = $%d WHERE id = $%d",
-		strings.Join(updates, ", "), argPos, argPos+1)
+	u.Set("updated_at", time.Now())
+	query := "UPDATE qos_policies SET " + u.Assignments() + " WHERE id = " + u.Arg(policyID)
 
-	_, err = database.DB.Exec(c.Request.Context(), query, args...)
+	_, err = database.DB.Exec(c.Request.Context(), query, u.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_qos_policy").Msg("failed to update QoS policy")
@@ -485,38 +474,29 @@ func (svc *Service) UpdateBandwidthLimitRule(c *gin.Context) {
 	}
 
 	// Build update query
-	updates := []string{}
-	args := []any{}
-	argPos := 1
+	u := &common.SQLUpdate{}
 
 	if req.Rule.MaxKbps != nil {
-		updates = append(updates, fmt.Sprintf("max_kbps = $%d", argPos))
-		args = append(args, *req.Rule.MaxKbps)
-		argPos++
+		u.Set("max_kbps", *req.Rule.MaxKbps)
 	}
 
 	if req.Rule.MaxBurstKbps != nil {
-		updates = append(updates, fmt.Sprintf("max_burst_kbps = $%d", argPos))
-		args = append(args, *req.Rule.MaxBurstKbps)
-		argPos++
+		u.Set("max_burst_kbps", *req.Rule.MaxBurstKbps)
 	}
 
 	if req.Rule.Direction != nil {
-		updates = append(updates, fmt.Sprintf("direction = $%d", argPos))
-		args = append(args, *req.Rule.Direction)
-		argPos++
+		u.Set("direction", *req.Rule.Direction)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
-	args = append(args, time.Now(), ruleID)
-	query := fmt.Sprintf("UPDATE qos_bandwidth_limit_rules SET %s, updated_at = $%d WHERE id = $%d",
-		strings.Join(updates, ", "), argPos, argPos+1)
+	u.Set("updated_at", time.Now())
+	query := "UPDATE qos_bandwidth_limit_rules SET " + u.Assignments() + " WHERE id = " + u.Arg(ruleID)
 
-	_, err = database.DB.Exec(c.Request.Context(), query, args...)
+	_, err = database.DB.Exec(c.Request.Context(), query, u.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_bandwidth_limit_rule").Msg("failed to update bandwidth limit rule")

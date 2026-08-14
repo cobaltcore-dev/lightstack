@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"github.com/cobaltcore-dev/o3k/internal/common"
 	"regexp"
 	"strconv"
 	"strings"
@@ -100,59 +101,59 @@ func TestBuildNetworkListFilter(t *testing.T) {
 
 	// SPEC-024 F11: router:external is a real predicate now, complementary rather than always-empty
 	// (FR-032, contract X6). The old assertion — empty=true — encoded the defect.
-	conds, args, empty := buildNetworkListFilter(caller, "", "true", "", "", "")
+	f, empty := buildNetworkListFilter(caller, "", "true", "", "", "")
 	if empty {
 		t.Fatal("router:external=true must no longer force an empty result")
 	}
-	if where := strings.Join(conds, " AND "); where != "(project_id = $1 OR shared = true OR external = true) AND external = $2" {
+	if where := f.Conds(); where != "(project_id = $1 OR shared = true OR external = true) AND external = $2" {
 		t.Errorf("router:external=true where = %q", where)
 	}
-	if len(args) != 2 || args[1] != true {
+	if args := f.Args(); len(args) != 2 || args[1] != true {
 		t.Errorf("router:external=true args = %v, want [caller true]", args)
 	}
 
 	// ...and its complement.
-	_, args, _ = buildNetworkListFilter(caller, "", "false", "", "", "")
-	if len(args) != 2 || args[1] != false {
+	f, _ = buildNetworkListFilter(caller, "", "false", "", "", "")
+	if args := f.Args(); len(args) != 2 || args[1] != false {
 		t.Errorf("router:external=false args = %v, want [caller false]", args)
 	}
 
 	// Default (no filters): scope = caller's own OR shared OR external, one arg (the caller).
 	// `external` is a THIRD INDEPENDENT disjunct — it must not require `shared`, or a tenant cannot
 	// see the external network they need to pick as a router gateway (FR-033a).
-	conds, args, empty = buildNetworkListFilter(caller, "", "", "", "", "")
+	f, empty = buildNetworkListFilter(caller, "", "", "", "", "")
 	if empty {
 		t.Fatal("default filter should not be empty")
 	}
-	if where := strings.Join(conds, " AND "); where != "(project_id = $1 OR shared = true OR external = true)" {
+	if where := f.Conds(); where != "(project_id = $1 OR shared = true OR external = true)" {
 		t.Errorf("default where = %q", where)
 	}
-	if len(args) != 1 || args[0] != caller {
+	if args := f.Args(); len(args) != 1 || args[0] != caller {
 		t.Errorf("default args = %v, want [%q]", args, caller)
 	}
 
 	// shared=true → only shared, and NO caller arg (so pagination starts at $1).
-	conds, args, _ = buildNetworkListFilter(caller, "true", "", "", "", "")
-	if where := strings.Join(conds, " AND "); where != "shared = true" {
+	f, _ = buildNetworkListFilter(caller, "true", "", "", "", "")
+	if where := f.Conds(); where != "shared = true" {
 		t.Errorf("shared=true where = %q", where)
 	}
-	if len(args) != 0 {
+	if args := f.Args(); len(args) != 0 {
 		t.Errorf("shared=true args = %v, want none", args)
 	}
 
 	// shared=false → exclude shared, scoped to the caller.
-	conds, _, _ = buildNetworkListFilter(caller, "false", "", "", "", "")
-	if where := strings.Join(conds, " AND "); !strings.Contains(where, "shared = false") {
+	f, _ = buildNetworkListFilter(caller, "false", "", "", "", "")
+	if where := f.Conds(); !strings.Contains(where, "shared = false") {
 		t.Errorf("shared=false where = %q", where)
 	}
 
 	// tenant + name append sequential placeholders after the scope arg ($1).
-	conds, args, _ = buildNetworkListFilter(caller, "", "", "proj-A", "", "netx")
-	where := strings.Join(conds, " AND ")
+	f, _ = buildNetworkListFilter(caller, "", "", "proj-A", "", "netx")
+	where := f.Conds()
 	if !strings.Contains(where, "project_id = $2") || !strings.Contains(where, "name = $3") {
 		t.Errorf("tenant+name where = %q, want $2/$3 placeholders", where)
 	}
-	if len(args) != 3 {
+	if args := f.Args(); len(args) != 3 {
 		t.Errorf("tenant+name args = %v, want 3", args)
 	}
 }
@@ -209,15 +210,16 @@ func TestBuildSubnetListFilter(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			conds, args := buildSubnetListFilter(tc.params, 1)
-			if len(conds) != len(tc.wantConds) {
-				t.Fatalf("conds = %v, want %v", conds, tc.wantConds)
+			f := &common.SQLFilter{}
+			addSubnetListFilter(f, tc.params)
+
+			// Conds() joins with " AND "; the cases express the predicates individually because what
+			// matters is each one's text AND its placeholder number.
+			want := strings.Join(tc.wantConds, " AND ")
+			if got := f.Conds(); got != want {
+				t.Errorf("conds = %q, want %q", got, want)
 			}
-			for i := range conds {
-				if conds[i] != tc.wantConds[i] {
-					t.Errorf("conds[%d] = %q, want %q", i, conds[i], tc.wantConds[i])
-				}
-			}
+			args := f.Args()
 			if len(args) != len(tc.wantArgs) {
 				t.Fatalf("args = %v, want %v", args, tc.wantArgs)
 			}
@@ -227,5 +229,27 @@ func TestBuildSubnetListFilter(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The subnet listing scopes by the owning network before adding client filters, so the contracted
+// filters start at $2 in the real query rather than $1. The builder no longer takes a start index —
+// it appends to a filter that already holds the scope — so this pins that the numbering follows the
+// filter it is given rather than restarting.
+func TestAddSubnetListFilterContinuesExistingNumbering(t *testing.T) {
+	f := &common.SQLFilter{}
+	caller := f.Arg("proj-A")
+	f.Cond("(s.project_id = " + caller + " OR n.project_id = " + caller + " OR n.shared = true)")
+
+	addSubnetListFilter(f, subnetFilterParams{NetworkID: "net-1", Name: "sub-a"})
+
+	const want = "(s.project_id = $1 OR n.project_id = $1 OR n.shared = true) AND " +
+		"s.network_id::text = $2 AND s.name = $3"
+	if got := f.Conds(); got != want {
+		t.Errorf("conds = %q, want %q", got, want)
+	}
+	// Three placeholders, but only three values: $1 appears twice and is appended once.
+	if args := f.Args(); len(args) != 3 || args[0] != "proj-A" || args[1] != "net-1" || args[2] != "sub-a" {
+		t.Errorf("args = %v, want [proj-A net-1 sub-a]", args)
 	}
 }
