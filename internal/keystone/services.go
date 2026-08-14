@@ -3,7 +3,6 @@ package keystone
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -20,7 +19,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 	f.eq(c, "name", "name")
 	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT id, type, name, description, enabled, created_at, updated_at FROM services"+
-			f.where()+" ORDER BY name", f.args...)
+			f.Where()+" ORDER BY name", f.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_services").Msg("Failed to query services")
 		common.SendError(c, common.NewInternalServerError("failed to query services"))
@@ -190,45 +189,32 @@ func (svc *Service) UpdateService(c *gin.Context) {
 	}
 
 	// Build dynamic UPDATE query
-	updates := []string{}
-	params := []any{}
-	paramIndex := 1
+	u := &common.SQLUpdate{}
 
 	if req.Service.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", paramIndex))
-		params = append(params, *req.Service.Name)
-		paramIndex++
+		u.Set("name", *req.Service.Name)
 	}
 	if req.Service.Description != nil {
-		updates = append(updates, fmt.Sprintf("description = $%d", paramIndex))
-		params = append(params, *req.Service.Description)
-		paramIndex++
+		u.Set("description", *req.Service.Description)
 	}
 	if req.Service.Enabled != nil {
-		updates = append(updates, fmt.Sprintf("enabled = $%d", paramIndex))
-		params = append(params, *req.Service.Enabled)
-		paramIndex++
+		u.Set("enabled", *req.Service.Enabled)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
 	// Always update updated_at
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", paramIndex))
-	params = append(params, time.Now())
-	paramIndex++
+	u.Set("updated_at", time.Now())
 
-	// Add serviceID as final parameter
-	params = append(params, serviceID)
-
-	query := fmt.Sprintf(`
+	query := `
 		UPDATE services
-		SET %s
-		WHERE id = $%d
+		SET ` + u.Assignments() + `
+		WHERE id = ` + u.Arg(serviceID) + `
 		RETURNING id, type, name, description, enabled, created_at, updated_at
-	`, strings.Join(updates, ", "), paramIndex)
+	`
 
 	// Execute update
 	var id, svcType, name string
@@ -236,7 +222,7 @@ func (svc *Service) UpdateService(c *gin.Context) {
 	var enabled bool
 	var createdAt, updatedAt time.Time
 
-	err := svc.pool.QueryRow(c.Request.Context(), query, params...).Scan(
+	err := svc.pool.QueryRow(c.Request.Context(), query, u.Args()...).Scan(
 		&id, &svcType, &name, &description, &enabled, &createdAt, &updatedAt,
 	)
 
@@ -276,8 +262,8 @@ func (svc *Service) ListEndpoints(c *gin.Context) {
 	f.eq(c, "region_id", "e.region")
 	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT e.id, e.service_id, e.interface, e.url, e.region, e.enabled, s.type, s.name "+
-			"FROM endpoints e JOIN services s ON e.service_id = s.id"+f.where()+
-			" ORDER BY s.name, e.interface", f.args...)
+			"FROM endpoints e JOIN services s ON e.service_id = s.id"+f.Where()+
+			" ORDER BY s.name, e.interface", f.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_endpoints").Msg("Failed to query endpoints")
 		common.SendError(c, common.NewInternalServerError("failed to query endpoints"))

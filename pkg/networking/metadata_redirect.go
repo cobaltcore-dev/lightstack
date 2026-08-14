@@ -103,9 +103,15 @@ func (mr *MetadataRedirect) RemoveForBridge(bridgeName string) error {
 // earlier in the ordered chain — wins, sending that network's guests to a gateway that no longer
 // exists. Metadata breaks and nothing logs an error. Matching on liveness alone would keep it.
 //
+// desired is called after the rules are listed, never before. A rule another path adds while the
+// caller builds its picture is then either listed — and its network, committed before the rule was
+// added, is in a picture read after the listing — or not listed and left alone. A picture built first
+// let a subnet created in between lose its fresh redirect.
+//
 // CALLER CONTRACT: desired must be complete. Pruning against a partially built set deletes live
-// rules, so a caller whose enumeration failed must not call this at all rather than pass what it got.
-func (mr *MetadataRedirect) Prune(desired map[string]string) (int, error) {
+// rules, so a caller that cannot build it must return an error, which skips the prune. A nil map
+// means no rule should exist (teardown).
+func (mr *MetadataRedirect) Prune(desired func() (map[string]string, error)) (int, error) {
 	if mr.mode == "stub" {
 		return 0, nil
 	}
@@ -113,7 +119,11 @@ func (mr *MetadataRedirect) Prune(desired map[string]string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return deleteMetadataRules(staleMetadataRules(rules, desired))
+	want, err := desired()
+	if err != nil {
+		return 0, err
+	}
+	return deleteMetadataRules(staleMetadataRules(rules, want))
 }
 
 // metadataRule is one parsed metadata DNAT rule from nat/PREROUTING.

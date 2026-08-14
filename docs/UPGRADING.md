@@ -332,6 +332,18 @@ Neutron `/v2.0/quotas/{id}`.
 | reading or deleting another project's rule | allowed | `404` |
 | deleting an unknown rule id | `204` | `404` |
 | `remote_group_id` | stored unchecked; a malformed id gave `500` | `400` when malformed, `404` when not the caller's group |
+| deleting a network that still has subnets | `409` | `204`; the subnets are deleted with it, as upstream |
+| deleting a network with floating IPs allocated from it, or that is a router's external gateway | `409` if it had subnets, else `204`, deleting its floating IPs with it | `409` (`NetworkInUse`) |
+| deleting the auto-allocated topology while a port is on its network | `204`, deleting the port with it | `409` (`NetworkInUse`) |
+| `gateway_ip` on subnet create | stored unchecked | `400` unless an address of the subnet's IP version inside it, other than its network and broadcast addresses |
+| `gateway_ip` on subnet update | ignored | applied, checked as on create; `409` (`GatewayIpInUse`) while a router interface holds the current gateway |
+| updating, deleting, or removing an interface from another project's router | the gateway's egress SNAT installed before a `404` (update), the namespace deleted before a `204` (delete), the interface detached (remove) | `404`, and nothing changes |
+| clearing a router's gateway with `external_gateway_info: {}` or `null` | `400`, or ignored | cleared, and the egress SNAT it gave withdrawn |
+| a router's egress SNAT once its gateway is cleared, `enable_snat` is turned off, or an interface is removed | left in place until teardown | withdrawn, unless another router still needs the same range |
+| `enable_snat` that is not a boolean | stored | `400` |
+| deleting a router that still has interfaces | `409` (`Conflict`) | `409` (`RouterInUse`) |
+| `remove_router_interface` with neither `subnet_id` nor `port_id` | `500` | `400` |
+| `marker` on the network, subnet and port listings | read whatever its visibility; one that named nothing was ignored | used only with a `limit`, as upstream, and only if the caller may read it; otherwise `404` (`NetworkNotFound`, `SubnetNotFound`, `PortNotFound`) |
 
 ### Nova
 
@@ -369,6 +381,7 @@ Reads follow upstream's visibility rules, so sharing an image now has an effect.
 | image show and download | public images and the caller's own | also community images, images with no owner, images shared with the caller (any membership status), and every image for an administrator |
 | image list, default | public images and the caller's own | the caller's own, public ones, and shared ones whose membership is accepted; an administrator lists every image. Either way other projects' community images are left out unless `?visibility=community` or `all` asks for them |
 | `?visibility=`, `?member_status=`, `?status=` on the list | ignored | honoured as upstream; an invalid `visibility` or `member_status` is a `400` |
+| `marker` on the list | read whatever its visibility; one that named nothing was ignored | must name an image the caller may read, as upstream; otherwise `400` |
 
 ## The console origin is now read — and must be an origin
 

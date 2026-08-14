@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // TestPollIntervalReportsTheEffectiveValue — cloud-storage#546, the reconcile-interval log line.
@@ -59,4 +61,68 @@ func TestApplyDHCPForNetworkTellsUnreadFromAbsent(t *testing.T) {
 			t.Errorf("= (%q, %q), want nothing asserted", bridge, addr)
 		}
 	})
+}
+
+// TestPruneDeletedNetworksKeepsWhatAReadCanSee — the prune removes the bridge and the DHCP server of a
+// network the database no longer has, and nothing of one it has. It lists the host state first and
+// reads the networks after, so a network created while a pass runs is in the read; the pass used to
+// read once up front, and a network created between that read and the prune lost both right after
+// its 201. That interleaving cannot be forced here; the contract around it can.
+func TestPruneDeletedNetworksKeepsWhatAReadCanSee(t *testing.T) {
+	requireDB(t)
+	svc := NewService(testPool, "stub", nil)
+	r := NewNetworkReconciler(svc, 0)
+
+	live := seedNetwork(t, "spec024-prune-live-"+uuid.NewString()[:8])
+	gone := uuid.NewString() // a network with no row: deleted, as far as the host can tell
+	for _, id := range []string{live, gone} {
+		plantStubBridge(t, svc, id)
+		markDHCPServing(t, svc, id)
+	}
+
+	r.pruneDeletedNetworks(context.Background())
+
+	if !hasStubBridge(t, svc, "br-"+live[:8]) || !svc.dhcpManager.IsRunning(live) {
+		t.Errorf("an existing network lost its host state: bridge=%v dhcp=%v",
+			hasStubBridge(t, svc, "br-"+live[:8]), svc.dhcpManager.IsRunning(live))
+	}
+	if hasStubBridge(t, svc, "br-"+gone[:8]) || svc.dhcpManager.IsRunning(gone) {
+		t.Errorf("a deleted network kept its host state: bridge=%v dhcp=%v",
+			hasStubBridge(t, svc, "br-"+gone[:8]), svc.dhcpManager.IsRunning(gone))
+	}
+}
+
+// TestDesiredRedirectsNowAddsNetworksTheEnumerationMissed — the metadata DNAT prune compares the
+// listed rules with what this returns, called after the listing. A network whose DHCP subnet was
+// created after the pass enumerated them, and whose handler has added its redirect since, is not in
+// the pass's own map; without this read its fresh rule was pruned. The pass's entries are kept as
+// they are, and the added address is the one applyDHCPForNetwork derives.
+func TestDesiredRedirectsNowAddsNetworksTheEnumerationMissed(t *testing.T) {
+	requireDB(t)
+	svc := &Service{pool: testPool, mode: "iptables"}
+
+	inPass := seedNetwork(t, "spec024-redirect-pass-"+uuid.NewString()[:8])
+	seedDHCPSubnet(t, inPass, "spec024-redirect-pass", "10.70.0.0/24")
+	missed := seedNetwork(t, "spec024-redirect-missed-"+uuid.NewString()[:8])
+	seedDHCPSubnet(t, missed, "spec024-redirect-missed", "10.71.0.0/24")
+	noDHCP := seedNetwork(t, "spec024-redirect-nodhcp-"+uuid.NewString()[:8])
+	seedSubnet(t, noDHCP, "spec024-redirect-nodhcp", "10.72.0.0/24", nil, 4, false)
+
+	pass := map[string]string{"br-" + inPass[:8]: "10.70.0.99"}
+	want, err := svc.desiredRedirectsNow(context.Background(), pass)
+	if err != nil {
+		t.Fatalf("desiredRedirectsNow: %v", err)
+	}
+	if got := want["br-"+inPass[:8]]; got != "10.70.0.99" {
+		t.Errorf("the pass's own entry = %q, want it kept as 10.70.0.99", got)
+	}
+	if got := want["br-"+missed[:8]]; got != "10.71.0.1" {
+		t.Errorf("the missed network's redirect = %q, want 10.71.0.1 (its gatewayless subnet's first host)", got)
+	}
+	if _, ok := want["br-"+noDHCP[:8]]; ok {
+		t.Errorf("a network without a DHCP-enabled subnet got a redirect")
+	}
+	if len(pass) != 1 {
+		t.Errorf("the pass's map was modified: %v", pass)
+	}
 }

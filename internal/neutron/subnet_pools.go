@@ -2,7 +2,6 @@ package neutron
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -231,55 +230,39 @@ func (svc *Service) UpdateSubnetPool(c *gin.Context) {
 		return
 	}
 
-	updates := []string{}
-	args := []any{}
-	argID := 1
+	u := &common.SQLUpdate{}
 
 	if req.SubnetPool.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argID))
-		args = append(args, *req.SubnetPool.Name)
-		argID++
+		u.Set("name", *req.SubnetPool.Name)
 	}
 
 	if len(req.SubnetPool.Prefixes) > 0 {
-		updates = append(updates, fmt.Sprintf("prefixes = $%d", argID))
-		args = append(args, req.SubnetPool.Prefixes)
-		argID++
+		u.Set("prefixes", req.SubnetPool.Prefixes)
 	}
 
 	if req.SubnetPool.MinPrefixlen != nil {
-		updates = append(updates, fmt.Sprintf("min_prefixlen = $%d", argID))
-		args = append(args, *req.SubnetPool.MinPrefixlen)
-		argID++
+		u.Set("min_prefixlen", *req.SubnetPool.MinPrefixlen)
 	}
 
 	if req.SubnetPool.MaxPrefixlen != nil {
-		updates = append(updates, fmt.Sprintf("max_prefixlen = $%d", argID))
-		args = append(args, *req.SubnetPool.MaxPrefixlen)
-		argID++
+		u.Set("max_prefixlen", *req.SubnetPool.MaxPrefixlen)
 	}
 
 	if req.SubnetPool.DefaultPrefixlen != nil {
-		updates = append(updates, fmt.Sprintf("default_prefixlen = $%d", argID))
-		args = append(args, *req.SubnetPool.DefaultPrefixlen)
-		argID++
+		u.Set("default_prefixlen", *req.SubnetPool.DefaultPrefixlen)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no updates provided"))
 		return
 	}
 
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", argID))
-	args = append(args, time.Now())
-	argID++
+	u.Set("updated_at", time.Now())
 
-	args = append(args, poolID, projectID)
+	query := "UPDATE subnet_pools SET " + u.Assignments() +
+		" WHERE id = " + u.Arg(poolID) + " AND project_id = " + u.Arg(projectID)
 
-	query := fmt.Sprintf("UPDATE subnet_pools SET %s WHERE id = $%d AND project_id = $%d",
-		updateString(updates), argID, argID+1)
-
-	result, err := svc.pool.Exec(c.Request.Context(), query, args...)
+	result, err := svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_subnet_pool").Msg("failed to update subnet pool")
 		common.SendError(c, common.NewInternalServerError("failed to update subnet pool"))

@@ -10,6 +10,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/middleware"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // SPEC-024 (cloud-storage#546) US2 / B10 — Neutron answers in Neutron's error envelope.
@@ -134,6 +135,50 @@ func TestNeutronNotFoundNamesTheConditionPerResource(t *testing.T) {
 				t.Fatalf("status = %d, want 404 (body %s)", code, body)
 			}
 			assertNeutronShape(t, neutronError(t, body), tc.wantType)
+		})
+	}
+}
+
+// TestNeutronInUseNamesTheCondition — FR-007's in-use conditions, and what counts as in use.
+//
+// DeleteNetwork's refusals were built without a resource, so neutronType fell through to the generic
+// Conflict and its in-use table was never consulted. Upstream raises NetworkInUse while any port
+// other than its own automatic ones remains, and a floating IP or a router gateway is such a port
+// there. Here each is a row of its own, so each is a case of its own. Subnets are not a case:
+// upstream deletes them with the network (TestDeleteNetworkTakesItsSubnets).
+func TestNeutronInUseNamesTheCondition(t *testing.T) {
+	requireDB(t)
+	r := newEnvelopeRouter()
+
+	for _, tc := range []struct {
+		name string
+		seed func(t *testing.T, networkID string)
+	}{
+		{"active port", func(t *testing.T, networkID string) {
+			mustExec(t, `INSERT INTO ports (name, network_id, project_id, mac_address)
+				VALUES ('spec024-in-use', $1, $2, 'fa:16:3e:00:00:02')`, networkID, seededProjectID)
+		}},
+		{"floating IP", func(t *testing.T, networkID string) {
+			mustExec(t, `INSERT INTO floating_ips (project_id, floating_network_id, floating_ip_address)
+				VALUES ($1, $2, '203.0.113.77')`, seededProjectID, networkID)
+		}},
+		{"router gateway", func(t *testing.T, networkID string) {
+			routerID := uuid.NewString()
+			mustExec(t, `INSERT INTO routers (id, name, project_id, external_gateway_info)
+				VALUES ($1, 'spec024-in-use', $2, jsonb_build_object('network_id', $3::text))`,
+				routerID, seededProjectID, networkID)
+			cleanupRows(t, "routers", routerID)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := seedNetwork(t, "spec024-in-use-"+uuid.NewString()[:8])
+			tc.seed(t, id)
+
+			code, body := doReq(r, http.MethodDelete, "/v2.0/networks/"+id, nil)
+			if code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409 (body %s)", code, body)
+			}
+			assertNeutronShape(t, neutronError(t, body), "NetworkInUse")
 		})
 	}
 }

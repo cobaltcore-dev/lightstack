@@ -79,9 +79,11 @@ var neutronNotFoundTypes = map[string]string{
 // neutronInUseTypes covers the 409s upstream names after the resource. Anything not listed is a
 // plain Conflict — upstream has no in-use class for it.
 var neutronInUseTypes = map[string]string{
-	"network": "NetworkInUse",
-	"subnet":  "SubnetInUse",
-	"port":    "PortInUse",
+	"network":    "NetworkInUse",
+	"subnet":     "SubnetInUse",
+	"port":       "PortInUse",
+	"gateway ip": "GatewayIpInUse",
+	"router":     "RouterInUse",
 }
 
 // neutronCodeTypes maps this package's envelope keys onto upstream class names for every status

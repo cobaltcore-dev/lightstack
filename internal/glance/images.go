@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -289,55 +288,70 @@ func (svc *Service) ListImages(c *gin.Context) {
 	// ?visibility= keeps one visibility, or "all" keeps everything; without it, community
 	// images are left out unless they are the caller's own. Narrower than reading one image
 	// (common.ImageVisibleSQL): a pending share can be shown but is not listed by default.
-	caller := common.CallerProjectID(projectID)
-	queryArgs := []any{caller, common.HasRole(c, common.RoleAdmin), memberStatus}
-	conditions := []string{`($2
+	//
+	// The caller and the membership status are each read by several placeholders, so each is
+	// appended once and its placeholder reused.
+	f := &common.SQLFilter{}
+	caller := f.Arg(common.CallerProjectID(projectID))
+	admin := f.Arg(common.HasRole(c, common.RoleAdmin))
+	membership := f.Arg(memberStatus)
+	f.Cond("(" + admin + `
 		OR i.visibility IN ('public', 'community')
-		OR i.project_id::text = $1
-		OR (i.visibility = 'shared' AND $1 <> '' AND EXISTS (
+		OR i.project_id::text = ` + caller + `
+		OR (i.visibility = 'shared' AND ` + caller + ` <> '' AND EXISTS (
 			SELECT 1 FROM image_members m
 			WHERE m.image_id = i.id
-			  AND replace(lower(m.member_id), '-', '') = replace($1, '-', '')
-			  AND ($3 = 'all' OR m.status = $3))))`}
-	argIdx := 4
+			  AND replace(lower(m.member_id), '-', '') = replace(` + caller + `, '-', '')
+			  AND (` + membership + ` = 'all' OR m.status = ` + membership + `))))`)
 	switch visibility {
 	case "":
-		conditions = append(conditions, "(i.visibility <> 'community' OR i.project_id::text = $1)")
+		f.Cond("(i.visibility <> 'community' OR i.project_id::text = " + caller + ")")
 	case "all":
 	default:
-		conditions = append(conditions, fmt.Sprintf("i.visibility = $%d", argIdx))
-		queryArgs = append(queryArgs, visibility)
-		argIdx++
+		f.Eq("i.visibility", visibility)
 	}
 	if status := c.Query("status"); status != "" {
-		conditions = append(conditions, fmt.Sprintf("i.status = $%d", argIdx))
-		queryArgs = append(queryArgs, status)
-		argIdx++
+		f.Eq("i.status", status)
 	}
 
-	// Marker-based pagination
+	// Marker-based pagination over a TOTAL order.
+	//
+	// This used to order by created_at alone and resolve the marker to `created_at < $n`. created_at
+	// is not unique — images uploaded by one script or seed share it — so the order was undefined
+	// among ties AND the predicate excluded every row sharing the marker's timestamp rather than only
+	// those before it, silently dropping the marker's siblings from the walk. id is the primary key,
+	// so (created_at, id) is total and the composite comparison is exclusive of exactly one row.
+	// Same defect and same fix as the compute listings in #549.
+	//
+	// The marker is resolved as a show resolves an image (common.ImageVisibleSQL), as upstream resolves
+	// it with _image_get, and one that does not resolve is refused with upstream's 400. It used to be
+	// read with no visibility at all and ignored when absent, so another project's private image
+	// narrowed the listing where an unknown id did not — telling the caller that image exists.
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM images WHERE id::text = $1",
-			marker,
-		).Scan(&markerCreatedAt)
-		if err == nil {
-			conditions = append(conditions, fmt.Sprintf("i.created_at < $%d", argIdx))
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			"SELECT i.created_at, i.id FROM images i WHERE i.id::text = $1 AND "+common.ImageVisibleSQL("i", 2, 3),
+			marker, common.CallerProjectID(projectID), common.HasRole(c, common.RoleAdmin),
+		).Scan(&markerCreatedAt, &markerID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			common.SendError(c, common.NewBadRequestError(fmt.Sprintf("No image found with ID %s", marker)))
+			return
 		}
+		if err != nil {
+			log.Error().Err(err).Str("marker", marker).Msg("failed to resolve pagination marker")
+			common.SendError(c, common.NewInternalServerError("failed to list images"))
+			return
+		}
+		f.Cond(fmt.Sprintf("(i.created_at, i.id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
-
-	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
+	where := f.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT i.id, i.name, i.status, i.visibility, i.size_bytes, i.disk_format, i.container_format, i.min_disk_gb, i.min_ram_mb, i.created_at, i.updated_at
-		FROM images i
-		WHERE %s
-		ORDER BY i.created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, strings.Join(conditions, " AND "), argIdx, argIdx+1), queryArgs...)
+		FROM images i`+where+`
+		ORDER BY i.created_at DESC, i.id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_images").Msg("failed to query images")

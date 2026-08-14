@@ -51,6 +51,7 @@ func TestDefaultEnvelopeIsUnchanged(t *testing.T) {
 		{"unauthorized", NewUnauthorizedError("nope"), "unauthorized", http.StatusUnauthorized},
 		{"forbidden", NewForbiddenError("nope"), "forbidden", http.StatusForbidden},
 		{"conflict", NewConflictError("nope"), "conflict", http.StatusConflict},
+		{"resource in use", NewResourceInUseError("network", "delete network", "nope"), "conflictingRequest", http.StatusConflict},
 		{"internal", NewInternalServerError("nope"), "computeFault", http.StatusInternalServerError},
 		{"method not allowed", NewMethodNotAllowedError("DELETE"), "badMethod", http.StatusMethodNotAllowed},
 	}

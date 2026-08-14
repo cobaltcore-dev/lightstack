@@ -2,7 +2,6 @@ package keystone
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -18,8 +17,8 @@ func (svc *Service) ListGroups(c *gin.Context) {
 	f.eq(c, "name", "name")
 	f.eqDomain(c, "domain_id", "domain_id")
 	rows, err := svc.pool.Query(c.Request.Context(),
-		"SELECT id, name, domain_id, description, created_at FROM groups"+f.where()+
-			" ORDER BY created_at DESC", f.args...,
+		"SELECT id, name, domain_id, description, created_at FROM groups"+f.Where()+
+			" ORDER BY created_at DESC", f.Args()...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_groups").Msg("Failed to query groups")
@@ -177,31 +176,23 @@ func (svc *Service) UpdateGroup(c *gin.Context) {
 	}
 
 	// Build dynamic update query
-	updates := []string{}
-	args := []any{}
-	argIdx := 1
+	u := &common.SQLUpdate{}
 
 	if req.Group.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argIdx))
-		args = append(args, *req.Group.Name)
-		argIdx++
+		u.Set("name", *req.Group.Name)
 	}
 	if req.Group.Description != nil {
-		updates = append(updates, fmt.Sprintf("description = $%d", argIdx))
-		args = append(args, *req.Group.Description)
-		argIdx++
+		u.Set("description", *req.Group.Description)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
-	updates = append(updates, "updated_at = NOW()")
-	args = append(args, groupID)
-
-	query := fmt.Sprintf("UPDATE groups SET %s WHERE id = $%d", joinUpdates(updates), argIdx)
-	_, err := svc.pool.Exec(c.Request.Context(), query, args...)
+	u.SetExpr("updated_at = NOW()")
+	query := "UPDATE groups SET " + u.Assignments() + " WHERE id = " + u.Arg(groupID)
+	_, err := svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_group").Str("group_id", groupID).Msg("Failed to update group")
 		common.SendError(c, common.NewInternalServerError("failed to update group"))
@@ -346,16 +337,4 @@ func (svc *Service) RemoveUserFromGroup(c *gin.Context) {
 	}
 
 	c.Status(204)
-}
-
-// Helper function to join update strings
-func joinUpdates(updates []string) string {
-	result := ""
-	for i, update := range updates {
-		if i > 0 {
-			result += ", "
-		}
-		result += update
-	}
-	return result
 }

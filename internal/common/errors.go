@@ -167,6 +167,19 @@ func NewOperationConflictError(operation, reason string) *OpenStackError {
 	}
 }
 
+// NewResourceInUseError creates an error for an operation refused because the resource is still in
+// use. It differs from NewOperationConflictError only in recording the resource, which is what lets
+// Neutron's envelope name the condition (NetworkInUse, …); every other envelope renders the two alike.
+func NewResourceInUseError(resourceType, operation, reason string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode: http.StatusConflict,
+		Code:       "conflictingRequest",
+		Message:    fmt.Sprintf("Cannot %s", operation),
+		Details:    reason,
+		Resource:   resourceType,
+	}
+}
+
 func NewBadRequestError(message string) *OpenStackError {
 	return &OpenStackError{
 		StatusCode: http.StatusBadRequest,

@@ -447,10 +447,7 @@ func cleanupPortForwardingPrerequisites(t *testing.T, client *gophercloud.Servic
 	}
 
 	// The external network and its subnet, last: the router used the network as its gateway and the
-	// floating IP was allocated from it, so both must already be gone. Subnet before network, because
-	// DeleteNetwork refuses a network that still has one (409) — which is why these leaked visibly
-	// rather than silently once SPEC-024 F11 made router:external real. Before that the attribute was
-	// dropped at bind time, so this fixture's "external" network was an ordinary one despite the name.
+	// floating IP was allocated from it, and DeleteNetwork refuses a network either still uses (409).
 	if extSubnetID != "" {
 		client.Delete(client.ServiceURL("subnets", extSubnetID), nil)
 	}

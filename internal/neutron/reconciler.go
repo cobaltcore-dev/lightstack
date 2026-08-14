@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"time"
 
@@ -83,29 +84,12 @@ func (r *NetworkReconciler) reconcile(ctx context.Context) {
 func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 	r.reportGrandfatheredGateways(ctx)
 
-	// Egress: internal subnets behind a router that has an external gateway.
-	var cidrs []string
-	if rows, err := r.svc.pool.Query(ctx, `
-		SELECT DISTINCT s.cidr
-		FROM routers rt
-		JOIN router_interfaces ri ON ri.router_id = rt.id
-		JOIN subnets s ON s.id = ri.subnet_id
-		WHERE rt.external_gateway_info IS NOT NULL
-		  AND rt.external_gateway_info::text <> 'null'`); err == nil {
-		for rows.Next() {
-			var cidr string
-			if err := rows.Scan(&cidr); err == nil {
-				cidrs = append(cidrs, cidr)
-			} else {
-				log.Warn().Err(err).Str("operation", "reconcileNAT").Msg("failed to scan NAT subnet row")
-			}
-		}
-		if err := rows.Err(); err != nil {
-			log.Error().Err(err).Msg("reconcile: NAT subnet rows error; egress set may be incomplete this pass")
-		}
-		rows.Close()
-	} else {
-		log.Error().Err(err).Msg("reconcile: failed to query NAT subnets")
+	// Egress: internal subnets behind a router whose gateway masquerades them. enable_snat is honoured
+	// here as everywhere (egressSNATCIDRs); it used not to be, so a range withdrawn when SNAT was
+	// turned off came straight back on this pass.
+	cidrs, err := r.svc.egressSNATCIDRs(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: egress subnets read incomplete; ensuring what was read this pass")
 	}
 
 	// Floating IPs currently associated to a port.
@@ -158,75 +142,96 @@ func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 // are kernel objects that normally persist across a pod restart, so an
 // "already exists" outcome is expected and logged at debug.
 func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
-	rows, err := r.svc.pool.Query(ctx, `SELECT id FROM networks`)
+	// A short list is safe to ENSURE from — only the prune needs a complete one.
+	ids, _, err := r.readNetworkIDs(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("reconcile: failed to query networks")
 		return
 	}
-	var ids []string
-	scanFailed := false
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			log.Warn().Err(err).Str("operation", "reconcileNetworks").Msg("failed to scan row")
-			scanFailed = true
-			continue
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	// A short list is safe to ENSURE from and unsafe to PRUNE from, so the two halves of this pass are
-	// guarded separately. This used to skip only on rows.Err(), which left the more likely case — one
-	// unreadable row, logged and stepped over — feeding a short list straight into the prune below.
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("reconcile: networks rows error")
-		scanFailed = true
-	}
-
 	for _, networkID := range ids {
 		bridgeName := "br-" + networkID[:8]
 		if err := r.svc.brManager.CreateBridge(bridgeName); err != nil {
 			log.Debug().Err(err).Str("network_id", networkID).Str("bridge", bridgeName).Msg("reconcile: bridge ensure (likely already present)")
 		}
 	}
+	r.pruneDeletedNetworks(ctx)
+}
 
-	// Prune real-mode state for networks that no longer exist: a deleted network's
-	// bridge persists in the kernel and keeps claiming its subnet gateway IP,
-	// colliding with a later network on the same CIDR (the recurring single-node
-	// stale-bridge problem). Delete those bridges and stop their dnsmasq.
-	//
-	// Both steps below read "not in the list" as "deleted", so neither may run against a list known
-	// to be short: a network that was merely unread would lose its bridge and have its dnsmasq
-	// stopped — taking DHCP away from running guests. Skipping only defers the hygiene to the next
-	// pass, which is the same trade reconcileSubnets makes for the metadata redirect.
-	if scanFailed {
-		log.Warn().Msg("reconcile: network enumeration incomplete; skipping bridge and DHCP prune this pass")
+// readNetworkIDs reads every network id. complete is false when a row could not be read: such a list
+// is safe to ENSURE from and unsafe to PRUNE from. This used to skip only on rows.Err(), which left
+// the more likely case — one unreadable row, logged and stepped over — feeding a short list straight
+// into the prune.
+func (r *NetworkReconciler) readNetworkIDs(ctx context.Context) (ids []string, complete bool, err error) {
+	rows, err := r.svc.pool.Query(ctx, `SELECT id FROM networks`)
+	if err != nil {
+		return nil, false, err
+	}
+	complete = true
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			log.Warn().Err(err).Str("operation", "reconcileNetworks").Msg("failed to scan row")
+			complete = false
+			continue
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("reconcile: networks rows error")
+		complete = false
+	}
+	return ids, complete, nil
+}
+
+// pruneDeletedNetworks removes real-mode state for networks that no longer exist: a deleted network's
+// bridge persists in the kernel and keeps claiming its subnet gateway IP, colliding with a later
+// network on the same CIDR (the recurring single-node stale-bridge problem), and its dnsmasq keeps
+// running.
+//
+// The host state is LISTED FIRST and the networks read after it. Every path commits a network's row
+// before creating host state for it, so whatever the listing found belongs to a row this read can
+// see. The pass used to read once, before ensuring and listing, and a network created in between lost
+// its bridge and its DHCP right after its 201.
+//
+// Both steps read "not in the list" as "deleted", so neither may run against a list known to be
+// short: a network that was merely unread would lose its bridge and have its dnsmasq stopped — taking
+// DHCP away from running guests. Skipping only defers the hygiene to the next pass, which is the same
+// trade reconcileSubnets makes for the metadata redirect.
+func (r *NetworkReconciler) pruneDeletedNetworks(ctx context.Context) {
+	bridges, listErr := r.svc.brManager.ListManagedBridges()
+	if listErr != nil {
+		log.Debug().Err(listErr).Msg("reconcile: list bridges for prune")
+	}
+	served := r.svc.dhcpManager.ServedNetworks()
+
+	ids, complete, err := r.readNetworkIDs(ctx)
+	if err != nil || !complete {
+		log.Warn().Err(err).Msg("reconcile: network enumeration incomplete; skipping bridge and DHCP prune this pass")
 		return
 	}
-
 	active := make(map[string]bool, len(ids))
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		active[id] = true
-		if len(id) >= 8 {
-			want["br-"+id[:8]] = true
+		want["br-"+id[:8]] = true
+	}
+
+	for _, b := range bridges {
+		if want[b] {
+			continue
+		}
+		if err := r.svc.brManager.DeleteBridge(b); err != nil {
+			log.Debug().Err(err).Str("bridge", b).Msg("reconcile: prune stale bridge")
+		} else {
+			log.Info().Str("bridge", b).Msg("reconcile: pruned stale bridge (network deleted)")
 		}
 	}
-	if bridges, err := r.svc.brManager.ListManagedBridges(); err != nil {
-		log.Debug().Err(err).Msg("reconcile: list bridges for prune")
-	} else {
-		for _, b := range bridges {
-			if want[b] {
-				continue
-			}
-			if err := r.svc.brManager.DeleteBridge(b); err != nil {
-				log.Debug().Err(err).Str("bridge", b).Msg("reconcile: prune stale bridge")
-			} else {
-				log.Info().Str("bridge", b).Msg("reconcile: pruned stale bridge (network deleted)")
-			}
+	for _, networkID := range served {
+		if !active[networkID] {
+			_ = r.svc.dhcpManager.StopDHCP(networkID)
 		}
 	}
-	r.svc.dhcpManager.PruneDHCP(active)
 }
 
 // reconcileSubnets re-applies DHCP for every network that has a DHCP-enabled
@@ -292,11 +297,52 @@ func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
 		log.Warn().Msg("reconcile: subnet state incomplete; skipping metadata DNAT prune this pass")
 		return
 	}
-	if removed, err := r.svc.mdRedirect.Prune(desired); err != nil {
+	// Prune lists the rules before it calls this, so a network whose subnet was created after the
+	// enumeration above — its handler having added the redirect since — is in the picture too.
+	if removed, err := r.svc.mdRedirect.Prune(func() (map[string]string, error) {
+		return r.svc.desiredRedirectsNow(ctx, desired)
+	}); err != nil {
 		log.Debug().Err(err).Msg("reconcile: metadata DNAT prune")
 	} else if removed > 0 {
 		log.Info().Int("rules", removed).Msg("reconcile: pruned stale metadata DNAT rules (network or gateway gone)")
 	}
+}
+
+// desiredRedirectsNow returns the pass's redirects plus that of every network with a DHCP-enabled
+// subnet the pass did not reach: one whose subnet was created after the pass enumerated them. It reads
+// when called, which Prune does after listing the rules, so the network of every listed rule is in
+// the result. The pass's own entries are kept as asserted; an added one is derived as
+// applyDHCPForNetwork derives it, from the network's first DHCP-enabled subnet.
+func (svc *Service) desiredRedirectsNow(ctx context.Context, pass map[string]string) (map[string]string, error) {
+	rows, err := svc.pool.Query(ctx, `
+		SELECT DISTINCT ON (network_id) network_id::text, cidr, gateway_ip
+		FROM subnets
+		WHERE enable_dhcp = true
+		ORDER BY network_id, created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	want := maps.Clone(pass)
+	if want == nil {
+		want = map[string]string{}
+	}
+	for rows.Next() {
+		var networkID, cidr string
+		var gatewayIP *string
+		if err := rows.Scan(&networkID, &cidr, &gatewayIP); err != nil {
+			return nil, err // a short picture is not a prune input
+		}
+		bridge := "br-" + networkID[:8]
+		if _, asserted := want[bridge]; asserted {
+			continue
+		}
+		if addr := bridgeAddrFor(gatewayIP, cidr); addr != "" {
+			want[bridge] = addr
+		}
+	}
+	return want, rows.Err()
 }
 
 // applyDHCPForNetwork (re)asserts the bridge gateway IP, the metadata DNAT, and
@@ -326,7 +372,8 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 	var dns []string
 	err := svc.pool.QueryRow(ctx, `
 		SELECT cidr, gateway_ip, dns_nameservers FROM subnets
-		WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns)
+		WHERE network_id = $1 AND enable_dhcp = true
+		ORDER BY created_at, id LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", nil // no DHCP-enabled subnet for this network — nothing to do
 	}

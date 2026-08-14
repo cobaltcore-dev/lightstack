@@ -109,7 +109,7 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 	// enumeration can name. Pruning against an empty desired set removes exactly the rules matching
 	// the shape Ensure writes, which is what "the host footprint goes away with the product" means
 	// (SPEC-024 host pass, finding 1).
-	if removed, err := svc.mdRedirect.Prune(nil); err != nil {
+	if removed, err := svc.mdRedirect.Prune(func() (map[string]string, error) { return nil, nil }); err != nil {
 		fail(err, "remove metadata DNAT rules")
 	} else if removed > 0 {
 		log.Info().Int("rules", removed).Msg("teardown network: reclaimed metadata DNAT rules")
