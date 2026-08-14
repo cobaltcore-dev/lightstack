@@ -150,18 +150,21 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 		return
 	}
 
-	// Delete subnets first (cascade will handle ports)
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		DELETE FROM subnets WHERE network_id = $1
-	`, networkID)
-
+	// The same refusal as any network delete. This used to delete the subnets and the network
+	// regardless, and the cascade took the ports of any VM still on it. Upstream deletes the topology's
+	// network through delete_network, whose NetworkInUse reaches the caller.
+	inUse, err := svc.networkInUse(c.Request.Context(), networkID)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_auto_allocated_subnets").Str("network_id", networkID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to delete auto-allocated subnets"))
+		log.Error().Err(err).Str("operation", "delete_auto_allocated_topology").Str("network_id", networkID).Msg("failed to check whether the network is in use")
+		common.SendError(c, common.NewInternalServerError("failed to delete auto-allocated topology"))
+		return
+	}
+	if inUse != "" {
+		common.SendError(c, common.NewResourceInUseError("network", "delete auto-allocated topology", inUse))
 		return
 	}
 
-	// Delete network
+	// Delete network; its subnets go with it.
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		DELETE FROM networks WHERE id = $1
 	`, networkID)
@@ -172,15 +175,9 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 		return
 	}
 
-	// Clean up bridge if in real mode. Failures are logged but not
-	// surfaced — the DB rows are gone, so a leftover bridge is a
-	// hygiene issue, not a correctness one.
-	if svc.mode != "stub" {
-		bridgeName := "br-" + networkID[:8]
-		if err := svc.brManager.DeleteBridge(bridgeName); err != nil {
-			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to delete auto-allocated bridge")
-		}
-	}
+	// The same host teardown as any network delete. This used to remove only the bridge, leaving the
+	// network's dnsmasq and metadata DNAT to the reconciler's next pass.
+	svc.teardownNetworkHost(networkID)
 
 	c.Status(http.StatusNoContent)
 }

@@ -2,7 +2,6 @@ package keystone
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
@@ -26,24 +25,15 @@ import (
 // WHERE conditionally from the parameters that are present, leaving the
 // unfiltered path byte-identical (FR-026).
 
-// listFilter accumulates equality predicates and their arguments.
+// listFilter adds the identity-specific ways of reading a query parameter to the
+// shared accumulator.
+//
+// The accumulation itself — conditions, arguments, and the placeholder numbering
+// that ties them together — is common.SQLFilter, shared with Nova's server
+// filter and Neutron's listings. Only the four methods below are peculiar to
+// identity: they read gin query parameters and know this service's vocabulary.
 type listFilter struct {
-	conds []string
-	args  []any
-}
-
-// arg appends a value and returns its placeholder, so a predicate can never
-// disagree with the argument list it reads from. Same shape as serverFilter.arg
-// (internal/nova/server_filter.go): placeholder numbers are derived from
-// len(args) as each value is appended, never counted by hand.
-func (f *listFilter) arg(v any) string {
-	f.args = append(f.args, v)
-	return fmt.Sprintf("$%d", len(f.args))
-}
-
-// add appends `column = $n` for an already-resolved value.
-func (f *listFilter) add(column string, v any) {
-	f.conds = append(f.conds, column+" = "+f.arg(v))
+	common.SQLFilter
 }
 
 // eq adds `column = $n` when the query parameter is present and non-empty.
@@ -51,7 +41,7 @@ func (f *listFilter) add(column string, v any) {
 // query it produced before this feature.
 func (f *listFilter) eq(c *gin.Context, param, column string) {
 	if v := c.Query(param); v != "" {
-		f.add(column, v)
+		f.Eq(column, v)
 	}
 }
 
@@ -71,10 +61,10 @@ func (f *listFilter) eqID(c *gin.Context, param, column string) {
 	}
 	id, err := uuid.Parse(v)
 	if err != nil {
-		f.conds = append(f.conds, "FALSE")
+		f.Cond("FALSE")
 		return
 	}
-	f.add(column, id.String())
+	f.Eq(column, id.String())
 }
 
 // eqBool adds a boolean predicate, accepting upstream's vocabulary — the same
@@ -90,7 +80,7 @@ func (f *listFilter) eqID(c *gin.Context, param, column string) {
 // unrecognised, so the empty case is already the ignored case.
 func (f *listFilter) eqBool(c *gin.Context, param, column string) {
 	if b, ok := common.ParseQueryBool(c.Query(param)); ok {
-		f.add(column, b)
+		f.Eq(column, b)
 	}
 }
 
@@ -108,14 +98,6 @@ func (f *listFilter) eqDomain(c *gin.Context, param, column string) {
 		f.eqID(c, param, column)
 		return
 	}
-	f.conds = append(f.conds, fmt.Sprintf(
-		"%s = (SELECT id FROM domains WHERE name = %s)", column, f.arg(defaultDomainName)))
-}
-
-// where renders the accumulated predicates, or "" when none are present.
-func (f *listFilter) where() string {
-	if len(f.conds) == 0 {
-		return ""
-	}
-	return " WHERE " + strings.Join(f.conds, " AND ")
+	f.Cond(fmt.Sprintf("%s = (SELECT id FROM domains WHERE name = %s)",
+		column, f.Arg(defaultDomainName)))
 }

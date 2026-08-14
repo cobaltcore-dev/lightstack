@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -63,9 +64,11 @@ type CreateRouterRequest struct {
 // UpdateRouterRequest represents a router update request
 type UpdateRouterRequest struct {
 	Router struct {
-		Name                *string         `json:"name"`
-		AdminStateUp        *bool           `json:"admin_state_up"`
-		ExternalGatewayInfo *map[string]any `json:"external_gateway_info"`
+		Name         *string `json:"name"`
+		AdminStateUp *bool   `json:"admin_state_up"`
+		// Raw, so an omitted key stays apart from an explicit null and an empty object — both of
+		// which clear the gateway (see routerGatewayUpdate).
+		ExternalGatewayInfo json.RawMessage `json:"external_gateway_info"`
 	} `json:"router"`
 }
 
@@ -89,35 +92,33 @@ func (svc *Service) ListRouters(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	f := &common.SQLFilter{}
+	f.Eq("project_id", projectID)
 
+	// Marker paging over a TOTAL order. created_at alone is not unique, so the order was undefined
+	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
+	// only those before it — a page walk silently dropped them. id is the primary key, so
+	// (created_at, id) is total (as #549 established for compute).
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM routers WHERE id = $1 AND project_id = $2",
+			"SELECT created_at, id FROM routers WHERE id = $1 AND project_id = $2",
 			marker, projectID,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
+	where := f.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
 
-	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
 		       distributed, ha, created_at, updated_at
-		FROM routers
-		WHERE project_id = $1%s
-		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+		FROM routers`+where+`
+		ORDER BY created_at DESC, id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_routers").Msg("database error")
@@ -317,64 +318,83 @@ func (svc *Service) GetRouter(c *gin.Context) {
 func (svc *Service) UpdateRouter(c *gin.Context) {
 	routerID := c.Param("id")
 	projectID := c.GetString("project_id")
+	ctx := c.Request.Context()
 
 	var req UpdateRouterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
+	gateway, gatewayGiven, err := routerGatewayUpdate(req.Router.ExternalGatewayInfo)
+	if err != nil {
+		common.SendError(c, common.NewBadRequestError("invalid external_gateway_info"))
+		return
+	}
 
-	updates := []string{}
-	args := []any{}
-	argID := 1
+	// Authorise first. The gateway's host side used to run before anything confirmed the caller owns
+	// the router: a project that knew another's router id could install egress SNAT for that router's
+	// subnets — egress its owner never configured — and was then told 404.
+	id, ok := svc.resolveOwnRouter(c, routerID, projectID)
+	if !ok {
+		return
+	}
+
+	u := &common.SQLUpdate{}
 
 	if req.Router.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argID))
-		args = append(args, *req.Router.Name)
-		argID++
+		u.Set("name", *req.Router.Name)
 	}
 
 	if req.Router.AdminStateUp != nil {
-		updates = append(updates, fmt.Sprintf("admin_state_up = $%d", argID))
-		args = append(args, *req.Router.AdminStateUp)
-		argID++
+		u.Set("admin_state_up", *req.Router.AdminStateUp)
 	}
 
-	if req.Router.ExternalGatewayInfo != nil {
-		networkID, ok := gatewayNetworkID(c, *req.Router.ExternalGatewayInfo)
-		if !ok || !requireExternalNetwork(c, svc.pool, networkID, "a router gateway") {
-			return
-		}
-		gatewayInfoJSON, _ := json.Marshal(*req.Router.ExternalGatewayInfo)
-		updates = append(updates, fmt.Sprintf("external_gateway_info = $%d", argID))
-		args = append(args, gatewayInfoJSON)
-		argID++
-
-		// Configure external gateway
-		if err := svc.configureExternalGateway(c.Request.Context(), routerID, *req.Router.ExternalGatewayInfo); err != nil {
-			log.Warn().Err(err).Str("router_id", routerID).Msg("failed to configure external gateway")
+	if gatewayGiven {
+		if gateway == nil {
+			u.Set("external_gateway_info", nil)
+		} else {
+			networkID, ok := gatewayNetworkID(c, gateway)
+			if !ok || !requireExternalNetwork(c, svc.pool, networkID, "a router gateway") {
+				return
+			}
+			gatewayInfoJSON, _ := json.Marshal(gateway)
+			u.Set("external_gateway_info", gatewayInfoJSON)
 		}
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no updates provided"))
 		return
 	}
 
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", argID))
-	args = append(args, time.Now())
-	argID++
+	u.Set("updated_at", time.Now())
 
-	args = append(args, routerID, projectID)
+	query := "UPDATE routers SET " + u.Assignments() +
+		" WHERE id = " + u.Arg(id) + " AND project_id = " + u.Arg(projectID)
 
-	query := fmt.Sprintf("UPDATE routers SET %s WHERE id = $%d AND project_id = $%d",
-		updateString(updates), argID, argID+1)
-
-	_, err := svc.pool.Exec(c.Request.Context(), query, args...)
+	tag, err := svc.pool.Exec(ctx, query, u.Args()...)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "update_router").Str("router_id", routerID).Msg("database error")
+		log.Error().Err(err).Str("operation", "update_router").Str("router_id", id).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update router"))
 		return
+	}
+	// Ownership was settled above, so matching no row here means a concurrent delete got there first.
+	if tag.RowsAffected() == 0 {
+		common.SendError(c, common.NewNotFoundError("router"))
+		return
+	}
+
+	// The host follows the row. A gateway that went away, or stopped masquerading, takes back the
+	// egress SNAT it gave the router's subnets — which used to stay in place for good.
+	if gatewayGiven {
+		if gateway != nil {
+			if err := svc.configureExternalGateway(ctx, id, gateway); err != nil {
+				log.Warn().Err(err).Str("router_id", id).Msg("failed to configure external gateway")
+			}
+		}
+		if gateway == nil || !gatewaySNATOn(gateway) {
+			svc.withdrawRouterEgressSNAT(ctx, id)
+		}
 	}
 
 	// Return updated router
@@ -385,41 +405,45 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 func (svc *Service) DeleteRouter(c *gin.Context) {
 	routerID := c.Param("id")
 	projectID := c.GetString("project_id")
+	ctx := c.Request.Context()
 
-	// Check if router has any interfaces attached
+	// Authorise first. The namespace used to go before the owner-scoped delete, which then answered
+	// 204 whatever it matched, and the unscoped in-use count answered 409 for a router the caller
+	// could not even see.
+	id, ok := svc.resolveOwnRouter(c, routerID, projectID)
+	if !ok {
+		return
+	}
+
 	var interfaceCount int
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM router_interfaces WHERE router_id = $1",
-		routerID,
-	).Scan(&interfaceCount)
-
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		log.Error().Err(err).Str("operation", "delete_router_check").Str("router_id", routerID).Msg("database error")
+	if err := svc.pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM router_interfaces WHERE router_id = $1", id,
+	).Scan(&interfaceCount); err != nil {
+		log.Error().Err(err).Str("operation", "delete_router_check").Str("router_id", id).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to check router interfaces"))
 		return
 	}
-
 	if interfaceCount > 0 {
-		common.SendError(c, common.NewConflictError(
-			fmt.Sprintf("router %s has %d interfaces attached", routerID, interfaceCount),
-		))
+		common.SendError(c, common.NewResourceInUseError("router", "delete router",
+			fmt.Sprintf("router %s still has %d interface(s) attached", id, interfaceCount)))
 		return
 	}
 
-	// Delete router namespace
-	if err := svc.routerManager.DeleteRouterNamespace(routerID); err != nil {
-		log.Warn().Err(err).Str("router_id", routerID).Msg("failed to delete router namespace")
-	}
-
-	// Delete from database
-	_, err = svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM routers WHERE id = $1 AND project_id = $2",
-		routerID, projectID,
-	)
+	tag, err := svc.pool.Exec(ctx, "DELETE FROM routers WHERE id = $1 AND project_id = $2", id, projectID)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_router").Str("router_id", routerID).Msg("database error")
+		log.Error().Err(err).Str("operation", "delete_router").Str("router_id", id).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete router"))
 		return
+	}
+	if tag.RowsAffected() == 0 {
+		common.SendError(c, common.NewNotFoundError("router"))
+		return
+	}
+
+	// The host follows the row. A router with no interfaces masquerades nothing, so there is no egress
+	// SNAT of its own to withdraw.
+	if err := svc.routerManager.DeleteRouterNamespace(id); err != nil {
+		log.Warn().Err(err).Str("router_id", id).Msg("failed to delete router namespace")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -510,10 +534,9 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	// just-attached subnet's egress out the uplink now (real mode), so egress
 	// works whether the gateway was set before or after this interface.
 	if svc.mode != "stub" {
-		var gwRaw []byte
+		var snatOn bool
 		if err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT external_gateway_info FROM routers WHERE id = $1", routerID).Scan(&gwRaw); err == nil &&
-			len(gwRaw) > 0 && string(gwRaw) != "null" {
+			"SELECT EXISTS (SELECT 1 FROM routers rt WHERE rt.id = $1 AND "+snatOnPredicate+")", routerID).Scan(&snatOn); err == nil && snatOn {
 			if uplink, uerr := networking.DefaultUplinkInterface(); uerr == nil {
 				if err := svc.routerManager.EnsureEgressSNAT(cidr, uplink); err != nil {
 					log.Warn().Err(err).Str("router_id", routerID).Str("cidr", cidr).Msg("WS-3: egress SNAT on interface attach failed")
@@ -546,6 +569,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 	routerID := c.Param("id")
 	projectID := c.GetString("project_id")
+	ctx := c.Request.Context()
 
 	var req struct {
 		SubnetID string `json:"subnet_id"`
@@ -556,51 +580,58 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
-
-	// Get port ID from subnet if not provided
-	portID := req.PortID
-	if portID == "" && req.SubnetID != "" {
-		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT port_id FROM router_interfaces WHERE router_id = $1 AND subnet_id = $2",
-			routerID, req.SubnetID,
-		).Scan(&portID)
-
-		if errors.Is(err, pgx.ErrNoRows) {
-			common.SendError(c, common.NewNotFoundError("router interface"))
-			return
-		}
-	}
-
-	// Detach interface from router namespace
-	interfaceName := "qg-" + portID[:10]
-	if err := svc.routerManager.DetachInterfaceFromRouter(routerID, interfaceName); err != nil {
-		log.Warn().Err(err).Str("router_id", routerID).Str("interface", interfaceName).Msg("failed to detach interface from router")
-	}
-
-	// Delete router interface record
-	_, err := svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM router_interfaces WHERE router_id = $1 AND port_id = $2",
-		routerID, portID,
-	)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "remove_router_interface_record").Str("router_id", routerID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to remove router interface record"))
+	if req.SubnetID == "" && req.PortID == "" {
+		common.SendError(c, common.NewBadRequestError("either subnet_id or port_id must be specified"))
 		return
 	}
 
-	// Delete the port
-	_, err = svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM ports WHERE id = $1 AND project_id = $2",
-		portID, projectID,
-	)
+	// Authorise first, and find the interface by its row on THIS router. Nothing here used to check who
+	// owns the router: the lookup, the host detach and the row delete were all unscoped, so any project
+	// that knew a router id could take an interface off it — and a port id shorter than ten characters,
+	// or none at all, panicked the slice that names the device.
+	id, ok := svc.resolveOwnRouter(c, routerID, projectID)
+	if !ok {
+		return
+	}
+
+	var portID, subnetID, cidr string
+	err := svc.pool.QueryRow(ctx, `
+		SELECT ri.port_id::text, ri.subnet_id::text, s.cidr
+		FROM router_interfaces ri
+		JOIN subnets s ON s.id = ri.subnet_id
+		WHERE ri.router_id = $1
+		  AND ($2 = '' OR ri.subnet_id::text = $2)
+		  AND ($3 = '' OR ri.port_id::text = $3)
+		LIMIT 1
+	`, id, req.SubnetID, req.PortID).Scan(&portID, &subnetID, &cidr)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("router interface"))
+		return
+	}
 	if err != nil {
+		log.Error().Err(err).Str("operation", "remove_router_interface_lookup").Str("router_id", id).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to find router interface"))
+		return
+	}
+
+	// The row first: deleting the interface's port takes its router_interfaces row with it (the
+	// foreign key cascades), and the host follows.
+	if _, err := svc.pool.Exec(ctx, "DELETE FROM ports WHERE id = $1", portID); err != nil {
 		log.Error().Err(err).Str("operation", "remove_router_interface_port").Str("port_id", portID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete router interface port"))
 		return
 	}
 
+	interfaceName := "qg-" + portID[:10]
+	if err := svc.routerManager.DetachInterfaceFromRouter(id, interfaceName); err != nil {
+		log.Warn().Err(err).Str("router_id", id).Str("interface", interfaceName).Msg("failed to detach interface from router")
+	}
+	// The subnet no longer leaves through this router; its range keeps its SNAT only if another
+	// router still needs it.
+	svc.withdrawEgressSNAT(ctx, []string{cidr})
+
 	c.JSON(http.StatusOK, gin.H{
-		"subnet_id": req.SubnetID,
+		"subnet_id": subnetID,
 		"port_id":   portID,
 	})
 }
@@ -616,10 +647,7 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 		return fmt.Errorf("missing network_id in external_gateway_info")
 	}
 
-	enableSNAT := true
-	if val, ok := gatewayInfo["enable_snat"].(bool); ok {
-		enableSNAT = val
-	}
+	enableSNAT := gatewaySNATOn(gatewayInfo)
 
 	// Get external network details
 	var externalCIDR string
@@ -673,6 +701,127 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 	}
 
 	return nil
+}
+
+// resolveOwnRouter returns the stored id of the caller's router named by routerID, writing the
+// refusal itself — 404, as for any router the caller cannot see — so the handler only has to return.
+// Router writes authorise through it before they touch anything, the host included. By id only, as
+// upstream; a client resolves a name to an id before it writes.
+func (svc *Service) resolveOwnRouter(c *gin.Context, routerID, projectID string) (string, bool) {
+	var id string
+	err := svc.pool.QueryRow(c.Request.Context(),
+		"SELECT id::text FROM routers WHERE id::text = $1 AND project_id = $2", routerID, projectID,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("router"))
+		return "", false
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "resolve_router").Str("router_id", routerID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to look up router"))
+		return "", false
+	}
+	return id, true
+}
+
+// snatOnPredicate holds for a router (aliased rt) whose gateway masquerades its subnets: the gateway
+// names a network, and enable_snat is not turned off — absent means on, as upstream. Compared as JSON
+// rather than cast, so no stored value can turn it into a query error.
+const snatOnPredicate = `rt.external_gateway_info->>'network_id' IS NOT NULL
+	AND COALESCE(rt.external_gateway_info->'enable_snat', 'true'::jsonb) <> 'false'::jsonb`
+
+// egressSNATCIDRs returns the internal subnet ranges that leave through a router with SNAT on.
+// reconcileNAT ensures a MASQUERADE for each; withdrawEgressSNAT keeps any range still listed. On a
+// read error it returns what it read so far together with the error: a short list is safe to ensure
+// from and unsafe to withdraw against.
+func (svc *Service) egressSNATCIDRs(ctx context.Context) ([]string, error) {
+	rows, err := svc.pool.Query(ctx, `
+		SELECT DISTINCT s.cidr
+		FROM routers rt
+		JOIN router_interfaces ri ON ri.router_id = rt.id
+		JOIN subnets s ON s.id = ri.subnet_id
+		WHERE `+snatOnPredicate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cidrs []string
+	for rows.Next() {
+		var cidr string
+		if err := rows.Scan(&cidr); err != nil {
+			return cidrs, err
+		}
+		cidrs = append(cidrs, cidr)
+	}
+	return cidrs, rows.Err()
+}
+
+// egressSNATNoLongerNeeded returns those of cidrs that no router with SNAT on still needs. The
+// MASQUERADE rule is per range, not per router, and two projects may well both use 10.0.0.0/24, so a
+// range stays while any router still has an interface on a subnet of it.
+func (svc *Service) egressSNATNoLongerNeeded(ctx context.Context, cidrs []string) ([]string, error) {
+	needed, err := svc.egressSNATCIDRs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var stale []string
+	for _, cidr := range cidrs {
+		if !slices.Contains(needed, cidr) && !slices.Contains(stale, cidr) {
+			stale = append(stale, cidr)
+		}
+	}
+	return stale, nil
+}
+
+// withdrawEgressSNAT removes the egress rules of each of cidrs that no router still needs: after a
+// gateway was cleared or stopped masquerading, or an interface went. That used never to happen — once
+// installed, a subnet's egress stayed until teardown. Best-effort, and skipped when the needed set
+// cannot be read in full; a range withdrawn while another path adds a router for it is restored on
+// the reconciler's next pass.
+func (svc *Service) withdrawEgressSNAT(ctx context.Context, cidrs []string) {
+	if svc.mode == "stub" || len(cidrs) == 0 {
+		return
+	}
+	stale, err := svc.egressSNATNoLongerNeeded(ctx, cidrs)
+	if err != nil {
+		log.Warn().Err(err).Msg("egress SNAT: needed ranges unreadable; nothing withdrawn")
+		return
+	}
+	if len(stale) == 0 {
+		return
+	}
+	uplink, err := networking.DefaultUplinkInterface()
+	if err != nil {
+		log.Warn().Err(err).Msg("egress SNAT: cannot detect the uplink; nothing withdrawn")
+		return
+	}
+	for _, cidr := range stale {
+		if err := svc.routerManager.RemoveEgressSNAT(cidr, uplink); err != nil {
+			log.Warn().Err(err).Str("cidr", cidr).Msg("egress SNAT: failed to withdraw")
+		} else {
+			log.Info().Str("cidr", cidr).Msg("egress SNAT: withdrawn")
+		}
+	}
+}
+
+// withdrawRouterEgressSNAT withdraws the egress rules of every range the router has an interface on.
+func (svc *Service) withdrawRouterEgressSNAT(ctx context.Context, routerID string) {
+	if svc.mode == "stub" {
+		return
+	}
+	rows, err := svc.pool.Query(ctx, `
+		SELECT s.cidr FROM router_interfaces ri JOIN subnets s ON s.id = ri.subnet_id WHERE ri.router_id = $1`,
+		routerID)
+	if err != nil {
+		log.Warn().Err(err).Str("router_id", routerID).Msg("egress SNAT: router ranges unreadable; nothing withdrawn")
+		return
+	}
+	cidrs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		log.Warn().Err(err).Str("router_id", routerID).Msg("egress SNAT: router ranges unreadable; nothing withdrawn")
+		return
+	}
+	svc.withdrawEgressSNAT(ctx, cidrs)
 }
 
 // requireExternalNetwork refuses a network that is not marked external, writing the refusal itself
@@ -737,6 +886,9 @@ func requireExternalNetwork(c *gin.Context, pool *pgxpool.Pool, networkID, use s
 // created with 201 carrying a gateway that had never been validated, which reconcileNAT then treated
 // as real forever (branch review 2026-08-13, SRC-3). Reporting 201 for a request the server did not
 // honour is the defect class this feature exists to remove.
+//
+// enable_snat, when present, must be a boolean: it is stored as given and read back as the decision
+// whether the router's subnets are masqueraded (gatewaySNATOn, egressSNATCIDRs).
 func gatewayNetworkID(c *gin.Context, gatewayInfo map[string]any) (string, bool) {
 	networkID, ok := gatewayInfo["network_id"].(string)
 	if !ok || networkID == "" {
@@ -744,5 +896,38 @@ func gatewayNetworkID(c *gin.Context, gatewayInfo map[string]any) (string, bool)
 			"external_gateway_info requires a non-empty string network_id"))
 		return "", false
 	}
+	if snat, present := gatewayInfo["enable_snat"]; present {
+		if _, isBool := snat.(bool); !isBool {
+			common.SendError(c, common.NewBadRequestError("external_gateway_info.enable_snat must be a boolean"))
+			return "", false
+		}
+	}
 	return networkID, true
+}
+
+// routerGatewayUpdate decodes external_gateway_info from an update. given is false when the key was
+// omitted; a nil gateway with given true clears it — an explicit null or an empty object, both of
+// which upstream's dict_or_nodata accepts, and the latter what `openstack router unset
+// --external-gateway` sends.
+func routerGatewayUpdate(raw json.RawMessage) (gateway map[string]any, given bool, err error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if string(raw) == "null" {
+		return nil, true, nil
+	}
+	if err := json.Unmarshal(raw, &gateway); err != nil {
+		return nil, true, err
+	}
+	if len(gateway) == 0 {
+		return nil, true, nil
+	}
+	return gateway, true, nil
+}
+
+// gatewaySNATOn reports whether a gateway masquerades the router's subnets: enable_snat absent means
+// on, as upstream.
+func gatewaySNATOn(gateway map[string]any) bool {
+	on, set := gateway["enable_snat"].(bool)
+	return !set || on
 }

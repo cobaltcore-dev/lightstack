@@ -588,7 +588,7 @@ and external networks rather than every tenant's. `rt-foreign-ext` is reachable 
 
 ## 2c. Later branch commits
 
-Both landed after §2 and §2b were written. Run them after R11.
+These landed after §2 and §2b were written. Run them after R11.
 
 ### R12 — Deleting one subnet leaves DHCP up for the network's others
 
@@ -699,6 +699,97 @@ address therefore arrives from `EnsureBridgeIP` on a reconciler pass, not from t
 checking immediately reports `NO ADDRESS` on a perfectly healthy build. 35s covers the 30s interval
 R8 confirmed.
 
+### R14 — Changing a subnet's gateway moves the host side with it
+
+`UpdateSubnet` stored a new `gateway_ip` and touched nothing on the host. The reconciler's next pass
+added the new bridge address and moved the metadata DNAT, but it never removes an address and never
+restarts a dnsmasq that is already running: the old address stayed on the bridge for good, and
+dnsmasq went on advertising the old router and the old metadata next hop. The fix removes the old
+address and the redirect and re-applies DHCP with a restart.
+
+Only real mode can show this: in stub mode `applyDHCPForNetwork` returns before touching anything.
+The refusals around it — an invalid gateway (`400`), and `GatewayIpInUse` (`409`) while a router
+interface holds the gateway — are API behaviour and are covered by unit tests.
+
+```bash
+export NET5=$(openstack network create rt-net-gw -f value -c id)
+export BR5=br-$(printf '%s' "$NET5" | cut -c1-8)
+openstack subnet create rt-sub-gw --network "$NET5" --subnet-range 10.244.50.0/24 --gateway 10.244.50.1 >/dev/null
+sleep 5
+ip -4 addr show "$BR5" | grep -oE 'inet [0-9.]+/[0-9]+'
+sudo grep -hE '^dhcp-option=(3|121),' /var/lib/lightstack/dhcp/configs/$NET5.conf
+sudo iptables -t nat -S PREROUTING | grep -- "-i $BR5 "
+openstack subnet set rt-sub-gw --gateway 10.244.50.254
+sleep 3
+ip -4 addr show "$BR5" | grep -oE 'inet [0-9.]+/[0-9]+'
+sudo grep -hE '^dhcp-option=(3|121),' /var/lib/lightstack/dhcp/configs/$NET5.conf
+sudo iptables -t nat -S PREROUTING | grep -- "-i $BR5 "
+```
+
+**Expect:** before the change, `inet 10.244.50.1/24`, `dhcp-option=3,10.244.50.1`, a `121` route via
+`10.244.50.1`, and one DNAT rule to `10.244.50.1:8775`. Three seconds after it, `inet 10.244.50.254/24`
+**only**, `dhcp-option=3,10.244.50.254`, the `121` route via `10.244.50.254`, and one DNAT rule to
+`10.244.50.254:8775`. Before the fix, `10.244.50.1` stayed on the bridge and the config kept naming it —
+neither ever changes on its own, so these two checks hold however long you wait.
+
+Then the gateway goes away entirely:
+
+```bash
+openstack subnet set rt-sub-gw --gateway none
+sleep 3
+ip -4 addr show "$BR5" | grep -oE 'inet [0-9.]+/[0-9]+'
+sudo grep -hE '^dhcp-option=(3|121),' /var/lib/lightstack/dhcp/configs/$NET5.conf
+```
+
+**Expect:** the bridge carries `10.244.50.1/24` only — with no gateway it takes the subnet's first host
+address, and `10.244.50.254` is removed — and the config has **no** `dhcp-option=3` line, only the
+`121` route to the metadata address via `10.244.50.1` (FR-023a).
+
+### R15 — Router writes are the owner's, and egress SNAT follows the gateway
+
+`UpdateRouter` configured the gateway's egress SNAT before its owner-scoped update, and
+`RemoveRouterInterface` checked no owner at all, so another project that knew a router's id could
+give its subnets egress or take an interface away. And egress SNAT, once installed, was never
+withdrawn — not when the gateway was cleared (the API could not even express that), not when
+`enable_snat` was turned off, not when an interface went. Run after R5, which leaves `rt-router` with
+the `rt-ext` gateway and the `rt-sub` interface (`10.244.10.0/24`).
+
+The refusals themselves are API behaviour and are covered by unit tests; what only real mode shows is
+that the egress rule outlives another project's attempt and follows the owner's changes.
+
+```bash
+openstack user create --or-show --project rt-other --password rt-secret rt-user >/dev/null
+openstack role add --project rt-other --user rt-user member
+export T2=$(openstack --os-username rt-user --os-password rt-secret --os-project-name rt-other token issue -f value -c id)
+export RTR=$(openstack router show rt-router -f value -c id)
+export SUB=$(openstack subnet show rt-sub -f value -c id)
+curl -s -o /dev/null -w 'other project clears the gateway: HTTP %{http_code}\n' -X PUT -H "X-Auth-Token: $T2" -H 'Content-Type: application/json' -d '{"router":{"external_gateway_info":{}}}' "http://$NODE_IP:9696/v2.0/routers/$RTR"
+curl -s -o /dev/null -w 'other project removes the interface: HTTP %{http_code}\n' -X PUT -H "X-Auth-Token: $T2" -H 'Content-Type: application/json' -d "{\"subnet_id\":\"$SUB\"}" "http://$NODE_IP:9696/v2.0/routers/$RTR/remove_router_interface"
+echo "egress rules after: $(sudo iptables -t nat -S POSTROUTING | grep -c -- '-s 10.244.10.0/24 -o')"
+echo "interfaces: $(docker exec lightstack-postgres psql -U lightstack -d lightstack -tAc "SELECT count(*) FROM router_interfaces WHERE router_id = '$RTR'")"
+```
+
+**Expect:** both writes `404`, then **`1`** egress rule and **`interfaces: 1`**. Before the fix the
+interface removal was carried out.
+
+Then the owner's changes, each followed by the rule count:
+
+```bash
+openstack router unset --external-gateway rt-router && echo "gateway cleared"
+echo "egress rules: $(sudo iptables -t nat -S POSTROUTING | grep -c -- '-s 10.244.10.0/24 -o')"
+openstack router set --external-gateway rt-ext rt-router && echo "gateway set"
+echo "egress rules: $(sudo iptables -t nat -S POSTROUTING | grep -c -- '-s 10.244.10.0/24 -o')"
+openstack router set --external-gateway rt-ext --disable-snat rt-router && echo "SNAT disabled"
+echo "egress rules: $(sudo iptables -t nat -S POSTROUTING | grep -c -- '-s 10.244.10.0/24 -o')"
+openstack router set --external-gateway rt-ext --enable-snat rt-router && echo "SNAT enabled"
+openstack router remove subnet rt-router rt-sub && echo "interface removed"
+echo "egress rules: $(sudo iptables -t nat -S POSTROUTING | grep -c -- '-s 10.244.10.0/24 -o')"
+```
+
+**Expect:** `0`, `1`, `0`, then `0` after the interface is removed. Before the fix the clear was
+refused with `400` and every count stayed `1`. Wait 35s after `SNAT disabled` and count again: still
+`0` — the reconciler no longer re-adds a range whose router has SNAT turned off.
+
 ### Not provable here — the VXLAN half of the same commit
 
 The same commit moved the VXLAN device out of `light-ns-<project>` into the root namespace.
@@ -736,11 +827,12 @@ openstack router remove subnet rt-router rt-sub 2>/dev/null || true
 openstack router delete rt-router rt-router-nogw 2>/dev/null || true
 openstack port delete rt-p1 2>/dev/null || true
 openstack volume delete rt-vol 2>/dev/null || true
-openstack subnet delete rt-sub rt-sub-nogw rt-ext-sub rt-sub-md rt-sub-two-a rt-sub-two-b 2>/dev/null || true
-openstack network delete rt-net rt-net-nogw rt-ext rt-b11 rt-net-md rt-net-two 2>/dev/null || true
+openstack subnet delete rt-sub rt-sub-nogw rt-ext-sub rt-sub-md rt-sub-two-a rt-sub-two-b rt-sub-gw 2>/dev/null || true
+openstack network delete rt-net rt-net-nogw rt-ext rt-b11 rt-net-md rt-net-two rt-net-gw 2>/dev/null || true
 docker exec lightstack-postgres psql -U lightstack -d lightstack -tAc "DELETE FROM networks WHERE name IN ('rt-b11','rt-foreign-ext')" 2>/dev/null || true
 curl -s -o /dev/null -X DELETE -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/auto-allocated-topology/$(openstack project show default -f value -c id)" 2>/dev/null || true
 openstack image delete cirros 2>/dev/null || true
+openstack user delete rt-user 2>/dev/null || true
 openstack project delete rt-other 2>/dev/null || true
 helm uninstall horizon -n lightstack 2>/dev/null || true
 helm uninstall lightstack -n lightstack 2>/dev/null || true

@@ -2,9 +2,11 @@ package networking
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"text/template"
@@ -191,29 +193,16 @@ func (m *DHCPManager) EnsureDHCP(config DHCPConfig) error {
 	return m.StartDHCP(config)
 }
 
-// PruneDHCP stops any tracked dnsmasq whose network is no longer active (its DB
-// row was deleted). Best-effort; complements EnsureDHCP, which only (re)starts
-// dnsmasq for networks that still exist (SPEC-009 WS-2).
-func (m *DHCPManager) PruneDHCP(active map[string]bool) {
+// ServedNetworks returns the networks this manager runs a DHCP server for, so the reconciler can stop
+// the ones whose network was deleted (SPEC-009 WS-2). It lists before it reads the networks, and
+// stops what that read no longer has; see NetworkReconciler.pruneDeletedNetworks for why that order.
+func (m *DHCPManager) ServedNetworks() []string {
 	m.mu.Lock()
-	var stale []string
+	defer m.mu.Unlock()
 	if m.mode == "stub" {
-		for nid := range m.stubDHCP {
-			if !active[nid] {
-				stale = append(stale, nid)
-			}
-		}
-	} else {
-		for nid := range m.runningPIDs {
-			if !active[nid] {
-				stale = append(stale, nid)
-			}
-		}
+		return slices.Collect(maps.Keys(m.stubDHCP))
 	}
-	m.mu.Unlock()
-	for _, nid := range stale {
-		_ = m.StopDHCP(nid)
-	}
+	return slices.Collect(maps.Keys(m.runningPIDs))
 }
 
 // writeDNSMasqConfig writes dnsmasq configuration file

@@ -333,6 +333,74 @@ func TestExternalNetworkIsVisibleCrossProjectReadOnly(t *testing.T) {
 	})
 }
 
+// TestExternalNetworkSubnetsAreReadableCrossProject — an external network's subnets are as visible as
+// the network, and no more writable. A network response lists every subnet id of the network, so a
+// caller shown the network must be able to resolve them (SPEC-020 FR-007); the subnet read scope had
+// `shared` but not `external`, so a tenant saw the external network beside subnet ids it could not
+// list or fetch. Upstream reads subnets through the network's RBAC entries with access_as_external
+// as well as access_as_shared (neutron/db/external_net_db.py).
+func TestExternalNetworkSubnetsAreReadableCrossProject(t *testing.T) {
+	requireDB(t)
+	requireSecondProject(t)
+	r := newNeutronTestRouter()
+	tenant := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+
+	// Both networks belong to the other project; seedExternalNetwork's cleanup removes their subnets.
+	seedForeignSubnet := func(networkID, cidr, gateway string) string {
+		id := uuid.NewString()
+		mustExec(t, `INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version, enable_dhcp, created_at, updated_at)
+			VALUES ($1, 'f11-foreign-subnet', $2, $3, $4, $5, 4, false, now(), now())`,
+			id, networkID, otherProjectID, cidr, gateway)
+		return id
+	}
+	external := seedExternalNetwork(t, "f11-ext-subnets", otherProjectID, false, true)
+	private := seedExternalNetwork(t, "f11-private-subnets", otherProjectID, false, false)
+	extSubnet := seedForeignSubnet(external, "10.95.0.0/24", "10.95.0.1")
+	privSubnet := seedForeignSubnet(private, "10.95.1.0/24", "10.95.1.1")
+
+	listed := func(networkID string) []string {
+		code, body := doReq(r, http.MethodGet, "/v2.0/subnets?network_id="+networkID, tenant)
+		if code != http.StatusOK {
+			t.Fatalf("list subnets of %s: code=%d body=%s", networkID, code, body)
+		}
+		var ids []string
+		for _, s := range subnetsFromBody(t, body) {
+			ids = append(ids, fmt.Sprint(s["id"]))
+		}
+		return ids
+	}
+
+	t.Run("listed with the external network", func(t *testing.T) {
+		if ids := listed(external); len(ids) != 1 || ids[0] != extSubnet {
+			t.Errorf("subnets of the external network = %v, want [%s]", ids, extSubnet)
+		}
+	})
+	t.Run("shown by id", func(t *testing.T) {
+		if code, body := doReq(r, http.MethodGet, "/v2.0/subnets/"+extSubnet, tenant); code != http.StatusOK {
+			t.Errorf("GET external network's subnet: code=%d body=%s, want 200", code, body)
+		}
+	})
+	t.Run("not writable", func(t *testing.T) {
+		if code, _ := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+extSubnet, `{"subnet":{"name":"f11-hijacked"}}`, tenant); code != http.StatusNotFound {
+			t.Errorf("PUT by a non-owner: code=%d, want 404", code)
+		}
+		if code, _ := doReq(r, http.MethodDelete, "/v2.0/subnets/"+extSubnet, tenant); code != http.StatusNotFound {
+			t.Errorf("DELETE by a non-owner: code=%d, want 404", code)
+		}
+		if ids := listed(external); len(ids) != 1 {
+			t.Errorf("after refused writes the external network lists %v, want its one subnet", ids)
+		}
+	})
+	t.Run("a private network's subnet stays hidden", func(t *testing.T) {
+		if ids := listed(private); len(ids) != 0 {
+			t.Errorf("subnets of another project's private network = %v, want none", ids)
+		}
+		if code, _ := doReq(r, http.MethodGet, "/v2.0/subnets/"+privSubnet, tenant); code != http.StatusNotFound {
+			t.Errorf("GET another project's private subnet: code=%d, want 404", code)
+		}
+	})
+}
+
 // TestRouterGatewayRequiresExternalNetwork — contracts X10 and X12.
 func TestRouterGatewayRequiresExternalNetwork(t *testing.T) {
 	requireDB(t)

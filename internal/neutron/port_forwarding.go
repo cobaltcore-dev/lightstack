@@ -328,36 +328,26 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 	}
 
 	// Build dynamic UPDATE query
-	updates := []string{}
-	args := []any{}
-	argID := 1
+	u := &common.SQLUpdate{}
 
 	needsNATUpdate := false
 
 	if req.PortForwarding.InternalPortID != nil {
-		updates = append(updates, fmt.Sprintf("internal_port_id = $%d", argID))
-		args = append(args, *req.PortForwarding.InternalPortID)
-		argID++
+		u.Set("internal_port_id", *req.PortForwarding.InternalPortID)
 	}
 	if req.PortForwarding.InternalIPAddress != nil {
-		updates = append(updates, fmt.Sprintf("internal_ip_address = $%d", argID))
-		args = append(args, *req.PortForwarding.InternalIPAddress)
-		argID++
+		u.Set("internal_ip_address", *req.PortForwarding.InternalIPAddress)
 		needsNATUpdate = true
 	}
 	if req.PortForwarding.InternalPort != nil {
-		updates = append(updates, fmt.Sprintf("internal_port = $%d", argID))
-		args = append(args, *req.PortForwarding.InternalPort)
-		argID++
+		u.Set("internal_port", *req.PortForwarding.InternalPort)
 		needsNATUpdate = true
 	}
 	if req.PortForwarding.Description != nil {
-		updates = append(updates, fmt.Sprintf("description = $%d", argID))
-		args = append(args, *req.PortForwarding.Description)
-		argID++
+		u.Set("description", *req.PortForwarding.Description)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		svc.GetPortForwarding(c) // No updates, return current state
 		return
 	}
@@ -402,16 +392,14 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 		}
 	}
 
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", argID))
-	args = append(args, time.Now())
-	argID++
+	u.Set("updated_at", time.Now())
 
-	args = append(args, pfID, floatingIPID, projectID)
+	query := "UPDATE port_forwardings SET " + u.Assignments() +
+		" WHERE id = " + u.Arg(pfID) +
+		" AND floatingip_id = " + u.Arg(floatingIPID) +
+		" AND project_id = " + u.Arg(projectID)
 
-	query := fmt.Sprintf("UPDATE port_forwardings SET %s WHERE id = $%d AND floatingip_id = $%d AND project_id = $%d",
-		updateString(updates), argID, argID+1, argID+2)
-
-	_, err = svc.pool.Exec(c.Request.Context(), query, args...)
+	_, err = svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_port_forwarding").Msg("failed to update port forwarding")
 		common.SendError(c, common.NewInternalServerError("failed to update port forwarding"))

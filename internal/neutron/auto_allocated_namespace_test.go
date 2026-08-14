@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // SPEC-024 (cloud-storage#546) F10, second path — the auto-allocated topology handlers used to build
@@ -17,8 +19,8 @@ import (
 // The placement itself is no longer expressible — BridgeManager takes no namespace — so what these
 // tests cover is the handler behaviour around the change: dropping the CreateNamespace call must not
 // alter what the API does, and the delete path must still be reached. Placement remains a real-mode
-// property that stub mode cannot observe (both blocks are behind `if svc.mode != "stub"`), so it needs
-// host validation, exactly as the port half did.
+// property that stub mode cannot observe (the create block is behind `if svc.mode != "stub"`), so it
+// needs host validation, exactly as the port half did.
 
 // TestAutoAllocatedTopologyCreateIsIdempotent — a repeat POST returns the SAME network rather than
 // creating a second one or erroring.
@@ -85,6 +87,70 @@ func TestAutoAllocatedTopologyDeleteRemovesTheTopology(t *testing.T) {
 
 	if code, _ := doReqBody(r, http.MethodGet, "/v2.0/auto-allocated-topology/"+seededProjectID, "", hdr); code != http.StatusNotFound {
 		t.Errorf("GET after delete: code=%d, want 404", code)
+	}
+}
+
+// TestAutoAllocatedTopologyDeleteTearsDownTheHost — the topology's network gets the host teardown every
+// network delete gets: its DHCP server, its metadata DNAT and its bridge. The handler used to delete
+// only the bridge, so dnsmasq and the DNAT rule waited for the reconciler's next pass. Stub mode cannot
+// observe the DNAT; the same helper removes it, between the two steps checked here.
+func TestAutoAllocatedTopologyDeleteTearsDownTheHost(t *testing.T) {
+	requireDB(t)
+	r, svc := newNeutronTestRouterWithService()
+	hdr := map[string]string{"X-Test-Project": seededProjectID}
+	cleanupAutoAllocated(t)
+
+	netID := postAutoAllocated(t, r, hdr, http.StatusCreated)
+	markDHCPServing(t, svc, netID)
+	bridge := plantStubBridge(t, svc, netID)
+
+	code, body := doReqBody(r, http.MethodDelete, "/v2.0/auto-allocated-topology/"+seededProjectID, "", hdr)
+	if code != http.StatusNoContent {
+		t.Fatalf("delete auto-allocated topology: code=%d body=%s; want 204", code, body)
+	}
+	if svc.dhcpManager.IsRunning(netID) {
+		t.Errorf("DHCP still serving network %s after its topology was deleted", netID[:8])
+	}
+	if hasStubBridge(t, svc, bridge) {
+		t.Errorf("bridge %s outlived its topology", bridge)
+	}
+}
+
+// TestAutoAllocatedTopologyDeleteRefusesWhileInUse — a topology whose network still carries a VM's port
+// stays, refused with NetworkInUse. The handler used to delete the subnets and the network regardless,
+// cascading the port away under the running VM. Upstream's delete_auto_allocated_topology deletes the
+// network through delete_network, whose NetworkInUse propagates to the caller.
+func TestAutoAllocatedTopologyDeleteRefusesWhileInUse(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	r, svc := newNeutronTestRouterWithService()
+	hdr := map[string]string{"X-Test-Project": seededProjectID}
+	cleanupAutoAllocated(t)
+
+	netID := postAutoAllocated(t, r, hdr, http.StatusCreated)
+	portID := uuid.NewString()
+	mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, mac_address)
+		VALUES ($1, 'spec024-vm-port', $2, $3, 'fa:16:3e:00:00:04')`, portID, netID, seededProjectID)
+	markDHCPServing(t, svc, netID)
+
+	code, body := doReqBody(r, http.MethodDelete, "/v2.0/auto-allocated-topology/"+seededProjectID, "", hdr)
+	if code != http.StatusConflict {
+		t.Fatalf("delete auto-allocated topology in use: code=%d body=%s; want 409", code, body)
+	}
+	assertNeutronShape(t, neutronError(t, body), "NetworkInUse")
+
+	var ports, subnets int
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM ports WHERE id = $1", portID).Scan(&ports); err != nil {
+		t.Fatalf("count ports: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM subnets WHERE network_id = $1", netID).Scan(&subnets); err != nil {
+		t.Fatalf("count subnets: %v", err)
+	}
+	if ports != 1 || subnets == 0 {
+		t.Errorf("after a refused delete: %d port(s), %d subnet(s); want the port and the subnet kept", ports, subnets)
+	}
+	if !svc.dhcpManager.IsRunning(netID) {
+		t.Errorf("a refused delete stopped DHCP for network %s", netID[:8])
 	}
 }
 

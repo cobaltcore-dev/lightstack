@@ -3,9 +3,7 @@ package cinder
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
@@ -87,38 +85,28 @@ func (svc *Service) UpdateVolumeType(c *gin.Context) {
 	}
 
 	// Build update query
-	updates := []string{}
-	args := []any{}
-	argPos := 1
+	u := &common.SQLUpdate{}
 
 	if req.VolumeType.Name != nil {
-		updates = append(updates, fmt.Sprintf("name = $%d", argPos))
-		args = append(args, *req.VolumeType.Name)
-		argPos++
+		u.Set("name", *req.VolumeType.Name)
 	}
 
 	if req.VolumeType.Description != nil {
-		updates = append(updates, fmt.Sprintf("description = $%d", argPos))
-		args = append(args, *req.VolumeType.Description)
-		argPos++
+		u.Set("description", *req.VolumeType.Description)
 	}
 
 	if req.VolumeType.IsPublic != nil {
-		updates = append(updates, fmt.Sprintf("is_public = $%d", argPos))
-		args = append(args, *req.VolumeType.IsPublic)
-		argPos++
+		u.Set("is_public", *req.VolumeType.IsPublic)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
-	args = append(args, typeID)
-	query := fmt.Sprintf("UPDATE volume_types SET %s WHERE id = $%d",
-		strings.Join(updates, ", "), argPos)
+	query := "UPDATE volume_types SET " + u.Assignments() + " WHERE id = " + u.Arg(typeID)
 
-	_, err = svc.pool.Exec(c.Request.Context(), query, args...)
+	_, err = svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_volume_type").Msg("failed to update volume type")

@@ -187,7 +187,7 @@ func TestMetadataRedirect_StubModeTouchesNothing(t *testing.T) {
 	if err := mr.RemoveForBridge("br-f28a8a32"); err != nil {
 		t.Errorf("RemoveForBridge in stub mode: %v; want no-op", err)
 	}
-	n, err := mr.Prune(nil)
+	n, err := mr.Prune(func() (map[string]string, error) { return nil, nil })
 	if err != nil {
 		t.Errorf("Prune in stub mode: %v; want no-op", err)
 	}

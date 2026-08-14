@@ -634,34 +634,31 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	f := &common.SQLFilter{}
+	f.Eq("project_id", projectID)
 
+	// Marker-based pagination over the SAME total order the ORDER BY uses. Resolving the marker to
+	// `created_at < $n` excluded every volume sharing its timestamp rather than only those before it,
+	// so a page walk silently dropped the marker's siblings — volumes created by one script or
+	// Terraform apply share created_at. Same defect and same fix as the compute listings in #549.
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM volumes WHERE id = $1 AND project_id = $2",
+			"SELECT created_at, id FROM volumes WHERE id = $1 AND project_id = $2",
 			marker, projectID,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
-
-	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
+	where := f.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, size_gb
-		FROM volumes
-		WHERE project_id = $1%s
-		ORDER BY created_at DESC, id DESC
-		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+		FROM volumes`+where+`
+		ORDER BY created_at DESC, id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_volumes").Msg("failed to query volumes")
@@ -717,34 +714,31 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	f := &common.SQLFilter{}
+	f.Eq("v.project_id", projectID)
 
+	// Marker paging over a TOTAL order. This ordered by v.created_at alone, which is not unique, so
+	// ties had no defined relative order and two identical requests could return them differently —
+	// and `v.created_at < $n` then excluded the marker's tied siblings entirely. Adding v.id to both
+	// the ORDER BY and the comparison makes the boundary exact (as #549 did for compute).
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM volumes WHERE id = $1 AND project_id = $2",
+			"SELECT created_at, id FROM volumes WHERE id = $1 AND project_id = $2",
 			marker, projectID,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND v.created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			f.Cond(fmt.Sprintf("(v.created_at, v.id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
-
-	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
+	where := f.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT v.id, v.name, v.description, v.size_gb, v.status, v.bootable, v.user_id, v.volume_type, v.created_at, v.updated_at
-		FROM volumes v
-		WHERE v.project_id = $1%s
-		ORDER BY v.created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+		FROM volumes v`+where+`
+		ORDER BY v.created_at DESC, v.id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_volumes_detail").Msg("failed to query volumes")

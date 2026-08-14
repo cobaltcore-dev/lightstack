@@ -106,17 +106,14 @@ teardown() {
     fi
     if [ -n "$USER2_TOKEN" ] && [ "$USER2_TOKEN" != "null" ]; then
         [ -n "$SERVER2_ID" ] && [ "$SERVER2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:8774/v2.1/servers/$SERVER2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
-        # Before the network: DeleteNetwork refuses a network that still has subnets
-        # ("network has subnets; delete subnets first"), and that refusal is invisible
-        # here. Skipping it left the network row to the project's ON DELETE CASCADE and,
-        # in real mode, left the subnet's bridge and dnsmasq running for good.
+        # Subnet, then network (deleting the network would also delete the subnet).
         [ -n "$SUBNET2_ID" ] && [ "$SUBNET2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/subnets/$SUBNET2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
         [ -n "$NET2_ID" ] && [ "$NET2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/networks/$NET2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
     fi
     if [ -n "$ADMIN_TOKEN" ] && [ "$ADMIN_TOKEN" != "null" ]; then
         # The shared network belongs to the administrator's project, so no project
         # deletion below cascades it away. A subnet the refused write should never have
-        # created goes first: DeleteNetwork refuses a network that still has subnets.
+        # created goes too.
         [ -n "$SHARED_INTRUDER_ID" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/subnets/$SHARED_INTRUDER_ID" -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
         [ -n "$SHARED_NET_ID" ] && [ "$SHARED_NET_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/networks/$SHARED_NET_ID" -H "X-Auth-Token: $ADMIN_TOKEN" 2>/dev/null || true
         for uid in "$USER1_ID" "$USER2_ID"; do

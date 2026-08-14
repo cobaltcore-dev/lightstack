@@ -201,12 +201,12 @@ func TestEqDomainResolvesTheDefaultAlias(t *testing.T) {
 	t.Run("the default alias resolves via subquery", func(t *testing.T) {
 		var f listFilter
 		f.eqDomain(filterCtx("domain_id=default"), "domain_id", "domain_id")
-		if want := " WHERE domain_id = (SELECT id FROM domains WHERE name = $1)"; f.where() != want {
-			t.Errorf("where() = %q, want %q", f.where(), want)
+		if want := " WHERE domain_id = (SELECT id FROM domains WHERE name = $1)"; f.Where() != want {
+			t.Errorf("where() = %q, want %q", f.Where(), want)
 		}
-		if len(f.args) != 1 || f.args[0] != defaultDomainName {
+		if len(f.Args()) != 1 || f.Args()[0] != defaultDomainName {
 			t.Errorf("args = %v, want [%q] — the alias must resolve against the domains "+
-				"table, not be matched literally", f.args, defaultDomainName)
+				"table, not be matched literally", f.Args(), defaultDomainName)
 		}
 	})
 
@@ -214,30 +214,30 @@ func TestEqDomainResolvesTheDefaultAlias(t *testing.T) {
 		var f listFilter
 		id := "00000000-0000-0000-0000-000000000100"
 		f.eqDomain(filterCtx("domain_id="+id), "domain_id", "domain_id")
-		if want := " WHERE domain_id = $1"; f.where() != want {
-			t.Errorf("where() = %q, want %q", f.where(), want)
+		if want := " WHERE domain_id = $1"; f.Where() != want {
+			t.Errorf("where() = %q, want %q", f.Where(), want)
 		}
-		if len(f.args) != 1 || f.args[0] != id {
-			t.Errorf("args = %v, want [%q]", f.args, id)
+		if len(f.Args()) != 1 || f.Args()[0] != id {
+			t.Errorf("args = %v, want [%q]", f.Args(), id)
 		}
 	})
 
 	t.Run("a value that is not a UUID matches nothing", func(t *testing.T) {
 		var f listFilter
 		f.eqDomain(filterCtx("domain_id=no-such-domain"), "domain_id", "domain_id")
-		if want := " WHERE FALSE"; f.where() != want {
-			t.Errorf("where() = %q, want %q", f.where(), want)
+		if want := " WHERE FALSE"; f.Where() != want {
+			t.Errorf("where() = %q, want %q", f.Where(), want)
 		}
-		if len(f.args) != 0 {
-			t.Errorf("args = %v; the value must never reach the uuid column", f.args)
+		if len(f.Args()) != 0 {
+			t.Errorf("args = %v; the value must never reach the uuid column", f.Args())
 		}
 	})
 
 	t.Run("absent adds nothing", func(t *testing.T) {
 		var f listFilter
 		f.eqDomain(filterCtx(""), "domain_id", "domain_id")
-		if f.where() != "" || len(f.args) != 0 {
-			t.Errorf("where()=%q args=%v; want no predicate", f.where(), f.args)
+		if f.Where() != "" || len(f.Args()) != 0 {
+			t.Errorf("where()=%q args=%v; want no predicate", f.Where(), f.Args())
 		}
 	})
 }
@@ -257,11 +257,11 @@ func TestEqIDMatchesOnlyAUUID(t *testing.T) {
 		t.Run(spelling, func(t *testing.T) {
 			var f listFilter
 			f.eqID(filterCtx("service_id="+url.QueryEscape(spelling)), "service_id", "e.service_id")
-			if want := " WHERE e.service_id = $1"; f.where() != want {
-				t.Errorf("where() = %q, want %q", f.where(), want)
+			if want := " WHERE e.service_id = $1"; f.Where() != want {
+				t.Errorf("where() = %q, want %q", f.Where(), want)
 			}
-			if len(f.args) != 1 || f.args[0] != id {
-				t.Errorf("args = %v, want [%q]", f.args, id)
+			if len(f.Args()) != 1 || f.Args()[0] != id {
+				t.Errorf("args = %v, want [%q]", f.Args(), id)
 			}
 		})
 	}
@@ -270,11 +270,11 @@ func TestEqIDMatchesOnlyAUUID(t *testing.T) {
 		t.Run(v, func(t *testing.T) {
 			var f listFilter
 			f.eqID(filterCtx("service_id="+v), "service_id", "e.service_id")
-			if want := " WHERE FALSE"; f.where() != want {
-				t.Errorf("where() = %q, want %q", f.where(), want)
+			if want := " WHERE FALSE"; f.Where() != want {
+				t.Errorf("where() = %q, want %q", f.Where(), want)
 			}
-			if len(f.args) != 0 {
-				t.Errorf("args = %v; the value must never reach the uuid column", f.args)
+			if len(f.Args()) != 0 {
+				t.Errorf("args = %v; the value must never reach the uuid column", f.Args())
 			}
 		})
 	}
@@ -282,8 +282,8 @@ func TestEqIDMatchesOnlyAUUID(t *testing.T) {
 	t.Run("absent adds nothing", func(t *testing.T) {
 		var f listFilter
 		f.eqID(filterCtx(""), "service_id", "e.service_id")
-		if f.where() != "" || len(f.args) != 0 {
-			t.Errorf("where()=%q args=%v; want no predicate", f.where(), f.args)
+		if f.Where() != "" || len(f.Args()) != 0 {
+			t.Errorf("where()=%q args=%v; want no predicate", f.Where(), f.Args())
 		}
 	})
 }

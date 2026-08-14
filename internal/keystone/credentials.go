@@ -2,7 +2,6 @@ package keystone
 
 import (
 	"errors"
-	"strconv"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -159,35 +158,21 @@ func (svc *Service) UpdateCredential(c *gin.Context) {
 	}
 
 	// Build dynamic update query
-	updates := []string{}
-	args := []any{}
-	argCount := 1
+	u := &common.SQLUpdate{}
 
 	if blob, ok := req.Credential["blob"].(string); ok {
-		updates = append(updates, "blob = $"+strconv.Itoa(argCount))
-		args = append(args, blob)
-		argCount++
+		u.Set("blob", blob)
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		common.SendError(c, common.NewBadRequestError("no fields to update"))
 		return
 	}
 
-	updates = append(updates, "updated_at = $"+strconv.Itoa(argCount))
-	args = append(args, time.Now())
-	argCount++
+	u.Set("updated_at", time.Now())
+	query := "UPDATE credentials SET " + u.Assignments() + " WHERE id = " + u.Arg(credID)
 
-	// Add credential ID as final parameter
-	args = append(args, credID)
-
-	query := "UPDATE credentials SET " + updates[0]
-	for i := 1; i < len(updates); i++ {
-		query += ", " + updates[i]
-	}
-	query += " WHERE id = $" + strconv.Itoa(argCount)
-
-	result, err := svc.pool.Exec(c.Request.Context(), query, args...)
+	result, err := svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_credential").Str("cred_id", credID).Msg("Failed to update credential")
 		common.SendError(c, common.NewInternalServerError("failed to update credential"))

@@ -1,11 +1,13 @@
 package networking
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/rs/zerolog/log"
 	"github.com/vishvananda/netlink"
@@ -241,6 +243,26 @@ func (m *BridgeManager) EnsureBridgeIP(bridgeName, addrCIDR string) error {
 	}
 	if err := netlink.AddrAdd(link, addr); err != nil && !strings.Contains(err.Error(), "exists") {
 		return fmt.Errorf("assign %s to bridge %s: %w", addrCIDR, bridgeName, err)
+	}
+	return nil
+}
+
+// RemoveBridgeIP removes an address from a bridge: EnsureBridgeIP's counterpart, for a subnet whose
+// gateway moved. A bridge or an address that is already gone is not an error.
+func (m *BridgeManager) RemoveBridgeIP(bridgeName, addrCIDR string) error {
+	if m.mode == "stub" {
+		return nil
+	}
+	link, err := netlink.LinkByName(bridgeName)
+	if err != nil {
+		return nil // no bridge, so no address on it
+	}
+	addr, err := netlink.ParseAddr(addrCIDR)
+	if err != nil {
+		return fmt.Errorf("parse bridge addr %s: %w", addrCIDR, err)
+	}
+	if err := netlink.AddrDel(link, addr); err != nil && !errors.Is(err, syscall.EADDRNOTAVAIL) {
+		return fmt.Errorf("remove %s from bridge %s: %w", addrCIDR, bridgeName, err)
 	}
 	return nil
 }

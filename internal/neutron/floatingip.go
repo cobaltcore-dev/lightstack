@@ -59,36 +59,34 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	f := &common.SQLFilter{}
+	f.Eq("project_id", projectID)
 
+	// Marker paging over a TOTAL order. created_at alone is not unique, so the order was undefined
+	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
+	// only those before it — a page walk silently dropped them. id is the primary key, so
+	// (created_at, id) is total (as #549 established for compute).
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
+		var markerID string
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM floating_ips WHERE id = $1 AND project_id = $2",
+			"SELECT created_at, id FROM floating_ips WHERE id = $1 AND project_id = $2",
 			marker, projectID,
-		).Scan(&markerCreatedAt)
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND created_at < $%d", argIdx)
-			queryArgs = append(queryArgs, markerCreatedAt)
-			argIdx++
+			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
 	}
 
-	queryArgs = append(queryArgs, limit, offset)
+	where := f.Where()
+	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
 
-	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, project_id, floating_network_id, floating_ip_address,
 		       fixed_ip_address, port_id, router_id, status, description,
 		       created_at, updated_at
-		FROM floating_ips
-		WHERE project_id = $1%s
-		ORDER BY created_at DESC
-		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+		FROM floating_ips`+where+`
+		ORDER BY created_at DESC, id DESC`+limitOffset, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_floatingips").Msg("database error")
@@ -431,9 +429,7 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 		return
 	}
 
-	updates := []string{}
-	args := []any{}
-	argID := 1
+	u := &common.SQLUpdate{}
 
 	// Handle port association/disassociation
 	if floatingIPData, ok := rawReq["floatingip"]; ok {
@@ -456,21 +452,13 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 
 			if shouldDisassociate {
 				// Disassociate (null value)
-				updates = append(updates, fmt.Sprintf("port_id = $%d", argID))
-				args = append(args, nil)
-				argID++
+				u.Set("port_id", nil)
 
-				updates = append(updates, fmt.Sprintf("fixed_ip_address = $%d", argID))
-				args = append(args, nil)
-				argID++
+				u.Set("fixed_ip_address", nil)
 
-				updates = append(updates, fmt.Sprintf("router_id = $%d", argID))
-				args = append(args, nil)
-				argID++
+				u.Set("router_id", nil)
 
-				updates = append(updates, fmt.Sprintf("status = $%d", argID))
-				args = append(args, "DOWN")
-				argID++
+				u.Set("status", "DOWN")
 			} else {
 				// Associate with new port
 				newPortID, ok := portIDValue.(string)
@@ -540,50 +528,36 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 					log.Warn().Err(err).Str("fixed_ip", fixedIP).Msg("WS-3: failed to program ingress filter")
 				}
 
-				updates = append(updates, fmt.Sprintf("port_id = $%d", argID))
-				args = append(args, newPortID)
-				argID++
+				u.Set("port_id", newPortID)
 
-				updates = append(updates, fmt.Sprintf("fixed_ip_address = $%d", argID))
-				args = append(args, fixedIP)
-				argID++
+				u.Set("fixed_ip_address", fixedIP)
 
-				updates = append(updates, fmt.Sprintf("router_id = $%d", argID))
-				args = append(args, routerID)
-				argID++
+				u.Set("router_id", routerID)
 
-				updates = append(updates, fmt.Sprintf("status = $%d", argID))
-				args = append(args, "ACTIVE")
-				argID++
+				u.Set("status", "ACTIVE")
 			}
 		}
 
 		// Handle description update
 		if descValue, hasDesc := floatingIPData["description"]; hasDesc {
 			if desc, ok := descValue.(string); ok {
-				updates = append(updates, fmt.Sprintf("description = $%d", argID))
-				args = append(args, desc)
-				argID++
+				u.Set("description", desc)
 			}
 		}
 	}
 
-	if len(updates) == 0 {
+	if u.Empty() {
 		// No updates, just return current state
 		svc.GetFloatingIP(c)
 		return
 	}
 
-	updates = append(updates, fmt.Sprintf("updated_at = $%d", argID))
-	args = append(args, time.Now())
-	argID++
+	u.Set("updated_at", time.Now())
 
-	args = append(args, floatingIPID, projectID)
+	query := "UPDATE floating_ips SET " + u.Assignments() +
+		" WHERE id = " + u.Arg(floatingIPID) + " AND project_id = " + u.Arg(projectID)
 
-	query := fmt.Sprintf("UPDATE floating_ips SET %s WHERE id = $%d AND project_id = $%d",
-		updateString(updates), argID, argID+1)
-
-	_, err = svc.pool.Exec(c.Request.Context(), query, args...)
+	_, err = svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_floatingip").Str("floatingip_id", floatingIPID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update floating IP"))
