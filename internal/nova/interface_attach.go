@@ -310,6 +310,8 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list interface attachments"))
+		return
 	}
 
 	if attachments == nil {

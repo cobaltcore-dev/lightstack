@@ -1134,8 +1134,12 @@ func (svc *Service) CreateBackupAction(c *gin.Context) {
 			}
 			backupIDs = append(backupIDs, id)
 		}
+		// Deliberately non-fatal: the backup image is already created and this
+		// handler still returns 202 below. Aborting here would report failure
+		// for an operation that succeeded; only rotation is skipped.
 		if err := rows.Err(); err != nil {
-			log.Error().Err(err).Msg("rows iteration error")
+			log.Warn().Err(err).Msg("backup rotation: iterating backup images failed; skipping rotation")
+			backupIDs = nil // the next backup rotates; never act on a partial listing
 		}
 
 		// Delete backups beyond rotation limit. A failed delete leaves a
