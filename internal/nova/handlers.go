@@ -898,6 +898,8 @@ func (svc *Service) ListServers(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list servers"))
+		return
 	}
 
 	if servers == nil {
@@ -982,7 +984,12 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		}
 
 		// Get addresses for this instance
-		addresses := svc.getInstanceAddresses(c.Request.Context(), id, rowProjectID)
+		addresses, addrErr := svc.getInstanceAddresses(c.Request.Context(), id, rowProjectID)
+		if addrErr != nil {
+			log.Error().Err(addrErr).Str("operation", "list_servers_detail_addresses").Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to list servers"))
+			return
+		}
 
 		entry := gin.H{
 			"id":                     id,
@@ -1022,6 +1029,8 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list servers"))
+		return
 	}
 
 	// Attach security_groups to every entry in one batched query (no N+1, FR-007).
@@ -1044,7 +1053,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 }
 
 // getInstanceAddresses retrieves network addresses for an instance from ports
-func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projectID string) gin.H {
+func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projectID string) (gin.H, error) {
 	addresses := gin.H{}
 
 	// Query ports for this instance
@@ -1056,7 +1065,7 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 	`, instanceID, projectID)
 
 	if err != nil {
-		return addresses // Return empty dict on error
+		return nil, fmt.Errorf("query ports for instance %s: %w", instanceID, err)
 	}
 	defer rows.Close()
 
@@ -1092,10 +1101,10 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("rows iteration error")
+		return nil, fmt.Errorf("iterate ports for instance %s: %w", instanceID, err)
 	}
 
-	return addresses
+	return addresses, nil
 }
 
 // GetServer returns details for a single server
@@ -1131,7 +1140,12 @@ func (svc *Service) GetServer(c *gin.Context) {
 	}
 
 	// Get addresses from ports
-	addresses := svc.getInstanceAddresses(c.Request.Context(), id, projectID)
+	addresses, addrErr := svc.getInstanceAddresses(c.Request.Context(), id, projectID)
+	if addrErr != nil {
+		log.Error().Err(addrErr).Str("operation", "get_server_addresses").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to get server"))
+		return
+	}
 
 	// Build response with nullable fields
 	response := gin.H{
@@ -1604,6 +1618,8 @@ func (svc *Service) ListFlavors(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list flavors"))
+		return
 	}
 
 	if flavors == nil {
@@ -1683,6 +1699,8 @@ func (svc *Service) ListFlavorsDetail(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list flavors"))
+		return
 	}
 
 	if flavors == nil {
@@ -1873,6 +1891,8 @@ func (svc *Service) ListAvailabilityZones(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list availability zones"))
+		return
 	}
 
 	// Fallback to "nova" if no aggregates exist
@@ -1912,6 +1932,8 @@ func (svc *Service) ListAvailabilityZonesDetail(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list availability zones"))
+		return
 	}
 
 	var zones []gin.H
@@ -2122,6 +2144,8 @@ func (svc *Service) GetServerMetadata(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to get server metadata"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"metadata": metadata})
@@ -2192,6 +2216,8 @@ func (svc *Service) UpdateServerMetadata(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to update server metadata"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"metadata": metadata})

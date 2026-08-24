@@ -11,7 +11,7 @@ Populate `key_name` and `security_groups` in the Nova server-detail responses (s
 
 **Language/Version**: Go 1.26 (module targets 1.21+)
 **Primary Dependencies**: gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); **no new modules**
-**Storage**: PostgreSQL — new migration `063` adds `instances.key_name` (nullable `text`); reuses `server_security_groups` (migration 049) and the Neutron `security_groups` table for name→id resolution
+**Storage**: PostgreSQL — new migration `063` adds `instances.key_name` (nullable `VARCHAR(255)`); reuses `server_security_groups` (migration 049) and the Neutron `security_groups` table for name→id resolution
 **Testing**: `go test` (internal/nova unit tests), gophercloud contract tests (`test/contract/`), bash integration (`test/`), Terraform compatibility scenario (`test/terraform/compat/`)
 **Target Platform**: Linux server (all changes are DB + HTTP JSON — they work identically in **stub** mode on any platform; no libvirt/Ceph/netlink involved)
 **Project Type**: Single Go binary, multi-service (Nova API on :8774)
@@ -65,7 +65,7 @@ internal/nova/
 internal/database/models.go  # add KeyName to the Instance model if that struct is used by these paths
 
 migrations/
-├── 063_nova_instance_key_name.up.sql    # ALTER TABLE instances ADD COLUMN key_name text
+├── 063_nova_instance_key_name.up.sql    # ALTER TABLE instances ADD COLUMN key_name VARCHAR(255)
 └── 063_nova_instance_key_name.down.sql  # ALTER TABLE instances DROP COLUMN key_name
 
 test/
