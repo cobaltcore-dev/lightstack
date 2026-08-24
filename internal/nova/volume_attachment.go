@@ -356,6 +356,8 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list volume attachments"))
+		return
 	}
 
 	if attachments == nil {
@@ -386,7 +388,7 @@ func (svc *Service) getNextAvailableDevice(ctx context.Context, instanceID strin
 		usedDevices[device] = true
 	}
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("rows iteration error")
+		return "", fmt.Errorf("iterate volume attachments for instance %s: %w", instanceID, err)
 	}
 
 	// Find first available device (vdb, vdc, ..., vdz)

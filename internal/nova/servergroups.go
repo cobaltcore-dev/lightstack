@@ -50,6 +50,8 @@ func (svc *Service) ListServerGroups(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list server groups"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"server_groups": serverGroups})
