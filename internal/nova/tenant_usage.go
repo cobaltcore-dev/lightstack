@@ -55,6 +55,8 @@ func (svc *Service) ListTenantUsage(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to list tenant usage"))
+		return
 	}
 
 	if tenantUsages == nil {

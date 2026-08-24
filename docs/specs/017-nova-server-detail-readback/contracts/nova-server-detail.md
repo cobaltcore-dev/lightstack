@@ -71,9 +71,10 @@ Given an unchanged Terraform config that sets `key_pair` and `security_groups`:
 
 ## Contract tests (Constitution I — real clients)
 
-- **gophercloud** (`test/contract/`): create a server with `KeyName` + `SecurityGroups`, then
-  `servers.Get` / `servers.List(AllPages)` and assert `server.KeyName` and `server.SecurityGroups`
-  match; assert a create with a bogus key_name / SG returns `400`.
+- **gophercloud** (`test/contract/`): create a server with `KeyName` / `SecurityGroups`, then
+  `servers.Get` and assert `server.KeyName` and `server.SecurityGroups` read back through a real
+  client (`server_readback_test.go`). List-detail and the two `400` paths are asserted by the Go
+  unit suite below, not here.
 - **Go unit** (`internal/nova/*_test.go`, DB-gated by `LIGHTSTACK_TEST_DB_URL`): assert the raw JSON of
   `GetServer` and `ListServersDetail` for the with/without-keypair and with/none/unknown-SG matrix,
   plus the two 400 paths.
