@@ -1639,12 +1639,6 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		return
 	}
 
-	// Stop DHCP server (best-effort: a leftover dnsmasq is hygiene,
-	// not correctness — the subnet row is about to be deleted).
-	if err := svc.dhcpManager.StopDHCP(networkID); err != nil {
-		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to stop DHCP server")
-	}
-
 	// Delete by the id the entitlement check above already resolved. Re-filtering on
 	// project_id here would silently no-op for a network owner removing another
 	// project's subnet — 204 with the row still present — because the two predicates
@@ -1659,37 +1653,51 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		return
 	}
 
-	svc.removeMetadataRedirectIfLastDHCPSubnet(c.Request.Context(), networkID)
+	svc.reconcileNetworkDHCPAfterSubnetDelete(c.Request.Context(), networkID)
 
 	c.Status(http.StatusNoContent)
 }
 
-// removeMetadataRedirectIfLastDHCPSubnet reclaims a network's metadata DNAT once its last
-// DHCP-enabled subnet is gone. The bridge survives subnet deletion, so nothing else would remove
-// the rule until the network itself is deleted — and iptables outlives the pod, the release and the
-// database (SPEC-024 host pass, finding 1).
+// reconcileNetworkDHCPAfterSubnetDelete brings a network's DHCP state back in line with its subnets
+// after one of them has been removed. Called AFTER the DELETE, so the count below is the post-state.
 //
-// Gated on the remaining count rather than fired unconditionally: a network with two DHCP subnets
-// still needs the redirect after one of them goes, and removing it would break cloud-init for its
-// running guests until the next reconcile pass. Called after the DELETE, so the count is post-state.
-func (svc *Service) removeMetadataRedirectIfLastDHCPSubnet(ctx context.Context, networkID string) {
-	if svc.mode == "stub" || len(networkID) < 8 {
-		return
-	}
+// dnsmasq and the metadata DNAT are both per-NETWORK, while the delete is per-SUBNET, so neither may
+// simply be torn down because one subnet went. DeleteSubnet used to call StopDHCP(networkID)
+// unconditionally and before the row was even removed, which took DHCP away from every other subnet
+// on that network — its guests stopped renewing until the reconciler's next pass, up to 30s later.
+//
+// One count answers both questions:
+//
+//   - subnets remain: dnsmasq is restarted rather than left alone, because its config names ONE
+//     subnet (applyDHCPForNetwork takes LIMIT 1) and that may have been the one just deleted. The
+//     restart regenerates it from a survivor. The metadata redirect stays; it is still needed.
+//   - none remain: there is nothing left to serve, so dnsmasq stops and the redirect is reclaimed —
+//     iptables outlives the pod, the release and the database (SPEC-024 host pass, finding 1).
+//
+// A failed count leaves both in place. The reconciler converges either way, whereas acting on an
+// unknown state risks removing something live.
+func (svc *Service) reconcileNetworkDHCPAfterSubnetDelete(ctx context.Context, networkID string) {
 	var remaining int
 	if err := database.DB.QueryRow(ctx,
 		"SELECT COUNT(*) FROM subnets WHERE network_id = $1 AND enable_dhcp = true", networkID,
 	).Scan(&remaining); err != nil {
-		// Unknown post-state. Leaving the rule is the safe side: the reconciler prunes it if it is
-		// genuinely orphaned, whereas removing it wrongly is a live metadata outage.
-		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to count remaining DHCP subnets; leaving metadata DNAT")
+		log.Warn().Err(err).Str("network_id", networkID).
+			Msg("failed to count remaining DHCP subnets; leaving DHCP and metadata DNAT as they are")
 		return
 	}
+
 	if remaining > 0 {
+		svc.applyDHCPForNetwork(ctx, networkID, true)
 		return
 	}
-	if err := svc.mdRedirect.RemoveForBridge("br-" + networkID[:8]); err != nil {
-		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to remove metadata DNAT")
+
+	if err := svc.dhcpManager.StopDHCP(networkID); err != nil {
+		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to stop DHCP server")
+	}
+	if len(networkID) >= 8 {
+		if err := svc.mdRedirect.RemoveForBridge("br-" + networkID[:8]); err != nil {
+			log.Warn().Err(err).Str("network_id", networkID).Msg("failed to remove metadata DNAT")
+		}
 	}
 }
 

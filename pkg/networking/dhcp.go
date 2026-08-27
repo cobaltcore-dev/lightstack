@@ -17,7 +17,6 @@ type DHCPManager struct {
 	mode        string // "stub", "iptables", or "ebpf"
 	leasePath   string
 	configPath  string
-	pidPath     string
 	mu          sync.Mutex
 	restartMu   sync.Mutex      // serializes dnsmasq reloads so concurrent port allocs don't interleave kill/start
 	runningPIDs map[string]int  // networkID -> PID
@@ -38,11 +37,9 @@ func NewDHCPManager(mode string) *DHCPManager {
 		_ = os.MkdirAll(baseDir, 0755)
 		_ = os.MkdirAll(filepath.Join(baseDir, "leases"), 0755)
 		_ = os.MkdirAll(filepath.Join(baseDir, "configs"), 0755)
-		_ = os.MkdirAll(filepath.Join(baseDir, "pids"), 0755)
 
 		mgr.leasePath = filepath.Join(baseDir, "leases")
 		mgr.configPath = filepath.Join(baseDir, "configs")
-		mgr.pidPath = filepath.Join(baseDir, "pids")
 	}
 
 	return mgr
@@ -56,7 +53,6 @@ type DHCPConfig struct {
 	GatewayIP      string
 	DNSServers     []string
 	LeaseFile      string
-	PIDFile        string
 	DHCPRangeStart string
 	DHCPRangeEnd   string
 	LeaseTime      string
@@ -88,11 +84,9 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig) error {
 	}
 
 	leaseFile := filepath.Join(m.leasePath, config.NetworkID+".leases")
-	pidFile := filepath.Join(m.pidPath, config.NetworkID+".pid")
 	configFile := filepath.Join(m.configPath, config.NetworkID+".conf")
 
 	config.LeaseFile = leaseFile
-	config.PIDFile = pidFile
 
 	// Create dnsmasq config file
 	if err := m.writeDNSMasqConfig(configFile, config); err != nil {
@@ -131,26 +125,17 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig) error {
 	return nil
 }
 
-// killProcess terminates EVERY dnsmasq bound to a network's config (not just the
-// one named in the pid-file) and clears its tracked PID, leaving the lease file
-// intact so a later StartDHCP preserves existing leases. Killing all of them
-// stops orphans from a previous o3k accumulating into multiple dnsmasq on one
-// bridge (SPEC-009 WS-2).
+// killProcess terminates EVERY dnsmasq bound to a network's config and clears its
+// tracked PID, leaving the lease file intact so a later StartDHCP preserves
+// existing leases. Killing all of them stops orphans from a previous o3k
+// accumulating into multiple dnsmasq on one bridge (SPEC-009 WS-2).
+//
+// Matching on the config path in the cmdline is the whole mechanism, and is the
+// stronger one: it reaches orphans no tracked PID names. There is deliberately no
+// pid-file fallback — dnsmasq runs --no-daemon, which suppresses writing one, so a
+// fallback that read it could never fire (branch review 2026-08-28, SRC-4).
 func (m *DHCPManager) killProcess(networkID string) {
-	// pkill -f matches the config path in the cmdline → catches untracked orphans
-	// the pid-file no longer points at.
 	_ = exec.Command("pkill", "-f", filepath.Join(m.configPath, networkID+".conf")).Run()
-	pidFile := filepath.Join(m.pidPath, networkID+".pid")
-	if pidData, err := os.ReadFile(pidFile); err == nil {
-		var pid int
-		_, _ = fmt.Sscanf(string(pidData), "%d", &pid)
-		if pid > 0 {
-			if proc, ferr := os.FindProcess(pid); ferr == nil {
-				_ = proc.Kill()
-			}
-		}
-		_ = os.Remove(pidFile)
-	}
 	m.mu.Lock()
 	delete(m.runningPIDs, networkID)
 	m.mu.Unlock()
@@ -187,9 +172,9 @@ func (m *DHCPManager) RestartDHCP(config DHCPConfig) error {
 
 // EnsureDHCP guarantees exactly one dnsmasq serves the network without
 // double-starting. If one is already tracked as running it is a no-op; otherwise
-// it first kills any process named in the persisted pid-file — an orphan left by
-// a previous o3k instance, since pid-files live on the hostPath and survive a
-// control-plane restart — then starts a fresh one. Serialized against RestartDHCP
+// it first kills any dnsmasq still bound to this network's config file — an orphan
+// left by a previous o3k instance, since config files live on the hostPath and
+// survive a control-plane restart — then starts a fresh one. Serialized against RestartDHCP
 // (and itself) via restartMu so a periodic reconcile and a concurrent
 // port-allocation reload can't each spawn a dnsmasq on the same bridge
 // (SPEC-009 WS-2).
@@ -239,17 +224,23 @@ bind-interfaces
 port=0
 dhcp-range={{ .DHCPRangeStart }},{{ .DHCPRangeEnd }},{{ .LeaseTime }}
 dhcp-leasefile={{ .LeaseFile }}
-pid-file={{ .PIDFile }}
 {{ if .GatewayIP }}dhcp-option=3,{{ .GatewayIP }}
-dhcp-option=121,169.254.169.254/32,{{ .GatewayIP }},0.0.0.0/0,{{ .GatewayIP }}
-{{ else if .MetadataNextHop }}dhcp-option=121,169.254.169.254/32,{{ .MetadataNextHop }}{{ end }}
+dhcp-option=121,{{ metadataIP }}/32,{{ .GatewayIP }},0.0.0.0/0,{{ .GatewayIP }}
+{{ else if .MetadataNextHop }}dhcp-option=121,{{ metadataIP }}/32,{{ .MetadataNextHop }}{{ end }}
 {{ range .DNSServers }}dhcp-option=6,{{ . }}
 {{ end }}
 {{ range .HostReservations }}dhcp-host={{ .MAC }},{{ .IP }}
 {{ end }}
 `
 
-	t, err := template.New("dnsmasq").Parse(tmpl)
+	// metadataIP comes from the constant rather than a literal because this template and the iptables
+	// DNAT in metadata_redirect.go are two halves of one path: the rule intercepts the address, this
+	// tells guests to route to it. Spelled separately they can diverge with nothing failing to compile
+	// and nothing logged — guests would simply route somewhere no rule catches, which is the silent
+	// breakage the reconciler's destination comparison exists to find (SPEC-024 R10c).
+	t, err := template.New("dnsmasq").Funcs(template.FuncMap{
+		"metadataIP": func() string { return MetadataIP },
+	}).Parse(tmpl)
 	if err != nil {
 		return err
 	}
@@ -265,6 +256,15 @@ dhcp-option=121,169.254.169.254/32,{{ .GatewayIP }},0.0.0.0/0,{{ .GatewayIP }}
 
 // IsRunning checks if DHCP server is running for a network
 func (m *DHCPManager) IsRunning(networkID string) bool {
+	// Stub mode keeps its own bookkeeping and spawns nothing, so runningPIDs is always empty there.
+	// Answering from it made this report "not serving" for a network StartDHCP had just recorded as
+	// served — a lie no caller happened to read, because both call sites sit on non-stub paths.
+	if m.mode == "stub" {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.stubDHCP[networkID]
+	}
+
 	m.mu.Lock()
 	pid, exists := m.runningPIDs[networkID]
 	m.mu.Unlock()

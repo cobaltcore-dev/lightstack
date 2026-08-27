@@ -77,9 +77,6 @@ func (f *SQLFilter) CloneArgs() *SQLFilter {
 	return &SQLFilter{SQLArgs: SQLArgs{args: slices.Clone(f.args)}}
 }
 
-// Len reports how many predicates have been added.
-func (f *SQLFilter) Len() int { return len(f.conds) }
-
 // SQLUpdate accumulates the SET assignments of an UPDATE alongside their arguments.
 //
 // Separate from SQLFilter because the two are joined differently — "," against " AND " — and because

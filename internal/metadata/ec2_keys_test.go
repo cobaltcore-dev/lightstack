@@ -265,3 +265,84 @@ func TestEC2UnknownKeyStill404s(t *testing.T) {
 		t.Errorf("unknown key: code=%d body=%q; want 404", code, body)
 	}
 }
+
+// Branch review 2026-08-28, SRC-6 — a malformed public-key index must be refused without a database
+// round-trip.
+//
+// ec2PublicKey used to resolve the instance's keys and only then check whether the index parsed, so
+// `public-keys/garbage` cost one query per request. This service is unauthenticated by design — EC2
+// compatibility puts it on the link-local address for any guest to call — so that is an unbounded
+// path from a guest to the shared connection pool.
+//
+// HOW THIS DISCRIMINATES. Asserting 404 for a malformed index against an unknown source address does
+// NOT work: the request 404s at instance resolution and never reaches this handler, so both orderings
+// pass and the test cannot fail. Verified by mutation before this version was written.
+//
+// Instead the request names an instance id that does not exist, via the X-Instance-ID header the
+// service already honours for tests. Resolution then succeeds, the handler IS reached, and the two
+// orderings diverge: querying first hits `SELECT user_id FROM instances` with no matching row, which
+// is an error and a 500; parsing first returns 404 without ever asking. The status code is the
+// observation — 500 means the lookup ran.
+func TestEC2PublicKeyRejectsAMalformedIndexBeforeAnyLookup(t *testing.T) {
+	requireMetaDB(t)
+	absent := uuid.NewString() // resolvable as an id, present in no row
+
+	for _, key := range []string{
+		"public-keys/garbage",
+		"public-keys/garbage/openssh-key",
+		"public-keys/-1",
+	} {
+		t.Run(key, func(t *testing.T) {
+			code, body := getEC2AsInstance(t, key, absent)
+			if code != http.StatusNotFound {
+				t.Errorf("GET %s = %d (%q); want 404 — a malformed index must be refused before the "+
+					"key lookup, and a 500 here means the lookup ran", key, code, body)
+			}
+		})
+	}
+}
+
+// getEC2AsInstance issues a request naming an instance directly, bypassing source-IP resolution.
+func getEC2AsInstance(t *testing.T, key, instanceID string) (int, string) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	NewService("stub").RegisterRoutes(&r.RouterGroup)
+
+	req := httptest.NewRequest(http.MethodGet, "/2009-04-04/meta-data/"+key, nil)
+	req.Header.Set("X-Instance-ID", instanceID)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w.Code, w.Body.String()
+}
+
+// The valid path still works, so the reordering did not turn a good index into a refusal. The upper
+// bound is the one arm that genuinely needs the query, and it is checked after it.
+func TestEC2PublicKeyStillServesAValidIndex(t *testing.T) {
+	requireMetaDB(t)
+	const ip = "10.90.0.77"
+	seedInstanceWithPort(t, "ec2meta-keyidx", ip)
+
+	// publicKeysForInstance resolves keys through the instance's USER, and seedInstanceWithPort
+	// attaches the seeded admin. Without a keypair there index 0 is already past the end, so the
+	// positive case needs one. Removed again so no other test in this package sees it.
+	kpID := uuid.NewString()
+	t.Cleanup(func() {
+		database.DB.Exec(context.Background(), //nolint:errcheck // best-effort cleanup
+			"DELETE FROM keypairs WHERE id = $1", kpID)
+	})
+	if _, err := database.DB.Exec(context.Background(),
+		`INSERT INTO keypairs (id, name, user_id, public_key)
+		 VALUES ($1, 'ec2meta-key', (SELECT id FROM users ORDER BY created_at LIMIT 1), 'ssh-ed25519 AAAAC3Nz')`,
+		kpID); err != nil {
+		t.Fatalf("seed keypair: %v", err)
+	}
+
+	if code, body := getEC2(t, "public-keys/0", ip); code != http.StatusOK || body != "openssh-key" {
+		t.Errorf("GET public-keys/0 = %d %q; want 200 %q", code, body, "openssh-key")
+	}
+	// One past the end still needs `keys` to decide, so this is the arm left after the query.
+	if code, _ := getEC2(t, "public-keys/99", ip); code != http.StatusNotFound {
+		t.Errorf("GET public-keys/99 = %d; want 404", code)
+	}
+}

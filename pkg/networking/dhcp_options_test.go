@@ -44,7 +44,6 @@ func baseDHCPConfig() DHCPConfig {
 		DHCPRangeEnd:   "10.0.0.200",
 		LeaseTime:      "12h",
 		LeaseFile:      "/tmp/leases",
-		PIDFile:        "/tmp/pid",
 	}
 }
 
@@ -98,5 +97,43 @@ func TestNoMetadataRouteWithoutANextHop(t *testing.T) {
 	}
 	if strings.Contains(out, "dhcp-option=3,") {
 		t.Errorf("no gateway means no default route; got:\n%s", out)
+	}
+}
+
+// Branch review 2026-08-28, SRC-3 — the metadata route must be rendered from MetadataIP, not from a
+// literal repeated in the template.
+//
+// This template and the iptables DNAT in metadata_redirect.go are two halves of one path: the rule
+// intercepts 169.254.169.254 on the bridge, this option tells guests to route there. Spelled
+// independently they can diverge — change the constant and the interception moves while DHCP keeps
+// advertising the old address, with nothing failing to compile and nothing logged. Guests would route
+// to an address no rule catches, which is exactly the invisible breakage the reconciler's
+// destination comparison was added to find.
+//
+// The assertion is deliberately indirect: rather than checking for the literal (which would pass just
+// as well if the template hardcoded it), it renders with both code paths and requires each to contain
+// MetadataIP. If someone reverts the template to a literal and the constant later changes, this fails.
+func TestMetadataRouteIsRenderedFromTheConstant(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  DHCPConfig
+	}{
+		{"with a gateway", DHCPConfig{
+			NetworkID: "n1", BridgeName: "br-n1", SubnetCIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1",
+			DHCPRangeStart: "10.0.0.10", DHCPRangeEnd: "10.0.0.250", LeaseTime: "24h",
+		}},
+		{"gatewayless, via the bridge address", DHCPConfig{
+			NetworkID: "n2", BridgeName: "br-n2", SubnetCIDR: "10.0.1.0/24", MetadataNextHop: "10.0.1.1",
+			DHCPRangeStart: "10.0.1.10", DHCPRangeEnd: "10.0.1.250", LeaseTime: "24h",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := renderDHCPConfig(t, tc.cfg)
+			want := "dhcp-option=121," + MetadataIP + "/32,"
+			if !strings.Contains(out, want) {
+				t.Errorf("rendered config does not route %s; want a line containing %q, got:\n%s",
+					MetadataIP, want, out)
+			}
+		})
 	}
 }

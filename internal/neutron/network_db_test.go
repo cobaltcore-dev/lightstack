@@ -52,6 +52,13 @@ func requireDB(t *testing.T) {
 const seededProjectID = "00000000-0000-0000-0000-000000000002"
 
 func newNeutronTestRouter() *gin.Engine {
+	r, _ := newNeutronTestRouterWithService()
+	return r
+}
+
+// newNeutronTestRouterWithService also hands back the Service the routes are bound to, for the tests
+// that assert on state the handlers keep outside the response — DHCP bookkeeping, for instance.
+func newNeutronTestRouterWithService() (*gin.Engine, *Service) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	// Mirror production: the envelope marker goes on the engine, first, so error bodies in these
@@ -66,8 +73,9 @@ func newNeutronTestRouter() *gin.Engine {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	NewService("stub", nil).RegisterRoutes(&r.RouterGroup)
-	return r
+	svc := NewService("stub", nil)
+	svc.RegisterRoutes(&r.RouterGroup)
+	return r, svc
 }
 
 func doReq(r *gin.Engine, method, path string, headers map[string]string) (int, string) {

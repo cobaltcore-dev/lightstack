@@ -38,6 +38,17 @@ Finding 1's substance — metadata DNAT rules being reclaimed — is **mode-gate
 here**. `MetadataRedirect` is a no-op in stub mode, so a stub stack writes no iptables rules to leak.
 That half is [HOST_TESTING_REAL_MODE.md](./HOST_TESTING_REAL_MODE.md) R10.
 
+**Later branch commits.** Three commits landed after the tables above were written, and all three
+change behaviour a client can see. S14–S18 cover them.
+
+| Acceptance criterion | Proved by |
+|---|---|
+| `refactor(sql)` — a page walk returns rows that share a `created_at`, once each | S14 |
+| `fix(neutron)` — `routers/{id}/l3-agents` is scoped, and cannot probe for foreign routers | S15 |
+| Branch review SRC-3/SRC-4 — a gateway is validated, and discloses no invisible network | S16 |
+| Finding 1 (ports) — a short or unusable port id is refused, not a crash | S17 |
+| Branch review SRC-1 — a cached network is not served to a caller who may not see it | S18 |
+
 ---
 
 ## 0. Prerequisites
@@ -141,7 +152,7 @@ curl -s -H "X-Auth-Token: $T" "http://localhost:8776/v3/$P/volumes/00000000-0000
 **Expect:** `exit code: 0`, then `Passed: 10` / `Failed: 0` / `ALL ERROR HANDLING TESTS PASSED`. Both
 compute and block-storage still print `["itemNotFound"]` — this feature changes Neutron only.
 
-The **exit code is the load-bearing part**: `test-errors` is a member of `test-all` (`Makefile:125`),
+The **exit code is the load-bearing part**: `test-errors` is a member of `test-all` (`Makefile:142`),
 so a non-zero exit here is what has been failing the whole suite since `7b15418`. Redirecting to a
 file rather than piping is deliberate — `$?` after a pipe reports the *last* command, and zsh spells
 the per-stage array `$pipestatus[1]`, not bash's `${PIPESTATUS[0]}`.
@@ -195,7 +206,7 @@ be `500`); and the stored value is literally `NULL`, proving the response and st
 The leading `delete` makes the step re-runnable, and the update changes a **DNS server rather than the
 name** so the subnet keeps a stable identity. An earlier version renamed it, which on a second run
 left two subnets sharing one name — and `DeleteSubnet` resolves a name with `LIMIT 1`
-(`internal/neutron/network.go:1542`), so teardown would have removed only one of them. O3K also does
+(`internal/neutron/network.go:1629`), so teardown would have removed only one of them. O3K also does
 not reject overlapping CIDRs on a network the way upstream does, so the duplicate produced no error to
 notice.
 
@@ -251,13 +262,29 @@ lines print `[true]` and `[false]` respectively — complements, not one of them
 printf '%-26s %s\n' "gateway on non-external" "$(curl -s -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d "{\"router\":{\"name\":\"ht-r-bad\",\"external_gateway_info\":{\"network_id\":\"$NET_B\"}}}" http://localhost:9696/v2.0/routers | jq -c '[(keys|first), .NeutronError.type]')"
 printf '%-26s %s\n' "gateway on external" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d "{\"router\":{\"name\":\"ht-r-good\",\"external_gateway_info\":{\"network_id\":\"$EXT\"}}}" http://localhost:9696/v2.0/routers)"
 printf '%-26s %s\n' "fip on non-external" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d "{\"floatingip\":{\"floating_network_id\":\"$NET_B\"}}" http://localhost:9696/v2.0/floatingips)"
-printf '%-26s %s\n' "rename foreign network" "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"network":{"name":"hijacked"}}' http://localhost:9696/v2.0/networks/$NID)"
+printf '%-26s %s\n' "admin renames foreign net" "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"network":{"name":"ht-b11-renamed"}}' http://localhost:9696/v2.0/networks/$NID)"
+printf '%-26s %s\n' "and it really applied" "$(docker exec o3k-postgres psql -U o3k -d o3k -tAc "SELECT name FROM networks WHERE id = '$NID'" | tr -d ' ')"
+curl -s -o /dev/null -X PUT -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"network":{"name":"ht-b11"}}' http://localhost:9696/v2.0/networks/$NID
 ```
 
 **Expect:** the non-external gateway is refused in Neutron's envelope
 (`["NeutronError","BadRequest"]`); the external one is `201`; the floating IP on a non-external
-network is a `4xx`; and renaming the network owned by `$OTHER` is **`404`** — visibility confers no
-authority, and a write that matches zero rows must not report success.
+network is a `4xx`; the rename is **`200`** and `and it really applied` reads `ht-b11-renamed`. The
+third line renames it back, so the name teardown deletes by is restored.
+
+**The rename is `200` on purpose, and the read-back is the assertion.** `UpdateNetwork` exempts an
+administrator from the owner predicate (`internal/neutron/network.go:1129`), which is upstream
+Neutron's `admin_or_owner` default for `update_network`. It was added for research R6.4: owner-scoped,
+an administrator marking a **tenant's** network external matched zero rows and was still answered
+`200` — the same dishonest success B11 is about, inside the fix for a different defect. So what has to
+be checked here is not refusal but that the write *landed*: a `200` with the old name still stored is
+the defect returning.
+
+The mirror contract — a **non-owner** must not rename a network they can merely see — is real and is
+X9 in `internal/neutron/external_networks_test.go:291`, which uses a tenant header. It cannot be run
+here: this runbook holds only an administrator token until S18, and an earlier version of this step
+asserted X9's `404` against that admin token, which the exemption makes unreachable. S18 runs it with
+a second caller.
 
 ### S11 — Nothing that used to pass regressed (SC-011)
 
@@ -359,17 +386,237 @@ neither, and it is exactly what advertising the capability alone would produce.
 
 ---
 
+## 2c. Later branch commits
+
+`refactor(sql)`, the l3-agents/DHCP fix, and two findings from the branch review all landed after
+§2 and §2b were written. Run these after S13; S18 rebuilds the stack and must go last.
+
+### S14 — A page walk returns tied rows, once each (marker paging)
+
+Six listings resolved a pagination marker to `created_at < $n` — Cinder volumes and volumes/detail,
+Glance images, Neutron floating IPs, routers and ports. `created_at` is not unique: rows written by
+one seed, script or Terraform apply share it to the microsecond, so that predicate excluded every row
+**tied** with the marker rather than only those before it, and a page walk dropped them without
+saying so. Five of the six also ordered by `created_at` alone, which is not a total order, so the page
+boundary was not stable even between two identical requests. Both halves now use `(created_at, id)`.
+
+The tie is forced with an `UPDATE` deliberately. Resources created through the API get distinct
+timestamps, so the defect does not reproduce on naturally-created rows — a walk over five ports made a
+second apart passes **unfixed**, which is what makes this the one step here that needs the database.
+
+```bash
+for i in 1 2 3 4 5; do openstack port create --network "$NET_A" ht-pg-$i -f value -c id; done > /tmp/546-pg-ports.txt
+docker exec o3k-postgres psql -U o3k -d o3k -tAc "UPDATE ports SET created_at = '2026-01-01 00:00:00+00' WHERE name LIKE 'ht-pg-%'"
+: > /tmp/546-pg-walk.txt
+M=""
+for i in $(seq 1 10); do PAGE=$(curl -s -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/ports?limit=2&marker=$M" | jq -r '.ports[].id'); test -z "$PAGE" && break; printf '%s\n' "$PAGE" >> /tmp/546-pg-walk.txt; M=$(printf '%s\n' "$PAGE" | tail -1); done
+echo "seeded ports:     $(wc -l < /tmp/546-pg-ports.txt)"
+echo "seen in the walk: $(grep -c -F -f /tmp/546-pg-ports.txt /tmp/546-pg-walk.txt)"
+echo "duplicated rows:  $(sort /tmp/546-pg-walk.txt | uniq -d | wc -l)"
+```
+
+**Expect:** `seeded ports` and `seen in the walk` are both **5**, and `duplicated rows` is **0**.
+Before the fix `seen` was **1** — the first page's marker carried the shared timestamp, and
+`created_at < that` excluded the other four for the remainder of the walk.
+
+Both halves of the assertion earn their place. Dropped rows are the reported defect; duplicates are
+the failure mode a *non-total* order produces, and a fix that changed only the comparison operator
+without adding `id` to the `ORDER BY` would trade one for the other.
+
+Then the same defect in a second service, since the fix is one shared helper rather than six edits:
+
+```bash
+for i in 1 2 3; do openstack volume create --size 1 ht-vg-$i -f value -c id; done > /tmp/546-pg-vols.txt
+docker exec o3k-postgres psql -U o3k -d o3k -tAc "UPDATE volumes SET created_at = '2026-01-01 00:00:00+00' WHERE name LIKE 'ht-vg-%'"
+: > /tmp/546-vg-walk.txt
+M=""
+for i in $(seq 1 8); do PAGE=$(curl -s -H "X-Auth-Token: $T" "http://localhost:8776/v3/$P/volumes?limit=1&marker=$M" | jq -r '.volumes[].id'); test -z "$PAGE" && break; printf '%s\n' "$PAGE" >> /tmp/546-vg-walk.txt; M=$(printf '%s\n' "$PAGE" | tail -1); done
+echo "seeded volumes:   $(wc -l < /tmp/546-pg-vols.txt)"
+echo "seen in the walk: $(grep -c -F -f /tmp/546-pg-vols.txt /tmp/546-vg-walk.txt)"
+```
+
+**Expect:** both **3**.
+
+The remaining four listings take the identical predicate from the same helper.
+`internal/cinder/volume_paging_test.go` and `internal/glance/image_paging_test.go` seed the same tie
+against them, and S11's unit line runs both.
+
+### S15 — `l3-agents` is scoped to the caller
+
+`GET` and `POST` on `/v2.0/routers/{id}/l3-agents` verified the router with
+`SELECT EXISTS(... WHERE id = $1)` and no project predicate. Another project's router answered `200`
+with an empty list; an id belonging to no router answered `404`. The pair distinguishes existence, so
+the endpoint was a probe for routers the caller cannot see.
+
+The `POST` matters more than the read: unscoped it would let a caller schedule an agent onto another
+project's router. Nothing exploitable follows today — `neutron_agents` is never populated, so the
+agent check refuses first — but that is incidental cover rather than a decision.
+
+The foreign router is inserted directly. B11 lets an administrator name a project when creating a
+**network**; `CreateRouter` has no such path, so there is no API route to a router owned by `$OTHER`.
+
+```bash
+export FR=$(docker exec o3k-postgres psql -U o3k -d o3k -tAc "INSERT INTO routers (name, project_id) VALUES ('ht-r-foreign', '$OTHER') RETURNING id" | head -1 | tr -d ' ')
+export OWN=$(curl -s -H "X-Auth-Token: $T" http://localhost:9696/v2.0/routers | jq -r '.routers[] | select(.name=="ht-r-good") | .id')
+echo "foreign=$FR own=$OWN"
+printf '%-30s %s\n' "own router" "$(curl -s -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/routers/$OWN/l3-agents" | jq -c '[(.agents|length), (.agents|type)]')"
+printf '%-30s %s\n' "another project's router" "$(curl -s -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/routers/$FR/l3-agents" | jq -c '[(keys|first), .NeutronError.type]')"
+printf '%-30s %s\n' "unknown id" "$(curl -s -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/routers/00000000-0000-0000-0000-999999999999/l3-agents" | jq -c '[(keys|first), .NeutronError.type]')"
+printf '%-30s %s\n' "malformed id" "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Token: $T" "http://localhost:9696/v2.0/routers/not-a-uuid/l3-agents")"
+printf '%-30s %s\n' "POST to a foreign router" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"agent_id":"00000000-0000-0000-0000-000000000001"}' "http://localhost:9696/v2.0/routers/$FR/l3-agents")"
+```
+
+**Expect:** `own router` is `[0,"array"]` — an **empty array**, not `null`. The foreign router and the
+unknown id both read `["NeutronError","RouterNotFound"]`: **the two must be indistinguishable**, which
+is the whole assertion. `malformed id` is `404`, not `500` — the id is compared as text so it matches
+nothing rather than erroring the query. The `POST` is `404`.
+
+`ht-r-good` comes from S10. If S10 was skipped there is no own-router to read and that first line will
+be empty rather than failing loudly — create one first.
+
+The `head -1` is not decoration. `psql -tAc` prints the command status tag on its own line **after**
+the returned row, so an `INSERT … RETURNING id` yields two lines and the capture becomes
+`<uuid>\nINSERT01`. A `curl` URL built from that is malformed, and the symptom does not name the
+cause: the request either returns an empty body or `000`, which reads like the endpoint failing rather
+than the variable being wrong. `SELECT` has no such tag, which is why the other `psql` captures in
+this runbook do not need it.
+
+### S16 — A gateway is validated, and names nothing invisible (SRC-3, SRC-4)
+
+S10 already refuses a gateway on the caller's own **non-external** network. Two neighbouring cases
+were not covered, both found in the branch review.
+
+SRC-3: `requireExternalNetwork` returned true for an empty or non-string `network_id`, deferring to
+"the existing handling" — which on this path is `configureExternalGateway`, whose error `CreateRouter`
+deliberately swallows. So the row was written with a gateway that never passed validation, and the
+NAT reconciler then treats it as real forever. `201` for something the server ignored is precisely the
+dishonest-success shape this ticket exists to remove.
+
+SRC-4: the lookup carried no visibility predicate, so a network the caller cannot see answered `400`
+("not an external network") while an unknown id answered `404` — the two distinguish existence.
+
+```bash
+printf '%-30s %s\n' "empty network_id" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"router":{"name":"ht-r-src3","external_gateway_info":{"network_id":""}}}' http://localhost:9696/v2.0/routers)"
+printf '%-30s %s\n' "rows that call wrote" "$(docker exec o3k-postgres psql -U o3k -d o3k -tAc "SELECT count(*) FROM routers WHERE name = 'ht-r-src3'" | tr -d ' ')"
+printf '%-30s %s\n' "absent network_id key" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"router":{"name":"ht-r-src3b","external_gateway_info":{"enable_snat":true}}}' http://localhost:9696/v2.0/routers)"
+printf '%-30s %s\n' "network_id not a string" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"router":{"name":"ht-r-src3c","external_gateway_info":{"network_id":123}}}' http://localhost:9696/v2.0/routers)"
+printf '%-30s %s\n' "invisible network" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d "{\"router\":{\"name\":\"ht-r-src4\",\"external_gateway_info\":{\"network_id\":\"$NID\"}}}" http://localhost:9696/v2.0/routers)"
+printf '%-30s %s\n' "absent network" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"router":{"name":"ht-r-src4b","external_gateway_info":{"network_id":"00000000-0000-0000-0000-999999999999"}}}' http://localhost:9696/v2.0/routers)"
+```
+
+**Expect:** the three unusable spellings are **`400`** and `rows that call wrote` is **`0`** — a
+refused request must persist nothing, which is the half a status-code-only check would miss. The last
+two are both **`404`**: `$NID` is the network owned by `$OTHER` from S8, and an invisible network must
+be indistinguishable from an absent one. A `400` on that line and `404` on the next is the oracle.
+
+Nothing is lost by answering `404` there. A legitimately usable gateway network is external, and
+external is its own visibility disjunct — S10's `ht-r-good` still succeeds against `$EXT`.
+
+### S17 — A short or unusable port id is refused, not a crash (finding 1, ports)
+
+S12 probes `DELETE /networks/{id}`. The same first-8-characters slice existed on the port path, and
+port **create** took an unvalidated `network_id` the same way.
+
+```bash
+for id in foo ab 1234567 12345678 00000000-0000-0000-0000-999999999999; do printf '%-44s %s\n' "DELETE /ports/$id" "$(curl -s -H "X-Auth-Token: $T" -o /tmp/546-delp.json -w '%{http_code}' -X DELETE "http://localhost:9696/v2.0/ports/$id") $(jq -rc '[(keys|first), .NeutronError.type]' /tmp/546-delp.json 2>/dev/null || echo '<empty body>')"; done
+printf '%-44s %s\n' "POST /ports with a short network_id" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d '{"port":{"network_id":"abc"}}' http://localhost:9696/v2.0/ports)"
+docker logs --since 5m o3k 2>&1 | grep -c 'slice bounds out of range' || true
+```
+
+**Expect:** every `DELETE` line is `404 ["NeutronError","PortNotFound"]` — no `500`, no
+`<empty body>`. The create is `404` or `400`, never `500`. The log count is **`0`**; as in S12 that is
+the independent check, since a `404` reached by crashing and recovering would still log the runtime
+error.
+
+### S18 — A cached network is not served to a caller who may not see it (SRC-1)
+
+**Run this last.** It changes `config/o3k.yaml` and rebuilds the image; the final block puts both back.
+
+`GetNetwork`'s cache was keyed on the network id alone, and the cache lookup runs **before** the
+visibility predicate the database path applies. So once an owner had fetched a private network, any
+authenticated caller who knew its id got `200` with the full object for the whole TTL, where the
+uncached answer is `404`. Making the body caller-independent — which this feature did, by reporting
+the row's real owner instead of the caller's — fixed the *content* and not the authorization, and
+gave the leak the owner's name to carry.
+
+`internal/neutron/network_cache_test.go` pins the key and says in its own comment that it does not
+prove the isolation, because `pkg/cache` needs a real Redis and CI has none. **This step is the only
+end-to-end proof of the fix.**
+
+It needs a deliberate config change to run at all. `docker-compose.yml` starts a Redis container and
+sets `O3K_REDIS_URL` and `O3K_CACHE_ENABLED`, but **nothing in the Go source reads either variable** —
+the cache is driven only by `cache.enabled` in the baked `config/o3k.yaml`, which is `false`. So every
+step above this one runs with the cache dead, and would pass against the unfixed code.
+
+```bash
+sed -i 's|^  enabled: false  # Set to true to enable Redis caching|  enabled: true|' config/o3k.yaml
+sed -i 's|^  redis_url: .*$|  redis_url: "redis://redis:6379/0"|' config/o3k.yaml
+sed -n '/^cache:/,/^  key_prefix/p' config/o3k.yaml
+docker compose -f deployments/docker-compose.yml up -d --build o3k
+for i in $(seq 1 45); do curl -s -o /dev/null http://localhost:35357/v3 && break; sleep 2; done
+export T=$(openstack token issue -f value -c id)
+docker exec o3k-redis redis-cli FLUSHALL
+openstack user create --project "$OTHER" --password secret ht-tenant -f value -c name
+openstack role add --project "$OTHER" --user ht-tenant member
+export T2=$(env OS_USERNAME=ht-tenant OS_PASSWORD=secret OS_PROJECT_NAME=hosttest-546 openstack token issue -f value -c id)
+export PRIV=$(openstack network create ht-priv -f value -c id)
+echo "owner reads it:   $(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Token: $T" http://localhost:9696/v2.0/networks/$PRIV)"
+echo "cached keys:      $(docker exec o3k-redis redis-cli --scan --pattern 'o3k:network:*' | tr '\n' ' ')"
+echo "other tenant:     $(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Token: $T2" http://localhost:9696/v2.0/networks/$PRIV)"
+echo "owner again:      $(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Token: $T" http://localhost:9696/v2.0/networks/$PRIV)"
+echo "other tenant renames: $(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "X-Auth-Token: $T2" -H 'Content-Type: application/json' -d '{"network":{"name":"hijacked"}}' http://localhost:9696/v2.0/networks/$PRIV)"
+echo "name after that:  $(docker exec o3k-postgres psql -U o3k -d o3k -tAc "SELECT name FROM networks WHERE id = '$PRIV'" | tr -d ' ')"
+```
+
+**Expect:** `owner reads it` is `200`; `cached keys` shows a key of the form
+`o3k:network:<project-uuid>:<network-uuid>` — the **project segment is the fix**, and a key spelled
+`o3k:network:<network-uuid>` is the defect; `other tenant` is **`404`**; and `owner again` is still
+`200`, proving the scoping did not simply disable caching.
+
+`other tenant renames` is **not** `200` and `name after that` is still `ht-priv` — contract X9, the
+non-owner write refusal S10 could not run because it holds only an administrator token. The
+administrator exemption in `UpdateNetwork` is scoped to administrators; a tenant still gets the owner
+predicate, and this is the only place in the runbook with a caller to prove it.
+
+The key shape and the `404` are two independent readings of the same fix, and both are worth having.
+The `404` is the behaviour that matters, but it also passes when the cache is off entirely — which,
+given how easy that is to end up with here, is a real risk. The key is what proves the cache was
+actually live and consulted.
+
+Put everything back:
+
+```bash
+git checkout -- config/o3k.yaml
+docker compose -f deployments/docker-compose.yml up -d --build o3k
+for i in $(seq 1 45); do curl -s -o /dev/null http://localhost:35357/v3 && break; sleep 2; done
+export T=$(openstack token issue -f value -c id)
+grep -A1 '^cache:' config/o3k.yaml
+```
+
+**Pass =** `enabled: false` is back and `git status --short config/o3k.yaml` prints nothing.
+
+The first `sed` anchors on the **comment**, not on `enabled: false`. `config/o3k.yaml` carries two
+lines spelled that way — the cache block and the rate-limiting block twelve lines below it — so the
+obvious pattern turns on rate limiting as well, and the requests in this step start being refused
+`429` for a reason that has nothing to do with the cache.
+
+---
+
 ## 3. Teardown steps
 
 Removes only what this run created, then the stack.
 
 ```bash
-openstack router delete ht-r-good 2>/dev/null || true
+openstack router delete ht-r-good ht-r-src3 ht-r-src3b ht-r-src3c ht-r-src4 ht-r-src4b 2>/dev/null || true
+docker exec o3k-postgres psql -U o3k -d o3k -tAc "DELETE FROM routers WHERE name IN ('ht-r-foreign','ht-r-src3','ht-r-src3b','ht-r-src3c','ht-r-src4','ht-r-src4b')" 2>/dev/null || true
+openstack volume delete ht-vg-1 ht-vg-2 ht-vg-3 2>/dev/null || true
+openstack user delete ht-tenant 2>/dev/null || true
+git checkout -- config/o3k.yaml
 openstack floating ip list -f value -c ID | xargs -r openstack floating ip delete 2>/dev/null || true
-openstack port delete ht-p1 2>/dev/null || true
+openstack port delete ht-p1 ht-pg-1 ht-pg-2 ht-pg-3 ht-pg-4 ht-pg-5 2>/dev/null || true
 openstack subnet delete ht-sub-a ht-sub-b ht-nogw 2>/dev/null || true
 docker exec o3k-postgres psql -U o3k -d o3k -tAc "DELETE FROM subnets WHERE name LIKE 'ht-nogw%'" 2>/dev/null || true
-openstack network delete ht-net-a ht-net-b ht-ext ht-b11 2>/dev/null || true
+openstack network delete ht-net-a ht-net-b ht-ext ht-b11 ht-priv 2>/dev/null || true
 openstack security group delete ht-sg 2>/dev/null || true
 openstack project delete hosttest-546 2>/dev/null || true
 docker compose -f deployments/docker-compose.yml down -v

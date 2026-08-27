@@ -39,6 +39,14 @@ branch as a separate commit. Each step below carries the context it needs.
 | Finding 1 — metadata DNAT rules are reclaimed on delete, by the reconciler, and at teardown | R10, and the teardown check in §3 |
 | Finding 2 — Horizon's admin **Project** column shows the owning project | R11 |
 
+**Later branch commits.** Two commits landed after the tables above were written and change real-mode
+behaviour. A third — the VXLAN half — cannot be proved on one host; see *Not provable here* below R13.
+
+| Acceptance criterion | Proved by |
+|---|---|
+| `fix(neutron)` — deleting one subnet leaves DHCP running for the network's others | R12 |
+| `fix(neutron)` — the auto-allocated topology's bridge is built in the root namespace | R13 |
+
 ---
 
 ## 0. Prerequisites
@@ -118,6 +126,18 @@ builds the image for a minute, starts Postgres, and only then fails with
 `export KUBECONFIG=<missing file>` does not error and kubectl quietly falls back to its default
 endpoint. The gate is an `if`, deliberately: an `exit` here would close the terminal you pasted into.
 
+The **ports check gates the install** for the same reason the cluster check does. o3k runs
+`hostNetwork`, so anything already holding 35357/8774/9292/9696/8776/8775 makes the pod
+`CrashLoopBackOff` on `bind: address already in use` — and the only place that says so is the
+container log, four minutes later, after `rollout status` has timed out. The usual cause is the
+**stub stack from `HOST_TESTING.md` still running**: that runbook's teardown drops it, and going
+straight from S18 to here skips that. Stop only its `o3k` container — `o3k-postgres` is shared and
+this deployment needs it.
+
+An earlier version of this block printed `PORTS BUSY` and then ran `helm upgrade` anyway, which is
+strictly worse than not checking: the diagnosis scrolls past and the failure arrives later wearing a
+different name.
+
 The `extraEnv[0]` arguments are **quoted deliberately**. Unquoted, zsh reads `[0]` as a glob character
 class, finds no match, and with its default `nomatch` aborts the whole `helm` command — so the
 namespace is never created and every following line fails with `namespaces "o3k" not found`. The
@@ -139,18 +159,26 @@ else
   sudo mkdir -p /var/lib/o3k/images /var/lib/o3k/volumes /var/lib/o3k/instances /var/lib/o3k/cloud-init /var/lib/o3k/dhcp /var/lib/o3k/console-tokens
   docker inspect o3k-postgres >/dev/null 2>&1 || make db-up
   sleep 5
-  ss -lntp 2>/dev/null | grep -E ':(35357|8774|9292|9696|8776|8775) ' && echo "PORTS BUSY: stop whatever is listed above" || echo "ports free"
+  BUSY=$(ss -lntp 2>/dev/null | grep -cE ':(35357|8774|9292|9696|8776|8775) ')
   pgrep -x o3k >/dev/null && echo "WARNING: a host-local o3k is running; kill that PID first" || true
+  if [ "$BUSY" -gt 0 ]; then
+    echo "STOP: $BUSY of o3k's six ports are already bound, and o3k runs hostNetwork."
+    ss -lntp 2>/dev/null | grep -E ':(35357|8774|9292|9696|8776|8775) '
+    echo "Most often this is the stub stack from HOST_TESTING.md, still up. Free the ports with:"
+    echo "    docker compose -f deployments/docker-compose.yml stop o3k"
+    echo "Keep o3k-postgres running — this deployment uses it. Then re-run this block."
+  else
   helm upgrade --install o3k charts/o3k --namespace o3k --create-namespace --set image.repository=o3k --set image.tag=spec024 --set image.pullPolicy=Never --set deploymentMode=single-node --set realMode.enabled=true --set realMode.privileged=true --set realMode.hostNetwork=true --set nova.libvirtMode=real --set neutron.networkingMode=iptables --set neutron.securityGroupMode=iptables --set cinder.storageMode=local --set glance.storageMode=s3 --set glance.s3.endpoint=$RGW_URL --set glance.s3.bucket=images --set glance.s3.region=us-east-1 --set 'extraEnv[0].name=AWS_ACCESS_KEY_ID' --set "extraEnv[0].value=$RGW_ACCESS" --set 'extraEnv[1].name=AWS_SECRET_ACCESS_KEY' --set "extraEnv[1].value=$RGW_SECRET" --set endpointHost=$NODE_IP --set secrets.jwtSecret=changeme --set secrets.adminPassword=secret --set database.url='postgres://o3k:secret@127.0.0.1:5432/o3k?sslmode=disable'
   kubectl -n o3k rollout status deploy/o3k-o3k --timeout=240s
   helm upgrade --install horizon charts/horizon --namespace o3k
   kubectl -n o3k rollout status deploy/horizon-o3k-horizon --timeout=240s
   kubectl -n o3k get secret o3k-o3k-config -o jsonpath='{.data.o3k\.yaml}' | base64 -d | grep -E "_mode:"
   kubectl -n o3k get pods
+  fi
 fi
 ```
 
-**Pass =** no `STOP:` line and `kubectl get nodes` shows the node `Ready`; `ports free`; every pod
+**Pass =** no `STOP:` line and `kubectl get nodes` shows the node `Ready`; every pod
 `Running`, none `CrashLoopBackOff`; and the mode read-back shows
 `libvirt_mode: "real"`, `networking_mode: "iptables"`, `security_group_mode: "iptables"`,
 `storage_mode: "s3"` (glance) and `storage_mode: "local"` (cinder). A `stub` anywhere means the rest
@@ -228,8 +256,9 @@ grep -E 'ip-route:169.254|checking http|failed to get|instance-id: ' /tmp/rt-gue
 address, so the metadata service answers 404 and omits the key from its directory listing — which is
 what upstream does. Reporting `local-ipv4` there would tell the guest it has a routable address when
 it does not. The datasource probes the key regardless and logs one `failed to get`; that line is the
-correct outcome, so counting it as a failure would make this step unpassable. Attach a floating IP
-(R5) and it goes away.
+correct outcome, so counting it as a failure would make this step unpassable. It goes away only once a
+floating IP is **associated with this server** — R5 allocates one but never attaches it, so the line
+is still expected after R5.
 
 `instance-id consumed` is the strongest single signal here: it means the guest did not merely reach
 the service, it parsed and used the response. The `=== datasource: ec2 net ===` block it comes from
@@ -336,18 +365,34 @@ through the UI.
 Note the page and any traceback. A dropdown that renders but is **empty** is the F11 defect; a dropdown
 that is absent means the router already has a gateway.
 
+Cancelling the dialog is enough — the assertion is that the dropdown is populated. Actually setting
+the gateway is a stronger result and is fine; teardown unsets both routers' gateways for that reason.
+
 ### R7 — A network reports its real owner (B11, FR-017)
 
 ```bash
 export NID=$(curl -s -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d "{\"network\":{\"name\":\"rt-b11\",\"project_id\":\"$OTHER\"}}" http://$NODE_IP:9696/v2.0/networks | jq -r '.network.id')
 echo "stored: $(docker exec o3k-postgres psql -U o3k -d o3k -tAc "SELECT project_id FROM networks WHERE id = '$NID'")"
 echo "wanted: $OTHER"
-curl -s -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/networks?router:external=true" | jq -c '[.networks[] | {name, project_id}]'
+curl -s -X POST -H "X-Auth-Token: $T" -H 'Content-Type: application/json' -d "{\"network\":{\"name\":\"rt-foreign-ext\",\"project_id\":\"$OTHER\",\"router:external\":true}}" http://$NODE_IP:9696/v2.0/networks | jq -c '.network | {name, project_id}'
+curl -s -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/networks" | jq -c '[.networks[] | {name, project_id}]'
 ```
 
-**Expect:** `stored` equals `wanted`, and the listed networks carry their owning project rather than
-the caller's. Those two — the API and the row behind it — are what FR-017 says; read the verdict from
-them.
+**Expect:** `stored` equals `wanted`; the create response for `rt-foreign-ext` reports
+`project_id` = `$OTHER`; and in the listing `rt-foreign-ext` carries `$OTHER` while every other
+network carries the caller's project.
+
+**`rt-foreign-ext` is the fixture that makes this step mean anything**, and it is built the way it is
+for a reason. `rt-b11` on the first two lines proves the *write* landed in the right project, but it
+can never appear in the listing: `ListNetworks` scopes to `(project_id = caller OR shared OR
+external)` and there is no administrator exemption on network **read**, so a network merely owned by
+another project is invisible. Reading the listing for it finds nothing and proves nothing.
+
+A network that is **foreign and external** is visible through the third disjunct while still being
+owned by someone else — the only shape where "reports the row's owner" and "reports the caller's
+project" give different answers (FR-033a, unit test X7). Both emitters are checked, because #546 had
+to fix all three network emitters and #545 had fixed this for subnets only: a create response that
+echoed the caller while the listing reported the owner would still be a defect.
 
 As an administrator `openstack network show rt-b11` returns 404 — a known, deliberate gap (no
 administrator override on network read); read the stored value above instead.
@@ -527,9 +572,152 @@ Then in the browser as `admin` / `secret`: **Admin → Network → Networks**. E
 project in the **Project** column and `0` in **DHCP Agents** — not `-`, and **no error pop-up**. The
 pop-up is the failure mode to watch for: it means the alias is advertised and the endpoint is not.
 
-`rt-b11` from R7 should show `rt-other` here rather than `default`, which is the same ownership claim
-R7 reads from the API and the database — the column agreeing with them is the point of this step, and
-R7 remains the assertion.
+**`rt-foreign-ext` from R7 is the row to read**, and it should show `rt-other` rather than `default` —
+the same ownership claim R7 reads from the API and the database, with the column agreeing. R7 remains
+the assertion; this step only asks whether Horizon renders it.
+
+**`rt-b11` will not be in this list, and that is not a fault of this step.** `ListNetworks` scopes to
+`(project_id = caller OR shared OR external)` for every caller — it honours no `all_tenants` and has
+no administrator widening — so a network that is merely owned by another project is invisible here
+exactly as it is to `openstack network show`. That is the same deliberate gap recorded under R7 and
+in EVIDENCE.md, and it means Horizon's **Admin** Network panel shows the administrator's own, shared
+and external networks rather than every tenant's. `rt-foreign-ext` is reachable only because
+`external` is its own visibility disjunct.
+
+---
+
+## 2c. Later branch commits
+
+Both landed after §2 and §2b were written. Run them after R11.
+
+### R12 — Deleting one subnet leaves DHCP up for the network's others
+
+`DeleteSubnet` called `StopDHCP(networkID)` unconditionally, and before the row was even removed.
+dnsmasq is per-**network** while the delete is per-**subnet**, so removing one subnet from a network
+carrying two took DHCP away from the survivor as well. Its guests stopped renewing until the
+reconciler's next pass restored it — up to 30s of a working network silently losing its DHCP server,
+with nothing logged. The metadata redirect was already handled correctly on this path; DHCP was not.
+
+**The timing is the test.** The reconciler repairs this within 30s, so a check run a minute later
+passes either way. Both probes below read the state within a few seconds of the delete, inside that
+window — that is the only interval in which the fixed and unfixed builds differ.
+
+Only real mode can show this at all: `DHCPManager` in stub mode records a map entry and starts no
+process.
+
+```bash
+export NET4=$(openstack network create rt-net-two -f value -c id)
+openstack subnet create rt-sub-two-a --network "$NET4" --subnet-range 10.244.40.0/24 >/dev/null
+openstack subnet create rt-sub-two-b --network "$NET4" --subnet-range 10.244.41.0/24 >/dev/null
+sleep 5
+echo "dnsmasq before:           $(kubectl -n o3k exec deploy/o3k-o3k -c o3k -- sh -c "ps -o args 2>/dev/null | grep -c 'dnsmas[q].*$NET4' || true")"
+kubectl -n o3k exec deploy/o3k-o3k -c o3k -- sh -c "ps -o pid,args 2>/dev/null | grep 'dnsmas[q].*$NET4' || true"
+openstack subnet delete rt-sub-two-b && echo "deleted one subnet of two"
+sleep 3
+echo "dnsmasq 3s after delete:  $(kubectl -n o3k exec deploy/o3k-o3k -c o3k -- sh -c "ps -o args 2>/dev/null | grep -c 'dnsmas[q].*$NET4' || true")"
+kubectl -n o3k exec deploy/o3k-o3k -c o3k -- sh -c "ps -o pid,args 2>/dev/null | grep 'dnsmas[q].*$NET4' || true"
+echo "subnets left:             $(openstack subnet list --network "$NET4" -f value -c Name | tr '\n' ' ')"
+sudo grep -hE 'dhcp-range' /var/lib/o3k/dhcp/configs/$NET4.conf 2>/dev/null || echo "NO CONFIG"
+```
+
+**Expect:** `dhcp-range` in the config and **1** dnsmasq before the delete, and **1** again three
+seconds after it, with `rt-sub-two-a` the surviving subnet. Before the fix the second count was **0**.
+
+The PID in the second `ps` differing from the first is correct and expected, not a failure: with a
+subnet gone the config has to be regenerated, because it names one subnet and that may have been the
+one just deleted. The fix restarts dnsmasq rather than leaving it on a stale config. What must not
+happen is the process being absent.
+
+**`ps` runs inside the pod, and it has to.** o3k spawns dnsmasq itself, the deployment does **not**
+set `hostPID`, and the processes therefore live in the container's PID namespace. A `ps -C dnsmasq`
+on the host lists only the system's own dnsmasq instances — systemd's, libvirt's, minikube's — and
+**never** o3k's, so it reports `0` whether the fix works or not: a check that cannot fail, which is
+the shape this branch's review rejected twice. For the same reason there is nothing to read in
+`/var/lib/o3k/dhcp/pids/`: the generated config *does* set `pid-file=`, but dnsmasq is launched
+`--no-daemon`, which suppresses writing it, so the directory stays empty and the manager holds PIDs
+in memory. The *config* files are on the hostPath and are readable
+directly, which is why the last line does not need `kubectl`.
+
+Then the other half of the same branch — the last subnet going takes DHCP with it:
+
+```bash
+openstack subnet delete rt-sub-two-a && echo "deleted the last subnet"
+sleep 3
+echo "dnsmasq after the last:   $(kubectl -n o3k exec deploy/o3k-o3k -c o3k -- sh -c "ps -o args 2>/dev/null | grep -c 'dnsmas[q].*$NET4' || true")"
+echo "metadata DNAT reclaimed:  $(sudo iptables -t nat -S PREROUTING | grep -c "br-$(printf '%s' "$NET4" | cut -c1-8)")"
+```
+
+**Expect:** both **0**. The network now has no DHCP-enabled subnet, so dnsmasq stops and the metadata
+redirect is reclaimed — the two decisions come from one remaining-subnet count, which is why they are
+asserted together.
+
+The grep pattern is spelled `dnsmas[q]` so it cannot match the `sh -c` process running it. `pgrep -f`
+with the network uuid would have the same problem one level up, matching the shell that issued the
+check and inflating every count by one — which makes the failing case read as passing.
+
+### R13 — The auto-allocated topology's bridge is in the root namespace
+
+`auto_allocated_topology.go` built `br-<id8>` **inside** `light-ns-<project>`, while the guest TAPs,
+dnsmasq and the NAT rules all used a second bridge of the same name in the root namespace.
+`EnsureBridgeIP` and `ListManagedBridges` are netlink-only and run in the root namespace, so the
+namespaced bridge could never be given its subnet gateway address and was invisible to the
+reconciler's prune. Wasted work and a leaked namespace rather than broken traffic — but it is the same
+misplacement F10 fixed for ports, arriving by a different path.
+
+Horizon and `openstack network auto allocated topology create` both reach this, so it is not a dead
+endpoint.
+
+```bash
+export PROJ=$(openstack project show default -f value -c id)
+curl -s -o /tmp/rt-aat.json -w 'create: HTTP %{http_code}\n' -X POST -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/auto-allocated-topology/$PROJ"
+export AAT=$(jq -r '.auto_allocated_topology.id' /tmp/rt-aat.json)
+export ABR=br-$(printf '%s' "$AAT" | cut -c1-8)
+echo "topology network: $AAT  bridge: $ABR"
+ip -br link show "$ABR" 2>/dev/null || echo "BRIDGE NOT IN THE ROOT NAMESPACE"
+echo "waiting 35s for a reconciler pass to assign the bridge address"
+sleep 35
+ip -4 addr show "$ABR" 2>/dev/null | grep -oE 'inet [0-9.]+/[0-9]+' || echo "NO ADDRESS — EnsureBridgeIP could not reach it"
+sudo ip netns list | grep light-ns || echo "no light-ns-* namespaces"
+curl -s -o /dev/null -w 'second create: HTTP %{http_code}\n' -X POST -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/auto-allocated-topology/$PROJ"
+curl -s -X POST -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/auto-allocated-topology/$PROJ" | jq -r '.auto_allocated_topology.id'
+```
+
+**Expect:** the first create is `201`; `$ABR` appears in the **root** namespace listing immediately;
+after the wait it **carries an address**; and no `light-ns-*` namespace exists. The second create is
+`200` and returns the **same** id — idempotence, which the fix also repaired: `createBridgeReal`'s
+in-namespace branch shelled out to `ip link add`, which fails on a second call where netlink tolerates
+an existing link.
+
+The address is the load-bearing assertion. A bridge in the wrong namespace still *appears* to exist if
+you go looking inside that namespace; what it can never have is the gateway address, because the only
+code that assigns one runs in the root namespace and would not find it.
+
+**The wait is required, and is not slack.** `CreateAutoAllocatedTopology` calls `CreateBridge` and
+nothing else — it deliberately does not surface bridge failures, because the rows are already
+committed and "a missing bridge is retried on the next port plug and on every reconciler pass". The
+address therefore arrives from `EnsureBridgeIP` on a reconciler pass, not from the handler, so
+checking immediately reports `NO ADDRESS` on a perfectly healthy build. 35s covers the 30s interval
+R8 confirmed.
+
+### Not provable here — the VXLAN half of the same commit
+
+The same commit moved the VXLAN device out of `light-ns-<project>` into the root namespace.
+`CreateVXLAN`, `DeleteVXLAN`, `AddFDBEntry` and `RemoveFDBEntry` all resolve the device with
+`netlink.LinkByName` in the root namespace, so in the namespace it was beyond its own manager's reach:
+FDB entries could not be installed at all — the entire point of the overlay — `DeleteVXLAN` reported
+success while leaking the device, and `CreateVXLAN`'s existence check missed it and rebuilt it every
+poll. Multi-node VXLAN did not work in real mode.
+
+**This runbook cannot show that.** It stands up one node, and an overlay with no peer installs no FDB
+entries whether or not the fix is present. Validating it needs two nodes with
+`neutron.vxlan_enabled: true` and distinct `compute.node_id` / `compute.tunnel_ip`, which is
+`test/vxlan_multinode_test.sh`'s territory.
+
+Recorded here so the absence is a stated gap rather than an assumption. The placement itself is
+carried by the compiler — the namespace parameters were deleted from
+`BridgeManager.CreateBridge`/`DeleteBridge`/`AttachToBridge`, `VXLANManager.AttachToBridge` and
+`DHCPManager.StartDHCP`/`RestartDHCP`/`EnsureDHCP`, so there is no longer an argument through which a
+caller could put a device in a namespace. What is unvalidated is the overlay working end to end.
 
 ---
 
@@ -543,12 +731,15 @@ export KUBECONFIG=~/.kube/k3s.yaml
 openstack server delete rt-guest rt-guest2 2>/dev/null || true
 openstack floating ip list -f value -c ID | xargs -r openstack floating ip delete 2>/dev/null || true
 openstack router unset --external-gateway rt-router 2>/dev/null || true
+openstack router unset --external-gateway rt-router-nogw 2>/dev/null || true
 openstack router remove subnet rt-router rt-sub 2>/dev/null || true
 openstack router delete rt-router rt-router-nogw 2>/dev/null || true
 openstack port delete rt-p1 2>/dev/null || true
 openstack volume delete rt-vol 2>/dev/null || true
-openstack subnet delete rt-sub rt-sub-nogw rt-ext-sub rt-sub-md 2>/dev/null || true
-openstack network delete rt-net rt-net-nogw rt-ext rt-b11 rt-net-md 2>/dev/null || true
+openstack subnet delete rt-sub rt-sub-nogw rt-ext-sub rt-sub-md rt-sub-two-a rt-sub-two-b 2>/dev/null || true
+openstack network delete rt-net rt-net-nogw rt-ext rt-b11 rt-net-md rt-net-two 2>/dev/null || true
+docker exec o3k-postgres psql -U o3k -d o3k -tAc "DELETE FROM networks WHERE name IN ('rt-b11','rt-foreign-ext')" 2>/dev/null || true
+curl -s -o /dev/null -X DELETE -H "X-Auth-Token: $T" "http://$NODE_IP:9696/v2.0/auto-allocated-topology/$(openstack project show default -f value -c id)" 2>/dev/null || true
 openstack image delete cirros 2>/dev/null || true
 openstack project delete rt-other 2>/dev/null || true
 helm uninstall horizon -n o3k 2>/dev/null || true

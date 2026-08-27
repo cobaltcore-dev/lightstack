@@ -600,7 +600,7 @@ go test -v ./internal/neutron/...       72 PASS   (baseline 34)
 17 files modified, 14 new (2 migration, 8 unit-test, 2 contract-test, 2 source). Migration `066` is
 the feature's only schema change and round-trips cleanly.
 
-### Still outstanding — host-only *(closed 2026-08-13, see Phase 10)*
+### Still outstanding — host-only *(closed 2026-08-13, see Phase 10; re-validated in full 2026-08-28, Phase 11)*
 
 **T092/T093** needed a privileged Linux host (real root; rootless podman cannot create host network
 namespaces): P5/P6/P11 (TAP and bridge co-located, guest gets DHCP and reaches metadata, no leaked
@@ -725,3 +725,113 @@ against live libvirt guests. That is a gap in the suite, not the product — the
 Project column inside a block guarded by DHCP-agent-scheduler support, so it rendered `-` for every
 row while the API answered correctly. FR-017 is read from the API and the database; the column is
 covered separately by the follow-up work below.
+
+---
+
+## Phase 11 — Full two-mode host pass, 2026-08-28
+
+Phase 10 validated R1–R11 on the state of the branch at 2026-08-13. Three commits landed after it —
+`cc5d6bb` (root-namespace VXLAN and auto-allocated bridge placement), `3c99b3c` (SQL builder and the
+marker-paging fix), `1abf800` (l3-agents scoping and DHCP survivor) — none of which had any host
+coverage. Both runbooks were extended (S14–S18, R12–R13) and **both were then run end to end**:
+stub on docker-compose, real mode on k3s with Glance on Rook RGW.
+
+**Result: every product assertion passed in both modes. All nine defects the pass surfaced were in
+the runbooks, not in the product.**
+
+### Stub mode — S1–S18
+
+S1–S13 re-confirmed Phase 3–8's results against the current tip. The new steps:
+
+| Step | Covers | Result |
+|---|---|---|
+| **S14** | marker paging (`3c99b3c`) | Five ports forced to a shared `created_at`, walked at `limit=2`: seeded **5**, seen **5**, duplicated **0**. Three volumes at `limit=1`: **3** and **3**. Before the fix `seen` was 1 — the first page's marker carried the tie and `created_at < that` excluded its four siblings for the rest of the walk. Both assertions matter: dropped rows are the reported defect, duplicates are what a non-total order produces, and a fix that changed only the operator would trade one for the other |
+| **S15** | l3-agents scoping (`1abf800`) | Own router `[0,"array"]`; **another project's router and an unknown id both `["NeutronError","RouterNotFound"]`** — indistinguishable, which is the entire assertion; malformed id `404` not `500`; `POST` to a foreign router `404`. Before the fix the foreign router answered `200` with an empty list, making the endpoint a working existence probe |
+| **S16** | SRC-3 / SRC-4 | Three unusable `network_id` spellings → `400` **and `0` rows written**; an invisible network and an absent one **both `404`**. The row count is the half a status-code check would miss: the defect was `201` with a gateway that never passed validation |
+| **S17** | short/unusable port ids | Five ids incl. the `1234567`/`12345678` boundary → `404 ["NeutronError","PortNotFound"]`, no empty bodies, `0` `slice bounds out of range` in the log |
+| **S18** | SRC-1 cache disclosure | Key `o3k:network:00000000-…-0002:1e692ed7-…` — **the project segment is the fix**; other tenant `404`; owner still `200`; tenant rename `404` with the name unchanged |
+
+**S18 is the first end-to-end proof SRC-1 has ever had.** `internal/neutron/network_cache_test.go` states
+in its own comment that it pins the key and *not* the isolation, because `pkg/cache` needs a real Redis
+and CI has none. It also could not be run as the runbook originally stood: `docker-compose.yml` starts
+a Redis container and sets `O3K_REDIS_URL` and `O3K_CACHE_ENABLED=true`, and **the binary reads
+neither** — `cfg.Cache.Enabled` comes only from the baked `config/o3k.yaml`, which is `false`. Every
+other stub step therefore runs with the cache dead. S18 enables it, probes, and restores.
+
+Also re-confirmed: `make test-errors` exit **0** (red since `7b15418`, 2026-03-07, and a member of
+`test-all`), six contract suites `ok`, `golangci-lint` **0 issues**.
+
+### Real mode — R1–R13
+
+R1–R11 reproduced Phase 10's results on the current tip: TAP `tap-ee98d0d6` beside `br-38741814` in
+the root namespace with no `light-ns-*`; five contract tests `--- PASS`; guests `ACTIVE` with real
+addresses and consumed instance-ids; the dnsmasq option-3/option-121 split; `MASQUERADE` for
+`10.244.10.0/24`; reconciler `interval: 30s`; RGW object `images/image-87d1537e-….raw` at 20.4 MiB
+matching `image show`'s `21430272`. R10a/b/c and R11 all pass, with the reconciler logging
+`{"rules":1,"message":"reconcile: pruned stale metadata DNAT rules"}` — exactly one, so it took ours
+and provably not R10b's docker-shaped decoy.
+
+Two new steps:
+
+| Step | Covers | Result |
+|---|---|---|
+| **R12** | DHCP survivor (`1abf800`) | Two subnets on one network: dnsmasq **1** before, **1** three seconds after deleting one — inside the 30s window, the only interval where fixed and unfixed differ. PID **1365 → 1384**, and the regenerated config reads `dhcp-range=10.244.40.10,10.244.40.250` — **the survivor's range, not the deleted subnet's**. Deleting the last subnet then gives dnsmasq **0** and metadata DNAT **0**, both from the one remaining-subnets count |
+| **R13** | auto-allocated bridge (`cc5d6bb`) | Create `201`; `br-08e511dd` in the **root** namespace; `inet 192.168.100.1/24` after a reconciler pass; no `light-ns-*`; second create `200` with the **same** id |
+
+R12's config line is stronger than the step asks for. The fix restarts dnsmasq rather than leaving it
+running precisely because the config names *one* subnet and it may have been the deleted one; the
+regenerated range proves the restart chose a survivor.
+
+R13's **address** is the load-bearing assertion, not the bridge's existence. A bridge built inside
+`light-ns-<project>` still appears to exist if you look in that namespace — what it can never have is
+the gateway address, because `EnsureBridgeIP` and `ListManagedBridges` are netlink-only and run in the
+root namespace.
+
+### Still not provable on one host — the VXLAN half of `cc5d6bb`
+
+The overlay needs two nodes with `neutron.vxlan_enabled` and distinct `compute.node_id` /
+`compute.tunnel_ip`. On a single node an overlay with no peer installs no FDB entries whether or not
+the fix is present, so the check cannot fail. Recorded as a stated gap in `HOST_TESTING_REAL_MODE.md`
+rather than left to look validated by silence. The *placement* is carried by the compiler — the
+namespace arguments were deleted from `BridgeManager.CreateBridge`/`DeleteBridge`/`AttachToBridge`,
+`VXLANManager.AttachToBridge` and `DHCPManager.StartDHCP`/`RestartDHCP`/`EnsureDHCP` — so there is no
+argument left through which a caller could put a device in a namespace. What is unvalidated is the
+overlay working end to end.
+
+### The nine runbook defects
+
+Worth recording in full, because the ratio is the finding: **31 steps, 0 product defects, 9 runbook
+defects.** Three of them were checks that could not fail.
+
+| # | Where | Defect |
+|---|---|---|
+| 1 | S10 | Asserted contract **X9** — *a non-owner cannot rename a network they can merely see* — with an **admin** token. `UpdateNetwork` deliberately exempts administrators (`network.go:1129`, upstream Neutron's `admin_or_owner`), added by the same commit for research R6.4. The step now asserts what the admin path guarantees — `200` **and the stored name actually changed** — and the tenant refusal moved to S18, which has a non-admin token |
+| 2 | S15 | `psql -tAc "INSERT … RETURNING id"` prints the `INSERT 0 1` status tag on its own line **after** the row, so `$FR` became `<uuid>\nINSERT01`. The malformed URLs surfaced as an empty body and `000`, which reads as the endpoint failing rather than the capture being wrong. `SELECT` emits no such tag, which is why no other `psql` capture needed `head -1` |
+| 3 | §1.2 | The ports check printed `PORTS BUSY` and then ran `helm upgrade` anyway — strictly worse than not checking, since the diagnosis scrolls past and the failure returns four minutes later as `CrashLoopBackOff`. Now a gate |
+| 4 | **R12** | Used `ps -C dnsmasq` **on the host**. The deployment does not set `hostPID`, so o3k's dnsmasq lives in the container's PID namespace and the host sees only systemd's, libvirt's and minikube's. The count would read `0` on a working build. `/var/lib/o3k/dhcp/pids/` is also empty — the config sets `pid-file=` but `--no-daemon` suppresses writing it, so PIDs are held in memory. **A check that cannot fail** |
+| 5 | **R13** | Checked for the bridge address immediately. `CreateAutoAllocatedTopology` calls `CreateBridge` and nothing else; the address arrives from `EnsureBridgeIP` on a reconciler pass, so a healthy build reported `NO ADDRESS` |
+| 6 | **R11** | Named `rt-b11` as the row proving the Project column. `ListNetworks` scopes to `(owner OR shared OR external)` with no `all_tenants` and no administrator widening, so a merely-foreign network is invisible — the row could never appear |
+| 7 | R7 | Its listing line could not discriminate owner from caller: every visible network was owned by the caller. Strengthened with `rt-foreign-ext`, foreign **and** external, which is the only shape where "reports the row's owner" and "reports the caller's project" differ (FR-033a) |
+| 8 | Teardown | `rt-router-nogw`'s gateway was never unset; `openstack network delete rt-b11` could never work, because `DeleteNetwork` is owner-scoped too. Both foreign networks are now reclaimed with `psql` |
+| 9 | R3 | Claimed the `public-ipv4` fetch failure "goes away" after R5. R5 only *allocates* a floating IP and never associates it, so the line is still expected |
+
+Defects 4, 5 and 6 were caught by checking the runbook's assumptions against the source **before**
+the step ran, not by the step failing. That is the same pattern `network_cache_test.go` objects to and
+`multi_tenant_test.sh` fell into: a check whose passing and failing states are identical is worse than
+no check, because it reports success.
+
+### One environment trap
+
+The stub stack from `HOST_TESTING.md` was still running when the real-mode deployment went up. o3k
+runs `hostNetwork`, so the pod collided on all six ports and `CrashLoopBackOff`ed with
+`Failed to bind :35357: listen tcp :35357: bind: address already in use`. `HOST_TESTING.md` §3 drops
+that stack; going straight from S18 to real mode skips it. Stop only the compose `o3k` container —
+`o3k-postgres` is shared and the real-mode deployment uses it.
+
+### Not #546 — one item for a separate ticket
+
+`charts/horizon` sets `timeoutSeconds: 1` on **liveness** against `/dashboard/auth/login/`. A cold
+Django worker spends 2+ seconds in `oslo_policy` evaluation, so Horizon fails its own liveness probe
+during ordinary use and kubelet restarts it — observed mid-login on this pass, surfacing to the
+browser as `connection refused`. Self-inflicted restarts, unrelated to any O3K API behaviour.
+

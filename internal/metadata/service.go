@@ -508,14 +508,23 @@ func ec2PublicKeyIndex(r ec2Request) {
 // cannot be tree entries: "<n>" answers "openssh-key", "<n>/openssh-key" answers the key itself.
 func ec2PublicKey(r ec2Request, sub string) {
 	parts := strings.Split(sub, "/")
+
+	// Decide what can be decided without the database first. This service is unauthenticated by
+	// design — EC2 compatibility puts it on the link-local address for any guest to call — so a
+	// malformed index must not reach the connection pool. Only the upper bound needs `keys`.
 	idx, perr := strconv.Atoi(parts[0])
+	if perr != nil || idx < 0 {
+		r.notFound()
+		return
+	}
+
 	keys, err := r.svc.publicKeysForInstance(r.ctx(), r.instanceID)
 	if err != nil {
 		log.Error().Err(err).Str("instance_id", r.instanceID).Msg("failed to read public keys")
 		r.serverError()
 		return
 	}
-	if perr != nil || idx < 0 || idx >= len(keys) {
+	if idx >= len(keys) {
 		r.notFound()
 		return
 	}

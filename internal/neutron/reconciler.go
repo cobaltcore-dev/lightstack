@@ -474,9 +474,14 @@ func (r *NetworkReconciler) reportGrandfatheredGateways(ctx context.Context) {
 	}
 	defer rows.Close()
 
+	// Scan and iteration failures are logged, not swallowed. Warning the operator IS this function's
+	// output (FR-035b), so a row dropped in silence is not a degraded result — it is the whole result
+	// going missing, and its silence reads as "nothing to converge". Same rule ListSubnets follows for
+	// the same reason (FR-024): keep serving the rest, but say what was skipped.
 	for rows.Next() {
 		var routerID, networkID, networkName string
 		if err := rows.Scan(&routerID, &networkID, &networkName); err != nil {
+			log.Warn().Err(err).Msg("reconcile: skipping unreadable grandfathered-gateway row")
 			continue
 		}
 		log.Warn().
@@ -485,5 +490,9 @@ func (r *NetworkReconciler) reportGrandfatheredGateways(ctx context.Context) {
 			Str("network_name", networkName).
 			Msg("router gateway network is not marked router:external; kept working (grandfathered), " +
 				"but a NEW gateway on it would be refused — mark it external to converge")
+	}
+	if err := rows.Err(); err != nil {
+		log.Warn().Err(err).Msg("reconcile: grandfathered-gateway scan incomplete — some routers may " +
+			"need converging without having been reported")
 	}
 }
