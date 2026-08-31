@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -113,7 +114,7 @@ func (svc *Service) CreateAutoAllocatedTopology(c *gin.Context) {
 	// rules all lived on the root-namespace bridge of the same name. Same defect as the port path, one
 	// path later (SPEC-024 / cloud-storage#546 F10).
 	if svc.mode != "stub" {
-		bridgeName := "br-" + networkID[:8]
+		bridgeName := networking.BridgeNameForNetwork(networkID)
 		if err := svc.brManager.CreateBridge(bridgeName); err != nil {
 			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to create auto-allocated bridge")
 		}

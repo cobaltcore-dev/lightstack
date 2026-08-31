@@ -254,7 +254,10 @@ func (svc *Service) GetVersion(c *gin.Context) {
 			"id":     "v2.0",
 			"status": "CURRENT",
 			"links": []gin.H{
-				{"rel": "self", "href": "/v2.0"},
+				// Absolute, from the shared rule: a client reading this during
+				// discovery has nothing to resolve a bare path against
+				// (SPEC-025 FR-007a/FR-007b).
+				{"rel": "self", "href": fmt.Sprintf("%s/v2.0", common.BaseURL(c, 9696))},
 			},
 		},
 	})
@@ -560,7 +563,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 			Msg("administrator creating a network into another project")
 	}
 	networkID := uuid.New().String()
-	bridgeName := "br-" + networkID[:8]
+	bridgeName := networking.BridgeNameForNetwork(networkID)
 
 	adminStateUp := true
 	if req.Network.AdminStateUp != nil {
@@ -1147,7 +1150,7 @@ func (svc *Service) networkInUse(ctx context.Context, networkID string) (string,
 // what the other removes. Best-effort: whatever a failed step leaves behind, the reconciler prunes,
 // since it removes bridges, DHCP servers and metadata rules whose network no longer exists.
 func (svc *Service) teardownNetworkHost(networkID string) {
-	bridgeName := "br-" + networkID[:8]
+	bridgeName := networking.BridgeNameForNetwork(networkID)
 
 	// The subnets went with the row, so nothing else stops the network's DHCP server: DeleteSubnet
 	// does when the last DHCP subnet goes, and no subnet delete ran. Before the bridge, which
@@ -1879,7 +1882,7 @@ func (svc *Service) reconcileNetworkDHCPAfterSubnetDelete(ctx context.Context, n
 		log.Warn().Err(err).Str("network_id", networkID).Msg("failed to stop DHCP server")
 	}
 	if len(networkID) >= 8 {
-		if err := svc.mdRedirect.RemoveForBridge("br-" + networkID[:8]); err != nil {
+		if err := svc.mdRedirect.RemoveForBridge(networking.BridgeNameForNetwork(networkID)); err != nil {
 			log.Warn().Err(err).Str("network_id", networkID).Msg("failed to remove metadata DNAT")
 		}
 	}
@@ -1916,7 +1919,7 @@ func (svc *Service) routerPortHolding(ctx context.Context, subnetID, ip string) 
 // SNAT is installed for router-attached subnets alone. A guest still using the old address as its
 // metadata next hop moves on its next lease renewal.
 func (svc *Service) reconcileNetworkDHCPAfterGatewayChange(ctx context.Context, networkID, cidr string, oldGateway, newGateway *string) {
-	bridgeName := "br-" + networkID[:8]
+	bridgeName := networking.BridgeNameForNetwork(networkID)
 	if oldAddr := bridgeAddrFor(oldGateway, cidr); oldAddr != "" && oldAddr != bridgeAddrFor(newGateway, cidr) {
 		if _, ipNet, err := net.ParseCIDR(cidr); err == nil {
 			ones, _ := ipNet.Mask.Size()

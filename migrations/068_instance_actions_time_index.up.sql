@@ -1,0 +1,11 @@
+-- SPEC-025 (cloud-storage#547) B7 — make action-history reclamation cheap.
+--
+-- Deleting a server does NOT delete its action history: upstream retains action records for deleted
+-- instances, so Lightstack does too (FR-042). Without a retention age that means the table only ever grows,
+-- and the sibling tenant-scoping work multiplied the rate by extending the write path from creation
+-- alone to every server action — 850 orphaned rows were observed after a single multi-tenancy run.
+--
+-- The reclamation sweep is `DELETE FROM instance_actions WHERE start_time < <cutoff>`, run on a timer.
+-- The table already has indexes on instance_id and request_id (migration 024) and none on time, so
+-- without this the sweep is a full scan of the one table whose entire problem is its size.
+CREATE INDEX IF NOT EXISTS idx_instance_actions_start_time ON instance_actions(start_time);

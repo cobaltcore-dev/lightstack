@@ -149,7 +149,7 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 		return
 	}
 	for _, networkID := range ids {
-		bridgeName := "br-" + networkID[:8]
+		bridgeName := networking.BridgeNameForNetwork(networkID)
 		if err := r.svc.brManager.CreateBridge(bridgeName); err != nil {
 			log.Debug().Err(err).Str("network_id", networkID).Str("bridge", bridgeName).Msg("reconcile: bridge ensure (likely already present)")
 		}
@@ -214,7 +214,7 @@ func (r *NetworkReconciler) pruneDeletedNetworks(ctx context.Context) {
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		active[id] = true
-		want["br-"+id[:8]] = true
+		want[networking.BridgeNameForNetwork(id)] = true
 	}
 
 	for _, b := range bridges {
@@ -334,7 +334,7 @@ func (svc *Service) desiredRedirectsNow(ctx context.Context, pass map[string]str
 		if err := rows.Scan(&networkID, &cidr, &gatewayIP); err != nil {
 			return nil, err // a short picture is not a prune input
 		}
-		bridge := "br-" + networkID[:8]
+		bridge := networking.BridgeNameForNetwork(networkID)
 		if _, asserted := want[bridge]; asserted {
 			continue
 		}
@@ -385,7 +385,7 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 		log.Warn().Err(perr).Str("network_id", networkID).Str("cidr", cidr).Msg("dhcp apply: bad subnet CIDR; skipping")
 		return "", "", nil
 	}
-	bridgeName := "br-" + networkID[:8]
+	bridgeName := networking.BridgeNameForNetwork(networkID)
 
 	// The bridge needs an address in the subnet whether or not the subnet advertises a gateway:
 	// dnsmasq binds to it, and the metadata DNAT hangs off it. With a gateway that address IS the

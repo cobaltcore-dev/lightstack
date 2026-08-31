@@ -2,6 +2,7 @@ package hypervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 )
+
+// ErrDomainNotFound reports that the hypervisor has no guest with the given id.
+//
+// The caller needs this distinguished from every other failure: an absent guest is a
+// STATE problem the client may be able to resolve, while a connection fault is an
+// outage it cannot. Collapsing both into one error is what made every libvirt failure
+// a flat 500 and left cloud-storage#547 B12 unreadable from outside — the API said
+// "server error" whether the guest had vanished or libvirt was simply unreachable.
+//
+// Compare with errors.Is; both the stub and real paths wrap it.
+var ErrDomainNotFound = errors.New("hypervisor: domain not found")
 
 // VMState represents the state of a virtual machine
 type VMState string
@@ -245,7 +257,7 @@ func (m *VMManager) deleteVMStub(vmUUID string) error {
 	defer m.mu.Unlock()
 
 	if _, exists := m.stubVMs[vmUUID]; !exists {
-		return fmt.Errorf("VM not found: %s", vmUUID)
+		return fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	delete(m.stubVMs, vmUUID)
@@ -268,7 +280,7 @@ func (m *VMManager) deleteVMReal(ctx context.Context, vmUUID string) error {
 	// Lookup domain
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
 	}
 
 	// Get domain state
@@ -311,7 +323,7 @@ func (m *VMManager) rebootVMStub(vmUUID string) error {
 
 	vm, exists := m.stubVMs[vmUUID]
 	if !exists {
-		return fmt.Errorf("VM not found: %s", vmUUID)
+		return fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	// Simulate reboot by keeping state as running
@@ -334,7 +346,7 @@ func (m *VMManager) rebootVMReal(ctx context.Context, vmUUID string) error {
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
 	}
 
 	if err := conn.DomainReboot(domain, 0); err != nil {
@@ -367,7 +379,7 @@ func (m *VMManager) hardRebootVMReal(vmUUID string) error {
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
 	}
 
 	// Active, not merely running: a paused or suspended guest has a qemu process too,
@@ -389,12 +401,20 @@ func (m *VMManager) hardRebootVMReal(vmUUID string) error {
 	return nil
 }
 
-// StopVM stops a virtual machine
-func (m *VMManager) StopVM(ctx context.Context, vmUUID string) error {
+// StopVM stops a virtual machine, returning only once it is actually off.
+//
+// grace is how long the guest OS is given to shut down cleanly before it is forced;
+// once it expires the guest is powered off the hard way, as upstream's shutdown_timeout
+// does. A non-positive grace forces immediately.
+//
+// The grace period is a parameter rather than manager state because it is a deployment
+// setting the caller already holds, and because a silent default here is precisely what
+// would let a future caller reintroduce the fire-and-forget stop this replaces.
+func (m *VMManager) StopVM(ctx context.Context, vmUUID string, grace time.Duration) error {
 	if m.mode == "stub" {
 		return m.stopVMStub(vmUUID)
 	}
-	return m.stopVMReal(ctx, vmUUID)
+	return m.stopVMReal(ctx, vmUUID, grace)
 }
 
 // stopVMStub simulates VM stop
@@ -404,7 +424,7 @@ func (m *VMManager) stopVMStub(vmUUID string) error {
 
 	vm, exists := m.stubVMs[vmUUID]
 	if !exists {
-		return fmt.Errorf("VM not found: %s", vmUUID)
+		return fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	vm.state = VMStateShutoff
@@ -412,8 +432,20 @@ func (m *VMManager) stopVMStub(vmUUID string) error {
 	return nil
 }
 
-// stopVMReal stops a real VM via libvirt
-func (m *VMManager) stopVMReal(ctx context.Context, vmUUID string) error {
+// stopVMReal stops a real VM via libvirt: ask, wait, then insist.
+//
+// DomainShutdown is a REQUEST — libvirt documents it as a graceful shutdown coordinated
+// with the guest OS, and the guest's own on_poweroff setting can change what it does
+// with it. It returns as soon as libvirt has accepted the request, which may be long
+// before the guest is off and may be forever if the guest ignores ACPI entirely.
+//
+// Returning nil at that point is what let a stop report success over a guest that was
+// still running: the caller persisted SHUTOFF, the next start hit an already-active
+// domain, and the record and reality never met again (cloud-storage#547 B12). So this
+// does not return until the guest is actually off, one way or the other — the same
+// shape as upstream's libvirt driver, which gives the guest shutdown_timeout seconds
+// and then powers it off.
+func (m *VMManager) stopVMReal(ctx context.Context, vmUUID string, grace time.Duration) error {
 	conn := m.conn.Load()
 	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
@@ -426,11 +458,42 @@ func (m *VMManager) stopVMReal(ctx context.Context, vmUUID string) error {
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
 	}
 
-	if err := conn.DomainShutdown(domain); err != nil {
-		return fmt.Errorf("failed to shutdown domain: %w", err)
+	readState := func() (VMState, error) {
+		state, _, err := conn.DomainGetState(domain, 0)
+		if err != nil {
+			return VMStateNoState, err
+		}
+		return libvirtState(int32(state)), nil
+	}
+
+	// Already off: the end state holds, and libvirt errors on a shutdown request to an
+	// inactive domain. Turning that into a failed stop is how the reverse divergence
+	// produced a 500 on an action that had nothing left to do.
+	if state, err := readState(); err == nil && RunStateOf(state) == RunStateDown {
+		return nil
+	}
+
+	if grace > 0 {
+		if err := conn.DomainShutdown(domain); err != nil {
+			return fmt.Errorf("failed to request shutdown of domain: %w", err)
+		}
+		if waitForShutoff(ctx, grace, shutoffPollInterval, readState) {
+			return nil
+		}
+	}
+
+	if err := conn.DomainDestroy(domain); err != nil {
+		// The guest may have finished shutting down in the gap between giving up on it
+		// and forcing it off — or gone entirely. Either is a stop that worked, and
+		// reporting it as a failure would put the caller right back to guessing.
+		state, stateErr := readState()
+		if libvirt.IsNotFound(stateErr) || (stateErr == nil && RunStateOf(state) == RunStateDown) {
+			return nil
+		}
+		return fmt.Errorf("guest did not shut down within %s and could not be forced off: %w", grace, err)
 	}
 
 	return nil
@@ -451,7 +514,7 @@ func (m *VMManager) startVMStub(vmUUID string) error {
 
 	vm, exists := m.stubVMs[vmUUID]
 	if !exists {
-		return fmt.Errorf("VM not found: %s", vmUUID)
+		return fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	vm.state = VMStateRunning
@@ -478,7 +541,16 @@ func (m *VMManager) startVMReal(ctx context.Context, vmUUID string) error {
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
+	}
+
+	// Already up: DomainCreate errors on an active domain, and the requested end state
+	// holds. Callers refuse this case with a conflict BEFORE getting here, where they
+	// can also correct the record; this covers the race between that check and this
+	// call, and any caller that has no check of its own.
+	if state, _, err := conn.DomainGetState(domain, 0); err == nil &&
+		RunStateOf(libvirtState(int32(state))) == RunStateUp {
+		return nil
 	}
 
 	if err := conn.DomainCreate(domain); err != nil {
@@ -503,7 +575,7 @@ func (m *VMManager) getVMStateStub(vmUUID string) (string, int, error) {
 
 	vm, exists := m.stubVMs[vmUUID]
 	if !exists {
-		return string(VMStateNoState), 0, fmt.Errorf("VM not found: %s", vmUUID)
+		return string(VMStateNoState), 0, fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	return string(vm.state), vm.powerState, nil
@@ -523,7 +595,7 @@ func (m *VMManager) getVMStateReal(ctx context.Context, vmUUID string) (string, 
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return string(VMStateNoState), 0, fmt.Errorf("domain not found: %w", err)
+		return string(VMStateNoState), 0, wrapLookupErr(err)
 	}
 
 	state, _, err := conn.DomainGetState(domain, 0)
@@ -531,9 +603,10 @@ func (m *VMManager) getVMStateReal(ctx context.Context, vmUUID string) (string, 
 		return string(VMStateNoState), 0, fmt.Errorf("failed to get domain state: %w", err)
 	}
 
-	// Convert libvirt state to OpenStack state
-	stateStr := libvirtStateToString(int32(state))
-	return stateStr, int(state), nil
+	// Convert libvirt state to OpenStack state. The power state needs mapping too —
+	// libvirt's enum and nova's power_state are different numberings that happen to
+	// agree on RUNNING (see novaPowerState).
+	return string(libvirtState(int32(state))), novaPowerState(int32(state)), nil
 }
 
 // AttachDevice attaches a device (disk/network) to a VM
@@ -550,7 +623,7 @@ func (m *VMManager) attachDeviceStub(vmUUID, deviceXML string) error {
 	defer m.mu.Unlock()
 
 	if _, exists := m.stubVMs[vmUUID]; !exists {
-		return fmt.Errorf("VM not found: %s", vmUUID)
+		return fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	// In stub mode, we just verify the VM exists
@@ -571,7 +644,7 @@ func (m *VMManager) attachDeviceReal(ctx context.Context, vmUUID, deviceXML stri
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
 	}
 
 	// Attach device (libvirt flags: 0 for default, 1 for persistent, 2 for live)
@@ -597,7 +670,7 @@ func (m *VMManager) detachDeviceStub(vmUUID, deviceXML string) error {
 	defer m.mu.Unlock()
 
 	if _, exists := m.stubVMs[vmUUID]; !exists {
-		return fmt.Errorf("VM not found: %s", vmUUID)
+		return fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	// In stub mode, we just verify the VM exists
@@ -618,7 +691,7 @@ func (m *VMManager) detachDeviceReal(ctx context.Context, vmUUID, deviceXML stri
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
 	}
 
 	// Detach device (libvirt flags: 0 for default, 1 for persistent, 2 for live)
@@ -645,7 +718,7 @@ func (m *VMManager) suspendVMStub(vmUUID string) error {
 
 	vm, exists := m.stubVMs[vmUUID]
 	if !exists {
-		return fmt.Errorf("VM not found: %s", vmUUID)
+		return fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	vm.state = VMStatePaused
@@ -667,7 +740,7 @@ func (m *VMManager) suspendVMReal(ctx context.Context, vmUUID string) error {
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
 	}
 
 	// Suspend domain (saves to disk)
@@ -693,7 +766,7 @@ func (m *VMManager) resumeVMStub(vmUUID string) error {
 
 	vm, exists := m.stubVMs[vmUUID]
 	if !exists {
-		return fmt.Errorf("VM not found: %s", vmUUID)
+		return fmt.Errorf("%w: %s", ErrDomainNotFound, vmUUID)
 	}
 
 	vm.state = VMStateRunning
@@ -720,7 +793,7 @@ func (m *VMManager) resumeVMReal(ctx context.Context, vmUUID string) error {
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
-		return fmt.Errorf("domain not found: %w", err)
+		return wrapLookupErr(err)
 	}
 
 	// Resume domain (starts from managed save)
@@ -749,6 +822,19 @@ func (m *VMManager) Close() {
 	})
 }
 
+// wrapLookupErr classifies a domain lookup failure.
+//
+// libvirt distinguishes "no such domain" (ERR_NO_DOMAIN) from every other RPC
+// failure, and go-libvirt exposes that as IsNotFound. Anything else — a dropped
+// connection, a permission problem — stays an ordinary error so it is not mistaken for
+// a state the caller can act on.
+func wrapLookupErr(err error) error {
+	if libvirt.IsNotFound(err) {
+		return fmt.Errorf("%w: %v", ErrDomainNotFound, err)
+	}
+	return fmt.Errorf("looking up domain: %w", err)
+}
+
 // parseUUID converts a UUID string to bytes
 func parseUUID(uuidStr string) (libvirt.UUID, error) {
 	var result libvirt.UUID
@@ -758,6 +844,12 @@ func parseUUID(uuidStr string) (libvirt.UUID, error) {
 	}
 	copy(result[:], parsed[:])
 	return result, nil
+}
+
+// libvirtState names a libvirt domain state. Typed rather than a bare string so it can
+// be handed straight to RunStateOf.
+func libvirtState(state int32) VMState {
+	return VMState(libvirtStateToString(state))
 }
 
 // libvirtStateToString converts libvirt state to string

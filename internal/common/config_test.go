@@ -594,3 +594,179 @@ func TestLoadConfigMetadataTrustInstanceHeader(t *testing.T) {
 		})
 	}
 }
+
+// SPEC-025 T008 (FR-024d, FR-042b): the two compute settings this feature adds must
+// have working defaults and must clamp a non-positive value, on the same principle as
+// the console settings — a deployment that never heard of either still reconciles
+// drift and still bounds its audit growth.
+func TestLoadConfigComputeIntervalDefaults(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "lightstack.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("omitted entirely falls back to the defaults", func(t *testing.T) {
+		cfg, err := LoadConfig(write(t, "nova:\n  libvirt_mode: real\n"))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.Nova.StateReconcileInterval != DefaultStateReconcileInterval {
+			t.Errorf("StateReconcileInterval = %v; want %v",
+				cfg.Nova.StateReconcileInterval, DefaultStateReconcileInterval)
+		}
+		if cfg.Nova.InstanceActionRetention != DefaultInstanceActionRetention {
+			t.Errorf("InstanceActionRetention = %v; want %v",
+				cfg.Nova.InstanceActionRetention, DefaultInstanceActionRetention)
+		}
+	})
+
+	t.Run("explicit values are honored", func(t *testing.T) {
+		cfg, err := LoadConfig(write(t, `
+nova:
+  state_reconcile_interval: 5s
+  instance_action_retention: 720h
+`))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.Nova.StateReconcileInterval != 5*time.Second {
+			t.Errorf("StateReconcileInterval = %v; want 5s", cfg.Nova.StateReconcileInterval)
+		}
+		if cfg.Nova.InstanceActionRetention != 720*time.Hour {
+			t.Errorf("InstanceActionRetention = %v; want 720h", cfg.Nova.InstanceActionRetention)
+		}
+	})
+
+	// Zero would mean a busy loop for the interval and "reclaim everything
+	// immediately" for the retention age. Neither is a plausible reading of 0, so
+	// both are clamped rather than honored.
+	t.Run("non-positive values are clamped, not accepted", func(t *testing.T) {
+		for _, body := range []string{
+			"nova:\n  state_reconcile_interval: 0s\n  instance_action_retention: 0s\n",
+			"nova:\n  state_reconcile_interval: -1s\n  instance_action_retention: -1h\n",
+		} {
+			cfg, err := LoadConfig(write(t, body))
+			if err != nil {
+				t.Fatalf("LoadConfig(%q): %v", body, err)
+			}
+			if cfg.Nova.StateReconcileInterval != DefaultStateReconcileInterval {
+				t.Errorf("StateReconcileInterval = %v; want the default %v",
+					cfg.Nova.StateReconcileInterval, DefaultStateReconcileInterval)
+			}
+			if cfg.Nova.InstanceActionRetention != DefaultInstanceActionRetention {
+				t.Errorf("InstanceActionRetention = %v; want the default %v",
+					cfg.Nova.InstanceActionRetention, DefaultInstanceActionRetention)
+			}
+		}
+	})
+
+	// The retention age must be long enough to be an audit trail, not a cache.
+	t.Run("the default retention is a plausible audit period", func(t *testing.T) {
+		if DefaultInstanceActionRetention < 30*24*time.Hour {
+			t.Errorf("DefaultInstanceActionRetention = %v; too short to be an audit trail",
+				DefaultInstanceActionRetention)
+		}
+	})
+}
+
+// A SYNCHRONOUS stop holds the HTTP request open for as long as it waits for the guest,
+// so the grace period it is allowed is bounded by the server's write deadline — not by
+// what upstream's asynchronous equivalent can afford.
+//
+// This was found on a host, the expensive way. With the grace period set to upstream's
+// 60s default and HTTPWriteTimeout also 60s, the forced-power-off path reached its
+// response write at or after the deadline every single time, so Go closed the connection
+// unanswered: `RemoteDisconnected('Remote end closed connection without response')`. The
+// stop had worked; it just could never say so. Which is the exact failure class the
+// feature exists to remove, reintroduced one layer down.
+func TestShutdownTimeoutFitsInsideTheWriteDeadline(t *testing.T) {
+	// The invariant, as arithmetic on the constants. This is the assertion that would
+	// have caught the defect before it reached a host: a default that cannot answer is
+	// a default that is wrong, and nothing else in the suite compares these two.
+	t.Run("the default leaves room to answer", func(t *testing.T) {
+		if DefaultShutdownTimeout+LifecycleResponseSlack > HTTPWriteTimeout {
+			t.Errorf("DefaultShutdownTimeout(%v) + LifecycleResponseSlack(%v) > HTTPWriteTimeout(%v); "+
+				"a stop that runs the full grace period cannot write its own response",
+				DefaultShutdownTimeout, LifecycleResponseSlack, HTTPWriteTimeout)
+		}
+	})
+
+	t.Run("the ceiling leaves room to answer", func(t *testing.T) {
+		if MaxShutdownTimeout+LifecycleResponseSlack > HTTPWriteTimeout {
+			t.Errorf("MaxShutdownTimeout(%v) + LifecycleResponseSlack(%v) > HTTPWriteTimeout(%v)",
+				MaxShutdownTimeout, LifecycleResponseSlack, HTTPWriteTimeout)
+		}
+	})
+
+	// A blocking stop is also bounded by whatever sits in front of Lightstack. 30s is the
+	// default read timeout of both gunicorn (Horizon) and a good many ingresses, so a
+	// default above it would fail in a deployment rather than in a test.
+	t.Run("the default stays inside a common proxy timeout", func(t *testing.T) {
+		if DefaultShutdownTimeout > 30*time.Second {
+			t.Errorf("DefaultShutdownTimeout = %v; a synchronous stop above 30s trips "+
+				"gunicorn's and most ingresses' default read timeout", DefaultShutdownTimeout)
+		}
+	})
+
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "lightstack.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("omitted falls back to the default", func(t *testing.T) {
+		cfg, err := LoadConfig(write(t, "nova:\n  libvirt_mode: real\n"))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.Nova.ShutdownTimeout != DefaultShutdownTimeout {
+			t.Errorf("ShutdownTimeout = %v; want %v", cfg.Nova.ShutdownTimeout, DefaultShutdownTimeout)
+		}
+	})
+
+	t.Run("an explicit value inside the ceiling is honored", func(t *testing.T) {
+		cfg, err := LoadConfig(write(t, "nova:\n  shutdown_timeout: 15s\n"))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.Nova.ShutdownTimeout != 15*time.Second {
+			t.Errorf("ShutdownTimeout = %v; want 15s", cfg.Nova.ShutdownTimeout)
+		}
+	})
+
+	// Clamped rather than refused: an operator who asks for a longer grace than a
+	// synchronous stop can deliver has made a reasonable request of an implementation
+	// that cannot honour it. Refusing to start over it would be worse than shortening it
+	// and saying so.
+	t.Run("a value above the ceiling is clamped", func(t *testing.T) {
+		cfg, err := LoadConfig(write(t, "nova:\n  shutdown_timeout: 10m\n"))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.Nova.ShutdownTimeout != MaxShutdownTimeout {
+			t.Errorf("ShutdownTimeout = %v; want it clamped to %v — a grace period the "+
+				"handler cannot answer within is one that loses its response",
+				cfg.Nova.ShutdownTimeout, MaxShutdownTimeout)
+		}
+	})
+
+	t.Run("non-positive falls back to the default", func(t *testing.T) {
+		for _, body := range []string{"nova:\n  shutdown_timeout: 0s\n", "nova:\n  shutdown_timeout: -5s\n"} {
+			cfg, err := LoadConfig(write(t, body))
+			if err != nil {
+				t.Fatalf("LoadConfig(%q): %v", body, err)
+			}
+			if cfg.Nova.ShutdownTimeout != DefaultShutdownTimeout {
+				t.Errorf("ShutdownTimeout for %q = %v; want the default %v",
+					body, cfg.Nova.ShutdownTimeout, DefaultShutdownTimeout)
+			}
+		}
+	})
+}

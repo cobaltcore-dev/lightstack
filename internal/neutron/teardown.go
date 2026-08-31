@@ -122,7 +122,7 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 		for _, id := range netIDs {
 			fail(svc.dhcpManager.StopDHCP(id), "stop dnsmasq")
 			if len(id) >= 8 {
-				fail(svc.brManager.DeleteBridge("br-"+id[:8]), "delete bridge")
+				fail(svc.brManager.DeleteBridge(networking.BridgeNameForNetwork(id)), "delete bridge")
 			}
 		}
 	}

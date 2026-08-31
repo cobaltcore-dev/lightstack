@@ -93,6 +93,35 @@ type NovaConfig struct {
 	// consoleProxy.enabled=false), so the API refuses instead of issuing a URL that
 	// leads nowhere. A pointer, because a plain bool cannot tell unset from false.
 	ConsoleEnabled *bool `yaml:"console_enabled"`
+
+	// StateReconcileInterval is how often the recorded run state of real-mode
+	// instances is compared against the hypervisor and corrected (SPEC-025
+	// FR-024b, FR-024d).
+	//
+	// Only drift the product did NOT cause needs this: every action that changes a
+	// guest's run state persists its own result (FR-024a), so a crashed guest or one
+	// removed out of band is what the sweep is for. Reading a server never contacts
+	// the hypervisor (FR-024c), which is why truth is bounded by this interval
+	// rather than instantaneous.
+	StateReconcileInterval time.Duration `yaml:"state_reconcile_interval"`
+
+	// ShutdownTimeout is how long a guest OS is given to shut down cleanly before it
+	// is powered off the hard way (SPEC-025 FR-022).
+	//
+	// libvirt's shutdown is a REQUEST to the guest, not a transition: it can take
+	// tens of seconds and a guest that ignores ACPI never honours it at all. Without
+	// a bound, a stop either lies about the outcome or waits forever. Mirrors
+	// upstream's shutdown_timeout, including its 60s default.
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+
+	// InstanceActionRetention is how long a server's action records are kept after
+	// the server itself is deleted (SPEC-025 FR-042a, FR-042b).
+	//
+	// Deleting a server does NOT delete its action history — upstream retains it,
+	// and so do we — so without a retention age the table only ever grows. Records
+	// belonging to a server that still exists are never reclaimed, whatever their
+	// age (FR-042c).
+	InstanceActionRetention time.Duration `yaml:"instance_action_retention"`
 }
 
 // ConsolesEnabled reports whether a console proxy is deployed; unset means yes.
@@ -105,6 +134,49 @@ func (n NovaConfig) ConsolesEnabled() bool {
 const (
 	DefaultConsoleTokenTTL          = 10 * time.Minute
 	DefaultConsoleReconcileInterval = 30 * time.Second
+)
+
+// Compute state and audit-retention defaults (SPEC-025). Applied by LoadConfig when
+// the file omits them: a deployment that never heard of either setting must still
+// reconcile drift and still bound its audit growth.
+const (
+	// DefaultStateReconcileInterval matches the 30s resync period of the real-mode
+	// network reconciler (NeutronConfig.ReconcileInterval) — the same order of
+	// magnitude suits both, and one number is easier to reason about than two.
+	DefaultStateReconcileInterval = 30 * time.Second
+	// DefaultInstanceActionRetention is 90 days: an ordinary audit-retention period.
+	// Any bounded value satisfies FR-042a; an operator who cares changes it.
+	DefaultInstanceActionRetention = 90 * 24 * time.Hour
+	// DefaultShutdownTimeout is deliberately BELOW upstream's 60s. Upstream's stop is
+	// asynchronous — nothing holds an HTTP connection while the guest shuts down — so
+	// it can afford a minute. Lightstack's is synchronous, which makes the grace period a
+	// request duration, and 30s is the default read timeout of gunicorn (Horizon) and
+	// of most ingresses. A default above that fails in a deployment, not in a test.
+	DefaultShutdownTimeout = 30 * time.Second
+)
+
+// Bounds on how long a synchronous request may take to answer (SPEC-025 FR-022b).
+//
+// These three are one arithmetic statement, which is why they live together: a handler
+// that runs past the server's write deadline has its connection closed by net/http with
+// NO response written. The stop still happens; it simply cannot report that it did,
+// which is the failure this feature exists to remove, reintroduced a layer down. Found
+// on a host with the grace period and the write deadline both at 60s, where every
+// forced power-off lost its answer and the client retried into a conflict.
+const (
+	// HTTPWriteTimeout is the write deadline every service's HTTP server uses. net/http
+	// resets it when a request's header is read, so it covers handler execution PLUS
+	// the response write — not just the write, as the name suggests.
+	HTTPWriteTimeout = 60 * time.Second
+
+	// LifecycleResponseSlack is what a lifecycle request needs on top of the guest's
+	// grace period: the state lookups, the forced power-off, the record write and the
+	// response itself.
+	LifecycleResponseSlack = 10 * time.Second
+
+	// MaxShutdownTimeout is the longest grace a synchronous stop can be given and still
+	// answer. A larger configured value is clamped to it.
+	MaxShutdownTimeout = HTTPWriteTimeout - LifecycleResponseSlack
 )
 
 type NeutronConfig struct {
@@ -274,6 +346,33 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("state_path %q is %d characters; real mode allows at most %d, because "+
 			"every guest's console socket (<state_path>/console-sockets/<instance-uuid>.sock) must fit "+
 			"QEMU's 108-byte socket-path limit", statePath, len(statePath), maxRealModeStatePath)
+	}
+
+	// Compute state and audit-retention defaults (SPEC-025 FR-024d, FR-042b). A
+	// non-positive value is clamped rather than honored: zero would mean a busy loop
+	// for the interval, and "reclaim everything immediately" for the retention age —
+	// the opposite of what an operator writing 0 could plausibly want.
+	if cfg.Nova.StateReconcileInterval <= 0 {
+		cfg.Nova.StateReconcileInterval = DefaultStateReconcileInterval
+	}
+	if cfg.Nova.InstanceActionRetention <= 0 {
+		cfg.Nova.InstanceActionRetention = DefaultInstanceActionRetention
+	}
+	// Clamped like its siblings rather than honouring 0 as upstream's "force
+	// immediately": unset yaml is indistinguishable from a deliberate 0, and the
+	// safe reading of "not configured" is not "hard-kill every guest".
+	if cfg.Nova.ShutdownTimeout <= 0 {
+		cfg.Nova.ShutdownTimeout = DefaultShutdownTimeout
+	}
+	// Clamped rather than refused at the top end: asking for a longer grace than a
+	// synchronous stop can deliver is a reasonable request of an implementation that
+	// cannot honour it, and refusing to start over it would be worse than shortening
+	// it and saying so.
+	if cfg.Nova.ShutdownTimeout > MaxShutdownTimeout {
+		fmt.Fprintf(os.Stderr,
+			"WARNING: nova.shutdown_timeout %v exceeds the %v a synchronous stop can answer within; using %v\n",
+			cfg.Nova.ShutdownTimeout, MaxShutdownTimeout, MaxShutdownTimeout)
+		cfg.Nova.ShutdownTimeout = MaxShutdownTimeout
 	}
 
 	// Warn if using default JWT secret

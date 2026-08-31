@@ -467,24 +467,32 @@ func TestBuildConsoleURLShape(t *testing.T) {
 }
 
 // With no origin configured the fallback must name the CONSOLE port, never Nova's
-// own. common.BaseURL applies its port argument only in its LIGHTSTACK_ENDPOINT_HOST
-// branch, so deriving from it alone advertised http://<host>:8774 — the API — and
-// the browser got a 404 where a console should be. Both branches are pinned here
-// because the chart ships endpointHost and consoleProxyBaseUrl empty by default, so
-// this fallback is the DEFAULT path of a real-mode install, not a corner case.
+// own: deriving the origin without re-porting it advertised http://<host>:8774 — the
+// API — and the browser got a 404 where a console should be. Both of common.BaseURL's
+// host branches are pinned here because the chart ships endpointHost and
+// consoleProxyBaseUrl empty by default, so this fallback is the DEFAULT path of a
+// real-mode install, not a corner case.
+//
+// The branches are selected the way BaseURL selects them since SPEC-025 FR-002/FR-003:
+// the host the client addressed wins, and LIGHTSTACK_ENDPOINT_HOST is consulted only when
+// the request carries none. A console link is an advertised URL like any other, so it
+// follows that precedence rather than keeping a private one — and there is deliberately
+// no setting to restore the old order (FR-003a).
 func TestConsoleURLFallbackUsesTheProxyPort(t *testing.T) {
 	t.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", "")
 
-	newCtx := func() *gin.Context {
+	newCtx := func(host string) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-		c.Request.Host = "10.2.199.101:8774" // Nova's port, as the request arrives
+		c.Request.Host = host
 		return c
 	}
 
 	t.Run("derived from the request", func(t *testing.T) {
-		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "")
-		got := buildConsoleURL("", newCtx(), "abc123")
+		// Set, and outranked: a request naming a host is the whole point of the
+		// precedence, so this also pins that the configured value cannot override it.
+		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.example")
+		got := buildConsoleURL("", newCtx("10.2.199.101:8774"), "abc123") // Nova's port, as the request arrives
 		want := "http://10.2.199.101:6080/vnc_lite.html?path=%3Ftoken%3Dabc123"
 		if got != want {
 			t.Errorf("url = %q; want %q", got, want)
@@ -496,10 +504,15 @@ func TestConsoleURLFallbackUsesTheProxyPort(t *testing.T) {
 
 	t.Run("derived from LIGHTSTACK_ENDPOINT_HOST", func(t *testing.T) {
 		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.example")
-		got := buildConsoleURL("", newCtx(), "abc123")
+		// No usable host on the request — the only case that reaches the configured
+		// one now.
+		got := buildConsoleURL("", newCtx(""), "abc123")
 		want := "http://lightstack.example:6080/vnc_lite.html?path=%3Ftoken%3Dabc123"
 		if got != want {
 			t.Errorf("url = %q; want %q", got, want)
+		}
+		if strings.Contains(got, ":8774") {
+			t.Error("the fallback advertised Nova's API port as the console origin")
 		}
 	})
 
@@ -507,8 +520,7 @@ func TestConsoleURLFallbackUsesTheProxyPort(t *testing.T) {
 	// origin "http://2001:db8::1:6080" does not even parse.
 	t.Run("an IPv6 host keeps its brackets", func(t *testing.T) {
 		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "")
-		c := newCtx()
-		c.Request.Host = "[2001:db8::1]:8774"
+		c := newCtx("[2001:db8::1]:8774")
 		got := buildConsoleURL("", c, "abc123")
 		want := "http://[2001:db8::1]:6080/vnc_lite.html?path=%3Ftoken%3Dabc123"
 		if got != want {
@@ -522,7 +534,7 @@ func TestConsoleURLFallbackUsesTheProxyPort(t *testing.T) {
 	t.Run("plain http even when the API is https", func(t *testing.T) {
 		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "")
 		t.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", "https")
-		c := newCtx()
+		c := newCtx("10.2.199.101:8774")
 		c.Request.TLS = &tls.ConnectionState{}
 		got := buildConsoleURL("", c, "abc123")
 		want := "http://10.2.199.101:6080/vnc_lite.html?path=%3Ftoken%3Dabc123"

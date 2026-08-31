@@ -125,7 +125,7 @@ func (vc *VXLANCoordinator) syncNetworks(ctx context.Context) {
 		// DeleteVXLAN reported success while leaking the device, and CreateVXLAN's existence check
 		// missed it and rebuilt it every pass. The guests were never on the namespaced bridge either
 		// (SPEC-024 / cloud-storage#546 F10).
-		bridgeName := "br-" + networkID[:8]
+		bridgeName := networking.BridgeNameForNetwork(networkID)
 		if err := vc.vxlanManager.AttachToBridge(networkID, bridgeName); err != nil {
 			log.Error().Err(err).Str("network_id", networkID).Msg("failed to attach VXLAN to bridge")
 		}

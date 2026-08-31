@@ -20,7 +20,7 @@ type VMSpec struct {
 	DiskGB    int
 	ImagePath string // Path to image (RBD or local)
 	Networks  []NetworkConfig
-	Volumes   []VolumeConfig
+	Volumes   []DiskSpec // attached data volumes, rendered as a hot-plugged one is (GenerateDiskXML)
 	CloudInit *CloudInitConfig
 }
 
@@ -29,14 +29,6 @@ type NetworkConfig struct {
 	PortID     string
 	MACAddress string
 	BridgeName string
-}
-
-// VolumeConfig defines volume attachment configuration
-type VolumeConfig struct {
-	VolumeID string
-	RBDPool  string
-	RBDImage string
-	Device   string // vda, vdb, etc.
 }
 
 // CloudInitConfig defines cloud-init configuration
@@ -118,22 +110,14 @@ func GenerateVMXML(spec VMSpec) string {
 `, spec.ImagePath)
 	}
 
-	// Attached volumes
+	// Attached volumes, rendered by the one disk renderer the hot-plug path uses, so a guest
+	// defined with its volumes gets the same disks as one that had them attached later —
+	// a node-local file or an RBD image alike.
 	for i, vol := range spec.Volumes {
-		device := vol.Device
-		if device == "" {
-			device = fmt.Sprintf("vd%c", 'b'+i) // vdb, vdc, etc.
+		if vol.Device == "" {
+			vol.Device = fmt.Sprintf("vd%c", 'b'+i) // vdb, vdc, etc.
 		}
-
-		fmt.Fprintf(&sb, `
-    <disk type='network' device='disk'>
-      <driver name='qemu' type='raw'/>
-      <source protocol='rbd' name='%s/%s'>
-        <host name='127.0.0.1' port='6789'/>
-      </source>
-      <target dev='%s' bus='virtio'/>
-    </disk>
-`, vol.RBDPool, vol.RBDImage, device)
+		sb.WriteString("\n" + GenerateDiskXML(vol) + "\n")
 	}
 
 	// Network interfaces

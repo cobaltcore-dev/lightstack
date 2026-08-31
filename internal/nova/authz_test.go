@@ -325,7 +325,7 @@ func TestResetStateAction_DatabaseErrorIs500(t *testing.T) {
 	c.Set("roles", []string{"admin"})
 	c.Set("action_data", map[string]any{"state": "error"})
 
-	NewService(testPool, "", "stub", nil).ResetStateAction(c)
+	NewService(testPool, "", "stub", nil).ResetStateAction(c, idA, authzProjectA)
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 — a database failure must not be answered as 404, "+
 			"or an outage reads as an authorization result", w.Code)

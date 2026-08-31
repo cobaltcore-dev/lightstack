@@ -21,6 +21,18 @@ All API operations complete before returning - no message queues, no async state
 
 **Rationale**: Simplicity over scalability. Trade throughput for debuggability and operational simplicity.
 
+**Permitted exception — stateless reconciliation loops** (added in v1.1.0). A periodic loop that compares
+recorded state against observed reality and corrects the record is NOT an async worker and does not
+violate this principle:
+
+- It carries no queue, no job records, no retries and no per-request state.
+- It never defers work an API request should have done — every API operation still completes before
+  returning, and persists its own result.
+- It exists only to correct drift the product did not cause: a guest that crashed, a resource removed
+  out of band, or a record that has aged past its retention.
+
+A loop that accepts work from a request, or that an API response waits on, remains forbidden.
+
 ### III. Fail-Fast Design
 External dependency failures return immediately (< 1 second timeouts).
 - libvirt connection failures: 1 second timeout
@@ -78,7 +90,8 @@ Lightstack runs as one ~35MB binary with embedded services.
 
 ### Forbidden Patterns
 - **No message queues**: RabbitMQ, Kafka, Redis streams
-- **No async workers**: Celery, background job processors
+- **No async workers**: Celery, background job processors, or any loop an API response waits on
+  (stateless reconciliation loops are permitted — see Article II)
 - **No state machines**: Conductor-style workflows
 - **No service discovery**: Consul, etcd (services on fixed ports)
 - **No container orchestration required**: Runs standalone or in Docker Compose
@@ -136,4 +149,21 @@ Amendments require:
 - User approval for breaking changes
 - Migration plan for existing deployments
 
-**Version**: 1.0.0 | **Ratified**: 2026-03-13 | **Last Amended**: 2026-03-13
+## Amendment Log
+
+### v1.1.0 — 2026-08-31 — stateless reconciliation loops permitted (Article II)
+
+**Rationale**: the Forbidden Patterns list read as prohibiting any background loop, which conflicted
+with code already merged to `main` — the real-mode network-state reconciler (SPEC-009,
+`internal/neutron/reconciler.go`), started from `cmd/lightstack/main.go`. It is not an async worker in
+the sense the principle guards against: no queue, and no API response waits on it. The principle was
+describing a rule the project had already, deliberately, departed from. Rather than leave every future
+feature to re-justify the same deviation, the exception is now stated once, with its limits.
+
+**Scope**: clarification, not relaxation. Deferring request work to a background loop is still
+forbidden, and the synchronous-operations rule for API operations is unchanged.
+
+**Migration plan**: none required. No behaviour changes. One shipped component stops being a deviation,
+and SPEC-025's compute state reconciler and action-history reclamation are permitted on the same terms.
+
+**Version**: 1.1.0 | **Ratified**: 2026-03-13 | **Last Amended**: 2026-08-31

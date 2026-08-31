@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -334,14 +332,15 @@ func buildConsoleURL(configuredOrigin string, c *gin.Context, token string) stri
 // deriveConsoleOrigin returns the proxy origin for a request, with the API port
 // replaced by the console port.
 //
-// common.BaseURL applies its port argument ONLY in its LIGHTSTACK_ENDPOINT_HOST branch;
-// otherwise it returns scheme://c.Request.Host verbatim and drops the port
-// (pinned by common.BaseURL's own test: BaseURL(ctx, 0) -> "https://host:443").
-// Relying on it alone therefore advertises Nova's own port, 8774, as the console
-// origin — a link the browser resolves to the API, not the proxy. That is the last
-// surviving form of the hardcoded-URL bug SPEC-021 exists to fix, so the port is
-// re-applied here rather than changing BaseURL, which every service's self-links
-// share.
+// The port argument is what does that work: common.BaseURL applies it in place of
+// whatever port the source host carried, in both its request and its
+// LIGHTSTACK_ENDPOINT_HOST branch (SPEC-025 FR-004). Without it the origin would name
+// Nova's own 8774 — a link the browser resolves to the API, not the proxy, which is
+// the last surviving form of the hardcoded-URL bug SPEC-021 exists to fix.
+//
+// The host follows the same precedence as every other advertised URL: the one the
+// client addressed wins, and LIGHTSTACK_ENDPOINT_HOST is the fallback (SPEC-025 FR-002,
+// FR-003).
 //
 // Only helps when the browser can reach the API host directly (the single-node
 // case). Behind an ingress whose hostname differs from the proxy's, set
@@ -352,14 +351,12 @@ func buildConsoleURL(configuredOrigin string, c *gin.Context, token string) stri
 // the chart and scripts ship, which serves plain HTTP. An https console needs
 // something in front of the proxy to terminate TLS, and so an explicit origin.
 func deriveConsoleOrigin(c *gin.Context) string {
-	base := strings.TrimRight(common.BaseURL(c, defaultConsoleProxyPort), "/")
+	base := common.BaseURL(c, defaultConsoleProxyPort)
 	u, err := url.Parse(base)
-	if err != nil || u.Hostname() == "" {
+	if err != nil {
 		return base
 	}
 	u.Scheme = "http"
-	// JoinHostPort, not "%s:%d": Hostname strips an IPv6 literal's brackets.
-	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(defaultConsoleProxyPort))
 	return u.String()
 }
 

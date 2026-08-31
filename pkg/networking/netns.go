@@ -284,8 +284,29 @@ func (m *BridgeManager) DeleteBridge(bridgeName string) error {
 	return netlink.LinkDel(link)
 }
 
+// BridgeNameForNetwork is the per-network Linux bridge name: "br-" plus the first 8
+// characters of the network id.
+//
+// THE SINGLE DEFINITION of a convention two services have to agree on exactly. Neutron
+// creates the bridge and attaches the DHCP and TAP devices to it; compute names the same
+// bridge when it re-creates a guest from stored state, and a guest pointed at a name
+// nothing plugs into attaches to no network at all, silently. The rule was hand-inlined at
+// nine sites in the network service and once more in compute before this became a
+// function.
+//
+// isManagedBridge below parses what this produces, and the two are NOT equivalent at every
+// input: a network id shorter than 8 characters yields a name isManagedBridge rejects on
+// length, so such a bridge would never be pruned. Network ids are UUIDs, so the short
+// branch is defensive only — it exists so a truncated id cannot panic the slice.
+func BridgeNameForNetwork(networkID string) string {
+	if len(networkID) < 8 {
+		return "br-" + networkID
+	}
+	return "br-" + networkID[:8]
+}
+
 // isManagedBridge reports whether name is a Lightstack per-network bridge: "br-" plus
-// the first 8 hex chars of a network UUID (neutron builds "br-"+networkID[:8]).
+// the first 8 hex chars of a network UUID (BridgeNameForNetwork builds it).
 // The strict shape ensures the reconciler never prunes a foreign bridge (docker
 // uses br-<12hex>, libvirt uses virbrN).
 func isManagedBridge(name string) bool {

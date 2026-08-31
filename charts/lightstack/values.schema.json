@@ -144,7 +144,7 @@
     "nova": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Compute service mode and console settings.",
+      "description": "Compute service mode, console and reconciler settings.",
       "properties": {
         "libvirtMode": { "type": "string", "enum": ["stub", "real"], "description": "stub (no libvirt) or real (libvirt/KVM)." },
         "consoleProxyBaseUrl": {
@@ -161,6 +161,21 @@
           "type": "string",
           "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
           "description": "How often expired console tokens are reaped. This is what enforces expiry \u2014 the proxy performs no expiry check. Same duration pattern as consoleTokenTtl."
+        },
+        "stateReconcileInterval": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
+          "description": "How often the recorded run state of real-mode instances is reconciled against the hypervisor (SPEC-025 FR-024b). Bounds how stale a server's reported state can be for drift Lightstack did not cause; state changes Lightstack makes itself are persisted immediately and need no sweep. Go duration (e.g. 30s). Pattern-checked because these render into lightstack.yaml and are parsed as time.Duration: an unparseable value is a hard LoadConfig error (not a defaulted one), so without it a typo installs cleanly and then crash-loops the pod. The repeated group accepts compound forms like 1h30m, which time.ParseDuration also accepts. A non-positive value is clamped to 30s rather than honored, since 0 would mean a busy loop."
+        },
+        "instanceActionRetention": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
+          "description": "How long a server's action records are kept after the server is deleted (SPEC-025 FR-042a). Deletion does not remove the history, matching upstream, so this is what bounds its growth. Records of a server that still exists are never reclaimed regardless of age. A non-positive value is clamped to the 90-day default rather than honored, since 0 would mean reclaiming everything immediately."
+        },
+        "shutdownTimeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$",
+          "description": "How long a guest OS is given to shut down cleanly before a stop forces it off (SPEC-025 FR-022). libvirt's shutdown is a request to the guest, not a transition, so a stop that returned when the request was accepted could report success over a still-running guest. A stop is SYNCHRONOUS, so this is also how long an os-stop request can take. Deliberately below upstream's 60s, whose stop is asynchronous and holds no connection: 30s is the default read timeout of gunicorn (Horizon) and most ingresses. A non-positive value is clamped to the 30s default, and anything above 50s is clamped down, because a handler that runs past the server's 60s write deadline has its connection closed with no response written \u2014 the stop succeeds and reports nothing."
         }
       }
     },

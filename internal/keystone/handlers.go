@@ -365,6 +365,7 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 			"description": description,
 			"enabled":     enabled,
 			"domain_id":   domainID,
+			"links":       identityLink(c, "projects", id),
 			"domain": gin.H{
 				"id":   domainID,
 				"name": domainName,
@@ -414,6 +415,7 @@ func (svc *Service) ListUsers(c *gin.Context) {
 			"name":      name,
 			"enabled":   enabled,
 			"domain_id": domainID,
+			"links":     identityLink(c, "users", id),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -446,6 +448,7 @@ func (svc *Service) GetUser(c *gin.Context) {
 		"name":      name,
 		"enabled":   enabled,
 		"domain_id": domainID,
+		"links":     identityLink(c, "users", id),
 	}})
 }
 
@@ -493,6 +496,7 @@ func (svc *Service) ListProjects(c *gin.Context) {
 			"description": description.String,
 			"enabled":     enabled,
 			"domain_id":   domainID.String,
+			"links":       identityLink(c, "projects", id),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -502,6 +506,22 @@ func (svc *Service) ListProjects(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"projects": projects})
+}
+
+// identityLink builds the links object every identity resource carries.
+//
+// python-openstackclient 6.x does an unconditional _info.pop('links') before
+// rendering, so a resource without this field aborts the command with a bare 'links'
+// and exit 1 — that is cloud-storage#547 B16, and it hits `project show`, `user show`
+// and `role show`. A 10.x client tolerates the omission, so whether Lightstack looks
+// functional depended on which client was first on PATH.
+//
+// Routed through common.BaseURL rather than concatenated by hand: several of these
+// links already existed but were built as `c.Request.Host + "/v3/..."`, which has no
+// scheme and is therefore not a resolvable URL (SPEC-025 FR-007, FR-012). One helper
+// so the rule cannot drift between the eleven places that need it.
+func identityLink(c *gin.Context, collection, id string) gin.H {
+	return gin.H{"self": common.BaseURL(c, 35357) + "/v3/" + collection + "/" + id}
 }
 
 // GetProject returns a single project
@@ -526,6 +546,7 @@ func (svc *Service) GetProject(c *gin.Context) {
 		"description": description,
 		"enabled":     enabled,
 		"domain_id":   domainID,
+		"links":       identityLink(c, "projects", id),
 	}})
 }
 
@@ -597,9 +618,7 @@ func (svc *Service) CreateProject(c *gin.Context) {
 		"description": req.Project.Description,
 		"domain_id":   domainID,
 		"enabled":     enabled,
-		"links": gin.H{
-			"self": c.Request.Host + "/v3/projects/" + projectID,
-		},
+		"links":       identityLink(c, "projects", projectID),
 	}})
 }
 
@@ -665,9 +684,7 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 		"description": description,
 		"domain_id":   domainID,
 		"enabled":     enabled,
-		"links": gin.H{
-			"self": c.Request.Host + "/v3/projects/" + projectID,
-		},
+		"links":       identityLink(c, "projects", projectID),
 	}})
 }
 
@@ -717,8 +734,9 @@ func (svc *Service) ListRoles(c *gin.Context) {
 			return
 		}
 		roles = append(roles, gin.H{
-			"id":   id,
-			"name": name,
+			"id":    id,
+			"name":  name,
+			"links": identityLink(c, "roles", id),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -746,11 +764,9 @@ func (svc *Service) GetRole(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"role": gin.H{
-		"id":   id,
-		"name": name,
-		"links": gin.H{
-			"self": c.Request.Host + "/v3/roles/" + id,
-		},
+		"id":    id,
+		"name":  name,
+		"links": identityLink(c, "roles", id),
 	}})
 }
 
@@ -785,11 +801,9 @@ func (svc *Service) CreateRole(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"role": gin.H{
-		"id":   roleID,
-		"name": req.Role.Name,
-		"links": gin.H{
-			"self": c.Request.Host + "/v3/roles/" + roleID,
-		},
+		"id":    roleID,
+		"name":  req.Role.Name,
+		"links": identityLink(c, "roles", roleID),
 	}})
 }
 
@@ -832,11 +846,9 @@ func (svc *Service) UpdateRole(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"role": gin.H{
-		"id":   roleID,
-		"name": name,
-		"links": gin.H{
-			"self": c.Request.Host + "/v3/roles/" + roleID,
-		},
+		"id":    roleID,
+		"name":  name,
+		"links": identityLink(c, "roles", roleID),
 	}})
 }
 
@@ -937,8 +949,9 @@ func (svc *Service) ListUserProjectRoles(c *gin.Context) {
 			continue
 		}
 		roles = append(roles, gin.H{
-			"id":   id,
-			"name": name,
+			"id":    id,
+			"name":  name,
+			"links": identityLink(c, "roles", id),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -1409,6 +1422,7 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 			"description": description,
 			"enabled":     enabled,
 			"domain_id":   domainID,
+			"links":       identityLink(c, "projects", id),
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -1,11 +1,14 @@
 package nova
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -62,11 +65,75 @@ func (svc *Service) GetServerDiagnostics(c *gin.Context) {
 	})
 }
 
+// resolveDeletedServerForHistory reports whether the caller may read the action history
+// of a server that no longer exists, and the instance id to read it under.
+//
+// Deliberately narrow. It grants nothing but a read of records already attributed to
+// the caller's own project (or, for an administrator, to any). A caller who is neither
+// gets no answer at all, so a deleted server stays indistinguishable from one that
+// never existed (FR-043b) — telling them apart would confirm another tenant's server
+// had existed.
+//
+// Only a well-formed identifier is accepted: after deletion there is no row left to
+// match a NAME against, and matching names against action records would let one
+// project's server name reach another's history.
+func (svc *Service) resolveDeletedServerForHistory(c *gin.Context, ref string) (string, bool) {
+	if !wantsDeletedInstanceActions(c) {
+		return "", false
+	}
+	if uuid.Validate(ref) != nil {
+		return "", false
+	}
+
+	query := `SELECT DISTINCT instance_id::text FROM instance_actions
+	           WHERE instance_id = $1 AND project_id = $2`
+	args := []any{ref, c.GetString("project_id")}
+	if common.HasRole(c, common.RoleAdmin) {
+		query = `SELECT DISTINCT instance_id::text FROM instance_actions WHERE instance_id = $1`
+		args = []any{ref}
+	}
+
+	var id string
+	if err := svc.pool.QueryRow(c.Request.Context(), query, args...).Scan(&id); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Error().Err(err).Str("instance_ref", ref).
+				Msg("looking up a deleted server's action history failed")
+		}
+		return "", false
+	}
+	return id, true
+}
+
 // ListInstanceActions handles GET /v2.1/servers/:id/os-instance-actions
+//
+// A DELETED server's history is still readable, by its owner and by an administrator
+// (SPEC-025 FR-043). This used to resolve the server first and answer *absent* to
+// everyone once it was gone — which contradicted the retention decision: records were
+// kept that nothing would ever serve, leaving an audit trail reachable only by someone
+// with database access.
+//
+// After deletion the server row is gone, so authorization comes from the ownership
+// recorded with each action instead (FR-043a). That column holds the OWNING project —
+// SPEC-023 fixed which value is written to it — which is what makes it usable here.
+//
+// Gated on microversion 2.21, as upstream gates it. See microversion.go for why this is
+// the product's only such gate.
 func (svc *Service) ListInstanceActions(c *gin.Context) {
-	instanceID, _, authorized := resolveServerOr404(c, svc.pool, c.Param("id"))
+	ref := c.Param("id")
+
+	instanceID, _, authorized := resolveServerOr404Silent(c, svc.pool, ref)
 	if !authorized {
-		return
+		// The server is not reachable as a live instance. It may still be one this
+		// caller deleted, whose history they are entitled to.
+		id, ok := svc.resolveDeletedServerForHistory(c, ref)
+		if !ok {
+			// Same *absent* answer as before, revealing nothing about whether the
+			// server ever existed (FR-043b).
+			denyCrossTenant(c, svc.pool, ref)
+			common.SendError(c, common.NewNotFoundError("instance"))
+			return
+		}
+		instanceID = id
 	}
 
 	// Query instance actions

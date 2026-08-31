@@ -101,6 +101,29 @@ func resolveServerOr404(c *gin.Context, pool *pgxpool.Pool, ref string) (id, own
 	return id, owner, true
 }
 
+// resolveServerOr404Silent is resolveServerOr404 without the response: it reports
+// whether the reference resolved and writes nothing.
+//
+// Needed by exactly one caller — the action-history read, which must fall through to a
+// second lookup when the server is gone rather than answer immediately (SPEC-025
+// FR-043). Every other caller should use resolveServerOr404, so the 404 stays in one
+// place; this one exists because "not a live server" is not the final answer there.
+//
+// A database failure still reports 500 and returns false, because that is not an
+// authorization answer and must not be mistaken for one.
+func resolveServerOr404Silent(c *gin.Context, pool *pgxpool.Pool, ref string) (id, owner string, ok bool) {
+	id, owner, err := targetInstance(c, pool, ref)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false
+	}
+	if err != nil {
+		log.Error().Err(err).Str("instance_ref", ref).Msg("instance lookup failed")
+		common.SendError(c, common.NewInternalServerError("failed to look up instance"))
+		return "", "", false
+	}
+	return id, owner, true
+}
+
 // requireAdmin gates a surface that belongs to the DEPLOYMENT rather than to any
 // project — host aggregates and the deployment-wide migration list (SPEC-023
 // FR-008e, FR-008f). It reports whether the caller may proceed, sending the 403
@@ -147,8 +170,9 @@ func requireAdmin(c *gin.Context, operation string) bool {
 // The caller gets the same 404 either way, so the lookup discloses nothing.
 //
 // The resource is always an instance: every caller reaches this through
-// resolveServerOr404, including the migration and console paths. Add a kind
-// parameter when a second kind actually exists, not before.
+// resolveServerOr404, including the migration and console paths, except the
+// action-history read, which calls it once its deleted-server fallback has also
+// failed. Add a kind parameter when a second kind actually exists, not before.
 func denyCrossTenant(c *gin.Context, pool *pgxpool.Pool, ref string) {
 	id, err := uuid.Parse(ref)
 	if err != nil {
@@ -215,7 +239,14 @@ func requestID(c *gin.Context) string {
 	if id := c.GetString("request_id"); id != "" {
 		return id
 	}
-	return "req-" + uuid.NewString()
+	// No middleware set one — mint an id and REMEMBER it on the context. Returning a
+	// fresh uuid on every call made two reads within a single request disagree, so
+	// anything correlating rows by request id (an action record and a later update to
+	// it, say) silently failed to match. Harmless in production, where the logging
+	// middleware always sets the value first, which is exactly why it survived.
+	id := "req-" + uuid.NewString()
+	c.Set("request_id", id)
+	return id
 }
 
 // nullableUUID converts an empty string to nil so a missing user id stores NULL

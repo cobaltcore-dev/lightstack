@@ -42,9 +42,7 @@ func (svc *Service) ListGroups(c *gin.Context) {
 			"name":        name,
 			"domain_id":   domainID,
 			"description": description,
-			"links": gin.H{
-				"self": c.Request.Host + "/v3/groups/" + id,
-			},
+			"links":       identityLink(c, "groups", id),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -117,9 +115,7 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 			"name":        req.Group.Name,
 			"domain_id":   domainID,
 			"description": req.Group.Description,
-			"links": gin.H{
-				"self": c.Request.Host + "/v3/groups/" + groupID,
-			},
+			"links":       identityLink(c, "groups", groupID),
 		},
 	})
 }
@@ -152,9 +148,7 @@ func (svc *Service) GetGroup(c *gin.Context) {
 			"name":        name,
 			"domain_id":   domainID,
 			"description": description,
-			"links": gin.H{
-				"self": c.Request.Host + "/v3/groups/" + groupID,
-			},
+			"links":       identityLink(c, "groups", groupID),
 		},
 	})
 }
@@ -217,9 +211,7 @@ func (svc *Service) UpdateGroup(c *gin.Context) {
 			"name":        name,
 			"domain_id":   domainID,
 			"description": description,
-			"links": gin.H{
-				"self": c.Request.Host + "/v3/groups/" + groupID,
-			},
+			"links":       identityLink(c, "groups", groupID),
 		},
 	})
 }

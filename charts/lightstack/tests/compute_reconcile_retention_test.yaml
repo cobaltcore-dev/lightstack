@@ -1,0 +1,68 @@
+# helm-unittest specs for SPEC-025's three new compute settings.
+#
+# All three are config-file only — the binary honours just four environment variables — so the
+# chart's job is to render them into the Secret-backed lightstack.yaml with the documented
+# defaults, and to reject a value the binary would fail to parse.
+#
+# The schema pattern matters more than it looks: an unparseable duration is a HARD
+# LoadConfig error, not a defaulted one, so without validation a typo installs cleanly
+# and then crash-loops the pod.
+suite: compute state reconciliation, action retention and shutdown grace
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+templates:
+  - templates/secret.yaml
+tests:
+  - it: renders the documented defaults when nothing is set
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'state_reconcile_interval: "30s"'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'instance_action_retention: "2160h"'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'shutdown_timeout: "30s"'
+
+  - it: honours explicit values
+    set:
+      nova.stateReconcileInterval: 5s
+      nova.instanceActionRetention: 720h
+      nova.shutdownTimeout: 15s
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'state_reconcile_interval: "5s"'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'instance_action_retention: "720h"'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'shutdown_timeout: "15s"'
+
+  - it: accepts a compound duration, as time.ParseDuration does
+    set:
+      nova.instanceActionRetention: 1h30m
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'instance_action_retention: "1h30m"'
+
+  - it: renders all three alongside the existing nova settings, not in place of them
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'libvirt_mode: "stub"'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'state_reconcile_interval:'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'instance_action_retention:'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'shutdown_timeout:'

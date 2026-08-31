@@ -46,7 +46,7 @@ func StageOverlay(instanceID, rawBasePath string) (string, error) {
 	if err := EnsureInstanceDir(instanceID); err != nil {
 		return "", fmt.Errorf("create instance dir: %w", err)
 	}
-	overlay := filepath.Join(InstanceDir(instanceID), "disk.qcow2")
+	overlay := OverlayPath(instanceID)
 	// qemu-img create -f qcow2 -b <raw base> -F raw <overlay>
 	cmd := exec.Command("qemu-img", "create", "-f", "qcow2", "-b", rawBasePath, "-F", "raw", overlay)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -56,6 +56,14 @@ func StageOverlay(instanceID, rawBasePath string) (string, error) {
 	// libvirt runs qemu as a non-root user, ownership/permissions are handled by
 	// the deployment (privileged pod) — validated on the host (quickstart).
 	return overlay, nil
+}
+
+// OverlayPath returns the per-instance qcow2 overlay StageOverlay creates, without
+// creating it. Needed to rebuild a guest's definition from stored state after its
+// domain has gone: the disk is still there, only libvirt's record of it is missing
+// (SPEC-025 FR-025a).
+func OverlayPath(instanceID string) string {
+	return filepath.Join(InstanceDir(instanceID), "disk.qcow2")
 }
 
 // ConsoleLogPath returns the per-instance serial console log file. libvirt is

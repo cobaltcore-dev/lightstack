@@ -76,6 +76,25 @@ nova:
   consoleTokenTtl: 10m
   # -- How often expired console tokens are reaped. This is what ENFORCES expiry.
   consoleReconcileInterval: 30s
+  # -- How often the recorded run state of real-mode instances is compared against the
+  #    hypervisor and corrected (SPEC-025). Only drift Lightstack did NOT cause needs this:
+  #    every lifecycle action persists its own result, so this catches a crashed guest
+  #    or one removed out of band. Reading a server never contacts the hypervisor, so
+  #    this interval is how stale the answer can be.
+  stateReconcileInterval: 30s
+  # -- How long a server's action records are kept AFTER the server is deleted
+  #    (SPEC-025). Deleting a server does not delete its history — upstream keeps it —
+  #    so without a retention age the table only grows. Records of a server that still
+  #    exists are never reclaimed, whatever their age.
+  instanceActionRetention: 2160h
+  # -- How long a guest OS is given to shut down cleanly before a stop powers it off
+  #    the hard way (SPEC-025). libvirt's shutdown is a REQUEST to the guest, not a
+  #    transition, so without a bound a stop either lies about the outcome or waits
+  #    forever. NOTE: a stop is SYNCHRONOUS, so this is also how long an os-stop
+  #    request can take. Deliberately below upstream's 60s: 30s is gunicorn's and most
+  #    ingresses' default read timeout, and values above 50s are clamped because the
+  #    handler could not write its response inside the server's write deadline.
+  shutdownTimeout: 30s
 neutron:
   networkingMode: stub        # stub | iptables | ebpf
   securityGroupMode: stub     # stub | iptables | ebpf

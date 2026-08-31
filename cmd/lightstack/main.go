@@ -300,6 +300,32 @@ func main() {
 	log.Printf("Console tokens: dir=%s ttl=%s reconcile=%s",
 		paths.ConsoleTokenDir(), cfg.Nova.ConsoleTokenTTL, cfg.Nova.ConsoleReconcileInterval)
 
+	// How long a guest gets to shut down cleanly before a stop forces it off
+	// (SPEC-025 FR-022). A stop is synchronous, so this also bounds how long an
+	// os-stop request can take.
+	novaService.SetShutdownTimeout(cfg.Nova.ShutdownTimeout)
+
+	// Compute state reconciler (SPEC-025 FR-024b): correct records that claim a
+	// server is running when the hypervisor has no guest for it. Real mode only —
+	// stub mode has no hypervisor to disagree with.
+	//
+	// Only drift Lightstack did not cause needs this: every lifecycle action persists its
+	// own result, so this catches a crashed guest or one removed out of band. Its own
+	// cancellable context so shutdown can stop it before the pool closes: on the
+	// process context it would keep sweeping against a closing pool.
+	// Runs in EVERY mode, not just real: it owns two sweeps, and only one of them is
+	// hypervisor-dependent. Action-history retention applies to any deployment that
+	// records actions, which is all of them (SPEC-025 FR-042a). The state sweep
+	// short-circuits on its own when there is no hypervisor to compare against.
+	stateCtx, stopStateReconciler := context.WithCancel(ctx)
+	stateReconciler := nova.NewStateReconciler(novaService, cfg.Nova.StateReconcileInterval).
+		WithActionRetention(cfg.Nova.InstanceActionRetention)
+	go stateReconciler.Run(stateCtx)
+	// The EFFECTIVE interval, after clamping — a deployment configuring 0 would
+	// otherwise read as though reconciliation were off.
+	log.Printf("Compute state reconciler started (interval: %s, action retention: %s)",
+		stateReconciler.Interval(), cfg.Nova.InstanceActionRetention)
+
 	// Initialize metadata service. It must bind a VM-reachable address (all
 	// interfaces by default) so the per-bridge 169.254.169.254 DNAT can reach it
 	// in real mode (SPEC-009 WS-4).
@@ -412,6 +438,8 @@ func main() {
 		networkReconciler.Stop()
 		log.Println("Network reconciler stopped")
 	}
+	stopStateReconciler()
+	log.Println("Compute state reconciler stopped")
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -671,7 +699,7 @@ func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      common.HTTPWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 }
@@ -694,7 +722,7 @@ func createNovaServer(cfg *common.Config, svc *nova.Service, authService *keysto
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      common.HTTPWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 }
@@ -722,7 +750,7 @@ func createNeutronServer(cfg *common.Config, svc *neutron.Service, authService *
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      common.HTTPWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 }
@@ -745,7 +773,7 @@ func createCinderServer(cfg *common.Config, svc *cinder.Service, authService *ke
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      common.HTTPWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 }
@@ -797,7 +825,7 @@ func createPlacementServer(cfg *common.Config, svc *placement.Service, authServi
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      common.HTTPWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 }
@@ -821,7 +849,7 @@ func createMetadataServer(svc *metadata.Service) *http.Server {
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      common.HTTPWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 }
