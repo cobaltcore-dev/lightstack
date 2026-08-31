@@ -1,11 +1,17 @@
 package neutron
 
 import (
-	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/gin-gonic/gin"
 )
 
 func TestGenerateMAC(t *testing.T) {
@@ -251,5 +257,52 @@ func TestAddSubnetListFilterContinuesExistingNumbering(t *testing.T) {
 	// Three placeholders, but only three values: $1 appears twice and is appended once.
 	if args := f.Args(); len(args) != 3 || args[0] != "proj-A" || args[1] != "net-1" || args[2] != "sub-a" {
 		t.Errorf("args = %v, want [proj-A net-1 sub-a]", args)
+	}
+}
+
+// SPEC-025 T012 (FR-007a, FR-007b): the network version document must carry an
+// ABSOLUTE self href.
+//
+// It emitted the bare path "/v2.0". A client that has just resolved the catalog and
+// is reading version documents to pick an endpoint cannot resolve that against
+// anything — it is the same discovery defect as the compute version document (B4),
+// one service over, and it is why FR-007b says "every service's", not "compute's".
+func TestNeutronVersionDocumentSelfLinkIsAbsolute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	svc := &Service{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v2.0", nil)
+	c.Request.Host = "lightstack.example:9696"
+
+	svc.GetVersion(c)
+
+	var doc struct {
+		Version struct {
+			Links []struct {
+				Rel  string `json:"rel"`
+				HRef string `json:"href"`
+			} `json:"links"`
+		} `json:"version"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decoding version document: %v (body: %s)", err, w.Body.String())
+	}
+	if len(doc.Version.Links) == 0 {
+		t.Fatal("version document has no links")
+	}
+
+	for _, l := range doc.Version.Links {
+		u, err := url.Parse(l.HRef)
+		if err != nil {
+			t.Fatalf("href %q does not parse: %v", l.HRef, err)
+		}
+		if u.Scheme == "" || u.Host == "" {
+			t.Errorf("href %q is not absolute; a client cannot resolve it", l.HRef)
+		}
+		if u.Host != "lightstack.example:9696" {
+			t.Errorf("href %q does not name the host the client addressed", l.HRef)
+		}
 	}
 }

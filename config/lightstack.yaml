@@ -79,6 +79,15 @@ nova:
   # How often expired console tokens are reaped. This is what ENFORCES expiry.
   console_reconcile_interval: 30s
 
+  # How long a guest OS is given to shut down cleanly before a stop powers it off the
+  # hard way (SPEC-025). libvirt's shutdown is a REQUEST to the guest — it can take
+  # tens of seconds, and a guest that ignores ACPI never honours it — so a stop that
+  # returned as soon as the request was accepted reported success over a still-running
+  # guest. A stop is SYNCHRONOUS, so this is also how long os-stop can take — which is
+  # why it is below upstream's 60s, and why anything above 50s is clamped: past that the
+  # handler cannot write its response inside the server's write deadline.
+  shutdown_timeout: 30s
+
 neutron:
   port: 9696
   dhcp_lease_time: 24h

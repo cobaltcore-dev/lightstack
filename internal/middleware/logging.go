@@ -57,6 +57,13 @@ func InitLogger(config *common.LoggingConfig) {
 	log.Logger = logger
 }
 
+// CallerProjectKey holds the project of the authenticated CALLER, as distinct from
+// "project_id", which handlers may rebind to the project being acted upon.
+//
+// Exported so the auth middleware sets it and the logging middleware reads it without
+// either depending on a bare string literal in the other.
+const CallerProjectKey = "caller_project_id"
+
 // LoggingMiddleware logs HTTP requests with structured logging
 func LoggingMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -98,7 +105,30 @@ func LoggingMiddleware() gin.HandlerFunc {
 
 		// Extract user/project from context — populated by auth middleware during c.Next()
 		userID, _ := c.Get("user_id")
-		projectID, _ := c.Get("project_id")
+
+		// Who ACTED, and who was acted upon.
+		//
+		// "project_id" is the EFFECTIVE project after any handler rebinding, so reading
+		// it alone attributed an operator's cross-tenant action to the tenant acted upon
+		// (cloud-storage#547 B15). CallerProjectKey is set by the auth middleware from
+		// the token and is never rebound, so it is the caller.
+		//
+		// The target appears only when it DIFFERS (FR-046a): an ordinary same-project
+		// line must stay byte-identical to what it was, and the existing caller field is
+		// never renamed — it is the one operators already grep.
+		callerProject, _ := c.Get(CallerProjectKey)
+		effectiveProject, _ := c.Get("project_id")
+
+		projectID := callerProject
+		if projectID == nil {
+			// No caller recorded: an unauthenticated path, or a test wiring that sets
+			// only project_id. Fall back rather than lose the field entirely.
+			projectID = effectiveProject
+		}
+		var targetProject any
+		if callerProject != nil && effectiveProject != nil && callerProject != effectiveProject {
+			targetProject = effectiveProject
+		}
 
 		// Determine log level based on status code
 		statusCode := c.Writer.Status()
@@ -123,6 +153,11 @@ func LoggingMiddleware() gin.HandlerFunc {
 		}
 		if projectID != nil {
 			logEvent.Str("project_id", projectID.(string))
+		}
+		if targetProject != nil {
+			// Present only for a cross-project action, so "who touched tenant X" is
+			// answerable from this line alone, with no stored record consulted (SC-012).
+			logEvent.Str("target_project_id", targetProject.(string))
 		}
 
 		// Add slow request warning

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +112,55 @@ func TestGetDefaultVolumeType(t *testing.T) {
 	}
 	if resp.VolumeType.Name != defaultVolumeType || resp.VolumeType.ID != defaultVolumeType {
 		t.Errorf("types/default = {id:%q,name:%q}, want both %q", resp.VolumeType.ID, resp.VolumeType.Name, defaultVolumeType)
+	}
+}
+
+// SPEC-025 T013 (FR-007a, FR-007b): the block-storage v3 version document must derive
+// its self href from the request.
+//
+// It was hardcoded to "http://lightstack:8776/v3/" — a hostname that resolves only inside the
+// compose file's network. Every client outside it, including the dashboard and the
+// infrastructure-as-code provider, is handed an address it cannot reach. Same
+// discovery defect as the compute version document (B4), one service over.
+func TestCinderVersionDocumentSelfLinkIsDerived(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	svc := &Service{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v3", nil)
+	c.Request.Host = "lightstack.example:8776"
+
+	svc.GetVersionV3(c)
+
+	var doc struct {
+		Version struct {
+			Links []struct {
+				Rel  string `json:"rel"`
+				HRef string `json:"href"`
+			} `json:"links"`
+		} `json:"version"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decoding version document: %v (body: %s)", err, w.Body.String())
+	}
+	if len(doc.Version.Links) == 0 {
+		t.Fatal("version document has no links")
+	}
+
+	for _, l := range doc.Version.Links {
+		if strings.Contains(l.HRef, "://lightstack:") || strings.Contains(l.HRef, "://lightstack/") {
+			t.Errorf("href %q names the compose-file hostname; no real client can resolve it", l.HRef)
+		}
+		u, err := url.Parse(l.HRef)
+		if err != nil {
+			t.Fatalf("href %q does not parse: %v", l.HRef, err)
+		}
+		if u.Scheme == "" || u.Host == "" {
+			t.Errorf("href %q is not absolute", l.HRef)
+		}
+		if u.Host != "lightstack.example:8776" {
+			t.Errorf("href %q does not name the host the client addressed", l.HRef)
+		}
 	}
 }

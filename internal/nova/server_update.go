@@ -101,7 +101,9 @@ func (svc *Service) UpdateServer(c *gin.Context) {
 		"addresses": gin.H{},
 		"links": []gin.H{
 			{
-				"href": c.Request.Host + "/v2.1/servers/" + instanceID,
+				// Absolute: a scheme-less "host/v2.1/servers/x" is not a URL
+				// (SPEC-025 FR-007).
+				"href": common.BaseURL(c, 8774) + "/v2.1/servers/" + instanceID,
 				"rel":  "self",
 			},
 		},

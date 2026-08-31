@@ -86,12 +86,9 @@ func TestGenerateVMXMLWithVolumes(t *testing.T) {
 		MemoryMB:  1024,
 		VCPUs:     1,
 		ImagePath: "/var/lib/libvirt/images/root.qcow2",
-		Volumes: []VolumeConfig{
-			{
-				RBDPool:  "volumes",
-				RBDImage: "volume-123",
-				Device:   "vdb",
-			},
+		Volumes: []DiskSpec{
+			{Device: "vdb", Type: "network", Source: "volumes/volume-123", Protocol: "rbd"},
+			{Device: "/dev/vdc", Type: "file", Source: "/var/lib/lightstack/volumes/volume-456.qcow2"},
 		},
 		Networks: []NetworkConfig{
 			{
@@ -103,11 +100,14 @@ func TestGenerateVMXMLWithVolumes(t *testing.T) {
 
 	xml := GenerateVMXML(spec)
 
-	// Check RBD volume is present
+	// Both kinds of volume are present: an RBD image and a node-local file, the latter as the
+	// attachment records its device ("/dev/vdc").
 	requiredElements := []string{
 		"<disk type='network' device='disk'>",
 		"<source protocol='rbd' name='volumes/volume-123'>",
 		"<target dev='vdb' bus='virtio'/>",
+		"<source file='/var/lib/lightstack/volumes/volume-456.qcow2'/>",
+		"<target dev='vdc' bus='virtio'/>",
 	}
 
 	for _, element := range requiredElements {

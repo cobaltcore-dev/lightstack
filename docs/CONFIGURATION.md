@@ -134,14 +134,14 @@ logging:
 > are silently ignored. Everything else (admin password, service modes, VXLAN, cache,
 > logging, ports, …) takes effect **only from the YAML config file** passed via `--config`.
 
-The binary honors exactly **thirteen** environment variables:
+The binary honors exactly **fourteen** environment variables:
 
 | Variable | Overrides / controls | Where it is read |
 |----------|----------------------|------------------|
 | `LIGHTSTACK_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` in OpenStack's dash-free form in the `/v3/auth/tokens` responses; `/v3/s3tokens` already uses that historical form. The EC2 mint accepts dash-free or alternate UUID encodings as input and stores the canonical database id. Enabling the flag therefore unifies Swift with the existing S3 tenant namespace without re-keying S3 data. | `internal/common/config.go` (`LoadConfig`) |
-| `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
+| `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host — a **fallback**, see below | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
 | `LIGHTSTACK_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
 | `LIGHTSTACK_DRAIN_SECONDS` | graceful-shutdown drain window | shutdown (`cmd/lightstack/main.go`) |
 | `LIGHTSTACK_GLANCE_STORAGE_MODE` | `glance.storage_mode` | `internal/common/config.go` (`LoadConfig`) |
@@ -166,6 +166,39 @@ export LIGHTSTACK_ENDPOINT_SCHEME="https"   # only when TLS is terminated in fro
 To change anything else, edit (or mount) the config file. The Helm chart, for example,
 renders the full `lightstack.yaml` — including `keystone.admin_password` — into a Kubernetes
 **Secret** mounted at the `--config` path, precisely because no per-key env override exists.
+
+#### `LIGHTSTACK_ENDPOINT_HOST` is a fallback, not an override
+
+**Behavioural change (SPEC-025).** Self-links now name **the host the client actually
+addressed**, and `LIGHTSTACK_ENDPOINT_HOST` is used only when a request carries no usable host.
+It previously won unconditionally.
+
+Why it changed: the old precedence made a per-command endpoint override unusable. A
+client that set `OS_COMPUTE_ENDPOINT_OVERRIDE` (or any `OS_*_ENDPOINT_OVERRIDE`) would
+fetch the service's version document, be handed back the deployment's own hostname in
+place of the one it had explicitly named, and then fail against a host the caller never
+chose.
+
+What to expect after upgrading:
+
+- Behind a proxy, ingress or load balancer, **nothing changes in practice** — the request
+  already carries the hostname you want advertised, so that is what gets advertised.
+- Reached directly by address, self-links now name that address rather than the
+  configured name. If clients relied on being redirected to the configured name, they
+  will now stay where they are.
+- **There is deliberately no setting to restore the old order.** Two rules for the same
+  question is what produced the defect.
+
+`LIGHTSTACK_ENDPOINT_HOST` still matters for the **service catalog**, which is deployment-wide
+rather than per-request and continues to be resolved from it. Note the consequence: if
+you point it at a name clients cannot resolve, every command fails at catalog lookup,
+before any version document is read.
+
+The advertised **port** is applied consistently now too. It names the port the target
+service is reachable on, and replaces whatever port the request carried — which is what
+lets compute advertise an image location on 9292 and a console origin on 6080 while
+itself being addressed on 8774. Lightstack is port-per-service, so there is no path-routed
+topology for this to disturb.
 
 ### Docker Compose Example
 
@@ -301,6 +334,70 @@ nova:
 **libvirt_mode:**
 - `stub` - Mock libvirt (for testing, no actual VMs)
 - `real` - Real libvirt integration (creates actual VMs)
+
+#### Run state, shutdown grace and audit retention (SPEC-025)
+
+```yaml
+nova:
+  state_reconcile_interval: 30s      # how often recorded run state is checked
+  shutdown_timeout: 30s              # grace given to a guest OS before a stop forces it off
+  instance_action_retention: 2160h   # 90 days — how long a deleted server's actions are kept
+```
+
+**`state_reconcile_interval`** (default `30s`) — how often the recorded run state of
+real-mode servers is compared against the hypervisor and corrected.
+
+Only drift Lightstack did *not* cause needs this: every lifecycle action persists its own
+result, so a stop or start is recorded immediately and needs no sweep. What this catches
+is a guest that crashed, or one removed out of band. Reading a server never contacts the
+hypervisor — deliberately, so a listing does not cost one round trip per server — which
+means this interval is how stale a server's reported state can be for drift of that kind.
+A non-positive value is clamped to the default rather than honoured, since `0` would mean
+a busy loop.
+
+**`shutdown_timeout`** (default `30s`, maximum `50s`) — how long a guest OS is given to
+shut down cleanly before a stop powers it off the hard way.
+
+libvirt's shutdown is a *request* to the guest, not a state transition: the guest's own
+`on_poweroff` handling decides what to do with it, it commonly takes several seconds, and
+a guest that ignores ACPI never honours it at all. A stop that returned as soon as libvirt
+accepted the request therefore reported success over a guest that was still running, and
+recorded `SHUTOFF` for it. So a stop now waits for the guest to actually stop, and forces
+it off once this period expires.
+
+**A stop is synchronous, so this is also how long an `os-stop` request can take.** That is
+what bounds it, and it is why the default is *below* upstream nova's `shutdown_timeout` of
+60s — upstream's stop is asynchronous and holds no connection open, so it can afford a
+minute where Lightstack cannot:
+
+- **30s default** — the default read timeout of gunicorn (which fronts Horizon) and of
+  most ingresses. A longer default fails in a deployment rather than in a test.
+- **50s ceiling** — `HTTPWriteTimeout` is 60s, and Go resets that deadline when a
+  request's header is read, so it covers *handler execution plus the response write*. A
+  handler that runs past it has its connection closed with **no response written**: the
+  stop succeeds and reports nothing, and a client that retries then gets a truthful `409`
+  for a stop that already happened. A configured value above the ceiling is clamped down,
+  with a warning on stderr.
+
+An ordinary Linux guest stops in a few seconds; the full period is only reached by a guest
+that is ignoring the request — a Windows guest at a "some apps are still running" prompt,
+or any guest stopped before its ACPI handler is up. A non-positive value is clamped to the
+default: unset YAML is indistinguishable from a deliberate `0`, and the safe reading of
+"not configured" is not "hard-kill every guest".
+
+**`instance_action_retention`** (default `2160h`, i.e. 90 days) — how long a server's
+action records are kept **after the server itself is deleted**.
+
+Deleting a server does not delete its action history; upstream retains it and so does
+Lightstack. Without a retention age the table would only grow. Records belonging to a server
+that still exists are never reclaimed, whatever their age. A non-positive value is
+clamped to the default, since `0` would mean reclaiming everything immediately.
+
+All three are **config-file only**. The binary honours exactly four environment variables
+(see [Environment Variables](#environment-variables)), so these must arrive through the
+`lightstack.yaml` you pass to `--config` — in Helm, through the rendered Secret. The chart
+exposes them as `nova.stateReconcileInterval`, `nova.shutdownTimeout` and
+`nova.instanceActionRetention`.
 
 ### Neutron (Network Service)
 

@@ -92,7 +92,7 @@ func TestStopVMStub(t *testing.T) {
 	vmUUID, _ := manager.CreateVM(ctx, "<domain></domain>")
 
 	// Stop should succeed
-	err := manager.StopVM(ctx, vmUUID)
+	err := manager.StopVM(ctx, vmUUID, 0)
 	if err != nil {
 		t.Errorf("Expected no error from stub stop, got: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestStartVMStub(t *testing.T) {
 	vmUUID, _ := manager.CreateVM(ctx, "<domain></domain>")
 
 	// Stop it
-	_ = manager.StopVM(ctx, vmUUID)
+	_ = manager.StopVM(ctx, vmUUID, 0)
 
 	// Start should succeed
 	err := manager.StartVM(ctx, vmUUID)
@@ -166,7 +166,7 @@ func TestVMLifecycleStub(t *testing.T) {
 	}
 
 	// Stop
-	_ = manager.StopVM(ctx, vmUUID)
+	_ = manager.StopVM(ctx, vmUUID, 0)
 	state, _, _ = manager.GetVMState(ctx, vmUUID)
 	if state != "SHUTOFF" {
 		t.Errorf("Expected SHUTOFF state after stop, got %s", state)

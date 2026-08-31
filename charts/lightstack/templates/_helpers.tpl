@@ -155,6 +155,9 @@ nova:
   console_token_ttl: {{ .Values.nova.consoleTokenTtl | quote }}
   console_reconcile_interval: {{ .Values.nova.consoleReconcileInterval | quote }}
   console_enabled: {{ if include "lightstack.consoleProxyDeployed" . }}true{{ else }}false{{ end }}
+  state_reconcile_interval: {{ .Values.nova.stateReconcileInterval | quote }}
+  instance_action_retention: {{ .Values.nova.instanceActionRetention | quote }}
+  shutdown_timeout: {{ .Values.nova.shutdownTimeout | quote }}
 neutron:
   port: 9696
   networking_mode: {{ .Values.neutron.networkingMode | quote }}

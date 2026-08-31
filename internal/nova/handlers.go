@@ -22,6 +22,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -45,9 +46,12 @@ type Service struct {
 	consoleStore        *console.Store
 	consoleProxyBaseURL string
 	consoleEnabled      bool
-	wg                  sync.WaitGroup
-	ctx                 context.Context
-	cancel              context.CancelFunc
+	// shutdownTimeout is how long a guest gets to shut down cleanly before a stop
+	// forces it off. Zero means the package default; see SetShutdownTimeout.
+	shutdownTimeout time.Duration
+	wg              sync.WaitGroup
+	ctx             context.Context
+	cancel          context.CancelFunc
 }
 
 const (
@@ -55,9 +59,19 @@ const (
 	novaCurrentVersion = "2.90"
 )
 
-// NeutronService defines the interface for Neutron operations Nova needs
+// NeutronService defines the interface for Neutron operations Nova needs.
 type NeutronService interface {
-	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string) (any, error)
+	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string, admin bool) (any, error)
+	// NetworkUsableBy reports whether a project may attach a guest to a network,
+	// returning a non-nil error naming the reason if not. admin is whether the caller
+	// holds the administrator role, which decides an unshared external network; both
+	// methods take it, so the pre-flight and the allocation judge the same caller.
+	//
+	// Compute asks rather than deciding: the attach rule belongs to the network
+	// service, and duplicating the predicate here is how the two drift. Used to refuse a
+	// bad network BEFORE anything is created (FR-017), which is the half of a network
+	// failure that IS knowable up front.
+	NetworkUsableBy(ctx context.Context, networkID, projectID string, admin bool) error
 }
 
 // NewService creates a new Nova service
@@ -106,6 +120,31 @@ func (svc *Service) SetConsoleProxyBaseURL(u string) {
 // console requests are refused rather than answered with a URL that leads nowhere.
 func (svc *Service) SetConsoleEnabled(enabled bool) {
 	svc.consoleEnabled = enabled
+}
+
+// SetShutdownTimeout sets how long a guest OS is given to shut down cleanly before a
+// stop powers it off the hard way (SPEC-025 FR-022, common.DefaultShutdownTimeout).
+//
+// A setter rather than a NewService parameter, matching the image-store and Cinder
+// wiring: every test constructing a Service would otherwise have to name a value it
+// does not care about.
+func (svc *Service) SetShutdownTimeout(d time.Duration) {
+	svc.shutdownTimeout = d
+}
+
+// guestShutdownGrace is the EFFECTIVE grace period: defaulted when unset, and clamped to
+// what a synchronous stop can still answer within.
+//
+// Clamped here as well as in LoadConfig because this is the value the handler actually
+// uses, and not every Service is built by LoadConfig — every test sets it directly. A
+// grace period longer than common.MaxShutdownTimeout does not merely run long: net/http
+// closes the connection at the write deadline with no response written, so the stop
+// succeeds and reports nothing (SPEC-025 FR-022b).
+func (svc *Service) guestShutdownGrace() time.Duration {
+	if svc.shutdownTimeout <= 0 {
+		return common.DefaultShutdownTimeout
+	}
+	return min(svc.shutdownTimeout, common.MaxShutdownTimeout)
 }
 
 // reclaimImageBaseIfUnused removes the node-local raw base for imageID once no
@@ -334,7 +373,14 @@ func (svc *Service) ListVersions(c *gin.Context) {
 	})
 }
 
-// GetVersion returns version details
+// GetVersion returns version details for GET /v2.1.
+//
+// The links array is not decoration: python-openstackclient reads this document
+// during discovery and indexes into version.links unconditionally, so omitting it
+// aborted the client with "list index out of range" — `openstack flavor list` failed
+// for anyone who had not pinned OS_COMPUTE_API_VERSION (cloud-storage#547 B4,
+// SPEC-025 FR-001/FR-008). The version LIST at "/" always had links; this document,
+// which is the one discovery actually fetches, did not.
 func (svc *Service) GetVersion(c *gin.Context) {
 	c.Header("OpenStack-API-Version", "compute "+novaCurrentVersion)
 	c.Header("OpenStack-API-Minimum-Version", "compute "+novaMinVersion)
@@ -344,6 +390,9 @@ func (svc *Service) GetVersion(c *gin.Context) {
 			"status":      "CURRENT",
 			"version":     novaCurrentVersion,
 			"min_version": novaMinVersion,
+			"links": []gin.H{
+				{"rel": "self", "href": fmt.Sprintf("%s/v2.1", common.BaseURL(c, 8774))},
+			},
 		},
 	})
 }
@@ -590,10 +639,14 @@ func (svc *Service) removeBootVolume(volumeID string) {
 // markInstanceError flags an instance ERROR (best-effort), used from the
 // VM-creation goroutine's failure paths. Uses svc.ctx so it still runs even if
 // the request context was cancelled.
-func (svc *Service) markInstanceError(instanceID string) {
+func (svc *Service) markInstanceError(instanceID string, reason string) {
+	now := time.Now()
 	if _, err := svc.pool.Exec(svc.ctx,
-		"UPDATE instances SET status = 'ERROR', updated_at = $1 WHERE id = $2",
-		time.Now(), instanceID); err != nil {
+		`UPDATE instances
+		    SET status = 'ERROR', updated_at = $1,
+		        fault_code = $2, fault_message = $3, fault_created = $1
+		  WHERE id = $4`,
+		now, http.StatusInternalServerError, reason, instanceID); err != nil {
 		log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ERROR")
 	}
 }
@@ -732,6 +785,37 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		log.Error().Err(err).Str("operation", "check_quota_ram").Msg("quota check error")
 		common.SendError(c, common.NewInternalServerError("failed to check quota"))
 		return
+	}
+
+	// Refuse a network the caller cannot use BEFORE the instance row exists (FR-017,
+	// FR-016a). This is the half of a network failure that is knowable up front — a
+	// wrong or unreachable network id — and answering it synchronously is what stops
+	// the ordinary typo from becoming a background failure the user has to poll for.
+	//
+	// The other half, an allocation that fails once under way, cannot be answered here
+	// because the create is acknowledged before allocation begins; it lands the server
+	// in ERROR with a readable reason instead (FR-015, FR-016).
+	if svc.neutronSvc != nil {
+		for _, network := range req.Server.Networks {
+			if network.UUID == "" {
+				continue
+			}
+			if err := svc.neutronSvc.NetworkUsableBy(c.Request.Context(), network.UUID, projectID, isAdmin); err != nil {
+				logger.Warn().Err(err).Str("network_id", network.UUID).
+					Msg("refusing server create: requested network is not usable by this project")
+				middleware.LogOperationEnd(c, "create", "server", req.Server.Name, time.Since(start), err)
+				// Upstream answers an unshared external network with its own 403
+				// (ExternalNetworkAttachForbidden); every other refusal is a 400.
+				var forbidden *neutron.ExternalNetworkAttachForbiddenError
+				if errors.As(err, &forbidden) {
+					common.SendError(c, common.NewForbiddenError(forbidden.Error()))
+					return
+				}
+				common.SendError(c, common.NewBadRequestError(
+					fmt.Sprintf("network %s is not available to this project: %v", network.UUID, err)))
+				return
+			}
+		}
 	}
 
 	// FR-002a: validate the keypair exists for this user before creating anything,
@@ -990,24 +1074,46 @@ func (svc *Service) CreateServer(c *gin.Context) {
 					log.Debug().Str("network_id", network.UUID).Msg("Allocating port for network")
 					// sgIDs: the groups resolved and validated above, so the port is
 					// filtered by the groups the server reports (cloud-storage#579).
-					portInfoRaw, err := svc.neutronSvc.AllocatePortForInstance(ctx, network.UUID, projectID, instanceID, sgIDs)
+					portInfoRaw, err := svc.neutronSvc.AllocatePortForInstance(ctx, network.UUID, projectID, instanceID, sgIDs, isAdmin)
 					if err != nil {
+						// FAIL the boot. This used to log and `continue`, so the
+						// server reached ACTIVE with an empty address map and no
+						// interface at all — the user was told it was running while
+						// it had no connectivity and could not reach the metadata
+						// service (cloud-storage#547 B13, FR-015/FR-020).
+						//
+						// A partial success is still a failure: one attached network
+						// out of two is not what was asked for, and a server that
+						// silently has fewer interfaces than requested is the same
+						// class of lie in a smaller size.
 						log.Error().Err(err).
 							Str("instance_id", instanceID).
 							Str("network_id", network.UUID).
-							Msg("Failed to allocate port from Neutron")
-						// Continue with empty networks rather than failing
-						continue
+							Msg("Failed to allocate port from Neutron; failing the boot")
+						svc.markInstanceError(instanceID,
+							fmt.Sprintf("could not attach the server to network %s: %v", network.UUID, err))
+						return
 					}
 
 					// Type assert to neutron.PortInfo
-					if portInfo, ok := portInfoRaw.(*neutron.PortInfo); ok {
-						networks = append(networks, hypervisor.NetworkConfig{
-							PortID:     portInfo.ID,
-							MACAddress: portInfo.MAC,
-							BridgeName: fmt.Sprintf("br-%s", portInfo.NetworkID[:8]),
-						})
+					portInfo, ok := portInfoRaw.(*neutron.PortInfo)
+					if !ok {
+						// The allocation reported success but returned something
+						// unusable, so the guest would boot without this interface.
+						// Same outcome as an outright failure, for the same reason.
+						log.Error().
+							Str("instance_id", instanceID).
+							Str("network_id", network.UUID).
+							Msg("port allocation returned an unusable result; failing the boot")
+						svc.markInstanceError(instanceID,
+							fmt.Sprintf("network %s returned an unusable port", network.UUID))
+						return
 					}
+					networks = append(networks, hypervisor.NetworkConfig{
+						PortID:     portInfo.ID,
+						MACAddress: portInfo.MAC,
+						BridgeName: networking.BridgeNameForNetwork(portInfo.NetworkID),
+					})
 				}
 			}
 
@@ -1059,28 +1165,24 @@ func (svc *Service) CreateServer(c *gin.Context) {
 					"SELECT status, COALESCE(bootable, false), project_id, COALESCE(attached_to_instance_id::text, ''), COALESCE(rbd_pool, ''), COALESCE(rbd_image, '') FROM volumes WHERE id = $1",
 					rootVol).Scan(&volStatus, &volBootable, &volProject, &volAttached, &rbdPool, &rbdImage); err != nil {
 					log.Error().Err(err).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: root volume not found")
-					svc.markInstanceError(instanceID)
+					svc.markInstanceError(instanceID, "boot volume "+rootVol+" was not found")
 					return
 				}
 				if volProject != projectID || volStatus != "available" || !volBootable || volAttached != "" {
 					log.Error().Str("instance_id", instanceID).Str("volume_id", rootVol).
 						Str("status", volStatus).Bool("bootable", volBootable).Bool("owned", volProject == projectID).
 						Msg("boot-from-volume: root volume not eligible (need available + bootable + owned + unattached)")
-					svc.markInstanceError(instanceID)
+					svc.markInstanceError(instanceID, "boot volume "+rootVol+" is not available, bootable, owned by this project and unattached")
 					return
 				}
-				// Root disk = the bootable volume's backing, selected exactly like the
-				// attach path (volumeDiskXML): if the node-local qcow2 exists it's a
-				// local volume; otherwise it's RBD (rbd:pool/image, which GenerateVMXML
-				// renders as a network disk). Do NOT key off rbd_pool/rbd_image — Lightstack
-				// sets those defaults on every volume, local ones included, so they
+				// Root disk = the bootable volume's backing, selected by the one rule the
+				// attach path and self-heal use too (volumeDisk): if the node-local qcow2
+				// exists it's a local volume; otherwise it's RBD (rbd:pool/image, which
+				// GenerateVMXML renders as a network disk). Do NOT key off rbd_pool/rbd_image —
+				// Lightstack sets those defaults on every volume, local ones included, so they
 				// can't distinguish the backend (SPEC-009 WS-5). Local is the validated
 				// v1 mode; the RBD branch shares the (Ceph-untested) attach RBD path.
-				if localPath := storage.LocalVolumePath(rootVol); fileExists(localPath) {
-					imagePath = localPath
-				} else {
-					imagePath = "rbd:" + rbdPool + "/" + rbdImage
-				}
+				imagePath = volumeRootDiskPath(rootVol, rbdPool, rbdImage)
 				// boot-from-volume skips StageOverlay, so create the per-instance
 				// directory the serial console.log lives in — otherwise libvirt
 				// fails to start the domain (SPEC-009 WS-5).
@@ -1100,16 +1202,16 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				bvNow := time.Now()
 				if _, e := svc.pool.Exec(ctx,
 					"INSERT INTO volume_attachments (id, volume_id, instance_id, device, delete_on_termination, attached_at) VALUES ($1, $2, $3, $4, $5, $6)",
-					uuid.New().String(), rootVol, instanceID, "/dev/vda", rootDOT, bvNow); e != nil {
+					uuid.New().String(), rootVol, instanceID, rootDevice, rootDOT, bvNow); e != nil {
 					log.Error().Err(e).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: failed to record root attachment")
-					svc.markInstanceError(instanceID)
+					svc.markInstanceError(instanceID, "the boot volume could not be attached as the root device")
 					return
 				}
 				if _, e := svc.pool.Exec(ctx,
 					"UPDATE volumes SET attached_to_instance_id = $1, status = 'in-use', updated_at = $2 WHERE id = $3",
 					instanceID, bvNow, rootVol); e != nil {
 					log.Error().Err(e).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: failed to mark volume in-use")
-					svc.markInstanceError(instanceID)
+					svc.markInstanceError(instanceID, "the boot volume could not be marked in use")
 					return
 				}
 			} else {
@@ -1511,12 +1613,32 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projectID string) (gin.H, error) {
 	addresses := gin.H{}
 
-	// Query ports for this instance
+	// One row per port, with every floating address associated to it aggregated
+	// alongside its fixed ones.
+	//
+	// The floating join is the fix for cloud-storage#547 B17: this query read
+	// ports.fixed_ips alone, so a floating address that was successfully associated —
+	// bound to the port and ACTIVE — never appeared in the one field `server show`,
+	// `server list`'s Networks column, the dashboard's instance list and the
+	// infrastructure-as-code provider all read. The user was told the association had
+	// not taken effect.
+	//
+	// Aggregated in SQL rather than by a second query per port: a listing already runs
+	// this once per instance, and one round trip per port on top of that would make the
+	// cost quadratic in a project's size.
 	rows, err := svc.pool.Query(ctx, `
-		SELECT p.network_id, p.fixed_ips, n.name
+		SELECT p.network_id,
+		       p.fixed_ips,
+		       n.name,
+		       COALESCE(
+		           ARRAY_AGG(f.floating_ip_address) FILTER (WHERE f.floating_ip_address IS NOT NULL),
+		           '{}'
+		       ) AS floating_ips
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
+		LEFT JOIN floating_ips f ON f.port_id = p.id
 		WHERE p.device_id = $1 AND p.project_id = $2
+		GROUP BY p.id, p.network_id, p.fixed_ips, n.name
 	`, instanceID, projectID)
 
 	if err != nil {
@@ -1527,8 +1649,9 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 	for rows.Next() {
 		var networkID, networkName string
 		var fixedIPsJSON []byte
+		var floatingIPs []string
 
-		if err := rows.Scan(&networkID, &fixedIPsJSON, &networkName); err != nil {
+		if err := rows.Scan(&networkID, &fixedIPsJSON, &networkName, &floatingIPs); err != nil {
 			log.Warn().Err(err).Msg("failed to scan network row")
 			continue
 		}
@@ -1539,20 +1662,28 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 			continue
 		}
 
-		// Build address list for this network
-		var addressList []gin.H
+		// Build the address list for this network. Upstream chains fixed and floating
+		// addresses into the SAME per-network list and tags each entry with its own
+		// kind; the type was previously the literal "fixed", so only one kind could
+		// ever appear however many the deployment had (FR-034, FR-035).
+		addressList := addresses[networkName]
+		var entries []gin.H
+		if existing, ok := addressList.([]gin.H); ok {
+			entries = existing
+		}
 		for _, ipInfo := range fixedIPs {
 			if ipAddr, ok := ipInfo["ip_address"].(string); ok {
-				addressList = append(addressList, gin.H{
-					"addr":            ipAddr,
-					"version":         4,
-					"OS-EXT-IPS:type": "fixed",
-				})
+				entries = append(entries, addressEntry(ipAddr, "fixed"))
+			}
+		}
+		for _, floating := range floatingIPs {
+			if floating != "" {
+				entries = append(entries, addressEntry(floating, "floating"))
 			}
 		}
 
-		if len(addressList) > 0 {
-			addresses[networkName] = addressList
+		if len(entries) > 0 {
+			addresses[networkName] = entries
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1560,6 +1691,20 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 	}
 
 	return addresses, nil
+}
+
+// addressEntry is one entry of a server's per-network address list, in upstream's
+// shape. The kind is a parameter precisely because it used to be a constant.
+func addressEntry(addr, kind string) gin.H {
+	version := 4
+	if strings.Contains(addr, ":") {
+		version = 6
+	}
+	return gin.H{
+		"addr":            addr,
+		"version":         version,
+		"OS-EXT-IPS:type": kind,
+	}
 }
 
 // GetServer returns details for a single server
@@ -1573,17 +1718,21 @@ func (svc *Service) GetServer(c *gin.Context) {
 	}
 
 	var id, name, status string
-	var userID, flavorID, imageID, keyName sql.NullString
+	var userID, flavorID, imageID, keyName, faultMessage sql.NullString
+	var faultCode sql.NullInt32
+	var faultCreated sql.NullTime
 	var powerState int
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, status, power_state, project_id,
 		       user_id::text, flavor_id::text, image_id::text,
-		       created_at, updated_at, key_name
+		       created_at, updated_at, key_name,
+		       fault_code, fault_message, fault_created
 		FROM instances
 		WHERE id = $1 AND project_id = $2
-	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projectID, &userID, &flavorID, &imageID, &createdAt, &updatedAt, &keyName)
+	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projectID, &userID, &flavorID, &imageID,
+		&createdAt, &updatedAt, &keyName, &faultCode, &faultMessage, &faultCreated)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -1648,6 +1797,30 @@ func (svc *Service) GetServer(c *gin.Context) {
 		return
 	}
 	response["os-extended-volumes:volumes_attached"] = attachedVolumes(volMap[id])
+
+	// fault: why a failed server failed, readable from the server itself (FR-016).
+	//
+	// Present only while the server is in ERROR and a reason was recorded, which is
+	// upstream's behaviour — a server that never failed carries no fault key at all,
+	// so this is invisible to every response that was already correct. Before this a
+	// user whose boot failed had nowhere to look: `server show` reported a status and
+	// nothing else, and the reason existed only in the service log.
+	//
+	// `details` is deliberately omitted: upstream fills it with a traceback for
+	// administrators, and there is none to offer here.
+	if status == "ERROR" && faultMessage.Valid && faultMessage.String != "" {
+		fault := gin.H{
+			"code":    http.StatusInternalServerError,
+			"message": faultMessage.String,
+		}
+		if faultCode.Valid {
+			fault["code"] = int(faultCode.Int32)
+		}
+		if faultCreated.Valid {
+			fault["created"] = faultCreated.Time.Format(time.RFC3339)
+		}
+		response["fault"] = fault
+	}
 
 	c.JSON(http.StatusOK, gin.H{"server": response})
 }
@@ -1870,18 +2043,20 @@ var consoleActions = map[string]func(*Service, *gin.Context, any){
 // down is what stops the rule from being re-implemented ~25 times. Handlers that
 // do not need a value take it as _ so the signature stays uniform.
 var serverActions = map[string]func(*Service, *gin.Context, any, string, string){
-	"suspend":       func(s *Service, c *gin.Context, _ any, _, _ string) { s.SuspendInstance(c) },
-	"resume":        func(s *Service, c *gin.Context, _ any, _, _ string) { s.ResumeInstance(c) },
-	"shelve":        func(s *Service, c *gin.Context, _ any, _, _ string) { s.ShelveInstance(c) },
-	"shelveOffload": func(s *Service, c *gin.Context, _ any, _, _ string) { s.ShelveInstance(c) },
-	"unshelve":      func(s *Service, c *gin.Context, _ any, _, _ string) { s.UnshelveInstance(c) },
-	"confirmResize": func(s *Service, c *gin.Context, _ any, _, _ string) { s.ConfirmResizeInstance(c) },
-	"revertResize":  func(s *Service, c *gin.Context, _ any, _, _ string) { s.RevertResizeInstance(c) },
-	"evacuate":      func(s *Service, c *gin.Context, _ any, _, _ string) { s.EvacuateInstance(c) },
-	"migrate":       func(s *Service, c *gin.Context, _ any, _, _ string) { s.MigrateInstance(c) },
-	"restore":       func(s *Service, c *gin.Context, _ any, _, _ string) { s.RestoreInstance(c) },
+	"suspend":       func(s *Service, c *gin.Context, _ any, id, proj string) { s.SuspendInstance(c, id, proj) },
+	"resume":        func(s *Service, c *gin.Context, _ any, id, proj string) { s.ResumeInstance(c, id, proj) },
+	"shelve":        func(s *Service, c *gin.Context, _ any, id, proj string) { s.ShelveInstance(c, id, proj) },
+	"shelveOffload": func(s *Service, c *gin.Context, _ any, id, proj string) { s.ShelveInstance(c, id, proj) },
+	"unshelve":      func(s *Service, c *gin.Context, _ any, id, proj string) { s.UnshelveInstance(c, id, proj) },
+	"confirmResize": func(s *Service, c *gin.Context, _ any, id, proj string) { s.ConfirmResizeInstance(c, id, proj) },
+	"revertResize":  func(s *Service, c *gin.Context, _ any, id, proj string) { s.RevertResizeInstance(c, id, proj) },
+	"evacuate":      func(s *Service, c *gin.Context, _ any, id, proj string) { s.EvacuateInstance(c, id, proj) },
+	"migrate":       func(s *Service, c *gin.Context, _ any, id, proj string) { s.MigrateInstance(c, id, proj) },
+	"restore":       func(s *Service, c *gin.Context, _ any, id, proj string) { s.RestoreInstance(c, id, proj) },
 
-	"resize":      func(s *Service, c *gin.Context, d any, _, _ string) { s.ResizeInstanceAction(c, d) },
+	"resize": func(s *Service, c *gin.Context, d any, id, proj string) { s.ResizeInstanceAction(c, d, id, proj) },
+	// The only entry that still discards both: createImage names a NEW image and never
+	// looks the server up, so it has no reference to resolve.
 	"createImage": func(s *Service, c *gin.Context, d any, _, _ string) { s.CreateImageAction(c, d) },
 
 	"rebuild": func(s *Service, c *gin.Context, d any, id, proj string) { s.RebuildInstanceAction(c, d, id, proj) },
@@ -1895,14 +2070,32 @@ var serverActions = map[string]func(*Service, *gin.Context, any, string, string)
 
 	// These read their body from the context rather than a parameter; left as-is
 	// so this refactor changes dispatch only.
-	"os-migrateLive":      func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.LiveMigrateInstance(c) },
-	"addSecurityGroup":    func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.AddSecurityGroup(c) },
-	"removeSecurityGroup": func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.RemoveSecurityGroup(c) },
-	"changePassword":      func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.ChangePassword(c) },
-	"createBackup":        func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.CreateBackupAction(c) },
-	"os-resetState":       func(s *Service, c *gin.Context, d any, _, _ string) { setActionData(c, d); s.ResetStateAction(c) },
+	"os-migrateLive": func(s *Service, c *gin.Context, d any, id, proj string) {
+		setActionData(c, d)
+		s.LiveMigrateInstance(c, id, proj)
+	},
+	"addSecurityGroup": func(s *Service, c *gin.Context, d any, id, proj string) {
+		setActionData(c, d)
+		s.AddSecurityGroup(c, id, proj)
+	},
+	"removeSecurityGroup": func(s *Service, c *gin.Context, d any, id, proj string) {
+		setActionData(c, d)
+		s.RemoveSecurityGroup(c, id, proj)
+	},
+	"changePassword": func(s *Service, c *gin.Context, d any, id, proj string) {
+		setActionData(c, d)
+		s.ChangePassword(c, id, proj)
+	},
+	"createBackup": func(s *Service, c *gin.Context, d any, id, proj string) {
+		setActionData(c, d)
+		s.CreateBackupAction(c, id, proj)
+	},
+	"os-resetState": func(s *Service, c *gin.Context, d any, id, proj string) {
+		setActionData(c, d)
+		s.ResetStateAction(c, id, proj)
+	},
 
-	"os-resetNetwork": func(s *Service, c *gin.Context, _ any, _, _ string) { s.ResetNetworkAction(c) },
+	"os-resetNetwork": func(s *Service, c *gin.Context, _ any, id, proj string) { s.ResetNetworkAction(c, id, proj) },
 }
 
 // setActionData passes an action's body to handlers that read it from the
@@ -2057,11 +2250,15 @@ func (svc *Service) lifecycleAction(c *gin.Context, action, instanceID, projectI
 	// which resolveServerOr404 does not carry. That resolved UUID is also what
 	// console-token revocation keys on below, since the caller may have
 	// addressed the instance by name (SPEC-021 FR-014).
+	//
+	// updated_at is read with it as the row's revision: a correction this action makes
+	// from what it observes is written only if nothing has written the row since.
 	var libvirtDomainID any
+	var readAt *time.Time
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE id = $1",
+		"SELECT libvirt_domain_id, updated_at FROM instances WHERE id = $1",
 		instanceID,
-	).Scan(&libvirtDomainID)
+	).Scan(&libvirtDomainID, &readAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		log.Warn().Str("instance_id", instanceID).Msg("Instance not found in ServerAction")
@@ -2143,32 +2340,207 @@ func (svc *Service) lifecycleAction(c *gin.Context, action, instanceID, projectI
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	// A stop may wait out the guest's entire grace period before forcing it off, so the
+	// bound has to exceed that period. At the old flat 10s the wait would be cancelled
+	// on every guest slower than ten seconds, and every one of them force-killed.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), svc.guestShutdownGrace()+common.LifecycleResponseSlack)
 	defer cancel()
 
-	// Handle different actions with real libvirt
+	// Each action names the state the server is in once it succeeds, so the record can
+	// be written from one place rather than three (SPEC-025 FR-022, FR-023, FR-024a).
+	var (
+		wantStatus   string
+		wantPower    int
+		healedDomain string
+	)
 	switch action {
 	case "reboot":
-		if err := svc.vmManager.RebootVM(ctx, libvirtDomainStr, hardReboot); err != nil {
-			log.Error().Err(err).Str("operation", "reboot_vm").Msg("libvirt error")
-			common.SendError(c, startRefusal(err, "failed to reboot server"))
-			return
-		}
+		err = svc.vmManager.RebootVM(ctx, libvirtDomainStr, hardReboot)
+		wantStatus, wantPower = "ACTIVE", 1
 	case "os-stop":
-		if err := svc.vmManager.StopVM(ctx, libvirtDomainStr); err != nil {
-			log.Error().Err(err).Str("operation", "stop_vm").Msg("libvirt error")
-			common.SendError(c, common.NewInternalServerError("failed to stop server"))
+		// The guest may already be off: shut down from inside, or stopped by an
+		// earlier request whose record was written optimistically. libvirt errors on a
+		// shutdown request to an inactive domain, and that error had nowhere to go but
+		// a 500 (cloud-storage#547 B12). Upstream answers 409 here — its precondition
+		// is "the server status must be ACTIVE or ERROR".
+		//
+		// Correcting the record before refusing is what stops the refusal latching: a
+		// 409 over a record that still disagrees with the hypervisor locks the server
+		// out of the only action that would have cleared the disagreement.
+		if svc.observedRunState(ctx, libvirtDomainStr) == hypervisor.RunStateDown {
+			svc.persistObservedRunState(c.Request.Context(), instanceID, projectID, "SHUTOFF", 4, readAt)
+			common.SendError(c, common.NewOperationConflictError(action, "the server is already stopped"))
 			return
 		}
+		err = svc.vmManager.StopVM(ctx, libvirtDomainStr, svc.guestShutdownGrace())
+		wantStatus, wantPower = "SHUTOFF", 4
 	case "os-start":
-		if err := svc.vmManager.StartVM(ctx, libvirtDomainStr); err != nil {
-			log.Error().Err(err).Str("operation", "start_vm").Msg("libvirt error")
-			common.SendError(c, startRefusal(err, "failed to start server"))
+		// The mirror of the above, and the half the host probe hit eight times running:
+		// the record said SHUTOFF while the guest had never stopped, so every start
+		// reached libvirt with an already-active domain and answered 500. Upstream's
+		// precondition is "the server status must be SHUTOFF".
+		if svc.observedRunState(ctx, libvirtDomainStr) == hypervisor.RunStateUp {
+			svc.persistObservedRunState(c.Request.Context(), instanceID, projectID, "ACTIVE", 1, readAt)
+			common.SendError(c, common.NewOperationConflictError(action, "the server is already running"))
 			return
 		}
+		err = svc.vmManager.StartVM(ctx, libvirtDomainStr)
+		if errors.Is(err, hypervisor.ErrDomainNotFound) {
+			// Self-heal (FR-025): the server exists and its disk is still there;
+			// only libvirt's record of the guest has gone. Re-create it from stored
+			// state and start it, the way upstream's hard reboot does, rather than
+			// returning an unexplained error over a record that claims the server
+			// runs. The new domain identifier replaces the stale one.
+			healedDomain, err = svc.reviveGuest(ctx, instanceID)
+			if err != nil {
+				// FR-025c / FR-026b: a self-heal that cannot complete is an action
+				// that cannot be performed, not an internal fault — the server
+				// exists and the request was well formed, so this is a state an
+				// operator has to resolve. Leave the record honest before
+				// answering: it must not go on claiming the server runs.
+				svc.persistRunState(c, instanceID, projectID, "ERROR", 0, "")
+				log.Error().Err(err).Str("instance_id", instanceID).
+					Msg("self-heal failed; the server has no guest and could not be given one")
+				// Why it could not — a path on the node, a hypervisor error — is the
+				// log line's above; the tenant reads this answer.
+				common.SendError(c, common.NewOperationConflictError(action,
+					"the server's guest is absent and could not be re-created"))
+				return
+			}
+			svc.recordSelfHeal(c, instanceID, projectID, healedDomain)
+		}
+		wantStatus, wantPower = "ACTIVE", 1
 	}
 
+	if err != nil {
+		sendLifecycleError(c, action, err)
+		return
+	}
+
+	// Persist what just happened. The real-mode branch previously wrote NOTHING —
+	// only the stub branch recorded the transition — so a SUCCESSFUL stop left
+	// "ACTIVE"/power_state=1 in the row and the API went on serving a running server
+	// that was shut off (cloud-storage#547 B12). Nothing reconciled the two, and
+	// reading the server reported ACTIVE either way, so the divergence stayed
+	// invisible until the next action failed.
+	svc.persistRunState(c, instanceID, projectID, wantStatus, wantPower, healedDomain)
+
 	c.Status(http.StatusAccepted)
+}
+
+// recordSelfHeal notes on the triggering action's own record that the guest had to be
+// re-created, so a repeatedly vanishing guest is discoverable rather than masked by a
+// start that keeps succeeding (FR-025b).
+//
+// Deliberately NOT a new action name or a new endpoint (FR-025d): the os-start row is
+// already written for this request and already carries a message column, so the repair
+// is visible to the server's owner through os-instance-actions without inventing an
+// event upstream does not have.
+func (svc *Service) recordSelfHeal(c *gin.Context, instanceID, projectID, domainID string) {
+	if _, err := svc.pool.Exec(c.Request.Context(),
+		`UPDATE instance_actions
+		    SET message = $1, updated_at = $2
+		  WHERE instance_id = $3 AND project_id = $4 AND request_id = $5`,
+		"guest was absent and was re-created from stored state (domain "+domainID+")",
+		time.Now(), instanceID, projectID, requestID(c),
+	); err != nil {
+		// Best-effort: the guest is already back and the start is going to succeed.
+		// Losing the note is worth reporting, not worth failing the request for.
+		log.Warn().Err(err).Str("instance_id", instanceID).
+			Msg("self-heal succeeded but could not be recorded on the action")
+	}
+}
+
+// persistRunState records the state an action just produced. Best-effort by design:
+// the hypervisor has already acted, so failing the request here would report a
+// failure for work that was done. The divergence it leaves is what the state
+// reconciler exists to correct (FR-024b).
+//
+// healedDomain is non-empty only when a self-heal re-created the guest, in which case
+// the new domain identifier replaces the stale one.
+func (svc *Service) persistRunState(c *gin.Context, instanceID, projectID, status string, power int, healedDomain string) {
+	query := "UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE id = $4 AND project_id = $5"
+	args := []any{status, power, time.Now(), instanceID, projectID}
+	if healedDomain != "" {
+		query = "UPDATE instances SET status = $1, power_state = $2, updated_at = $3, libvirt_domain_id = $6 WHERE id = $4 AND project_id = $5"
+		args = append(args, healedDomain)
+	}
+	if _, err := svc.pool.Exec(c.Request.Context(), query, args...); err != nil {
+		log.Error().Err(err).
+			Str("instance_id", instanceID).Str("status", status).
+			Msg("lifecycle action succeeded but its state could not be persisted")
+	}
+}
+
+// persistObservedRunState records a run state this action OBSERVED rather than caused — the
+// correction a refused stop or start makes before answering 409 — and reports whether it did.
+//
+// Only if the row is as this action read it (readAt, its updated_at then): the observation is
+// a sample taken a moment earlier, and a concurrent start or stop that finished since recorded
+// a newer truth, which a stale "running" or "stopped" must not overwrite. The state reconciler
+// guards its own corrections the same way. NULL-safe, so a row that never had an updated_at is
+// still correctable. Upstream serialises lifecycle actions per instance instead; that would
+// mean holding a lock through a stop's whole grace period.
+//
+// An action's own outcome is not written through here: what it just did is the newest truth.
+func (svc *Service) persistObservedRunState(ctx context.Context, instanceID, projectID, status string, power int, readAt *time.Time) bool {
+	tag, err := svc.pool.Exec(ctx,
+		`UPDATE instances SET status = $1, power_state = $2, updated_at = $3
+		  WHERE id = $4 AND project_id = $5 AND updated_at IS NOT DISTINCT FROM $6`,
+		status, power, time.Now(), instanceID, projectID, readAt)
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Str("status", status).
+			Msg("could not correct the record from the observed guest state")
+		return false
+	}
+	return tag.RowsAffected() > 0
+}
+
+// observedRunState reports what the hypervisor says the guest is doing, or
+// RunStateUnknown when it will not say.
+//
+// Unknown covers three cases that must all behave alike: no hypervisor wired in, an
+// unreachable one, and an absent guest. None is grounds for refusing an action — a
+// blip must not become a precondition failure, and an absent guest belongs to the
+// self-heal path, which is downstream of here (FR-025).
+func (svc *Service) observedRunState(ctx context.Context, libvirtDomainID string) hypervisor.RunState {
+	if svc.vmManager == nil {
+		return hypervisor.RunStateUnknown
+	}
+	state, err := svc.vmManager.GuestRunState(ctx, libvirtDomainID)
+	if err != nil {
+		// Logged at debug, not warn: an absent guest reaches this on every self-heal,
+		// and the action about to run reports the outcome that matters.
+		log.Debug().Err(err).Str("libvirt_domain", libvirtDomainID).
+			Msg("could not read guest run state; proceeding with the action")
+		return hypervisor.RunStateUnknown
+	}
+	return state
+}
+
+// sendLifecycleError turns a hypervisor failure into the answer a client can act on.
+//
+// Three outcomes have to stay distinguishable (FR-026, FR-026a): the target is absent
+// (answered earlier, by the dispatcher), the action cannot be performed in the
+// server's current state, or something failed internally. Every libvirt failure used
+// to be a flat 500, which is what made B12 unreadable from outside — a vanished guest
+// and an unreachable libvirt produced the identical answer, so a client could not tell
+// whether retrying made any sense.
+//
+// A guest the hypervisor does not have is a STATE problem, so it is a conflict.
+// Deliberately not 503 for an unreachable hypervisor, apt as that would be: upstream
+// compute does not emit it for a server action, clients branch on status against
+// upstream, and Article I outranks descriptive precision. The extra detail is in the log.
+// Any other failure goes through startRefusal, which names a console socket directory
+// that is not ready (SPEC-021 FR-017a) and otherwise keeps the generic message.
+func sendLifecycleError(c *gin.Context, action string, err error) {
+	log.Error().Err(err).Str("operation", action).Msg("libvirt error")
+	if errors.Is(err, hypervisor.ErrDomainNotFound) {
+		common.SendError(c, common.NewOperationConflictError(action,
+			"the server has no guest on the hypervisor"))
+		return
+	}
+	common.SendError(c, startRefusal(err, "failed to perform "+action))
 }
 
 // ListFlavors lists all flavors (brief)
@@ -2581,7 +2953,14 @@ func (svc *Service) GetLimits(c *gin.Context) {
 		return
 	}
 
-	// Query current usage from database
+	// Query current usage from database.
+	//
+	// This counted `AND i.status != 'DELETED'` until SPEC-025. Nothing in the product
+	// has ever written that status — every delete path is a hard DELETE FROM instances
+	// — so the clause excluded nothing and was the only usage query carrying it. Left
+	// in place it was a latent under-count: the moment anything began writing that
+	// status, this view would silently stop counting those servers while the quota
+	// views kept counting them (FR-040, FR-041).
 	var instancesUsed, coresUsed, ramUsed int
 	if err := svc.pool.QueryRow(ctx,
 		`SELECT

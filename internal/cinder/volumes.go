@@ -2519,8 +2519,11 @@ func (svc *Service) GetVersions(c *gin.Context) {
 				"updated":     "2021-04-07T00:00:00Z",
 				"links": []gin.H{
 					{
-						"rel":  "self",
-						"href": "http://lightstack:8776/v3/",
+						"rel": "self",
+						// Derived, not hardcoded: "http://lightstack:8776/v3/" resolves only
+						// inside the compose network, so every client outside it was
+						// handed an unreachable address (SPEC-025 FR-007a/FR-007b).
+						"href": fmt.Sprintf("%s/v3/", common.BaseURL(c, 8776)),
 					},
 				},
 				"media-types": []gin.H{
@@ -2545,8 +2548,11 @@ func (svc *Service) GetVersionV3(c *gin.Context) {
 			"updated":     "2021-04-07T00:00:00Z",
 			"links": []gin.H{
 				{
-					"rel":  "self",
-					"href": "http://lightstack:8776/v3/",
+					"rel": "self",
+					// Derived, not hardcoded: "http://lightstack:8776/v3/" resolves only
+					// inside the compose network, so every client outside it was
+					// handed an unreachable address (SPEC-025 FR-007a/FR-007b).
+					"href": fmt.Sprintf("%s/v3/", common.BaseURL(c, 8776)),
 				},
 			},
 			"media-types": []gin.H{

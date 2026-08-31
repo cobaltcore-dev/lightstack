@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -17,17 +18,36 @@ import (
 )
 
 // Suspend suspends a running instance (saves RAM to disk)
-func (svc *Service) SuspendInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+// guestDomain reads a scanned libvirt_domain_id, treating NULL as "no guest recorded".
+//
+// The column is nullable with no default and the create INSERT omits it, so EVERY server
+// has it NULL until a guest is defined — forever in stub mode, and in real mode until the
+// goroutine that calls libvirt writes it back. Scanning it into a plain string made pgx
+// refuse the row outright ("cannot scan NULL into *string"), so an action against a
+// perfectly ordinary server answered 500 (cloud-storage#547, found by the R10 contract
+// run on the real-mode host).
+//
+// lifecycleAction has always handled this, by scanning into `any`. A pointer says the same
+// thing with the nullability visible in the type, and gives the three handlers below one
+// place to agree on what NULL means.
+func guestDomain(scanned *string) string {
+	if scanned == nil {
+		return ""
+	}
+	return *scanned
+}
+
+func (svc *Service) SuspendInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Get instance and libvirt domain ID
-	var libvirtDomainID, status string
+	var domainScan *string
+	var status string
 	var powerState int
 	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COALESCE(libvirt_domain_id, ''), status, power_state FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
-	).Scan(&libvirtDomainID, &status, &powerState)
+	).Scan(&domainScan, &status, &powerState)
+	libvirtDomainID := guestDomain(domainScan)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -91,16 +111,16 @@ func (svc *Service) SuspendInstance(c *gin.Context) {
 }
 
 // Resume resumes a suspended instance
-func (svc *Service) ResumeInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) ResumeInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Get instance and libvirt domain ID
-	var libvirtDomainID, status string
+	var domainScan *string
+	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COALESCE(libvirt_domain_id, ''), status FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
-	).Scan(&libvirtDomainID, &status)
+	).Scan(&domainScan, &status)
+	libvirtDomainID := guestDomain(domainScan)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -168,16 +188,16 @@ func (svc *Service) ResumeInstance(c *gin.Context) {
 }
 
 // Shelve shelves an instance (shutdown and save disk image)
-func (svc *Service) ShelveInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) ShelveInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Get instance
-	var libvirtDomainID, status string
+	var domainScan *string
+	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COALESCE(libvirt_domain_id, ''), status FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
-	).Scan(&libvirtDomainID, &status)
+	).Scan(&domainScan, &status)
+	libvirtDomainID := guestDomain(domainScan)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -234,11 +254,16 @@ func (svc *Service) ShelveInstance(c *gin.Context) {
 		svc.wg.Add(1)
 		go func() {
 			defer svc.wg.Done()
-			ctx, cancel := context.WithTimeout(svc.ctx, 30*time.Second)
+			// Wide enough for the guest's whole grace period plus the forced
+			// power-off: a stop now waits for the transition rather than firing a
+			// request at the guest and returning, so a ceiling below the grace
+			// period would cancel the wait and hard-kill every slow guest.
+			grace := svc.guestShutdownGrace()
+			ctx, cancel := context.WithTimeout(svc.ctx, grace+common.LifecycleResponseSlack)
 			defer cancel()
 
 			// Stop VM
-			_ = svc.vmManager.StopVM(ctx, libvirtDomainID)
+			_ = svc.vmManager.StopVM(ctx, libvirtDomainID, grace)
 			// In real mode, would also snapshot disk and delete instance
 		}()
 	}
@@ -247,9 +272,7 @@ func (svc *Service) ShelveInstance(c *gin.Context) {
 }
 
 // Unshelve restores a shelved instance
-func (svc *Service) UnshelveInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Get instance
 	var status string
@@ -293,29 +316,12 @@ func (svc *Service) UnshelveInstance(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// ResizeInstance changes the flavor of an instance
-func (svc *Service) ResizeInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	var req struct {
-		Resize struct {
-			FlavorRef string `json:"flavorRef" binding:"required"`
-		} `json:"resize"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.SendError(c, common.NewBadRequestError("invalid request body"))
-		return
-	}
-
-	svc.resizeInstance(c, instanceID, projectID, req.Resize.FlavorRef)
-}
-
-// ResizeInstanceAction handles resize from the action API
-func (svc *Service) ResizeInstanceAction(c *gin.Context, resizeData any) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+// ResizeInstanceAction handles resize from the action API.
+//
+// Takes the resolved reference like every other dispatched action (SPEC-025 FR-029):
+// it used to read the raw path parameter, so a server addressed by name reached a
+// uuid-typed query and failed the cast.
+func (svc *Service) ResizeInstanceAction(c *gin.Context, resizeData any, instanceID, projectID string) {
 
 	// Parse the already-parsed action body
 	resizeMap, ok := resizeData.(map[string]any)
@@ -418,9 +424,7 @@ func (svc *Service) resizeInstance(c *gin.Context, instanceID, projectID, flavor
 }
 
 // ConfirmResize confirms a resize operation
-func (svc *Service) ConfirmResizeInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) ConfirmResizeInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Update status to ACTIVE
 	result, err := svc.pool.Exec(c.Request.Context(), `
@@ -445,9 +449,7 @@ func (svc *Service) ConfirmResizeInstance(c *gin.Context) {
 }
 
 // RevertResize reverts a resize operation
-func (svc *Service) RevertResizeInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) RevertResizeInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Get instance
 	var status string
@@ -497,8 +499,7 @@ func (svc *Service) RevertResizeInstance(c *gin.Context) {
 // caller's project, so it answered 404 for every instance the administrator did
 // not personally own — unusable for the situation it exists to handle
 // (FR-008a).
-func (svc *Service) EvacuateInstance(c *gin.Context) {
-	instanceID := c.Param("id")
+func (svc *Service) EvacuateInstance(c *gin.Context, instanceID, _ string) {
 
 	// Admin-only operation - check roles
 	if !common.HasRole(c, common.RoleAdmin) {
@@ -532,9 +533,7 @@ func (svc *Service) EvacuateInstance(c *gin.Context) {
 }
 
 // MigrateInstance handles cold migration
-func (svc *Service) MigrateInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) MigrateInstance(c *gin.Context, instanceID, projectID string) {
 
 	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
@@ -620,9 +619,7 @@ func (svc *Service) MigrateInstance(c *gin.Context) {
 }
 
 // LiveMigrateInstance handles live migration
-func (svc *Service) LiveMigrateInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) LiveMigrateInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Validate that action data exists (already parsed by ServerAction)
 	if _, exists := c.Get("action_data"); !exists {
@@ -741,9 +738,7 @@ func formatSecurityGroups(names []string) []gin.H {
 }
 
 // AddSecurityGroup adds a security group to an instance
-func (svc *Service) AddSecurityGroup(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) AddSecurityGroup(c *gin.Context, instanceID, projectID string) {
 
 	// Get action data from context (already parsed by ServerAction)
 	actionData, exists := c.Get("action_data")
@@ -831,9 +826,7 @@ func (svc *Service) AddSecurityGroup(c *gin.Context) {
 }
 
 // RemoveSecurityGroup removes a security group from an instance
-func (svc *Service) RemoveSecurityGroup(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) RemoveSecurityGroup(c *gin.Context, instanceID, projectID string) {
 
 	// Get action data from context
 	actionData, exists := c.Get("action_data")
@@ -937,9 +930,7 @@ func (svc *Service) RemoveSecurityGroup(c *gin.Context) {
 }
 
 // ChangePassword changes the admin password for an instance
-func (svc *Service) ChangePassword(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) ChangePassword(c *gin.Context, instanceID, projectID string) {
 
 	// Get action data from context
 	actionData, exists := c.Get("action_data")
@@ -1016,9 +1007,7 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 }
 
 // RestoreInstance restores a soft-deleted instance
-func (svc *Service) RestoreInstance(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) RestoreInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Check if instance exists and is soft-deleted
 	var status string
@@ -1059,9 +1048,7 @@ func (svc *Service) RestoreInstance(c *gin.Context) {
 }
 
 // CreateBackupAction creates a backup image of an instance
-func (svc *Service) CreateBackupAction(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID string) {
 
 	// Get action data from context
 	actionData, exists := c.Get("action_data")
@@ -1200,8 +1187,7 @@ func (svc *Service) CreateBackupAction(c *gin.Context) {
 // was scoped `AND project_id = $2` to the caller while the UPDATE below was not,
 // so the check was the only thing narrowing it and an administrator got 404 for
 // every instance they did not own (FR-008a).
-func (svc *Service) ResetStateAction(c *gin.Context) {
-	instanceID := c.Param("id")
+func (svc *Service) ResetStateAction(c *gin.Context, instanceID, _ string) {
 
 	// Admin-only operation - check roles
 	if !common.HasRole(c, common.RoleAdmin) {
@@ -1236,16 +1222,29 @@ func (svc *Service) ResetStateAction(c *gin.Context) {
 		return
 	}
 
-	// Map known lowercase states to canonical uppercase; pass anything
-	// else through unchanged.
-	var statusUpper string
-	switch state {
-	case "error":
-		statusUpper = "ERROR"
-	case "active":
-		statusUpper = "ACTIVE"
-	default:
-		statusUpper = state
+	// Upstream accepts exactly two states. Its api-ref gives os-resetState.state as
+	// "The state to set, 'active' or 'error'", and refuses anything else.
+	//
+	// This mapped those two and PASSED EVERYTHING ELSE THROUGH UNCHANGED into
+	// instances.status — the column every listing, every server show, the ?status= filter
+	// and Horizon's status column read. `{"state":"banana"}` was answered 202 and became a
+	// permanent, advertised server status. `{"state":"shutoff"}` stored a lowercase value
+	// that only a case-folding comparison could find again, which is why the listing
+	// filter's UPPER(status) is load-bearing rather than gratuitous: it exists to cope with
+	// what this handler used to write.
+	//
+	// Matched case-INSENSITIVELY, deliberately laxer than upstream's enum: a caller that
+	// sent "ACTIVE" had it stored by the old pass-through, so refusing it now would remove
+	// behaviour rather than add correctness. Erring toward acceptance is the direction that
+	// cannot break a caller.
+	//
+	// Folding first and comparing once means the value that gets stored IS the value that
+	// was checked: if the guard passes, statusUpper is "ACTIVE" or "ERROR" by construction,
+	// so there is no branch in which a non-canonical status can reach the UPDATE.
+	statusUpper := strings.ToUpper(state)
+	if statusUpper != "ACTIVE" && statusUpper != "ERROR" {
+		common.SendError(c, common.NewInvalidValueError("state", state, "active or error"))
+		return
 	}
 
 	_, err := svc.pool.Exec(c.Request.Context(), `
@@ -1264,9 +1263,7 @@ func (svc *Service) ResetStateAction(c *gin.Context) {
 }
 
 // ResetNetworkAction resets instance network
-func (svc *Service) ResetNetworkAction(c *gin.Context) {
-	instanceID := c.Param("id")
-	projectID := c.GetString("project_id")
+func (svc *Service) ResetNetworkAction(c *gin.Context, instanceID, projectID string) {
 
 	// Verify instance exists
 	var existsCheck bool

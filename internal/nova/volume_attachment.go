@@ -18,19 +18,45 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// volumeDiskXML builds the libvirt disk XML for a volume: a local-mode volume is
-// a file (its backing qcow2 lives on the node), otherwise an RBD network disk
-// (SPEC-009 WS-5).
-func volumeDiskXML(volumeID, device, rbdPool, rbdImage string) string {
+// volumeDisk is a volume as a guest disk at device: a local-mode volume is a file (its
+// backing qcow2 lives on the node), otherwise an RBD network disk (SPEC-009 WS-5).
+//
+// The one selection every path that gives a guest a volume makes — attach, boot from a
+// volume, and self-heal — so none of them can pick a different backing for the same volume.
+func volumeDisk(volumeID, device, rbdPool, rbdImage string) hypervisor.DiskSpec {
 	if path := storage.LocalVolumePath(volumeID); fileExists(path) {
-		return hypervisor.GenerateDiskXML(hypervisor.DiskSpec{Device: device, Type: "file", Source: path})
+		return hypervisor.DiskSpec{Device: device, Type: "file", Source: path}
 	}
-	return hypervisor.GenerateDiskXML(hypervisor.DiskSpec{
-		Device: device, Type: "network", Source: rbdPool + "/" + rbdImage, Protocol: "rbd",
-	})
+	return hypervisor.DiskSpec{Device: device, Type: "network", Source: rbdPool + "/" + rbdImage, Protocol: "rbd"}
 }
 
-func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+// volumeDiskXML builds the libvirt disk XML for a volume (see volumeDisk).
+func volumeDiskXML(volumeID, device, rbdPool, rbdImage string) string {
+	return hypervisor.GenerateDiskXML(volumeDisk(volumeID, device, rbdPool, rbdImage))
+}
+
+// rootDevice is where a server booted from a volume has that volume: the boot path records
+// the attachment there, and self-heal looks for it there.
+const rootDevice = "/dev/vda"
+
+// volumeRootDiskPath is a volume as the guest's root disk, in VMSpec.ImagePath's terms: the
+// node-local file, or rbd:pool/image (see volumeDisk).
+func volumeRootDiskPath(volumeID, rbdPool, rbdImage string) string {
+	d := volumeDisk(volumeID, rootDevice, rbdPool, rbdImage)
+	if d.Type == "file" {
+		return d.Source
+	}
+	return "rbd:" + d.Source
+}
+
+// fileExists reports whether a node-local file is present.
+//
+// A package variable rather than a plain function so paths under /var/lib/lightstack can be
+// simulated in tests. paths.Base is a hardcoded constant with no override —
+// deliberately, since SPEC-011 removed the old home-directory fallback — so a non-root
+// test run cannot stage a real backing file, and the alternative was to leave the
+// boot-from-volume and self-heal paths covered only by skipped tests.
+var fileExists = func(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // VolumeAttachment represents a volume attached to an instance
 type VolumeAttachment struct {

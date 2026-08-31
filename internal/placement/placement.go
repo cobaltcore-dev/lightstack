@@ -3,6 +3,7 @@ package placement
 import (
 	"net/http"
 
+	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 )
 
@@ -36,7 +37,9 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 // GetVersions returns the root version discovery response
 func (svc *Service) GetVersions(c *gin.Context) {
-	baseURL := "http://" + c.Request.Host + "/"
+	// Shared rule: a hardcoded scheme ignores LIGHTSTACK_ENDPOINT_SCHEME and TLS
+	// terminated ahead of the service (SPEC-025 FR-005/FR-007a).
+	baseURL := common.BaseURL(c, 8778) + "/"
 	c.JSON(http.StatusOK, gin.H{
 		"versions": []gin.H{
 			{
@@ -57,7 +60,9 @@ func (svc *Service) GetVersions(c *gin.Context) {
 
 // GetVersion returns v1 version information
 func (svc *Service) GetVersion(c *gin.Context) {
-	baseURL := "http://" + c.Request.Host + "/"
+	// Shared rule: a hardcoded scheme ignores LIGHTSTACK_ENDPOINT_SCHEME and TLS
+	// terminated ahead of the service (SPEC-025 FR-005/FR-007a).
+	baseURL := common.BaseURL(c, 8778) + "/"
 	c.JSON(http.StatusOK, gin.H{
 		"version": gin.H{
 			"id":          "v1.0",

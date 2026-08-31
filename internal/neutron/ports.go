@@ -66,7 +66,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	}
 	// Any OTHER error had to be handled too (second review, AGY-1). A network_id that is not a UUID
 	// fails the cast rather than matching no row, so it is not ErrNoRows — and going unchecked it
-	// fell through with networkID empty, all the way to `"br-" + req.Port.NetworkID[:8]`, which
+	// fell through with networkID empty, all the way to networking.BridgeNameForNetwork, which
 	// panicked on anything shorter than 8 characters. AllocatePortForInstance, which runs the very
 	// same lookup for the instance-boot path, has always checked both; the two disagreeing is the
 	// asymmetry #546 noted between these paths.
@@ -122,7 +122,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	// in real mode the kernel object is gone after a host reboot until the reconciler's next pass,
 	// and FR-001 requires port creation to succeed on any recorded network rather than depending on
 	// that timing. Idempotent — an existing bridge is not an error.
-	bridgeName := "br-" + req.Port.NetworkID[:8]
+	bridgeName := networking.BridgeNameForNetwork(req.Port.NetworkID)
 	if err := svc.brManager.CreateBridge(bridgeName); err != nil {
 		log.Debug().Err(err).Str("bridge", bridgeName).Msg("ensure bridge before attach (may already exist)")
 	}
@@ -1379,36 +1379,109 @@ type PortInfo struct {
 	SubnetID  string
 }
 
+// ExternalNetworkAttachForbiddenError refuses a guest an interface on an unshared external network.
+// It is upstream Nova's ExternalNetworkAttachForbidden, in its wording, and compute answers it with
+// the 403 upstream's create handler gives it. Naming the network discloses nothing: an external
+// network is visible to every project (FR-033a).
+type ExternalNetworkAttachForbiddenError struct {
+	NetworkID string
+}
+
+func (e *ExternalNetworkAttachForbiddenError) Error() string {
+	return "It is not allowed to create an interface on external network " + e.NetworkID
+}
+
+// errNoSuchNetwork refuses every other network a guest may not use, in the same words whether the
+// network is absent or belongs to someone else: telling the two apart confirms that another
+// project's network exists.
+var errNoSuchNetwork = errors.New("no such network")
+
+// guestMayAttach decides whether a guest of projectID may have an interface on networkID; admin is
+// whether the caller holds the administrator role. It is the one rule the boot pre-flight
+// (NetworkUsableBy) and the allocation it vouches for (AllocatePortForInstance) share, so the two
+// cannot disagree (SPEC-025 FR-016a) — they did while the pre-flight borrowed the read scope.
+//
+// It is narrower than that scope, because seeing a network is not being allowed to plug into it.
+// Upstream's rule is _check_external_network_attach (nova/network/neutron.py) under the policy
+// network:attach_external_network, admin by default:
+//
+//   - a shared network takes anyone's guest, a shared external network included;
+//   - an unshared external network takes only an administrator's, whoever owns it;
+//   - any other network takes only its owner's. Upstream would also let an administrator onto
+//     another project's private network; Lightstack does not.
+func (svc *Service) guestMayAttach(ctx context.Context, networkID, projectID string, admin bool) error {
+	var owned, shared, external bool
+	err := svc.pool.QueryRow(ctx,
+		`SELECT COALESCE(project_id = $2, false), COALESCE(shared, false), external
+		   FROM networks WHERE id = $1`,
+		networkID, projectID,
+	).Scan(&owned, &shared, &external)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errNoSuchNetwork
+	}
+	if err != nil {
+		return fmt.Errorf("checking network availability: %w", err)
+	}
+	switch {
+	case shared:
+		return nil
+	case external:
+		if admin {
+			return nil
+		}
+		return &ExternalNetworkAttachForbiddenError{NetworkID: networkID}
+	case owned:
+		return nil
+	default:
+		return errNoSuchNetwork
+	}
+}
+
+// NetworkUsableBy reports whether a project may attach a guest to a network, naming the reason
+// when it may not (SPEC-025 FR-017); admin is whether the caller holds the administrator role.
+//
+// Compute calls this before creating anything, so a wrong or unusable network id is a synchronous
+// refusal rather than a boot that fails in the background. The rule is guestMayAttach, which the
+// allocation applies again.
+func (svc *Service) NetworkUsableBy(ctx context.Context, networkID, projectID string, admin bool) error {
+	return svc.guestMayAttach(ctx, networkID, projectID, admin)
+}
+
 // AllocatePortForInstance creates a port for a VM instance (called from Nova).
 // securityGroupIDs are the groups the server was created with, already resolved and
 // validated by Nova; empty means "none requested", which gets the project default.
-func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string) (any, error) {
+func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string, admin bool) (any, error) {
 	portID := uuid.New().String()
 	macAddress := generateMAC()
 
-	// Get network and subnet info to allocate IP
-	var netID string
-	err := svc.pool.QueryRow(ctx,
-		"SELECT id FROM networks WHERE id = $1 AND (project_id = $2 OR shared = true)",
-		networkID, projectID,
-	).Scan(&netID)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("network %s not found", networkID)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to query network: %w", err)
+	// The rule the boot pre-flight already applied, applied again because this is the attach
+	// itself; upstream re-checks on every allocation for the same reason.
+	if err := svc.guestMayAttach(ctx, networkID, projectID, admin); err != nil {
+		if errors.Is(err, errNoSuchNetwork) {
+			return nil, fmt.Errorf("network %s not found", networkID)
+		}
+		return nil, err
 	}
 
 	// Get subnet to allocate IP
 	var subnetID, cidr string
-	err = svc.pool.QueryRow(ctx,
+	err := svc.pool.QueryRow(ctx,
 		"SELECT id, cidr FROM subnets WHERE network_id = $1 LIMIT 1",
 		networkID,
 	).Scan(&subnetID, &cidr)
 
+	// This error is TENANT-VISIBLE: it lands verbatim in instances.fault_message and is
+	// served in the server-detail `fault` object (SPEC-025 FR-018). So it names the
+	// condition and stops — wrapping pgx.ErrNoRows put "no rows in result set" in front
+	// of a tenant, which tells them about the storage layer rather than their network.
+	//
+	// And the two cases are not the same answer: no subnet is something the tenant can
+	// fix, while a failed query is something only an operator can.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("no subnet found for network %s", networkID)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("no subnet found for network %s: %w", networkID, err)
+		return nil, fmt.Errorf("looking up a subnet for network %s: %w", networkID, err)
 	}
 
 	// Allocate IP from subnet
@@ -1467,7 +1540,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		}
 
 		// Ensure bridge exists in default namespace
-		bridgeName := "br-" + networkID[:8]
+		bridgeName := networking.BridgeNameForNetwork(networkID)
 		if err := svc.brManager.CreateBridge(bridgeName); err != nil {
 			// Bridge might already exist, log but don't fail
 			log.Debug().Err(err).Str("bridge", bridgeName).Msg("bridge creation returned error (may already exist)")
