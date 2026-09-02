@@ -45,6 +45,13 @@ reason — it needs the fault text.
 
 `details` is omitted deliberately — upstream fills it with a traceback for administrators; Lightstack has none.
 
+The tenant reads `message`, so it carries the network service's reason only when the tenant can act on
+it — the network is unknown or forbidden, has no subnet, or has no free address. A database or host
+failure is recorded as `could not attach the server to network <id>` and logged in full, as upstream
+records only a non-Nova exception's class name (`nova/compute/utils.py`, `exception_to_dict`). The same
+rule holds for Path 1: a network check that *fails*, rather than refuses, is a `500` without the error's
+text.
+
 ## Invariants
 
 - **FR-018**: reported state and reported addresses never contradict. `ACTIVE` with `{}` for a server

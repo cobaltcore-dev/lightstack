@@ -97,10 +97,11 @@ func (svc *Service) CreateBackup(c *gin.Context) {
 
 	// Check if volume exists and get its size
 	var volumeSize int
+	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT size_gb FROM volumes WHERE id = $1 AND project_id = $2",
+		"SELECT size_gb, status FROM volumes WHERE id = $1 AND project_id = $2",
 		req.Backup.VolumeID, projectID,
-	).Scan(&volumeSize)
+	).Scan(&volumeSize, &status)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
@@ -111,16 +112,30 @@ func (svc *Service) CreateBackup(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to create backup"))
 		return
 	}
+	if refuseAwaitingTransfer(c, req.Backup.VolumeID, status) {
+		return
+	}
 
+	// Backups consume their own count and their own gigabytes allowance
+	// (SPEC-025-followup FR-028a). Checked before the row is written, so a refusal leaves
+	// nothing behind.
 	backupID := uuid.New().String()
 	now := time.Now()
 
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	err = withCinderQuota(c.Request.Context(), svc.pool, projectID,
+		[]quotaWant{{"backups", 1}, {"backup_gigabytes", volumeSize}},
+		func(tx pgx.Tx) error {
+			_, ierr := tx.Exec(c.Request.Context(), `
 		INSERT INTO volume_backups (id, project_id, volume_id, name, description, status, size_gb, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`, backupID, projectID, req.Backup.VolumeID, req.Backup.Name, req.Backup.Description, "available", volumeSize, now, now)
+			return ierr
+		})
 
 	if err != nil {
+		if sendQuotaError(c, err) {
+			return
+		}
 		log.Error().Err(err).Str("operation", "create_backup").Msg("failed to insert backup")
 		common.SendError(c, common.NewInternalServerError("failed to create backup"))
 		return
@@ -262,18 +277,25 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 		restoredVolumeID = *requestedVolumeID
 
 		// Verify target volume exists
-		var exists bool
+		var status string
 		err = svc.pool.QueryRow(c.Request.Context(),
-			"SELECT EXISTS(SELECT 1 FROM volumes WHERE id = $1 AND project_id = $2)",
+			"SELECT status FROM volumes WHERE id = $1 AND project_id = $2",
 			restoredVolumeID, projectID,
-		).Scan(&exists)
+		).Scan(&status)
 
-		if err != nil || !exists {
+		if err != nil {
 			common.SendError(c, common.NewNotFoundError("target volume"))
 			return
 		}
+		if refuseAwaitingTransfer(c, restoredVolumeID, status) {
+			return
+		}
 	} else {
-		// Create new volume for restore
+		// Create new volume for restore. This is one of the FOUR routes that add a volume
+		// to a project (SPEC-025-followup FR-019) — it inserts directly rather than going
+		// through provisionVolume, so the check at the top of that function does not cover
+		// it. The spec named two routes; planning found this one by re-deriving the list
+		// from the code.
 		restoredVolumeID = uuid.New().String()
 		now := time.Now()
 
@@ -282,12 +304,18 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 			volumeName = nameVal
 		}
 
-		_, err = svc.pool.Exec(c.Request.Context(), `
+		err = withVolumeQuota(c.Request.Context(), svc.pool, projectID, sizeGB, func(tx pgx.Tx) error {
+			_, ierr := tx.Exec(c.Request.Context(), `
 			INSERT INTO volumes (id, project_id, name, description, size_gb, status, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		`, restoredVolumeID, projectID, volumeName, "Restored from backup", sizeGB, "available", now, now)
+			return ierr
+		})
 
 		if err != nil {
+			if sendQuotaError(c, err) {
+				return
+			}
 			log.Error().Err(err).Str("operation", "restore_backup").Msg("failed to create restored volume")
 			common.SendError(c, common.NewInternalServerError("failed to restore backup"))
 			return

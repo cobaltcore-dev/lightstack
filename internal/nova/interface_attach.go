@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -89,15 +90,24 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		// Create new port on the specified network
 		networkID = req.InterfaceAttachment.NetID
 
-		// Verify network exists
-		var networkExists bool
-		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT EXISTS(SELECT 1 FROM networks WHERE id = $1 AND project_id = $2)",
-			networkID, projectID,
-		).Scan(&networkExists)
-
-		if err != nil || !networkExists {
-			common.SendError(c, common.NewNotFoundError("network"))
+		// The rule booting applies (neutron.GuestMayAttach): the server's own networks and shared
+		// ones, and an unshared external network for administrators only — upstream applies
+		// network:attach_external_network to os-interface exactly as to boot. This used to accept
+		// the server's own networks alone. Answered as upstream's os-interface answers: 404 for a
+		// network the caller may not use, 403 for an external one, 500 for a check that failed.
+		if err := neutron.GuestMayAttach(c.Request.Context(), svc.pool, networkID, projectID,
+			common.HasRole(c, common.RoleAdmin)); err != nil {
+			var forbidden *neutron.ExternalNetworkAttachForbiddenError
+			var visible tenantMessager
+			switch {
+			case errors.As(err, &forbidden):
+				common.SendError(c, common.NewForbiddenError(forbidden.Error()))
+			case errors.As(err, &visible):
+				common.SendError(c, common.NewNotFoundError("network"))
+			default:
+				log.Error().Err(err).Str("network_id", networkID).Msg("interface attach: checking the network failed")
+				common.SendError(c, common.NewInternalServerError("failed to check the network"))
+			}
 			return
 		}
 

@@ -1006,45 +1006,14 @@ func (svc *Service) ChangePassword(c *gin.Context, instanceID, projectID string)
 	c.Status(http.StatusAccepted)
 }
 
-// RestoreInstance restores a soft-deleted instance
-func (svc *Service) RestoreInstance(c *gin.Context, instanceID, projectID string) {
-
-	// Check if instance exists and is soft-deleted
-	var status string
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT status FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&status)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return
-	}
-	if err != nil {
-		log.Error().Err(err).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("database error"))
-		return
-	}
-
-	if status != "SOFT_DELETED" {
-		common.SendError(c, common.NewInvalidStateError("instance is not soft-deleted"))
-		return
-	}
-
-	// Restore instance to SHUTOFF state
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		UPDATE instances
-		SET status = $1, power_state = $2, updated_at = $3
-		WHERE id = $4
-	`, "SHUTOFF", 4, time.Now(), instanceID)
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "restore_instance").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to restore instance"))
-		return
-	}
-
-	c.Status(http.StatusAccepted)
+// RestoreInstance answers `restore` as upstream does at its default reclaim_instance_interval
+// of 0, where deletion is immediate (SPEC-025-followup FR-035). The dispatcher has already
+// answered 404 for a server that no longer exists; one that does exist is live, never
+// soft-deleted, so upstream refuses it with 409. No state here lets the action succeed, but
+// upstream keeps the route at every setting, so a client gets its answer, not "unknown action".
+func (svc *Service) RestoreInstance(c *gin.Context, instanceID string) {
+	common.SendError(c, common.NewInvalidStateError(
+		fmt.Sprintf("Instance %s is in an invalid state for 'restore'", instanceID)))
 }
 
 // CreateBackupAction creates a backup image of an instance
@@ -1170,10 +1139,18 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 		}
 	}
 
-	// Return image location in header (OpenStack pattern)
+	// The image is identified by the Location header at every microversion (OpenStack
+	// pattern), and additionally in the BODY from 2.45 (SPEC-025-followup FR-039).
 	c.Header("Location", fmt.Sprintf("/v2/images/%s", backupImageID))
 
-	// Microversion 2.45+ returns image_id in response body
+	// This is the gate the comment here always claimed and the code never had: it read
+	// "Microversion 2.45+ returns image_id in response body" while returning the body
+	// unconditionally, so a client negotiating 2.1 received a field upstream introduced 44
+	// versions later. The audit's first finding was a documented gate that did not exist.
+	if !wantsCreateImageIDInBody(c) {
+		c.Status(http.StatusAccepted)
+		return
+	}
 	c.JSON(http.StatusAccepted, gin.H{
 		"image_id": backupImageID,
 	})

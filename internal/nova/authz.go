@@ -101,29 +101,6 @@ func resolveServerOr404(c *gin.Context, pool *pgxpool.Pool, ref string) (id, own
 	return id, owner, true
 }
 
-// resolveServerOr404Silent is resolveServerOr404 without the response: it reports
-// whether the reference resolved and writes nothing.
-//
-// Needed by exactly one caller — the action-history read, which must fall through to a
-// second lookup when the server is gone rather than answer immediately (SPEC-025
-// FR-043). Every other caller should use resolveServerOr404, so the 404 stays in one
-// place; this one exists because "not a live server" is not the final answer there.
-//
-// A database failure still reports 500 and returns false, because that is not an
-// authorization answer and must not be mistaken for one.
-func resolveServerOr404Silent(c *gin.Context, pool *pgxpool.Pool, ref string) (id, owner string, ok bool) {
-	id, owner, err := targetInstance(c, pool, ref)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", false
-	}
-	if err != nil {
-		log.Error().Err(err).Str("instance_ref", ref).Msg("instance lookup failed")
-		common.SendError(c, common.NewInternalServerError("failed to look up instance"))
-		return "", "", false
-	}
-	return id, owner, true
-}
-
 // requireAdmin gates a surface that belongs to the DEPLOYMENT rather than to any
 // project — host aggregates and the deployment-wide migration list (SPEC-023
 // FR-008e, FR-008f). It reports whether the caller may proceed, sending the 403

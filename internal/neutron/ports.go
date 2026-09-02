@@ -1391,15 +1391,39 @@ func (e *ExternalNetworkAttachForbiddenError) Error() string {
 	return "It is not allowed to create an interface on external network " + e.NetworkID
 }
 
+// TenantMessage marks the refusal as fit for the tenant; see tenantVisibleError.
+func (e *ExternalNetworkAttachForbiddenError) TenantMessage() string { return e.Error() }
+
+// tenantVisibleError is a failure whose text the tenant may read: it names a condition of their
+// network they can act on, and nothing about how the service is built. Compute shows a failed boot's
+// reason in the server's own fault, so it shows only these as worded; anything else — a database or
+// host failure — reaches the log alone. Upstream does the same: a non-Nova exception's fault records
+// its class name, never its text (nova/compute/utils.py exception_to_dict). A wrapped database error
+// used to reach `server show`.
+type tenantVisibleError struct{ msg string }
+
+func (e *tenantVisibleError) Error() string { return e.msg }
+
+// TenantMessage marks the error as fit for the tenant. Compute asserts the behaviour rather than the
+// type.
+func (e *tenantVisibleError) TenantMessage() string { return e.msg }
+
 // errNoSuchNetwork refuses every other network a guest may not use, in the same words whether the
 // network is absent or belongs to someone else: telling the two apart confirms that another
 // project's network exists.
-var errNoSuchNetwork = errors.New("no such network")
+var errNoSuchNetwork error = &tenantVisibleError{msg: "no such network"}
 
-// guestMayAttach decides whether a guest of projectID may have an interface on networkID; admin is
-// whether the caller holds the administrator role. It is the one rule the boot pre-flight
-// (NetworkUsableBy) and the allocation it vouches for (AllocatePortForInstance) share, so the two
-// cannot disagree (SPEC-025 FR-016a) — they did while the pre-flight borrowed the read scope.
+// guestMayAttach is GuestMayAttach on this service's pool.
+func (svc *Service) guestMayAttach(ctx context.Context, networkID, projectID string, admin bool) error {
+	return GuestMayAttach(ctx, svc.pool, networkID, projectID, admin)
+}
+
+// GuestMayAttach decides whether a guest of projectID may have an interface on networkID; admin is
+// whether the caller holds the administrator role. It is the one rule every path that plugs a guest
+// into a network applies: the boot pre-flight (NetworkUsableBy), the allocation it vouches for
+// (AllocatePortForInstance), and compute's interface attach — so none of them can disagree
+// (SPEC-025 FR-016a). They did while the pre-flight borrowed the read scope, and while the
+// interface attach accepted the server's own networks only.
 //
 // It is narrower than that scope, because seeing a network is not being allowed to plug into it.
 // Upstream's rule is _check_external_network_attach (nova/network/neutron.py) under the policy
@@ -1409,9 +1433,9 @@ var errNoSuchNetwork = errors.New("no such network")
 //   - an unshared external network takes only an administrator's, whoever owns it;
 //   - any other network takes only its owner's. Upstream would also let an administrator onto
 //     another project's private network; Lightstack does not.
-func (svc *Service) guestMayAttach(ctx context.Context, networkID, projectID string, admin bool) error {
+func GuestMayAttach(ctx context.Context, pool *pgxpool.Pool, networkID, projectID string, admin bool) error {
 	var owned, shared, external bool
-	err := svc.pool.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		`SELECT COALESCE(project_id = $2, false), COALESCE(shared, false), external
 		   FROM networks WHERE id = $1`,
 		networkID, projectID,
@@ -1458,7 +1482,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// itself; upstream re-checks on every allocation for the same reason.
 	if err := svc.guestMayAttach(ctx, networkID, projectID, admin); err != nil {
 		if errors.Is(err, errNoSuchNetwork) {
-			return nil, fmt.Errorf("network %s not found", networkID)
+			return nil, &tenantVisibleError{msg: fmt.Sprintf("network %s not found", networkID)}
 		}
 		return nil, err
 	}
@@ -1470,15 +1494,12 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		networkID,
 	).Scan(&subnetID, &cidr)
 
-	// This error is TENANT-VISIBLE: it lands verbatim in instances.fault_message and is
-	// served in the server-detail `fault` object (SPEC-025 FR-018). So it names the
-	// condition and stops — wrapping pgx.ErrNoRows put "no rows in result set" in front
-	// of a tenant, which tells them about the storage layer rather than their network.
-	//
-	// And the two cases are not the same answer: no subnet is something the tenant can
-	// fix, while a failed query is something only an operator can.
+	// The two cases are not the same answer: no subnet is something the tenant can fix, so it is
+	// marked for them and shown in the server's fault (SPEC-025 FR-018); a failed query is
+	// something only an operator can, so its text stays out of it. Wrapping pgx.ErrNoRows used
+	// to put "no rows in result set" in front of a tenant.
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("no subnet found for network %s", networkID)
+		return nil, &tenantVisibleError{msg: fmt.Sprintf("no subnet found for network %s", networkID)}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("looking up a subnet for network %s: %w", networkID, err)
@@ -1487,7 +1508,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// Allocate IP from subnet
 	allocatedIP := allocateIP(cidr)
 	if allocatedIP == "" {
-		return nil, fmt.Errorf("failed to allocate IP from subnet %s", subnetID)
+		return nil, &tenantVisibleError{msg: fmt.Sprintf("failed to allocate IP from subnet %s", subnetID)}
 	}
 
 	fixedIPs := []map[string]any{

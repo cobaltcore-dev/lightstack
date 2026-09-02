@@ -189,10 +189,49 @@ What to expect after upgrading:
 - **There is deliberately no setting to restore the old order.** Two rules for the same
   question is what produced the defect.
 
-`LIGHTSTACK_ENDPOINT_HOST` still matters for the **service catalog**, which is deployment-wide
-rather than per-request and continues to be resolved from it. Note the consequence: if
-you point it at a name clients cannot resolve, every command fails at catalog lookup,
-before any version document is read.
+#### `LIGHTSTACK_ENDPOINT_HOST` also decides what the service catalog caches
+
+A second, narrower role. The catalog cache key includes the host a request addressed —
+it has to, or one caller's `Host` header would decide which endpoints another caller in
+the same project is handed, and therefore where that caller sends its token. But the host
+comes from a client-supplied header, so keying on it lets callers choose the key space:
+with `cache.enabled: true`, a tenant varying that one header writes a Redis entry per
+value, each held 24 hours in a store shared across the deployment.
+
+So **only the host named by `LIGHTSTACK_ENDPOINT_HOST` is cached.** A request addressing any
+other name is answered correctly, from the database, uncached.
+
+What that means in practice:
+
+- `cache.enabled` defaults to **false**, so most deployments are unaffected either way.
+- If you enable caching and want catalog lookups served from it, **set
+  `LIGHTSTACK_ENDPOINT_HOST` to the name your clients use.** Left unset, the advertised host is
+  `localhost` and a deployment addressed by any other name caches no catalogs.
+- The endpoints themselves are unaffected: precedence is still request host first, as
+  above. This setting governs caching only.
+
+**The service catalog now follows the same rule** (SPEC-025-followup). It previously did not:
+catalog endpoint URLs were resolved from `LIGHTSTACK_ENDPOINT_HOST` alone, so pointing it at a name
+clients could not resolve made *every* command fail at catalog lookup — one step **before** any
+version document, and therefore before the self-link fix above could ever be reached. A client that
+can reach the deployment at all is now handed a catalog naming the address it used.
+
+`LIGHTSTACK_ENDPOINT_HOST` remains the fallback for both, used when a request carries no usable host, and
+`localhost` is the last resort so an advertised URL is always absolute and parseable.
+
+Two consequences worth knowing:
+
+- **A forwarded-host header is deliberately not trusted.** Lightstack reads `Host`, never
+  `X-Forwarded-Host`. On a direct connection a forwarding header is chosen by the client, and the
+  advertised endpoints are exactly where a client will send its token — so trusting one would hand
+  an attacker the choice. **A deployment behind a proxy or ingress must configure the proxy to
+  preserve the original `Host`** (nginx: `proxy_set_header Host $host;`); otherwise Lightstack advertises
+  whatever name the proxy forwarded, typically the internal service name. That is no worse than the
+  old `localhost` default, but it is not automatically better either.
+- **The catalog cache is keyed on the host as well as the project.** Enabling `cache.enabled`
+  (Redis, off by default) with a project-only key would let one caller's `Host` decide the endpoints
+  another caller in the same project receives. Nothing to configure — noted because the cache's
+  24-hour TTL previously rested on the catalog being identical for every caller, and it no longer is.
 
 The advertised **port** is applied consistently now too. It names the port the target
 service is reachable on, and replaces whatever port the request carried — which is what
@@ -805,7 +844,8 @@ neutron:
 
 ## Rate Limiting Configuration
 
-Lightstack supports two-tier rate limiting to protect against brute-force attacks and resource exhaustion. See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural details.
+Lightstack supports two-tier rate limiting to protect against brute-force attacks and resource exhaustion.
+See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural details.
 
 ### Configuration
 
@@ -833,10 +873,14 @@ rate_limiting:
 
 ### How It Works
 
-1. **Unauthenticated requests** (e.g., `POST /v3/auth/tokens`): Limited by the client's address, meaning the TCP peer. Forwarding headers such as `X-Forwarded-For` are not believed: every server's engine trusts no proxy, since a caller could otherwise send a fresh address with each request and never be limited.
+1. **Unauthenticated requests** (e.g., `POST /v3/auth/tokens`): Limited by the client's address,
+   meaning the TCP peer. Forwarding headers such as `X-Forwarded-For` are not believed: every
+   server's engine trusts no proxy, since a caller could otherwise send a fresh address with each
+   request and never be limited.
 2. **Authenticated requests**: Limited by `project_id` extracted from the JWT token.
 3. **When limit exceeded**: Returns HTTP 429 with `Retry-After` header and OpenStack-compatible error body.
-4. **Overflow behavior**: When 10,000+ unique IPs/projects are tracked, new entries are allowed through without limiting. A warning is logged.
+4. **Overflow behavior**: When 10,000+ unique IPs/projects are tracked, new entries are allowed
+   through without limiting. A warning is logged.
 
 ### Changing Limits
 

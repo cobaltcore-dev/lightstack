@@ -26,8 +26,8 @@ func seedInstance(t *testing.T, ctx context.Context) (string, string) {
 	t.Helper()
 	var id string
 	if err := testPool.QueryRow(ctx,
-		`INSERT INTO instances (name, project_id, user_id, status)
-		 VALUES ($1, $2, $3, 'ACTIVE') RETURNING id`,
+		`INSERT INTO instances (name, project_id, user_id, flavor_id, status)
+		 VALUES ($1, $2, $3, (SELECT id FROM flavors WHERE name = 'm1.small'), 'ACTIVE') RETURNING id`,
 		"spec021-console-"+t.Name(), seededProjectID, seededUserID,
 	).Scan(&id); err != nil {
 		t.Fatalf("seedInstance: %v", err)

@@ -113,7 +113,8 @@ func seedInstance(t *testing.T, keyName *string) string {
 	ctx := context.Background()
 	id := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
-		`INSERT INTO instances (id, name, project_id, user_id, status, key_name) VALUES ($1,'md-inst',$2,$3,'ACTIVE',$4)`,
+		`INSERT INTO instances (id, name, project_id, user_id, flavor_id, status, key_name)
+		 VALUES ($1,'md-inst',$2,$3,(SELECT id FROM flavors WHERE name = 'm1.small'),'ACTIVE',$4)`,
 		id, seededProjectID, seededUserID, keyName); err != nil {
 		t.Fatalf("insert instance: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -35,12 +36,21 @@ func (svc *Service) ManageVolume(c *gin.Context) {
 	// Default size for managed volumes (would query backend in real implementation)
 	sizeGB := 1
 
-	_, err := svc.pool.Exec(c.Request.Context(), `
+	// Importing an unmanaged backing store adds a volume to the project, so it consumes
+	// quota exactly as a create does (SPEC-025-followup FR-019). A third of the four
+	// volume-adding routes, and one the spec did not know about.
+	err := withVolumeQuota(c.Request.Context(), svc.pool, projectID, sizeGB, func(tx pgx.Tx) error {
+		_, ierr := tx.Exec(c.Request.Context(), `
 		INSERT INTO volumes (id, name, size_gb, status, project_id, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, volumeID, req.Volume.Name, sizeGB, "available", projectID, time.Now(), time.Now())
+		return ierr
+	})
 
 	if err != nil {
+		if sendQuotaError(c, err) {
+			return
+		}
 		log.Error().Err(err).Str("operation", "manage_volume").Msg("failed to insert managed volume")
 		common.SendError(c, common.NewInternalServerError("failed to manage volume"))
 		return
@@ -151,12 +161,28 @@ func (svc *Service) ManageSnapshot(c *gin.Context) {
 	// Default size (would query backend in real implementation)
 	sizeGB := 1
 
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	// Importing an unmanaged snapshot adds a snapshot to the project, so it consumes the
+	// snapshot count and — since FR-026 counts snapshot size toward the allowance — its
+	// gigabytes too.
+	//
+	// THIS SITE WAS NOT IN THE PLAN. The spec named two volume-adding routes, planning
+	// re-derived four, and T074's re-grep of the finished code found this ninth
+	// quota-consuming site. It is the reason FR-019 requires the list be re-derived rather
+	// than trusted: every enumeration of these sites so far has been short by one.
+	err = withCinderQuota(c.Request.Context(), svc.pool, projectID,
+		[]quotaWant{{"snapshots", 1}, {"gigabytes", sizeGB}},
+		func(tx pgx.Tx) error {
+			_, ierr := tx.Exec(c.Request.Context(), `
 		INSERT INTO snapshots (id, name, volume_id, size_gb, status, project_id, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, snapshotID, req.Snapshot.Name, req.Snapshot.VolumeID, sizeGB, "available", projectID, time.Now(), time.Now())
+			return ierr
+		})
 
 	if err != nil {
+		if sendQuotaError(c, err) {
+			return
+		}
 		log.Error().Err(err).Str("operation", "manage_snapshot").Msg("failed to insert managed snapshot")
 		common.SendError(c, common.NewInternalServerError("failed to manage snapshot"))
 		return

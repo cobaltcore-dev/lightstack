@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -126,6 +127,56 @@ func TestGuestAttachRuleMatchesUpstreamAndBothPathsAgree(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// tenantMessager is the behaviour compute asserts before it shows an allocation failure to the tenant.
+type tenantMessager interface{ TenantMessage() string }
+
+// TestAllocationFailuresMarkWhatATenantMaySee: a failed boot's reason is shown in the server's own
+// fault, which the tenant reads. The failures they can act on are marked as fit to show, and say which
+// network; a failure only an operator can act on — here the database, via a cancelled request — is
+// not, so compute reports it without its text. A wrapped database error used to reach `server show`.
+func TestAllocationFailuresMarkWhatATenantMaySee(t *testing.T) {
+	requireDB(t)
+	requireSecondProject(t)
+	ctx := context.Background()
+	svc := NewService(testPool, "stub", nil)
+
+	noSubnet := seedNetwork(t, "spec025-visible-nosubnet")
+	foreignExternal := seedAttachNetwork(t, "spec025-visible-external", otherProjectID, false, true)
+	for _, tc := range []struct{ name, networkID string }{
+		{"absent network", uuid.New().String()},
+		{"no subnet", noSubnet},
+		{"unshared external network", foreignExternal},
+	} {
+		_, err := svc.AllocatePortForInstance(ctx, tc.networkID, seededProjectID, uuid.New().String(), nil, false)
+		var visible tenantMessager
+		if !errors.As(err, &visible) {
+			t.Errorf("%s: %v is not marked fit for the tenant; it is a condition they can act on", tc.name, err)
+			continue
+		}
+		if !strings.Contains(visible.TenantMessage(), tc.networkID) {
+			t.Errorf("%s: tenant message %q does not name the network", tc.name, visible.TenantMessage())
+		}
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	for _, call := range []struct {
+		name string
+		err  error
+	}{
+		{"pre-flight", svc.NetworkUsableBy(cancelled, noSubnet, seededProjectID, false)},
+		{"allocation", func() error {
+			_, err := svc.AllocatePortForInstance(cancelled, noSubnet, seededProjectID, uuid.New().String(), nil, false)
+			return err
+		}()},
+	} {
+		var visible tenantMessager
+		if call.err == nil || errors.As(call.err, &visible) {
+			t.Errorf("%s with the database unreachable: %v; want an error NOT marked for the tenant", call.name, call.err)
 		}
 	}
 }

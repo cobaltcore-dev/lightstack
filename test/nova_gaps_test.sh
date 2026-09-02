@@ -81,13 +81,12 @@ fi
 
 # B4, end to end: the client must list flavors with NO version pinned.
 #
-# Requires a deployment whose CATALOG host is resolvable from here. LIGHTSTACK_ENDPOINT_HOST
-# rewrites the catalog endpoints (keystone/auth.go substituteURLTemplates) and that
-# path still ignores the request host, so pointing it at a name this machine cannot
-# resolve breaks every command before any version document is read. That is a
-# pre-existing catalog concern owned by SPEC-007, not part of this feature — but it
-# will make this check fail for a reason that has nothing to do with B4, so it is
-# named here rather than left to be rediscovered.
+# The catalog-host caveat this check used to carry is GONE (SPEC-025-followup FR-031):
+# the catalog now names the host the client addressed, with LIGHTSTACK_ENDPOINT_HOST as the
+# fallback, so pointing it at a name this machine cannot resolve no longer breaks every
+# command before any version document is read. Recorded rather than simply deleted,
+# because a stale explanation of a fixed problem sends the next reader after the wrong
+# thing — and this check failed for that reason once.
 unset OS_COMPUTE_API_VERSION
 if FLAVORS=$(openstack flavor list -f value -c Name 2>&1); then
     COUNT=$(echo "$FLAVORS" | grep -c .)

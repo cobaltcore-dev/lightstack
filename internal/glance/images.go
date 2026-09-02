@@ -5,11 +5,14 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -199,6 +202,14 @@ func (svc *Service) CreateImage(c *gin.Context) {
 	// Set defaults
 	visibility := "private"
 	if req.Visibility != "" {
+		// Same vocabulary as the patch path, through the same predicate. This path had no
+		// domain check at all, so `{"visibility":"nonsense"}` was answered 201 and stored a
+		// value nothing honours.
+		if !validImageVisibility(req.Visibility) {
+			common.SendError(c, common.NewInvalidValueError("visibility", req.Visibility,
+				strings.Join(imageVisibilities, " or ")))
+			return
+		}
 		visibility = req.Visibility
 	}
 
@@ -644,65 +655,290 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-var imageUpdateFields = map[string]string{
-	"/name":       "name",
-	"/visibility": "visibility",
-	"/min_disk":   "min_disk_gb",
-	"/min_ram":    "min_ram_mb",
+// imageFieldKind is the column's type, so a value of the wrong shape is refused as a
+// client error rather than handed to PostgreSQL to reject as a fault (FR-012).
+type imageFieldKind int
+
+const (
+	imageFieldString imageFieldKind = iota
+	imageFieldInt
+)
+
+type imageUpdateField struct {
+	column string
+	kind   imageFieldKind
+	// allowed, when non-empty, is the closed set of values this property may take.
+	// Type-checking alone let any string through; see imageVisibilities.
+	allowed []string
+}
+
+// imageVisibilities is the visibility vocabulary this product HONOURS: upstream's whole
+// set. Every value is honoured on read (common.ImageVisibleSQL and ListImages, SPEC-020
+// FR-026) — a `shared` image is read by the projects it is shared with, through
+// image_members, and a `community` image by anyone.
+//
+// The value used to be type-checked and not domain-checked, so any string was stored and
+// answered 200. An unrecognised visibility is none of these four, so the image then read
+// as owner-only, which fails closed but is still a success the product did not carry out —
+// the silent success this feature exists to remove, and the same reason the server-list
+// filters refuse `host` rather than ignoring it. A closed set refuses it instead and names
+// the accepted values.
+var imageVisibilities = []string{"public", "private", "shared", "community"}
+
+// validImageVisibility is shared by the create and patch paths so the two cannot accept
+// different vocabularies — they did, and only the patch path was reviewed.
+func validImageVisibility(v string) bool {
+	return slices.Contains(imageVisibilities, v)
+}
+
+// imageUpdateFields is the set of paths a patch may write. Unchanged by
+// SPEC-025-followup: this feature makes the handler honest about what it will NOT write,
+// it does not widen what can be written.
+//
+// All four are Glance BASE properties carrying a schema-defined default, which is why
+// `remove` is refused for every one of them (FR-011) — there is no absent state to restore
+// them to, and resetting one to its default would make `remove` a synonym for a write the
+// client never asked for.
+var imageUpdateFields = map[string]imageUpdateField{
+	"/name":       {"name", imageFieldString, nil},
+	"/visibility": {"visibility", imageFieldString, imageVisibilities},
+	"/min_disk":   {"min_disk_gb", imageFieldInt, nil},
+	"/min_ram":    {"min_ram_mb", imageFieldInt, nil},
 }
 
 func allowedImageUpdateField(path string) (string, bool) {
-	col, ok := imageUpdateFields[path]
-	return col, ok
+	f, ok := imageUpdateFields[path]
+	return f.column, ok
 }
 
-// UpdateImage updates an image
+// UpdateImage applies a JSON-Patch document to an image (SPEC-025-followup US2).
+//
+// The media type is `application/openstack-images-v2.1-json-patch`, which upstream defines
+// as conforming to RFC 6902 — so `add`, `remove` and `replace` are all part of the
+// contract. This handler previously applied only `replace`, `continue`d past every other
+// operation and every non-allowlisted path, then fell through to GetImage and answered
+// **200 with the unchanged image**. `openstack image set --min-disk N` sends `add`, so the
+// documented way to set a property reported success and did nothing, silently in both
+// directions: the only log line fired when a `replace` UPDATE errored, so a discarded
+// operation left no trace at all.
+//
+// Three properties the shape below exists to guarantee:
+//
+//   - ATOMIC (FR-014). The whole document becomes ONE update statement, so it cannot
+//     half-apply. The previous form ran an Exec per operation and logged-and-continued on
+//     failure, which is how a partial write was reachable.
+//   - NO SILENT SUCCESS (FR-012, FR-013). Every operation and path the handler cannot
+//     honour is refused, naming what was refused. Nothing is discarded.
+//   - NO ZERO-ROW SUCCESS (FR-015). RowsAffected is checked. The trailing GetImage already
+//     answered 404 for a missing or other-project image, so this was the right answer for
+//     the wrong reason — the UPDATE matched nothing and nobody looked.
 func (svc *Service) UpdateImage(c *gin.Context) {
 	imageID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Parse JSON Patch operations
 	var updates []map[string]any
 	if err := c.ShouldBindJSON(&updates); err != nil {
-		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		common.SendError(c, common.NewBadRequestError("request body must be a JSON-Patch document (an array of operations)"))
 		return
 	}
 
-	// Apply updates (simplified - only handles replace operations)
-	for _, update := range updates {
-		op, ok := update["op"].(string)
-		if !ok {
-			continue
-		}
-		path, ok := update["path"].(string)
-		if !ok {
-			continue
-		}
-		value := update["value"]
+	order, assignments, perr := planImagePatch(updates)
+	if perr != nil {
+		common.SendError(c, perr)
+		return
+	}
 
-		if op == "replace" {
-			field, ok := allowedImageUpdateField(path)
-			if !ok {
-				continue
-			}
-			// field is now a validated column name from the allowlist
-			query := fmt.Sprintf("UPDATE images SET %s = $1, updated_at = $2 WHERE id = $3 AND project_id = $4", field)
-			if _, err := svc.pool.Exec(c.Request.Context(), query, value, time.Now(), imageID, projectID); err != nil {
-				log.Warn().Err(err).Str("image_id", imageID).Str("field", field).Msg("failed to apply image patch op; continuing")
-			}
-		}
+	if len(order) == 0 {
+		// An empty document changes nothing and is not an error; the client still gets the
+		// image, which is what upstream returns. Nothing was written, so nothing is evicted.
+		svc.GetImage(c)
+		return
+	}
+
+	matched, err := applyImagePatch(c.Request.Context(), svc.pool, imageID, projectID, order, assignments)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "update_image").Str("image_id", imageID).Msg("failed to apply image patch")
+		common.SendError(c, common.NewInternalServerError("failed to update image"))
+		return
+	}
+	if !matched {
+		// The image does not exist, or belongs to another project. Answered here rather
+		// than left to the read below, so the reason is the write that matched nothing.
+		common.SendError(c, common.NewNotFoundError("image"))
+		return
 	}
 
 	// Evict before re-reading. GetImage below tries the cache first, so without this the
 	// response is the pre-patch body and every caller's view stays stale for the whole TTL.
-	// The pattern spans callers for the same reason DeleteImage's does.
+	// Entries are keyed per caller (imageCacheKey), so evicting this image means evicting
+	// every project's view of it, not just the patcher's — same as DeleteImage.
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(c.Request.Context(), "image:*:"+imageID)
 		svc.cache.TryDeletePattern(c.Request.Context(), "images:*")
 	}
 
-	// Return updated image
+	// The response reports the applied state (FR-016).
 	svc.GetImage(c)
+}
+
+// planPatchOperation validates ONE operation and reports the field it writes and the
+// coerced value.
+//
+// It RETURNS the refusal rather than sending it. Keeping *gin.Context out is the point:
+// all five refusals below are then reachable from a unit test, where previously the only
+// way to exercise any of them was an HTTP request — which is how a value-coercion defect
+// survived nine passing tests that bound their JSON with a decoder production does not use.
+func planPatchOperation(update map[string]any) (imageUpdateField, any, *common.OpenStackError) {
+	var none imageUpdateField
+
+	op, ok := update["op"].(string)
+	if !ok {
+		return none, nil, common.NewBadRequestError("each patch operation must carry a string \"op\"")
+	}
+	path, ok := update["path"].(string)
+	if !ok {
+		return none, nil, common.NewBadRequestError("each patch operation must carry a string \"path\"")
+	}
+
+	// `remove` is refused for every writable path (FR-011): all four are base properties
+	// with schema defaults, so none has an absent state. Upstream answers 403 for a base
+	// property, which is also what it answers for the unwritable paths below — the two
+	// refusals are the same kind of thing.
+	if op == "remove" {
+		return none, nil, common.NewForbiddenError(fmt.Sprintf(
+			"Cannot remove %s: it is a base image property with a schema default and cannot be absent. Set a value with replace instead.", path))
+	}
+	if op != "add" && op != "replace" {
+		return none, nil, common.NewBadRequestError(fmt.Sprintf(
+			"Unsupported patch operation %q; this service implements add and replace", op))
+	}
+
+	// `add` and `replace` are the SAME write for these four scalar properties: each is one
+	// column on one row, so setting a property that has no value and replacing one that
+	// does are indistinguishable at the storage layer (FR-010).
+	field, ok := imageUpdateFields[path]
+	if !ok {
+		return none, nil, common.NewForbiddenError(fmt.Sprintf(
+			"Cannot modify %s: it is not a client-writable image property", path))
+	}
+
+	value, err := coerceImagePatchValue(field, path, update["value"])
+	if err != nil {
+		return none, nil, err
+	}
+	return field, value, nil
+}
+
+// planImagePatch validates the ENTIRE document and reports the columns to assign, in
+// first-seen order, with their values.
+//
+// Validating everything before returning is what makes the operation atomic: a refusal
+// happens before any statement is built, so there is no partial state to roll back. The
+// previous form ran an Exec per operation and logged-and-continued on failure, which is
+// how a half-applied patch was reachable.
+func planImagePatch(updates []map[string]any) ([]string, map[string]any, *common.OpenStackError) {
+	assignments := make(map[string]any, len(updates))
+	order := make([]string, 0, len(updates))
+
+	for _, update := range updates {
+		field, value, err := planPatchOperation(update)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, seen := assignments[field.column]; !seen {
+			order = append(order, field.column)
+		}
+		// Last write wins for a repeated path. PostgreSQL rejects two assignments to one
+		// column in a single SET, so the document is collapsed rather than passed through.
+		assignments[field.column] = value
+	}
+	return order, assignments, nil
+}
+
+// applyImagePatch writes the plan as ONE statement and reports whether a row matched.
+//
+// The bool is not a convenience: a zero-row UPDATE means the image does not exist or
+// belongs to another project, and the caller has to answer 404 for it (FR-015). The
+// previous form checked nothing and let the trailing read produce the 404 — the right
+// answer for the wrong reason, since the write had already matched nothing and nobody
+// looked.
+func applyImagePatch(ctx context.Context, pool *pgxpool.Pool, imageID, projectID string, order []string, assignments map[string]any) (bool, error) {
+	var upd common.SQLUpdate
+	for _, column := range order {
+		upd.Set(column, assignments[column])
+	}
+	upd.Set("updated_at", time.Now())
+	query := fmt.Sprintf("UPDATE images SET %s WHERE id::text = %s AND project_id = %s",
+		upd.Assignments(), upd.Arg(imageID), upd.Arg(projectID))
+
+	tag, err := pool.Exec(ctx, query, upd.Args()...)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// coerceImagePatchValue checks a patch value against its column's type and returns the
+// value to write, or the client error to answer with.
+//
+// A NUMBER ARRIVES AS json.Number, NOT float64. `internal/middleware` sets
+// `binding.EnableDecoderUseNumber = true` in a package `init()`, so every JSON number
+// bound into an `any` reaches a handler as json.Number — a string type. Nova's handlers
+// document this in three separate places; cinder's os-extend action branches on it
+// explicitly.
+//
+// This function accepted only float64 on its first pass, so EVERY integer patch was
+// refused with 400 "Invalid field value" — `openstack image set --min-disk 10` traded one
+// silent failure for a loud wrong one. Found on the 2026-09-02 real-mode host run, and NOT
+// by the unit tests: the flag is set by an `init()` in a package the glance test harness
+// never imported, so the tests bound numbers as float64 and asserted a shape production
+// never produces. The harness now imports it (see image_patch_test.go).
+//
+// float64 is still accepted: a caller that binds without the flag is not wrong, and a
+// coercion that works either way cannot be broken by a change in link order.
+func coerceImagePatchValue(field imageUpdateField, path string, raw any) (any, *common.OpenStackError) {
+	switch field.kind {
+	case imageFieldInt:
+		n, ok := patchInt(raw)
+		if !ok {
+			return nil, common.NewInvalidValueError(path, fmt.Sprintf("%v", raw), "an integer")
+		}
+		return n, nil
+	case imageFieldString:
+		s, ok := raw.(string)
+		if !ok {
+			return nil, common.NewInvalidValueError(path, fmt.Sprintf("%v", raw), "a string")
+		}
+		// A closed set is checked HERE rather than left to PostgreSQL, which has no
+		// constraint on these columns (migration 001 gives visibility a comment listing
+		// the values and no CHECK), so an unhonoured value would simply be stored.
+		if len(field.allowed) > 0 && !slices.Contains(field.allowed, s) {
+			return nil, common.NewInvalidValueError(path, s, strings.Join(field.allowed, " or "))
+		}
+		return s, nil
+	}
+	return nil, common.NewBadRequestError(fmt.Sprintf("unhandled property %s", path))
+}
+
+// patchInt narrows a bound JSON value to an integer, accepting every shape the decoder can
+// produce for one. A bool is deliberately NOT accepted: Go would not convert it anyway, and
+// `{"value": true}` for min_disk is a client error rather than a 1.
+func patchInt(raw any) (int64, bool) {
+	switch v := raw.(type) {
+	case json.Number:
+		n, err := v.Int64()
+		return n, err == nil
+	case float64:
+		if v != float64(int64(v)) {
+			return 0, false
+		}
+		return int64(v), true
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	}
+	return 0, false
 }
 
 // UploadImageData uploads image data

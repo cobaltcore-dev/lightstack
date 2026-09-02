@@ -30,6 +30,13 @@ import (
 // exact state was investigated as a cross-tenant authorization defect before anyone
 // checked the network's owner.
 
+// tenantErr is an error the network service has marked as fit for the tenant to read, which is
+// how it reports a network the caller cannot use. Any other error is an internal failure.
+type tenantErr string
+
+func (e tenantErr) Error() string         { return string(e) }
+func (e tenantErr) TenantMessage() string { return string(e) }
+
 // fakeNeutron is a NeutronService whose behaviour each test chooses.
 type fakeNeutron struct {
 	allocErrFor map[string]error // network id -> error to return
@@ -149,7 +156,7 @@ func TestCreateRefusesAnUnusableNetworkUpFront(t *testing.T) {
 
 	const missingNet = "99999999-9999-9999-9999-999999999999"
 	fake := &fakeNeutron{usableErr: map[string]error{
-		missingNet: errors.New("network not found"),
+		missingNet: tenantErr("no such network"),
 	}}
 	_, r := newBootService(t, fake)
 
@@ -245,6 +252,86 @@ func TestAttachRuleIsToldTheCallersRole(t *testing.T) {
 		}
 		if len(alloc) != 1 || alloc[0] != tc.admin {
 			t.Errorf("%s: allocation admin flags = %v; want [%v]", tc.roles, alloc, tc.admin)
+		}
+	}
+}
+
+// A network check that FAILED is not a refusal: it answers 500 without the error's text, which
+// names the database, and creates nothing. It used to be a 400 carrying the driver's message.
+func TestCreateAnswersAFailedNetworkCheckWith500(t *testing.T) {
+	requireDB(t)
+
+	const netID = "77777777-7777-7777-7777-777777777777"
+	fake := &fakeNeutron{usableErr: map[string]error{
+		netID: errors.New("checking network availability: failed to connect to `user=lightstack database=lightstack`: 10.0.0.5:5432: connection refused"),
+	}}
+	_, r := newBootService(t, fake)
+
+	const name = "spec025-preflight-failed-check"
+	cleanupServerNamed(t, name)
+	body := fmt.Sprintf(`{"server":{"name":%q,"flavorRef":"m1.small","imageRef":%q,"networks":[{"uuid":%q}]}}`,
+		name, seededImageID(t), netID)
+	code, respBody := doReq(r, http.MethodPost, "/v2.1/servers", body, bootHdr())
+
+	if code != http.StatusInternalServerError {
+		t.Errorf("create with the network check failing = %d; want 500. body: %s", code, respBody)
+	}
+	for _, leak := range []string{"lightstack", "10.0.0.5", "connection refused"} {
+		if strings.Contains(respBody, leak) {
+			t.Errorf("the response carries the internal error's text (%q); body: %s", leak, respBody)
+		}
+	}
+	if n := countServersNamed(t, name); n != 0 {
+		t.Errorf("%d instance rows created; want 0", n)
+	}
+}
+
+// The server's fault is read by the tenant. An allocation failure they can act on is shown as the
+// network service worded it; any other — here a database error — is reported without its text, as
+// upstream records only a non-Nova exception's class name (nova/compute/utils.py exception_to_dict).
+func TestAllocationFaultShowsTheTenantOnlyWhatIsMarked(t *testing.T) {
+	requireDB(t)
+
+	for _, tc := range []struct {
+		name      string
+		err       error
+		want      string // in the fault
+		forbidden []string
+	}{
+		{"marked", tenantErr("no subnet found for this network"), "no subnet found for this network", nil},
+		{"internal", errors.New("failed to insert port into database: ERROR: deadlock detected (SQLSTATE 40P01)"),
+			"", []string{"SQLSTATE", "deadlock", "database"}},
+	} {
+		netID := seedBootNetwork(t, seededProjectID, "spec025-fault-"+tc.name)
+		fake := &fakeNeutron{allocErrFor: map[string]error{netID: tc.err}}
+		_, r := newBootService(t, fake)
+
+		name := "spec025-fault-" + tc.name
+		cleanupServerNamed(t, name)
+		body := fmt.Sprintf(`{"server":{"name":%q,"flavorRef":"m1.small","imageRef":%q,"networks":[{"uuid":%q}]}}`,
+			name, seededImageID(t), netID)
+		if code, respBody := doReq(r, http.MethodPost, "/v2.1/servers", body, bootHdr()); code != http.StatusAccepted && code != http.StatusCreated {
+			t.Fatalf("%s: create = %d; want it accepted. body: %s", tc.name, code, respBody)
+		}
+		if got := awaitInstanceStatus(t, name, "ERROR"); got != "ERROR" {
+			t.Fatalf("%s: status = %q; want ERROR", tc.name, got)
+		}
+		var message string
+		if err := testPool.QueryRow(t.Context(),
+			`SELECT COALESCE(fault_message, '') FROM instances WHERE name = $1 AND project_id = $2`,
+			name, seededProjectID).Scan(&message); err != nil {
+			t.Fatalf("%s: reading the fault: %v", tc.name, err)
+		}
+		if !strings.Contains(message, netID) {
+			t.Errorf("%s: fault %q does not name the network", tc.name, message)
+		}
+		if tc.want != "" && !strings.Contains(message, tc.want) {
+			t.Errorf("%s: fault %q does not carry the network service's reason %q", tc.name, message, tc.want)
+		}
+		for _, leak := range tc.forbidden {
+			if strings.Contains(message, leak) {
+				t.Errorf("%s: fault %q carries the internal error's text (%q)", tc.name, message, leak)
+			}
 		}
 	}
 }
