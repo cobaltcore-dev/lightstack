@@ -2,6 +2,7 @@ package nova
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,5 +162,67 @@ func TestServerFilterEmpty(t *testing.T) {
 	}
 	if len(f.Args()) != 0 {
 		t.Errorf("args = %v, want none", f.Args())
+	}
+}
+
+// TestApplyQueryFiltersUnfilteredAddsNothing pins FR-007 mechanically rather than by
+// inference: an unfiltered request must render byte-identically to what the listing
+// rendered before query filters existed.
+//
+// This is the SQL-level counterpart to server_list_filters_test.go's row-level tests. It
+// belongs here, beside the scope assertions, because it is a statement about the rendered
+// query and needs no database — which also means it still guards FR-007 in an environment
+// where the DB-backed tests skip.
+func TestApplyQueryFiltersUnfilteredAddsNothing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const project = "00000000-0000-0000-0000-0000000000a1"
+
+	for _, tc := range []struct {
+		name  string
+		query string
+		admin bool
+	}{
+		{"no parameters at all", "", false},
+		{"paging only", "limit=10&marker=abc&offset=5", false},
+		{"empty filter values are absent", "name=&status=&image=&flavor=", false},
+		{"unrecognised parameters are ignored", "sort_key=created_at&sort_dir=desc&deleted=false", false},
+		{"admin, no filters", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := serverFilterCtx(tc.query, project, tc.admin)
+			f := newServerFilter(c, "")
+			before := f.Where()
+			if err := f.applyQueryFilters(c, ""); err != nil {
+				t.Fatalf("applyQueryFilters(%q) returned %v; an unfiltered request must not be refused", tc.query, err)
+			}
+			if got := f.Where(); got != before {
+				t.Errorf("applyQueryFilters(%q) changed the clause from %q to %q; an absent filter must append nothing", tc.query, before, got)
+			}
+		})
+	}
+}
+
+// TestApplyQueryFiltersRefusesUnrecordable is the SQL-level half of FR-004: the refusal is
+// returned from the accumulator, so both listings get it from one place and neither can
+// forget to check.
+func TestApplyQueryFiltersRefusesUnrecordable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const project = "00000000-0000-0000-0000-0000000000a1"
+
+	for _, param := range refusedListFilters {
+		t.Run(param, func(t *testing.T) {
+			c := serverFilterCtx(param+"=x", project, true)
+			f := newServerFilter(c, "")
+			err := f.applyQueryFilters(c, "")
+			if err == nil {
+				t.Fatalf("?%s=x was accepted; FR-004 requires it be refused", param)
+			}
+			if err.StatusCode != 400 {
+				t.Errorf("?%s=x refused with %d; want 400", param, err.StatusCode)
+			}
+			if !strings.Contains(err.Message+err.Details, param) {
+				t.Errorf("?%s=x refusal does not name the filter: %s / %s", param, err.Message, err.Details)
+			}
+		})
 	}
 }

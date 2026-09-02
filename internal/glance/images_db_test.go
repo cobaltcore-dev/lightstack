@@ -57,7 +57,10 @@ func requireDB(t *testing.T) {
 	}
 }
 
-const seededProjectID = "00000000-0000-0000-0000-000000000002"
+const (
+	seededProjectID = "00000000-0000-0000-0000-000000000002"
+	seededUserID    = "00000000-0000-0000-0000-000000000001"
+)
 
 func newGlanceTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
@@ -205,8 +208,9 @@ func TestDeleteImageInUse_DB(t *testing.T) {
 		imgID := newImage(t)
 		instID := uuid.NewString()
 		if _, err := testPool.Exec(ctx,
-			`INSERT INTO instances (id, name, project_id, image_id, status) VALUES ($1,'pin-inst',$2,$3,'ACTIVE')`,
-			instID, seededProjectID, imgID); err != nil {
+			`INSERT INTO instances (id, name, project_id, user_id, flavor_id, image_id, status)
+			 VALUES ($1,'pin-inst',$2,$3,(SELECT id FROM flavors WHERE name = 'm1.small'),$4,'ACTIVE')`,
+			instID, seededProjectID, seededUserID, imgID); err != nil {
 			t.Fatalf("insert instance: %v", err)
 		}
 		t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM instances WHERE id=$1", instID) })

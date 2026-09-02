@@ -3,9 +3,12 @@
 Findings surfaced while implementing this feature that were deliberately left out of it.
 Each is written so it can be filed as-is.
 
-**Not filed as issues yet** — new tickets land in someone's backlog and the routing is the
-team's call, so they are recorded here rather than created unilaterally. Say the word and
-they go up as issues on `cobaltcore-dev/cloud-storage`.
+**No separate issues.** These are specified as a *pseudo-ticket* instead —
+[`docs/specs/025-followup/`](../025-followup/spec.md), implemented on this same branch — and tracked
+by a checklist comment on the feature's own ticket:
+[#547 (comment)](https://github.com/cobaltcore-dev/cloud-storage/issues/547#issuecomment-5508473250).
+New tickets land in someone's backlog, and seven of these are one theme with one owner, so they stay
+where the work is. **F5 needs no work** and is recorded below for the audit trail only.
 
 ---
 
@@ -206,3 +209,49 @@ properties `add` and `replace` are the same write), implement or explicitly refu
 **400** for an operation that is not supported rather than 200-with-no-change. Check `RowsAffected()`
 on the update and refuse if it is zero. Pin each op with a test that reads the value back — a test that
 only asserts 200 passes against the current behaviour.
+
+---
+
+## F9 — Image sharing is advertised and not implemented
+
+**Where**: `internal/glance/images.go` — the member API (`CreateImageMember` and four sibling
+routes, registered at `:94-98`) writes `image_members` (migration `011`), and **no read path ever
+joins it**. Both filter on ownership or public visibility alone:
+
+```go
+f.Cond("(visibility = 'public' OR project_id = " + f.Arg(projectID) + ")")   // ListImages
+WHERE (id::text = $1 OR name = $1) AND (visibility = 'public' OR project_id = $2)  // GetImage
+```
+
+**What**: a client can set an image's visibility to `shared`, add members, and receive `200`
+throughout — and those members still cannot see the image. `community` is equally absent: `grep`
+for `'shared'` or `'community'` across `internal/glance` returns nothing, and only `'public'` is
+ever special-cased. `migrations/001_initial_schema.up.sql:177` documents all four as if supported:
+
+```sql
+visibility VARCHAR(50) DEFAULT 'private', -- 'public', 'private', 'shared', 'community'
+```
+
+**How it surfaced**: branch review of SPEC-025, finding SRC-15. The finding as filed was narrower —
+that the image PATCH type-checked a value without checking its domain, so any string was stored.
+Investigating it found the create path had the same hole, and that the two values worth refusing
+were not nonsense but *upstream-valid values the product silently ignores*.
+
+**What was done here**: `visibility` is now validated on both the create and the patch path against
+`imageVisibilities = {"public", "private"}`, so `shared` and `community` are refused with `400`
+naming the two accepted values rather than stored and ignored. That closes the silent-success half.
+
+**What is left**: implementing member-based reads. Both read paths would need to admit an image the
+caller is a member of, at which point `shared` becomes honourable and belongs back in
+`imageVisibilities`; `community` needs its own decision.
+
+**Deliberately NOT recorded as an Article I divergence.** The exception clause's first limit
+excludes effort as grounds, and `shared` is implementable against a schema that is already present
+— nothing is joining it. So this is an unimplemented feature, and the refusal is the honest interim
+surface for one, not a departure the project has chosen to keep. It is a gap to close, not a
+divergence to register.
+
+**Severity**: low as a defect, moderate as a compatibility gap. Nothing is exposed that should not
+be — an unrecognised visibility is not `'public'`, so the image stays owner-only, and the failure
+is closed in every direction. But image sharing is a documented Glance feature with a working
+write API and no read behind it.

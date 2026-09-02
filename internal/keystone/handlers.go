@@ -256,10 +256,10 @@ func (svc *Service) AuthenticateToken(c *gin.Context) {
 
 	if req.Auth.Identity.Token != nil && req.Auth.Identity.Token.ID != "" {
 		// Token-based authentication (re-scoping)
-		resp, tokenString, err = svc.authService.AuthenticateToken(c.Request.Context(), &req)
+		resp, tokenString, err = svc.authService.AuthenticateToken(c.Request.Context(), &req, c.Request.Host)
 	} else if req.Auth.Identity.Password != nil {
 		// Password-based authentication
-		resp, tokenString, err = svc.authService.AuthenticatePassword(c.Request.Context(), &req)
+		resp, tokenString, err = svc.authService.AuthenticatePassword(c.Request.Context(), &req, c.Request.Host)
 	} else {
 		common.SendError(c, common.NewBadRequestError("password or token authentication required"))
 		return
@@ -305,7 +305,7 @@ func (svc *Service) ValidateToken(c *gin.Context) {
 	// whose mandatory fields are user{id,name}, expires_at, roles[]{name} and
 	// project{id,name}; the old flat {"project_id", roles: [string]} shape was
 	// unparseable by RGW and standard clients (gophercloud tokens.Get).
-	c.JSON(http.StatusOK, svc.authService.BuildTokenResponse(c.Request.Context(), claims))
+	c.JSON(http.StatusOK, svc.authService.BuildTokenResponse(c.Request.Context(), claims, c.Request.Host))
 }
 
 // RevokeToken revokes a token (DELETE /v3/auth/tokens)

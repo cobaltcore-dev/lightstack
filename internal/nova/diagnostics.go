@@ -77,12 +77,15 @@ func (svc *Service) GetServerDiagnostics(c *gin.Context) {
 // Only a well-formed identifier is accepted: after deletion there is no row left to
 // match a NAME against, and matching names against action records would let one
 // project's server name reach another's history.
-func (svc *Service) resolveDeletedServerForHistory(c *gin.Context, ref string) (string, bool) {
+//
+// A lookup the database could not answer is returned as an error, not as "no history":
+// that answer would tell an owner whose history exists that the server never did.
+func (svc *Service) resolveDeletedServerForHistory(c *gin.Context, ref string) (string, bool, error) {
 	if !wantsDeletedInstanceActions(c) {
-		return "", false
+		return "", false, nil
 	}
 	if uuid.Validate(ref) != nil {
-		return "", false
+		return "", false, nil
 	}
 
 	query := `SELECT DISTINCT instance_id::text FROM instance_actions
@@ -94,14 +97,14 @@ func (svc *Service) resolveDeletedServerForHistory(c *gin.Context, ref string) (
 	}
 
 	var id string
-	if err := svc.pool.QueryRow(c.Request.Context(), query, args...).Scan(&id); err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			log.Error().Err(err).Str("instance_ref", ref).
-				Msg("looking up a deleted server's action history failed")
-		}
-		return "", false
+	err := svc.pool.QueryRow(c.Request.Context(), query, args...).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
 	}
-	return id, true
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
 }
 
 // ListInstanceActions handles GET /v2.1/servers/:id/os-instance-actions
@@ -121,11 +124,22 @@ func (svc *Service) resolveDeletedServerForHistory(c *gin.Context, ref string) (
 func (svc *Service) ListInstanceActions(c *gin.Context) {
 	ref := c.Param("id")
 
-	instanceID, _, authorized := resolveServerOr404Silent(c, svc.pool, ref)
-	if !authorized {
+	// targetInstance rather than resolveServerOr404, because "not a live server" is not the
+	// final answer here. A lookup the database could not answer is not that answer either: it
+	// is one 500, and the request ends. It used to be reported AND taken for an absent server,
+	// so a 404 or the history itself followed the 500 in the same body.
+	instanceID, _, err := targetInstance(c, svc.pool, ref)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		// The server is not reachable as a live instance. It may still be one this
 		// caller deleted, whose history they are entitled to.
-		id, ok := svc.resolveDeletedServerForHistory(c, ref)
+		id, ok, ferr := svc.resolveDeletedServerForHistory(c, ref)
+		if ferr != nil {
+			log.Error().Err(ferr).Str("instance_ref", ref).
+				Msg("looking up a deleted server's action history failed")
+			common.SendError(c, common.NewInternalServerError("failed to look up instance"))
+			return
+		}
 		if !ok {
 			// Same *absent* answer as before, revealing nothing about whether the
 			// server ever existed (FR-043b).
@@ -134,6 +148,10 @@ func (svc *Service) ListInstanceActions(c *gin.Context) {
 			return
 		}
 		instanceID = id
+	case err != nil:
+		log.Error().Err(err).Str("instance_ref", ref).Msg("instance lookup failed")
+		common.SendError(c, common.NewInternalServerError("failed to look up instance"))
+		return
 	}
 
 	// Query instance actions

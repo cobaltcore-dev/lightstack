@@ -282,3 +282,32 @@ func TestOpenStackErrorError(t *testing.T) {
 		})
 	}
 }
+
+// TestNewNotAcceptableError covers the product's first 406 (SPEC-025-followup FR-041).
+//
+// The status code is the point: compute's microversion gate refuses an out-of-range
+// negotiation, and a client that receives anything other than 406 cannot tell "negotiate
+// down" from "your request was malformed".
+func TestNewNotAcceptableError(t *testing.T) {
+	err := NewNotAcceptableError("Version 2.99 is not supported by the API. Minimum is 2.1 and maximum is 2.90.")
+
+	if err.StatusCode != http.StatusNotAcceptable {
+		t.Errorf("Expected status code %d, got %d", http.StatusNotAcceptable, err.StatusCode)
+	}
+	if err.Code != "computeFault" {
+		t.Errorf("Expected fault element computeFault, got: %s", err.Code)
+	}
+	if err.Message == "" {
+		t.Error("Expected the caller's message to be carried through")
+	}
+
+	// The envelope a client actually parses: {"computeFault": {"message": ..., "code": 406}}.
+	body := err.ToJSON()
+	fault, ok := body["computeFault"].(gin.H)
+	if !ok {
+		t.Fatalf("Expected a computeFault envelope, got: %#v", body)
+	}
+	if fault["code"] != http.StatusNotAcceptable {
+		t.Errorf("Expected the body's code to be 406, got: %v", fault["code"])
+	}
+}

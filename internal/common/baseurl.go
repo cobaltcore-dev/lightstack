@@ -80,15 +80,22 @@ func requestHost(c *gin.Context) string {
 	return c.Request.Host
 }
 
-// hostWithPort replaces host's port with the given one, leaving an IPv6 literal
-// correctly bracketed.
+// HostWithoutPort returns host with any port removed, in a form a port can be
+// appended to: an IPv6 literal comes back bracketed, a name or IPv4 address bare.
 //
 // Handling both bracket forms matters: net.SplitHostPort strips the brackets from
 // "[::1]:8774" but reports an error for a bare "[fe80::1]", so each case needs the
 // brackets restored from a different starting point. Getting this wrong previously
 // produced authorities like "lightstack.example.com:1234:9696" — two ports, no client can
 // resolve it — whenever a configured host already named a port.
-func hostWithPort(host string, port int) string {
+//
+// Exported because the service catalog needs the same answer for a different reason
+// (SPEC-025-followup FR-031): it substitutes the request host into endpoint URLs that
+// supply their own ":port", so a request host arriving as "lightstack.example.com:35357"
+// would produce exactly the two-port authority described above. One implementation,
+// two callers, rather than the second caller re-deriving it and getting the IPv6 case
+// wrong.
+func HostWithoutPort(host string) string {
 	h := host
 	if stripped, _, err := net.SplitHostPort(h); err == nil {
 		h = stripped
@@ -97,7 +104,12 @@ func hostWithPort(host string, port int) string {
 	}
 	if strings.Contains(h, ":") {
 		// A bare IPv6 literal: it must be bracketed before a port is appended.
-		return "[" + h + "]:" + strconv.Itoa(port)
+		return "[" + h + "]"
 	}
-	return h + ":" + strconv.Itoa(port)
+	return h
+}
+
+// hostWithPort replaces host's port with the given one.
+func hostWithPort(host string, port int) string {
+	return HostWithoutPort(host) + ":" + strconv.Itoa(port)
 }

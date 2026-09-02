@@ -239,7 +239,7 @@ type Endpoint struct {
 }
 
 // AuthenticatePassword authenticates user with password
-func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest) (*AuthResponse, string, error) {
+func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest, requestHost string) (*AuthResponse, string, error) {
 	if req.Auth.Identity.Password == nil {
 		return nil, "", common.NewBadRequestError("password authentication required")
 	}
@@ -454,14 +454,14 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		}
 
 		// Add service catalog
-		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, requestHost, s.cache, s.glanceS3Endpoint)
 	}
 
 	return resp, tokenString, nil
 }
 
 // AuthenticateToken handles token-based authentication (re-scoping)
-func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (*AuthResponse, string, error) {
+func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest, requestHost string) (*AuthResponse, string, error) {
 	if req.Auth.Identity.Token == nil || req.Auth.Identity.Token.ID == "" {
 		return nil, "", common.NewBadRequestError("token authentication required")
 	}
@@ -659,7 +659,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		}
 
 		// Add service catalog
-		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, requestHost, s.cache, s.glanceS3Endpoint)
 	}
 
 	return resp, tokenString, nil
@@ -688,11 +688,12 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 //     same way (a missing or disabled project/user row omits that key;
 //     domain names fall back to "Default" on a failed lookup).
 //   - roles render as [{"id": name, "name": name}] objects.
-//   - the catalog is built from the CANONICAL project id, like the issue path.
+//   - the catalog is built from the CANONICAL project id and the host the
+//     client addressed, like the issue paths.
 //   - methods come from the claims — server-recorded at issue (["password"]
 //     on the password path, inherited from the re-scoped token on the token
 //     path), omitted for tokens issued before the claims carried them.
-func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaims) *AuthResponse {
+func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaims, requestHost string) *AuthResponse {
 	resp := &AuthResponse{}
 	if claims.ExpiresAt != nil {
 		resp.Token.ExpiresAt = keystoneTimestamp(claims.ExpiresAt.Time)
@@ -825,7 +826,7 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 		}
 
 		// Service catalog from the CANONICAL project id, like the issue paths.
-		resp.Token.Catalog = BuildServiceCatalog(s.pool, claims.ProjectID, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, claims.ProjectID, requestHost, s.cache, s.glanceS3Endpoint)
 	}
 
 	return resp
@@ -871,13 +872,30 @@ func (s *AuthService) CheckPassword(password, hash string) bool {
 	return err == nil
 }
 
-// BuildServiceCatalog builds the OpenStack service catalog from database
-func BuildServiceCatalog(pool *pgxpool.Pool, projectID string, cacheInstance *cache.Cache, s3Endpoint string) []CatalogEntry {
+// BuildServiceCatalog builds the OpenStack service catalog from database.
+//
+// requestHost is the host the client addressed, and it OUTRANKS the configured endpoint
+// host (SPEC-025-followup FR-031) — the same precedence SPEC-025 established for
+// self-links. The catalog is the earlier of the two failures: a client reads it before any
+// version document, so a deployment whose configured host is unresolvable to the client
+// broke every command one step *before* the self-links that feature fixed were ever
+// fetched. Empty when a request carries no usable host, in which case the configured host
+// and then "localhost" apply, so an endpoint is always absolute and parseable (FR-032).
+func BuildServiceCatalog(pool *pgxpool.Pool, projectID, requestHost string, cacheInstance *cache.Cache, s3Endpoint string) []CatalogEntry {
 	ctx := context.Background()
+	host := catalogHost(requestHost)
 
-	// Try cache first (service catalog is immutable, 24h TTL)
-	if cacheInstance != nil {
-		cacheKey := "service_catalog:" + projectID
+	// The cache key carries the HOST as well as the project (FR-031a).
+	//
+	// Not an optimisation — a correctness requirement, and a security one. Endpoints now
+	// derive from a client-supplied value, so a key naming only the project would let one
+	// caller's Host header decide the endpoints another caller in the same project is
+	// handed, and therefore where that caller sends its token. The comment this replaced
+	// asserted the catalog was immutable, which this feature makes false.
+	// ...but only the deployment's OWN host is cached; see catalogCacheable.
+	cacheable := cacheInstance != nil && catalogCacheable(host)
+	if cacheable {
+		cacheKey := "service_catalog:" + projectID + ":" + host
 		var cached []CatalogEntry
 		if err := cacheInstance.Get(ctx, cacheKey, &cached); err == nil {
 			return cached
@@ -896,7 +914,7 @@ func BuildServiceCatalog(pool *pgxpool.Pool, projectID string, cacheInstance *ca
 	`)
 	if err != nil {
 		// Fall back to hardcoded catalog on error
-		return buildHardcodedCatalog(projectID, s3Endpoint)
+		return buildHardcodedCatalog(projectID, host, s3Endpoint)
 	}
 	defer rows.Close()
 
@@ -942,7 +960,7 @@ func BuildServiceCatalog(pool *pgxpool.Pool, projectID string, cacheInstance *ca
 		// Add endpoint if present
 		if endpointID != nil && iface != nil && url != nil {
 			// Substitute URL templates
-			substitutedURL := substituteURLTemplates(*url, projectID)
+			substitutedURL := substituteURLTemplates(*url, projectID, host)
 			if svcType == "s3" {
 				substitutedURL = s3Endpoint // external RGW; serve the resolved config URL as-is
 			}
@@ -962,7 +980,7 @@ func BuildServiceCatalog(pool *pgxpool.Pool, projectID string, cacheInstance *ca
 	// missing. Fall back to the complete hardcoded catalog and do NOT cache.
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("service catalog rows iteration error; serving hardcoded catalog uncached")
-		return buildHardcodedCatalog(projectID, s3Endpoint)
+		return buildHardcodedCatalog(projectID, host, s3Endpoint)
 	}
 
 	// Convert map to slice
@@ -972,19 +990,64 @@ func BuildServiceCatalog(pool *pgxpool.Pool, projectID string, cacheInstance *ca
 
 	// Fall back to hardcoded if query returned nothing
 	if len(catalog) == 0 {
-		return buildHardcodedCatalog(projectID, s3Endpoint)
+		return buildHardcodedCatalog(projectID, host, s3Endpoint)
 	}
 
-	// Store in cache (24h TTL per config)
-	if cacheInstance != nil {
-		cacheInstance.TrySet(ctx, "service_catalog:"+projectID, catalog, 24*time.Hour)
+	// Store in cache (24h TTL per config), for the configured host only.
+	if cacheable {
+		cacheInstance.TrySet(ctx, "service_catalog:"+projectID+":"+host, catalog, 24*time.Hour)
 	}
 
 	return catalog
 }
 
+// catalogHost resolves the host to advertise: the host the client addressed, then the
+// configured one, then localhost.
+//
+// The PORT IS STRIPPED, and that is the whole reason this is a function rather than a
+// parameter passed straight through. substituteURLTemplates replaces host *prefixes* that
+// include the trailing colon — "http://lightstack:" → "http://<host>:" — which is what lets each
+// endpoint keep its own port from the seeded rows. Feeding it a request host that already
+// carries one ("lightstack.example.com:35357") would produce "http://lightstack.example.com:35357:8774":
+// two ports, resolvable by nothing. common.HostWithoutPort is the bracket-aware split that
+// avoids it, shared with the self-link path whose own comment records having emitted
+// exactly that authority before.
+//
+// A forwarded-host header is deliberately NOT consulted (FR-031b). Nothing in the product
+// reads one, and trusting a client-supplied forwarding header raises the same hazard
+// FR-031a exists to close — on a direct connection it is attacker-chosen. A deployment
+// behind a proxy configures the proxy to preserve Host; see docs/CONFIGURATION.md.
+// catalogCacheable reports whether a catalog built for this host may be cached.
+//
+// Only the deployment's OWN advertised host is. The cache key carries the host because it
+// has to (FR-031a: otherwise one caller's Host header decides another's endpoints, and so
+// where that caller sends its token) — but the host comes from a client-supplied header,
+// which means callers choose the key space. With caching enabled, a tenant varying that
+// one header writes a Redis key per value, each held 24 hours in a store shared across the
+// deployment, with no eviction policy this product configures. Restricting the cache to the
+// configured host puts the bound back where it was: one entry per project.
+//
+// THE COST, stated rather than implied: when LIGHTSTACK_ENDPOINT_HOST is unset the configured host
+// is "localhost", so a deployment addressed by any other name caches nothing here. That is
+// deliberate. The catalog is a single joined query, caching is opt-in (cache.enabled
+// defaults to false), and an optional saving is worth less than a bound that cannot be
+// exceeded by a caller.
+func catalogCacheable(host string) bool {
+	return host == catalogHost("")
+}
+
+func catalogHost(requestHost string) string {
+	if h := common.HostWithoutPort(requestHost); h != "" {
+		return h
+	}
+	if h := common.HostWithoutPort(os.Getenv("LIGHTSTACK_ENDPOINT_HOST")); h != "" {
+		return h
+	}
+	return "localhost"
+}
+
 // substituteURLTemplates replaces template placeholders in endpoint URLs
-func substituteURLTemplates(url, projectID string) string {
+func substituteURLTemplates(url, projectID, baseHost string) string {
 	// Replace {project_id} placeholder
 	url = strings.ReplaceAll(url, "{project_id}", projectID)
 	// Also handle $(project_id)s format (OpenStack convention)
@@ -994,13 +1057,9 @@ func substituteURLTemplates(url, projectID string) string {
 	// Also handle plain %s format (legacy)
 	url = strings.ReplaceAll(url, "%s", projectID)
 
-	// Replace hostname based on LIGHTSTACK_ENDPOINT_HOST environment variable
-	// This allows using 'localhost' in CI and 'lightstack' in docker-compose
-	baseHost := os.Getenv("LIGHTSTACK_ENDPOINT_HOST")
-	if baseHost == "" {
-		baseHost = "localhost"
-	}
-	// Replace http://lightstack: with the configured host
+	// baseHost is resolved by catalogHost: the host the client addressed, falling back to
+	// LIGHTSTACK_ENDPOINT_HOST and then localhost. It arrives with any port already stripped.
+	// Replace http://lightstack: with the resolved host
 	url = strings.ReplaceAll(url, "http://lightstack:", "http://"+baseHost+":")
 	// Also handle https://lightstack: for future SSL support
 	url = strings.ReplaceAll(url, "https://lightstack:", "https://"+baseHost+":")
@@ -1018,12 +1077,11 @@ func substituteURLTemplates(url, projectID string) string {
 }
 
 // buildHardcodedCatalog provides fallback catalog (previous implementation)
-func buildHardcodedCatalog(projectID, s3Endpoint string) []CatalogEntry {
-	// Use LIGHTSTACK_ENDPOINT_HOST env var, default to "localhost" for CI compatibility
-	baseHost := os.Getenv("LIGHTSTACK_ENDPOINT_HOST")
-	if baseHost == "" {
-		baseHost = "localhost"
-	}
+// buildHardcodedCatalog is the fallback served when the database read fails or returns
+// nothing. It takes the same resolved host as the database-backed path (FR-031): a
+// fallback that advertised a different address would make a partial read change which
+// hostname a client is told to use.
+func buildHardcodedCatalog(projectID, baseHost, s3Endpoint string) []CatalogEntry {
 	// Honor the configured advertised scheme (SPEC-007 WS-3, FR-010).
 	baseURL := common.EndpointScheme() + "://" + baseHost
 

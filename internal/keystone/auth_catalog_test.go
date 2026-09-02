@@ -35,9 +35,9 @@ func setSchemeEnv(t *testing.T, scheme string) {
 // (FR-010/011/013, SC-006). No DB required.
 func TestHardcodedCatalogScheme(t *testing.T) {
 	setSchemeEnv(t, "")
-	httpCat := buildHardcodedCatalog("proj1", "")
+	httpCat := buildHardcodedCatalog("proj1", catalogHost(""), "")
 	setSchemeEnv(t, "https")
-	httpsCat := buildHardcodedCatalog("proj1", "")
+	httpsCat := buildHardcodedCatalog("proj1", catalogHost(""), "")
 
 	for _, e := range httpsCat {
 		for _, ep := range e.Endpoints {
@@ -83,7 +83,7 @@ func TestHardcodedCatalogScheme(t *testing.T) {
 func TestBuildServiceCatalogScheme(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "https")
-	cat := BuildServiceCatalog(testPool, "proj1", nil, "")
+	cat := BuildServiceCatalog(testPool, "proj1", "", nil, "")
 	if len(cat) == 0 {
 		t.Fatal("empty catalog")
 	}
@@ -107,7 +107,7 @@ func TestBuildServiceCatalogS3EndpointFromConfig(t *testing.T) {
 	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // Helm-style: value comes from config, not env
 
 	var got string
-	for _, e := range BuildServiceCatalog(testPool, "proj-s3", nil, rgw) { // nil cache => fresh; rgw = cfg value
+	for _, e := range BuildServiceCatalog(testPool, "proj-s3", "", nil, rgw) { // nil cache => fresh; rgw = cfg value
 		if e.Type != "s3" {
 			continue
 		}
@@ -130,7 +130,7 @@ func TestBuildServiceCatalogOmitsS3WhenUnconfigured(t *testing.T) {
 	requireDB(t)
 	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // unconfigured deployment
 
-	cat := BuildServiceCatalog(testPool, "proj-unconf", nil, "") // "" = cfg.Glance.S3Endpoint unset
+	cat := BuildServiceCatalog(testPool, "proj-unconf", "", nil, "") // "" = cfg.Glance.S3Endpoint unset
 	if len(cat) == 0 {
 		t.Fatal("empty catalog")
 	}
@@ -158,10 +158,10 @@ func TestHardcodedCatalogS3FromConfig(t *testing.T) {
 		return "", false
 	}
 
-	if url, ok := s3URL(buildHardcodedCatalog("p", "http://rgw.example.test:8080")); !ok || url != "http://rgw.example.test:8080" {
+	if url, ok := s3URL(buildHardcodedCatalog("p", catalogHost(""), "http://rgw.example.test:8080")); !ok || url != "http://rgw.example.test:8080" {
 		t.Fatalf("configured: fallback s3 endpoint = %q ok=%v; want the RGW URL", url, ok)
 	}
-	if _, ok := s3URL(buildHardcodedCatalog("p", "")); ok {
+	if _, ok := s3URL(buildHardcodedCatalog("p", catalogHost(""), "")); ok {
 		t.Fatal("unconfigured: fallback must not advertise an s3 endpoint")
 	}
 }
@@ -173,7 +173,7 @@ func TestHardcodedCatalogS3FromConfig(t *testing.T) {
 func TestSubstituteURLTemplatesRewritesLocalhost(t *testing.T) {
 	setSchemeEnv(t, "") // LIGHTSTACK_ENDPOINT_HOST=lightstack.example.com, scheme unset (http)
 
-	got := substituteURLTemplates("http://localhost:8776/v3", "proj1")
+	got := substituteURLTemplates("http://localhost:8776/v3", "proj1", catalogHost(""))
 	if strings.Contains(got, "localhost") {
 		t.Errorf("localhost not rewritten: %q", got)
 	}
@@ -182,7 +182,7 @@ func TestSubstituteURLTemplatesRewritesLocalhost(t *testing.T) {
 	}
 
 	// The existing http://lightstack: rewrite still works (no regression).
-	if got := substituteURLTemplates("http://lightstack:9696", "p"); !strings.Contains(got, "lightstack.example.com:9696") {
+	if got := substituteURLTemplates("http://lightstack:9696", "p", catalogHost("")); !strings.Contains(got, "lightstack.example.com:9696") {
 		t.Errorf("lightstack prefix rewrite regressed: %q", got)
 	}
 }
@@ -204,7 +204,7 @@ func TestSubstituteURLTemplatesLocalhostUnsetNoop(t *testing.T) {
 		os.Unsetenv(k)
 	}
 
-	got := substituteURLTemplates("http://localhost:8776/v3", "p")
+	got := substituteURLTemplates("http://localhost:8776/v3", "p", catalogHost(""))
 	if !strings.Contains(got, "localhost:8776") {
 		t.Errorf("localhost must be preserved when host unset, got %q", got)
 	}
@@ -227,7 +227,7 @@ func catalogServices(cat []CatalogEntry) []string {
 func TestBuildServiceCatalogListsPlacement(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "")
-	for _, e := range BuildServiceCatalog(testPool, "proj-placement", nil, "") {
+	for _, e := range BuildServiceCatalog(testPool, "proj-placement", "", nil, "") {
 		if e.Type != "placement" {
 			continue
 		}
@@ -245,9 +245,57 @@ func TestBuildServiceCatalogListsPlacement(t *testing.T) {
 func TestHardcodedCatalogMatchesTheDatabase(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "")
-	db := catalogServices(BuildServiceCatalog(testPool, "proj-drift", nil, ""))
-	fallback := catalogServices(buildHardcodedCatalog("proj-drift", ""))
+	db := catalogServices(BuildServiceCatalog(testPool, "proj-drift", "", nil, ""))
+	fallback := catalogServices(buildHardcodedCatalog("proj-drift", catalogHost(""), ""))
 	if !slices.Equal(db, fallback) {
 		t.Errorf("the database catalog lists %v, the fallback %v; they must list the same services", db, fallback)
 	}
+}
+
+// TestCatalogCacheableOnlyForTheConfiguredHost pins the cache-admission policy
+// (branch review SRC-11).
+//
+// The cache key must carry the host (FR-031a) or one caller's Host header decides another
+// caller's endpoints. But the host is client-supplied, so keying on it hands the key space
+// to callers: with caching enabled, a tenant varying one header writes a Redis key per
+// value, each held 24 hours in a store shared across the deployment with no eviction
+// policy the product sets. Admitting only the configured host restores the bound of one
+// entry per project.
+//
+// Asserted as a predicate rather than through the cache because the cache is Redis-backed
+// and no test in this repo has one; the decision is the part with a rule in it.
+func TestCatalogCacheableOnlyForTheConfiguredHost(t *testing.T) {
+	t.Run("with LIGHTSTACK_ENDPOINT_HOST set", func(t *testing.T) {
+		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.example.test")
+
+		if !catalogCacheable("lightstack.example.test") {
+			t.Error("the configured host must be cacheable; otherwise the cache never serves anything")
+		}
+		for _, host := range []string{
+			"attacker.example.test",
+			"lightstack.example.test.evil",
+			"", // no usable host: catalogHost falls back, so this is not the configured name
+			"192.0.2.1",
+			"lightstack.example.test:8774", // a port makes it a different string, and so a different key
+		} {
+			if catalogCacheable(host) {
+				t.Errorf("catalogCacheable(%q) = true; only the configured host may be cached, or a caller "+
+					"chooses the key space", host)
+			}
+		}
+	})
+
+	t.Run("without LIGHTSTACK_ENDPOINT_HOST", func(t *testing.T) {
+		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "")
+
+		// The documented cost: the configured host is "localhost", so a deployment
+		// addressed by any other name caches nothing. Pinned so it is a known trade
+		// rather than a surprise to whoever next measures a cache hit rate.
+		if !catalogCacheable("localhost") {
+			t.Error("with no configured host, localhost is the advertised name and must be cacheable")
+		}
+		if catalogCacheable("lightstack.svc.cluster.local") {
+			t.Error("with no configured host, nothing else is cacheable — set LIGHTSTACK_ENDPOINT_HOST to enable it")
+		}
+	})
 }

@@ -286,6 +286,29 @@ func NewQuotaExceededError(resource string) *OpenStackError {
 	}
 }
 
+// NewNotAcceptableError creates a 406 error, for a request whose negotiated form the service
+// cannot produce.
+//
+// The product's first 406: every other constructor here predates any surface that could refuse a
+// negotiation. Compute's microversion gate is the first caller (SPEC-025-followup FR-041) and
+// unlikely to be the last, which is why this lives in common rather than in nova.
+//
+// The envelope is `computeFault`. Upstream's fault guide states the root element "varies depending
+// on the error type (e.g. itemNotFound, computeFault)", and 406 is not one of the codes upstream
+// maps to a specific name — it falls through to the generic fault element. The exact key for a 406
+// is not documented directly, so this is upstream's fallback rather than a quoted example; if a
+// stock client is found to branch on something else, this is the one line to change.
+//
+// message is composed by the caller so this stays free of any one service's vocabulary. Compute
+// passes upstream's form, which names what to negotiate down to rather than merely refusing.
+func NewNotAcceptableError(message string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode: http.StatusNotAcceptable,
+		Code:       "computeFault",
+		Message:    message,
+	}
+}
+
 func NewMethodNotAllowedError(method string) *OpenStackError {
 	return &OpenStackError{
 		StatusCode: http.StatusMethodNotAllowed,

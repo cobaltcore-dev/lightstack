@@ -2,6 +2,7 @@ package common
 
 import (
 	"crypto/tls"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -190,6 +191,53 @@ func TestBaseURLAlwaysAbsolute(t *testing.T) {
 					t.Errorf("BaseURL(host=%q req=%q port=%d) = %q: not absolute", envHost, reqHost, port, got)
 				}
 			}
+		}
+	}
+}
+
+// TestHostWithoutPort pins the port-stripping the service catalog depends on
+// (SPEC-025-followup FR-031).
+//
+// The two-port case is the reason this is a shared, tested helper rather than a
+// strings.Split at the call site: substituting a request host that already carries a port
+// into a URL pattern that supplies its own produces "host:35357:8774", which no client can
+// resolve. hostWithPort's comment records that exact authority having been emitted before.
+func TestHostWithoutPort(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"bare name", "lightstack.example.com", "lightstack.example.com"},
+		{"name with port", "lightstack.example.com:35357", "lightstack.example.com"},
+		{"ipv4", "10.0.0.5", "10.0.0.5"},
+		{"ipv4 with port", "10.0.0.5:8774", "10.0.0.5"},
+		// SplitHostPort strips the brackets here, so they must be restored.
+		{"bracketed ipv6 with port", "[::1]:8774", "[::1]"},
+		// SplitHostPort reports an error here, so the brackets must be trimmed then restored.
+		{"bracketed ipv6 without port", "[fe80::1]", "[fe80::1]"},
+		{"bare ipv6", "fe80::1", "[fe80::1]"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HostWithoutPort(tt.host); got != tt.want {
+				t.Errorf("HostWithoutPort(%q) = %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHostWithoutPortComposesWithPort is the property the catalog substitution relies on:
+// appending ":port" to the result must always yield a single, resolvable authority.
+func TestHostWithoutPortComposesWithPort(t *testing.T) {
+	for _, host := range []string{"lightstack.example.com", "lightstack.example.com:35357", "[::1]:8774", "fe80::1", "10.0.0.5:8776"} {
+		authority := HostWithoutPort(host) + ":8774"
+		if _, err := url.Parse("http://" + authority + "/v2.1"); err != nil {
+			t.Errorf("host %q produced an unparseable authority %q: %v", host, authority, err)
+		}
+		if _, _, err := net.SplitHostPort(authority); err != nil {
+			t.Errorf("host %q produced authority %q that is not a single host:port: %v", host, authority, err)
 		}
 	}
 }

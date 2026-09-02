@@ -482,39 +482,86 @@ func (svc *Service) SetImageStore(s *storage.ImageStore) {
 // requires. With an ImageRef the volume is a bootable copy of the image's raw base;
 // otherwise it is empty (SPEC-009 WS-5 / T040).
 func (svc *Service) provisionVolume(ctx context.Context, spec volumeSpec) (bootable bool, err error) {
-	var sourceImageID any
+	// The checks and the INSERT share one transaction, and the project lock is held
+	// across both (FR-023) — which is withVolumeQuota's whole purpose.
+	//
+	// Checking in a transaction of its own is not enough, and this is worth spelling out
+	// because it is the mistake this code made first: the check committed, releasing the
+	// lock, and the row was inserted afterwards. Two concurrent creates against a single
+	// remaining allowance both passed the check before either inserted, and both
+	// succeeded. The window is small and entirely real — a test with two goroutines finds
+	// it every time.
+	//
+	// The backing store is created inside the transaction so a failure to record the
+	// volume can still reclaim it. It is the one non-database operation under the lock;
+	// the lock is per-project, so a slow backing store delays only that project's own
+	// concurrent creates.
+	//
+	// The image base is fetched BEFORE the transaction. The fetch reads the image's
+	// checksum through svc.pool, and inside the transaction that read would need a second
+	// connection while this one is held — once every connection belongs to a create
+	// waiting on this project's lock, none is ever free.
 	if spec.ImageRef != "" {
 		if berr := svc.ensureLocalImageBase(ctx, spec.ImageRef); berr != nil {
 			log.Error().Err(berr).Str("operation", "fetch_image_base").Str("image", spec.ImageRef).Msg("failed to fetch the image base for a volume")
 			return false, &volumeBackingError{"failed to create volume from image", berr}
 		}
+	}
+	var backingCreated bool
+	err = withVolumeQuota(ctx, svc.pool, spec.ProjectID, spec.SizeGB, func(tx pgx.Tx) error {
+		var perr error
+		bootable, backingCreated, perr = svc.writeVolume(ctx, tx, spec)
+		return perr
+	})
+	if err != nil {
+		if backingCreated {
+			// The row was rolled back with the transaction, so the backing store would
+			// otherwise be a leak: the recorded volume is the one users can see.
+			if cephErr := svc.cephClient.DeleteVolume(ctx, spec.ID); cephErr != nil {
+				log.Warn().Err(cephErr).Str("volume_id", spec.ID).
+					Msg("rollback: failed to delete volume backing after transaction failure")
+			}
+		}
+		return false, err
+	}
+	return bootable, nil
+}
+
+// writeVolume creates the backing store and records the volume inside the caller's
+// transaction, reporting whether the volume is bootable and whether a backing store now
+// exists to be reclaimed if the transaction fails.
+func (svc *Service) writeVolume(ctx context.Context, tx pgx.Tx, spec volumeSpec) (bootable, backingCreated bool, err error) {
+	var sourceImageID any
+	if spec.ImageRef != "" {
 		if berr := svc.cephClient.CreateVolumeFromImage(ctx, spec.ID, storage.LocalImagePath(spec.ImageRef), spec.SizeGB); berr != nil {
 			log.Error().Err(berr).Str("operation", "create_volume_from_image").Str("image", spec.ImageRef).Msg("failed to create volume from image")
-			return false, &volumeBackingError{"failed to create volume from image", berr}
+			return false, false, &volumeBackingError{"failed to create volume from image", berr}
 		}
 		sourceImageID = spec.ImageRef
 		bootable = true
 	} else if berr := svc.cephClient.CreateVolume(ctx, spec.ID, spec.SizeGB); berr != nil {
 		log.Error().Err(berr).Str("operation", "create_volume_backing").Msg("failed to create volume backing")
-		return false, &volumeBackingError{"failed to create volume backing", berr}
+		return false, false, &volumeBackingError{"failed to create volume backing", berr}
 	}
+	backingCreated = true
 
 	// Status available — the backing is already provisioned. volume_type and description
 	// are persisted so they read back verbatim (F9, FR-003); both columns exist (migrations
 	// 016 and 012) but were once parsed and discarded.
-	if _, derr := svc.pool.Exec(ctx, `
+	//
+	// Written through the caller's TRANSACTION, not svc.pool: the quota check that
+	// authorised this row holds its lock in that transaction, and an insert outside it
+	// would commit independently of the check — which is exactly the race FR-023 forbids.
+	// The caller reclaims the backing store if the transaction fails.
+	if _, derr := tx.Exec(ctx, `
 		INSERT INTO volumes (id, name, description, project_id, user_id, size_gb, status, bootable, source_image_id, rbd_pool, rbd_image, volume_type, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	`, spec.ID, spec.Name, spec.Description, spec.ProjectID, spec.UserID, spec.SizeGB, "available", bootable,
 		sourceImageID, svc.cephPool, "volume-"+spec.ID, spec.VolumeType, spec.CreatedAt, spec.CreatedAt); derr != nil {
-		// Roll the backing back (best-effort; the DB error is what the caller sees).
-		if cephErr := svc.cephClient.DeleteVolume(ctx, spec.ID); cephErr != nil {
-			log.Warn().Err(cephErr).Str("volume_id", spec.ID).Msg("rollback: failed to delete volume backing after DB insert failure")
-		}
 		log.Error().Err(derr).Str("operation", "create_volume_db").Msg("failed to insert volume into database")
-		return false, fmt.Errorf("recording volume %s: %w", spec.ID, derr)
+		return bootable, backingCreated, fmt.Errorf("recording volume %s: %w", spec.ID, derr)
 	}
-	return bootable, nil
+	return bootable, backingCreated, nil
 }
 
 // ensureLocalImageBase makes sure the raw base of imageID is on this node before a
@@ -597,6 +644,9 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 		CreatedAt: now,
 	})
 	if err != nil {
+		if sendQuotaError(c, err) {
+			return
+		}
 		var unavailable *volumeBackingError
 		if errors.As(err, &unavailable) {
 			common.SendError(c, common.NewServiceUnavailableError(unavailable.msg))
@@ -1008,10 +1058,11 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 
 	// Check if volume is attached (support lookup by ID or name)
 	var attachedTo sql.NullString
+	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT attached_to_instance_id FROM volumes WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
+		"SELECT attached_to_instance_id, status FROM volumes WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		volumeID, projectID,
-	).Scan(&attachedTo)
+	).Scan(&attachedTo, &status)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
@@ -1028,6 +1079,9 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 
 	if attachedTo.Valid {
 		common.SendError(c, common.NewBadRequestError("volume is attached to an instance"))
+		return
+	}
+	if refuseAwaitingTransfer(c, volumeID, status) {
 		return
 	}
 
@@ -1078,6 +1132,22 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
+	}
+
+	// These actions change the volume, so they wait while it is awaiting transfer (see
+	// statusAwaitingTransfer). Attach needs no entry: it already requires available. A volume the
+	// lookup cannot find is left to the action, which answers for it as before.
+	for _, action := range []string{"os-extend", "os-retype", "os-unmanage", "os-update_readonly_flag", "os-reimage"} {
+		if _, ok := req[action]; !ok {
+			continue
+		}
+		var status string
+		if err := svc.pool.QueryRow(c.Request.Context(),
+			"SELECT status FROM volumes WHERE id::text = $1 AND project_id = $2", volumeID, projectID,
+		).Scan(&status); err == nil && refuseAwaitingTransfer(c, volumeID, status) {
+			return
+		}
+		break
 	}
 
 	// Handle attach action. Upstream requires a mountpoint and a server or a host;
@@ -1168,13 +1238,28 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			return
 		}
 
-		_, err = svc.pool.Exec(c.Request.Context(), `
+		// Extension consumes the gigabytes it ADDS, not the size it results in
+		// (SPEC-025-followup FR-028). Charging the resulting size would double-count the
+		// gigabytes the volume already holds and refuse extensions that fit.
+		//
+		// The UPDATE runs under the same lock as the check. An extend writes an ABSOLUTE
+		// size, which hides the race in the obvious test — two concurrent extends of one
+		// volume to the same target agree — so the window only shows with several volumes
+		// sharing one allowance, where each request reads the same pre-extension usage.
+		err = withCinderQuota(c.Request.Context(), svc.pool, projectID,
+			[]quotaWant{{"gigabytes", newSize - currentSize}},
+			func(tx pgx.Tx) error {
+				_, uerr := tx.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET size_gb = $1, updated_at = $2
 			WHERE id = $3 AND project_id = $4
 		`, newSize, time.Now(), volumeID, projectID)
-
+				return uerr
+			})
 		if err != nil {
+			if sendQuotaError(c, err) {
+				return
+			}
 			log.Error().Err(err).Str("operation", "extend_volume").Str("volume_id", volumeID).Msg("failed to extend volume")
 			common.SendError(c, common.NewInternalServerError("failed to extend volume"))
 			return
@@ -1467,34 +1552,65 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 	// Get volume info
 	var volumeID string
 	var size int
+	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, size_gb FROM volumes WHERE id = $1 AND project_id = $2",
+		"SELECT id, size_gb, status FROM volumes WHERE id = $1 AND project_id = $2",
 		req.Snapshot.VolumeID, projectID,
-	).Scan(&volumeID, &size)
+	).Scan(&volumeID, &size, &status)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
-
-	// Create snapshot in Ceph
-	if err := svc.cephClient.CreateSnapshot(c.Request.Context(), volumeID, snapshotID); err != nil {
-		log.Error().Err(err).Str("operation", "create_snapshot_ceph").Str("volume_id", volumeID).Msg("failed to create snapshot in Ceph")
-		common.SendError(c, common.NewServiceUnavailableError("failed to create snapshot"))
+	if refuseAwaitingTransfer(c, req.Snapshot.VolumeID, status) {
 		return
 	}
 
-	// Insert into database
+	// Snapshots consume the snapshot count AND gigabytes, because a snapshot occupies
+	// backend storage and FR-026 counts its size toward the allowance. Checked before the
+	// backing snapshot is created, so a refusal leaves nothing behind (FR-028a).
+	//
+	// The Ceph call and the INSERT run under the project's quota lock, following
+	// provisionVolume: the backing snapshot is created inside the transaction so a failure
+	// to record it can still reclaim it. This was the WIDEST of the eight windows the
+	// check-then-write shape left open — a full Ceph round trip sat between the check and
+	// the insert, with the lock already released. The lock is per-project, so a slow Ceph
+	// delays only that project's own concurrent snapshots.
 	now := time.Now()
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	var backingCreated bool
+	err = withCinderQuota(c.Request.Context(), svc.pool, projectID,
+		[]quotaWant{{"snapshots", 1}, {"gigabytes", size}},
+		func(tx pgx.Tx) error {
+			if cerr := svc.cephClient.CreateSnapshot(c.Request.Context(), volumeID, snapshotID); cerr != nil {
+				log.Error().Err(cerr).Str("operation", "create_snapshot_ceph").Str("volume_id", volumeID).Msg("failed to create snapshot in Ceph")
+				return &volumeBackingError{"failed to create snapshot", cerr}
+			}
+			backingCreated = true
+			_, ierr := tx.Exec(c.Request.Context(), `
 		INSERT INTO snapshots (id, name, description, volume_id, project_id, size_gb, status, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, snapshotID, req.Snapshot.Name, req.Snapshot.Description, volumeID, projectID, size, "creating", now)
+			return ierr
+		})
 
 	if err != nil {
-		// Rollback: delete from Ceph (best-effort; the DB error is the user-facing one)
-		if cephErr := svc.cephClient.DeleteSnapshot(c.Request.Context(), volumeID, snapshotID); cephErr != nil {
-			log.Warn().Err(cephErr).Str("snapshot_id", snapshotID).Str("volume_id", volumeID).Msg("rollback: failed to delete snapshot from Ceph after DB insert failure")
+		if backingCreated {
+			// The row was rolled back with the transaction, so the backing snapshot would
+			// otherwise be a leak: the recorded snapshot is the one users can see.
+			if cephErr := svc.cephClient.DeleteSnapshot(c.Request.Context(), volumeID, snapshotID); cephErr != nil {
+				log.Warn().Err(cephErr).Str("snapshot_id", snapshotID).Str("volume_id", volumeID).Msg("rollback: failed to delete snapshot from Ceph after DB insert failure")
+			}
+		}
+		if sendQuotaError(c, err) {
+			return
+		}
+		// A backing-store failure is an external dependency being down; a recording
+		// failure is ours. Clients act on those differently, which is what
+		// volumeBackingError exists to distinguish.
+		var backingErr *volumeBackingError
+		if errors.As(err, &backingErr) {
+			common.SendError(c, common.NewServiceUnavailableError("failed to create snapshot"))
+			return
 		}
 		log.Error().Err(err).Str("operation", "create_snapshot_db").Msg("failed to insert snapshot into database")
 		common.SendError(c, common.NewInternalServerError("failed to create snapshot"))
@@ -2410,37 +2526,28 @@ func (svc *Service) GetLimits(c *gin.Context) {
 		return
 	}
 
-	// Query current usage. A count that fails answers 500, never zero usage.
-	var volumesUsed, snapshotsUsed, gigabytesUsed, backupsUsed, backupGigabytesUsed int
-
-	if err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
-		projectID,
-	).Scan(&volumesUsed, &gigabytesUsed); err != nil {
-		log.Error().Err(err).Str("project_id", projectID).Msg("failed to query volume usage for limits")
+	// Usage comes from the SHARED resolution, not from a second copy of the counting
+	// (SPEC-025-followup FR-026a).
+	//
+	// This view previously counted usage inline — three queries duplicating
+	// cinderQuotaUsage — which is how it came to disagree with the quota-set views the
+	// moment `gigabytes` was corrected to include snapshot size (FR-026). The limits it
+	// reports already resolve through resolveCinderQuotaLimits; usage now does too, so a
+	// correction to either lands in every surface at once instead of in whichever copy the
+	// author happened to be editing.
+	//
+	// A count that fails answers 500, never zero usage.
+	usage, err := cinderQuotaUsage(c.Request.Context(), svc.pool, projectID)
+	if err != nil {
+		log.Error().Err(err).Str("project_id", projectID).Msg("failed to query usage for limits")
 		common.SendError(c, common.NewInternalServerError("failed to get limits"))
 		return
 	}
-
-	if err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM snapshots WHERE project_id = $1 AND status != 'deleted'",
-		projectID,
-	).Scan(&snapshotsUsed); err != nil {
-		log.Error().Err(err).Str("project_id", projectID).Msg("failed to query snapshot usage for limits")
-		common.SendError(c, common.NewInternalServerError("failed to get limits"))
-		return
-	}
-
-	// volume_backups (migration 022) carries no 'deleted' status — DeleteBackup removes
-	// the row — so this counts every row for the project.
-	if err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volume_backups WHERE project_id = $1",
-		projectID,
-	).Scan(&backupsUsed, &backupGigabytesUsed); err != nil {
-		log.Error().Err(err).Str("project_id", projectID).Msg("failed to query backup usage for limits")
-		common.SendError(c, common.NewInternalServerError("failed to get limits"))
-		return
-	}
+	volumesUsed := usage["volumes"]
+	snapshotsUsed := usage["snapshots"]
+	gigabytesUsed := usage["gigabytes"]
+	backupsUsed := usage["backups"]
+	backupGigabytesUsed := usage["backup_gigabytes"]
 
 	c.JSON(200, gin.H{
 		"limits": gin.H{

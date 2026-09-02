@@ -325,6 +325,33 @@ func TestBootVolumeFailureNeverFallsBackToAnImageBoot(t *testing.T) {
 	}
 }
 
+// quotaRefusal is a block-storage quota refusal as compute sees it: an error carrying
+// QuotaResource, as cinder's QuotaExceededError does, recognised without importing cinder.
+type quotaRefusal struct{ resource string }
+
+func (e quotaRefusal) Error() string         { return "quota exceeded for " + e.resource }
+func (e quotaRefusal) QuotaResource() string { return e.resource }
+
+// A boot volume refused for quota answers 413 naming the resource, not the 503 an
+// unavailable backing store gets, and leaves no server behind (SPEC-025-followup FR-020,
+// FR-022).
+func TestBootVolumeQuotaRefusalIs413(t *testing.T) {
+	requireDB(t)
+	fake := &fakeCinder{t: t, failWith: fmt.Errorf("provisioning: %w", quotaRefusal{"gigabytes"})}
+	_, r := newBootVolumeService(t, fake)
+
+	const name = "fr025-bfv-quota"
+	cleanupServerNamed(t, name)
+
+	code, body := doReq(r, http.MethodPost, "/v2.1/servers", wizardBody(name, seededImageID(t), 4, true), bootHdr())
+	if code != http.StatusRequestEntityTooLarge || !strings.Contains(body, "gigabytes") {
+		t.Errorf("create = %d %s; want 413 naming gigabytes", code, body)
+	}
+	if n := countServersNamed(t, name); n != 0 {
+		t.Errorf("%d instance rows after a quota refusal; want 0", n)
+	}
+}
+
 // The paths that already worked are untouched.
 func TestExistingBootPathsDoNotCreateVolumes(t *testing.T) {
 	requireDB(t)

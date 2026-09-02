@@ -148,7 +148,26 @@ func TestCinderListVolumeTransfers_Contract(t *testing.T) {
 	createReq, _ := http.NewRequest("POST", createURL, bytes.NewReader(transferBody))
 	createReq.Header.Set("X-Auth-Token", client.TokenID)
 	createReq.Header.Set("Content-Type", "application/json")
-	http.DefaultClient.Do(createReq)
+	createResp, err := http.DefaultClient.Do(createReq)
+	require.NoError(t, err)
+	var created struct {
+		Transfer struct {
+			ID string `json:"id"`
+		} `json:"transfer"`
+	}
+	createBody, _ := io.ReadAll(createResp.Body)
+	createResp.Body.Close()
+	require.NoError(t, json.Unmarshal(createBody, &created), "create transfer: %s", createBody)
+
+	// Cancel before the volume is deleted (defers run last-first): a volume with a pending
+	// transfer is held awaiting transfer, and refuses deletion until the transfer is gone.
+	defer func() {
+		cancelReq, _ := http.NewRequest("DELETE", client.Endpoint+"os-volume-transfer/"+created.Transfer.ID, nil)
+		cancelReq.Header.Set("X-Auth-Token", client.TokenID)
+		if resp, err := http.DefaultClient.Do(cancelReq); err == nil {
+			resp.Body.Close()
+		}
+	}()
 
 	// Test: List volume transfers
 	url := client.Endpoint + "os-volume-transfer"

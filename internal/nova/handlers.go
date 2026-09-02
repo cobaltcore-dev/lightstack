@@ -234,7 +234,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/", svc.ListVersions)
 	r.GET("/v2.1", svc.GetVersion)
 
-	v21 := r.Group("/v2.1")
+	// Microversion negotiation applies to the whole v2.1 surface (FR-038, FR-041): the
+	// applied version is reported on every response, and an out-of-range one is refused
+	// before any handler runs. Attached to the group rather than to the version documents,
+	// which are what previously carried the header — and always as the maximum.
+	v21 := r.Group("/v2.1", MicroversionMiddleware())
 	{
 		// Servers (instances)
 		v21.GET("/servers", svc.ListServers)
@@ -651,6 +655,22 @@ func (svc *Service) markInstanceError(instanceID string, reason string) {
 	}
 }
 
+// tenantMessager is an error the network service has marked as fit for the tenant to read: a
+// condition of their network they can act on. Nothing else it returns is shown to them.
+type tenantMessager interface{ TenantMessage() string }
+
+// allocationFault is the reason a failed port allocation records in the server's fault, which the
+// tenant reads. Only a failure the network service marked for them is shown as worded; any other — a
+// database or host error — is in the log line the caller writes and is reported without its text, as
+// upstream records only a non-Nova exception's class name (nova/compute/utils.py exception_to_dict).
+func allocationFault(networkID string, err error) string {
+	var visible tenantMessager
+	if errors.As(err, &visible) {
+		return fmt.Sprintf("could not attach the server to network %s: %s", networkID, visible.TenantMessage())
+	}
+	return fmt.Sprintf("could not attach the server to network %s", networkID)
+}
+
 // CreateServer creates a new server instance
 func (svc *Service) CreateServer(c *gin.Context) {
 	logger := middleware.GetLogger(c)
@@ -801,18 +821,28 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				continue
 			}
 			if err := svc.neutronSvc.NetworkUsableBy(c.Request.Context(), network.UUID, projectID, isAdmin); err != nil {
-				logger.Warn().Err(err).Str("network_id", network.UUID).
-					Msg("refusing server create: requested network is not usable by this project")
 				middleware.LogOperationEnd(c, "create", "server", req.Server.Name, time.Since(start), err)
 				// Upstream answers an unshared external network with its own 403
-				// (ExternalNetworkAttachForbidden); every other refusal is a 400.
+				// (ExternalNetworkAttachForbidden); every other refusal is a 400. Only an
+				// error the network service marked for the tenant is a refusal: anything
+				// else is a check that failed, which is a 500 and keeps its text in the log.
 				var forbidden *neutron.ExternalNetworkAttachForbiddenError
-				if errors.As(err, &forbidden) {
+				var visible tenantMessager
+				switch {
+				case errors.As(err, &forbidden):
+					logger.Warn().Err(err).Str("network_id", network.UUID).
+						Msg("refusing server create: requested network is not usable by this project")
 					common.SendError(c, common.NewForbiddenError(forbidden.Error()))
-					return
+				case errors.As(err, &visible):
+					logger.Warn().Err(err).Str("network_id", network.UUID).
+						Msg("refusing server create: requested network is not usable by this project")
+					common.SendError(c, common.NewBadRequestError(
+						fmt.Sprintf("network %s is not available to this project: %s", network.UUID, visible.TenantMessage())))
+				default:
+					logger.Error().Err(err).Str("network_id", network.UUID).
+						Msg("server create: checking a requested network failed")
+					common.SendError(c, common.NewInternalServerError("failed to check the requested networks"))
 				}
-				common.SendError(c, common.NewBadRequestError(
-					fmt.Sprintf("network %s is not available to this project: %v", network.UUID, err)))
 				return
 			}
 		}
@@ -943,6 +973,20 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		if volErr != nil {
 			// Never fall back to booting the image directly: the caller asked for a volume
 			// and would be told it worked.
+			//
+			// A quota refusal is answered as one (SPEC-025-followup FR-020, FR-022): the
+			// boot is refused BEFORE any instance row exists, so nothing is left implying a
+			// volume, and the caller gets 413 naming the resource rather than a 503 that
+			// reads as "the storage service is down". Recognised through a behavioural
+			// interface because compute does not import block storage — see
+			// QuotaExceededError.QuotaResource.
+			var limited interface{ QuotaResource() string }
+			if errors.As(volErr, &limited) {
+				logger.Warn().Err(volErr).Str("resource", limited.QuotaResource()).
+					Msg("refusing server create: block-storage quota exhausted")
+				common.SendError(c, common.NewQuotaExceededError(limited.QuotaResource()))
+				return
+			}
 			logger.Error().Err(volErr).Str("image_id", bootVolImage).Int("size_gb", size).
 				Msg("boot volume could not be created; refusing the boot")
 			common.SendError(c, common.NewServiceUnavailableError("could not create the boot volume"))
@@ -1090,8 +1134,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 							Str("instance_id", instanceID).
 							Str("network_id", network.UUID).
 							Msg("Failed to allocate port from Neutron; failing the boot")
-						svc.markInstanceError(instanceID,
-							fmt.Sprintf("could not attach the server to network %s: %v", network.UUID, err))
+						svc.markInstanceError(instanceID, allocationFault(network.UUID, err))
 						return
 					}
 
@@ -1343,6 +1386,13 @@ func (svc *Service) CreateServer(c *gin.Context) {
 // ListServers lists all servers (brief)
 func (svc *Service) ListServers(c *gin.Context) {
 	filter := newServerFilter(c, "")
+	// Filters are applied to BOTH listings from the same accumulator, so a client cannot
+	// get different rows for one query depending on which representation it asked for
+	// (FR-002). A refused filter is answered here rather than silently dropped (FR-004).
+	if ferr := filter.applyQueryFilters(c, ""); ferr != nil {
+		common.SendError(c, ferr)
+		return
+	}
 
 	// Parse pagination parameters
 	limit := 1000 // Default limit
@@ -1446,6 +1496,13 @@ func (svc *Service) ListServers(c *gin.Context) {
 // ListServersDetail lists all servers (detailed)
 func (svc *Service) ListServersDetail(c *gin.Context) {
 	filter := newServerFilter(c, "i.")
+	// Same accumulator, same refusals as the brief listing (FR-002, FR-004). The alias
+	// differs because this query joins flavors, which is exactly why serverFilter takes the
+	// alias rather than having the caller patch the rendered SQL afterwards.
+	if ferr := filter.applyQueryFilters(c, "i."); ferr != nil {
+		common.SendError(c, ferr)
+		return
+	}
 
 	// Parse pagination parameters
 	limit := 1000
@@ -1468,6 +1525,18 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	// (L6).
 	if marker := c.Query("marker"); marker != "" {
 		lookup := newServerFilter(c, "")
+		// The marker resolves under the SAME query filters as the page, not scope alone
+		// (FR-005). Without this the two listings diverge: the brief listing computes a
+		// ROW_NUMBER offset inside the filtered set, so its marker is inherently
+		// filter-relative, while this keyset lookup would resolve a marker the filter
+		// excludes. A client only ever pages with a marker taken from the same filtered
+		// listing, so the two agree in every case a client produces — but leaving them
+		// asymmetric means the pathological case behaves differently depending on which
+		// representation was asked for, which is what FR-002 forbids.
+		if ferr := lookup.applyQueryFilters(c, ""); ferr != nil {
+			common.SendError(c, ferr)
+			return
+		}
 		lookup.Eq("id::text", marker)
 		var markerCreatedAt time.Time
 		var markerID string
@@ -1521,14 +1590,6 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 			continue
 		}
 
-		// Get addresses for this instance
-		addresses, addrErr := svc.getInstanceAddresses(c.Request.Context(), id, rowProjectID)
-		if addrErr != nil {
-			log.Error().Err(addrErr).Str("operation", "list_servers_detail_addresses").Msg("database error")
-			common.SendError(c, common.NewInternalServerError("failed to list servers"))
-			return
-		}
-
 		entry := gin.H{
 			"id":                     id,
 			"name":                   name,
@@ -1537,7 +1598,6 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 			"user_id":                userID,
 			"created":                createdAt.Format(time.RFC3339),
 			"updated":                updatedAt.Format(time.RFC3339),
-			"addresses":              addresses,
 			"OS-EXT-STS:power_state": powerState,
 			"flavor": gin.H{
 				"id":    flavorID,
@@ -1571,6 +1631,28 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		return
 	}
 
+	// Attach addresses to every entry in ONE batched query (SPEC-025-followup FR-045).
+	// This listing already batched security_groups the same way — the addresses were the
+	// remaining per-row query, and the two now cost two round trips for any page size.
+	addrMap, err := svc.instanceAddressMap(c.Request.Context(), ids)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_servers_detail_addresses").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list servers"))
+		return
+	}
+	for _, s := range servers {
+		sid, _ := s["id"].(string)
+		if addrs, ok := addrMap[sid]; ok {
+			s["addresses"] = addrs
+		} else {
+			// A server with no ports reports an EMPTY map, not null and not a missing key
+			// (FR-047) — the per-instance reader returns gin.H{} for the same case, and a
+			// client distinguishing "no addresses" from "field absent" would otherwise see
+			// the two listings disagree.
+			s["addresses"] = gin.H{}
+		}
+	}
+
 	// Attach security_groups to every entry in one batched query (no N+1, FR-007).
 	sgMap, err := securityGroupNamesForServers(c.Request.Context(), svc.pool, ids)
 	if err != nil {
@@ -1600,6 +1682,99 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"servers": servers})
+}
+
+// instanceAddressMap builds the address map for MANY instances in one query
+// (SPEC-025-followup US7, FR-045 – FR-048).
+//
+// The detailed listing called getInstanceAddresses once per row, so a page of N servers
+// cost N address queries. This is the same SQL — the same floating_ips LEFT JOIN with
+// ARRAY_AGG ... FILTER, the same GROUP BY p.id giving one row per port — taking the page's
+// instance ids at once and returning device_id so rows can be bucketed by server.
+//
+// THE PROJECT PREDICATE IS THE SUBTLE PART. The per-instance form filtered
+// `p.project_id = $2`, where the argument was the INSTANCE's own project rather than the
+// caller's. Batched, there is no single project to pass, so the pairing is stated per row
+// instead: joining instances on `i.id = p.device_id AND i.project_id = p.project_id` keeps
+// a cross-tenant administrative listing correctly attributed. Dropping the predicate
+// entirely would let a port whose project disagrees with its instance's contribute an
+// address to that instance — which is why it is a join condition and not an omission.
+func (svc *Service) instanceAddressMap(ctx context.Context, instanceIDs []string) (map[string]gin.H, error) {
+	byInstance := make(map[string]gin.H, len(instanceIDs))
+	if len(instanceIDs) == 0 {
+		return byInstance, nil
+	}
+
+	rows, err := svc.pool.Query(ctx, `
+		SELECT p.device_id::text,
+		       p.network_id,
+		       p.fixed_ips,
+		       n.name,
+		       COALESCE(
+		           ARRAY_AGG(f.floating_ip_address) FILTER (WHERE f.floating_ip_address IS NOT NULL),
+		           '{}'
+		       ) AS floating_ips
+		FROM ports p
+		JOIN networks n ON p.network_id = n.id
+		JOIN instances i ON i.id = p.device_id AND i.project_id = p.project_id
+		LEFT JOIN floating_ips f ON f.port_id = p.id
+		WHERE p.device_id::text = ANY($1)
+		GROUP BY p.device_id, p.id, p.network_id, p.fixed_ips, n.name
+	`, instanceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query ports for %d instances: %w", len(instanceIDs), err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var deviceID, networkID, networkName string
+		var fixedIPsJSON []byte
+		var floatingIPs []string
+		if err := rows.Scan(&deviceID, &networkID, &fixedIPsJSON, &networkName, &floatingIPs); err != nil {
+			log.Warn().Err(err).Msg("failed to scan batched address row")
+			continue
+		}
+		if byInstance[deviceID] == nil {
+			byInstance[deviceID] = gin.H{}
+		}
+		appendAddressEntries(byInstance[deviceID], networkName, fixedIPsJSON, floatingIPs)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ports for %d instances: %w", len(instanceIDs), err)
+	}
+	return byInstance, nil
+}
+
+// appendAddressEntries merges one port's fixed and floating addresses into a network's
+// entry list, shared by the per-instance and batched readers so the two cannot describe
+// the same port differently.
+//
+// Upstream chains fixed and floating addresses into the SAME per-network list and tags
+// each entry with its own kind; the type was once the literal "fixed", so only one kind
+// could ever appear however many the deployment had.
+func appendAddressEntries(addresses gin.H, networkName string, fixedIPsJSON []byte, floatingIPs []string) {
+	var fixedIPs []map[string]any
+	if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil {
+		return
+	}
+
+	var entries []gin.H
+	if existing, ok := addresses[networkName].([]gin.H); ok {
+		entries = existing
+	}
+	for _, ipInfo := range fixedIPs {
+		if ipAddr, ok := ipInfo["ip_address"].(string); ok {
+			entries = append(entries, addressEntry(ipAddr, "fixed"))
+		}
+	}
+	for _, floating := range floatingIPs {
+		if floating != "" {
+			entries = append(entries, addressEntry(floating, "floating"))
+		}
+	}
+	if len(entries) > 0 {
+		addresses[networkName] = entries
+	}
 }
 
 // getInstanceAddresses retrieves network addresses for an instance from ports.
@@ -1656,35 +1831,9 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 			continue
 		}
 
-		// Parse fixed IPs
-		var fixedIPs []map[string]any
-		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil {
-			continue
-		}
-
-		// Build the address list for this network. Upstream chains fixed and floating
-		// addresses into the SAME per-network list and tags each entry with its own
-		// kind; the type was previously the literal "fixed", so only one kind could
-		// ever appear however many the deployment had (FR-034, FR-035).
-		addressList := addresses[networkName]
-		var entries []gin.H
-		if existing, ok := addressList.([]gin.H); ok {
-			entries = existing
-		}
-		for _, ipInfo := range fixedIPs {
-			if ipAddr, ok := ipInfo["ip_address"].(string); ok {
-				entries = append(entries, addressEntry(ipAddr, "fixed"))
-			}
-		}
-		for _, floating := range floatingIPs {
-			if floating != "" {
-				entries = append(entries, addressEntry(floating, "floating"))
-			}
-		}
-
-		if len(entries) > 0 {
-			addresses[networkName] = entries
-		}
+		// Shared with the batched reader (FR-046): both must describe a port the same
+		// way, and a second copy of this merge is how they would come to disagree.
+		appendAddressEntries(addresses, networkName, fixedIPsJSON, floatingIPs)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate ports for instance %s: %w", instanceID, err)
@@ -2052,7 +2201,7 @@ var serverActions = map[string]func(*Service, *gin.Context, any, string, string)
 	"revertResize":  func(s *Service, c *gin.Context, _ any, id, proj string) { s.RevertResizeInstance(c, id, proj) },
 	"evacuate":      func(s *Service, c *gin.Context, _ any, id, proj string) { s.EvacuateInstance(c, id, proj) },
 	"migrate":       func(s *Service, c *gin.Context, _ any, id, proj string) { s.MigrateInstance(c, id, proj) },
-	"restore":       func(s *Service, c *gin.Context, _ any, id, proj string) { s.RestoreInstance(c, id, proj) },
+	"restore":       func(s *Service, c *gin.Context, _ any, id, _ string) { s.RestoreInstance(c, id) },
 
 	"resize": func(s *Service, c *gin.Context, d any, id, proj string) { s.ResizeInstanceAction(c, d, id, proj) },
 	// The only entry that still discards both: createImage names a NEW image and never
@@ -3400,10 +3549,22 @@ func (svc *Service) CreateImageAction(c *gin.Context, createImageData any) {
 		}
 	}
 
-	// Return Location header with image URL
+	// The image is identified by the Location header at every microversion, and
+	// additionally in the BODY from 2.45 (SPEC-025-followup FR-039).
+	//
+	// Upstream introduced the response body for BOTH the createImage and createBackup
+	// actions at 2.45. This handler returned no body at any version — upstream's pre-2.45
+	// shape, served unconditionally — which is the mirror image of the defect
+	// CreateBackupAction had: that one returned the body unconditionally, under a comment
+	// claiming it was gated. Found by the real-mode host pass, whose R8b tested this action
+	// while the gate had only been applied to the other one.
 	imageLocation := fmt.Sprintf("%s/v2/images/%s", common.BaseURL(c, 9292), imageID)
 	c.Header("Location", imageLocation)
-	c.Status(http.StatusAccepted)
+	if !wantsCreateImageIDInBody(c) {
+		c.Status(http.StatusAccepted)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"image_id": imageID})
 }
 
 // PauseInstanceAction handles the pause action
