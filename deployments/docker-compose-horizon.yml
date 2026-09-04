@@ -4,18 +4,20 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:18.4-alpine
-    container_name: o3k-postgres
+    container_name: lightstack-postgres
     hostname: postgres
     environment:
-      POSTGRES_DB: o3k
-      POSTGRES_USER: o3k
-      POSTGRES_PASSWORD: secret
+      # See deployments/docker-compose.yml — the identity of a retained volume wins
+      # over the file's defaults (cloud-storage#575).
+      POSTGRES_DB: ${POSTGRES_DB:-lightstack}
+      POSTGRES_USER: ${POSTGRES_USER:-lightstack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
     volumes:
       - postgres-data:/var/lib/postgresql
     networks:
-      - o3k-network
+      - lightstack-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U o3k"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightstack}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,21 +26,21 @@ services:
   # Memcached for Horizon Sessions
   memcached:
     image: memcached:1.6-alpine
-    container_name: o3k-memcached
+    container_name: lightstack-memcached
     hostname: memcached
     command: memcached -m 64
     networks:
-      - o3k-network
+      - lightstack-network
     restart: unless-stopped
 
-  # O3K OpenStack Services
-  o3k:
+  # Lightstack OpenStack Services
+  lightstack:
     build:
       context: ..
       dockerfile: build/package/Dockerfile
-    image: o3k:latest
-    container_name: o3k
-    hostname: o3k
+    image: lightstack:latest
+    container_name: lightstack
+    hostname: lightstack
     ports:
       - "35357:35357" # Keystone (Identity)
       - "8774:8774" # Nova (Compute)
@@ -47,15 +49,15 @@ services:
       - "9292:9292" # Glance (Image)
       - "8775:8775" # Metadata Service
     environment:
-      - O3K_DB_URL=postgres://o3k:secret@postgres:5432/o3k?sslmode=disable
-      - O3K_JWT_SECRET=${O3K_JWT_SECRET:?O3K_JWT_SECRET must be set}
-      - O3K_ENDPOINT_HOST=o3k
+      - LIGHTSTACK_DB_URL=postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable
+      - LIGHTSTACK_JWT_SECRET=${LIGHTSTACK_JWT_SECRET:?LIGHTSTACK_JWT_SECRET must be set}
+      - LIGHTSTACK_ENDPOINT_HOST=lightstack
     volumes:
-      - o3k-data:/var/lib/o3k
-      - o3k-images:/var/lib/o3k/images
-      - o3k-volumes:/var/lib/o3k/volumes
+      - lightstack-data:/var/lib/lightstack
+      - lightstack-images:/var/lib/lightstack/images
+      - lightstack-volumes:/var/lib/lightstack/volumes
     networks:
-      - o3k-network
+      - lightstack-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,7 +72,7 @@ services:
   # OpenStack Horizon Dashboard (Flamingo 2025.2)
   horizon:
     image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
-    container_name: o3k-horizon
+    container_name: lightstack-horizon
     hostname: horizon
     ports:
       - "80:80"
@@ -85,9 +87,9 @@ services:
       - horizon-static:/var/lib/kolla/venv/lib/python3.12/site-packages/static:rw
       - horizon-logs:/var/log/kolla/horizon:rw
     networks:
-      - o3k-network
+      - lightstack-network
     depends_on:
-      o3k:
+      lightstack:
         condition: service_healthy
       novnc:
         condition: service_started
@@ -102,7 +104,7 @@ services:
   # noVNC Console Proxy
   novnc:
     image: dougw/novnc:latest
-    container_name: o3k-novnc
+    container_name: lightstack-novnc
     hostname: novnc
     ports:
       - "6080:6080"
@@ -110,7 +112,7 @@ services:
       - DISPLAY_WIDTH=1280
       - DISPLAY_HEIGHT=720
     networks:
-      - o3k-network
+      - lightstack-network
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "6080"]
       interval: 30s
@@ -119,14 +121,14 @@ services:
     restart: unless-stopped
 
 networks:
-  o3k-network:
+  lightstack-network:
     driver: bridge
-    name: o3k-horizon-network
+    name: lightstack-horizon-network
 
 volumes:
   postgres-data:
-  o3k-data:
-  o3k-images:
-  o3k-volumes:
+  lightstack-data:
+  lightstack-images:
+  lightstack-volumes:
   horizon-static:
   horizon-logs:

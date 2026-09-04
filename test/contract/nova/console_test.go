@@ -14,7 +14,7 @@ import (
 
 // TestNovaGetConsoleOutput_Contract tests POST /v2.1/servers/:id/action (os-getConsoleOutput)
 func TestNovaGetConsoleOutput_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -59,7 +59,7 @@ func TestNovaGetConsoleOutput_Contract(t *testing.T) {
 
 // TestNovaGetVNCConsole_Contract tests POST /v2.1/servers/:id/action (os-getVNCConsole)
 func TestNovaGetVNCConsole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -110,7 +110,7 @@ func TestNovaGetVNCConsole_Contract(t *testing.T) {
 
 // TestNovaCreateRemoteConsole_Contract tests POST /v2.1/servers/:id/remote-consoles
 func TestNovaCreateRemoteConsole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -165,7 +165,7 @@ func TestNovaCreateRemoteConsole_Contract(t *testing.T) {
 
 // TestNovaGetSerialConsole_Contract tests POST /v2.1/servers/:id/action (os-getSerialConsole)
 func TestNovaGetSerialConsole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -216,7 +216,7 @@ func TestNovaGetSerialConsole_Contract(t *testing.T) {
 
 // TestNovaGetSPICEConsole_Contract tests POST /v2.1/servers/:id/action (os-getSPICEConsole)
 func TestNovaGetSPICEConsole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -268,7 +268,7 @@ func TestNovaGetSPICEConsole_Contract(t *testing.T) {
 
 // TestNovaGetRDPConsole_Contract tests POST /v2.1/servers/:id/action (os-getRDPConsole)
 func TestNovaGetRDPConsole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

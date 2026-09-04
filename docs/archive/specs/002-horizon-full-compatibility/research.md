@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-O3K currently has **91% OpenStack API coverage (308/330 endpoints)** with 19/19 existing Horizon compatibility tests passing. Research identifies **7 critical Nova server actions** requiring completion for full Horizon dashboard functionality, plus documentation enhancements.
+Lightstack currently has **91% OpenStack API coverage (308/330 endpoints)** with 19/19 existing Horizon compatibility tests passing. Research identifies **7 critical Nova server actions** requiring completion for full Horizon dashboard functionality, plus documentation enhancements.
 
 **Key Finding**: Console access (VNC/SPICE) completed in Sprint 58-59, service catalog complete in Sprint 62-63. Primary gap is incomplete Nova server action implementations with security issue in `os-resetState`.
 
@@ -24,7 +24,7 @@ O3K currently has **91% OpenStack API coverage (308/330 endpoints)** with 19/19 
 
 ### 1.2 Horizon API Usage Patterns
 
-Based on codebase analysis of `/Users/I761222/git/o3k/docs/sprints/SPRINT_56-57_GAP_ANALYSIS.md`:
+Based on codebase analysis of `/Users/I761222/git/lightstack/docs/sprints/SPRINT_56-57_GAP_ANALYSIS.md`:
 
 **Dashboard Load Sequence**:
 1. POST `/v3/auth/tokens` (Keystone) - ✅ Complete
@@ -63,7 +63,7 @@ Based on codebase analysis of `/Users/I761222/git/o3k/docs/sprints/SPRINT_56-57_
 
 ✅ **COMPLETE** - Implemented in Sprint 58-59
 
-**File**: `/Users/I761222/git/o3k/internal/nova/console.go`
+**File**: `/Users/I761222/git/lightstack/internal/nova/console.go`
 
 **Endpoints Implemented**:
 - `POST /servers/{id}/remote-consoles` - Modern endpoint (v2.6+)
@@ -95,19 +95,19 @@ func (svc *Service) GetRemoteConsole(c *gin.Context) {
 
 **Horizon Compatibility**: Full compatibility. Horizon expects exact format returned.
 
-**Deployment Note**: Requires noVNC proxy deployment (not part of O3K binary). Documentation needed.
+**Deployment Note**: Requires noVNC proxy deployment (not part of Lightstack binary). Documentation needed.
 
 ### 2.2 noVNC Integration Pattern
 
 **Recommended Architecture**:
 ```
-Browser → Horizon → O3K Nova API → Token Generation
+Browser → Horizon → lightstack Nova API → Token Generation
 Browser → noVNC Proxy (separate container) → libvirt VNC port
 ```
 
 **Token Validation Flow**:
-1. O3K generates JWT token with server_id, expires_at
-2. noVNC proxy validates token against O3K Keystone
+1. Lightstack generates JWT token with server_id, expires_at
+2. noVNC proxy validates token against Lightstack Keystone
 3. Proxy connects to libvirt VNC socket for that server
 4. WebSocket proxied to browser
 
@@ -119,7 +119,7 @@ novnc:
   ports:
     - "6080:6080"
   environment:
-    - VNC_HOST=o3k-compute
+    - VNC_HOST=lightstack-compute
 ```
 
 ## 3. Network Topology Data Format
@@ -188,7 +188,7 @@ func TestNetworkTopologyData_Contract(t *testing.T) {
 
 ### 4.1 Incomplete Implementations (CRITICAL)
 
-**File**: `/Users/I761222/git/o3k/internal/nova/advanced_actions.go`
+**File**: `/Users/I761222/git/lightstack/internal/nova/advanced_actions.go`
 
 #### Action 1: `migrate` (30% complete)
 
@@ -469,7 +469,7 @@ func (svc *Service) ResetServerState(c *gin.Context) {
 
 **Pattern from Cinder** (reference implementation):
 ```go
-// /Users/I761222/git/o3k/internal/cinder/volumes.go:ResetVolumeStatus
+// /Users/I761222/git/lightstack/internal/cinder/volumes.go:ResetVolumeStatus
 roles := c.GetStringSlice("roles")
 isAdmin := false
 for _, role := range roles {
@@ -502,7 +502,7 @@ if !isAdmin {
 
 ✅ **COMPLETE** - Implemented in Sprint 62-63
 
-**File**: `/Users/I761222/git/o3k/internal/keystone/service_catalog.go`
+**File**: `/Users/I761222/git/lightstack/internal/keystone/service_catalog.go`
 
 **Database Tables**:
 - `services`: Service definitions (compute, network, volume, image, identity)
@@ -520,7 +520,7 @@ if !isAdmin {
           {
             "interface": "public",
             "region": "RegionOne",
-            "url": "http://o3k-host:8774/v2.1"
+            "url": "http://lightstack-host:8774/v2.1"
           }
         ]
       }
@@ -533,7 +533,7 @@ if !isAdmin {
 
 **Horizon local_settings.py**:
 ```python
-OPENSTACK_HOST = "o3k-host"
+OPENSTACK_HOST = "lightstack-host"
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 
 # Important: Use v3 for modern Horizon
@@ -543,16 +543,16 @@ OPENSTACK_API_VERSIONS = {
     "volume": 3,
 }
 
-# Token TTL must match O3K configuration
+# Token TTL must match lightstack configuration
 TOKEN_TIMEOUT_MARGIN = 3600  # 1 hour
 ```
 
 **Required Service Catalog Entries**:
-- `identity` (Keystone): http://o3k-host:35357/v3
-- `compute` (Nova): http://o3k-host:8774/v2.1
-- `network` (Neutron): http://o3k-host:9696/v2.0
-- `volumev3` (Cinder): http://o3k-host:8776/v3
-- `image` (Glance): http://o3k-host:9292/v2
+- `identity` (Keystone): http://lightstack-host:35357/v3
+- `compute` (Nova): http://lightstack-host:8774/v2.1
+- `network` (Neutron): http://lightstack-host:9696/v2.0
+- `volumev3` (Cinder): http://lightstack-host:8776/v3
+- `image` (Glance): http://lightstack-host:9292/v2
 
 **Validation**: Verify all services present in token response, URLs accessible from Horizon container.
 
@@ -564,8 +564,8 @@ TOKEN_TIMEOUT_MARGIN = 3600  # 1 hour
 ```yaml
 version: '3.8'
 services:
-  o3k:
-    image: o3k:latest
+  lightstack:
+    image: lightstack:latest
     ports:
       - "35357:35357"  # Keystone
       - "8774:8774"    # Nova
@@ -576,13 +576,13 @@ services:
       - DATABASE_URL=postgresql://...
       - JWT_SECRET=change-in-production
     volumes:
-      - ./config/o3k.yaml:/etc/o3k/o3k.yaml
+      - ./config/lightstack.yaml:/etc/lightstack/lightstack.yaml
 
   postgres:
     image: postgres:16
     environment:
-      - POSTGRES_DB=o3k
-      - POSTGRES_USER=o3k
+      - POSTGRES_DB=lightstack
+      - POSTGRES_USER=lightstack
       - POSTGRES_PASSWORD=secret
 
   horizon:
@@ -590,23 +590,23 @@ services:
     ports:
       - "80:80"
     environment:
-      - OPENSTACK_HOST=o3k
+      - OPENSTACK_HOST=lightstack
     volumes:
       - ./horizon/local_settings.py:/etc/openstack-dashboard/local_settings.py
     depends_on:
-      - o3k
+      - lightstack
 
   novnc:
     image: novnc/noVNC:latest
     ports:
       - "6080:6080"
     environment:
-      - VNC_HOST=o3k
+      - VNC_HOST=lightstack
 ```
 
 ### 6.2 CORS Configuration
 
-**O3K Configuration** (config/o3k.yaml):
+**lightstack Configuration** (config/lightstack.yaml):
 ```yaml
 cors:
   enabled: true
@@ -625,7 +625,7 @@ cors:
     - "X-Subject-Token"
 ```
 
-**Why CORS Needed**: Horizon makes XHR requests from browser to O3K APIs on different ports/domains.
+**Why CORS Needed**: Horizon makes XHR requests from browser to Lightstack APIs on different ports/domains.
 
 ### 6.3 Token TTL Tuning
 
@@ -634,7 +634,7 @@ cors:
 - Production: 4 hours (14400 seconds)
 - Minimum: 1 hour to avoid frequent re-authentication
 
-**O3K Configuration**:
+**lightstack Configuration**:
 ```yaml
 keystone:
   jwt_secret: "production-secret-key-here"
@@ -643,7 +643,7 @@ keystone:
 
 **Horizon Session Timeout** (local_settings.py):
 ```python
-SESSION_TIMEOUT = 14400  # Match O3K token TTL
+SESSION_TIMEOUT = 14400  # Match lightstack token TTL
 ```
 
 ### 6.4 Troubleshooting Common Issues
@@ -651,8 +651,8 @@ SESSION_TIMEOUT = 14400  # Match O3K token TTL
 | Error | Cause | Solution |
 |-------|-------|----------|
 | "Unable to retrieve version information" | Service catalog missing service type | Verify all 5 services registered in Keystone |
-| "CORS policy: No 'Access-Control-Allow-Origin'" | CORS not configured | Enable CORS in O3K config, add Horizon origin |
-| "Token has expired" | Token TTL too short | Increase token_ttl in O3K, match SESSION_TIMEOUT in Horizon |
+| "CORS policy: No 'Access-Control-Allow-Origin'" | CORS not configured | Enable CORS in Lightstack config, add Horizon origin |
+| "Token has expired" | Token TTL too short | Increase token_ttl in lightstack, match SESSION_TIMEOUT in Horizon |
 | "Console not available" | noVNC proxy not running | Deploy noVNC container, verify port 6080 accessible |
 | "Network topology not loading" | Missing Neutron endpoints | Verify router/network/subnet APIs return data |
 
@@ -717,7 +717,7 @@ SESSION_TIMEOUT = 14400  # Match O3K token TTL
 ### 8.1 New Documentation Files
 
 1. **docs/HORIZON_INTEGRATION.md**
-   - Architecture diagram (Horizon → O3K services)
+   - Architecture diagram (Horizon → Lightstack services)
    - Deployment guide (Docker Compose)
    - Configuration reference
    - Troubleshooting section
@@ -737,14 +737,14 @@ SESSION_TIMEOUT = 14400  # Match O3K token TTL
 
 **quickstart.md Contents**:
 ```markdown
-# Quick Start: Horizon with O3K
+# Quick Start: Horizon with lightstack
 
 ## Prerequisites
 - Docker & Docker Compose
 - 4GB RAM minimum
 - 10GB disk space
 
-## Step 1: Deploy O3K
+## Step 1: Deploy lightstack
 [docker-compose.yml snippet]
 
 ## Step 2: Configure Horizon
@@ -814,7 +814,7 @@ http://localhost/dashboard
 - Database table for console sessions
 - Redis cache for token storage
 
-**Rejected Because**: Database adds latency and persistence overhead. Redis adds external dependency. JWT aligns with existing O3K token design.
+**Rejected Because**: Database adds latency and persistence overhead. Redis adds external dependency. JWT aligns with existing Lightstack token design.
 
 ### Decision 3: Server Actions Implementation Priority
 
@@ -852,9 +852,9 @@ None. All unknowns from plan Technical Context have been resolved.
 
 ## Appendix: File References
 
-- **Nova Actions**: `/Users/I761222/git/o3k/internal/nova/advanced_actions.go`
-- **Console Implementation**: `/Users/I761222/git/o3k/internal/nova/console.go`
-- **Service Catalog**: `/Users/I761222/git/o3k/internal/keystone/service_catalog.go`
-- **Gap Analysis**: `/Users/I761222/git/o3k/docs/sprints/SPRINT_56-57_GAP_ANALYSIS.md`
-- **Remaining Work**: `/Users/I761222/git/o3k/REMAINING_WORK.md`
-- **Horizon Tests**: `/Users/I761222/git/o3k/test/horizon_compat_test.sh`
+- **Nova Actions**: `/Users/I761222/git/lightstack/internal/nova/advanced_actions.go`
+- **Console Implementation**: `/Users/I761222/git/lightstack/internal/nova/console.go`
+- **Service Catalog**: `/Users/I761222/git/lightstack/internal/keystone/service_catalog.go`
+- **Gap Analysis**: `/Users/I761222/git/lightstack/docs/sprints/SPRINT_56-57_GAP_ANALYSIS.md`
+- **Remaining Work**: `/Users/I761222/git/lightstack/REMAINING_WORK.md`
+- **Horizon Tests**: `/Users/I761222/git/lightstack/test/horizon_compat_test.sh`

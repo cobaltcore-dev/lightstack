@@ -47,7 +47,7 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-func skipIfO3KNotRunning(t *testing.T) {
+func skipIfLightstackNotRunning(t *testing.T) {
 	t.Helper()
 	if os.Getenv("SKIP_CONTRACT_TESTS") == "1" {
 		t.Skip("Contract tests skipped (SKIP_CONTRACT_TESTS=1)")
@@ -56,7 +56,7 @@ func skipIfO3KNotRunning(t *testing.T) {
 
 // TestGlanceImageMemberCreate_Contract tests POST /v2/images/{image_id}/members
 func TestGlanceImageMemberCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -88,7 +88,7 @@ func TestGlanceImageMemberCreate_Contract(t *testing.T) {
 
 // TestGlanceImageMemberList_Contract tests GET /v2/images/{image_id}/members
 func TestGlanceImageMemberList_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -121,7 +121,7 @@ func TestGlanceImageMemberList_Contract(t *testing.T) {
 
 // TestGlanceImageMemberGet_Contract tests GET /v2/images/{image_id}/members/{member_id}
 func TestGlanceImageMemberGet_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -152,7 +152,7 @@ func TestGlanceImageMemberGet_Contract(t *testing.T) {
 
 // TestGlanceImageMemberUpdate_Contract tests PUT /v2/images/{image_id}/members/{member_id}
 func TestGlanceImageMemberUpdate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -187,7 +187,7 @@ func TestGlanceImageMemberUpdate_Contract(t *testing.T) {
 
 // TestGlanceImageMemberDelete_Contract tests DELETE /v2/images/{image_id}/members/{member_id}
 func TestGlanceImageMemberDelete_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 

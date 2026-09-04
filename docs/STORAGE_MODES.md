@@ -1,18 +1,18 @@
 # Storage Modes Guide
 
-O3K supports multiple storage backends for both Cinder (block storage) and Glance (image service), allowing flexible deployment options from development to production.
+Lightstack supports multiple storage backends for both Cinder (block storage) and Glance (image service), allowing flexible deployment options from development to production.
 
 ## Overview
 
 ### Cinder Storage Modes
 - **stub**: Simulated storage (no actual storage operations)
-- **local**: Local qcow2 files on libvirt host (`/var/lib/o3k/volumes/`)
+- **local**: Local qcow2 files on libvirt host (`/var/lib/lightstack/volumes/`)
 - **rbd**: Ceph RBD volumes (shared storage cluster)
 - **local,rbd**: Hybrid mode (local + RBD for performance + redundancy)
 
 ### Glance Storage Modes
 - **stub**: Simulated storage (no actual storage operations)
-- **local**: Local raw files (`/var/lib/o3k/images/`)
+- **local**: Local raw files (`/var/lib/lightstack/images/`)
 - **rbd**: Ceph RBD images (shared storage cluster)
 - **s3**: S3-compatible object storage (AWS S3, MinIO, Ceph RGW)
 - **local,rbd**: Hybrid mode (local cache + RBD backing)
@@ -21,14 +21,14 @@ O3K supports multiple storage backends for both Cinder (block storage) and Glanc
 
 > **Ceph RGW (S3) is validated** (SPEC-014). In `s3` mode, image transfers stream
 > to completion (no total-op timeout), HTTPS with an internal CA is supported, and
-> a VM can boot from an RGW-backed image on any node — o3k lazily fetches + verifies
+> a VM can boot from an RGW-backed image on any node — Lightstack lazily fetches + verifies
 > the base on demand. See [S3_CONFIGURATION.md](./S3_CONFIGURATION.md) for the
 > backend recipe/quirks and [OBJECT_STORAGE_S3.md](./OBJECT_STORAGE_S3.md) for
 > tenant-facing object storage.
 
 ## Configuration
 
-### Cinder Configuration (`config/o3k.yaml`)
+### Cinder Configuration (`config/lightstack.yaml`)
 
 ```yaml
 cinder:
@@ -38,7 +38,7 @@ cinder:
   storage_mode: local  # "stub", "local", "rbd", or "local,rbd"
 ```
 
-### Glance Configuration (`config/o3k.yaml`)
+### Glance Configuration (`config/lightstack.yaml`)
 
 ```yaml
 glance:
@@ -78,8 +78,8 @@ storage_mode: local
 ```
 
 **Storage Locations**:
-- Cinder volumes: `/var/lib/o3k/volumes/volume-{uuid}.qcow2`
-- Glance images: `/var/lib/o3k/images/image-{uuid}.raw`
+- Cinder volumes: `/var/lib/lightstack/volumes/volume-{uuid}.qcow2`
+- Glance images: `/var/lib/lightstack/images/image-{uuid}.raw`
 
 **Characteristics**:
 - Fast (local disk I/O)
@@ -91,7 +91,7 @@ storage_mode: local
 **Example**:
 ```bash
 # After creating a volume, check the file:
-ls -lh /var/lib/o3k/volumes/
+ls -lh /var/lib/lightstack/volumes/
 # -rw-r--r-- 1 user user 10G Jan 15 10:30 volume-abc-123.qcow2
 ```
 
@@ -276,7 +276,7 @@ $ time openstack image download freebsd-13 -f value -c size
 Glance's RBD backend is a placeholder in **every** build (unlike Cinder, there is no
 `-tags ceph` variant for images), so this mode could never write the S3 replica that
 its own download-fallback reads — an upload would report success with only one backend
-written. o3k therefore **refuses to start** with `glance.storage_mode: rbd,s3`, and the
+written. Lightstack therefore **refuses to start** with `glance.storage_mode: rbd,s3`, and the
 chart's `values.schema.json` rejects it at render time.
 
 **Use `local,s3` instead** (local primary + S3 replica), or plain `s3`.
@@ -332,7 +332,7 @@ glance:
 **Characteristics**:
 - Zero external dependencies
 - Fast local disk I/O
-- Data in `/var/lib/o3k/`
+- Data in `/var/lib/lightstack/`
 - Single-node only
 
 ### 2. Production Single-Node
@@ -472,15 +472,15 @@ glance:
 
 **Check**:
 ```bash
-ls -ld /var/lib/o3k/volumes/
-ls -ld /var/lib/o3k/images/
+ls -ld /var/lib/lightstack/volumes/
+ls -ld /var/lib/lightstack/images/
 ```
 
-**Solution**: o3k creates these on startup (SPEC-011 / cloud-storage#510); `permission denied`
-means the o3k process cannot write `/var/lib/o3k`. In real mode o3k runs privileged/root and
+**Solution**: Lightstack creates these on startup (SPEC-011 / cloud-storage#510); `permission denied`
+means the Lightstack process cannot write `/var/lib/lightstack`. In real mode Lightstack runs privileged/root and
 creates them automatically. For a non-root install, grant ownership of the base directory once:
 ```bash
-sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/o3k
+sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/lightstack
 ```
 
 ### Hybrid Mode Replication Failures
@@ -497,7 +497,7 @@ sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/o3k
 - Check S3 connectivity
 - Manual sync if needed:
   ```bash
-  aws s3 sync /var/lib/o3k/images/ s3://my-bucket/images/ --exclude "*" --include "image-*.raw"
+  aws s3 sync /var/lib/lightstack/images/ s3://my-bucket/images/ --exclude "*" --include "image-*.raw"
   ```
 
 ## Best Practices
@@ -545,14 +545,14 @@ No migration needed - stub data is ephemeral.
 ```bash
 # For each volume:
 qemu-img convert -f qcow2 -O raw \
-  /var/lib/o3k/volumes/volume-{uuid}.qcow2 \
+  /var/lib/lightstack/volumes/volume-{uuid}.qcow2 \
   rbd:volumes/volume-{uuid}
 ```
 
 **Glance Images**:
 ```bash
 # For each image:
-rbd import /var/lib/o3k/images/image-{uuid}.raw \
+rbd import /var/lib/lightstack/images/image-{uuid}.raw \
   images/image-{uuid}
 ```
 
@@ -561,7 +561,7 @@ rbd import /var/lib/o3k/images/image-{uuid}.raw \
 **Glance Images**:
 ```bash
 # Bulk upload:
-aws s3 sync /var/lib/o3k/images/ s3://my-bucket/images/ \
+aws s3 sync /var/lib/lightstack/images/ s3://my-bucket/images/ \
   --exclude "*" --include "image-*.raw"
 ```
 
@@ -581,7 +581,7 @@ done
 ### Metrics to Track
 
 1. **Storage Usage**:
-   - Local: `du -sh /var/lib/o3k/volumes /var/lib/o3k/images`
+   - Local: `du -sh /var/lib/lightstack/volumes /var/lib/lightstack/images`
    - RBD: `rbd du volumes` / `rbd du images`
    - S3: AWS CloudWatch metrics
 
@@ -603,7 +603,7 @@ done
 ### Alerting
 
 1. **Local storage**:
-   - Alert if `/var/lib/o3k/` > 80% disk capacity
+   - Alert if `/var/lib/lightstack/` > 80% disk capacity
 
 2. **Ceph**:
    - Alert on Ceph cluster warnings
@@ -642,7 +642,7 @@ done
   "Statement": [
     {
       "Effect": "Allow",
-      "Principal": {"AWS": "arn:aws:iam::123456789012:user/o3k"},
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/lightstack"},
       "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
       "Resource": "arn:aws:s3:::my-glance-images/*"
     }

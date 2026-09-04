@@ -3,7 +3,7 @@
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
-Day-to-day operations, monitoring, and maintenance for O3K deployments.
+Day-to-day operations, monitoring, and maintenance for Lightstack deployments.
 
 ---
 
@@ -23,7 +23,7 @@ Day-to-day operations, monitoring, and maintenance for O3K deployments.
 
 ## Overview
 
-This guide covers operational tasks for running O3K in production environments.
+This guide covers operational tasks for running Lightstack in production environments.
 
 **Target audience:** System administrators, DevOps engineers, SREs
 
@@ -39,11 +39,11 @@ docker compose ps
 
 # Expected output:
 # NAME           STATUS
-# o3k            Up (healthy)
-# o3k-postgres   Up (healthy)
+# lightstack            Up (healthy)
+# lightstack-postgres   Up (healthy)
 
 # Systemd deployment
-sudo systemctl status o3k
+sudo systemctl status lightstack
 sudo systemctl status postgresql
 ```
 
@@ -51,20 +51,20 @@ sudo systemctl status postgresql
 
 ```bash
 # Docker
-docker compose logs o3k --tail=100 --follow
+docker compose logs lightstack --tail=100 --follow
 
 # Systemd
-sudo journalctl -u o3k -f
+sudo journalctl -u lightstack -f
 
 # Check for errors
-docker compose logs o3k | grep -i error
+docker compose logs lightstack | grep -i error
 ```
 
 ### Resource Usage
 
 ```bash
 # Docker container stats
-docker stats o3k o3k-postgres
+docker stats lightstack lightstack-postgres
 
 # System resources
 top
@@ -97,15 +97,15 @@ done
 
 ```bash
 # Docker
-docker exec o3k-postgres psql -U o3k -d o3k -c "SELECT version();"
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "SELECT version();"
 
 # Check database size
-docker exec o3k-postgres psql -U o3k -d o3k -c "
-  SELECT pg_size_pretty(pg_database_size('o3k')) AS size;
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
+  SELECT pg_size_pretty(pg_database_size('lightstack')) AS size;
 "
 
 # Check table sizes
-docker exec o3k-postgres psql -U o3k -d o3k -c "
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
   SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
   FROM pg_tables
   WHERE schemaname = 'public'
@@ -118,7 +118,7 @@ docker exec o3k-postgres psql -U o3k -d o3k -c "
 
 ```bash
 # Using OpenStack CLI
-source ~/.o3k-env
+source ~/.lightstack-env
 
 # Count active resources
 openstack server list --all-projects | wc -l
@@ -171,16 +171,16 @@ openstack token issue
 
 ```bash
 # Errors
-docker compose logs o3k | grep -i "ERROR"
+docker compose logs lightstack | grep -i "ERROR"
 
 # Authentication failures
-docker compose logs o3k | grep "authentication failed"
+docker compose logs lightstack | grep "authentication failed"
 
 # Database issues
-docker compose logs o3k | grep "database"
+docker compose logs lightstack | grep "database"
 
 # Slow queries (if debug logging enabled)
-docker compose logs o3k | grep "slow query"
+docker compose logs lightstack | grep "slow query"
 ```
 
 ### Alerting Rules
@@ -205,10 +205,10 @@ curl http://localhost:9090/metrics
 ```
 
 **Key metrics:**
-- `o3k_api_requests_total{service="nova",method="POST",status="200"}`
-- `o3k_api_request_duration_seconds{service="nova"}`
-- `o3k_database_connections{state="active"}`
-- `o3k_instances_total{state="active"}`
+- `lightstack_api_requests_total{service="nova",method="POST",status="200"}`
+- `lightstack_api_request_duration_seconds{service="nova"}`
+- `lightstack_database_connections{state="active"}`
+- `lightstack_instances_total{state="active"}`
 
 ---
 
@@ -220,19 +220,19 @@ curl http://localhost:9090/metrics
 
 ```bash
 #!/bin/bash
-# /usr/local/bin/o3k-backup.sh
+# /usr/local/bin/lightstack-backup.sh
 
-BACKUP_DIR="/backups/o3k"
+BACKUP_DIR="/backups/lightstack"
 DATE=$(date +%Y%m%d-%H%M%S)
-BACKUP_FILE="$BACKUP_DIR/o3k-$DATE.sql.gz"
+BACKUP_FILE="$BACKUP_DIR/lightstack-$DATE.sql.gz"
 
 mkdir -p $BACKUP_DIR
 
 # Create backup
-docker exec o3k-postgres pg_dump -U o3k o3k | gzip > $BACKUP_FILE
+docker exec lightstack-postgres pg_dump -U lightstack lightstack | gzip > $BACKUP_FILE
 
 # Keep only last 7 days
-find $BACKUP_DIR -name "o3k-*.sql.gz" -mtime +7 -delete
+find $BACKUP_DIR -name "lightstack-*.sql.gz" -mtime +7 -delete
 
 echo "Backup completed: $BACKUP_FILE"
 ```
@@ -240,32 +240,32 @@ echo "Backup completed: $BACKUP_FILE"
 **Crontab entry:**
 ```bash
 # Daily backup at 2 AM
-0 2 * * * /usr/local/bin/o3k-backup.sh
+0 2 * * * /usr/local/bin/lightstack-backup.sh
 ```
 
 **Manual backup:**
 ```bash
 # Backup
-docker exec o3k-postgres pg_dump -U o3k o3k > o3k-backup.sql
+docker exec lightstack-postgres pg_dump -U lightstack lightstack > lightstack-backup.sql
 
 # Compressed backup
-docker exec o3k-postgres pg_dump -U o3k o3k | gzip > o3k-backup.sql.gz
+docker exec lightstack-postgres pg_dump -U lightstack lightstack | gzip > lightstack-backup.sql.gz
 ```
 
 ### Database Restore
 
 ```bash
-# Stop O3K (prevent writes during restore)
-docker compose stop o3k
+# Stop lightstack (prevent writes during restore)
+docker compose stop lightstack
 
 # Restore from backup
-cat o3k-backup.sql | docker exec -i o3k-postgres psql -U o3k o3k
+cat lightstack-backup.sql | docker exec -i lightstack-postgres psql -U lightstack lightstack
 
 # Or compressed:
-gunzip -c o3k-backup.sql.gz | docker exec -i o3k-postgres psql -U o3k o3k
+gunzip -c lightstack-backup.sql.gz | docker exec -i lightstack-postgres psql -U lightstack lightstack
 
-# Start O3K
-docker compose start o3k
+# Start lightstack
+docker compose start lightstack
 ```
 
 ### Configuration Backup
@@ -273,10 +273,10 @@ docker compose start o3k
 ```bash
 # Backup configuration
 cp docker-compose.yml docker-compose.yml.backup-$(date +%Y%m%d)
-cp config/o3k.yaml config/o3k.yaml.backup-$(date +%Y%m%d)
+cp config/lightstack.yaml config/lightstack.yaml.backup-$(date +%Y%m%d)
 
 # Or tar everything:
-tar -czf o3k-config-$(date +%Y%m%d).tar.gz docker-compose.yml config/ deployments/
+tar -czf lightstack-config-$(date +%Y%m%d).tar.gz docker-compose.yml config/ deployments/
 ```
 
 ### Disaster Recovery Plan
@@ -285,7 +285,7 @@ tar -czf o3k-config-$(date +%Y%m%d).tar.gz docker-compose.yml config/ deployment
 **Recovery Point Objective (RPO):** <24 hours (daily backups)
 
 **Recovery steps:**
-1. Install O3K on new system
+1. Install Lightstack on new system
 2. Restore configuration files
 3. Restore database from backup
 4. Start services
@@ -298,22 +298,22 @@ tar -czf o3k-config-$(date +%Y%m%d).tar.gz docker-compose.yml config/ deployment
 set -e
 
 # 1. Setup
-cd /opt/o3k
+cd /opt/lightstack
 docker compose down -v
 
 # 2. Restore config (from backup location)
 cp /backups/config/docker-compose.yml .
-cp /backups/config/o3k.yaml config/
+cp /backups/config/lightstack.yaml config/
 
 # 3. Start database only
 docker compose up -d postgres
 sleep 10
 
 # 4. Restore database
-gunzip -c /backups/o3k/latest.sql.gz | docker exec -i o3k-postgres psql -U o3k o3k
+gunzip -c /backups/lightstack/latest.sql.gz | docker exec -i lightstack-postgres psql -U lightstack lightstack
 
-# 5. Start O3K
-docker compose up -d o3k
+# 5. Start lightstack
+docker compose up -d lightstack
 
 # 6. Verify
 sleep 10
@@ -327,18 +327,18 @@ echo "Recovery complete!"
 
 ## Maintenance
 
-### Update O3K
+### Update Lightstack
 
 ```bash
 # Backup first!
-./o3k-backup.sh
+./lightstack-backup.sh
 
 # Pull latest code
-cd /opt/o3k
+cd /opt/lightstack
 git pull
 
 # Rebuild image
-docker compose build o3k
+docker compose build lightstack
 
 # Stop and start (runs migrations automatically)
 docker compose down
@@ -346,33 +346,33 @@ docker compose up -d
 
 # Verify
 docker compose ps
-docker compose logs o3k --tail=50
+docker compose logs lightstack --tail=50
 ```
 
 ### Database Migrations
 
 ```bash
 # Check current migration version
-docker exec o3k /app/o3k-migrate status
+docker exec lightstack /app/lightstack-migrate status
 
 # Run pending migrations
-docker exec o3k /app/o3k-migrate up
+docker exec lightstack /app/lightstack-migrate up
 
 # Rollback last migration (if needed)
-docker exec o3k /app/o3k-migrate down 1
+docker exec lightstack /app/lightstack-migrate down 1
 ```
 
 ### Database Maintenance
 
 ```bash
 # Vacuum database (reclaim space)
-docker exec o3k-postgres psql -U o3k -d o3k -c "VACUUM ANALYZE;"
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "VACUUM ANALYZE;"
 
 # Reindex (improve query performance)
-docker exec o3k-postgres psql -U o3k -d o3k -c "REINDEX DATABASE o3k;"
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "REINDEX DATABASE lightstack;"
 
 # Check for table bloat
-docker exec o3k-postgres psql -U o3k -d o3k -c "
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
   SELECT schemaname, tablename,
          pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
   FROM pg_tables
@@ -387,7 +387,7 @@ docker exec o3k-postgres psql -U o3k -d o3k -c "
 ```yaml
 # docker-compose.yml
 services:
-  o3k:
+  lightstack:
     logging:
       driver: "json-file"
       options:
@@ -406,14 +406,14 @@ SystemKeepFree=2G
 
 ```bash
 # Delete old deleted VMs (soft-deleted)
-docker exec o3k-postgres psql -U o3k -d o3k -c "
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
   DELETE FROM instances
   WHERE deleted = true
     AND deleted_at < NOW() - INTERVAL '30 days';
 "
 
 # Delete old tokens (if storing in DB)
-docker exec o3k-postgres psql -U o3k -d o3k -c "
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
   DELETE FROM tokens WHERE expires_at < NOW();
 "
 ```
@@ -426,7 +426,7 @@ docker exec o3k-postgres psql -U o3k -d o3k -c "
 
 **Check logs:**
 ```bash
-docker compose logs o3k
+docker compose logs lightstack
 docker compose logs postgres
 ```
 
@@ -440,14 +440,14 @@ docker compose logs postgres
 
 ```bash
 # Check container stats
-docker stats o3k
+docker stats lightstack
 
 # Check processes inside container
-docker exec o3k top
+docker exec lightstack top
 
 # Check for slow queries (enable query logging)
-docker exec o3k-postgres psql -U o3k -d o3k -c "
-  ALTER DATABASE o3k SET log_min_duration_statement = 1000;
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
+  ALTER DATABASE lightstack SET log_min_duration_statement = 1000;
 "
 ```
 
@@ -455,31 +455,31 @@ docker exec o3k-postgres psql -U o3k -d o3k -c "
 
 ```bash
 # Check memory usage
-docker stats o3k
+docker stats lightstack
 
 # Restart if memory leak suspected
-docker compose restart o3k
+docker compose restart lightstack
 ```
 
 ### Database Connection Exhaustion
 
 ```bash
 # Check active connections
-docker exec o3k-postgres psql -U o3k -d o3k -c "
-  SELECT count(*) FROM pg_stat_activity WHERE datname = 'o3k';
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
+  SELECT count(*) FROM pg_stat_activity WHERE datname = 'lightstack';
 "
 
 # Kill idle connections
-docker exec o3k-postgres psql -U o3k -d o3k -c "
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
   SELECT pg_terminate_backend(pid)
   FROM pg_stat_activity
-  WHERE datname = 'o3k'
+  WHERE datname = 'lightstack'
     AND state = 'idle'
     AND state_change < NOW() - INTERVAL '10 minutes';
 "
 
 # Increase max_connections in config
-# config/o3k.yaml:
+# config/lightstack.yaml:
 # database:
 #   max_connections: 50
 ```
@@ -497,8 +497,8 @@ docker system df
 docker system prune -a
 
 # Check database size
-docker exec o3k-postgres psql -U o3k -d o3k -c "
-  SELECT pg_size_pretty(pg_database_size('o3k'));
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
+  SELECT pg_size_pretty(pg_database_size('lightstack'));
 "
 ```
 
@@ -534,10 +534,10 @@ NEW_SECRET=$(openssl rand -hex 32)
 
 # 2. Update config
 # Edit docker-compose.yml:
-# O3K_KEYSTONE_JWT_SECRET: "$NEW_SECRET"
+# LIGHTSTACK_KEYSTONE_JWT_SECRET: "$NEW_SECRET"
 
-# 3. Restart O3K
-docker compose restart o3k
+# 3. Restart lightstack
+docker compose restart lightstack
 
 # 4. All existing tokens invalidated - users must re-authenticate
 ```
@@ -546,7 +546,7 @@ docker compose restart o3k
 
 ```bash
 # Using SQL
-docker exec o3k-postgres psql -U o3k -d o3k -c "
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
   UPDATE users
   SET password_hash = crypt('new-secure-password', gen_salt('bf'))
   WHERE name = 'admin';
@@ -560,13 +560,13 @@ openstack user password set
 
 ```bash
 # Review recent authentication attempts
-docker compose logs o3k | grep "authentication"
+docker compose logs lightstack | grep "authentication"
 
 # Review API access
-docker compose logs o3k | grep "POST\|DELETE"
+docker compose logs lightstack | grep "POST\|DELETE"
 
 # Failed login attempts
-docker compose logs o3k | grep "authentication failed"
+docker compose logs lightstack | grep "authentication failed"
 ```
 
 ### Firewall Configuration
@@ -619,7 +619,7 @@ CREATE INDEX IF NOT EXISTS idx_networks_project ON networks(project_id);
 time openstack server list
 
 # Database query time
-docker exec o3k-postgres psql -U o3k -d o3k -c "
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
   SELECT query, mean_exec_time, calls
   FROM pg_stat_statements
   ORDER BY mean_exec_time DESC
@@ -672,7 +672,7 @@ services:
 - Google Cloud SQL
 - Azure Database for PostgreSQL
 
-### O3K HA
+### Lightstack HA
 
 **Load Balancer:**
 ```
@@ -684,7 +684,7 @@ services:
       ┌───────────┼───────────┐
       │           │           │
    ┌──▼──┐     ┌──▼──┐     ┌──▼──┐
-   │ o3k1│     │ o3k2│     │ o3k3│
+   │ lightstack1│     │ lightstack2│     │ lightstack3│
    └─────┘     └─────┘     └─────┘
       │           │           │
       └───────────┼───────────┘
@@ -697,22 +697,22 @@ services:
 
 **HAProxy config:**
 ```
-frontend o3k_keystone
+frontend lightstack_keystone
     bind *:5001
-    default_backend o3k_keystone_backend
+    default_backend lightstack_keystone_backend
 
-backend o3k_keystone_backend
+backend lightstack_keystone_backend
     balance roundrobin
     option httpchk GET /v3
-    server o3k1 10.0.0.1:5001 check
-    server o3k2 10.0.0.2:5001 check
-    server o3k3 10.0.0.3:5001 check
+    server lightstack1 10.0.0.1:5001 check
+    server lightstack2 10.0.0.2:5001 check
+    server lightstack3 10.0.0.3:5001 check
 ```
 
 ### Health Checks
 
 ```bash
-# Script: /usr/local/bin/o3k-healthcheck.sh
+# Script: /usr/local/bin/lightstack-healthcheck.sh
 #!/bin/bash
 curl -f http://localhost:5001/v3 && exit 0 || exit 1
 ```

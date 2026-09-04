@@ -14,7 +14,7 @@ import (
 
 // TestCinderUpdateReadonlyFlag_Contract tests POST /v3/:project/volumes/:id/action (os-update_readonly_flag)
 func TestCinderUpdateReadonlyFlag_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -67,7 +67,7 @@ func TestCinderUpdateReadonlyFlag_Contract(t *testing.T) {
 
 // TestCinderSetImageMetadata_Contract tests POST /v3/:project/volumes/:id/action (os-set_image_metadata)
 func TestCinderSetImageMetadata_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -123,7 +123,7 @@ func TestCinderSetImageMetadata_Contract(t *testing.T) {
 
 // TestCinderForceDetach_Contract tests POST /v3/:project/volumes/:id/action (os-force_detach)
 func TestCinderForceDetach_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -177,7 +177,7 @@ func TestCinderForceDetach_Contract(t *testing.T) {
 
 // TestCinderResetStatus_Contract tests POST /v3/:project/volumes/:id/action (os-reset_status)
 func TestCinderResetStatus_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -230,7 +230,7 @@ func TestCinderResetStatus_Contract(t *testing.T) {
 
 // TestCinderUnsetImageMetadata_Contract tests os-unset_image_metadata action
 func TestCinderUnsetImageMetadata_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupCinderClient(t)
 
 	// Create volume
@@ -279,7 +279,7 @@ func TestCinderUnsetImageMetadata_Contract(t *testing.T) {
 
 // TestCinderReimageVolume_Contract tests os-reimage action
 func TestCinderReimageVolume_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupCinderClient(t)
 
 	// Create volume

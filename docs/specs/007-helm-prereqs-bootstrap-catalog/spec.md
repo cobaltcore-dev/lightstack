@@ -3,35 +3,35 @@
 **Feature Branch**: `007-helm-prereqs-bootstrap-catalog`  
 **Created**: 2026-06-08  
 **Status**: Draft  
-**Input**: User description: "Helm chart prerequisites (SPEC-007): two small config/bootstrap-level changes to O3K that must land before the Helm chart (SPEC-008) can be authored securely over TLS — (WS-2) admin-password bootstrap wiring and (WS-3) configurable service-catalog scheme (http/https)."
+**Input**: User description: "Helm chart prerequisites (SPEC-007): two small config/bootstrap-level changes to Lightstack that must land before the Helm chart (SPEC-008) can be authored securely over TLS — (WS-2) admin-password bootstrap wiring and (WS-3) configurable service-catalog scheme (http/https)."
 
 ## Clarifications
 
 ### Session 2026-06-08
 
-- Q: When no admin password is configured at startup, what should the product (the O3K binary) do? → A: Boot with the well-known default credential but emit a prominent warning (option C). The product does not refuse to start; the "fail the install when no password is supplied" gate is owned by the SPEC-008 Helm chart (FR-007a), not the binary.
+- Q: When no admin password is configured at startup, what should the product (the Lightstack binary) do? → A: Boot with the well-known default credential but emit a prominent warning (option C). The product does not refuse to start; the "fail the install when no password is supplied" gate is owned by the SPEC-008 Helm chart (FR-007a), not the binary.
 - Q: When a non-empty admin password IS configured, does the binary impose strength validation (minimum length / complexity / denylist)? → A: No — permissive (option A). The binary accepts any non-empty (trimmed) value as supplied; password strength is enforced by the SPEC-008 chart, not the product. (A binary denylist would also reject the explicit dev/CI default of `secret`.)
-- Q: How is the advertised catalog scheme made configurable? → A: A new `O3K_ENDPOINT_SCHEME` environment variable (option A), read alongside the existing `O3K_ENDPOINT_HOST` and applied at catalog-presentation time, defaulting to `http`. The stored catalog rows and migration 040 are left untouched.
+- Q: How is the advertised catalog scheme made configurable? → A: A new `LIGHTSTACK_ENDPOINT_SCHEME` environment variable (option A), read alongside the existing `LIGHTSTACK_ENDPOINT_HOST` and applied at catalog-presentation time, defaulting to `http`. The stored catalog rows and migration 040 are left untouched.
 - Q: What is logged when bootstrap creates or updates the admin password? → A: Minimal structured logging (option A) — one log line on create/update identifying the user but never the password value; plus the existing FR-006 no-password warning.
 - Q: When a custom `admin_user` (≠ `admin`) is configured with a password, what happens to the seeded default `admin` account? → A: Neutralize it (option B) — bootstrap disables/locks the seeded `admin` so `admin/secret` can no longer authenticate. (When `admin_user` is the default `admin`, bootstrap simply updates that same row in place; the gap only exists on name-change.)
-- Q: Does bootstrap reconcile the admin password to config on every start, or only seed it once? → A: First-boot seed only (option B). The configured `admin_password` is applied only at initial provisioning — when the admin account is absent or still carries the well-known default `secret`. Once the password is non-default, bootstrap never overwrites it; rotation after provisioning is done via the OpenStack Identity API, not by changing config. (Matches Keycloak/Grafana-style bootstrap. Chosen over upstream Keystone's reconcile-on-redeploy because O3K bootstraps on every process start, where a reconcile would clobber a runtime-rotated password on every pod restart.)
-- Q: What happens when `O3K_ENDPOINT_SCHEME` is set to an unsupported value? → A: Warn and default to `http` (option A) — the binary logs a prominent warning, ignores the invalid value, and advertises `http`; it does not refuse to start. `http`/`https` are parsed case-insensitively and whitespace-trimmed.
+- Q: Does bootstrap reconcile the admin password to config on every start, or only seed it once? → A: First-boot seed only (option B). The configured `admin_password` is applied only at initial provisioning — when the admin account is absent or still carries the well-known default `secret`. Once the password is non-default, bootstrap never overwrites it; rotation after provisioning is done via the OpenStack Identity API, not by changing config. (Matches Keycloak/Grafana-style bootstrap. Chosen over upstream Keystone's reconcile-on-redeploy because Lightstack bootstraps on every process start, where a reconcile would clobber a runtime-rotated password on every pod restart.)
+- Q: What happens when `LIGHTSTACK_ENDPOINT_SCHEME` is set to an unsupported value? → A: Warn and default to `http` (option A) — the binary logs a prominent warning, ignores the invalid value, and advertises `http`; it does not refuse to start. `http`/`https` are parsed case-insensitively and whitespace-trimmed.
 - Q: How is multi-node concurrent first-boot provisioning made safe? → A: Atomic/idempotent DB operations (option A) — a conditional `UPDATE` guarded on the default credential plus `INSERT … ON CONFLICT`, with no external coordination (no locks, leader election, or designated bootstrapper). Concurrent nodes converge to one admin account.
-- Q: Does a password change revoke existing tokens? → A: No (option A). O3K tokens are stateless (HMAC-signed, not server-stored, not password-bound); existing tokens remain valid until their TTL expiry (default 24h, configurable) after any password change. Immediate revocation is an explicit non-goal here; operators needing a tighter bound shorten the token TTL.
+- Q: Does a password change revoke existing tokens? → A: No (option A). Lightstack tokens are stateless (HMAC-signed, not server-stored, not password-bound); existing tokens remain valid until their TTL expiry (default 24h, configurable) after any password change. Immediate revocation is an explicit non-goal here; operators needing a tighter bound shorten the token TTL.
 - Q: How is the seeded `admin` neutralized when a custom `admin_user` is configured (FR-004a)? → A: Set `enabled = false` (option A) on the seeded `admin` row — the native Keystone disabled-user mechanism (column already exists); reversible; the row and its role assignments are preserved (not deleted or scrambled).
 - Q: What role/project provisioning does a custom `admin_user` get, and what does FR-007 constrain? → A: Mirror the seed's grants (option A) — bootstrap grants the custom admin the standard admin role on the seeded `default` project (FR-004b). FR-007 is scoped to preserving project isolation and not altering *other* identities' privileges; it does not forbid granting the configured admin its standard role or disabling the superseded seed `admin`.
-- Q: Which TLS exposure model must the chart use so WS-3's `https://<host>:<service-port>` URLs resolve? → A: Port-based per-service TLS (option 1) — the chart (SPEC-008) terminates TLS per service port, matching O3K's multi-port design and `docs/KUBERNETES_DEPLOYMENT.md` Option B. A single-`:443` path-based or per-subdomain ingress is out of scope (it would require advertising per-service path prefixes or hostnames, beyond scheme-only rewriting).
-- Q: Does `O3K_ENDPOINT_SCHEME` apply only to the Keystone catalog, or also to resource self-links / pagination? → A: Both — it also governs the self-links and pagination URLs built by `common.BaseURL` (Nova/Neutron/Cinder/Glance responses), so a TLS-fronted deployment never emits `http://` self-links (FR-013a).
+- Q: Which TLS exposure model must the chart use so WS-3's `https://<host>:<service-port>` URLs resolve? → A: Port-based per-service TLS (option 1) — the chart (SPEC-008) terminates TLS per service port, matching lightstack's multi-port design and `docs/KUBERNETES_DEPLOYMENT.md` Option B. A single-`:443` path-based or per-subdomain ingress is out of scope (it would require advertising per-service path prefixes or hostnames, beyond scheme-only rewriting).
+- Q: Does `LIGHTSTACK_ENDPOINT_SCHEME` apply only to the Keystone catalog, or also to resource self-links / pagination? → A: Both — it also governs the self-links and pagination URLs built by `common.BaseURL` (Nova/Neutron/Cinder/Glance responses), so a TLS-fronted deployment never emits `http://` self-links (FR-013a).
 
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Operator sets a non-default admin password at deploy time (Priority: P1)
 
-An operator deploys O3K (single-node or multi-node) and supplies an admin password through configuration. On startup, the platform provisions the admin account with exactly that password. No deployment ever comes up reachable with the well-known `admin/secret` default.
+An operator deploys Lightstack (single-node or multi-node) and supplies an admin password through configuration. On startup, the platform provisions the admin account with exactly that password. No deployment ever comes up reachable with the well-known `admin/secret` default.
 
 **Why this priority**: This is a security-blocking defect. Today every fresh deployment is reachable with a publicly-known credential, and the configuration knobs that should fix it are dead code. Until this works, the Helm chart cannot require a non-default admin password, and even a single-node install is unsafe to expose. This is the gating prerequisite for SPEC-008.
 
-**Independent Test**: Deploy O3K with a configured admin password, then attempt to authenticate. Authentication succeeds with the supplied password and fails with `secret`. Fully testable without WS-3.
+**Independent Test**: Deploy Lightstack with a configured admin password, then attempt to authenticate. Authentication succeeds with the supplied password and fails with `secret`. Fully testable without WS-3.
 
 **Acceptance Scenarios**:
 
@@ -45,7 +45,7 @@ An operator deploys O3K (single-node or multi-node) and supplies an admin passwo
 
 ### User Story 2 - Operator behind TLS gets working catalog URLs (Priority: P2)
 
-An operator fronts O3K with TLS terminated at an ingress/load balancer and configures the advertised endpoint scheme as `https`. Clients that authenticate receive a service catalog whose endpoint URLs use `https://<host>:<port>`, so OpenStack CLI, Horizon, and Terraform follow the catalog to the correct, working URLs instead of broken `http://` ones.
+An operator fronts Lightstack with TLS terminated at an ingress/load balancer and configures the advertised endpoint scheme as `https`. Clients that authenticate receive a service catalog whose endpoint URLs use `https://<host>:<port>`, so OpenStack CLI, Horizon, and Terraform follow the catalog to the correct, working URLs instead of broken `http://` ones.
 
 **Why this priority**: Required only for the chart's optional TLS path. Without it, a TLS-fronted deployment hands clients `http://` catalog URLs that fail. It is P2 because deployments without TLS are unaffected and the default behavior is unchanged.
 
@@ -94,9 +94,9 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 
 #### WS-3 — Configurable service-catalog scheme
 
-- **FR-009**: The platform MUST allow the advertised service-catalog endpoint scheme to be configured as either `http` or `https` via a dedicated environment variable (`O3K_ENDPOINT_SCHEME`), read alongside the existing `O3K_ENDPOINT_HOST` and applied at catalog-presentation time.
+- **FR-009**: The platform MUST allow the advertised service-catalog endpoint scheme to be configured as either `http` or `https` via a dedicated environment variable (`LIGHTSTACK_ENDPOINT_SCHEME`), read alongside the existing `LIGHTSTACK_ENDPOINT_HOST` and applied at catalog-presentation time.
 - **FR-010**: When the scheme is configured as `https`, every advertised catalog endpoint URL MUST use `https://` with the correct host and port.
-- **FR-011**: When the scheme is not configured (`O3K_ENDPOINT_SCHEME` unset or empty), advertised catalog endpoint URLs MUST use `http://` (the existing default is preserved).
+- **FR-011**: When the scheme is not configured (`LIGHTSTACK_ENDPOINT_SCHEME` unset or empty), advertised catalog endpoint URLs MUST use `http://` (the existing default is preserved).
 - **FR-012**: The scheme configuration MUST compose correctly with the existing advertised-host rewrite, so that host and scheme are both reflected in the final URLs.
 - **FR-013**: The catalog response structure MUST remain unchanged except for the URL scheme — service types, names, endpoint interfaces, regions, IDs, and all other fields MUST be identical (no OpenStack API shape change, no microversion bump). The scheme MUST be applied at catalog-presentation time; the stored catalog rows (migration 040) MUST NOT be modified.
 - **FR-013a**: The configured scheme MUST also apply to advertised resource self-links and pagination URLs in service responses (not only the Keystone catalog), so a TLS-fronted deployment never emits `http://` links. Default remains `http`.
@@ -111,7 +111,7 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 
 - **Admin account**: The bootstrap administrative identity. Key attributes: account name (configurable, default `admin`), one-way-hashed password (derived from the configured value), and its existing roles/project scoping (unchanged by this feature).
 - **Admin-password configuration**: Operator-supplied setting (password and optional user name) consumed at bootstrap and applied only at initial provisioning (first-boot seed). Presence/absence drives the no-password warning and the chart's install gate.
-- **Catalog-scheme configuration**: Operator-supplied environment variable (`O3K_ENDPOINT_SCHEME`) selecting `http` (default) or `https` for advertised endpoint URLs; read alongside and composing with the existing advertised-host setting (`O3K_ENDPOINT_HOST`).
+- **Catalog-scheme configuration**: Operator-supplied environment variable (`LIGHTSTACK_ENDPOINT_SCHEME`) selecting `http` (default) or `https` for advertised endpoint URLs; read alongside and composing with the existing advertised-host setting (`LIGHTSTACK_ENDPOINT_HOST`).
 - **Service catalog**: The set of advertised service endpoint URLs returned at authentication; affected only in the URL scheme by WS-3.
 
 ## Success Criteria *(mandatory)*
@@ -132,16 +132,16 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 
 - **Fail-fast gate ownership**: Resolved (see Clarifications 2026-06-08). The product boots with the default credential and emits a prominent warning when no admin password is configured; it does not refuse to start. The "fail the install when no password is supplied" enforcement lives entirely in the SPEC-008 chart (FR-007a).
 - **Scope of admin update**: Bootstrap sets the admin password only at initial provisioning (first-boot seed) and ensures the named admin account exists with its normal admin roles. It does not reconcile or rotate the password on later starts, and does not manage arbitrary additional users; broader user provisioning is out of scope.
-- **Configuration surface**: The admin password/user are configured via `keystone.admin_password` / `keystone.admin_user` (config file). The catalog scheme is configured via the `O3K_ENDPOINT_SCHEME` environment variable (resolved 2026-06-08), mirroring the existing `O3K_ENDPOINT_HOST` rewrite.
+- **Configuration surface**: The admin password/user are configured via `keystone.admin_password` / `keystone.admin_user` (config file). The catalog scheme is configured via the `LIGHTSTACK_ENDPOINT_SCHEME` environment variable (resolved 2026-06-08), mirroring the existing `LIGHTSTACK_ENDPOINT_HOST` rewrite.
 - **Default preservation**: With neither scheme knob set, catalog behavior and API shapes are unchanged from today, so non-TLS and existing deployments are unaffected.
 - **Seed migration retained**: The seed migration remains for fresh-DB bootstrapping. When a password is configured for the default `admin` name, bootstrap overrides the seeded credential in place; when a custom `admin_user` is configured, bootstrap neutralizes the seeded `admin` account (FR-004a, resolved 2026-06-08). The seeded `admin/secret` remains live only in the no-password-configured dev case (Round-1 clarification).
-- **TLS exposure model**: WS-3 advertises `https://<host>:<service-port>` (same host, one port per service). The SPEC-008 chart MUST terminate TLS **per service port** (port-based exposure — `docs/KUBERNETES_DEPLOYMENT.md` Option B), so these URLs resolve. This matches O3K's multi-port design (each service on its own port); a single host certificate (wildcard/SAN) covers all ports. Single-`:443` path/subdomain routing is out of scope (resolved 2026-06-08).
+- **TLS exposure model**: WS-3 advertises `https://<host>:<service-port>` (same host, one port per service). The SPEC-008 chart MUST terminate TLS **per service port** (port-based exposure — `docs/KUBERNETES_DEPLOYMENT.md` Option B), so these URLs resolve. This matches lightstack's multi-port design (each service on its own port); a single host certificate (wildcard/SAN) covers all ports. Single-`:443` path/subdomain routing is out of scope (resolved 2026-06-08).
 
 ## Dependencies
 
 - **Depends on**: SPEC-000 (OpenStack API compliance — must pass its contract tests).
-- **Blocks**: SPEC-008 (Helm charts), both single-node and multi-node — specifically chart requirements FR-007/FR-007a (admin password) and FR-008b (TLS catalog scheme). SPEC-008 MUST expose O3K with **per-service-port TLS termination** (port-based) so the advertised `https://<host>:<port>` catalog and self-link URLs resolve (see Assumptions → TLS exposure model).
-- **Reuses**: existing Keystone bootstrap path and the existing advertised-host (`O3K_ENDPOINT_HOST`) rewrite.
+- **Blocks**: SPEC-008 (Helm charts), both single-node and multi-node — specifically chart requirements FR-007/FR-007a (admin password) and FR-008b (TLS catalog scheme). SPEC-008 MUST expose Lightstack with **per-service-port TLS termination** (port-based) so the advertised `https://<host>:<port>` catalog and self-link URLs resolve (see Assumptions → TLS exposure model).
+- **Reuses**: existing Keystone bootstrap path and the existing advertised-host (`LIGHTSTACK_ENDPOINT_HOST`) rewrite.
 
 ## Out of Scope
 
@@ -151,4 +151,4 @@ An operator fronts O3K with TLS terminated at an ingress/load balancer and confi
 - Multi-node placement, metadata, north-south networking, and startup reconciliation — tracked separately as SPEC-007 post-conditions.
 - General user/password management beyond the bootstrap admin account.
 - Ongoing admin-password rotation via configuration. Once provisioned, the admin password is rotated through the OpenStack Identity API (e.g., `openstack user password set`), not by changing config — the configured `admin_password` is a first-boot seed (see Clarifications 2026-06-08).
-- Token/session revocation on password change. O3K tokens are stateless (HMAC-signed, not server-stored, not password-bound); after any password change, existing tokens remain valid until their TTL expiry (default 24h, configurable). Immediate revocation would require stateful tokens and is a separate feature.
+- Token/session revocation on password change. Lightstack tokens are stateless (HMAC-signed, not server-stored, not password-bound); after any password change, existing tokens remain valid until their TTL expiry (default 24h, configurable). Immediate revocation would require stateful tokens and is a separate feature.

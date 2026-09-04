@@ -1,11 +1,11 @@
 # Implementation Plan: Single-Node Real Mode (v1)
 
 **Branch**: `bugfix/503-single-node-real-mode-v1` | **Date**: 2026-06-18 | **Spec**: [spec.md](./spec.md)
-**Input**: Feature specification from `docs/specs/009-single-node-real-mode/spec.md` (cloud-storage#503, subtask of #476 / o3k#52)
+**Input**: Feature specification from `docs/specs/009-single-node-real-mode/spec.md` (cloud-storage#503, subtask of #476 / lightstack#52)
 
 ## Summary
 
-Make a real-mode O3K deployment usable end-to-end on a single Linux node. The feature is delivered in dependency order **WS-0 → WS-2 → WS-4 → WS-3**, plus real-mode **block storage (WS-5)**:
+Make a real-mode Lightstack deployment usable end-to-end on a single Linux node. The feature is delivered in dependency order **WS-0 → WS-2 → WS-4 → WS-3**, plus real-mode **block storage (WS-5)**:
 
 - **WS-0** — real VMs boot from a Glance image via a **per-instance qcow2 overlay over a raw base**; images normalized to raw on ingest; image deletion blocked while a dependent disk exists; core power lifecycle + serial console.
 - **WS-2** — a startup + periodic **network-state reconciler** (modeled on the existing VXLAN coordinator) rebuilds DHCP/namespaces/bridges/SG rules from the DB so VMs survive a control-plane (pod) restart; all VM disk artifacts persist on the node hostPath.
@@ -13,16 +13,16 @@ Make a real-mode O3K deployment usable end-to-end on a single Linux node. The fe
 - **WS-3** — **reuse** the existing router SNAT + floating-IP DNAT code, auto-wiring the external network to the node uplink; security groups enforced on north-south.
 - **WS-5** — real-mode volume create/attach/detach (made **synchronous**, fixing the current async goroutine) and **boot-from-volume**.
 
-Technical approach: extend the existing single binary (`cmd/o3k/main.go` + `internal/*`, `pkg/*`); add one DB migration (`060`); add `qemu-img` + `genisoimage` to the reference image; fix the node-local storage path. No new services, no queues. Full design rationale in [research.md](./research.md); schema/entities in [data-model.md](./data-model.md); behavioral contracts in [contracts/](./contracts/); validation runbook in [quickstart.md](./quickstart.md).
+Technical approach: extend the existing single binary (`cmd/lightstack/main.go` + `internal/*`, `pkg/*`); add one DB migration (`060`); add `qemu-img` + `genisoimage` to the reference image; fix the node-local storage path. No new services, no queues. Full design rationale in [research.md](./research.md); schema/entities in [data-model.md](./data-model.md); behavioral contracts in [contracts/](./contracts/); validation runbook in [quickstart.md](./quickstart.md).
 
 ## Technical Context
 
 **Language/Version**: Go 1.26 (stdlib + minimal deps; existing module)
 **Primary Dependencies**: Gin (HTTP), pgx (PostgreSQL), `digitalocean/go-libvirt` (hypervisor), `vishvananda/netlink` (netns/bridges), `coreos/go-iptables` (NAT/SG), `ceph/go-ceph` (RBD, `-tags ceph`), `aws-sdk-go-v2` (S3); **gophercloud** for contract tests. Invoked host tools (not Go deps): `qemu-img`, `genisoimage`, `dnsmasq`, `iptables`, `ip` (iproute2).
-**Storage**: PostgreSQL 18 (control-plane state); node-local hostPath `/var/lib/o3k` for real-mode data — `images/` (raw bases), `instances/<id>/` (per-instance overlays), `volumes/` (local volumes), `cloud-init/` (config-drive ISOs); RBD/S3 optional backends.
+**Storage**: PostgreSQL 18 (control-plane state); node-local hostPath `/var/lib/lightstack` for real-mode data — `images/` (raw bases), `instances/<id>/` (per-instance overlays), `volumes/` (local volumes), `cloud-init/` (config-drive ISOs); RBD/S3 optional backends.
 **Testing**: `go test` (unit, stub-mode logic); gophercloud contract tests under `test/contract/`; bash integration under `test/` (OpenStack CLI); real-mode e2e on a Linux host (cannot run in a non-Linux sandbox).
 **Target Platform**: Linux single node with KVM + host libvirtd for real mode (stub mode is cross-platform and remains the default); deployed via the SPEC-008 Helm chart on single-node k3s.
-**Project Type**: Single Go binary (monolith) — all services constructed in `cmd/o3k/main.go`; no microservices.
+**Project Type**: Single Go binary (monolith) — all services constructed in `cmd/lightstack/main.go`; no microservices.
 **Performance Goals**: VM create < 10 s (real mode); metadata responses < 100 ms; external-dependency calls fail fast < 1 s; reconciler resync on a configurable interval (default 30 s).
 **Constraints**: 100% OpenStack Flamingo (2025.2) API/CLI/Terraform compatibility; synchronous operations (no queues/async state machines); IPv4-only (v1); single node (no cross-node placement/routing).
 **Scale/Scope**: One node; concurrent VM/volume count bounded by host resources (no scheduler/overcommit). 5 user stories, 31 FRs, 10 SCs. ~6 internal packages + 2 pkg/ packages touched + 1 migration + Dockerfile.
@@ -38,7 +38,7 @@ Technical approach: extend the existing single binary (`cmd/o3k/main.go` + `inte
 | **III. Fail-fast design** | ✅ PASS | Overlay staging, libvirt attach/detach, metadata DNAT, image conversion all fail fast (< 1 s for external deps). Global startup dep checks (DB ping, libvirt connect) stay fail-fast and run **before** reconciliation. Per-tenant reconciliation is best-effort (isolate + retry) — see Complexity Tracking. |
 | **IV. Multi-mode architecture** | ✅ PASS | Every change preserves stub mode and keeps it the default (FR-020). Real-mode code paths are mode-gated; the reconciler only runs when networking mode ≠ stub. |
 | **V. Project isolation** | ✅ PASS | Metadata identification is namespace/project-aware (FR-010); per-project network namespaces; all queries scoped by `project_id`. |
-| **VI. Single binary** | ✅ PASS | All wiring stays in `cmd/o3k/main.go`; the reconciler is an in-process goroutine. `qemu-img`/`genisoimage`/`dnsmasq` are invoked host tools (same model as today), not separate services. |
+| **VI. Single binary** | ✅ PASS | All wiring stays in `cmd/lightstack/main.go`; the reconciler is an in-process goroutine. `qemu-img`/`genisoimage`/`dnsmasq` are invoked host tools (same model as today), not separate services. |
 | **Test-first + reversible migrations** | ✅ PASS | Contract/unit tests authored RED-first; migration `060` ships with up **and** down. |
 
 **Result: PASS.** No unjustified violations; the one pre-existing violation (async attach) is corrected by this plan. Two patterns are recorded in Complexity Tracking for transparency.
@@ -66,7 +66,7 @@ docs/specs/009-single-node-real-mode/
 ### Source Code (repository root — existing layout, files this feature touches)
 
 ```text
-cmd/o3k/main.go                      # wire reconciler goroutine; bind metadata VM-reachable
+cmd/lightstack/main.go                      # wire reconciler goroutine; bind metadata VM-reachable
 internal/
 ├── nova/
 │   ├── handlers.go                  # WS-0 disk-path helper + overlay staging; BDM-v2 parse; user_data; lifecycle
@@ -91,11 +91,11 @@ pkg/
 │   ├── metadata_redirect.go (NEW)   # WS-4 per-namespace 169.254.169.254 → metadata DNAT
 │   └── netns.go / security_groups.go# rebuild on reconcile; SG on north-south
 └── storage/
-    ├── ceph.go / image_store.go     # WS-0 raw normalization on ingest; fix local path → /var/lib/o3k; CoW clone / copy for volume-from-image
-config/o3k.yaml                      # reconcile_interval + metadata bind defaults
+    ├── ceph.go / image_store.go     # WS-0 raw normalization on ingest; fix local path → /var/lib/lightstack; CoW clone / copy for volume-from-image
+config/lightstack.yaml                      # reconcile_interval + metadata bind defaults
 migrations/060_*.{up,down}.sql       # NEW — volumes.source_image_id (+ indexes)
 build/package/Dockerfile             # add qemu-img + genisoimage
-charts/o3k/README.md                 # WS-3 operator floating-IP pool recipe (MetalLB / routed subnet)
+charts/lightstack/README.md                 # WS-3 operator floating-IP pool recipe (MetalLB / routed subnet)
 docs/{STUB_PLACEHOLDERS,WHATS_LEFT,REAL_MODE_TESTING}.md  # reconcile over-claims (polish)
 test/
 ├── contract/                        # gophercloud contract tests (per workstream)
@@ -109,7 +109,7 @@ test/
 
 Built and validated in spec priority/dependency order; each story is independently testable (Constitution test-first applies per story).
 
-1. **Foundation** — migration `060`; image packaging (`qemu-img`, `genisoimage`); fix node-local storage path (`/var/lib/o3k/volumes`).
+1. **Foundation** — migration `060`; image packaging (`qemu-img`, `genisoimage`); fix node-local storage path (`/var/lib/lightstack/volumes`).
 2. **WS-0 (P1)** — raw-on-ingest, shared image-path helper, per-instance overlay, image-in-use guard, power lifecycle, serial console.
 3. **WS-2 (P2)** — reconciler (`Start(ctx)` initial + ticker), DB-driven idempotent rebuild, best-effort per resource, hostPath persistence.
 4. **WS-4 (P3)** — VM-reachable metadata bind + per-namespace DNAT, namespace/project-aware identity, core surface + EC2 endpoints, `user_data` write-path, config-drive end-to-end.

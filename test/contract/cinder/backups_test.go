@@ -13,7 +13,7 @@ import (
 
 // TestCinderListBackups_Contract tests GET /v3/:project_id/backups
 func TestCinderListBackups_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -41,7 +41,7 @@ func TestCinderListBackups_Contract(t *testing.T) {
 
 // TestCinderCreateBackup_Contract tests POST /v3/:project_id/backups
 func TestCinderCreateBackup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -119,7 +119,7 @@ func TestCinderCreateBackup_Contract(t *testing.T) {
 
 // TestCinderGetBackup_Contract tests GET /v3/:project_id/backups/:id
 func TestCinderGetBackup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -210,7 +210,7 @@ func TestCinderGetBackup_Contract(t *testing.T) {
 
 // TestCinderDeleteBackup_Contract tests DELETE /v3/:project_id/backups/:id
 func TestCinderDeleteBackup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -285,7 +285,7 @@ func TestCinderDeleteBackup_Contract(t *testing.T) {
 
 // TestCinderRestoreBackup_Contract tests POST /v3/:project_id/backups/:id/action (restore)
 func TestCinderRestoreBackup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

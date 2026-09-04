@@ -15,7 +15,7 @@ import (
 
 // TestNovaFlavorAddTenantAccess_Contract tests POST /v2.1/flavors/:id/action (addTenantAccess)
 func TestNovaFlavorAddTenantAccess_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -76,7 +76,7 @@ func TestNovaFlavorAddTenantAccess_Contract(t *testing.T) {
 
 // TestNovaFlavorRemoveTenantAccess_Contract tests POST /v2.1/flavors/:id/action (removeTenantAccess)
 func TestNovaFlavorRemoveTenantAccess_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -149,7 +149,7 @@ func TestNovaFlavorRemoveTenantAccess_Contract(t *testing.T) {
 
 // TestNovaGetFlavorAccess_Contract tests GET /v2.1/flavors/:id/os-flavor-access
 func TestNovaGetFlavorAccess_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

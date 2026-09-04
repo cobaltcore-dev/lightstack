@@ -1,6 +1,6 @@
 # Terraform compatibility tests (SPEC-009)
 
-Validates that the **unmodified** Terraform OpenStack provider works against O3K
+Validates that the **unmodified** Terraform OpenStack provider works against Lightstack
 (spec FR-018 / SC-007). Each workstream gets its own self-contained module:
 
 ```text
@@ -13,12 +13,12 @@ test/terraform/
 
 ## Running
 
-These run against a **live O3K** (real mode, on the Linux/k3s host — see
+These run against a **live lightstack** (real mode, on the Linux/k3s host — see
 `../../docs/specs/009-single-node-real-mode/quickstart.md`). They are not run in
 CI.
 
 ```bash
-source ~/.o3k-env            # OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, OS_PROJECT_NAME, ...
+source ~/.lightstack-env            # OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, OS_PROJECT_NAME, ...
 cd test/terraform/ws4
 cp ../provider.tf.example provider.tf
 terraform init

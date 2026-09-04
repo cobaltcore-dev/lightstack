@@ -1,5 +1,5 @@
 #!/bin/bash
-# O3K Validation Startup Script
+# Lightstack Validation Startup Script
 # Run this script once Docker/OrbStack is running
 
 set -e
@@ -12,7 +12,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║           O3K Real-World Validation - Startup                 ║${NC}"
+echo -e "${BLUE}║           Lightstack Real-World Validation - Startup                 ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -27,24 +27,24 @@ fi
 echo -e "${GREEN}✓ Docker is running${NC}"
 echo ""
 
-# Start O3K + Horizon stack
-echo -e "${YELLOW}[2/5]${NC} Starting O3K + Horizon stack..."
-export O3K_JWT_SECRET="${O3K_JWT_SECRET:-validation-only-secret}"
+# Start Lightstack + Horizon stack
+echo -e "${YELLOW}[2/5]${NC} Starting Lightstack + Horizon stack..."
+export LIGHTSTACK_JWT_SECRET="${LIGHTSTACK_JWT_SECRET:-validation-only-secret}"
 docker compose -f deployments/docker-compose-horizon.yml down &> /dev/null || true
 docker compose -f deployments/docker-compose-horizon.yml up -d --build
-echo -e "${GREEN}✓ O3K services started${NC}"
+echo -e "${GREEN}✓ Lightstack services started${NC}"
 echo ""
 
-# Wait for O3K to be ready
-echo -e "${YELLOW}[3/5]${NC} Waiting for O3K to be healthy..."
+# Wait for Lightstack to be ready
+echo -e "${YELLOW}[3/5]${NC} Waiting for Lightstack to be healthy..."
 for i in {1..30}; do
     if curl -s -f http://localhost:35357/v3 &> /dev/null; then
-        echo -e "${GREEN}✓ O3K is healthy${NC}"
+        echo -e "${GREEN}✓ Lightstack is healthy${NC}"
         break
     fi
     if [ $i -eq 30 ]; then
-        echo -e "${RED}✗ O3K failed to start${NC}"
-        echo "Check logs with: docker logs o3k"
+        echo -e "${RED}✗ Lightstack failed to start${NC}"
+        echo "Check logs with: docker logs lightstack"
         exit 1
     fi
     sleep 2
@@ -68,7 +68,7 @@ for i in {1..30}; do
     fi
     if [ $i -eq 30 ]; then
         echo -e "${YELLOW}⚠ Horizon may not be ready yet${NC}"
-        echo "Check logs with: docker logs o3k-horizon"
+        echo "Check logs with: docker logs lightstack-horizon"
     fi
     sleep 2
     echo -n "."
@@ -80,7 +80,7 @@ echo -e "${BLUE}╔════════════════════�
 echo -e "${BLUE}║                    VALIDATION READY                           ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "✓ O3K Services:     ${GREEN}http://localhost:35357/v3${NC} (Keystone)"
+echo -e "✓ Lightstack Services:     ${GREEN}http://localhost:35357/v3${NC} (Keystone)"
 echo -e "                    http://localhost:8774/v2.1 (Nova)"
 echo -e "                    http://localhost:9696/v2.0 (Neutron)"
 echo -e "                    http://localhost:8776/v3 (Cinder)"

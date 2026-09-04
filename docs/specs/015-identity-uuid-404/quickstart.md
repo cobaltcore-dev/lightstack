@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- o3k running (`make run` or docker compose), admin creds sourced (`~/.o3k-env`).
-- For DB-backed tests: `export O3K_TEST_DB_URL=postgres://…` (a throwaway DB — migrations are applied).
+- Lightstack running (`make run` or docker compose), admin creds sourced (`~/.lightstack-env`).
+- For DB-backed tests: `export LIGHTSTACK_TEST_DB_URL=postgres://…` (a throwaway DB — migrations are applied).
 
 ## 1. Reproduce the bug (RED baseline)
 
@@ -27,7 +27,7 @@ done
 # Middleware unit tests (no DB)
 go test ./internal/keystone/ -run UUIDParam -race
 
-# DB-backed e2e (requires O3K_TEST_DB_URL)
+# DB-backed e2e (requires LIGHTSTACK_TEST_DB_URL)
 go test ./internal/keystone/ -run NotFound -race
 
 # Full gates

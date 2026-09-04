@@ -8,18 +8,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 )
 
-func skipIfO3KNotRunning(t *testing.T) {
+func skipIfLightstackNotRunning(t *testing.T) {
 	t.Helper()
 	if os.Getenv("SKIP_CONTRACT_TESTS") == "1" {
-		t.Skip("Skipping contract test (O3K not running)")
+		t.Skip("Skipping contract test (Lightstack not running)")
 	}
 }
 
 func TestNeutronListExtensions_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

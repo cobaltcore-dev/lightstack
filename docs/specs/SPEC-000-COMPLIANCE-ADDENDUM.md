@@ -70,4 +70,4 @@ This specification must meet all SPEC-000 compliance requirements:
 
 ## Notes
 
-Every specification MUST explicitly state how it maintains SPEC-000 compliance. This is the foundation of O3K's value proposition: **100% OpenStack API compatibility, indistinguishable from the real thing.**
+Every specification MUST explicitly state how it maintains SPEC-000 compliance. This is the foundation of lightstack's value proposition: **100% OpenStack API compatibility, indistinguishable from the real thing.**

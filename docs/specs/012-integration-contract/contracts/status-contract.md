@@ -14,18 +14,18 @@ helm status <release> -n <ns> -o json | jq -r '.info.status'
 #    → pending-install | pending-upgrade | deployed | failed | ...
 
 # 2a. single-node (Deployment) readiness
-kubectl -n <ns> get deploy <release>-o3k \
+kubectl -n <ns> get deploy <release>-lightstack \
   -o jsonpath='{.status.updatedReplicas}/{.status.availableReplicas}/{.spec.replicas}'
 #    ready ⇔ updatedReplicas == availableReplicas == spec.replicas
-#    (equivalently: kubectl rollout status deploy/<release>-o3k)
+#    (equivalently: kubectl rollout status deploy/<release>-lightstack)
 
 # 2b. multi-node (DaemonSet) readiness
-kubectl -n <ns> get ds <release>-o3k \
+kubectl -n <ns> get ds <release>-lightstack \
   -o jsonpath='{.status.numberReady}/{.status.updatedNumberScheduled}/{.status.desiredNumberScheduled}'
 #    ready ⇔ numberReady == updatedNumberScheduled == desiredNumberScheduled
 
 # 3. terminal failure (fail fast, before the bound)
-kubectl -n <ns> get pods -l app.kubernetes.io/name=o3k \
+kubectl -n <ns> get pods -l app.kubernetes.io/name=lightstack \
   -o jsonpath='{range .items[*]}{.status.phase}{" "}{range .status.containerStatuses[*]}{.state.waiting.reason}{" "}{end}{"\n"}{end}'
 #    terminal ⇔ any phase==Failed OR reason ∈ {CrashLoopBackOff, ImagePullBackOff, ErrImagePull}
 ```
@@ -59,7 +59,7 @@ Keystone port.
 The contract guarantees **one** endpoint and a discovery method for the rest.
 
 1. **Keystone `/v3`** — the anchor:
-   - in-cluster: `http://<release>-o3k.<ns>.svc:35357/v3`
+   - in-cluster: `http://<release>-lightstack.<ns>.svc:35357/v3`
    - advertised (external): `<scheme>://<endpointHost>:35357/v3` where `scheme` = `https` iff
      `tls.enabled`. **`endpointHost` MUST be set** for an external consumer (unset ⇒ the catalog
      advertises `localhost`, unusable off-node).
@@ -73,7 +73,7 @@ export OS_AUTH_URL=<scheme>://<endpointHost>:35357/v3
 openstack catalog list          # → identity, compute, placement, network, volumev3, image
 ```
 
-- The six `<release>-o3k:<port>` URLs in `NOTES.txt` are **non-authoritative** debugging info.
+- The six `<release>-lightstack:<port>` URLs in `NOTES.txt` are **non-authoritative** debugging info.
 - **metadata `:8775`** is node-local (VM link-local), not a Service and not in the catalog — excluded.
 
 ## Versioning

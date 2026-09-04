@@ -1,5 +1,5 @@
 #!/bin/bash
-# Comprehensive O3K API Contract Testing Script
+# Comprehensive Lightstack API Contract Testing Script
 # Tests all services against OpenStack 2025.2 compatibility
 
 set -e
@@ -19,19 +19,19 @@ export OS_USER_DOMAIN_NAME=${OS_USER_DOMAIN_NAME:-Default}
 export OS_PROJECT_DOMAIN_NAME=${OS_PROJECT_DOMAIN_NAME:-Default}
 
 echo "============================="
-echo "O3K API Contract Test Suite"
+echo "Lightstack API Contract Test Suite"
 echo "============================="
 echo "Auth URL: $OS_AUTH_URL"
 echo ""
 
-# Check if O3K is running
-echo "Checking O3K availability..."
+# Check if Lightstack is running
+echo "Checking Lightstack availability..."
 if ! curl -sf "$OS_AUTH_URL" > /dev/null 2>&1; then
-    echo -e "${RED}ERROR: O3K is not running at $OS_AUTH_URL${NC}"
-    echo "Start O3K with: docker compose -f deployments/docker-compose.yml up -d"
+    echo -e "${RED}ERROR: Lightstack is not running at $OS_AUTH_URL${NC}"
+    echo "Start Lightstack with: docker compose -f deployments/docker-compose.yml up -d"
     exit 1
 fi
-echo -e "${GREEN}✓ O3K is running${NC}"
+echo -e "${GREEN}✓ Lightstack is running${NC}"
 echo ""
 
 # Test authentication
@@ -54,7 +54,7 @@ for SERVICE in "${SERVICES[@]}"; do
     echo "Testing $SERVICE"
     echo "============================="
 
-    cd "/Users/I761222/git/o3k/test/contract/$SERVICE"
+    cd "/Users/I761222/git/lightstack/test/contract/$SERVICE"
 
     # Run tests with timeout and JSON output
     TEST_OUTPUT=$(go test -json -count=1 -timeout=3m 2>&1)

@@ -33,7 +33,7 @@
 
 All items pass on the first iteration. Detail:
 
-- **Domain vs. implementation**: the spec references Kubernetes concepts (Pod `Ready` condition, readiness/liveness/startup probes, the Helm chart, the per-service listeners) because they are the **contract and topology** of the feature ("k8s-native heartbeating"), not o3k's internal implementation. No languages, frameworks, code structure, or APIs of o3k itself appear. Conventional endpoint naming (`/readyz`, `/livez`) is mentioned only in Assumptions as a configurable convention.
+- **Domain vs. implementation**: the spec references Kubernetes concepts (Pod `Ready` condition, readiness/liveness/startup probes, the Helm chart, the per-service listeners) because they are the **contract and topology** of the feature ("k8s-native heartbeating"), not lightstack's internal implementation. No languages, frameworks, code structure, or APIs of Lightstack itself appear. Conventional endpoint naming (`/readyz`, `/livez`) is mentioned only in Assumptions as a configurable convention.
 - **No clarifications outstanding**: the two genuinely-open decisions are recorded as **Assumptions** with reasonable defaults derived from the issue and the agreed gold-plated scope, and explicitly flagged as operator-overridable — they do not block planning:
   1. *Port topology (AC2)* — readiness/liveness on the identity listener as canonical target, additionally on the other API listeners (metadata excluded). Override toward identity-only is available.
   2. *Tier-2 `/healthz` (AC6)* — out of scope, deferred to a separate ticket; pull-in is available.

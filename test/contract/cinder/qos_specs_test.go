@@ -14,7 +14,7 @@ import (
 
 // TestCinderListQosSpecs_Contract tests GET /v3/:project/qos-specs
 func TestCinderListQosSpecs_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -43,7 +43,7 @@ func TestCinderListQosSpecs_Contract(t *testing.T) {
 
 // TestCinderCreateQosSpec_Contract tests POST /v3/:project/qos-specs
 func TestCinderCreateQosSpec_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -90,7 +90,7 @@ func TestCinderCreateQosSpec_Contract(t *testing.T) {
 
 // TestCinderGetQosSpec_Contract tests GET /v3/:project/qos-specs/:id
 func TestCinderGetQosSpec_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -124,7 +124,7 @@ func TestCinderGetQosSpec_Contract(t *testing.T) {
 
 // TestCinderUpdateQosSpec_Contract tests PUT /v3/:project/qos-specs/:id
 func TestCinderUpdateQosSpec_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -168,7 +168,7 @@ func TestCinderUpdateQosSpec_Contract(t *testing.T) {
 
 // TestCinderDeleteQosSpec_Contract tests DELETE /v3/:project/qos-specs/:id
 func TestCinderDeleteQosSpec_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

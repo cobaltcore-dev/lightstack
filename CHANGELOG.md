@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to O3K will be documented in this file.
+All notable changes to Lightstack will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 📐 Architecture Documentation
 - **Rate limiting section**: Two-tier middleware architecture diagram in ARCHITECTURE.md
 - **Dependency injection section**: Constructor injection pattern and request lifecycle diagram
-- **Configuration**: Rate limiting config block added to `config/o3k.yaml` and CONFIGURATION.md
+- **Configuration**: Rate limiting config block added to `config/lightstack.yaml` and CONFIGURATION.md
 - **ROADMAP v0.7.0**: Replaced vague targets with concrete 7-step execution plan
 
 ### 🧹 Documentation Cleanup
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 🔒 Security Hardening
 - **crypto/rand for MAC addresses**: Replace predictable `math/rand` with cryptographic random for multi-tenant MAC generation (C-3)
 - **Cryptographic admin passwords**: Replace hardcoded `"generated-password"` and `"rescuepass123"` with random 16-char passwords using `crypto/rand` (C-4)
-- **Configurable CORS origins**: Replace wildcard `Access-Control-Allow-Origin: *` with origin-checked middleware, configurable via `server.cors_allowed_origins` in o3k.yaml (C-5)
+- **Configurable CORS origins**: Replace wildcard `Access-Control-Allow-Origin: *` with origin-checked middleware, configurable via `server.cors_allowed_origins` in lightstack.yaml (C-5)
 - **Glance PATCH field allowlist**: Harden SQL field interpolation with map-based validation to prevent injection (M-14)
 
 ### 🔧 Error Handling
@@ -95,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🎉 Feature: OpenStack Horizon 100% Compatibility (Flamingo 2025.2)
 
-This release delivers comprehensive OpenStack Horizon dashboard integration with complete API compatibility targeting OpenStack Flamingo (2025.2). All Horizon features now work seamlessly with O3K as the backend.
+This release delivers comprehensive OpenStack Horizon dashboard integration with complete API compatibility targeting OpenStack Flamingo (2025.2). All Horizon features now work seamlessly with Lightstack as the backend.
 
 ### Added
 
@@ -121,9 +121,9 @@ This release delivers comprehensive OpenStack Horizon dashboard integration with
 
 #### Documentation
 - **HORIZON_INTEGRATION.md** (734 lines): Complete integration guide
-  - Architecture diagrams showing Horizon ↔ O3K ↔ PostgreSQL flow
+  - Architecture diagrams showing Horizon ↔ Lightstack ↔ PostgreSQL flow
   - Deployment instructions with Docker Compose
-  - Configuration reference (local_settings.py, o3k.yaml)
+  - Configuration reference (local_settings.py, lightstack.yaml)
   - Comprehensive troubleshooting section (6 common issues)
   - Production deployment checklist
   - API coverage matrix
@@ -134,7 +134,7 @@ This release delivers comprehensive OpenStack Horizon dashboard integration with
   - Multi-tenancy and RBAC implementation
   - Security considerations and best practices
 - **Quickstart Guide** (582 lines): End-to-end deployment walkthrough
-  - Step-by-step deployment (O3K + Horizon + noVNC)
+  - Step-by-step deployment (lightstack + Horizon + noVNC)
   - Configuration templates
   - Verification procedures
   - Troubleshooting section
@@ -186,7 +186,7 @@ This release delivers comprehensive OpenStack Horizon dashboard integration with
 
 ### 🎉 Milestone: All HIGH and MEDIUM Priority Features Complete!
 
-With **91% API coverage (308/330 endpoints)**, O3K has achieved production readiness. All critical and important features are now implemented. The remaining 2% represents LOW priority enterprise-only features and edge cases.
+With **91% API coverage (308/330 endpoints)**, Lightstack has achieved production readiness. All critical and important features are now implemented. The remaining 2% represents LOW priority enterprise-only features and edge cases.
 
 ### Added
 
@@ -388,7 +388,7 @@ This release represents a major milestone: **323 implemented OpenStack API endpo
 
 ### 🎉 MVP v1 Complete - Production Ready
 
-This is the first production-ready release of O3K, featuring complete OpenStack API compatibility and 100% Horizon dashboard support.
+This is the first production-ready release of lightstack, featuring complete OpenStack API compatibility and 100% Horizon dashboard support.
 
 ### Added
 
@@ -580,7 +580,7 @@ This is the first production-ready release of O3K, featuring complete OpenStack 
 
 ### v1.0.0 Highlights
 
-**O3K is now production-ready** with complete OpenStack API compatibility. All 7 phases of development are complete, including real libvirt/KVM integration, multi-backend storage, and 100% Horizon dashboard compatibility.
+**lightstack is now production-ready** with complete OpenStack API compatibility. All 7 phases of development are complete, including real libvirt/KVM integration, multi-backend storage, and 100% Horizon dashboard compatibility.
 
 **Key Achievements:**
 - ✅ 100% Horizon dashboard compatibility (19/19 tests passed)
@@ -599,10 +599,10 @@ This is the first production-ready release of O3K, featuring complete OpenStack 
 
 **Getting Started:**
 ```bash
-git clone https://github.com/cobaltcore-dev/o3k.git
-cd o3k
+git clone https://github.com/cobaltcore-dev/lightstack.git
+cd lightstack
 make build
-./bin/o3k --config config/o3k.yaml
+./bin/lightstack --config config/lightstack.yaml
 ```
 
 **Next Steps:**
@@ -620,5 +620,5 @@ See `docs/README.md` for quick start guide and `docs/REAL_LIBVIRT_MODE.md` for K
 
 ---
 
-[1.0.0]: https://github.com/cobaltcore-dev/o3k/releases/tag/v1.0.0
-[Unreleased]: https://github.com/cobaltcore-dev/o3k/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/cobaltcore-dev/lightstack/releases/tag/v1.0.0
+[Unreleased]: https://github.com/cobaltcore-dev/lightstack/compare/v1.0.0...HEAD

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cobaltcore-dev/o3k/pkg/paths"
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -280,7 +280,7 @@ packages:
   - curl
   - vim
 runcmd:
-  - echo "O3K VM booted successfully" > /var/log/o3k.log
+  - echo "Lightstack VM booted successfully" > /var/log/lightstack.log
 `
 
 	if sshKey != "" {

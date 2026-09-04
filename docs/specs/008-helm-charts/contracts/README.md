@@ -28,14 +28,14 @@ Every mode permutation MUST `helm template` cleanly. Expected resources:
 
 **single-node / stub (the validated MVP):**
 - `Deployment` (`replicaCount` allowed, **unprivileged**, no hostNetwork/hostPath → passes `restricted` PSA)
-- `Secret` carrying the rendered `o3k.yaml` (full config incl. credentials; unless `existingSecret`), `Service` (`ClusterIP`, 7 ports), optional `Ingress`
+- `Secret` carrying the rendered `lightstack.yaml` (full config incl. credentials; unless `existingSecret`), `Service` (`ClusterIP`, 7 ports), optional `Ingress`
 - `Pod` (helm test hook). **No** privileged/hostPath/PSA-privileged objects.
 
 **single-node / real:** as above but `Deployment` `replicas=1` + `strategy: Recreate`, `privileged`, `hostNetwork`, hostPath mounts (libvirt socket + host storage), optional `privileged` namespace label.
 
 **multi-node:** `DaemonSet` (nodeSelector = designation label) replacing the Deployment; `neutron.vxlan_enabled: true` (in the rendered config); single front-door `Service` load-balancing all instances; metadata reached node-locally (not via the Service). *(End-to-end behavior deferred — see C2-note.)*
 
-> **C2-note (2026-06-11 clarification):** real-mode and multi-node resources are authored and render/lint-clean now, but their runtime behavior depends on the product post-conditions (WS-1/4/5/6, issue [#52](https://github.com/cobaltcore-dev/o3k/issues/52)). Their e2e success criteria (SC-003, SC-004, real-VM login/floating-IP/restart) are gated on those landing.
+> **C2-note (2026-06-11 clarification):** real-mode and multi-node resources are authored and render/lint-clean now, but their runtime behavior depends on the product post-conditions (WS-1/4/5/6, issue [#52](https://github.com/cobaltcore-dev/lightstack/issues/52)). Their e2e success criteria (SC-003, SC-004, real-VM login/floating-IP/restart) are gated on those landing.
 
 ---
 

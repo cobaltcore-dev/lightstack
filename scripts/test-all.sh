@@ -1,5 +1,5 @@
 #!/bin/bash
-# Comprehensive test script for O3K Phases 0-2
+# Comprehensive test script for Lightstack Phases 0-2
 
 set -e
 
@@ -11,10 +11,14 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║             O3K Comprehensive Test Suite (Phases 0-2)          ║${NC}"
+echo -e "${BLUE}║             Lightstack Comprehensive Test Suite (Phases 0-2)          ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}\n"
 
-KEYSTONE_URL="http://localhost:5000"
+# Identity listens on keystone.port (35357), not the upstream Keystone convention of 5000.
+# OS_AUTH_URL wins when set; its /v3 suffix is stripped because the tests append their own.
+KEYSTONE_URL="${OS_AUTH_URL:-http://localhost:35357/v3}"
+KEYSTONE_URL="${KEYSTONE_URL%/}"
+KEYSTONE_URL="${KEYSTONE_URL%/v3}"
 NOVA_URL="http://localhost:8774"
 NEUTRON_URL="http://localhost:9696"
 CINDER_URL="http://localhost:8776"
@@ -55,8 +59,8 @@ echo -e "${YELLOW}=== Phase 0: Foundation Tests ===${NC}\n"
 # ============================================================================
 
 # Test: Binary exists
-if [ -f "bin/o3k" ]; then
-    echo -e "${GREEN}✓${NC} Binary exists ($(ls -lh bin/o3k | awk '{print $5}'))"
+if [ -f "bin/lightstack" ]; then
+    echo -e "${GREEN}✓${NC} Binary exists ($(ls -lh bin/lightstack | awk '{print $5}'))"
     ((PASS++))
 else
     echo -e "${RED}✗${NC} Binary not found"
@@ -64,7 +68,7 @@ else
 fi
 
 # Test: Config file exists
-if [ -f "config/o3k.yaml" ]; then
+if [ -f "config/lightstack.yaml" ]; then
     echo -e "${GREEN}✓${NC} Config file exists"
     ((PASS++))
 else
@@ -300,7 +304,7 @@ echo -e "${BLUE}║${NC}  ${YELLOW}Total:${NC}  $((PASS + FAIL))                
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}\n"
 
 if [ $FAIL -eq 0 ]; then
-    echo -e "${GREEN}🎉 All tests passed! O3K Phases 0-2 are fully functional.${NC}\n"
+    echo -e "${GREEN}🎉 All tests passed! Lightstack Phases 0-2 are fully functional.${NC}\n"
     echo -e "${YELLOW}Ready for:${NC}"
     echo "  ✓ OpenStack CLI usage"
     echo "  ✓ Horizon dashboard login"

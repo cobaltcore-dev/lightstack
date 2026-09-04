@@ -1,21 +1,21 @@
-# Unified O3K + Horizon Deployment Guide
+# Unified Lightstack + Horizon Deployment Guide
 
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
-**O3K Version**: v0.5.0+
+**lightstack Version**: v0.5.0+
 **OpenStack Release**: Flamingo (2025.2)
 **Last Updated**: 2026-03-13
 **Status**: Production Ready
 
 ## Overview
 
-This guide provides a complete, unified deployment of O3K and OpenStack Horizon dashboard in a single Docker Compose stack. This is the **recommended deployment method** for getting a complete OpenStack environment with web UI.
+This guide provides a complete, unified deployment of Lightstack and OpenStack Horizon dashboard in a single Docker Compose stack. This is the **recommended deployment method** for getting a complete OpenStack environment with web UI.
 
 ### What's Included
 
 - **PostgreSQL 18**: Database backend
-- **O3K Services**: All five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance)
+- **lightstack Services**: All five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance)
 - **Horizon Dashboard**: OpenStack Flamingo (2025.2) web interface
 - **noVNC Proxy**: VNC console access for instances
 
@@ -23,11 +23,11 @@ This guide provides a complete, unified deployment of O3K and OpenStack Horizon 
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Docker Network (o3k-horizon-network)      │
+│                    Docker Network (lightstack-horizon-network)      │
 ├─────────────────────────────────────────────────────────────┤
 │                                                               │
 │  ┌──────────┐   ┌────────────────┐   ┌─────────────────┐  │
-│  │PostgreSQL│◄──│  O3K Services  │◄──│     Horizon     │  │
+│  │PostgreSQL│◄──│  lightstack Services  │◄──│     Horizon     │  │
 │  │  :5432   │   │   :35357-9292  │   │      :80        │  │
 │  └──────────┘   └────────────────┘   └─────────────────┘  │
 │                          ▲                                   │
@@ -68,11 +68,11 @@ This guide provides a complete, unified deployment of O3K and OpenStack Horizon 
 ### Platform Support
 
 - ✅ **Linux x86_64 (AMD64)**: Full support (all services)
-- ⚠️ **Linux ARM64**: O3K works natively; Horizon/noVNC run via emulation (slower)
+- ⚠️ **Linux ARM64**: Lightstack works natively; Horizon/noVNC run via emulation (slower)
 - ✅ **macOS Intel**: Full support (Docker Desktop with Rosetta)
-- ⚠️ **macOS Apple Silicon (ARM64)**: O3K works natively; Horizon/noVNC require emulation
+- ⚠️ **macOS Apple Silicon (ARM64)**: Lightstack works natively; Horizon/noVNC require emulation
   - **Note**: Horizon and noVNC are x86_64 images and will run under emulation
-  - O3K itself is built as ARM64 and runs natively
+  - Lightstack itself is built as ARM64 and runs natively
   - For ARM64-only environments, use API-only deployment (see Alternative Deployment Options below)
 - ⚠️ **Windows**: WSL2 required
 
@@ -81,8 +81,8 @@ This guide provides a complete, unified deployment of O3K and OpenStack Horizon 
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/cobaltcore-dev/o3k.git
-cd o3k/deployments
+git clone https://github.com/cobaltcore-dev/lightstack.git
+cd lightstack/deployments
 ```
 
 ### Step 2: Review Configuration (Optional)
@@ -99,7 +99,7 @@ cat horizon-config/local_settings
 
 **Default Settings**:
 - Database: PostgreSQL on port 5432
-- O3K Mode: Stub (no real VMs, suitable for testing)
+- Lightstack Mode: Stub (no real VMs, suitable for testing)
 - Horizon: Flamingo (2025.2) on port 80
 - Default Credentials: admin/secret
 
@@ -112,11 +112,11 @@ docker compose -f docker-compose-horizon.yml up -d
 **Expected Output**:
 ```
 [+] Running 5/5
- ✔ Network o3k-horizon-network    Created
- ✔ Container o3k-postgres         Started
- ✔ Container o3k                  Started
- ✔ Container o3k-novnc            Started
- ✔ Container o3k-horizon          Started
+ ✔ Network lightstack-horizon-network    Created
+ ✔ Container lightstack-postgres         Started
+ ✔ Container lightstack                  Started
+ ✔ Container lightstack-novnc            Started
+ ✔ Container lightstack-horizon          Started
 ```
 
 ### Step 4: Wait for Services to Be Ready
@@ -151,7 +151,7 @@ http://localhost/dashboard
 
 ### API-Only Deployment (ARM64 Native)
 
-If you're on ARM64 (Apple Silicon, ARM servers) and want to avoid emulation overhead, use the API-only deployment which runs O3K natively:
+If you're on ARM64 (Apple Silicon, ARM servers) and want to avoid emulation overhead, use the API-only deployment which runs Lightstack natively:
 
 ```bash
 # Use the standard docker-compose without Horizon
@@ -180,18 +180,18 @@ You can customize the deployment by setting environment variables before startin
 
 ```bash
 # Database configuration
-export O3K_DB_PASSWORD=your-secure-password
-export O3K_DB_NAME=o3k
-export O3K_DB_USER=o3k
+export LIGHTSTACK_DB_PASSWORD=your-secure-password
+export LIGHTSTACK_DB_NAME=lightstack
+export LIGHTSTACK_DB_USER=lightstack
 
-# JWT secret for O3K authentication
-export O3K_JWT_SECRET=your-secure-jwt-secret-here
+# JWT secret for lightstack authentication
+export LIGHTSTACK_JWT_SECRET=your-secure-jwt-secret-here
 
-# O3K modes
-export O3K_NOVA_MODE=stub      # or 'real' for actual VMs (Linux only)
-export O3K_NEUTRON_MODE=stub   # or 'iptables' for real networking
-export O3K_CINDER_MODE=local   # or 'rbd', 's3'
-export O3K_GLANCE_MODE=local   # or 'rbd', 's3'
+# lightstack modes
+export LIGHTSTACK_NOVA_MODE=stub      # or 'real' for actual VMs (Linux only)
+export LIGHTSTACK_NEUTRON_MODE=stub   # or 'iptables' for real networking
+export LIGHTSTACK_CINDER_MODE=local   # or 'rbd', 's3'
+export LIGHTSTACK_GLANCE_MODE=local   # or 'rbd', 's3'
 
 # Horizon configuration
 export HORIZON_SECRET_KEY=your-horizon-secret-key
@@ -211,18 +211,18 @@ services:
     environment:
       POSTGRES_PASSWORD: CHANGE_THIS_PASSWORD
 
-  o3k:
+  lightstack:
     environment:
-      - O3K_DATABASE_URL=postgres://o3k:CHANGE_THIS_PASSWORD@postgres:5432/o3k?sslmode=disable
+      - LIGHTSTACK_DATABASE_URL=postgres://lightstack:CHANGE_THIS_PASSWORD@postgres:5432/lightstack?sslmode=disable
 ```
 
 **JWT Secret** - Edit `docker-compose-horizon.yml`:
 
 ```yaml
 services:
-  o3k:
+  lightstack:
     environment:
-      - O3K_KEYSTONE_JWT_SECRET=GENERATE_SECURE_RANDOM_STRING_HERE
+      - LIGHTSTACK_KEYSTONE_JWT_SECRET=GENERATE_SECURE_RANDOM_STRING_HERE
 ```
 
 Generate a secure JWT secret:
@@ -246,7 +246,7 @@ Use a reverse proxy (nginx, traefik) with SSL certificates:
 services:
   nginx:
     image: nginx:alpine
-    container_name: o3k-nginx
+    container_name: lightstack-nginx
     ports:
       - "443:443"
       - "80:80"
@@ -254,7 +254,7 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/certs:ro
     networks:
-      - o3k-network
+      - lightstack-network
     depends_on:
       - horizon
 ```
@@ -273,10 +273,10 @@ For production with actual VMs:
 
 ```yaml
 services:
-  o3k:
+  lightstack:
     environment:
-      - O3K_NOVA_LIBVIRT_MODE=real
-      - O3K_NEUTRON_NETWORKING_MODE=iptables
+      - LIGHTSTACK_NOVA_LIBVIRT_MODE=real
+      - LIGHTSTACK_NEUTRON_NETWORKING_MODE=iptables
     privileged: true  # Required for networking
     volumes:
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
@@ -294,13 +294,13 @@ Suitable for development and small deployments:
 
 ```yaml
 services:
-  o3k:
+  lightstack:
     environment:
-      - O3K_CINDER_STORAGE_MODE=local
-      - O3K_GLANCE_STORAGE_MODE=local
+      - LIGHTSTACK_CINDER_STORAGE_MODE=local
+      - LIGHTSTACK_GLANCE_STORAGE_MODE=local
     volumes:
-      - o3k-images:/var/lib/o3k/images
-      - o3k-volumes:/var/lib/o3k/volumes
+      - lightstack-images:/var/lib/lightstack/images
+      - lightstack-volumes:/var/lib/lightstack/volumes
 ```
 
 #### Ceph RBD Storage
@@ -309,13 +309,13 @@ For production with Ceph cluster:
 
 ```yaml
 services:
-  o3k:
+  lightstack:
     environment:
-      - O3K_CINDER_STORAGE_MODE=rbd
-      - O3K_GLANCE_STORAGE_MODE=rbd
-      - O3K_CEPH_CONF=/etc/ceph/ceph.conf
-      - O3K_CEPH_POOL_VOLUMES=o3k-volumes
-      - O3K_CEPH_POOL_IMAGES=o3k-images
+      - LIGHTSTACK_CINDER_STORAGE_MODE=rbd
+      - LIGHTSTACK_GLANCE_STORAGE_MODE=rbd
+      - LIGHTSTACK_CEPH_CONF=/etc/ceph/ceph.conf
+      - LIGHTSTACK_CEPH_POOL_VOLUMES=lightstack-volumes
+      - LIGHTSTACK_CEPH_POOL_IMAGES=lightstack-images
     volumes:
       - /etc/ceph:/etc/ceph:ro
 ```
@@ -326,15 +326,15 @@ For AWS S3 or MinIO:
 
 ```yaml
 services:
-  o3k:
+  lightstack:
     environment:
-      - O3K_CINDER_STORAGE_MODE=s3
-      - O3K_GLANCE_STORAGE_MODE=s3
-      - O3K_S3_ENDPOINT=https://s3.amazonaws.com
-      - O3K_S3_ACCESS_KEY=your-access-key
-      - O3K_S3_SECRET_KEY=your-secret-key
-      - O3K_S3_BUCKET_VOLUMES=o3k-volumes
-      - O3K_S3_BUCKET_IMAGES=o3k-images
+      - LIGHTSTACK_CINDER_STORAGE_MODE=s3
+      - LIGHTSTACK_GLANCE_STORAGE_MODE=s3
+      - LIGHTSTACK_S3_ENDPOINT=https://s3.amazonaws.com
+      - LIGHTSTACK_S3_ACCESS_KEY=your-access-key
+      - LIGHTSTACK_S3_SECRET_KEY=your-secret-key
+      - LIGHTSTACK_S3_BUCKET_VOLUMES=lightstack-volumes
+      - LIGHTSTACK_S3_BUCKET_IMAGES=lightstack-images
 ```
 
 ## Operations
@@ -373,7 +373,7 @@ docker compose -f docker-compose-horizon.yml logs -f
 
 # Specific service
 docker compose -f docker-compose-horizon.yml logs -f horizon
-docker compose -f docker-compose-horizon.yml logs -f o3k
+docker compose -f docker-compose-horizon.yml logs -f lightstack
 
 # Last 100 lines
 docker compose -f docker-compose-horizon.yml logs --tail 100 horizon
@@ -402,20 +402,20 @@ docker compose -f docker-compose-horizon.yml restart
 docker compose -f docker-compose-horizon.yml restart horizon
 
 # Rebuild and restart (after config changes)
-docker compose -f docker-compose-horizon.yml up -d --build o3k
+docker compose -f docker-compose-horizon.yml up -d --build lightstack
 ```
 
 ### Accessing Container Shells
 
 ```bash
-# O3K container
-docker exec -it o3k /bin/sh
+# lightstack container
+docker exec -it lightstack /bin/sh
 
 # Horizon container
-docker exec -it o3k-horizon /bin/bash
+docker exec -it lightstack-horizon /bin/bash
 
 # PostgreSQL container
-docker exec -it o3k-postgres psql -U o3k
+docker exec -it lightstack-postgres psql -U lightstack
 ```
 
 ## Using OpenStack CLI
@@ -446,7 +446,7 @@ export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 
 # Option 2: Create RC file
-cat > ~/o3k-openrc.sh <<'EOF'
+cat > ~/lightstack-openrc.sh <<'EOF'
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
@@ -456,7 +456,7 @@ export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 EOF
 
-source ~/o3k-openrc.sh
+source ~/lightstack-openrc.sh
 ```
 
 ### Test Commands
@@ -526,7 +526,7 @@ curl -s http://localhost:9292/ | jq
 
 ```bash
 # Source environment
-source ~/o3k-openrc.sh
+source ~/lightstack-openrc.sh
 
 # Create network
 openstack network create test-net
@@ -586,17 +586,17 @@ docker compose -f docker-compose-horizon.yml ps
    ```
 
 3. **Use native ARM64 Horizon** (future):
-   - Track: https://github.com/cobaltcore-dev/o3k/issues/XXX
+   - Track: https://github.com/cobaltcore-dev/lightstack/issues/XXX
    - Custom ARM64 Horizon build in development
 
 **Verification**:
 ```bash
-# Check O3K (should be ARM64 and healthy)
-docker inspect o3k | jq '.[0].Architecture'  # Should show "arm64"
-docker compose -f docker-compose-horizon.yml ps o3k  # Should be "healthy"
+# Check lightstack (should be ARM64 and healthy)
+docker inspect lightstack | jq '.[0].Architecture'  # Should show "arm64"
+docker compose -f docker-compose-horizon.yml ps lightstack  # Should be "healthy"
 
-# O3K works natively on ARM64, only Horizon requires emulation
-docker exec o3k curl -s http://localhost:35357/v3 | jq '.version.status'
+# lightstack works natively on ARM64, only Horizon requires emulation
+docker exec lightstack curl -s http://localhost:35357/v3 | jq '.version.status'
 ```
 
 ### Service Won't Start
@@ -605,7 +605,7 @@ docker exec o3k curl -s http://localhost:35357/v3 | jq '.version.status'
 
 **Diagnosis**:
 ```bash
-docker compose -f docker-compose-horizon.yml logs o3k
+docker compose -f docker-compose-horizon.yml logs lightstack
 ```
 
 **Common Issues**:
@@ -642,25 +642,25 @@ docker compose -f docker-compose-horizon.yml logs o3k
 
 **Diagnosis**:
 ```bash
-# Check Horizon can reach O3K
-docker exec o3k-horizon curl -s http://o3k:35357/v3 | jq
+# Check Horizon can reach lightstack
+docker exec lightstack-horizon curl -s http://lightstack:35357/v3 | jq
 
 # Check network connectivity
-docker exec o3k-horizon ping -c 3 o3k
+docker exec lightstack-horizon ping -c 3 lightstack
 ```
 
 **Solutions**:
 
-1. **Verify O3K is running**:
+1. **Verify Lightstack is running**:
    ```bash
-   docker compose -f docker-compose-horizon.yml ps o3k
+   docker compose -f docker-compose-horizon.yml ps lightstack
    curl -s http://localhost:35357/v3 | jq
    ```
 
 2. **Check Horizon configuration**:
    ```bash
-   docker exec o3k-horizon cat /etc/openstack-dashboard/local_settings.py | grep OPENSTACK_HOST
-   # Should show: OPENSTACK_HOST = "o3k"
+   docker exec lightstack-horizon cat /etc/openstack-dashboard/local_settings.py | grep OPENSTACK_HOST
+   # Should show: OPENSTACK_HOST = "lightstack"
    ```
 
 3. **Restart Horizon**:
@@ -678,8 +678,8 @@ docker exec o3k-horizon ping -c 3 o3k
 docker compose -f docker-compose-horizon.yml ps novnc
 curl -I http://localhost:6080
 
-# Check O3K can reach noVNC
-docker exec o3k curl -I http://novnc:6080
+# Check lightstack can reach noVNC
+docker exec lightstack curl -I http://novnc:6080
 ```
 
 **Solutions**:
@@ -723,9 +723,9 @@ docker exec o3k curl -I http://novnc:6080
    services:
      memcached:
        image: memcached:alpine
-       container_name: o3k-memcached
+       container_name: lightstack-memcached
        networks:
-         - o3k-network
+         - lightstack-network
    ```
 
    Update horizon-config/local_settings:
@@ -740,24 +740,24 @@ docker exec o3k curl -I http://novnc:6080
 
 ### Database Issues
 
-**Symptom**: Database errors in O3K logs
+**Symptom**: Database errors in Lightstack logs
 
 **Diagnosis**:
 ```bash
 docker compose -f docker-compose-horizon.yml logs postgres
-docker exec o3k-postgres psql -U o3k -c "\dt"
+docker exec lightstack-postgres psql -U lightstack -c "\dt"
 ```
 
 **Solutions**:
 
 1. **Check database connectivity**:
    ```bash
-   docker exec o3k-postgres pg_isready -U o3k
+   docker exec lightstack-postgres pg_isready -U lightstack
    ```
 
 2. **Verify database schema**:
    ```bash
-   docker exec o3k-postgres psql -U o3k -c "\dt" | wc -l
+   docker exec lightstack-postgres psql -U lightstack -c "\dt" | wc -l
    # Should show ~20+ tables
    ```
 
@@ -770,19 +770,19 @@ docker exec o3k-postgres psql -U o3k -c "\dt"
 
 ## Upgrading
 
-### Upgrade O3K
+### Upgrade Lightstack
 
 ```bash
 # Pull latest code
-cd ~/git/o3k
+cd ~/git/lightstack
 git pull
 
-# Rebuild O3K image
+# Rebuild lightstack image
 cd deployments
-docker compose -f docker-compose-horizon.yml build o3k
+docker compose -f docker-compose-horizon.yml build lightstack
 
 # Restart with new image
-docker compose -f docker-compose-horizon.yml up -d o3k
+docker compose -f docker-compose-horizon.yml up -d lightstack
 ```
 
 ### Upgrade Horizon
@@ -802,10 +802,10 @@ docker compose -f docker-compose-horizon.yml up -d horizon
 
 ### Database Migration
 
-O3K automatically runs migrations on startup. To manually run migrations:
+Lightstack automatically runs migrations on startup. To manually run migrations:
 
 ```bash
-docker exec o3k /app/o3k migrate
+docker exec lightstack /app/lightstack migrate
 ```
 
 ## Backup and Restore
@@ -814,25 +814,25 @@ docker exec o3k /app/o3k migrate
 
 ```bash
 # Create backup directory
-mkdir -p ~/o3k-backups/$(date +%Y%m%d)
+mkdir -p ~/lightstack-backups/$(date +%Y%m%d)
 
 # Backup database
-docker exec o3k-postgres pg_dump -U o3k o3k > \
-  ~/o3k-backups/$(date +%Y%m%d)/database.sql
+docker exec lightstack-postgres pg_dump -U lightstack lightstack > \
+  ~/lightstack-backups/$(date +%Y%m%d)/database.sql
 
 # Backup configuration
-cp docker-compose-horizon.yml ~/o3k-backups/$(date +%Y%m%d)/
-cp -r horizon-config ~/o3k-backups/$(date +%Y%m%d)/
+cp docker-compose-horizon.yml ~/lightstack-backups/$(date +%Y%m%d)/
+cp -r horizon-config ~/lightstack-backups/$(date +%Y%m%d)/
 
 # Backup volumes (if using local storage)
 docker run --rm \
-  -v deployments_o3k-images:/data \
-  -v ~/o3k-backups/$(date +%Y%m%d):/backup \
+  -v deployments_lightstack-images:/data \
+  -v ~/lightstack-backups/$(date +%Y%m%d):/backup \
   alpine tar czf /backup/images.tar.gz /data
 
 docker run --rm \
-  -v deployments_o3k-volumes:/data \
-  -v ~/o3k-backups/$(date +%Y%m%d):/backup \
+  -v deployments_lightstack-volumes:/data \
+  -v ~/lightstack-backups/$(date +%Y%m%d):/backup \
   alpine tar czf /backup/volumes.tar.gz /data
 ```
 
@@ -840,22 +840,22 @@ docker run --rm \
 
 ```bash
 # Restore database
-cat ~/o3k-backups/20260313/database.sql | \
-  docker exec -i o3k-postgres psql -U o3k o3k
+cat ~/lightstack-backups/20260313/database.sql | \
+  docker exec -i lightstack-postgres psql -U lightstack lightstack
 
 # Restore configuration
-cp ~/o3k-backups/20260313/docker-compose-horizon.yml .
-cp -r ~/o3k-backups/20260313/horizon-config .
+cp ~/lightstack-backups/20260313/docker-compose-horizon.yml .
+cp -r ~/lightstack-backups/20260313/horizon-config .
 
 # Restore volumes
 docker run --rm \
-  -v deployments_o3k-images:/data \
-  -v ~/o3k-backups/20260313:/backup \
+  -v deployments_lightstack-images:/data \
+  -v ~/lightstack-backups/20260313:/backup \
   alpine tar xzf /backup/images.tar.gz -C /
 
 docker run --rm \
-  -v deployments_o3k-volumes:/data \
-  -v ~/o3k-backups/20260313:/backup \
+  -v deployments_lightstack-volumes:/data \
+  -v ~/lightstack-backups/20260313:/backup \
   alpine tar xzf /backup/volumes.tar.gz -C /
 
 # Restart services
@@ -871,18 +871,18 @@ docker compose -f docker-compose-horizon.yml restart
 docker stats
 
 # Resource limits
-docker inspect o3k --format='{{.HostConfig.Memory}}'
-docker inspect o3k --format='{{.HostConfig.NanoCpus}}'
+docker inspect lightstack --format='{{.HostConfig.Memory}}'
+docker inspect lightstack --format='{{.HostConfig.NanoCpus}}'
 ```
 
 ### Application Metrics
 
 ```bash
-# O3K metrics endpoint (if enabled)
+# lightstack metrics endpoint (if enabled)
 curl http://localhost:9090/metrics
 
 # Database connections
-docker exec o3k-postgres psql -U o3k -c \
+docker exec lightstack-postgres psql -U lightstack -c \
   "SELECT count(*) FROM pg_stat_activity;"
 
 # Horizon request logs
@@ -898,7 +898,7 @@ cat > health-check.sh <<'EOF'
 #!/bin/bash
 set -e
 
-echo "Checking O3K services..."
+echo "Checking lightstack services..."
 curl -f http://localhost:35357/v3 > /dev/null || exit 1
 echo "✓ Keystone OK"
 
@@ -945,9 +945,9 @@ Use an existing PostgreSQL instance:
 
 ```yaml
 services:
-  o3k:
+  lightstack:
     environment:
-      - O3K_DATABASE_URL=postgres://user:pass@external-db.example.com:5432/o3k?sslmode=require
+      - LIGHTSTACK_DATABASE_URL=postgres://user:pass@external-db.example.com:5432/lightstack?sslmode=require
 
 # Remove postgres service
 ```
@@ -979,10 +979,10 @@ For Kubernetes deployment, see separate guide: `docs/KUBERNETES_DEPLOYMENT.md` (
 
 ## Support and Resources
 
-- **Documentation**: https://github.com/cobaltcore-dev/o3k/tree/main/docs
-- **Issues**: https://github.com/cobaltcore-dev/o3k/issues
+- **Documentation**: https://github.com/cobaltcore-dev/lightstack/tree/main/docs
+- **Issues**: https://github.com/cobaltcore-dev/lightstack/issues
 - **OpenStack Horizon Docs**: https://docs.openstack.org/horizon/latest/
-- **O3K Project**: https://github.com/cobaltcore-dev/o3k
+- **lightstack Project**: https://github.com/cobaltcore-dev/lightstack
 
 ## FAQ
 
@@ -993,13 +993,13 @@ A: Yes, with proper security hardening (HTTPS, secure passwords, resource limits
 A: Yes, containers run via Rosetta emulation. Native ARM64 support coming soon.
 
 **Q: Can I run real VMs?**
-A: Yes, on Linux with libvirt/KVM. Set O3K_NOVA_LIBVIRT_MODE=real.
+A: Yes, on Linux with libvirt/KVM. Set LIGHTSTACK_NOVA_LIBVIRT_MODE=real.
 
 **Q: How do I add more users?**
 A: Use OpenStack CLI or Horizon's Identity panel to create users.
 
 **Q: Can I integrate with Active Directory?**
-A: Yes, configure Keystone LDAP backend (see O3K docs).
+A: Yes, configure Keystone LDAP backend (see Lightstack docs).
 
 **Q: What's the difference between stub and real mode?**
 A: Stub mode returns fake data (for testing). Real mode creates actual VMs and networks.
@@ -1009,8 +1009,8 @@ A: Update Horizon image tag in docker-compose-horizon.yml to desired release.
 
 ## License
 
-This deployment configuration is part of the O3K project and is licensed under Apache License 2.0.
+This deployment configuration is part of the Lightstack project and is licensed under Apache License 2.0.
 
 ---
 
-**Last Updated**: 2026-03-13 | **O3K Version**: v0.5.0 | **Horizon Version**: Flamingo (2025.2)
+**Last Updated**: 2026-03-13 | **lightstack Version**: v0.5.0 | **Horizon Version**: Flamingo (2025.2)

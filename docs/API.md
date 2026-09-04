@@ -1,4 +1,4 @@
-# O3K API Documentation
+# Lightstack API Documentation
 
 ## Keystone Identity Service (v3)
 
@@ -249,7 +249,7 @@ After project-scoped authentication, the token response includes a service catal
 
 ## Error Responses
 
-O3K follows OpenStack error response format:
+Lightstack follows OpenStack error response format:
 
 ```json
 {

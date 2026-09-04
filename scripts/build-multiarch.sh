@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build O3K Docker image for multiple architectures
+# Build Lightstack Docker image for multiple architectures
 
 set -e
 
@@ -8,12 +8,12 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo "=========================================="
-echo "  O3K Multi-Architecture Build"
+echo "  Lightstack Multi-Architecture Build"
 echo "=========================================="
 echo ""
 
 # Parse arguments
-IMAGE_NAME="${1:-o3k}"
+IMAGE_NAME="${1:-lightstack}"
 IMAGE_TAG="${2:-latest}"
 PUSH="${3:-false}"
 

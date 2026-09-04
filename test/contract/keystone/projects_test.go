@@ -12,7 +12,7 @@ import (
 
 // TestKeystoneCreateProject_Contract tests POST /v3/projects endpoint
 func TestKeystoneCreateProject_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -48,7 +48,7 @@ func TestKeystoneCreateProject_Contract(t *testing.T) {
 
 // TestKeystoneUpdateProject_Contract tests PATCH /v3/projects/:id endpoint
 func TestKeystoneUpdateProject_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -80,7 +80,7 @@ func TestKeystoneUpdateProject_Contract(t *testing.T) {
 
 // TestKeystoneUpdateProjectEnabled_Contract tests enabling/disabling projects
 func TestKeystoneUpdateProjectEnabled_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -116,7 +116,7 @@ func TestKeystoneUpdateProjectEnabled_Contract(t *testing.T) {
 
 // TestKeystoneDeleteProject_Contract tests DELETE /v3/projects/:id endpoint
 func TestKeystoneDeleteProject_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -142,7 +142,7 @@ func TestKeystoneDeleteProject_Contract(t *testing.T) {
 
 // TestKeystoneDeleteNonExistentProject_Contract tests 404 handling
 func TestKeystoneDeleteNonExistentProject_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 

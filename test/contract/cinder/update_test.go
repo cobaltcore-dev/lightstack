@@ -14,7 +14,7 @@ import (
 
 // TestCinderVolumeUpdate_Contract tests PATCH /v3/{project_id}/volumes/{id}
 func TestCinderVolumeUpdate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -89,7 +89,7 @@ func TestCinderVolumeUpdate_Contract(t *testing.T) {
 
 // TestCinderSnapshotUpdate_Contract tests PATCH /v3/{project_id}/snapshots/{id}
 func TestCinderSnapshotUpdate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

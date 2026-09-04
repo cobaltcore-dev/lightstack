@@ -1,4 +1,4 @@
-# O3K Troubleshooting Guide
+# Lightstack Troubleshooting Guide
 
 ## TAP Device and Bridge Networking Issues
 
@@ -21,14 +21,14 @@ output: setting the network namespace "light-ns-xxx" failed: Invalid argument
 
 2. Mount it in docker-compose.yml:
    ```yaml
-   o3k:
+   lightstack:
      volumes:
        - /var/run/netns:/var/run/netns:shared
    ```
 
 3. Restart the container:
    ```bash
-   docker compose up -d o3k
+   docker compose up -d lightstack
    ```
 
 ### Issue: "Cannot get interface MTU on 'br-xxx': No such device"
@@ -58,7 +58,7 @@ svc.brManager.CreateBridge(bridgeName, false, "")   // false = default namespace
 **Symptom**: QEMU fails to start VM:
 ```
 Failed to get "write" lock
-Is another process using the image [/var/lib/o3k/images/xxx.qcow2]?
+Is another process using the image [/var/lib/lightstack/images/xxx.qcow2]?
 ```
 
 **Root Cause**: Previous VM instances are still running and using the image file.
@@ -77,7 +77,7 @@ Is another process using the image [/var/lib/o3k/images/xxx.qcow2]?
 
 3. Verify no VMs are using the image:
    ```bash
-   sudo lsof /var/lib/o3k/images/*.qcow2
+   sudo lsof /var/lib/lightstack/images/*.qcow2
    ```
 
 ## Silent VM Creation Failures
@@ -114,7 +114,7 @@ Is another process using the image [/var/lib/o3k/images/xxx.qcow2]?
 3. Fix image file paths:
    ```bash
    # Create symlink if needed
-   cd /var/lib/o3k/images
+   cd /var/lib/lightstack/images
    ln -sf actual-image.img UUID.qcow2
    ```
 
@@ -151,16 +151,16 @@ sudo ip netns list
 sudo ip netns exec light-ns-xxx ip link show
 ```
 
-### Check O3K Logs
+### Check Lightstack Logs
 ```bash
 # Docker deployment
-docker logs o3k --tail 100
+docker logs lightstack --tail 100
 
 # Look for specific errors
-docker logs o3k 2>&1 | grep -E 'ERROR|failed'
+docker logs lightstack 2>&1 | grep -E 'ERROR|failed'
 
 # Check debug logs
-docker logs o3k 2>&1 | grep DEBUG
+docker logs lightstack 2>&1 | grep DEBUG
 ```
 
 ## Common Diagnostic Steps
@@ -177,13 +177,13 @@ docker logs o3k 2>&1 | grep DEBUG
    sudo ip link show
    ```
 
-2. **Verify O3K configuration**:
+2. **Verify Lightstack configuration**:
    ```bash
    # Check mode settings
-   grep -E 'libvirt_mode|networking_mode' /opt/o3k/config/o3k.yaml
+   grep -E 'libvirt_mode|networking_mode' /opt/lightstack/config/lightstack.yaml
    
    # Verify database connection
-   psql -U o3k -d o3k -c "SELECT COUNT(*) FROM instances;"
+   psql -U lightstack -d lightstack -c "SELECT COUNT(*) FROM instances;"
    ```
 
 3. **Check file permissions**:
@@ -192,7 +192,7 @@ docker logs o3k 2>&1 | grep DEBUG
    ls -la /var/run/libvirt/libvirt-sock
    
    # Image directory
-   ls -la /var/lib/o3k/images/
+   ls -la /var/lib/lightstack/images/
    
    # netns directory
    ls -la /var/run/netns/
@@ -200,12 +200,12 @@ docker logs o3k 2>&1 | grep DEBUG
 
 4. **Review recent changes**:
    ```bash
-   # Check O3K container status
-   docker ps | grep o3k
+   # Check lightstack container status
+   docker ps | grep lightstack
    
    # Check container restarts
-   docker inspect o3k | jq '.[].State'
+   docker inspect lightstack | jq '.[].State'
    
    # Check mounted volumes
-   docker inspect o3k | jq '.[].Mounts'
+   docker inspect lightstack | jq '.[].Mounts'
    ```

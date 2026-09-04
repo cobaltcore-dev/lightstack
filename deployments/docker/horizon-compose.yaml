@@ -3,7 +3,7 @@ version: '3.8'
 services:
   horizon:
     image: kolla/horizon:2024.1-rocky-9
-    container_name: o3k-horizon
+    container_name: lightstack-horizon
     ports:
       - "80:80"
     environment:
@@ -25,7 +25,7 @@ services:
       - OPENSTACK_SSL_CACERT=
 
       # Session settings
-      - SECRET_KEY=o3k-horizon-secret-key-change-in-production
+      - SECRET_KEY=lightstack-horizon-secret-key-change-in-production
       - TIME_ZONE=UTC
 
       # Enable all panels
@@ -33,11 +33,11 @@ services:
     volumes:
       - ./horizon_config:/etc/openstack-dashboard
     networks:
-      - o3k-network
+      - lightstack-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 networks:
-  o3k-network:
+  lightstack-network:
     driver: bridge

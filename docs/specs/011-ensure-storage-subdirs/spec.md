@@ -25,8 +25,8 @@ success.
 
 ### Session 2026-06-25
 
-- Q: When the canonical local image dir is absent at startup, what happens to the legacy `~/.o3k/images` fallback? → A: Remove it entirely — the image service always resolves to and creates the configured node-local dir in every mode (matching the other local-storage services); development/non-Linux use relies on stub mode.
-- Q: What automated regression coverage must the spec mandate to pin this failure mode so it cannot silently reappear? → A: All three tiers — a CI-gating unit test (image service resolves/creates canonical `/var/lib/o3k/images`, never a home-relative path), a CI-gating chart-render test (real-mode pre-creates the subdirs; stub omits them), and a host end-to-end test (deploy → image → VM running); each demonstrated RED on pre-fix behavior, GREEN after.
+- Q: When the canonical local image dir is absent at startup, what happens to the legacy `~/.lightstack/images` fallback? → A: Remove it entirely — the image service always resolves to and creates the configured node-local dir in every mode (matching the other local-storage services); development/non-Linux use relies on stub mode.
+- Q: What automated regression coverage must the spec mandate to pin this failure mode so it cannot silently reappear? → A: All three tiers — a CI-gating unit test (image service resolves/creates canonical `/var/lib/lightstack/images`, never a home-relative path), a CI-gating chart-render test (real-mode pre-creates the subdirs; stub omits them), and a host end-to-end test (deploy → image → VM running); each demonstrated RED on pre-fix behavior, GREEN after.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -160,7 +160,7 @@ deploy again, and confirm a VM boots to a running state on the first attempt wit
 - **FR-011**: The fix MUST be locked by committed automated regression tests at three tiers, each
   demonstrated to fail against the pre-fix behavior and to pass after the fix (RED→GREEN):
   (a) a CI-gating **unit test** asserting the image service resolves and creates the canonical
-  node-local image directory (`/var/lib/o3k/images`) and never a home-relative / `~/.o3k` path, in
+  node-local image directory (`/var/lib/lightstack/images`) and never a home-relative / `~/.lightstack` path, in
   any mode; (b) a CI-gating **chart-render test** asserting a real-mode deployment pre-creates all
   required subdirectories on the node-local mount and a stub deployment does not; (c) a **host
   end-to-end test** (fresh real-mode deploy → image upload → VM reaches running state) in the
@@ -209,7 +209,7 @@ deploy again, and confirm a VM boots to a running state on the first attempt wit
   deployment; requirements are expressed relative to that configured base.
 - In real mode the platform runs with sufficient privileges to create directories on the
   node-local location (consistent with how it already writes there at runtime).
-- The legacy home-relative fallback storage location (`~/.o3k`) is removed entirely (see
+- The legacy home-relative fallback storage location (`~/.lightstack`) is removed entirely (see
   Clarifications 2026-06-25): the image service always resolves to and creates the configured
   node-local directory, in every mode, matching how the other local-storage services already
   behave. Development and non-Linux use rely on stub mode, which does not touch node-local storage.

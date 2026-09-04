@@ -35,7 +35,7 @@ func ws5WaitVolumeStatus(t *testing.T, c *gophercloud.ServiceClient, id, want st
 // `available` synchronously on create, goes `in-use` on attach to a server and
 // back to `available` on detach — all via the standard API.
 func TestWS5_VolumeAttachLifecycle(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 	cinder := SetupBlockStorageV3Client(t)
 	nova := SetupComputeV2Client(t)
 	glance := SetupImageV2Client(t)
@@ -68,7 +68,7 @@ func TestWS5_VolumeAttachLifecycle(t *testing.T) {
 		"volume should be in-use after attach")
 
 	// Detach returns it to available. Delete by volume ID — in the Nova API the
-	// attachment identifier IS the volume id (o3k's detach handler keys off it).
+	// attachment identifier IS the volume id (Lightstack's detach handler keys off it).
 	require.NoError(t, volumeattach.Delete(nova, srv.ID, vol.ID).ExtractErr())
 	assert.Equal(t, "available", ws5WaitVolumeStatus(t, cinder, vol.ID, "available"),
 		"volume should be available after detach")

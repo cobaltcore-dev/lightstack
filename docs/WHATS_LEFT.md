@@ -1,15 +1,15 @@
-# What's Left? - O3K Status Overview
+# What's Left? - Lightstack Status Overview
 
 **Date**: April 2026
 **Version**: v0.6.0
 **Current Coverage**: 104% (342/330 endpoints) ✅
 
 > **SPEC-009 (2026-06-22): single-node real mode implemented + host-validated.** The
-> real-mode workstreams of o3k#52 Part A — VM disk (WS-0), startup network
+> real-mode workstreams of lightstack#52 Part A — VM disk (WS-0), startup network
 > reconciliation (WS-2), metadata/cloud-init (WS-4), single-node north-south (WS-3) —
 > plus block storage (WS-5: attach, volume-from-image, boot-from-volume, delete
 > semantics) now work end-to-end on Linux + libvirt. Multi-node (WS-1) remains the
-> v2 ticket (o3k#52 Part B). See `docs/specs/009-single-node-real-mode/`.
+> v2 ticket (lightstack#52 Part B). See `docs/specs/009-single-node-real-mode/`.
 
 ---
 
@@ -61,7 +61,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 
 ## TL;DR
 
-**Nothing critical is left.** O3K has exceeded the OpenStack baseline by 12 endpoints. All remaining work is optional enterprise features with low demand.
+**Nothing critical is left.** Lightstack has exceeded the OpenStack baseline by 12 endpoints. All remaining work is optional enterprise features with low demand.
 
 ---
 
@@ -148,7 +148,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 - Auto-topology: Rarely used feature
 - Effort: 2-3 sprints
 
-**Alternative**: O3K has standard routing + floating IPs (sufficient for 99% use cases)
+**Alternative**: Lightstack has standard routing + floating IPs (sufficient for 99% use cases)
 
 ---
 
@@ -168,7 +168,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 ```
 
 **Why skip it**:
-- O3K implements core API (v2.1 base)
+- Lightstack implements core API (v2.1 base)
 - Microversion features are incremental enhancements
 - Most clients work fine with v2.1 base
 - Can add on-demand as needed
@@ -178,7 +178,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 
 ---
 
-## What O3K HAS That Exceeds Baseline (+12 endpoints)
+## What Lightstack HAS That Exceeds Baseline (+12 endpoints)
 
 These are BONUS features beyond the 330 baseline:
 

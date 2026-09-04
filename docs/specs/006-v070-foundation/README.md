@@ -53,7 +53,7 @@ The release was shaped by two formal reviews: a CEO-level scope review and an en
 **Approach**:
 - Create `test/terraform/` directory with 15-20 Terraform configurations
 - Each config exercises one `openstack_*` resource type (create, read, update, destroy)
-- Run sequentially in CI against O3K (no parallelism, avoids connection pool exhaustion)
+- Run sequentially in CI against Lightstack (no parallelism, avoids connection pool exhaustion)
 - No DevStack comparison yet (infrastructure-heavy, deferred)
 - Pin Terraform OpenStack provider version for CI stability
 
@@ -74,7 +74,7 @@ The release was shaped by two formal reviews: a CEO-level scope review and an en
 - `openstack_identity_role_v3`
 - `openstack_images_image_v2`
 
-**Validation Gate**: All Terraform configs apply and destroy cleanly against O3K in CI
+**Validation Gate**: All Terraform configs apply and destroy cleanly against Lightstack in CI
 
 ### Step 3: Map Failing Tests
 
@@ -119,7 +119,7 @@ The release was shaped by two formal reviews: a CEO-level scope review and an en
 - Two tiers: IP-based for auth endpoints, project_id-based for authenticated
 - `sync.Map` storage with 10-minute eviction goroutine
 - 10,000 entry cap, degrade open on overflow
-- Configurable via `rate_limiting` block in `o3k.yaml`
+- Configurable via `rate_limiting` block in `lightstack.yaml`
 - 12 unit tests + 1 integration test
 
 **Validation Gate**: Rate limiter tests pass; POST /v3/auth/tokens returns 429 under rapid fire

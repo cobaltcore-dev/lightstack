@@ -1,9 +1,9 @@
-# O3K Constitution
+# Lightstack Constitution
 
 ## Core Principles
 
 ### I. OpenStack Flamingo API Compatibility (NON-NEGOTIABLE)
-O3K MUST maintain 100% API compatibility with OpenStack Flamingo (2025.2 release).
+Lightstack MUST maintain 100% API compatibility with OpenStack Flamingo (2025.2 release).
 - All API endpoints must match Flamingo specifications exactly
 - Horizon dashboard (Flamingo version) must work without modification
 - OpenStack CLI tools must function identically to native OpenStack
@@ -47,8 +47,8 @@ All resources scoped by `project_id` from JWT token.
 - JWT contains: user_id, project_id, roles
 
 ### VI. Single Binary Deployment
-O3K runs as one ~35MB binary with embedded services.
-- All six services (Keystone, Nova, Neutron, Cinder, Glance, Metadata) in cmd/o3k/main.go
+Lightstack runs as one ~35MB binary with embedded services.
+- All six services (Keystone, Nova, Neutron, Cinder, Glance, Metadata) in cmd/lightstack/main.go
 - Shared database connection pool (PostgreSQL)
 - Shared auth middleware (JWT validation)
 - Shared logging middleware (structured JSON)
@@ -102,7 +102,7 @@ Integration tests in `test/` directory use bash + OpenStack CLI for end-to-end v
 - Database migrations must be reversible (up/down migrations)
 
 ### Security Requirements
-- JWT secrets MUST be changed in production (config/o3k.yaml)
+- JWT secrets MUST be changed in production (config/lightstack.yaml)
 - Database passwords via environment variables in production
 - Token TTL default: 24 hours (configurable)
 - bcrypt for password hashing (no plaintext passwords in database)

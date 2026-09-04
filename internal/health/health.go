@@ -1,4 +1,4 @@
-// Package health provides o3k's thin, honest readiness and liveness signals.
+// Package health provides Lightstack's thin, honest readiness and liveness signals.
 //
 // Readiness is gated on the database being reachable AND all HTTP listeners
 // being bound; liveness is dependency-free (process up). It also exposes an
@@ -20,10 +20,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
-// defaultCheckTimeout bounds each component check, honoring o3k's sub-second
+// defaultCheckTimeout bounds each component check, honoring Lightstack's sub-second
 // fail-fast principle (FR-003/SC-003): the endpoint never hangs on a wedged DB.
 const defaultCheckTimeout = 800 * time.Millisecond
 
@@ -53,7 +53,7 @@ type Result struct {
 	Failed []string
 }
 
-// Checker aggregates the readiness inputs of one o3k process. Construct with New.
+// Checker aggregates the readiness inputs of one Lightstack process. Construct with New.
 type Checker struct {
 	checks   []Check
 	timeout  time.Duration
@@ -144,7 +144,7 @@ func (c *Checker) record(r Result) Result {
 }
 
 // Health endpoint paths. Exported as Paths so callers (e.g. the logging
-// middleware, the `o3k healthcheck` CLI) reference one list instead of
+// middleware, the `lightstack healthcheck` CLI) reference one list instead of
 // duplicating the literals and silently drifting (PR #70 review) — change a
 // path here and every consumer follows.
 const (

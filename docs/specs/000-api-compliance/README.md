@@ -7,15 +7,15 @@
 
 ## Mission Statement
 
-> **O3K must be 100% OpenStack API compliant. Consumers—whether Terraform providers, OpenStack CLI, SDKs, or Horizon dashboard—cannot distinguish O3K from canonical OpenStack.**
+> **lightstack must be 100% OpenStack API compliant. Consumers—whether Terraform providers, OpenStack CLI, SDKs, or Horizon dashboard—cannot distinguish Lightstack from canonical OpenStack.**
 
 This is not a goal. This is a **requirement**. This is **non-negotiable**.
 
 ## Overview
 
-This specification defines the compliance framework, testing methodology, validation criteria, and enforcement mechanisms that ensure O3K achieves and maintains 100% OpenStack API compatibility across all services.
+This specification defines the compliance framework, testing methodology, validation criteria, and enforcement mechanisms that ensure Lightstack achieves and maintains 100% OpenStack API compatibility across all services.
 
-**Scope**: All O3K services (Keystone, Nova, Neutron, Cinder, Glance, Barbican, Designate, Octavia) and all future services.
+**Scope**: All Lightstack services (Keystone, Nova, Neutron, Cinder, Glance, Barbican, Designate, Octavia) and all future services.
 
 ## Goals
 
@@ -37,13 +37,13 @@ This specification defines the compliance framework, testing methodology, valida
 
 ```
 IF a request is valid for OpenStack
-THEN it must be valid for O3K and produce equivalent results
+THEN it must be valid for lightstack and produce equivalent results
 
 IF a request is invalid for OpenStack
-THEN it must be invalid for O3K and produce equivalent errors
+THEN it must be invalid for lightstack and produce equivalent errors
 
 IF OpenStack client/SDK/tool works with OpenStack
-THEN it must work identically with O3K
+THEN it must work identically with lightstack
 ```
 
 **Zero tolerance for incompatibility.**
@@ -52,7 +52,7 @@ THEN it must work identically with O3K
 
 ## OpenStack API Versions
 
-O3K must support these OpenStack API versions:
+Lightstack must support these OpenStack API versions:
 
 | Service | API Version | Microversions | Priority |
 |---------|-------------|---------------|----------|
@@ -129,7 +129,7 @@ func TestKeystoneV3Compliance(t *testing.T) {
 
 ### Level 2: Terraform Provider Tests
 
-**Definition**: terraform-provider-openstack must work unchanged against O3K.
+**Definition**: terraform-provider-openstack must work unchanged against lightstack.
 
 **Test Suite**:
 ```hcl
@@ -583,7 +583,7 @@ curl -X GET http://localhost:8774/v2.1/servers/nonexistent-id \
 
 ## Microversion Support (Nova)
 
-Nova uses microversions for API evolution. O3K must implement microversion negotiation correctly.
+Nova uses microversions for API evolution. Lightstack must implement microversion negotiation correctly.
 
 ### Microversion Headers
 
@@ -659,7 +659,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Start O3K services
+      - name: Start lightstack services
         run: docker compose up -d
       - name: Run contract tests
         run: make test-compliance-contracts
@@ -671,7 +671,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: hashicorp/setup-terraform@v2
-      - name: Start O3K
+      - name: Start lightstack
         run: docker compose up -d
       - name: Run Terraform tests
         run: make test-compliance-terraform
@@ -682,7 +682,7 @@ jobs:
       - uses: actions/checkout@v3
       - name: Install OpenStack CLI
         run: pip install python-openstackclient
-      - name: Start O3K
+      - name: Start lightstack
         run: docker compose up -d
       - name: Run CLI tests
         run: make test-compliance-cli
@@ -696,7 +696,7 @@ jobs:
       - uses: actions/checkout@v3
       - name: Setup SDK (${{ matrix.sdk }})
         run: make setup-sdk-${{ matrix.sdk }}
-      - name: Start O3K
+      - name: Start lightstack
         run: docker compose up -d
       - name: Run SDK tests
         run: make test-compliance-sdk-${{ matrix.sdk }}
@@ -705,7 +705,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Start O3K + Horizon
+      - name: Start lightstack + Horizon
         run: docker compose -f deployments/docker-compose-horizon.yml up -d
       - name: Run Selenium tests
         run: make test-compliance-horizon
@@ -769,7 +769,7 @@ make compliance-report
 
 # Output:
 # ====================================
-# O3K OpenStack API Compliance Report
+# lightstack OpenStack API Compliance Report
 # ====================================
 # Date: 2026-03-09
 #
@@ -819,7 +819,7 @@ services:
 **Usage**:
 ```bash
 # Test against real OpenStack
-./test/compliance/compare.sh o3k openstack-devstack
+./test/compliance/compare.sh lightstack openstack-devstack
 
 # Output: Diff report of any behavioral differences
 ```
@@ -835,7 +835,7 @@ All API documentation must link to official OpenStack docs:
 
 **OpenStack Reference**: https://docs.openstack.org/api-ref/compute/#create-server
 
-O3K implements this endpoint with 100% compatibility.
+lightstack implements this endpoint with 100% compatibility.
 
 ## Request
 ...
@@ -851,7 +851,7 @@ O3K implements this endpoint with 100% compatibility.
 
 ## Success Criteria
 
-O3K achieves 100% OpenStack API compliance when:
+Lightstack achieves 100% OpenStack API compliance when:
 
 - [x] **All compliance tests pass** (contract, Terraform, CLI, SDK, Horizon)
 - [x] **Schema validation: 100%** (every response matches OpenStack schema)

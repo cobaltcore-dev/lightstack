@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick setup script for Horizon Dashboard with O3K
+# Quick setup script for Horizon Dashboard with Lightstack
 
 set -e
 
@@ -9,20 +9,20 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo "=========================================="
-echo "  O3K Horizon Dashboard Setup"
+echo "  Lightstack Horizon Dashboard Setup"
 echo "=========================================="
 echo ""
 
-# Check if O3K is running
-echo -e "${YELLOW}[1/5]${NC} Checking O3K status..."
+# Check if Lightstack is running
+echo -e "${YELLOW}[1/5]${NC} Checking Lightstack status..."
 if curl -s http://localhost:35357/v3 > /dev/null 2>&1; then
-    echo -e "${GREEN}✓${NC} O3K is running"
+    echo -e "${GREEN}✓${NC} Lightstack is running"
 else
-    echo -e "${RED}✗${NC} O3K is not running on localhost:35357"
+    echo -e "${RED}✗${NC} Lightstack is not running on localhost:35357"
     echo ""
-    echo "Please start O3K first:"
-    echo "  cd /path/to/o3k"
-    echo "  ./o3k --config config/o3k.yaml"
+    echo "Please start Lightstack first:"
+    echo "  cd /path/to/lightstack"
+    echo "  ./lightstack --config config/lightstack.yaml"
     echo ""
     exit 1
 fi

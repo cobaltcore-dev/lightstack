@@ -1,0 +1,73 @@
+# helm-unittest specs for the install-time fail-fast gates (T005).
+# Run with: helm plugin install https://github.com/helm-unittest/helm-unittest && helm unittest charts/lightstack
+suite: install-time fail-fast gates
+templates:
+  - templates/service.yaml
+tests:
+  - it: fails when jwtSecret is missing (FR-007)
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+    asserts:
+      - failedTemplate:
+          errorPattern: "jwtSecret is required"
+  - it: fails when adminPassword is missing (FR-007a)
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      database.url: postgres://lightstack@db/lightstack
+    asserts:
+      - failedTemplate:
+          errorPattern: "adminPassword is required"
+  - it: fails when database.url is missing (FR-006)
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+    asserts:
+      - failedTemplate:
+          errorPattern: "database.url is required"
+  - it: multi-node real rejects local glance/cinder backends (FR-012e)
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+      deploymentMode: multi-node
+      realMode.enabled: true
+      glance.storageMode: local
+      cinder.storageMode: local
+    asserts:
+      - failedTemplate:
+          errorPattern: "FR-012e"
+  - it: cache.enabled requires redisUrl (FR-006a)
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+      cache.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "cache.enabled requires cache.redisUrl"
+  - it: rejects drainSeconds >= terminationGracePeriodSeconds (SPEC-013 FR-009)
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+      drainSeconds: 45
+      terminationGracePeriodSeconds: 30
+    asserts:
+      - failedTemplate:
+          errorPattern: "must be less than terminationGracePeriodSeconds"
+  - it: renders with minimal valid values
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: jwt
+      secrets.adminPassword: pw
+      database.url: postgres://lightstack@db/lightstack
+    asserts:
+      - hasDocuments:
+          count: 1

@@ -14,7 +14,7 @@ func setupKeystoneClient(t *testing.T) *gophercloud.ServiceClient {
 }
 
 func TestKeystoneGroupsCRUD_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 

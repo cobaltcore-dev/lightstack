@@ -15,7 +15,7 @@
 
 ## Path Conventions
 
-O3K uses single-project structure with Go packages:
+Lightstack uses single-project structure with Go packages:
 - `internal/` - Service implementations (keystone, nova, neutron, cinder, glance)
 - `pkg/` - Reusable packages (hypervisor, networking, storage)
 - `test/contract/` - Contract tests using gophercloud
@@ -51,9 +51,9 @@ O3K uses single-project structure with Go packages:
 
 ## Phase 3: User Story 1 - Cloud Administrator Dashboard Access (Priority: P1) 🎯 MVP
 
-**Goal**: Ensure Horizon dashboard connects to O3K and all service panels are accessible
+**Goal**: Ensure Horizon dashboard connects to Lightstack and all service panels are accessible
 
-**Independent Test**: Deploy standard Horizon container pointing to O3K, login with admin credentials, verify dashboard loads with all navigation panels visible
+**Independent Test**: Deploy standard Horizon container pointing to lightstack, login with admin credentials, verify dashboard loads with all navigation panels visible
 
 ### Tests for User Story 1 ⚠️ WRITE FIRST - MUST FAIL BEFORE IMPLEMENTATION
 
@@ -65,7 +65,7 @@ O3K uses single-project structure with Go packages:
 - [x] T010 [US1] Verify all 5 services in service catalog (Keystone, Nova, Neutron, Cinder, Glance) in internal/keystone/service_catalog.go ✅ Sprint 62-63 complete
 - [x] T011 [US1] Validate service catalog URL templates match Horizon expectations in internal/keystone/auth.go ✅ Verified
 - [x] T012 [US1] Test token response includes complete catalog with all endpoints in internal/keystone/auth.go ✅ Verified
-- [x] T013 [US1] Verify CORS configuration allows Horizon origin in config/o3k.yaml (documentation task) ✅ Documented in HORIZON_INTEGRATION.md
+- [x] T013 [US1] Verify CORS configuration allows Horizon origin in config/lightstack.yaml (documentation task) ✅ Documented in HORIZON_INTEGRATION.md
 
 **Checkpoint**: Horizon dashboard loads successfully, all service panels accessible
 
@@ -197,7 +197,7 @@ O3K uses single-project structure with Go packages:
 - [ ] T056 [P] [US5] Add database indexes for frequently queried fields in migrations/049_performance_indexes.up.sql
 - [ ] T057 [P] [US5] Optimize list queries with proper pagination in internal/nova/server.go
 - [ ] T058 [P] [US5] Optimize list queries with proper pagination in internal/neutron/network.go
-- [ ] T059 [US5] Verify database connection pool settings in config/o3k.yaml
+- [ ] T059 [US5] Verify database connection pool settings in config/lightstack.yaml
 
 **Checkpoint**: Dashboard performs well with 100+ resources across all service types
 
@@ -205,9 +205,9 @@ O3K uses single-project structure with Go packages:
 
 ## Phase 8: User Story 6 - Comprehensive Documentation (Priority: P2)
 
-**Goal**: New users can deploy Horizon with O3K following documentation without external help
+**Goal**: New users can deploy Horizon with Lightstack following documentation without external help
 
-**Independent Test**: Follow documentation from scratch to deploy Horizon with O3K without prior knowledge
+**Independent Test**: Follow documentation from scratch to deploy Horizon with Lightstack without prior knowledge
 
 ### Tests for User Story 6 ⚠️ WRITE FIRST - MUST FAIL BEFORE IMPLEMENTATION
 
@@ -327,7 +327,7 @@ Task: "Verify quickstart.md in specs/002-horizon-full-compatibility/quickstart.m
 5. **STOP and VALIDATE**: Test Horizon dashboard with full CRUD operations
 6. Deploy/demo if ready
 
-**MVP Deliverable**: Horizon dashboard works with O3K for complete instance lifecycle management including all 7 server actions
+**MVP Deliverable**: Horizon dashboard works with Lightstack for complete instance lifecycle management including all 7 server actions
 
 ### Incremental Delivery
 

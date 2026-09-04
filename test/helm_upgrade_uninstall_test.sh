@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
 # SPEC-008 T027 — day-2 upgrade + uninstall scenario (single-node stub).
 # Requires: a Kubernetes cluster (kind/k3s), kubectl, helm, an external PostgreSQL,
-# and an O3K image. Validates SC-005 (config change applied, no data loss) and
+# and a Lightstack image. Validates SC-005 (config change applied, no data loss) and
 # SC-006 (uninstall leaves no orphaned workloads). FR-014.
 #
-#   O3K_IMAGE_REPO=ghcr.io/you/o3k O3K_DB_URL='postgres://o3k:pw@host:5432/o3k?sslmode=disable' \
+#   LIGHTSTACK_IMAGE_REPO=ghcr.io/you/lightstack LIGHTSTACK_DB_URL='postgres://lightstack:pw@host:5432/lightstack?sslmode=disable' \
 #   ./test/helm_upgrade_uninstall_test.sh
 set -euo pipefail
 
-REL="${REL:-o3k-day2}"; NS="${NS:-o3k-day2}"
-CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/o3k"
+REL="${REL:-lightstack-day2}"; NS="${NS:-lightstack-day2}"
+CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/lightstack"
 COMMON=(
-  --set image.repository="${O3K_IMAGE_REPO:?set O3K_IMAGE_REPO}"
-  --set image.tag="${O3K_IMAGE_TAG:-latest}"
+  --set image.repository="${LIGHTSTACK_IMAGE_REPO:?set LIGHTSTACK_IMAGE_REPO}"
+  --set image.tag="${LIGHTSTACK_IMAGE_TAG:-latest}"
   --set secrets.jwtSecret="$(openssl rand -hex 16)"
   --set secrets.adminPassword="Day2-Admin-1"
-  --set database.url="${O3K_DB_URL:?set O3K_DB_URL}"
+  --set database.url="${LIGHTSTACK_DB_URL:?set LIGHTSTACK_DB_URL}"
 )
 
 helm install "$REL" "$CHART" -n "$NS" --create-namespace "${COMMON[@]}"
-kubectl -n "$NS" rollout status "deploy/${REL}-o3k" --timeout=300s
+kubectl -n "$NS" rollout status "deploy/${REL}-lightstack" --timeout=300s
 
 # SC-005: a config change is applied on upgrade.
 helm upgrade "$REL" "$CHART" -n "$NS" "${COMMON[@]}" --set logging.level=debug
-kubectl -n "$NS" rollout status "deploy/${REL}-o3k" --timeout=300s
-kubectl -n "$NS" get secret "${REL}-o3k-config" -o jsonpath='{.data.o3k\.yaml}' \
+kubectl -n "$NS" rollout status "deploy/${REL}-lightstack" --timeout=300s
+kubectl -n "$NS" get secret "${REL}-lightstack-config" -o jsonpath='{.data.lightstack\.yaml}' \
   | base64 -d | grep -q 'level: "debug"' \
   && echo "PASS: config change applied on upgrade (SC-005)"
 

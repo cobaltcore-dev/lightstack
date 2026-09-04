@@ -13,7 +13,7 @@ import (
 
 // TestGlanceUploadImageData_Contract tests PUT /v2/images/:id/file
 func TestGlanceUploadImageData_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -49,7 +49,7 @@ func TestGlanceUploadImageData_Contract(t *testing.T) {
 
 // TestGlanceDownloadImageData_Contract tests GET /v2/images/:id/file
 func TestGlanceDownloadImageData_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -92,7 +92,7 @@ func TestGlanceDownloadImageData_Contract(t *testing.T) {
 
 // TestGlanceDownloadNonExistentImage_Contract tests GET /v2/images/:id/file for non-existent image
 func TestGlanceDownloadNonExistentImage_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 

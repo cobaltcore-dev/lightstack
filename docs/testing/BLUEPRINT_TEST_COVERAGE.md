@@ -18,7 +18,7 @@
 
 > Nova's 106 counts the 34 `POST /servers/{id}/action` sub-actions individually; Cinder's 76 counts the wired `os-*` volume/type/backup actions. "Missing" = the route/action is implemented but no contract test or integration script exercises it.
 
-**Beyond §3** (different units — see their own sections below): **§4 storage backends** — 5 of 15 behaviors covered, 10 missing (CI exercises `local` mode only). **§6 Terraform** — sc007 covers 3 of #423's 5 smoke categories, and ~13 o3k-supported provider resources are not exercised (and it is not CI-gated).
+**Beyond §3** (different units — see their own sections below): **§4 storage backends** — 5 of 15 behaviors covered, 10 missing (CI exercises `local` mode only). **§6 Terraform** — sc007 covers 3 of #423's 5 smoke categories, and ~13 lightstack-supported provider resources are not exercised (and it is not CI-gated).
 
 ---
 
@@ -82,7 +82,7 @@
 
 ## Storage backends (blueprint §4) — 10 of 15 behaviors untested
 
-**CI reality:** the `contract-tests` CI job exercises **`local` mode only** — `build/package/Dockerfile` bakes `config/o3k.yaml` (`storage_mode: local` for both Glance and Cinder), `deployments/docker-compose.yml` adds no S3/MinIO/Ceph service, and no CI job passes `-tags ceph`. So every non-`local` backend is unexercised. The chart tests (`charts/o3k/tests/*_test.yaml`) validate only that the chart *accepts/rejects* `storageMode` values (config plumbing), never backend I/O.
+**CI reality:** the `contract-tests` CI job exercises **`local` mode only** — `build/package/Dockerfile` bakes `config/lightstack.yaml` (`storage_mode: local` for both Glance and Cinder), `deployments/docker-compose.yml` adds no S3/MinIO/Ceph service, and no CI job passes `-tags ceph`. So every non-`local` backend is unexercised. The chart tests (`charts/lightstack/tests/*_test.yaml`) validate only that the chart *accepts/rejects* `storageMode` values (config plumbing), never backend I/O.
 
 **Covered (5):** Glance `stub` + `local` (`test/contract/glance/image_data_test.go`, `pkg/storage/paths_test.go`); Cinder `local` (`test/contract/cinder/volume_lifecycle_test.go`, `test/contract/ws5_volume_test.go`); Nova VM-disk qcow2 overlay (`test/ws0_disk_real_test.sh`) + boot-from-volume (`test/ws5_boot_from_volume_test.sh`).
 
@@ -103,15 +103,15 @@
 
 **Weak (real-host only, no unit test):** Nova `StageOverlay` (`pkg/hypervisor/disk.go`) is covered by `ws0_disk_real_test.sh` on a real host, but `disk_test.go` tests only `InstancePaths`, not the `qemu-img create -b … -F raw` overlay — add a CI unit test (needs only `qemu-img`).
 
-## Terraform coverage (blueprint §6) — #423 gaps + o3k-supported resources not exercised
+## Terraform coverage (blueprint §6) — #423 gaps + lightstack-supported resources not exercised
 
 **What sc007 covers:** one real-mode module (`test/terraform/sc007/main.tf`, unmodified provider `~> 3.0`) — 10 resource types + 2 data sources: networks/subnets (tenant + external), router + interface, keypair, instance (+ `user_data`), floating IP + associate, `blockstorage_volume_v3`, `compute_volume_attach_v2`; data sources `images_image_v2` (lookup) + `networking_port_v2` (the FIP port-id workaround). **Not CI-gated** (`test/terraform/README.md` says so; `ci.yml:261` has only a "Planned" TODO). The README is stale — it lists removed `ws3/ws4/ws5/` dirs; only `sc007/` remains.
 
 **vs #423's required smoke set:** compute instances ✅, networks ✅, volumes ✅; **security groups ❌** (API exists, untested); **object storage ❌** (no Swift API — impossible).
 
-**Missing Terraform tests** (o3k-supported resources not exercised, prioritized):
+**Missing Terraform tests** (lightstack-supported resources not exercised, prioritized):
 
-| Terraform resource | o3k API | Priority / note |
+| Terraform resource | Lightstack API | Priority / note |
 |---|---|---|
 | `openstack_networking_secgroup_v2` + `_rule_v2` | ✅ Neutron (§3.3) | **#423 priority** — create secgroup + rules, attach to the instance |
 | `openstack_images_image_v2` (as resource) | ✅ Glance create + `PUT …/file` (§3.5) | image *upload* via TF untested (sc007 only reads); validation-critical for #422 |
@@ -127,7 +127,7 @@
 | `openstack_networking_{subnetpool,rbac_policy,addressscope}_v2` | ✅ Neutron (§3.3) | lower priority |
 | boot-from-volume via `compute_instance_v2` `block_device` | ✅ host-validated | works on host (`ws5_boot_from_volume`), never exercised via TF |
 
-**Do NOT add (would fail against o3k):** `openstack_compute_secgroup_v2`, `openstack_compute_floatingip_v2` / `_associate_v2` (legacy nova-network — ❌ §3.2; use the Neutron equivalents), `openstack_identity_ec2_credential_v3` (OS-EC2 not registered — §3.1), `openstack_networking_qos_dscp_marking_rule_v2` (§3.3), and all `openstack_objectstorage_*` (no Swift API).
+**Do NOT add (would fail against lightstack):** `openstack_compute_secgroup_v2`, `openstack_compute_floatingip_v2` / `_associate_v2` (legacy nova-network — ❌ §3.2; use the Neutron equivalents), `openstack_identity_ec2_credential_v3` (OS-EC2 not registered — §3.1), `openstack_networking_qos_dscp_marking_rule_v2` (§3.3), and all `openstack_objectstorage_*` (no Swift API).
 
 ---
 

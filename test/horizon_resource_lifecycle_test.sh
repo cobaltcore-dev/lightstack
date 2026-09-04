@@ -14,7 +14,7 @@ PASSED=0
 FAILED=0
 
 echo "=========================================="
-echo " O3K Horizon Resource Lifecycle Test"
+echo " Lightstack Horizon Resource Lifecycle Test"
 echo "=========================================="
 echo ""
 

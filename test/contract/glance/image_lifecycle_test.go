@@ -11,7 +11,7 @@ import (
 
 // TestGlanceImageCreate_Contract tests basic image creation
 func TestGlanceImageCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -48,7 +48,7 @@ func TestGlanceImageCreate_Contract(t *testing.T) {
 
 // TestGlanceImageList_Contract tests listing images
 func TestGlanceImageList_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -64,7 +64,7 @@ func TestGlanceImageList_Contract(t *testing.T) {
 
 // TestGlanceImageDelete_Contract tests image deletion
 func TestGlanceImageDelete_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -93,7 +93,7 @@ func TestGlanceImageDelete_Contract(t *testing.T) {
 
 // TestGlanceImageLifecycle_Contract tests complete image lifecycle (metadata only)
 func TestGlanceImageLifecycle_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 

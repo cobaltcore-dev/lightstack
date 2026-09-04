@@ -7,19 +7,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
-// testDBAvailable is true when O3K_TEST_DB_URL is set and the schema migrated;
+// testDBAvailable is true when LIGHTSTACK_TEST_DB_URL is set and the schema migrated;
 // DB-backed tests skip otherwise (Constitution: real dependencies over mocks).
 var testDBAvailable bool
 
 func TestMain(m *testing.M) {
 	// Skip DB-backed tests only when no test DB is configured. When
-	// O3K_TEST_DB_URL IS set, a connect/migrate failure is fatal — never a
+	// LIGHTSTACK_TEST_DB_URL IS set, a connect/migrate failure is fatal — never a
 	// silent skip — so a broken Postgres in CI fails the job instead of
 	// quietly hiding the DB-backed tests.
-	if dbURL := os.Getenv("O3K_TEST_DB_URL"); dbURL != "" {
+	if dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL"); dbURL != "" {
 		ctx := context.Background()
 		if err := database.Connect(ctx, dbURL, &database.PoolConfig{
 			MaxConns:          5,
@@ -28,11 +28,11 @@ func TestMain(m *testing.M) {
 			MaxConnIdleTime:   15 * time.Minute,
 			HealthCheckPeriod: time.Minute,
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "O3K_TEST_DB_URL is set but connecting to it failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but connecting to it failed: %v\n", err)
 			os.Exit(1)
 		}
 		if err := database.MigrateUp(dbURL, "../../migrations"); err != nil {
-			fmt.Fprintf(os.Stderr, "O3K_TEST_DB_URL is set but migrations failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but migrations failed: %v\n", err)
 			database.Close()
 			os.Exit(1)
 		}
@@ -48,7 +48,7 @@ func TestMain(m *testing.M) {
 func requireDB(t *testing.T) {
 	t.Helper()
 	if !testDBAvailable {
-		t.Skip("set O3K_TEST_DB_URL to run DB-backed keystone tests")
+		t.Skip("set LIGHTSTACK_TEST_DB_URL to run DB-backed keystone tests")
 	}
 }
 

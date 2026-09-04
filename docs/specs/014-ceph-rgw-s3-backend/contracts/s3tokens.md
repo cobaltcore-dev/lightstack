@@ -1,8 +1,8 @@
 # Contract — S3 token validation endpoint (RGW-facing)
 
-The endpoint Ceph RGW calls to authenticate a tenant S3 request against o3k.
+The endpoint Ceph RGW calls to authenticate a tenant S3 request against lightstack.
 **Public** (registered on the `v3` group, bypasses `authMiddleware`) — the S3 signature in the
-body *is* the credential; o3k self-validates. No caller/admin token required.
+body *is* the credential; Lightstack self-validates. No caller/admin token required.
 
 ## POST /v3/s3tokens
 Called by RGW when `rgw s3 auth use keystone = true`.

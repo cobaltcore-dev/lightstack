@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 )

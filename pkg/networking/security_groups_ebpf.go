@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/cobaltcore-dev/o3k/pkg/networking/ebpf"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking/ebpf"
 )
 
 // ApplySecurityGroupToPort applies security group rules to a specific port (eBPF-specific)

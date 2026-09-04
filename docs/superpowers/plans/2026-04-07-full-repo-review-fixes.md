@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26, Gin, pgx v5, zerolog, crypto/rand, golang-migrate
 
-**Findings Reference:** `/Users/I761222/git/o3k/full-repo-review-report.md`
+**Findings Reference:** `/Users/I761222/git/lightstack/full-repo-review-report.md`
 
 ---
 
@@ -89,7 +89,7 @@ func TestGenerateMAC_Uniqueness(t *testing.T) {
 
 - [ ] **Step 2: Run test to confirm it compiles and passes baseline**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/neutron/ -run TestGenerateMAC -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/neutron/ -run TestGenerateMAC -v`
 
 - [ ] **Step 3: Replace math/rand with crypto/rand**
 
@@ -113,12 +113,12 @@ func generateMAC() string {
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/neutron/ -run TestGenerateMAC -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/neutron/ -run TestGenerateMAC -v`
 Expected: All 3 tests PASS
 
 - [ ] **Step 5: Run full build to check for import conflicts**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 Expected: Clean build
 
 - [ ] **Step 6: Commit**
@@ -183,7 +183,7 @@ func TestGeneratePassword_Uniqueness(t *testing.T) {
 
 - [ ] **Step 2: Run test — expect compile failure**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/common/ -run TestGeneratePassword -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/common/ -run TestGeneratePassword -v`
 Expected: FAIL — `GeneratePassword` not defined
 
 - [ ] **Step 3: Implement password generator**
@@ -211,7 +211,7 @@ func GeneratePassword(length int) string {
 
 - [ ] **Step 4: Run test — expect PASS**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/common/ -run TestGeneratePassword -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/common/ -run TestGeneratePassword -v`
 Expected: All 3 tests PASS
 
 - [ ] **Step 5: Replace hardcoded passwords in nova handlers**
@@ -221,11 +221,11 @@ In `internal/nova/handlers.go`, find the two occurrences:
 1. Around line 500 — `"adminPass": "generated-password"` → `"adminPass": common.GeneratePassword(16)`
 2. Around line 1783 — `"adminPass": "rescuepass123"` → `"adminPass": common.GeneratePassword(16)`
 
-Add import: `"github.com/cobaltcore-dev/o3k/internal/common"` if not already present.
+Add import: `"github.com/cobaltcore-dev/lightstack/internal/common"` if not already present.
 
 - [ ] **Step 6: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 Expected: Clean build
 
 - [ ] **Step 7: Commit**
@@ -248,7 +248,7 @@ Fixes: C-4"
 **Files:**
 - Modify: `internal/middleware/logging.go:249-263`
 - Modify: `internal/common/config.go` (add CORS config struct)
-- Modify: `config/o3k.yaml` (add CORS section)
+- Modify: `config/lightstack.yaml` (add CORS section)
 - Test: `internal/middleware/cors_test.go` (create)
 
 - [ ] **Step 1: Write the CORS middleware test**
@@ -334,7 +334,7 @@ func TestCORSMiddleware_OptionsPreflightReturns204(t *testing.T) {
 
 - [ ] **Step 2: Run test — expect compile failure**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/middleware/ -run TestCORS -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/middleware/ -run TestCORS -v`
 Expected: FAIL — `CORSMiddlewareWithConfig` not defined
 
 - [ ] **Step 3: Add CORS config to config struct**
@@ -348,7 +348,7 @@ type ServerConfig struct {
 }
 ```
 
-In `config/o3k.yaml`, add:
+In `config/lightstack.yaml`, add:
 
 ```yaml
 server:
@@ -399,25 +399,25 @@ func CORSMiddleware() gin.HandlerFunc {
 
 - [ ] **Step 5: Update main.go to pass CORS config**
 
-In `cmd/o3k/main.go`, replace `middleware.CORSMiddleware()` calls with `middleware.CORSMiddlewareWithConfig(cfg.Server.CORSAllowedOrigins)` in each `createXxxServer()` function. There are 7 server factory functions that need updating.
+In `cmd/lightstack/main.go`, replace `middleware.CORSMiddleware()` calls with `middleware.CORSMiddlewareWithConfig(cfg.Server.CORSAllowedOrigins)` in each `createXxxServer()` function. There are 7 server factory functions that need updating.
 
 - [ ] **Step 6: Run tests**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/middleware/ -run TestCORS -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/middleware/ -run TestCORS -v`
 Expected: All 4 tests PASS
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 Expected: Clean build
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add internal/middleware/logging.go internal/middleware/cors_test.go internal/common/config.go config/o3k.yaml cmd/o3k/main.go
+git add internal/middleware/logging.go internal/middleware/cors_test.go internal/common/config.go config/lightstack.yaml cmd/lightstack/main.go
 git commit -m "fix(middleware): make CORS origins configurable, default to localhost
 
 Replaces wildcard Access-Control-Allow-Origin with origin-checked
 CORS middleware. Adds PATCH to allowed methods, adds OpenStack-specific
-headers. Configurable via server.cors_allowed_origins in o3k.yaml.
+headers. Configurable via server.cors_allowed_origins in lightstack.yaml.
 
 Fixes: C-5, L-3"
 ```
@@ -465,7 +465,7 @@ func TestIsAllowedImageField(t *testing.T) {
 
 - [ ] **Step 2: Run test — expect compile failure**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/glance/ -run TestIsAllowedImageField -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/glance/ -run TestIsAllowedImageField -v`
 Expected: FAIL — `allowedImageUpdateField` not defined
 
 - [ ] **Step 3: Extract the field allowlist into a lookup function**
@@ -503,7 +503,7 @@ if op == "replace" {
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/glance/ -run TestIsAllowedImageField -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/glance/ -run TestIsAllowedImageField -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -527,12 +527,12 @@ Fixes: M-14"
 
 - [ ] **Step 1: Verify both adminPass locations were fixed**
 
-Run: `cd /Users/I761222/git/o3k && grep -n '"adminPass"' internal/nova/handlers.go`
+Run: `cd /Users/I761222/git/lightstack && grep -n '"adminPass"' internal/nova/handlers.go`
 Expected: Both lines show `common.GeneratePassword(16)`, not hardcoded strings.
 
 - [ ] **Step 2: Run contract tests to verify CreateServer still works**
 
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/nova/ -run TestCreateServer -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/nova/ -run TestCreateServer -v -count=1`
 Expected: PASS (response still contains `adminPass` field, just with a random value now)
 
 ---
@@ -625,7 +625,7 @@ func TestParsePagination_SortKey(t *testing.T) {
 
 - [ ] **Step 2: Run test — expect compile failure**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/common/ -run TestParsePagination -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/common/ -run TestParsePagination -v`
 Expected: FAIL — `ParsePagination` not defined
 
 - [ ] **Step 3: Implement pagination helper**
@@ -682,7 +682,7 @@ func ParsePagination(c *gin.Context, defaultLimit int) PaginationParams {
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd /Users/I761222/git/o3k && go test ./internal/common/ -run TestParsePagination -v`
+Run: `cd /Users/I761222/git/lightstack && go test ./internal/common/ -run TestParsePagination -v`
 Expected: All 4 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -720,13 +720,13 @@ IsPublic  bool      `json:"os-flavor-access:is_public"`
 
 - [ ] **Step 2: Search for any code that relies on the old tag**
 
-Run: `grep -rn "OS-FLV-EXT-DATA:ephemeral" /Users/I761222/git/o3k/internal/`
+Run: `grep -rn "OS-FLV-EXT-DATA:ephemeral" /Users/I761222/git/lightstack/internal/`
 
 If any handler manually sets this key in a `gin.H{}` response, update those too.
 
 - [ ] **Step 3: Run build and tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./... && go test ./internal/common/ -v`
+Run: `cd /Users/I761222/git/lightstack && go build ./... && go test ./internal/common/ -v`
 Expected: Clean build, tests pass
 
 - [ ] **Step 4: Commit**
@@ -752,11 +752,11 @@ Fixes: M-5"
 
 - [ ] **Step 1: Find all callers**
 
-Run: `grep -rn "RunMigrations\|MigrateUp" /Users/I761222/git/o3k/ --include="*.go"`
+Run: `grep -rn "RunMigrations\|MigrateUp" /Users/I761222/git/lightstack/ --include="*.go"`
 
 - [ ] **Step 2: Replace any RunMigrations calls with MigrateUp**
 
-If `cmd/o3k/main.go` or any other file calls `database.RunMigrations()`, change to `database.MigrateUp()`.
+If `cmd/lightstack/main.go` or any other file calls `database.RunMigrations()`, change to `database.MigrateUp()`.
 
 - [ ] **Step 3: Delete RunMigrations from db.go**
 
@@ -764,13 +764,13 @@ Remove lines 104-124 from `internal/database/db.go` (the `RunMigrations` functio
 
 - [ ] **Step 4: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 Expected: Clean build
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/database/db.go cmd/o3k/main.go
+git add internal/database/db.go cmd/lightstack/main.go
 git commit -m "refactor(database): remove duplicate RunMigrations, use MigrateUp
 
 RunMigrations in db.go duplicated MigrateUp in migrate.go with
@@ -804,7 +804,7 @@ Also check for `"min_version"` — both should use constants.
 
 - [ ] **Step 3: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 Expected: Clean build
 
 - [ ] **Step 4: Commit**
@@ -843,7 +843,7 @@ const (
 
 - [ ] **Step 3: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 Expected: Clean build
 
 - [ ] **Step 4: Commit**
@@ -867,7 +867,7 @@ Fixes: L-4"
 
 - [ ] **Step 1: Verify the nova_quotas table schema**
 
-Run: `grep -rn "nova_quotas\|quotas" /Users/I761222/git/o3k/migrations/ --include="*.sql" | head -20`
+Run: `grep -rn "nova_quotas\|quotas" /Users/I761222/git/lightstack/migrations/ --include="*.sql" | head -20`
 
 This tells us the exact column names to query. Adjust the implementation below to match the actual schema.
 
@@ -939,8 +939,8 @@ func (svc *Service) GetLimits(c *gin.Context) {
 
 - [ ] **Step 3: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/nova/ -run TestLimits -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/nova/ -run TestLimits -v -count=1`
 Expected: Build passes, limits test passes
 
 - [ ] **Step 4: Commit**
@@ -965,7 +965,7 @@ Fixes: H-12"
 
 - [ ] **Step 1: Locate the problematic pagination query**
 
-Run: `grep -n 'id > \$marker\|id > marker' /Users/I761222/git/o3k/internal/nova/handlers.go`
+Run: `grep -n 'id > \$marker\|id > marker' /Users/I761222/git/lightstack/internal/nova/handlers.go`
 
 The current pattern uses `id > $marker` which does lexicographic UUID comparison — this produces non-deterministic pagination order because UUIDv4 values are not sequential.
 
@@ -993,8 +993,8 @@ This matches the pagination pattern used by ListServers and other list endpoints
 
 - [ ] **Step 3: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/nova/ -run TestFlavor -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/nova/ -run TestFlavor -v -count=1`
 Expected: Build passes, flavor tests pass
 
 - [ ] **Step 4: Commit**
@@ -1029,11 +1029,11 @@ This is the highest-leverage fix in the codebase. The error framework already ex
 ### Task 3.1: Register ErrorHandlingMiddleware and NotFoundHandler (H-9)
 
 **Files:**
-- Modify: `cmd/o3k/main.go` (all 7 `createXxxServer()` functions)
+- Modify: `cmd/lightstack/main.go` (all 7 `createXxxServer()` functions)
 
 - [ ] **Step 1: Add middleware registration to each server factory**
 
-In each of the 7 `createXxxServer()` functions in `cmd/o3k/main.go`, add after the existing middleware registrations:
+In each of the 7 `createXxxServer()` functions in `cmd/lightstack/main.go`, add after the existing middleware registrations:
 
 ```go
 r.Use(middleware.ErrorHandlingMiddleware())
@@ -1054,18 +1054,18 @@ func MethodNotAllowedHandler() gin.HandlerFunc {
 
 - [ ] **Step 2: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 Expected: Clean build
 
 - [ ] **Step 3: Run contract tests to verify no regression**
 
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/... -v -count=1 2>&1 | tail -20`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/... -v -count=1 2>&1 | tail -20`
 Expected: Same pass rate as before
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add cmd/o3k/main.go internal/middleware/errors.go
+git add cmd/lightstack/main.go internal/middleware/errors.go
 git commit -m "feat(middleware): register error handling middleware and custom 404/405 handlers
 
 Enables ErrorHandlingMiddleware for panic recovery and OpenStack-
@@ -1088,7 +1088,7 @@ Fixes: H-9"
 
 - [ ] **Step 1: Audit all inline error responses in keystone**
 
-Run: `grep -n 'c.JSON(http.Status' /Users/I761222/git/o3k/internal/keystone/*.go | wc -l`
+Run: `grep -n 'c.JSON(http.Status' /Users/I761222/git/lightstack/internal/keystone/*.go | wc -l`
 
 This gives the count of inline responses to migrate.
 
@@ -1135,8 +1135,8 @@ common.SendError(c, common.NewConflictError("resource already exists"))
 
 - [ ] **Step 4: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/keystone/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/keystone/ -v -count=1`
 Expected: Clean build, contract tests pass
 
 - [ ] **Step 5: Commit**
@@ -1165,7 +1165,7 @@ Fixes: C-1 (keystone), H-2 (keystone)"
 
 - [ ] **Step 1: Audit count**
 
-Run: `grep -n 'c.JSON(http.Status' /Users/I761222/git/o3k/internal/nova/*.go | wc -l`
+Run: `grep -n 'c.JSON(http.Status' /Users/I761222/git/lightstack/internal/nova/*.go | wc -l`
 
 - [ ] **Step 2: Migrate all inline errors to structured errors**
 
@@ -1179,8 +1179,8 @@ Same replacement patterns as Task 3.2. Nova has the most handlers (~40% of all e
 
 - [ ] **Step 3: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/nova/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/nova/ -v -count=1`
 Expected: Clean build, contract tests pass
 
 - [ ] **Step 4: Commit**
@@ -1212,8 +1212,8 @@ Same pattern as Tasks 3.2/3.3.
 
 - [ ] **Step 2: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/neutron/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/neutron/ -v -count=1`
 
 - [ ] **Step 3: Commit**
 
@@ -1238,8 +1238,8 @@ Same pattern as previous tasks.
 
 - [ ] **Step 2: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/cinder/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/cinder/ -v -count=1`
 
 - [ ] **Step 3: Commit**
 
@@ -1263,8 +1263,8 @@ Same pattern.
 
 - [ ] **Step 2: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/glance/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/glance/ -v -count=1`
 
 - [ ] **Step 3: Commit**
 
@@ -1289,7 +1289,7 @@ These are small services with few endpoints.
 
 - [ ] **Step 2: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 3: Commit**
 
@@ -1306,15 +1306,15 @@ Fixes: C-1 (placement, metadata), H-2 (placement, metadata)"
 
 - [ ] **Step 1: Run grep to count remaining inline errors**
 
-Run: `grep -rn 'c\.JSON(http\.Status.*gin\.H{"error"' /Users/I761222/git/o3k/internal/ | wc -l`
+Run: `grep -rn 'c\.JSON(http\.Status.*gin\.H{"error"' /Users/I761222/git/lightstack/internal/ | wc -l`
 Expected: 0
 
-Run: `grep -rn 'err\.Error()' /Users/I761222/git/o3k/internal/ | grep 'c\.JSON' | wc -l`
+Run: `grep -rn 'err\.Error()' /Users/I761222/git/lightstack/internal/ | grep 'c\.JSON' | wc -l`
 Expected: 0
 
 - [ ] **Step 2: Run full contract test suite**
 
-Run: `cd /Users/I761222/git/o3k && go test ./test/contract/... -v -count=1 2>&1 | tail -30`
+Run: `cd /Users/I761222/git/lightstack && go test ./test/contract/... -v -count=1 2>&1 | tail -30`
 Expected: Same or better pass rate than before migration
 
 - [ ] **Step 3: Commit verification note**
@@ -1386,7 +1386,7 @@ func WithTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 
 - [ ] **Step 3: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 4: Commit**
 
@@ -1410,7 +1410,7 @@ Fixes: C-2 (infrastructure)"
 
 - [ ] **Step 1: Identify multi-statement handlers in Nova**
 
-Run: `grep -n 'database.DB.Exec\|database.DB.QueryRow' /Users/I761222/git/o3k/internal/nova/handlers.go | head -40`
+Run: `grep -n 'database.DB.Exec\|database.DB.QueryRow' /Users/I761222/git/lightstack/internal/nova/handlers.go | head -40`
 
 Look for handlers with 2+ database calls that should be atomic.
 
@@ -1440,7 +1440,7 @@ if err != nil {
 
 - [ ] **Step 3: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./... && go test ./test/contract/nova/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./... && go test ./test/contract/nova/ -v -count=1`
 
 - [ ] **Step 4: Commit**
 
@@ -1468,7 +1468,7 @@ Same approach as Task 4.2 for cinder.
 
 - [ ] **Step 2: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./... && go test ./test/contract/cinder/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./... && go test ./test/contract/cinder/ -v -count=1`
 
 - [ ] **Step 3: Commit**
 
@@ -1493,7 +1493,7 @@ Same approach.
 
 - [ ] **Step 2: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./... && go test ./test/contract/neutron/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./... && go test ./test/contract/neutron/ -v -count=1`
 
 - [ ] **Step 3: Commit**
 
@@ -1549,16 +1549,16 @@ func (svc *Service) Shutdown() {
 
 - [ ] **Step 3: Update main.go graceful shutdown to call service Shutdown()**
 
-In `cmd/o3k/main.go`, in the shutdown sequence, call each service's `Shutdown()` before the HTTP server stops.
+In `cmd/lightstack/main.go`, in the shutdown sequence, call each service's `Shutdown()` before the HTTP server stops.
 
 - [ ] **Step 4: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/nova/ internal/cinder/ cmd/o3k/main.go
+git add internal/nova/ internal/cinder/ cmd/lightstack/main.go
 git commit -m "feat(nova,cinder): add goroutine lifecycle management with WaitGroup
 
 Services now track background goroutines and wait for completion
@@ -1610,7 +1610,7 @@ go func() {
 
 - [ ] **Step 2: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 3: Commit**
 
@@ -1638,7 +1638,7 @@ Change all `context.Background()` calls in metadata handlers to `c.Request.Conte
 
 - [ ] **Step 2: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 3: Commit**
 
@@ -1664,7 +1664,7 @@ Check what function this is in. If it's inside a request handler, use `c.Request
 
 - [ ] **Step 2: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 3: Commit**
 
@@ -1689,7 +1689,7 @@ Fixes: M-2 (keystone)"
 
 - [ ] **Step 1: Find all stdlib log calls**
 
-Run: `grep -rn 'log\.Printf\|log\.Print\b\|log\.Println\|log\.Fatal' /Users/I761222/git/o3k/internal/ --include="*.go"`
+Run: `grep -rn 'log\.Printf\|log\.Print\b\|log\.Println\|log\.Fatal' /Users/I761222/git/lightstack/internal/ --include="*.go"`
 
 - [ ] **Step 2: Replace each with zerolog equivalent**
 
@@ -1709,7 +1709,7 @@ log.Error().Err(err).Msg("operation failed")
 
 - [ ] **Step 3: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 4: Commit**
 
@@ -1732,10 +1732,10 @@ Fixes: M-1"
 
 - [ ] **Step 1: Find all silent scan continues**
 
-Run: `grep -n 'Scan.*err.*continue\|err.*Scan.*\n.*continue' /Users/I761222/git/o3k/internal/ -r`
+Run: `grep -n 'Scan.*err.*continue\|err.*Scan.*\n.*continue' /Users/I761222/git/lightstack/internal/ -r`
 
 Alternatively search for the pattern with multiline:
-Run: `grep -rn 'continue' /Users/I761222/git/o3k/internal/ --include="*.go" -B1 | grep 'Scan'`
+Run: `grep -rn 'continue' /Users/I761222/git/lightstack/internal/ --include="*.go" -B1 | grep 'Scan'`
 
 - [ ] **Step 2: Add logging to each scan error**
 
@@ -1753,7 +1753,7 @@ if err := rows.Scan(&id, &name); err != nil {
 
 - [ ] **Step 3: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 4: Commit**
 
@@ -1777,7 +1777,7 @@ Fixes: M-4, SP-4"
 
 - [ ] **Step 1: Find all swallowed errors**
 
-Run: `grep -rn '_, _ =\|_ =.*Exec\|// Ignore error\|// ignore error' /Users/I761222/git/o3k/internal/ --include="*.go"`
+Run: `grep -rn '_, _ =\|_ =.*Exec\|// Ignore error\|// ignore error' /Users/I761222/git/lightstack/internal/ --include="*.go"`
 
 - [ ] **Step 2: For each, decide: log or propagate**
 
@@ -1798,7 +1798,7 @@ if err != nil {
 
 - [ ] **Step 3: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 4: Commit**
 
@@ -1828,7 +1828,7 @@ Fixes: M-6"
 
 - [ ] **Step 2: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 3: Commit**
 
@@ -1941,7 +1941,7 @@ This eliminates the duplication while preserving both URL patterns.
 
 - [ ] **Step 3: Run build and contract tests**
 
-Run: `cd /Users/I761222/git/o3k && go build ./... && go test ./test/contract/cinder/ -v -count=1`
+Run: `cd /Users/I761222/git/lightstack && go build ./... && go test ./test/contract/cinder/ -v -count=1`
 
 - [ ] **Step 4: Commit**
 
@@ -1980,9 +1980,9 @@ import (
 )
 
 // BaseURL returns the external base URL for self-links.
-// Uses O3K_ENDPOINT_HOST env var if set, otherwise derives from request.
+// Uses LIGHTSTACK_ENDPOINT_HOST env var if set, otherwise derives from request.
 func BaseURL(c *gin.Context, defaultPort int) string {
-	if host := os.Getenv("O3K_ENDPOINT_HOST"); host != "" {
+	if host := os.Getenv("LIGHTSTACK_ENDPOINT_HOST"); host != "" {
 		return fmt.Sprintf("http://%s:%d", host, defaultPort)
 	}
 	scheme := "http"
@@ -1995,13 +1995,13 @@ func BaseURL(c *gin.Context, defaultPort int) string {
 
 - [ ] **Step 2: Replace hardcoded localhost URLs**
 
-Run: `grep -rn 'localhost:8774\|localhost:35357\|localhost:9696\|localhost:8776\|localhost:9292' /Users/I761222/git/o3k/internal/ --include="*.go"`
+Run: `grep -rn 'localhost:8774\|localhost:35357\|localhost:9696\|localhost:8776\|localhost:9292' /Users/I761222/git/lightstack/internal/ --include="*.go"`
 
 Replace each `http://localhost:PORT` with `common.BaseURL(c, PORT)`.
 
 - [ ] **Step 3: Run build**
 
-Run: `cd /Users/I761222/git/o3k && go build ./...`
+Run: `cd /Users/I761222/git/lightstack && go build ./...`
 
 - [ ] **Step 4: Commit**
 
@@ -2009,7 +2009,7 @@ Run: `cd /Users/I761222/git/o3k && go build ./...`
 git add internal/common/baseurl.go internal/nova/ internal/keystone/
 git commit -m "fix: derive base URL from request instead of hardcoding localhost
 
-Adds common.BaseURL() that uses O3K_ENDPOINT_HOST env var or
+Adds common.BaseURL() that uses LIGHTSTACK_ENDPOINT_HOST env var or
 request Host header. Replaces ~15 hardcoded localhost:PORT URLs
 in self-links and console URLs.
 
@@ -2025,7 +2025,7 @@ Fixes: H-11"
 
 - [ ] **Step 1: Check git history for migration 042**
 
-Run: `cd /Users/I761222/git/o3k && git log --all --oneline -- 'migrations/042_*'`
+Run: `cd /Users/I761222/git/lightstack && git log --all --oneline -- 'migrations/042_*'`
 
 - [ ] **Step 2: If it was deleted, document why. If it was never created, add a placeholder**
 
@@ -2071,7 +2071,7 @@ This runs linting on production code while excluding test files until they're cl
 
 - [ ] **Step 2: Verify lint passes locally**
 
-Run: `cd /Users/I761222/git/o3k && golangci-lint run ./cmd/... ./internal/... ./pkg/... --timeout=5m`
+Run: `cd /Users/I761222/git/lightstack && golangci-lint run ./cmd/... ./internal/... ./pkg/... --timeout=5m`
 
 If there are failures, fix them first.
 
@@ -2120,7 +2120,7 @@ Fixes: M-13"
 
 - [ ] **Step 1: Check if run_nova_tests_with_fix.sh is still needed**
 
-Run: `cat /Users/I761222/git/o3k/run_nova_tests_with_fix.sh | head -5`
+Run: `cat /Users/I761222/git/lightstack/run_nova_tests_with_fix.sh | head -5`
 
 If it's a one-off debug script, delete it. If useful, move to `test/`.
 
@@ -2149,7 +2149,7 @@ Fixes: L-6, L-8"
 ```makefile
 # Development-only defaults. Do NOT use in production.
 # Production should set DB_URL via environment variable with sslmode=require.
-DB_URL?=postgres://o3k:secret@localhost:5432/o3k?sslmode=disable
+DB_URL?=postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable
 ```
 
 - [ ] **Step 2: Commit**
@@ -2169,7 +2169,7 @@ Fixes: M-12"
 
 - [ ] **Step 1: Verify Task 1.3 covered this**
 
-Run: `grep -n 'Allow-Headers' /Users/I761222/git/o3k/internal/middleware/logging.go`
+Run: `grep -n 'Allow-Headers' /Users/I761222/git/lightstack/internal/middleware/logging.go`
 Expected: Shows the expanded header list including OpenStack headers.
 
 No additional commit needed.

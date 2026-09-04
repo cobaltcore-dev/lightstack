@@ -2,17 +2,17 @@
 
 **Status**: Accepted
 **Date**: 2026-04-20
-**Deciders**: O3K Core Team
+**Deciders**: Lightstack Core Team
 **Spec**: [SPEC-006](../specs/006-v070-foundation/README.md)
 
 ## Context
 
-O3K has no rate limiting (finding H-6 from April 2026 codebase review). This exposes two attack surfaces:
+Lightstack has no rate limiting (finding H-6 from April 2026 codebase review). This exposes two attack surfaces:
 
 1. **Unauthenticated abuse**: `POST /v3/auth/tokens` can be brute-forced or used to exhaust the database connection pool. No `project_id` is available for this endpoint.
 2. **Authenticated abuse**: Any authenticated client can send unlimited API requests, exhausting server resources for other tenants.
 
-The `common.NewRateLimitError()` constructor exists but has no middleware to trigger it. O3K's architecture is single-binary with no Redis, so rate limiting must be in-process.
+The `common.NewRateLimitError()` constructor exists but has no middleware to trigger it. lightstack's architecture is single-binary with no Redis, so rate limiting must be in-process.
 
 ## Decision
 
@@ -87,7 +87,7 @@ Build a token bucket from scratch with `sync.Mutex` and manual refill logic.
 ### Redis-backed rate limiting
 Store rate limit state in Redis for cross-instance coordination.
 
-**Rejected because**: O3K's architecture explicitly avoids Redis (single-binary, no external dependencies beyond PostgreSQL). In-process limiting is sufficient for single-binary deployment. If multi-instance deployment is added later (Phase 4: HA), Redis can be introduced then.
+**Rejected because**: lightstack's architecture explicitly avoids Redis (single-binary, no external dependencies beyond PostgreSQL). In-process limiting is sufficient for single-binary deployment. If multi-instance deployment is added later (Phase 4: HA), Redis can be introduced then.
 
 ### Per-endpoint rate limiting
 Configure different limits for each API endpoint.
@@ -100,13 +100,13 @@ Configure different limits for each API endpoint.
 - Auth endpoints protected from brute-force attacks
 - Per-project fairness prevents single tenant from exhausting resources
 - Standard library implementation (no custom concurrency bugs)
-- Configurable via `o3k.yaml` (can disable for development)
+- Configurable via `lightstack.yaml` (can disable for development)
 - OpenStack-compatible 429 response format
 
 ### Negative
 - Adds `golang.org/x/time` dependency
 - `sync.Map` does not shrink after deletes (Go runtime behavior), but 1.2MB ceiling is acceptable
-- In-process only, does not coordinate across multiple O3K instances (acceptable for current single-binary architecture)
+- In-process only, does not coordinate across multiple Lightstack instances (acceptable for current single-binary architecture)
 - Eviction goroutine adds one more background goroutine to manage during shutdown
 
 ### Neutral

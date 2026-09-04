@@ -37,7 +37,7 @@ fi
 echo "5. Creating test image..."
 IMAGE_NAME="cirros-test-$$"
 if ! openstack image list -f value -c Name | grep -q "$IMAGE_NAME"; then
-  # Create minimal fake image (O3K in stub mode doesn't care about actual image data)
+  # Create minimal fake image (Lightstack in stub mode doesn't care about actual image data)
   touch /tmp/test-image.qcow2
   openstack image create $IMAGE_NAME \
     --disk-format qcow2 \
@@ -57,9 +57,9 @@ INSTANCE_ID=$(openstack server create test-cloudinit-vm-$$ \
 echo "Instance created: $INSTANCE_ID"
 
 echo "7. Verifying cloud-init ISO was generated..."
-sleep 2  # Give O3K time to create the ISO
+sleep 2  # Give lightstack time to create the ISO
 
-ISO_PATH="/var/lib/o3k/cloud-init/${INSTANCE_ID}.iso"
+ISO_PATH="/var/lib/lightstack/cloud-init/${INSTANCE_ID}.iso"
 if [ -f "$ISO_PATH" ]; then
   echo "✓ Cloud-init ISO exists at $ISO_PATH"
   ls -lh "$ISO_PATH"
@@ -74,7 +74,7 @@ if [ -f "$ISO_PATH" ]; then
 else
   echo "✗ Cloud-init ISO NOT FOUND at $ISO_PATH"
   echo "  This may be expected if:"
-  echo "  - O3K is running in stub mode"
+  echo "  - Lightstack is running in stub mode"
   echo "  - genisoimage/mkisofs is not installed"
   echo "  - VM creation failed"
   TEST_RESULT="WARN"

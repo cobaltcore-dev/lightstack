@@ -1,9 +1,9 @@
-# Scaling O3K: Production Multi-Node Deployment
+# Scaling lightstack: Production Multi-Node Deployment
 
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
-**Purpose**: Scale O3K from single-node demo to production-ready multi-node cluster
+**Purpose**: Scale Lightstack from single-node demo to production-ready multi-node cluster
 **Target Audience**: DevOps engineers, cloud operators, production deployments
 **Prerequisites**: Understanding of [SINGLE_NODE_DEPLOYMENT.md](SINGLE_NODE_DEPLOYMENT.md)
 
@@ -11,7 +11,7 @@
 
 ## Overview
 
-This guide covers scaling O3K from a single demonstration node to a production-ready multi-node cluster with high availability, shared storage, and load balancing.
+This guide covers scaling Lightstack from a single demonstration node to a production-ready multi-node cluster with high availability, shared storage, and load balancing.
 
 **Key Differences from Single-Node**:
 - ✅ High Availability (HA) for control plane
@@ -41,7 +41,7 @@ This guide covers scaling O3K from a single demonstration node to a production-r
 │   Controller Node 1   │          │  Controller Node 2   │
 │  (Active)             │◄────────►│  (Standby)           │
 │                       │  Keepalived│                    │
-│ - O3K Services        │          │ - O3K Services       │
+│ - lightstack Services        │          │ - lightstack Services       │
 │ - PostgreSQL Primary  │          │ - PostgreSQL Replica │
 │ - Horizon Dashboard   │          │ - Horizon Dashboard  │
 └───────┬───────────────┘          └──────┬───────────────┘
@@ -95,7 +95,7 @@ This guide covers scaling O3K from a single demonstration node to a production-r
 │ Controller 1 │  │ Controller 2   │  │ Controller 3   │
 │ (Active)     │  │ (Active)       │  │ (Standby)      │
 │              │  │                │  │                │
-│ - O3K API    │  │ - O3K API      │  │ - O3K API      │
+│ - lightstack API    │  │ - lightstack API      │  │ - lightstack API      │
 │ - Horizon    │  │ - Horizon      │  │ - Horizon      │
 └──────┬───────┘  └────────┬───────┘  └────────┬───────┘
        │                   │                    │
@@ -238,8 +238,8 @@ sudo chronyc sources
 
 # Configure /etc/hosts with all nodes
 sudo tee -a /etc/hosts <<EOF
-# O3K Cluster Nodes
-192.168.10.10   o3k-api o3k-api.example.com
+# lightstack Cluster Nodes
+192.168.10.10   lightstack-api lightstack-api.example.com
 192.168.10.11   controller1
 192.168.10.12   controller2
 192.168.10.21   compute1
@@ -288,7 +288,7 @@ ETCD_LISTEN_PEER_URLS="http://192.168.10.11:2380"
 ETCD_INITIAL_ADVERTISE_PEER_URLS="http://192.168.10.11:2380"
 ETCD_INITIAL_CLUSTER="controller1=http://192.168.10.11:2380,controller2=http://192.168.10.12:2380"
 ETCD_INITIAL_CLUSTER_STATE="new"
-ETCD_INITIAL_CLUSTER_TOKEN="etcd-cluster-o3k"
+ETCD_INITIAL_CLUSTER_TOKEN="etcd-cluster-lightstack"
 EOF
 
 sudo systemctl enable --now etcd
@@ -309,7 +309,7 @@ ETCD_LISTEN_PEER_URLS="http://192.168.10.12:2380"
 ETCD_INITIAL_ADVERTISE_PEER_URLS="http://192.168.10.12:2380"
 ETCD_INITIAL_CLUSTER="controller1=http://192.168.10.11:2380,controller2=http://192.168.10.12:2380"
 ETCD_INITIAL_CLUSTER_STATE="new"
-ETCD_INITIAL_CLUSTER_TOKEN="etcd-cluster-o3k"
+ETCD_INITIAL_CLUSTER_TOKEN="etcd-cluster-lightstack"
 EOF
 
 sudo systemctl enable --now etcd
@@ -326,7 +326,7 @@ etcdctl cluster-health
 
 ```bash
 sudo tee /etc/patroni.yml <<EOF
-scope: o3k-postgres
+scope: lightstack-postgres
 namespace: /db/
 name: controller1
 
@@ -427,7 +427,7 @@ patronictl -c /etc/patroni.yml list
 
 Expected output:
 ```
-+ Cluster: o3k-postgres ----+----+-----------+
++ Cluster: lightstack-postgres ----+----+-----------+
 | Member      | Host          | Role   | State   |
 +-------------+---------------+--------+---------+
 | controller1 | 192.168.10.11 | Leader | running |
@@ -486,7 +486,7 @@ sudo ceph orch daemon add osd ceph3:/dev/sdb
 sudo ceph -s
 ```
 
-**Create RBD pools for O3K**:
+**Create RBD pools for lightstack**:
 
 ```bash
 # Create pools
@@ -504,15 +504,15 @@ sudo ceph osd pool set volumes size 3
 sudo ceph osd pool set images size 3
 sudo ceph osd pool set vms size 3
 
-# Create Ceph user for O3K
-sudo ceph auth get-or-create client.o3k \
+# Create Ceph user for lightstack
+sudo ceph auth get-or-create client.lightstack \
   mon 'allow r' \
   osd 'allow class-read object_prefix rbd_children, allow rwx pool=volumes, allow rwx pool=images, allow rwx pool=vms' \
-  -o /etc/ceph/ceph.client.o3k.keyring
+  -o /etc/ceph/ceph.client.lightstack.keyring
 
-# Copy keyring to O3K nodes
+# Copy keyring to lightstack nodes
 scp /etc/ceph/ceph.conf controller1:/tmp/
-scp /etc/ceph/ceph.client.o3k.keyring controller1:/tmp/
+scp /etc/ceph/ceph.client.lightstack.keyring controller1:/tmp/
 # Repeat for controller2, compute1, compute2, compute3
 ```
 
@@ -542,9 +542,9 @@ sudo apt install -y ceph-common librbd-dev
 
 # Copy Ceph configuration
 sudo cp /tmp/ceph.conf /etc/ceph/
-sudo cp /tmp/ceph.client.o3k.keyring /etc/ceph/
+sudo cp /tmp/ceph.client.lightstack.keyring /etc/ceph/
 sudo chmod 644 /etc/ceph/ceph.conf
-sudo chmod 600 /etc/ceph/ceph.client.o3k.keyring
+sudo chmod 600 /etc/ceph/ceph.client.lightstack.keyring
 
 # Enable libvirt
 sudo systemctl enable --now libvirtd
@@ -564,7 +564,7 @@ EOF
 sudo systemctl restart libvirtd
 
 # Verify Ceph connectivity
-rbd --id o3k ls volumes
+rbd --id lightstack ls volumes
 ```
 
 **Configure VXLAN networking**:
@@ -583,25 +583,25 @@ sudo ip link set vxlan-tunnel up
 # Make persistent (add to /etc/network/interfaces or netplan)
 ```
 
-### Step 5: Deploy O3K on Controller Nodes
+### Step 5: Deploy Lightstack on Controller Nodes
 
 **On controller1 and controller2**:
 
 ```bash
-# Clone O3K
+# Clone lightstack
 cd /opt
-sudo git clone https://github.com/cobaltcore-dev/o3k.git
-sudo chown -R $USER:$USER o3k
-cd o3k
+sudo git clone https://github.com/cobaltcore-dev/lightstack.git
+sudo chown -R $USER:$USER lightstack
+cd lightstack
 
-# Build O3K
+# Build lightstack
 make build
 
 # Create configuration
-mkdir -p /opt/o3k/config
-cat > /opt/o3k/config/o3k.yaml <<EOF
+mkdir -p /opt/lightstack/config
+cat > /opt/lightstack/config/lightstack.yaml <<EOF
 database:
-  url: "postgres://o3k:o3k-password@192.168.10.10:5432/o3k?sslmode=disable"  # VIP from HAProxy
+  url: "postgres://lightstack:lightstack-password@192.168.10.10:5432/lightstack?sslmode=disable"  # VIP from HAProxy
 
 keystone:
   host: "0.0.0.0"
@@ -615,7 +615,7 @@ nova:
   libvirt_mode: real
   libvirt_uri: "qemu+tcp://compute1/system"  # Will be load-balanced
   instance_storage_path: "rbd:vms/instances"  # Ceph RBD
-  console_proxy_base_url: "https://o3k-api.example.com:6080/vnc_auto.html"
+  console_proxy_base_url: "https://lightstack-api.example.com:6080/vnc_auto.html"
 
 neutron:
   host: "0.0.0.0"
@@ -629,7 +629,7 @@ cinder:
   port: 8776
   storage_mode: rbd  # IMPORTANT: Use Ceph RBD
   rbd_pool: volumes
-  rbd_user: o3k
+  rbd_user: lightstack
   rbd_ceph_conf: /etc/ceph/ceph.conf
 
 glance:
@@ -637,7 +637,7 @@ glance:
   port: 9292
   storage_mode: rbd  # IMPORTANT: Use Ceph RBD
   rbd_pool: images
-  rbd_user: o3k
+  rbd_user: lightstack
   rbd_ceph_conf: /etc/ceph/ceph.conf
 
 metadata:
@@ -652,19 +652,19 @@ compute:
 EOF
 
 # Run migrations (only on controller1)
-./bin/o3k migrate --config config/o3k.yaml
+./bin/lightstack migrate --config config/lightstack.yaml
 
 # Create systemd service
-sudo tee /etc/systemd/system/o3k.service <<EOF
+sudo tee /etc/systemd/system/lightstack.service <<EOF
 [Unit]
-Description=O3K OpenStack Services
+Description=lightstack OpenStack Services
 After=network.target patroni.service
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/o3k
-ExecStart=/opt/o3k/bin/o3k --config /opt/o3k/config/o3k.yaml
+WorkingDirectory=/opt/lightstack
+ExecStart=/opt/lightstack/bin/lightstack --config /opt/lightstack/config/lightstack.yaml
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -676,7 +676,7 @@ EOF
 
 # Enable and start
 sudo systemctl daemon-reload
-sudo systemctl enable --now o3k.service
+sudo systemctl enable --now lightstack.service
 ```
 
 ### Step 6: Deploy HAProxy Load Balancer
@@ -818,25 +818,25 @@ ip addr show eth0
 
 ```bash
 # On controller1
-sudo mkdir -p /etc/ssl/o3k
+sudo mkdir -p /etc/ssl/lightstack
 sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /etc/ssl/o3k/o3k.key \
-  -out /etc/ssl/o3k/o3k.crt \
-  -subj "/CN=o3k-api.example.com"
+  -keyout /etc/ssl/lightstack/lightstack.key \
+  -out /etc/ssl/lightstack/lightstack.crt \
+  -subj "/CN=lightstack-api.example.com"
 
 # Combine for HAProxy
-sudo cat /etc/ssl/o3k/o3k.crt /etc/ssl/o3k/o3k.key | \
-  sudo tee /etc/ssl/o3k/o3k.pem
+sudo cat /etc/ssl/lightstack/lightstack.crt /etc/ssl/lightstack/lightstack.key | \
+  sudo tee /etc/ssl/lightstack/lightstack.pem
 
 # Copy to controller2
-scp /etc/ssl/o3k/* controller2:/tmp/
-ssh controller2 "sudo mkdir -p /etc/ssl/o3k && sudo mv /tmp/o3k.* /etc/ssl/o3k/"
+scp /etc/ssl/lightstack/* controller2:/tmp/
+ssh controller2 "sudo mkdir -p /etc/ssl/lightstack && sudo mv /tmp/lightstack.* /etc/ssl/lightstack/"
 
 # Update HAProxy config for HTTPS
 sudo tee -a /etc/haproxy/haproxy.cfg <<EOF
 # HTTPS Frontend
 frontend https_front
-    bind *:443 ssl crt /etc/ssl/o3k/o3k.pem
+    bind *:443 ssl crt /etc/ssl/lightstack/lightstack.pem
     mode http
     default_backend keystone
 
@@ -854,7 +854,7 @@ sudo systemctl restart haproxy
 
 ```bash
 sudo apt install -y certbot python3-certbot-haproxy
-sudo certbot --haproxy -d o3k-api.example.com
+sudo certbot --haproxy -d lightstack-api.example.com
 ```
 
 ### Step 8: Monitoring and Logging
@@ -914,13 +914,13 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: 'o3k-controllers'
+  - job_name: 'lightstack-controllers'
     static_configs:
       - targets:
         - '192.168.10.11:9090'
         - '192.168.10.12:9090'
 
-  - job_name: 'o3k-compute'
+  - job_name: 'lightstack-compute'
     static_configs:
       - targets:
         - '192.168.10.21:9100'
@@ -952,8 +952,8 @@ curl http://192.168.10.10:9000/stats
 sudo ceph -s
 sudo ceph osd tree
 
-# O3K services
-systemctl status o3k.service
+# lightstack services
+systemctl status lightstack.service
 
 # Compute nodes
 openstack compute service list
@@ -965,9 +965,9 @@ openstack compute service list
 
 ```bash
 # 1. Prepare node (install KVM, configure networking)
-# 2. Copy O3K binary and config
+# 2. Copy lightstack binary and config
 # 3. Register with compute registry
-# 4. Start O3K service
+# 4. Start lightstack service
 # 5. Verify: openstack compute service list
 ```
 
@@ -984,24 +984,24 @@ sudo ceph osd tree
 
 ```bash
 # Automated daily backup script
-sudo tee /usr/local/bin/backup-o3k-db.sh <<'EOF'
+sudo tee /usr/local/bin/backup-lightstack-db.sh <<'EOF'
 #!/bin/bash
 BACKUP_DIR="/backup/postgres"
 DATE=$(date +%Y%m%d-%H%M%S)
 mkdir -p $BACKUP_DIR
 
 # Backup from primary
-pg_dump -h 192.168.10.10 -U o3k -d o3k | gzip > \
-  $BACKUP_DIR/o3k-$DATE.sql.gz
+pg_dump -h 192.168.10.10 -U lightstack -d lightstack | gzip > \
+  $BACKUP_DIR/lightstack-$DATE.sql.gz
 
 # Retain last 7 days
-find $BACKUP_DIR -name "o3k-*.sql.gz" -mtime +7 -delete
+find $BACKUP_DIR -name "lightstack-*.sql.gz" -mtime +7 -delete
 EOF
 
-sudo chmod +x /usr/local/bin/backup-o3k-db.sh
+sudo chmod +x /usr/local/bin/backup-lightstack-db.sh
 
 # Schedule daily at 2 AM
-echo "0 2 * * * /usr/local/bin/backup-o3k-db.sh" | sudo crontab -
+echo "0 2 * * * /usr/local/bin/backup-lightstack-db.sh" | sudo crontab -
 ```
 
 **Ceph snapshots**:
@@ -1057,7 +1057,7 @@ sudo apt install -y pgbouncer
 
 -- /etc/pgbouncer/pgbouncer.ini
 [databases]
-o3k = host=192.168.10.10 port=5432 dbname=o3k
+lightstack = host=192.168.10.10 port=5432 dbname=lightstack
 
 [pgbouncer]
 listen_addr = 127.0.0.1
@@ -1099,12 +1099,12 @@ sudo ip link set dev eth1 mtu 9000  # Ceph storage network
 
 ```bash
 # Check compute registry
-psql -h 192.168.10.10 -U o3k -d o3k \
+psql -h 192.168.10.10 -U lightstack -d lightstack \
   -c "SELECT * FROM compute_nodes;"
 
 # Force re-registration
 # Edit config: change node_id
-sudo systemctl restart o3k.service
+sudo systemctl restart lightstack.service
 ```
 
 ### VXLAN Connectivity Issues
@@ -1150,7 +1150,7 @@ sudo ceph osd reweight osd.1 0.9
 
 ## Conclusion
 
-This scaling guide provides a production-ready O3K deployment with:
+This scaling guide provides a production-ready Lightstack deployment with:
 - ✅ High Availability (2-3 controllers)
 - ✅ Horizontal Scaling (N compute nodes)
 - ✅ Shared Storage (Ceph RBD)
@@ -1160,7 +1160,7 @@ This scaling guide provides a production-ready O3K deployment with:
 - ✅ Backup & DR (automated backups)
 
 **Next Steps**:
-- Implement CI/CD for O3K updates
+- Implement CI/CD for Lightstack updates
 - Add more compute nodes based on workload
 - Scale Ceph cluster for capacity
 - Integrate with external authentication (LDAP/AD)

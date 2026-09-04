@@ -31,7 +31,7 @@ echo "  PRODUCTION LOGGING VERIFICATION"
 echo "=========================================="
 echo ""
 echo "This test verifies the structured logging implementation."
-echo "O3K should be running with logging.format: json in config."
+echo "Lightstack should be running with logging.format: json in config."
 echo ""
 
 # Test 1: JSON format logging
@@ -144,7 +144,7 @@ echo "  FUNCTIONAL VERIFICATION"
 echo "=========================================="
 echo ""
 
-echo "To verify logging is working, check your O3K output for:"
+echo "To verify logging is working, check your Lightstack output for:"
 echo ""
 echo "1. JSON Format Example:"
 echo '   {"level":"info","request_id":"...","method":"GET","path":"/v2.1/servers","status":200,"duration":5.2,"response_size":1234,"time":"...","message":"request completed"}'

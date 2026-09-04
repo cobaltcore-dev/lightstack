@@ -1,5 +1,5 @@
-# Horizon Custom Settings for O3K
-# This file configures Horizon to connect to O3K running on the host
+# Horizon Custom Settings for Lightstack
+# This file configures Horizon to connect to Lightstack running on the host
 
 import os
 
@@ -9,9 +9,9 @@ DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 # Allow all hosts (configure properly in production)
 ALLOWED_HOSTS = ['*']
 
-# OpenStack settings - connect to O3K container
-# Use "o3k" when running in Docker Compose, or "host.docker.internal" for host-based O3K
-OPENSTACK_HOST = os.environ.get('OPENSTACK_HOST', 'o3k')
+# OpenStack settings - connect to Lightstack container
+# Use "lightstack" when running in Docker Compose, or "host.docker.internal" for host-based Lightstack
+OPENSTACK_HOST = os.environ.get('OPENSTACK_HOST', 'lightstack')
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 
 # Default region
@@ -34,7 +34,7 @@ OPENSTACK_ENDPOINT_TYPE = "publicURL"
 
 # Available regions
 AVAILABLE_REGIONS = [
-    ('http://%s:35357/v3' % os.environ.get('OPENSTACK_HOST', 'o3k'), 'RegionOne'),
+    ('http://%s:35357/v3' % os.environ.get('OPENSTACK_HOST', 'lightstack'), 'RegionOne'),
 ]
 
 # Console type
@@ -145,7 +145,7 @@ if not DEBUG:
     SESSION_COOKIE_HTTPONLY = True
 
 # Custom branding (optional)
-SITE_BRANDING = "O3K OpenStack Dashboard"
+SITE_BRANDING = "Lightstack OpenStack Dashboard"
 
 # Available themes
 AVAILABLE_THEMES = [
@@ -160,8 +160,8 @@ DEFAULT_THEME = 'default'
 HORIZON_CONFIG = {
     "password_autocomplete": "on",
     "help_url": "https://docs.openstack.org",
-    "bug_url": "https://github.com/cobaltcore-dev/o3k/issues",
+    "bug_url": "https://github.com/cobaltcore-dev/lightstack/issues",
 }
 
-print("O3K Horizon configuration loaded successfully")
+print("Lightstack Horizon configuration loaded successfully")
 print(f"Connecting to Keystone at: {OPENSTACK_KEYSTONE_URL}")

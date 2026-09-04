@@ -29,7 +29,7 @@ export const options = {
   },
 };
 
-const BASE_URL = __ENV.O3K_URL || 'http://localhost:8774';
+const BASE_URL = __ENV.LIGHTSTACK_URL || 'http://localhost:8774';
 const KEYSTONE_URL = __ENV.KEYSTONE_URL || 'http://localhost:35357';
 
 // Get auth token (run once per VU)

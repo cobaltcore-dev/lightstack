@@ -1,14 +1,14 @@
-// Package teardown implements o3k's release-scoped cleanup: the purge the Helm
+// Package teardown implements Lightstack's release-scoped cleanup: the purge the Helm
 // pre-delete hook runs on `dataRetentionPolicy: delete` (SPEC-010 / issue #53,
 // cloud-storage#472).
 //
-// It removes everything o3k generated on the node and leaves the database to its
+// It removes everything Lightstack generated on the node and leaves the database to its
 // operator (the DB is read to enumerate what to purge, but never reset). Order:
 //   - compute: destroy + undefine the release's libvirt domains
 //   - network: remove all host network state (egress SNAT, floating-IP DNAT + the
 //     /32 on the uplink, security-group filters, metadata DNAT, dnsmasq, bridges,
 //     namespaces) — delegated to neutron.PurgeRealModeNetworkState
-//   - storage: remove every node-local tree under /var/lib/o3k (images, volumes,
+//   - storage: remove every node-local tree under /var/lib/lightstack (images, volumes,
 //     instances [VM disks], cloud-init ISOs, dhcp)
 //
 // Best-effort and idempotent per artifact (a missing artifact is success, FR-008)
@@ -16,7 +16,7 @@
 // purged, so the blocking hook fails and uninstall halts (FR-001/016). An
 // unreachable database is ignored, not fatal (C9): host state is then purged
 // best-effort (storage trees + a netns prefix scan). It runs in the existing single
-// binary as `o3k cleanup` (FR-010), is Kubernetes-API-free (research R1), and is
+// binary as `lightstack cleanup` (FR-010), is Kubernetes-API-free (research R1), and is
 // stub-safe (Constitution IV). Networked backends (RBD/S3) and the global
 // net.ipv4.ip_forward sysctl are deliberately left alone (operator-owned / host-wide).
 package teardown
@@ -29,12 +29,12 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/internal/neutron"
-	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
-	"github.com/cobaltcore-dev/o3k/pkg/networking"
-	"github.com/cobaltcore-dev/o3k/pkg/paths"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/neutron"
+	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -58,11 +58,11 @@ type Inventory struct {
 type deps struct {
 	deleteDomain func(ctx context.Context, id string) error
 	purgeNetwork func() error // remove all host network state (DB-driven, or netns-prefix fallback)
-	purgeStorage func() error // RemoveAll the node-local /var/lib/o3k trees (never RBD/S3 — C4/FR-015)
+	purgeStorage func() error // RemoveAll the node-local /var/lib/lightstack trees (never RBD/S3 — C4/FR-015)
 }
 
 // Run wires the real managers from cfg, enumerates the release's state, and purges
-// it. This is the entrypoint the `o3k cleanup` subcommand invokes.
+// it. This is the entrypoint the `lightstack cleanup` subcommand invokes.
 func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 	// Host hypervisor. Stub mode → no-op; real mode → connects to host libvirtd.
 	vmMgr, err := hypervisor.NewVMManager(cfg.Nova.LibvirtURI, cmp.Or(cfg.Nova.LibvirtMode, "stub"))
@@ -144,7 +144,7 @@ func execute(ctx context.Context, d deps, inv Inventory, opts Options, dbReachab
 		return fmt.Errorf("teardown incomplete: failed to purge %s", strings.Join(failed, ", "))
 	}
 	if dbReachable {
-		log.Info().Msg("teardown: complete — no o3k-generated host state remaining (database left to its operator)")
+		log.Info().Msg("teardown: complete — no lightstack-generated host state remaining (database left to its operator)")
 	} else {
 		log.Warn().Msg("teardown: complete (best-effort) — DB unreachable, so storage + prefixed namespaces were purged; host bridges/iptables/domains could not be enumerated and may remain (C9)")
 	}
@@ -193,7 +193,7 @@ func isAbsent(err error) bool {
 		strings.Contains(s, "already")
 }
 
-// purgeLocalStorage removes every node-local storage tree under /var/lib/o3k — VM
+// purgeLocalStorage removes every node-local storage tree under /var/lib/lightstack — VM
 // disk overlays (instances/), config-drive ISOs (cloud-init/), local Glance images
 // (images/), local Cinder volumes (volumes/), and dnsmasq state (dhcp/). It removes
 // ONLY local hostPath data — never networked RBD/S3 backends (operator-owned,
@@ -235,7 +235,7 @@ func enumerateDomainIDs(ctx context.Context) ([]string, error) {
 }
 
 // purgeNamespacesByPrefix is the DB-unreachable network fallback (C9): it deletes
-// o3k network namespaces by their well-known prefixes. Host bridges and iptables
+// Lightstack network namespaces by their well-known prefixes. Host bridges and iptables
 // can't be precisely enumerated without the DB and are left for the operator (logged).
 func purgeNamespacesByPrefix(nsMgr *networking.NetworkNamespaceManager, routerMgr *networking.RouterManager) error {
 	out, err := exec.Command("ip", "netns", "list").Output()

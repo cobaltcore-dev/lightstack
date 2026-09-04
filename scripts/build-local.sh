@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build O3K Docker image for current platform
+# Build Lightstack Docker image for current platform
 
 set -e
 
@@ -8,7 +8,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo "=========================================="
-echo "  O3K Docker Build (Current Platform)"
+echo "  Lightstack Docker Build (Current Platform)"
 echo "=========================================="
 echo ""
 
@@ -36,14 +36,14 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # Build
 docker build \
     --platform $PLATFORM \
-    -t o3k:latest \
+    -t lightstack:latest \
     -f deployments/docker/Dockerfile \
     .
 
 echo ""
 echo -e "${GREEN}✓ Build complete!${NC}"
 echo ""
-echo "Image: o3k:latest"
+echo "Image: lightstack:latest"
 echo "Platform: $PLATFORM"
 echo ""
 echo "To run:"

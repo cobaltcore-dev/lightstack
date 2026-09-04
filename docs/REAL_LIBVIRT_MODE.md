@@ -1,16 +1,16 @@
 # Real Libvirt Mode for Nova
 
-This guide explains how to enable and use real libvirt mode for Nova compute service, allowing O3K to create actual virtual machines using KVM/QEMU.
+This guide explains how to enable and use real libvirt mode for Nova compute service, allowing Lightstack to create actual virtual machines using KVM/QEMU.
 
 ---
 
 ## Overview
 
-O3K Nova supports two modes:
+Lightstack Nova supports two modes:
 - **stub**: Simulated VMs (no actual hypervisor, for testing)
 - **real**: Actual VMs via libvirt/KVM (production)
 
-In real mode, O3K uses the `go-libvirt` pure Go library to communicate with libvirt daemon, creating actual KVM virtual machines.
+In real mode, Lightstack uses the `go-libvirt` pure Go library to communicate with libvirt daemon, creating actual KVM virtual machines.
 
 ---
 
@@ -111,7 +111,7 @@ virsh --connect qemu:///system list --all
 
 ### Enable Real Mode
 
-Edit `config/o3k.yaml`:
+Edit `config/lightstack.yaml`:
 
 ```yaml
 nova:
@@ -247,7 +247,7 @@ virsh list --all
 
 ## VM XML Generation
 
-O3K automatically generates libvirt XML based on flavor, image, and network configuration.
+Lightstack automatically generates libvirt XML based on flavor, image, and network configuration.
 
 ### Example Generated XML
 
@@ -280,7 +280,7 @@ O3K automatically generates libvirt XML based on flavor, image, and network conf
     <!-- Boot disk -->
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' cache='writeback'/>
-      <source file='/var/lib/o3k/instances/instance-00000001/disk'/>
+      <source file='/var/lib/lightstack/instances/instance-00000001/disk'/>
       <target dev='vda' bus='virtio'/>
     </disk>
 
@@ -313,11 +313,11 @@ O3K automatically generates libvirt XML based on flavor, image, and network conf
 
 ### Local Storage
 
-VMs use qcow2 images from `~/.o3k/images/`:
+VMs use qcow2 images from `~/.lightstack/images/`:
 
 ```bash
 # Check VM disk
-ls -lh ~/.o3k/images/
+ls -lh ~/.lightstack/images/
 ```
 
 ### Ceph RBD Storage
@@ -378,7 +378,7 @@ virsh domblklist <uuid>
 
 ### Bridge-based Networking
 
-O3K creates Linux bridges for each network:
+Lightstack creates Linux bridges for each network:
 
 ```bash
 # List bridges
@@ -407,7 +407,7 @@ ip link show type tuntap
 
 ## Cloud-Init Integration
 
-O3K supports cloud-init for VM customization:
+Lightstack supports cloud-init for VM customization:
 
 ### Meta-Data
 
@@ -426,7 +426,7 @@ packages:
   - htop
 
 runcmd:
-  - echo "VM initialized by O3K" > /var/log/o3k.log
+  - echo "VM initialized by lightstack" > /var/log/lightstack.log
 
 ssh_authorized_keys:
   - ssh-rsa AAAAB3NzaC1yc2E... user@host
@@ -434,12 +434,12 @@ ssh_authorized_keys:
 
 ### Cloud-Init ISO
 
-O3K generates a cloud-init ISO and attaches it as a CD-ROM:
+Lightstack generates a cloud-init ISO and attaches it as a CD-ROM:
 
 ```xml
 <disk type='file' device='cdrom'>
   <driver name='qemu' type='raw'/>
-  <source file='/var/lib/o3k/cloud-init/instance-00000001.iso'/>
+  <source file='/var/lib/lightstack/cloud-init/instance-00000001.iso'/>
   <target dev='hdc' bus='ide'/>
   <readonly/>
 </disk>
@@ -508,7 +508,7 @@ mount -t hugetlbfs hugetlbfs /dev/hugepages
 
 ### Virtio Drivers
 
-Always use virtio drivers for best performance (already default in O3K):
+Always use virtio drivers for best performance (already default in lightstack):
 
 - **Network**: `virtio-net`
 - **Disk**: `virtio-blk` or `virtio-scsi`
@@ -552,14 +552,14 @@ tail -f /var/log/libvirt/libvirtd.log
 tail -f /var/log/libvirt/qemu/<domain-name>.log
 ```
 
-### O3K Logs
+### Lightstack Logs
 
 ```bash
-# O3K service logs
-journalctl -u o3k -f
+# lightstack service logs
+journalctl -u lightstack -f
 
 # Check VM creation
-grep "CreateVM" /var/log/o3k.log
+grep "CreateVM" /var/log/lightstack.log
 ```
 
 ---
@@ -651,7 +651,7 @@ sudo chmod 666 /dev/kvm
 openstack server list -f json > instances.json
 
 # Backup database
-pg_dump o3k > backup.sql
+pg_dump lightstack > backup.sql
 ```
 
 ### Step 2: Install Prerequisites
@@ -665,10 +665,10 @@ nova:
   libvirt_mode: real
 ```
 
-### Step 4: Restart O3K
+### Step 4: Restart Lightstack
 
 ```bash
-sudo systemctl restart o3k
+sudo systemctl restart lightstack
 ```
 
 ### Step 5: Recreate VMs
@@ -699,7 +699,7 @@ Stub mode VMs don't translate to real VMs. You'll need to:
 # Check AppArmor status
 sudo aa-status
 
-# Allow O3K access
+# Allow lightstack access
 sudo aa-complain /usr/sbin/libvirtd
 ```
 

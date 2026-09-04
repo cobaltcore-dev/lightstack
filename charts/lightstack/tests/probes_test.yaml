@@ -1,0 +1,88 @@
+# helm-unittest specs for the SPEC-013 health probes (T017/T024).
+# The probes live in the shared lightstack.podSpec, so they must render identically on
+# the single-node Deployment and the multi-node DaemonSet.
+suite: health probes wiring (SPEC-013)
+templates:
+  - templates/deployment.yaml
+  - templates/daemonset.yaml
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+tests:
+  - it: readiness + startup gate on /readyz, liveness on /livez (single-node Deployment)
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: identity
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.failureThreshold
+          value: 30
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /livez
+
+  - it: probes are wired identically on the multi-node DaemonSet
+    template: templates/daemonset.yaml
+    set:
+      deploymentMode: multi-node
+    asserts:
+      - isKind:
+          of: DaemonSet
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /livez
+
+  - it: liveness never targets the DB-gated path (no crash-loop on a DB outage)
+    template: templates/deployment.yaml
+    asserts:
+      - notEqual:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /readyz
+
+  - it: each probe is individually disableable
+    template: templates/deployment.yaml
+    set:
+      probes.startup.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].startupProbe
+      - exists:
+          path: spec.template.spec.containers[0].readinessProbe
+
+  - it: probe timing is overridable
+    template: templates/deployment.yaml
+    set:
+      probes.readiness.periodSeconds: 7
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.periodSeconds
+          value: 7
+
+  - it: terminationGracePeriod is set; drain env appears only when drainSeconds > 0
+    template: templates/deployment.yaml
+    set:
+      drainSeconds: 5
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 30
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DRAIN_SECONDS
+            value: "5"

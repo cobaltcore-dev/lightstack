@@ -136,32 +136,32 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	// Environment variable overrides
-	if dbURL := os.Getenv("O3K_DB_URL"); dbURL != "" {
+	if dbURL := os.Getenv("LIGHTSTACK_DB_URL"); dbURL != "" {
 		cfg.Database.URL = dbURL
 	}
-	if jwtSecret := os.Getenv("O3K_JWT_SECRET"); jwtSecret != "" {
+	if jwtSecret := os.Getenv("LIGHTSTACK_JWT_SECRET"); jwtSecret != "" {
 		cfg.Keystone.JWTSecret = jwtSecret
 	}
 	// Glance S3/RGW overrides (handy when config is mounted read-only).
-	if v := os.Getenv("O3K_GLANCE_STORAGE_MODE"); v != "" {
+	if v := os.Getenv("LIGHTSTACK_GLANCE_STORAGE_MODE"); v != "" {
 		cfg.Glance.StorageMode = v
 	}
-	if v := os.Getenv("O3K_GLANCE_S3_ENDPOINT"); v != "" {
+	if v := os.Getenv("LIGHTSTACK_GLANCE_S3_ENDPOINT"); v != "" {
 		cfg.Glance.S3Endpoint = v
 	}
-	if v := os.Getenv("O3K_GLANCE_S3_BUCKET"); v != "" {
+	if v := os.Getenv("LIGHTSTACK_GLANCE_S3_BUCKET"); v != "" {
 		cfg.Glance.S3Bucket = v
 	}
-	if v := os.Getenv("O3K_GLANCE_S3_REGION"); v != "" {
+	if v := os.Getenv("LIGHTSTACK_GLANCE_S3_REGION"); v != "" {
 		cfg.Glance.S3Region = v
 	}
-	if v := os.Getenv("O3K_GLANCE_S3_CA_BUNDLE"); v != "" {
+	if v := os.Getenv("LIGHTSTACK_GLANCE_S3_CA_BUNDLE"); v != "" {
 		cfg.Glance.S3CABundle = v
 	}
 	// Two-way override: an operator must be able to turn skip-verify OFF from the
 	// env even if the mounted config shipped it on (matches OpenStack's symmetric
 	// `insecure` config booleans). Unrecognized/empty values keep the file value.
-	switch os.Getenv("O3K_GLANCE_S3_INSECURE_SKIP_VERIFY") {
+	switch os.Getenv("LIGHTSTACK_GLANCE_S3_INSECURE_SKIP_VERIFY") {
 	case "true", "1":
 		cfg.Glance.S3InsecureSkipVerify = true
 	case "false", "0":
@@ -169,17 +169,17 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	// A malformed duration is ignored (the file value stands) and warned about,
 	// rather than silently zeroing the timeout.
-	if v := os.Getenv("O3K_GLANCE_S3_CONNECT_TIMEOUT"); v != "" {
+	if v := os.Getenv("LIGHTSTACK_GLANCE_S3_CONNECT_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Glance.S3ConnectTimeout = d
 		} else {
-			fmt.Fprintf(os.Stderr, "WARNING: ignoring invalid O3K_GLANCE_S3_CONNECT_TIMEOUT %q: %v\n", v, err)
+			fmt.Fprintf(os.Stderr, "WARNING: ignoring invalid LIGHTSTACK_GLANCE_S3_CONNECT_TIMEOUT %q: %v\n", v, err)
 		}
 	}
 
 	// Warn if using default JWT secret
 	if cfg.Keystone.JWTSecret == "change-me-in-production" {
-		fmt.Fprintln(os.Stderr, "WARNING: Using default JWT secret! Set O3K_JWT_SECRET environment variable in production.")
+		fmt.Fprintln(os.Stderr, "WARNING: Using default JWT secret! Set LIGHTSTACK_JWT_SECRET environment variable in production.")
 	}
 
 	return &cfg, nil

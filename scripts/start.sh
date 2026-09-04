@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick startup script for O3K Docker Compose deployment
+# Quick startup script for Lightstack Docker Compose deployment
 
 set -e
 
@@ -9,7 +9,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo "=========================================="
-echo "  O3K Docker Compose Startup"
+echo "  Lightstack Docker Compose Startup"
 echo "=========================================="
 echo ""
 
@@ -44,12 +44,18 @@ fi
 # Use appropriate compose command
 COMPOSE_CMD="${COMPOSE_CMD:-docker compose}"
 
+# Identity listens on keystone.port (35357), not the upstream Keystone convention of
+# 5000. One declaration for the conflict check, the readiness probe and the URLs printed
+# at the end, so they cannot drift apart again.
+KEYSTONE_PORT="${KEYSTONE_PORT:-35357}"
+IDENTITY_URL="http://localhost:${KEYSTONE_PORT}/v3"
+
 # Check for existing services
 echo -e "${YELLOW}[3/5]${NC} Checking for conflicts..."
-if lsof -i:5000 &> /dev/null; then
-    echo -e "${RED}✗${NC} Port 5000 is already in use"
-    echo "Please stop any service using port 5000"
-    lsof -i:5000
+if lsof -i:"$KEYSTONE_PORT" &> /dev/null; then
+    echo -e "${RED}✗${NC} Port $KEYSTONE_PORT is already in use"
+    echo "Please stop any service using port $KEYSTONE_PORT"
+    lsof -i:"$KEYSTONE_PORT"
     exit 1
 fi
 
@@ -57,7 +63,7 @@ echo -e "${GREEN}✓${NC} Ports are available"
 
 # Start services
 echo -e "${YELLOW}[4/5]${NC} Starting services..."
-echo "This may take 2-3 minutes on first run (downloading images, building O3K)..."
+echo "This may take 2-3 minutes on first run (downloading images, building Lightstack)..."
 
 cd "$(dirname "$0")"
 $COMPOSE_CMD up -d --build
@@ -71,9 +77,9 @@ MAX_ATTEMPTS=60
 ATTEMPT=0
 
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-    # Check O3K health
-    if curl -sf http://localhost:5000/v3 > /dev/null 2>&1; then
-        echo -e "\n${GREEN}✓${NC} O3K is ready!"
+    # Check Lightstack health
+    if curl -sf "$IDENTITY_URL" > /dev/null 2>&1; then
+        echo -e "\n${GREEN}✓${NC} Lightstack is ready!"
         break
     fi
     ATTEMPT=$((ATTEMPT + 1))
@@ -83,10 +89,10 @@ done
 
 if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
     echo ""
-    echo -e "${RED}✗${NC} O3K did not start in time"
+    echo -e "${RED}✗${NC} Lightstack did not start in time"
     echo ""
     echo "Check logs with:"
-    echo "  $COMPOSE_CMD logs o3k"
+    echo "  $COMPOSE_CMD logs lightstack"
     exit 1
 fi
 
@@ -110,7 +116,7 @@ if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
     echo ""
     echo "You can still use the OpenStack CLI:"
     echo "  pipx install python-openstackclient"
-    echo "  export OS_AUTH_URL=http://localhost:5000/v3"
+    echo "  export OS_AUTH_URL=$IDENTITY_URL"
     echo "  export OS_USERNAME=admin"
     echo "  export OS_PASSWORD=secret"
     echo "  export OS_PROJECT_NAME=default"
@@ -122,7 +128,7 @@ fi
 
 echo ""
 echo "=========================================="
-echo "  O3K is Ready!"
+echo "  Lightstack is Ready!"
 echo "=========================================="
 echo ""
 echo -e "${GREEN}Services Status:${NC}"
@@ -130,7 +136,7 @@ $COMPOSE_CMD ps
 echo ""
 echo -e "${GREEN}Access Points:${NC}"
 echo "  Web UI:       http://localhost/dashboard"
-echo "  API (Auth):   http://localhost:5000/v3"
+echo "  API (Auth):   $IDENTITY_URL"
 echo "  API (Compute) http://localhost:8774/v2.1"
 echo "  API (Network) http://localhost:9696/v2.0"
 echo ""
@@ -146,7 +152,7 @@ echo "  Restart:       $COMPOSE_CMD restart"
 echo "  Rebuild:       $COMPOSE_CMD up -d --build"
 echo ""
 echo -e "${GREEN}OpenStack CLI Setup:${NC}"
-echo "  source /tmp/o3k-env.sh"
+echo "  source /tmp/lightstack-env.sh"
 echo "  openstack server list"
 echo ""
 

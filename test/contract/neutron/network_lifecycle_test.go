@@ -3,7 +3,7 @@ package neutron_test
 import (
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
@@ -15,7 +15,7 @@ import (
 
 // TestNeutronNetworkCreate_Contract tests basic network creation
 func TestNeutronNetworkCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -48,7 +48,7 @@ func TestNeutronNetworkCreate_Contract(t *testing.T) {
 
 // TestNeutronSubnetCreate_Contract tests subnet creation
 func TestNeutronSubnetCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -93,7 +93,7 @@ func TestNeutronSubnetCreate_Contract(t *testing.T) {
 
 // TestNeutronPortCreate_Contract tests port creation
 func TestNeutronPortCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -135,7 +135,7 @@ func TestNeutronPortCreate_Contract(t *testing.T) {
 
 // TestNeutronFloatingIPCreate_Contract tests floating IP creation
 func TestNeutronFloatingIPCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -177,7 +177,7 @@ func TestNeutronFloatingIPCreate_Contract(t *testing.T) {
 
 // TestNeutronNetworkLifecycle_Contract tests complete network resource lifecycle
 func TestNeutronNetworkLifecycle_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

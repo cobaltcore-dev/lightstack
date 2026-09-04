@@ -14,7 +14,7 @@ import (
 
 // TestNovaListServerTags_Contract tests GET /v2.1/servers/:id/tags
 func TestNovaListServerTags_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -52,7 +52,7 @@ func TestNovaListServerTags_Contract(t *testing.T) {
 
 // TestNovaReplaceServerTags_Contract tests PUT /v2.1/servers/:id/tags
 func TestNovaReplaceServerTags_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -97,7 +97,7 @@ func TestNovaReplaceServerTags_Contract(t *testing.T) {
 
 // TestNovaAddServerTag_Contract tests PUT /v2.1/servers/:id/tags/:tag
 func TestNovaAddServerTag_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -142,7 +142,7 @@ func TestNovaAddServerTag_Contract(t *testing.T) {
 
 // TestNovaDeleteServerTag_Contract tests DELETE /v2.1/servers/:id/tags/:tag
 func TestNovaDeleteServerTag_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -177,7 +177,7 @@ func TestNovaDeleteServerTag_Contract(t *testing.T) {
 
 // TestNovaDeleteAllServerTags_Contract tests DELETE /v2.1/servers/:id/tags
 func TestNovaDeleteAllServerTags_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

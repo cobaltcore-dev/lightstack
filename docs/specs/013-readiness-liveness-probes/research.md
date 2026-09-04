@@ -29,9 +29,9 @@ All spec `NEEDS CLARIFICATION` were resolved by the 11 clarifications (spec `## 
 - **Sources**: oslo.middleware healthcheck plugins doc; Octavia API Health Monitoring admin doc.
 
 ## R6 — Observability (Q9)
-- **Decision**: structured log on each readiness transition (with cause); **no** o3k-exposed metrics endpoint.
-- **Rationale**: readiness is already scrapable at the platform layer via `kube-state-metrics` (`kube_pod_status_ready`) — the k8s-native path; a self-exposed metric duplicates it and pulls in a metrics subsystem o3k lacks.
-- **Alternatives**: o3k Prometheus gauge (redundant + new subsystem); nothing (loses the cheap, high-value transition log).
+- **Decision**: structured log on each readiness transition (with cause); **no** lightstack-exposed metrics endpoint.
+- **Rationale**: readiness is already scrapable at the platform layer via `kube-state-metrics` (`kube_pod_status_ready`) — the k8s-native path; a self-exposed metric duplicates it and pulls in a metrics subsystem Lightstack lacks.
+- **Alternatives**: Lightstack Prometheus gauge (redundant + new subsystem); nothing (loses the cheap, high-value transition log).
 
 ## R7 — External exposure (Q8)
 - **Decision**: serve unauthenticated on the identity port; **document** that operators restrict external access at their LB/Ingress; chart adds no per-path deny rules.
@@ -48,8 +48,8 @@ All spec `NEEDS CLARIFICATION` were resolved by the 11 clarifications (spec `## 
 - **Rationale**: readiness removal from a Service is asynchronous; flipping not-ready and pausing before closing listeners prevents dropped in-flight/newly-routed requests during rollouts. Matters most for scalable stub-mode deployments (real mode pins 1 replica, Recreate).
 - **Alternatives**: immediate shutdown (drops requests mid-rollout); rely only on preStop (still need the readiness flip to leave endpoints).
 
-## R10 — `o3k healthcheck` CLI (FR-011)
-- **Decision**: dispatch `o3k healthcheck [--ready|--live] [--addr]` like the existing `o3k cleanup` (intercept `os.Args[1]` before `flag.Parse`); it issues an HTTP GET to `localhost:<identityPort>/readyz` (or `/livez`), prints the reason, exits 0/1.
+## R10 — `lightstack healthcheck` CLI (FR-011)
+- **Decision**: dispatch `lightstack healthcheck [--ready|--live] [--addr]` like the existing `lightstack cleanup` (intercept `os.Args[1]` before `flag.Parse`); it issues an HTTP GET to `localhost:<identityPort>/readyz` (or `/livez`), prints the reason, exits 0/1.
 - **Rationale**: reuses the established subcommand pattern; usable as an exec-probe alternative and for host-side diagnosis without a token.
 - **Alternatives**: separate binary (violates single-binary, Principle VI); none (loses local diagnosis affordance).
 

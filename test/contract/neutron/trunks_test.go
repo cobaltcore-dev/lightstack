@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,14 +18,14 @@ import (
 // Helper to create test port in database (bypasses bridge issues)
 func createDBPort(t *testing.T, name string) string {
 	portID := uuid.New().String()
-	cmd := fmt.Sprintf(`docker exec o3k-postgres psql -U o3k -d o3k -c "INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at) SELECT '%s', '%s', id, (SELECT id FROM projects WHERE name='default' LIMIT 1), '00:00:00:00:00:00', true, 'ACTIVE', '[]', NOW(), NOW() FROM networks LIMIT 1 ON CONFLICT DO NOTHING;"`, portID, name)
+	cmd := fmt.Sprintf(`docker exec lightstack-postgres psql -U lightstack -d lightstack -c "INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at) SELECT '%s', '%s', id, (SELECT id FROM projects WHERE name='default' LIMIT 1), '00:00:00:00:00:00', true, 'ACTIVE', '[]', NOW(), NOW() FROM networks LIMIT 1 ON CONFLICT DO NOTHING;"`, portID, name)
 	exec.Command("sh", "-c", cmd).Run()
 	return portID
 }
 
 // TestTrunkBasicCRUD tests trunk CRUD operations
 func TestTrunkBasicCRUD(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := contract.SetupNeutronClient(t)
 
 	portID := createDBPort(t, "test-trunk-port")
@@ -94,12 +94,12 @@ func TestTrunkBasicCRUD(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	// Cleanup
-	exec.Command("sh", "-c", fmt.Sprintf(`docker exec o3k-postgres psql -U o3k -d o3k -c "DELETE FROM ports WHERE id='%s';"`, portID)).Run()
+	exec.Command("sh", "-c", fmt.Sprintf(`docker exec lightstack-postgres psql -U lightstack -d lightstack -c "DELETE FROM ports WHERE id='%s';"`, portID)).Run()
 }
 
 // TestTrunkSubports tests adding subports
 func TestTrunkSubports(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := contract.SetupNeutronClient(t)
 
 	parentPort := createDBPort(t, "trunk-parent")
@@ -148,5 +148,5 @@ func TestTrunkSubports(t *testing.T) {
 
 	// Cleanup
 	http.NewRequest("DELETE", client.ServiceURL("trunks", trunkID), nil)
-	exec.Command("sh", "-c", fmt.Sprintf(`docker exec o3k-postgres psql -U o3k -d o3k -c "DELETE FROM ports WHERE id IN ('%s', '%s');"`, parentPort, subPort)).Run()
+	exec.Command("sh", "-c", fmt.Sprintf(`docker exec lightstack-postgres psql -U lightstack -d lightstack -c "DELETE FROM ports WHERE id IN ('%s', '%s');"`, parentPort, subPort)).Run()
 }

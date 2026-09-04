@@ -1,5 +1,5 @@
 #!/bin/bash
-# Simple O3K Integration Test
+# Simple Lightstack Integration Test
 # Quick validation of all services
 
 # Note: NOT using set -e because we explicitly track pass/fail counts
@@ -220,7 +220,7 @@ test_glance() {
 
 # Main
 echo "=========================================="
-echo " O3K Quick Integration Test"
+echo " Lightstack Quick Integration Test"
 echo "=========================================="
 echo ""
 

@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"text/template"
 
-	"github.com/cobaltcore-dev/o3k/pkg/paths"
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
 // DHCPManager manages DHCP servers (dnsmasq)
@@ -131,7 +131,7 @@ func (m *DHCPManager) StartDHCP(config DHCPConfig, nsName string) error {
 // killProcess terminates EVERY dnsmasq bound to a network's config (not just the
 // one named in the pid-file) and clears its tracked PID, leaving the lease file
 // intact so a later StartDHCP preserves existing leases. Killing all of them
-// stops orphans from a previous o3k accumulating into multiple dnsmasq on one
+// stops orphans from a previous Lightstack accumulating into multiple dnsmasq on one
 // bridge (SPEC-009 WS-2).
 func (m *DHCPManager) killProcess(networkID string) {
 	// pkill -f matches the config path in the cmdline → catches untracked orphans
@@ -185,7 +185,7 @@ func (m *DHCPManager) RestartDHCP(config DHCPConfig, nsName string) error {
 // EnsureDHCP guarantees exactly one dnsmasq serves the network without
 // double-starting. If one is already tracked as running it is a no-op; otherwise
 // it first kills any process named in the persisted pid-file — an orphan left by
-// a previous o3k instance, since pid-files live on the hostPath and survive a
+// a previous Lightstack instance, since pid-files live on the hostPath and survive a
 // control-plane restart — then starts a fresh one. Serialized against RestartDHCP
 // (and itself) via restartMu so a periodic reconcile and a concurrent
 // port-allocation reload can't each spawn a dnsmasq on the same bridge
@@ -199,7 +199,7 @@ func (m *DHCPManager) EnsureDHCP(config DHCPConfig, nsName string) error {
 	if m.IsRunning(config.NetworkID) {
 		return nil // already serving and tracked — idempotent
 	}
-	m.killProcess(config.NetworkID) // reap a stale orphan from a previous o3k before starting
+	m.killProcess(config.NetworkID) // reap a stale orphan from a previous Lightstack before starting
 	return m.StartDHCP(config, nsName)
 }
 

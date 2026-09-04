@@ -12,7 +12,7 @@ import (
 
 // TestCinderListAvailabilityZones_Contract tests GET /v3/:project/os-availability-zone
 func TestCinderListAvailabilityZones_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

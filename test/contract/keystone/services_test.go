@@ -14,7 +14,7 @@ import (
 
 // TestKeystoneListServices_Contract tests GET /v3/services
 func TestKeystoneListServices_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -44,7 +44,7 @@ func TestKeystoneListServices_Contract(t *testing.T) {
 
 // TestKeystoneCreateService_Contract tests POST /v3/services
 func TestKeystoneCreateService_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -88,7 +88,7 @@ func TestKeystoneCreateService_Contract(t *testing.T) {
 
 // TestKeystoneListEndpoints_Contract tests GET /v3/endpoints
 func TestKeystoneListEndpoints_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -118,7 +118,7 @@ func TestKeystoneListEndpoints_Contract(t *testing.T) {
 
 // TestKeystoneGetService_Contract tests GET /v3/services/:id
 func TestKeystoneGetService_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupKeystoneClient(t)
 
 	// Use existing seeded service (Keystone)
@@ -148,7 +148,7 @@ func TestKeystoneGetService_Contract(t *testing.T) {
 
 // TestKeystoneUpdateService_Contract tests PATCH /v3/services/:id
 func TestKeystoneUpdateService_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupKeystoneClient(t)
 
 	// Create test service
@@ -209,7 +209,7 @@ func TestKeystoneUpdateService_Contract(t *testing.T) {
 
 // TestKeystoneDeleteService_Contract tests DELETE /v3/services/:id
 func TestKeystoneDeleteService_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupKeystoneClient(t)
 
 	// Create test service
@@ -257,7 +257,7 @@ func TestKeystoneDeleteService_Contract(t *testing.T) {
 
 // TestKeystoneCreateEndpoint_Contract tests POST /v3/endpoints
 func TestKeystoneCreateEndpoint_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupKeystoneClient(t)
 
 	// Use existing service (Keystone)
@@ -299,7 +299,7 @@ func TestKeystoneCreateEndpoint_Contract(t *testing.T) {
 
 // TestKeystoneDeleteEndpoint_Contract tests DELETE /v3/endpoints/:id
 func TestKeystoneDeleteEndpoint_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupKeystoneClient(t)
 
 	// Create endpoint first

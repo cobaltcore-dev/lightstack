@@ -14,7 +14,7 @@ import (
 // SPEC-014 FR-005/FR-007: the OpenStack EC2-credentials API round-trip
 // (create -> list -> show -> delete) at /v3/users/:id/credentials/OS-EC2.
 func TestKeystoneEC2CredentialLifecycle_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupKeystoneClient(t)
 
 	const userID = "00000000-0000-0000-0000-000000000001"    // seeded admin user

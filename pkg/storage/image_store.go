@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/cobaltcore-dev/o3k/pkg/paths"
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -117,8 +117,8 @@ func NewImageStore(mode, cephPool, cephConf string, s3opts S3Options) (*ImageSto
 
 	// Always resolve to the canonical node-local image dir (the chart's
 	// persistent hostPath). SPEC-011 / cloud-storage#510: Glance previously fell
-	// back to ~/.o3k/images when this dir was absent at startup, but Nova always
-	// reads LocalImagePath() under /var/lib/o3k/images — so the fallback silently
+	// back to ~/.lightstack/images when this dir was absent at startup, but Nova always
+	// reads LocalImagePath() under /var/lib/lightstack/images — so the fallback silently
 	// diverged the write and read locations and VMs booted to ERROR. Mirror the
 	// other local-storage services (see ceph.go): resolve unconditionally and
 	// create it (below); never relocate.

@@ -5,21 +5,21 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
 // PurgeRealModeNetworkState removes the real-mode host network state this node
 // created — the inverse of the reconciler (SPEC-010 teardown / cloud-storage#472,
-// o3k#53). It enumerates from the database (read-only; the DB is operator-owned and
+// Lightstack#53). It enumerates from the database (read-only; the DB is operator-owned and
 // is never reset by teardown) and calls the existing Remove* helpers, in reverse of
 // how the reconciler asserts them:
 //
 //  1. floating-IP DNAT (+ the /32 on the uplink) and per-VM ingress SG filters
 //  2. egress SNAT for internal subnets behind an external-gateway router
-//     2b. per-security-group iptables chains (O3K-SG-*), best-effort
+//     2b. per-security-group iptables chains (lightstack-SG-*), best-effort
 //  3. per network: stop dnsmasq, remove the 169.254.169.254 DNAT, delete the bridge
 //  4. router namespaces, then tenant/project namespaces
 //
@@ -88,7 +88,7 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 		}
 	}
 
-	// 2b. Per-security-group iptables chains (O3K-SG-*, east-west SG in iptables mode).
+	// 2b. Per-security-group iptables chains (lightstack-SG-*, east-west SG in iptables mode).
 	// Best-effort: a chain that was never materialized (stub/ebpf) or is still
 	// referenced by a port jump is logged, NOT counted — it must not abort the
 	// teardown (issue #53 topic 3 / option b). A DB query failure IS a real error.

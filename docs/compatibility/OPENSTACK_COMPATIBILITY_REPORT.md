@@ -1,13 +1,13 @@
 # OpenStack 2025.2 API Compatibility Report
 **Generated**: 2026-03-24
-**O3K Version**: v0.5.0 (estimated based on status)
+**lightstack Version**: v0.5.0 (estimated based on status)
 **Baseline**: OpenStack 2025.2 Epoxy Release
 
 ---
 
 ## Executive Summary
 
-O3K demonstrates **strong API compatibility** with OpenStack 2025.2, achieving:
+Lightstack demonstrates **strong API compatibility** with OpenStack 2025.2, achieving:
 - **308/330 endpoints implemented** (93% coverage)
 - **76 contract test files** validating API contracts
 - **100% compatibility** with Terraform, Horizon UI, and OpenStack CLI
@@ -23,7 +23,7 @@ O3K demonstrates **strong API compatibility** with OpenStack 2025.2, achieving:
 | **Glance** | 6 | TBD | TBD | N/A | ⚠️ Not Tested* |
 | **TOTAL** | **77** | **52+** | **3** | **>90%** | ✅ PRODUCTION READY |
 
-*Tests not executed due to service catalog hostname resolution (Docker internal `o3k` hostname vs `localhost`). This is expected behavior and not a bug.
+*Tests not executed due to service catalog hostname resolution (Docker internal `lightstack` hostname vs `localhost`). This is expected behavior and not a bug.
 
 ---
 
@@ -404,7 +404,7 @@ O3K demonstrates **strong API compatibility** with OpenStack 2025.2, achieving:
 ### Test Infrastructure
 2. **Hostname Resolution in Contract Tests**
    - **Impact**: Tests fail when run outside Docker network
-   - **Cause**: Service catalog returns `o3k` hostname (Docker internal)
+   - **Cause**: Service catalog returns `lightstack` hostname (Docker internal)
    - **Resolution**: Tests should run in Docker network OR use localhost-based catalog
    - **Not a bug**: Expected behavior for containerized deployment
 
@@ -437,7 +437,7 @@ O3K demonstrates **strong API compatibility** with OpenStack 2025.2, achieving:
 
 ## Conclusion
 
-O3K demonstrates **excellent OpenStack 2025.2 API compatibility** with:
+Lightstack demonstrates **excellent OpenStack 2025.2 API compatibility** with:
 
 ### Strengths
 - ✅ **93% endpoint coverage** (308/330) - Production ready
@@ -453,7 +453,7 @@ O3K demonstrates **excellent OpenStack 2025.2 API compatibility** with:
 - ⚠️ Add microversion negotiation tests
 
 ### Production Readiness
-O3K is **production-ready** for 95%+ of OpenStack use cases. The remaining gaps are:
+Lightstack is **production-ready** for 95%+ of OpenStack use cases. The remaining gaps are:
 - Enterprise-only features (<1% usage)
 - Edge cases better implemented on-demand
 - LOW priority enhancements with minimal user impact
@@ -464,4 +464,4 @@ O3K is **production-ready** for 95%+ of OpenStack use cases. The remaining gaps 
 
 **Report Generated**: 2026-03-24
 **Next Review**: After service catalog bug fix (v0.5.1)
-**Contact**: O3K Development Team
+**Contact**: Lightstack Development Team

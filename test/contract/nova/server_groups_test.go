@@ -13,7 +13,7 @@ import (
 
 // TestNovaCreateServerGroup_Contract tests POST /v2.1/:project_id/os-server-groups
 func TestNovaCreateServerGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -62,7 +62,7 @@ func TestNovaCreateServerGroup_Contract(t *testing.T) {
 
 // TestNovaListServerGroups_Contract tests GET /v2.1/:project_id/os-server-groups
 func TestNovaListServerGroups_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -104,7 +104,7 @@ func TestNovaListServerGroups_Contract(t *testing.T) {
 
 // TestNovaGetServerGroup_Contract tests GET /v2.1/:project_id/os-server-groups/:id
 func TestNovaGetServerGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -161,7 +161,7 @@ func TestNovaGetServerGroup_Contract(t *testing.T) {
 
 // TestNovaDeleteServerGroup_Contract tests DELETE /v2.1/:project_id/os-server-groups/:id
 func TestNovaDeleteServerGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

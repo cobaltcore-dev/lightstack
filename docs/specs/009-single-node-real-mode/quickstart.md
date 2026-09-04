@@ -7,7 +7,7 @@ End-to-end validation runbook for the acceptance criteria (SC-001…SC-010). Rea
 ## 0. Prerequisites
 
 1. **Host**: Ubuntu with KVM + libvirtd running (`systemctl status libvirtd`, `kvm-ok`). Note the uplink: `ip route get 1.1.1.1`.
-2. **Image tools**: the o3k binary/image needs `qemu-img` + `genisoimage` + `dnsmasq` on PATH (the reference Dockerfile installs them).
+2. **Image tools**: the Lightstack binary/image needs `qemu-img` + `genisoimage` + `dnsmasq` on PATH (the reference Dockerfile installs them).
 3. **Database**: a reachable PostgreSQL (e.g. a `postgres` container on the host).
 4. **Test image**: `cirros` (`cirros.img`, ~20 MB) — small, cloud-init-aware, DHCP + SSH. Note: cirros busybox has **no `mkfs`**, so volume persistence is checked at the raw block level.
 5. **Floating IP**: on a single host the FIP is hosted as a `/32` on the uplink and DNAT'd to the VM (no MetalLB needed). A routable **pool** to a hosting node is v2 (#52).
@@ -15,10 +15,10 @@ End-to-end validation runbook for the acceptance criteria (SC-001…SC-010). Rea
 ## 1. Build
 
 ```bash
-make build                                       # bin/o3k
+make build                                       # bin/lightstack
 # (Helm only) container image with the real-mode tools:
-docker build -t o3k:dev -f build/package/Dockerfile .
-docker save o3k:dev -o /tmp/o3k-dev.tar && sudo k3s ctr images import /tmp/o3k-dev.tar
+docker build -t lightstack:dev -f build/package/Dockerfile .
+docker save lightstack:dev -o /tmp/lightstack-dev.tar && sudo k3s ctr images import /tmp/lightstack-dev.tar
 ```
 
 ## 2. Deploy in real mode — pick one
@@ -26,9 +26,9 @@ docker save o3k:dev -o /tmp/o3k-dev.tar && sudo k3s ctr images import /tmp/o3k-d
 **Option A — Helm (the chart deliverable).** `deploymentMode` defaults to `single-node`; real mode is gated by `realMode.enabled`:
 
 ```bash
-helm install o3k ./charts/o3k \
-  --set image.repository=o3k --set image.tag=dev --set image.pullPolicy=Never \
-  --set database.url='postgres://o3k:<pw>@<host>:5432/o3k?sslmode=disable' \
+helm install lightstack ./charts/lightstack \
+  --set image.repository=lightstack --set image.tag=dev --set image.pullPolicy=Never \
+  --set database.url='postgres://lightstack:<pw>@<host>:5432/lightstack?sslmode=disable' \
   --set secrets.jwtSecret='<strong-random>' --set secrets.adminPassword='<non-default>' \
   --set nova.libvirtMode=real \
   --set neutron.networkingMode=iptables --set neutron.securityGroupMode=iptables \
@@ -40,13 +40,13 @@ helm install o3k ./charts/o3k \
 **Option B — binary directly (the validated path).** Set `nova.libvirt_mode: real`, `neutron.networking_mode: iptables`, `cinder.storage_mode: local`, `glance.storage_mode: local` in your config, then:
 
 ```bash
-sudo -E ./bin/o3k --config config/o3k.yaml --migrations migrations
+sudo -E ./bin/lightstack --config config/lightstack.yaml --migrations migrations
 ```
 
 Then, either way:
 
 ```bash
-source ~/.o3k-env            # OS_AUTH_URL etc.
+source ~/.lightstack-env            # OS_AUTH_URL etc.
 openstack token issue
 ```
 
@@ -62,8 +62,8 @@ openstack subnet create sub1 --network net1 --subnet-range 10.0.0.0/24
 openstack server create --image cirros --flavor m1.small --key-name k1 --network net1 vm1 --wait
 openstack server show vm1 -f value -c status                   # → ACTIVE
 # on the host (needs sudo):
-sudo virsh domblklist instance-<vm1-id8>                       # disk = /var/lib/o3k/instances/<id>/disk.qcow2
-qemu-img info -U /var/lib/o3k/instances/<vm1-id>/disk.qcow2    # backing = image-<id>.raw, format raw
+sudo virsh domblklist instance-<vm1-id8>                       # disk = /var/lib/lightstack/instances/<id>/disk.qcow2
+qemu-img info -U /var/lib/lightstack/instances/<vm1-id>/disk.qcow2    # backing = image-<id>.raw, format raw
 openstack server create --image cirros --flavor m1.small --network net1 vm2 --wait   # separate overlay (isolation)
 openstack image delete cirros                                  # → 409 in use (vm1/vm2 reference it)
 openstack console log show vm1                                 # real serial boot output
@@ -73,7 +73,7 @@ openstack console log show vm1                                 # real serial boo
 
 ```bash
 openstack server show vm1 -f value -c addresses                # note the IP
-# restart o3k: Helm → kubectl rollout restart deploy/o3k ; binary → Ctrl-C + re-run
+# restart lightstack: Helm → kubectl rollout restart deploy/lightstack ; binary → Ctrl-C + re-run
 openstack server show vm1 -f value -c addresses                # SAME IP (reservation rebuilt from DB)
 ssh -i ~/.ssh/id_rsa cirros@<ip> 'echo ok'                     # connectivity + disk intact
 # no duplicates after a second restart:
@@ -105,7 +105,7 @@ openstack server add floating ip vm1 $FIP
 ssh -i ~/.ssh/id_rsa cirros@$FIP 'echo reachable'               # ingress via FIP (the default SG is seeded with tcp/22)
 openstack server remove floating ip vm1 $FIP                    # ingress stops
 ```
-> The default security group already allows tcp/22 (seeded). To prove SG gating on a non-22 port, add/remove a rule and watch the per-VM `O3K-NSI-<ip>` chain (HOST-TESTING.md §14). Host-local SSH to the *fixed* IP bypasses the FORWARD-based SG; the chain content is the enforcement for forwarded/external traffic.
+> The default security group already allows tcp/22 (seeded). To prove SG gating on a non-22 port, add/remove a rule and watch the per-VM `lightstack-NSI-<ip>` chain (HOST-TESTING.md §14). Host-local SSH to the *fixed* IP bypasses the FORWARD-based SG; the chain content is the enforcement for forwarded/external traffic.
 
 ## 7. WS-5 — block storage + delete semantics (SC-009, FR-023)
 
@@ -136,7 +136,7 @@ openstack server delete vm5 ; openstack volume show dotvol      # → No Volume 
 The OpenStack provider drives the same API unmodified. `test/terraform/` ships `provider.tf.example` + `README.md`; a dedicated SPEC-009 fixture (`test/terraform/ws5/`) is a deferred task (T038). Minimal check:
 
 ```bash
-cp test/terraform/provider.tf.example /tmp/o3k.tf   # point at OS_AUTH_URL; add a resource block
+cp test/terraform/provider.tf.example /tmp/lightstack.tf   # point at OS_AUTH_URL; add a resource block
 cd /tmp && terraform init && terraform apply         # instance / keypair / network / volume
 terraform destroy
 ```

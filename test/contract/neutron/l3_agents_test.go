@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/google/uuid"
 	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
@@ -17,7 +17,7 @@ import (
 
 // TestNeutronListAgents_Contract tests GET /v2.0/agents
 func TestNeutronListAgents_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -45,7 +45,7 @@ func TestNeutronListAgents_Contract(t *testing.T) {
 
 // TestNeutronGetAgent_Contract tests GET /v2.0/agents/:id
 func TestNeutronGetAgent_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -79,7 +79,7 @@ func TestNeutronGetAgent_Contract(t *testing.T) {
 
 // TestNeutronListL3AgentsOnRouter_Contract tests GET /v2.0/routers/:id/l3-agents
 func TestNeutronListL3AgentsOnRouter_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -113,7 +113,7 @@ func TestNeutronListL3AgentsOnRouter_Contract(t *testing.T) {
 
 // TestNeutronAddL3AgentToRouter_Contract tests POST /v2.0/routers/:id/l3-agents
 func TestNeutronAddL3AgentToRouter_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -150,7 +150,7 @@ func createTestAgent(t *testing.T, description, binary string) string {
 	t.Helper()
 
 	agentID := uuid.New().String()
-	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "INSERT INTO neutron_agents (id, agent_type, \"binary\", host, description, admin_state_up, alive, created_at) VALUES ('` + agentID + `', 'L3 agent', '` + binary + `', 'compute-1', '` + description + `', true, true, NOW()) ON CONFLICT DO NOTHING;"`
+	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "INSERT INTO neutron_agents (id, agent_type, \"binary\", host, description, admin_state_up, alive, created_at) VALUES ('` + agentID + `', 'L3 agent', '` + binary + `', 'compute-1', '` + description + `', true, true, NOW()) ON CONFLICT DO NOTHING;"`
 	exec.Command("sh", "-c", cmd).Run()
 
 	return agentID
@@ -160,7 +160,7 @@ func createTestAgent(t *testing.T, description, binary string) string {
 func cleanupTestAgent(t *testing.T, agentID string) {
 	t.Helper()
 
-	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "DELETE FROM neutron_agents WHERE id='` + agentID + `';"`
+	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "DELETE FROM neutron_agents WHERE id='` + agentID + `';"`
 	exec.Command("sh", "-c", cmd).Run()
 }
 

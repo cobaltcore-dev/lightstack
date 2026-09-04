@@ -3,7 +3,7 @@ package keystone
 import (
 	"strings"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -11,7 +11,7 @@ import (
 
 // uuidParamMiddleware rejects a management request whose UUID path parameter is
 // not a well-formed UUID, returning Keystone's verbatim 404
-// ("Could not find <resource>: <id>.") before the handler runs. o3k's identity
+// ("Could not find <resource>: <id>.") before the handler runs. Lightstack's identity
 // id columns are Postgres `uuid`, so a non-UUID can never name a row — 404 is the
 // faithful behavior, and validating up front avoids the `22P02` cast that would
 // otherwise surface as 500 (cloud-storage#515).

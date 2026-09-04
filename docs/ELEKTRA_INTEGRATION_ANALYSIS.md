@@ -1,7 +1,7 @@
-# Elektra Integration Analysis for O3K
+# Elektra Integration Analysis for Lightstack
 
 **Date**: March 16, 2026
-**Author**: O3K Development Team
+**Author**: Lightstack Development Team
 **Status**: Comprehensive Analysis
 **Related**: [HORIZON_INTEGRATION.md](HORIZON_INTEGRATION.md)
 
@@ -11,13 +11,13 @@
 
 **Elektra** is SAP's OpenStack dashboard built with Ruby on Rails 7.1.6, React 18.2.0, and custom SAP infrastructure components. Unlike Horizon (OpenStack's official dashboard), **Elektra is NOT compatible with vanilla OpenStack deployments** and requires extensive SAP-specific customizations.
 
-**Key Finding**: Direct O3K integration with Elektra is **NOT RECOMMENDED** due to:
+**Key Finding**: Direct Lightstack integration with Elektra is **NOT RECOMMENDED** due to:
 1. Hard dependencies on SAP proprietary services (Limes, Castellum, custom billing)
 2. Requirement for SAP Cloud Infrastructure environment
 3. Incompatibility with standard OpenStack deployments
 4. Significant customization effort with limited transferability
 
-**Alternative Recommendation**: Continue with **Horizon dashboard** (already 100% compatible with O3K) as the primary web UI.
+**Alternative Recommendation**: Continue with **Horizon dashboard** (already 100% compatible with lightstack) as the primary web UI.
 
 ---
 
@@ -81,7 +81,7 @@ plugins/
 
 ---
 
-## 2. Critical Dependencies: Why Elektra Can't Run on O3K
+## 2. Critical Dependencies: Why Elektra Can't Run on Lightstack
 
 ### 2.1 Limes (SAP's Quota Management Service)
 
@@ -116,13 +116,13 @@ end
 }
 ```
 
-**Impact on O3K**:
-- Limes service does NOT exist in O3K
+**Impact on lightstack**:
+- Limes service does NOT exist in Lightstack
 - Limes API is SAP-proprietary (not OpenStack API)
 - Resource management plugin would fail without Limes
 - No open-source alternative available
 
-**Horizon Comparison**: Horizon uses native OpenStack quota APIs (built into Keystone/Nova/Neutron/Cinder/Glance) - O3K already supports these.
+**Horizon Comparison**: Horizon uses native OpenStack quota APIs (built into Keystone/Nova/Neutron/Cinder/Glance) - Lightstack already supports these.
 
 ### 2.2 Custom OpenStack Client (Elektron)
 
@@ -145,7 +145,7 @@ def services(filter = {})
 end
 ```
 
-**Impact on O3K**:
+**Impact on lightstack**:
 - Elektron may expect SAP-specific API responses
 - Service catalog must match SAP's structure
 - Authentication flow may differ from standard OpenStack
@@ -177,8 +177,8 @@ config.limes_mail_server_endpoint = ENV["LIMES_MAIL_SERVER_API_ENDPOINT"]
 - Limes mail server integration
 - SAP-specific SSL certificate verification
 
-**Impact on O3K**:
-- O3K uses standard OpenStack configuration
+**Impact on lightstack**:
+- Lightstack uses standard OpenStack configuration
 - Region naming doesn't match SAP's scheme
 - No Monsoon-specific features
 - Authentication uses standard JWT tokens (not SAP's auth gem)
@@ -192,7 +192,7 @@ config.limes_mail_server_endpoint = ENV["LIMES_MAIL_SERVER_API_ENDPOINT"]
 4. **Kubernetes/Kubernetes_ng** - SAP K8s distribution
 5. **Masterdata Cockpit** - SAP master data management
 
-**Impact**: 25% of Elektra's functionality is SAP-specific and cannot work with O3K.
+**Impact**: 25% of Elektra's functionality is SAP-specific and cannot work with lightstack.
 
 ---
 
@@ -200,17 +200,17 @@ config.limes_mail_server_endpoint = ENV["LIMES_MAIL_SERVER_API_ENDPOINT"]
 
 ### 3.1 OpenStack Core Services (Partial Compatibility)
 
-| Service | Elektra Plugin | O3K Support | Compatibility | Notes |
+| Service | Elektra Plugin | Lightstack Support | Compatibility | Notes |
 |---------|---------------|-------------|---------------|-------|
 | Keystone | identity | ✅ Full (61 endpoints) | ⚠️ Partial | Auth flow differs (Elektron vs JWT) |
 | Nova | compute | ✅ Full (72 endpoints) | ⚠️ Partial | Elektron client vs standard API |
 | Neutron | networking | ✅ Full (98 endpoints) | ⚠️ Partial | May expect SAP network extensions |
 | Cinder | block_storage | ✅ Full (73 endpoints) | ⚠️ Partial | Works but lacks Limes quota UI |
 | Glance | image | ✅ Full (38 endpoints) | ⚠️ Partial | API compatible, UI may differ |
-| Barbican | keymanagerng | ❌ Not in O3K | ❌ No | O3K doesn't implement Barbican |
-| Octavia | lbaas2 | ❌ Not in O3K | ❌ No | O3K doesn't implement Octavia |
-| Designate | dns_service | ❌ Not in O3K | ❌ No | O3K doesn't implement Designate |
-| Manila | shared_filesystem_storage | ❌ Not in O3K | ❌ No | O3K doesn't implement Manila |
+| Barbican | keymanagerng | ❌ Not in Lightstack | ❌ No | Lightstack doesn't implement Barbican |
+| Octavia | lbaas2 | ❌ Not in Lightstack | ❌ No | Lightstack doesn't implement Octavia |
+| Designate | dns_service | ❌ Not in Lightstack | ❌ No | Lightstack doesn't implement Designate |
+| Manila | shared_filesystem_storage | ❌ Not in Lightstack | ❌ No | Lightstack doesn't implement Manila |
 
 **Verdict**: Core services have API compatibility but frontend integration is blocked by Elektron client and Limes dependencies.
 
@@ -233,15 +233,15 @@ MonsoonOpenstackAuth.configure do |auth|
 end
 ```
 
-**O3K's Approach**:
+**lightstack's Approach**:
 - JWT tokens (HMAC-SHA256, 24h TTL)
 - Standard Keystone v3 authentication
 - No SAML/Federation (LOW priority feature)
 - No two-factor RADIUS integration
 
 **Compatibility**: ⚠️ **Significant Mismatch**
-- Elektra expects multiple auth methods O3K doesn't support
-- Token format may differ (Elektra uses PKI/Fernet, O3K uses JWT)
+- Elektra expects multiple auth methods Lightstack doesn't support
+- Token format may differ (Elektra uses PKI/Fernet, Lightstack uses JWT)
 - Session management architecture differs
 
 ### 3.3 Quota Management (Limes) - Critical Blocker
@@ -255,7 +255,7 @@ import { mount } from "@sapcc/limes-ui"  // SAP private NPM package
 endpoint: "https://limes-3.#{current_region}.cloud.sap"
 ```
 
-**O3K's Quota Management**:
+**lightstack's Quota Management**:
 - Native OpenStack quotas (built into each service)
 - Keystone: domain/project quotas
 - Nova: instance quotas (cores, RAM, instances)
@@ -264,10 +264,10 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 - Glance: image quotas (images, storage)
 
 **Compatibility**: ❌ **INCOMPATIBLE**
-- Limes is a separate service O3K doesn't implement
+- Limes is a separate service Lightstack doesn't implement
 - Limes UI is a closed-source SAP package
 - No drop-in replacement exists
-- Horizon's quota management uses standard OpenStack APIs (already working with O3K)
+- Horizon's quota management uses standard OpenStack APIs (already working with lightstack)
 
 ### 3.4 UI Component Dependencies
 
@@ -293,25 +293,25 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 
 ### 4.1 Scenario 1: Minimal Integration (Core Services Only)
 
-**Goal**: Get basic Elektra functionality working with O3K (compute, networking, storage)
+**Goal**: Get basic Elektra functionality working with Lightstack (compute, networking, storage)
 
 **Required Work**:
 1. **Authentication Adapter** (2-3 weeks):
-   - Replace `monsoon-openstack-auth` with O3K JWT authentication
-   - Implement session management compatible with O3K tokens
-   - Handle token refresh (O3K uses 24h TTL)
+   - Replace `monsoon-openstack-auth` with Lightstack JWT authentication
+   - Implement session management compatible with Lightstack tokens
+   - Handle token refresh (lightstack uses 24h TTL)
 
 2. **Elektron Client Customization** (2-3 weeks):
    - Fork Elektron library
    - Remove SAP-specific API expectations
-   - Test with O3K service endpoints
+   - Test with Lightstack service endpoints
 
 3. **Disable SAP-Specific Plugins** (1 week):
    - Remove/disable: resources, inquiry, keppel, kubernetes, masterdata_cockpit
    - Patch any hard dependencies in remaining plugins
 
 4. **Service Catalog Mapping** (1 week):
-   - Ensure O3K's service catalog matches Elektra's expectations
+   - Ensure lightstack's service catalog matches Elektra's expectations
    - Map endpoint URLs correctly
 
 5. **UI Testing & Bug Fixes** (3-4 weeks):
@@ -337,7 +337,7 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 1. **Implement Limes API** (6-8 weeks):
    - Reverse-engineer Limes API from Elektra code
    - Build Limes-compatible service in Go
-   - Integrate with O3K's native quotas
+   - Integrate with lightstack's native quotas
 
 2. **Limes UI Replacement** (4-6 weeks):
    - Cannot use `@sapcc/limes-ui` (proprietary)
@@ -372,13 +372,13 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 
 ## 5. Technical Comparison: Elektra vs Horizon
 
-| Aspect | Elektra | Horizon | Winner for O3K |
+| Aspect | Elektra | Horizon | Winner for Lightstack |
 |--------|---------|---------|----------------|
 | **OpenStack Compatibility** | SAP-specific | 100% vanilla OpenStack | ✅ **Horizon** |
-| **O3K Integration Status** | Not integrated | 100% working | ✅ **Horizon** |
+| **lightstack Integration Status** | Not integrated | 100% working | ✅ **Horizon** |
 | **Technology Stack** | Rails 7 + React 18 | Django 5 + Angular/React | ⚖️ Tie (both modern) |
-| **Quota Management** | Limes (proprietary) | Native OpenStack | ✅ **Horizon** (works with O3K) |
-| **Authentication** | Custom (monsoon-auth) | Standard Keystone | ✅ **Horizon** (O3K compatible) |
+| **Quota Management** | Limes (proprietary) | Native OpenStack | ✅ **Horizon** (works with lightstack) |
+| **Authentication** | Custom (monsoon-auth) | Standard Keystone | ✅ **Horizon** (lightstack compatible) |
 | **OpenStack Client** | Elektron (SAP fork) | python-openstackclient | ✅ **Horizon** (standard) |
 | **SAP Features** | Built-in (K8s, Keppel) | Not applicable | ⚖️ N/A |
 | **Maintenance Burden** | High (SAP dependencies) | Low (upstream project) | ✅ **Horizon** |
@@ -386,7 +386,7 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 | **Deployment Complexity** | High (custom env) | Medium (standard) | ✅ **Horizon** |
 | **Integration Effort** | 8-11 months | 0 (already done) | ✅ **Horizon** |
 
-**Overall**: Horizon is **vastly superior** for O3K integration.
+**Overall**: Horizon is **vastly superior** for Lightstack integration.
 
 ---
 
@@ -399,12 +399,12 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 - Assumes SAP ecosystem (Limes, Castellum, custom billing)
 - "Opinionated dashboard" = SAP opinions
 
-**O3K's Design**:
+**lightstack's Design**:
 - Built **for vanilla OpenStack compatibility** (K3s for OpenStack)
 - API-first, client-agnostic
 - Works with any standard OpenStack client
 
-**Verdict**: Elektra optimized for SAP's needs, O3K optimized for OpenStack standard.
+**Verdict**: Elektra optimized for SAP's needs, Lightstack optimized for OpenStack standard.
 
 ### 6.2 The "Elektra Paradox"
 
@@ -413,9 +413,9 @@ From Elektra's README:
 
 **Translation**: Elektra requires a non-vanilla OpenStack environment (SAP's customized stack).
 
-**O3K's Position**: O3K **IS** a vanilla OpenStack implementation (104% API compatible with standard OpenStack).
+**lightstack's Position**: Lightstack **IS** a vanilla OpenStack implementation (104% API compatible with standard OpenStack).
 
-**Logical Conclusion**: Elektra explicitly states it doesn't work with clouds like O3K.
+**Logical Conclusion**: Elektra explicitly states it doesn't work with clouds like lightstack.
 
 ### 6.3 Limes: The Deal-Breaker
 
@@ -444,19 +444,19 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 
 ### 7.1 Why Horizon Is the Right Choice
 
-✅ **100% Compatible**: Already working perfectly with O3K (proven in testing)
+✅ **100% Compatible**: Already working perfectly with Lightstack (proven in testing)
 
 ✅ **Zero Integration Effort**: HORIZON_INTEGRATION.md documents complete integration
 
-✅ **Standard OpenStack**: Uses vanilla APIs O3K already implements
+✅ **Standard OpenStack**: Uses vanilla APIs Lightstack already implements
 
 ✅ **Active Maintenance**: OpenStack Foundation maintains Horizon (Flamingo 2025.2 released)
 
 ✅ **No Vendor Lock-in**: Works with any OpenStack cloud (AWS, Rackspace, etc.)
 
-✅ **Full Feature Parity**: All O3K features accessible via Horizon:
+✅ **Full Feature Parity**: All Lightstack features accessible via Horizon:
 - Instance lifecycle (create, resize, migrate, snapshot)
-- VNC console access (integrated with O3K's noVNC proxy)
+- VNC console access (integrated with lightstack's noVNC proxy)
 - Network topology visualization
 - Volume management (attach, snapshot, backup)
 - Image management (upload, download, share)
@@ -464,22 +464,22 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 - Multi-project RBAC
 
 ✅ **Production-Ready**: Comprehensive deployment guides in `docs/`:
-- UNIFIED_DEPLOYMENT.md (O3K + Horizon in one docker-compose)
+- UNIFIED_DEPLOYMENT.md (lightstack + Horizon in one docker-compose)
 - HORIZON_DEPLOYMENT.md (separate Horizon deployment)
 - QUICK_REFERENCE.md (command cheat sheet)
 
-### 7.2 What O3K Would Lose By Switching to Elektra
+### 7.2 What Lightstack Would Lose By Switching to Elektra
 
-❌ **SAP-Specific Features**: Limes, Keppel, Kubernetes management (not applicable to O3K users)
+❌ **SAP-Specific Features**: Limes, Keppel, Kubernetes management (not applicable to Lightstack users)
 
-**What O3K Would NOT Lose**:
+**What Lightstack Would NOT Lose**:
 ✅ All core OpenStack functionality (compute, network, storage)
 ✅ Quota management (Horizon uses native OpenStack quotas)
 ✅ Multi-tenancy and RBAC
 ✅ VNC console access
 ✅ Network topology visualization
 
-**Verdict**: O3K loses zero OpenStack functionality by staying with Horizon.
+**Verdict**: Lightstack loses zero OpenStack functionality by staying with Horizon.
 
 ### 7.3 If Elektra Integration Is Still Required (Business Decision)
 
@@ -519,20 +519,20 @@ Use Horizon for:
 
 **Rationale**: 100% compatible, zero effort, production-ready.
 
-### 8.2 Custom UI for O3K-Specific Features (Optional)
+### 8.2 Custom UI for lightstack-Specific Features (Optional)
 
-If O3K develops features beyond standard OpenStack:
+If Lightstack develops features beyond standard OpenStack:
 - Build lightweight React UI using `@cloudoperators/juno-ui-components`
-- Integrate with O3K's REST APIs directly
+- Integrate with lightstack's REST APIs directly
 - Avoid Elektron/Limes dependencies
 
-**Example**: O3K Performance Dashboard
+**Example**: Lightstack Performance Dashboard
 ```typescript
-// Custom React app using O3K APIs
+// Custom React app using lightstack APIs
 import { mount } from "@cloudoperators/juno-ui-components"
 
-// Direct API calls to O3K (no Elektron)
-fetch('http://o3k:8774/v2.1/servers')
+// Direct API calls to lightstack (no Elektron)
+fetch('http://lightstack:8774/v2.1/servers')
   .then(res => res.json())
   .then(data => renderServerList(data))
 ```
@@ -541,12 +541,12 @@ fetch('http://o3k:8774/v2.1/servers')
 
 ### 8.3 Keep Elektra for SAP-Specific Deployments Only
 
-If O3K will run **alongside** SAP infrastructure:
-- Use Horizon for O3K standalone deployments
-- Use Elektra when O3K is part of SAP Cloud Infrastructure
+If Lightstack will run **alongside** SAP infrastructure:
+- Use Horizon for Lightstack standalone deployments
+- Use Elektra when Lightstack is part of SAP Cloud Infrastructure
 - Accept they serve different use cases
 
-**Don't try to force Elektra to work with standalone O3K.**
+**Don't try to force Elektra to work with standalone lightstack.**
 
 ---
 
@@ -554,7 +554,7 @@ If O3K will run **alongside** SAP infrastructure:
 
 ### 9.1 Final Verdict
 
-**DO NOT integrate Elektra with O3K** because:
+**DO NOT integrate Elektra with lightstack** because:
 
 1. ❌ **Incompatible by Design**: Elektra explicitly states it doesn't work with vanilla OpenStack
 2. ❌ **Limes Dependency**: Cannot function without SAP's proprietary quota service
@@ -564,10 +564,10 @@ If O3K will run **alongside** SAP infrastructure:
 
 **CONTINUE with Horizon** because:
 
-1. ✅ **100% Compatible**: Already working perfectly with O3K
+1. ✅ **100% Compatible**: Already working perfectly with Lightstack
 2. ✅ **Zero Effort**: Integration complete (HORIZON_INTEGRATION.md)
 3. ✅ **Standard OpenStack**: No vendor lock-in
-4. ✅ **Full Functionality**: All O3K features accessible
+4. ✅ **Full Functionality**: All Lightstack features accessible
 5. ✅ **Production-Ready**: Documented, tested, deployed
 
 ### 9.2 Summary Table
@@ -576,7 +576,7 @@ If O3K will run **alongside** SAP infrastructure:
 |----------|-------------------|------------------|
 | Time to Production | 8-11 months | ✅ 0 (already done) |
 | Integration Effort | Very High | ✅ None |
-| Compatibility with O3K | ❌ Incompatible | ✅ 100% |
+| Compatibility with Lightstack | ❌ Incompatible | ✅ 100% |
 | Maintenance Burden | ❌ High | ✅ Low |
 | Feature Coverage | ⚠️ Partial (no Limes) | ✅ Full |
 | Risk Level | ❌ CRITICAL | ✅ ZERO |
@@ -587,7 +587,7 @@ If O3K will run **alongside** SAP infrastructure:
 
 **Immediate Actions**:
 1. ✅ Document Elektra incompatibility in project docs
-2. ✅ Confirm Horizon as O3K's official dashboard
+2. ✅ Confirm Horizon as lightstack's official dashboard
 3. ✅ Close any Elektra integration tickets/requirements
 4. ⚠️ Educate stakeholders on Elektra's SAP-specific nature
 
@@ -601,8 +601,8 @@ If O3K will run **alongside** SAP infrastructure:
 
 **Optimal Path**:
 1. ✅ Continue using Horizon (100% functional today)
-2. ✅ Invest saved effort (8-11 months) into O3K core features
-3. ✅ Build custom UI for O3K-specific enhancements (if needed)
+2. ✅ Invest saved effort (8-11 months) into Lightstack core features
+3. ✅ Build custom UI for lightstack-specific enhancements (if needed)
 4. ✅ Maintain OpenStack standard compliance
 
 ---
@@ -613,12 +613,12 @@ If O3K will run **alongside** SAP infrastructure:
 - GitHub: https://github.com/SAP-cloud-infrastructure/elektra
 - README disclaimer: "not compatible with vanilla OpenStack deployments"
 
-**O3K Horizon Integration**:
+**lightstack Horizon Integration**:
 - [docs/HORIZON_INTEGRATION.md](HORIZON_INTEGRATION.md) - Complete integration guide
-- [docs/UNIFIED_DEPLOYMENT.md](UNIFIED_DEPLOYMENT.md) - O3K + Horizon deployment
+- [docs/UNIFIED_DEPLOYMENT.md](UNIFIED_DEPLOYMENT.md) - Lightstack + Horizon deployment
 - [docs/QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Command reference
 
-**Related O3K Documentation**:
+**Related Lightstack Documentation**:
 - [docs/API_COVERAGE_REPORT.md](API_COVERAGE_REPORT.md) - 104% API coverage (342/330 endpoints)
 - [REMAINING_WORK.md](../REMAINING_WORK.md) - Sprint 66 Horizon integration results
 

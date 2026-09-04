@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# SPEC-009 WS-2 (T016 / SC-003): a VM keeps its IP across an O3K control-plane
-# restart. The dev host runs o3k in the foreground, so the restart is manual;
+# SPEC-009 WS-2 (T016 / SC-003): a VM keeps its IP across a Lightstack control-plane
+# restart. The dev host runs Lightstack in the foreground, so the restart is manual;
 # this two-phase script records the before-state to a file and verifies the
 # after-state — no need to copy/paste the (quote-laden) addresses string.
 #   1) ./test/ws2_restart_survival_test.sh record <server>
-#   2) restart the o3k process (Ctrl-C in T1, then re-run it)
+#   2) restart the Lightstack process (Ctrl-C in T1, then re-run it)
 #   3) ./test/ws2_restart_survival_test.sh verify <server>
 set -euo pipefail
 : "${OS_AUTH_URL:?source your OpenStack env first}"
@@ -17,7 +17,7 @@ case "$cmd" in
     printf '%s' "$ip" > "$statefile"
     echo "[ws2] $vm addresses before restart: $ip"
     echo "[ws2] recorded to $statefile"
-    echo "Now restart o3k (Ctrl-C in T1, then re-run §6), then run: $0 verify $vm"
+    echo "Now restart Lightstack (Ctrl-C in T1, then re-run §6), then run: $0 verify $vm"
     ;;
   verify)
     # Default to the recorded file; an explicit 3rd arg overrides it.
@@ -36,10 +36,10 @@ case "$cmd" in
     else
       echo "FAIL: addresses changed ('$want' -> '$got')"; exit 1
     fi
-    if sudo pgrep -fa dnsmasq 2>/dev/null | grep -q "var/lib/o3k/dhcp"; then
+    if sudo pgrep -fa dnsmasq 2>/dev/null | grep -q "var/lib/lightstack/dhcp"; then
       echo "PASS: dnsmasq respawned by the reconciler (with MAC->IP reservation)"
     else
-      echo "WARN: no o3k dnsmasq found after restart"
+      echo "WARN: no Lightstack dnsmasq found after restart"
     fi
     ;;
   *) echo "usage: $0 record|verify <server>"; exit 1 ;;

@@ -17,7 +17,7 @@ import (
 
 // TestNovaListMigrations_Contract tests GET /v2.1/:project_id/os-migrations
 func TestNovaListMigrations_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -45,7 +45,7 @@ func TestNovaListMigrations_Contract(t *testing.T) {
 
 // TestNovaListServerMigrations_Contract tests GET /v2.1/:project_id/servers/:id/migrations
 func TestNovaListServerMigrations_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -76,7 +76,7 @@ func TestNovaListServerMigrations_Contract(t *testing.T) {
 
 // TestNovaGetServerMigration_Contract tests GET /v2.1/:project_id/servers/:id/migrations/:id
 func TestNovaGetServerMigration_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -113,7 +113,7 @@ func TestNovaGetServerMigration_Contract(t *testing.T) {
 
 // TestNovaDeleteServerMigration_Contract tests DELETE /v2.1/:project_id/servers/:id/migrations/:id
 func TestNovaDeleteServerMigration_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -138,7 +138,7 @@ func TestNovaDeleteServerMigration_Contract(t *testing.T) {
 
 // TestNovaForceCompleteMigration_Contract tests POST /v2.1/:project_id/servers/:id/migrations/:id/action
 func TestNovaForceCompleteMigration_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -198,7 +198,7 @@ func createTestMigration(t *testing.T, serverID string) string {
 
 	migrationID := uuid.New().String()
 
-	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "
+	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
 	INSERT INTO server_migrations (id, server_uuid, source_node, dest_node, status, migration_type, created_at, updated_at)
 	VALUES ('` + migrationID + `', '` + serverID + `', 'node1', 'node2', 'migrating', 'live-migration', NOW(), NOW())
 	ON CONFLICT DO NOTHING;"`
@@ -212,6 +212,6 @@ func createTestMigration(t *testing.T, serverID string) string {
 func cleanupTestMigration(t *testing.T, migrationID string) {
 	t.Helper()
 
-	cmd := `docker exec o3k-postgres psql -U o3k -d o3k -c "DELETE FROM server_migrations WHERE id='` + migrationID + `';"`
+	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "DELETE FROM server_migrations WHERE id='` + migrationID + `';"`
 	exec.Command("sh", "-c", cmd).Run()
 }

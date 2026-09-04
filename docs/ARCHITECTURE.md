@@ -1,11 +1,11 @@
-# O3K Architecture
+# Lightstack Architecture
 
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
 ## Design Philosophy
 
-O3K is built on three core principles:
+Lightstack is built on three core principles:
 
 1. **API Compatibility First**: 100% OpenStack API compatibility to work seamlessly with Horizon and OpenStack CLI/SDK
 2. **Synchronous Operations**: No async state machines - operations complete before API returns
@@ -17,7 +17,7 @@ O3K is built on three core principles:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    O3K Process                        │
+│                    lightstack Process                        │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
 │  │  Keystone    │  │     Nova     │  │   Neutron    │      │
@@ -178,7 +178,7 @@ O3K is built on three core principles:
 
 ### Rate Limiting Architecture
 
-O3K implements two-tier rate limiting as Gin middleware (see [ADR-002](adr/ADR-002-rate-limiting-architecture.md)):
+Lightstack implements two-tier rate limiting as Gin middleware (see [ADR-002](adr/ADR-002-rate-limiting-architecture.md)):
 
 ```
   REQUEST
@@ -208,7 +208,7 @@ O3K implements two-tier rate limiting as Gin middleware (see [ADR-002](adr/ADR-0
 - **Two-tier, not per-endpoint**: IP-based for unauthenticated auth endpoints (`POST /v3/auth/tokens`), project-based for all authenticated endpoints
 - **In-process, not Redis**: Single-binary architecture avoids external dependencies
 - **Degrade open**: When entry cap (10K) is exceeded, new IPs/projects are allowed through rather than blocked
-- **Configurable**: Enable/disable and adjust rates via `rate_limiting` block in `o3k.yaml`
+- **Configurable**: Enable/disable and adjust rates via `rate_limiting` block in `lightstack.yaml`
 
 ### Dependency Injection Pattern
 
@@ -234,7 +234,7 @@ Services receive their database connection pool through constructors rather than
 
 ### Request Lifecycle
 
-Full request path through O3K middleware stack:
+Full request path through Lightstack middleware stack:
 
 ```
   Client
@@ -331,10 +331,10 @@ Key indexes for performance:
 
 ```
 ┌────────────────────────────────┐
-│       O3K Host          │
+│       lightstack Host          │
 │                                │
 │  ┌──────────────────────────┐ │
-│  │  O3K Binary       │ │
+│  │  lightstack Binary       │ │
 │  │  (All services)          │ │
 │  └──────────────────────────┘ │
 │                                │

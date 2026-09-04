@@ -8,7 +8,7 @@ paths are defined once in `pkg/paths/paths.go`.
 
 ## Node-local storage layout
 
-Base: `realMode.hostStoragePath` (default `/var/lib/o3k`), mounted into the pod as the
+Base: `realMode.hostStoragePath` (default `/var/lib/lightstack`), mounted into the pod as the
 `host-storage` hostPath volume.
 
 | Subdir (`pkg/paths`) | Path | Owner service | Holds | Created by (after fix) |
@@ -23,11 +23,11 @@ Base: `realMode.hostStoragePath` (default `/var/lib/o3k`), mounted into the pod 
 
 - **INV-1 (single source of truth)**: A given image's bytes are written by Glance and read by Nova at
   **the same** path (`<base>/images/image-<id>.raw`). No component may resolve a different root.
-  *(Was violated: Glance → `~/.o3k/images`, Nova → `<base>/images`.)*
+  *(Was violated: Glance → `~/.lightstack/images`, Nova → `<base>/images`.)*
 - **INV-2 (existence before serve)**: In real mode, all five subdirs exist before the platform serves
   requests (initContainer guarantees up-front; each service's `MkdirAll` guarantees on first write).
 - **INV-3 (persistence)**: All subdirs live under the `host-storage` hostPath, so contents survive
-  pod/process restart (not pod-ephemeral `~/.o3k`).
+  pod/process restart (not pod-ephemeral `~/.lightstack`).
 - **INV-4 (idempotence)**: Creating the layout when some/all dirs already exist is a no-op that
   preserves existing contents (`mkdir -p` / `os.MkdirAll` semantics).
 - **INV-5 (mode isolation)**: In stub / non-real mode, none of these dirs are required and none are

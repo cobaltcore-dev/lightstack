@@ -1,6 +1,6 @@
 # Contract Tests
 
-This directory contains **contract tests** for O3K's OpenStack API compliance. Contract tests verify that O3K implements the OpenStack API specification correctly by using real OpenStack client libraries (gophercloud).
+This directory contains **contract tests** for lightstack's OpenStack API compliance. Contract tests verify that Lightstack implements the OpenStack API specification correctly by using real OpenStack client libraries (gophercloud).
 
 ## Purpose
 
@@ -25,10 +25,10 @@ Contract tests ensure **100% API compatibility** with OpenStack:
 
 ### Prerequisites
 
-O3K must be running:
+Lightstack must be running:
 
 ```bash
-# Start O3K with Docker Compose
+# Start lightstack with Docker Compose
 docker compose up -d
 
 # Or run directly
@@ -39,7 +39,7 @@ Set environment variables:
 
 ```bash
 # Source the environment file
-source ~/.o3k-env
+source ~/.lightstack-env
 
 # Or set manually
 export OS_AUTH_URL=http://localhost:35357/v3
@@ -75,7 +75,7 @@ Contract tests are part of the CI pipeline:
 - name: Run Contract Tests
   run: |
     docker compose up -d
-    sleep 5  # Wait for O3K to start
+    sleep 5  # Wait for lightstack to start
     go test ./test/contract/... -v
 ```
 
@@ -96,7 +96,7 @@ import (
 )
 
 func TestKeystoneCreateUser_Contract(t *testing.T) {
-    SkipIfO3KNotRunning(t)
+    SkipIfLightstackNotRunning(t)
 
     client := SetupIdentityV3Client(t)
 
@@ -121,7 +121,7 @@ func TestKeystoneCreateUser_Contract(t *testing.T) {
 1. **Use gophercloud SDK** - Never use raw HTTP calls. Use `gophercloud/gophercloud/openstack/*` packages.
 2. **Test OpenStack contract** - Verify response format, fields, error codes match OpenStack spec.
 3. **Cleanup resources** - Use `defer` to delete created resources, even on test failure.
-4. **Skip if not running** - Use `SkipIfO3KNotRunning(t)` to avoid false CI failures.
+4. **Skip if not running** - Use `SkipIfLightstackNotRunning(t)` to avoid false CI failures.
 5. **Descriptive names** - Use `Test{Service}{Action}_Contract` naming (e.g., `TestKeystoneCreateUser_Contract`).
 
 ### Gophercloud Packages
@@ -162,7 +162,7 @@ Timeline per endpoint: ~2 hours (write test 30min, confirm RED 2min, review 10mi
 ## Troubleshooting
 
 **Test fails with "connection refused"**:
-- Check O3K is running: `curl http://localhost:35357/v3`
+- Check Lightstack is running: `curl http://localhost:35357/v3`
 - Check environment variables: `echo $OS_AUTH_URL`
 
 **Test fails with "401 Unauthorized"**:
@@ -181,5 +181,5 @@ Timeline per endpoint: ~2 hours (write test 30min, confirm RED 2min, review 10mi
 
 - OpenStack API Reference: https://docs.openstack.org/api-ref/
 - Gophercloud Documentation: https://github.com/gophercloud/gophercloud
-- SPEC-000 Compliance: `/Users/I761222/git/o3k/specs/000-compliance/SPEC.md`
-- Implementation Plan: `/Users/I761222/git/o3k/DEVELOPMENT_PLAN_SUMMARY.md`
+- SPEC-000 Compliance: `/Users/I761222/git/lightstack/specs/000-compliance/SPEC.md`
+- Implementation Plan: `/Users/I761222/git/lightstack/DEVELOPMENT_PLAN_SUMMARY.md`

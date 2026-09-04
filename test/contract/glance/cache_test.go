@@ -13,7 +13,7 @@ import (
 
 // TestGlanceListCachedImages_Contract tests GET /v2/cache/images
 func TestGlanceListCachedImages_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -41,7 +41,7 @@ func TestGlanceListCachedImages_Contract(t *testing.T) {
 
 // TestGlancePrefetchImage_Contract tests PUT /v2/cache/images/:id
 func TestGlancePrefetchImage_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -74,7 +74,7 @@ func TestGlancePrefetchImage_Contract(t *testing.T) {
 
 // TestGlanceDeleteCachedImage_Contract tests DELETE /v2/cache/images/:id
 func TestGlanceDeleteCachedImage_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -113,7 +113,7 @@ func TestGlanceDeleteCachedImage_Contract(t *testing.T) {
 
 // TestGlanceClearCache_Contract tests DELETE /v2/cache/images (clear all)
 func TestGlanceClearCache_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 

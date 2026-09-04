@@ -6,14 +6,14 @@ import (
 	"net/http"
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestNeutronGetAutoAllocatedTopology_Contract tests GET /v2.0/auto-allocated-topology/:project
 func TestNeutronGetAutoAllocatedTopology_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -44,7 +44,7 @@ func TestNeutronGetAutoAllocatedTopology_Contract(t *testing.T) {
 
 // TestNeutronCreateAutoAllocatedTopology_Contract tests POST /v2.0/auto-allocated-topology/:project
 func TestNeutronCreateAutoAllocatedTopology_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -75,7 +75,7 @@ func TestNeutronCreateAutoAllocatedTopology_Contract(t *testing.T) {
 
 // TestNeutronDeleteAutoAllocatedTopology_Contract tests DELETE /v2.0/auto-allocated-topology/:project
 func TestNeutronDeleteAutoAllocatedTopology_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

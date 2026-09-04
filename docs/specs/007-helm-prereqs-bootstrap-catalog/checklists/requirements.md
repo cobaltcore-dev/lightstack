@@ -32,4 +32,4 @@
 ## Notes
 
 - Items marked incomplete require spec updates before `/speckit.clarify` or `/speckit.plan`.
-- The spec deliberately references existing artifacts (seed migration, `O3K_ENDPOINT_HOST`) by name in Dependencies/Assumptions to anchor scope; these are pointers to existing reused mechanisms, not new implementation prescriptions.
+- The spec deliberately references existing artifacts (seed migration, `LIGHTSTACK_ENDPOINT_HOST`) by name in Dependencies/Assumptions to anchor scope; these are pointers to existing reused mechanisms, not new implementation prescriptions.

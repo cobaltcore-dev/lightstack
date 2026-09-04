@@ -1,6 +1,6 @@
 #!/bin/bash
 # Comprehensive Horizon + Real Tools Validation Test
-# Tests O3K with Horizon dashboard, OpenStack CLI, and gophercloud
+# Tests Lightstack with Horizon dashboard, OpenStack CLI, and gophercloud
 
 set -e
 
@@ -18,7 +18,7 @@ FAILED_TESTS=0
 MISSING_APIS=()
 
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║          O3K REAL-WORLD VALIDATION TEST SUITE                ║${NC}"
+echo -e "${BLUE}║          Lightstack REAL-WORLD VALIDATION TEST SUITE                ║${NC}"
 echo -e "${BLUE}║   Testing with Horizon Dashboard & OpenStack CLI             ║${NC}"
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
@@ -58,11 +58,11 @@ missing_api() {
 
 # Pre-flight checks
 echo -e "${BLUE}═══ Pre-flight Checks ═══${NC}"
-test_case "Check O3K is running"
+test_case "Check Lightstack is running"
 if curl -s -f http://localhost:35357/v3 > /dev/null 2>&1; then
     pass
 else
-    fail "O3K not responding"
+    fail "Lightstack not responding"
     exit 1
 fi
 

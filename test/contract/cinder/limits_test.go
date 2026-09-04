@@ -46,15 +46,15 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-func skipIfO3KNotRunning(t *testing.T) {
+func skipIfLightstackNotRunning(t *testing.T) {
 	t.Helper()
 	if os.Getenv("SKIP_CONTRACT_TESTS") == "1" {
-		t.Skip("Skipping contract test (O3K not running)")
+		t.Skip("Skipping contract test (Lightstack not running)")
 	}
 }
 
 func TestCinderGetLimits_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

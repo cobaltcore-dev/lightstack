@@ -1,0 +1,7 @@
+# INVALID: required container image absent. MUST be rejected (image.repository required;
+# also caught by the render-time fail-fast guard).
+secrets:
+  jwtSecret: x
+  adminPassword: x
+database:
+  url: postgres://lightstack@db/lightstack

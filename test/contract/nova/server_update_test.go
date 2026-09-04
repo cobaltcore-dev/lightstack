@@ -14,7 +14,7 @@ import (
 
 // TestNovaUpdateServer_Contract tests PATCH /v2.1/servers/:id
 func TestNovaUpdateServer_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -67,7 +67,7 @@ func TestNovaUpdateServer_Contract(t *testing.T) {
 
 // TestNovaUpdateNonExistentServer_Contract tests updating non-existent server
 func TestNovaUpdateNonExistentServer_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

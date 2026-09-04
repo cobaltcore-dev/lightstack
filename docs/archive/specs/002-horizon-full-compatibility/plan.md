@@ -5,9 +5,9 @@
 
 ## Summary
 
-Achieve 100% OpenStack Horizon dashboard compatibility with O3K by enhancing existing integration (19/19 tests passing), implementing missing features (VNC console, topology visualization, advanced Neutron features), reaching 95%+ API coverage of Horizon-used endpoints, and documenting the integration architecture between Horizon, Keystone, and O3K services.
+Achieve 100% OpenStack Horizon dashboard compatibility with Lightstack by enhancing existing integration (19/19 tests passing), implementing missing features (VNC console, topology visualization, advanced Neutron features), reaching 95%+ API coverage of Horizon-used endpoints, and documenting the integration architecture between Horizon, Keystone, and Lightstack services.
 
-**Technical Approach**: Incremental enhancement of existing API endpoints, documentation improvements, and targeted test coverage expansion. No architectural changes required - O3K already supports JWT authentication, service catalog, and core CRUD operations.
+**Technical Approach**: Incremental enhancement of existing API endpoints, documentation improvements, and targeted test coverage expansion. No architectural changes required - Lightstack already supports JWT authentication, service catalog, and core CRUD operations.
 
 ## Technical Context
 
@@ -37,12 +37,12 @@ Based on BEASTMODE.md constitution:
 
 | Article | Requirement | Status | Notes |
 |---------|-------------|--------|-------|
-| I. Library-First | Every feature starts as standalone library | ✅ PASS | O3K is monolithic but services are modular packages (internal/keystone, internal/nova, etc.) |
-| II. CLI Interface | Libraries expose CLI functionality | ✅ PASS | O3K already has CLI via single binary entry point |
+| I. Library-First | Every feature starts as standalone library | ✅ PASS | Lightstack is monolithic but services are modular packages (internal/keystone, internal/nova, etc.) |
+| II. CLI Interface | Libraries expose CLI functionality | ✅ PASS | Lightstack already has CLI via single binary entry point |
 | III. Test-First | TDD mandatory (tests → fail → implement) | ⚠️ ENFORCE | Must write Horizon integration tests BEFORE implementation |
 | IV. Integration Testing | Real dependencies over mocks | ✅ PASS | Integration tests use real OpenStack CLI + Horizon |
 | V. Observability | Everything inspectable | ✅ PASS | Structured JSON logging, all operations logged |
-| VI. Versioning | Semantic versioning | ✅ PASS | O3K follows semver (currently v1.0.0) |
+| VI. Versioning | Semantic versioning | ✅ PASS | Lightstack follows semver (currently v1.0.0) |
 | VII. Simplicity | ≤3 projects, YAGNI | ✅ PASS | Single project with 5 services in one binary |
 | VIII. Anti-Abstraction | Use frameworks directly | ✅ PASS | Direct Gin usage, no custom HTTP frameworks |
 | IX. Integration-First | Contract tests before implementation | ⚠️ ENFORCE | Must write contract tests for new endpoints |
@@ -60,7 +60,7 @@ specs/002-horizon-full-compatibility/
 ├── plan.md              # This file (/speckit.plan command output)
 ├── research.md          # Phase 0: Horizon API usage analysis, missing endpoints
 ├── data-model.md        # Phase 1: Database schema additions (if needed)
-├── quickstart.md        # Phase 1: Horizon deployment with O3K guide
+├── quickstart.md        # Phase 1: Horizon deployment with lightstack guide
 ├── contracts/           # Phase 1: Contract test specifications
 │   ├── nova-console.md
 │   ├── neutron-topology.md
@@ -70,7 +70,7 @@ specs/002-horizon-full-compatibility/
 
 ### Source Code (repository root)
 
-O3K uses a single-project structure with service-based internal packages:
+Lightstack uses a single-project structure with service-based internal packages:
 
 ```text
 internal/                   # Service implementations
@@ -137,7 +137,7 @@ docs/                      # Documentation
 └── API_COVERAGE.md             # [TO UPDATE] Coverage metrics
 ```
 
-**Structure Decision**: Single-project structure maintained. All enhancements are additions to existing service packages. No new top-level directories needed. This aligns with O3K's existing architecture where all five OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) are internal packages within a single binary.
+**Structure Decision**: Single-project structure maintained. All enhancements are additions to existing service packages. No new top-level directories needed. This aligns with lightstack's existing architecture where all five OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) are internal packages within a single binary.
 
 ## Complexity Tracking
 
@@ -155,7 +155,7 @@ No constitution violations. All requirements align with existing principles.
    - Deliverable: `research.md` section "Horizon Critical Endpoints"
 
 2. **Gap Analysis vs Current Coverage**
-   - Compare Horizon-used endpoints against O3K's 308/330 implemented endpoints
+   - Compare Horizon-used endpoints against lightstack's 308/330 implemented endpoints
    - Priority: Endpoints called during dashboard load and common operations
    - Deliverable: `research.md` section "Missing Endpoint Priority Matrix"
 
@@ -225,7 +225,7 @@ Response (201):
   "remote_console": {
     "protocol": "vnc",
     "type": "novnc",
-    "url": "http://o3k-host:6080/vnc_auto.html?token=abc123"
+    "url": "http://lightstack-host:6080/vnc_auto.html?token=abc123"
   }
 }
 
@@ -291,7 +291,7 @@ Response (202): Accepted
 **File**: `quickstart.md`
 
 Structure:
-1. **Prerequisites**: Docker, OpenStack CLI, O3K running
+1. **Prerequisites**: Docker, OpenStack CLI, Lightstack running
 2. **Step 1: Deploy Horizon** (docker-compose snippet)
 3. **Step 2: Configure Horizon** (local_settings.py changes)
 4. **Step 3: Verify Connectivity** (test authentication)
@@ -370,7 +370,7 @@ Run `.specify/scripts/bash/update-agent-context.sh claude` to update `.claude/me
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | VNC console requires real mode (libvirt) | Blocks console testing on macOS | Implement stub mode fallback returning mock console URL |
-| Horizon version drift (newer than O3K targets) | Breaking changes in Horizon API expectations | Pin Horizon version in docs, test against OpenStack Yoga/Zed releases |
+| Horizon version drift (newer than Lightstack targets) | Breaking changes in Horizon API expectations | Pin Horizon version in docs, test against OpenStack Yoga/Zed releases |
 | Performance degrades with 100+ resources | Fails SC-004 (dashboard load time) | Add database indexes, optimize list queries with pagination |
 | Documentation incomplete for edge cases | User confusion during deployment | Include troubleshooting section with common error messages |
 

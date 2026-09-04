@@ -1,8 +1,8 @@
-# O3K Networking Modes Deployment Guide
+# Lightstack Networking Modes Deployment Guide
 
 ## Overview
 
-O3K supports three networking modes, each with different performance characteristics and requirements:
+Lightstack supports three networking modes, each with different performance characteristics and requirements:
 
 1. **Stub Mode** - Testing and development (no kernel dependencies)
 2. **IPTables Mode** - Traditional Linux networking with iptables security groups
@@ -126,12 +126,12 @@ sudo dnf install -y iproute iptables bridge-utils dnsmasq
 5. **Security Groups with iptables**
    ```bash
    # Create chain per security group
-   iptables -t filter -N O3K-SG-<sg_id>
-   iptables -t filter -A O3K-SG-<sg_id> -j DROP  # Default deny
+   iptables -t filter -N lightstack-SG-<sg_id>
+   iptables -t filter -A lightstack-SG-<sg_id> -j DROP  # Default deny
 
    # Add rules
-   iptables -t filter -I O3K-SG-<sg_id> 1 -p tcp --dport 22 -j ACCEPT
-   iptables -t filter -I O3K-SG-<sg_id> 1 -p icmp -j ACCEPT
+   iptables -t filter -I lightstack-SG-<sg_id> 1 -p tcp --dport 22 -j ACCEPT
+   iptables -t filter -I lightstack-SG-<sg_id> 1 -p icmp -j ACCEPT
    ```
 
 ### Performance
@@ -313,14 +313,14 @@ int sg_ingress(struct __sk_buff *skb) {
 
 ### Example 1: Development on macOS (Stub Mode)
 ```yaml
-# config/o3k.yaml
+# config/lightstack.yaml
 neutron:
   networking_mode: stub
 ```
 
 ```bash
 # No special requirements
-go run cmd/o3k/main.go --config config/o3k.yaml
+go run cmd/lightstack/main.go --config config/lightstack.yaml
 ```
 
 ### Example 2: Production on Ubuntu 22.04 (IPTables Mode)
@@ -329,14 +329,14 @@ go run cmd/o3k/main.go --config config/o3k.yaml
 sudo apt-get update
 sudo apt-get install -y iproute2 iptables bridge-utils dnsmasq
 
-# Configure O3K
-cat > /etc/o3k/o3k.yaml <<EOF
+# Configure lightstack
+cat > /etc/lightstack/lightstack.yaml <<EOF
 neutron:
   networking_mode: iptables
 EOF
 
-# Run O3K with systemd
-sudo systemctl start o3k
+# Run lightstack with systemd
+sudo systemctl start lightstack
 ```
 
 ### Example 3: High-Performance on Ubuntu 24.04 (eBPF Mode)
@@ -348,14 +348,14 @@ sudo apt-get install -y iproute2 linux-tools-generic bpftool clang llvm
 # Verify kernel version
 uname -r  # Should be 5.15+ or 6.x
 
-# Configure O3K
-cat > /etc/o3k/o3k.yaml <<EOF
+# Configure lightstack
+cat > /etc/lightstack/lightstack.yaml <<EOF
 neutron:
   networking_mode: ebpf
 EOF
 
-# Run O3K with systemd
-sudo systemctl start o3k
+# Run lightstack with systemd
+sudo systemctl start lightstack
 ```
 
 ---
@@ -364,9 +364,9 @@ sudo systemctl start o3k
 
 To switch modes, simply:
 
-1. Stop O3K
-2. Update `config/o3k.yaml` with desired `networking_mode`
-3. Restart O3K
+1. Stop Lightstack
+2. Update `config/lightstack.yaml` with desired `networking_mode`
+3. Restart Lightstack
 
 **Note**: Existing networks/VMs will need to be recreated when switching modes.
 
@@ -376,20 +376,20 @@ To switch modes, simply:
 
 ### Test Stub Mode (Works on any OS)
 ```bash
-# Start O3K
-go run cmd/o3k/main.go --config config/o3k.yaml
+# Start lightstack
+go run cmd/lightstack/main.go --config config/lightstack.yaml
 
 # Create network
 openstack network create test-network
 
 # Verify in database
-psql -d o3k -c "SELECT id, name, status FROM networks;"
+psql -d lightstack -c "SELECT id, name, status FROM networks;"
 ```
 
 ### Test IPTables Mode (Linux only)
 ```bash
-# Start O3K
-sudo go run cmd/o3k/main.go --config config/o3k.yaml
+# Start lightstack
+sudo go run cmd/lightstack/main.go --config config/lightstack.yaml
 
 # Create network
 openstack network create test-network
@@ -403,14 +403,14 @@ sudo ip netns exec light-ns-<project_id> ip link show | grep br-
 
 ### Test eBPF Mode (Linux 4.18+ only)
 ```bash
-# Start O3K
-sudo go run cmd/o3k/main.go --config config/o3k.yaml
+# Start lightstack
+sudo go run cmd/lightstack/main.go --config config/lightstack.yaml
 
 # Create network
 openstack network create test-network
 
 # Verify eBPF programs loaded
-sudo bpftool prog list | grep O3K
+sudo bpftool prog list | grep lightstack
 
 # Verify TC filters
 sudo tc filter show dev tap-<port_id> ingress
@@ -436,7 +436,7 @@ sudo tc filter show dev tap-<port_id> ingress
 
 **Issue**: `permission denied` when creating namespace
 - **Cause**: Insufficient privileges
-- **Solution**: Run O3K with sudo or CAP_NET_ADMIN capability
+- **Solution**: Run Lightstack with sudo or CAP_NET_ADMIN capability
 
 ---
 

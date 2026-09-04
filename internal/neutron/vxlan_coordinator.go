@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/compute"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/cobaltcore-dev/lightstack/internal/compute"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/rs/zerolog/log"
 )
 

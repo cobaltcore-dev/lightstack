@@ -124,12 +124,12 @@ During contract test execution, identified and fixed **5 critical implementation
 ```bash
 $ go test ./test/contract/... -count=1
 
-ok  	github.com/cobaltcore-dev/o3k/test/contract	        0.373s
-ok  	github.com/cobaltcore-dev/o3k/test/contract/cinder	5.946s
-ok  	github.com/cobaltcore-dev/o3k/test/contract/glance	2.101s
-ok  	github.com/cobaltcore-dev/o3k/test/contract/keystone	4.669s
-ok  	github.com/cobaltcore-dev/o3k/test/contract/neutron	4.695s
-ok  	github.com/cobaltcore-dev/o3k/test/contract/nova	6.473s
+ok  	github.com/cobaltcore-dev/lightstack/test/contract	        0.373s
+ok  	github.com/cobaltcore-dev/lightstack/test/contract/cinder	5.946s
+ok  	github.com/cobaltcore-dev/lightstack/test/contract/glance	2.101s
+ok  	github.com/cobaltcore-dev/lightstack/test/contract/keystone	4.669s
+ok  	github.com/cobaltcore-dev/lightstack/test/contract/neutron	4.695s
+ok  	github.com/cobaltcore-dev/lightstack/test/contract/nova	6.473s
 ```
 
 **Total Tests**: 150+ contract tests
@@ -155,7 +155,7 @@ $ go test -v -run TestNova.*Migration ./test/contract/nova/
 --- PASS: TestNovaForceMigrationComplete_Contract (0.10s)
 
 PASS
-ok  	github.com/cobaltcore-dev/o3k/test/contract/nova	2.703s
+ok  	github.com/cobaltcore-dev/lightstack/test/contract/nova	2.703s
 ```
 
 ---

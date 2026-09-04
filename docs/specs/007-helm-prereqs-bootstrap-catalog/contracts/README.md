@@ -32,13 +32,13 @@ Affected endpoint (unchanged shape): **`POST /v3/auth/tokens`** (Keystone v3 ide
 
 The `token.catalog[].endpoints[]` array is structurally identical regardless of scheme; only `url`'s scheme varies.
 
-`O3K_ENDPOINT_SCHEME` unset / `http` (default):
+`LIGHTSTACK_ENDPOINT_SCHEME` unset / `http` (default):
 
 ```json
 { "interface": "public", "region": "RegionOne", "url": "http://<host>:9292" }
 ```
 
-`O3K_ENDPOINT_SCHEME=https`:
+`LIGHTSTACK_ENDPOINT_SCHEME=https`:
 
 ```json
 { "interface": "public", "region": "RegionOne", "url": "https://<host>:9292" }
@@ -48,7 +48,7 @@ The `token.catalog[].endpoints[]` array is structurally identical regardless of 
 - Every endpoint URL across every service uses the configured scheme (FR-010); default and unset/invalid → `http` (FR-011, FR-014).
 - The scheme also applies to resource **self-links / pagination** (`common.BaseURL`), not only the catalog (FR-013a).
 - All other fields — service `type`, `name`, endpoint `interface`, `region`, `id`, host, port, path — are unchanged (FR-013). No microversion bump.
-- Composes with `O3K_ENDPOINT_HOST` (host and scheme both reflected).
+- Composes with `LIGHTSTACK_ENDPOINT_HOST` (host and scheme both reflected).
 
 **Exposure note**: advertised URLs are `https://<host>:<service-port>` (port kept). They resolve only when the deployment terminates TLS **per service port** (port-based). The SPEC-008 chart owns that; see spec Assumptions → TLS exposure model.
 
@@ -59,5 +59,5 @@ The `token.catalog[].endpoints[]` array is structurally identical regardless of 
 | Contract | Verified by |
 |----------|-------------|
 | C1 | `internal/keystone/bootstrap_test.go` (unit: provision / idempotent / custom-user / no-password) + integration (`test/`): configure password → `openstack token issue` succeeds, `secret` rejected |
-| C2 | `internal/keystone/auth_catalog_test.go` + `internal/common/baseurl_test.go` (unit: http default / https / invalid→http, catalog + self-links) + integration: `O3K_ENDPOINT_SCHEME=https` → `openstack catalog list` URLs and resource self-links are `https://` |
+| C2 | `internal/keystone/auth_catalog_test.go` + `internal/common/baseurl_test.go` (unit: http default / https / invalid→http, catalog + self-links) + integration: `LIGHTSTACK_ENDPOINT_SCHEME=https` → `openstack catalog list` URLs and resource self-links are `https://` |
 | C1 + C2 | **SPEC-000 contract tests** pass with both workstreams enabled (FR-016, SC-007) |

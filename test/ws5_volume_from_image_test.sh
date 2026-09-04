@@ -3,7 +3,7 @@
 # reaches `available` synchronously (real qcow2 backing via qemu-img).
 set -euo pipefail
 : "${OS_AUTH_URL:?source your OpenStack env first}"
-IMG="${O3K_TEST_IMAGE:-cirros}"
+IMG="${LIGHTSTACK_TEST_IMAGE:-cirros}"
 VOL=ws5-fromimg-vol
 
 cleanup() { openstack volume delete "$VOL" 2>/dev/null || true; }

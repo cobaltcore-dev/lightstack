@@ -31,7 +31,7 @@ func getAuthenticatedProvider() (*gophercloud.ProviderClient, error) {
 
 // TestNovaFlavorInvalidInput_Contract tests error handling for invalid flavor creation
 func TestNovaFlavorInvalidInput_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -82,7 +82,7 @@ func TestNovaFlavorInvalidInput_Contract(t *testing.T) {
 
 // TestNovaFlavorNotFound_Contract tests 404 handling
 func TestNovaFlavorNotFound_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -100,7 +100,7 @@ func TestNovaFlavorNotFound_Contract(t *testing.T) {
 
 // TestNovaFlavorDuplicateName_Contract tests conflict handling
 func TestNovaFlavorDuplicateName_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -130,13 +130,13 @@ func TestNovaFlavorDuplicateName_Contract(t *testing.T) {
 	} else {
 		// If allowed, cleanup second flavor
 		defer flavors.Delete(client, flavor2.ID)
-		t.Logf("Note: O3K allows duplicate flavor names (flavor1=%s, flavor2=%s)", flavor1.ID, flavor2.ID)
+		t.Logf("Note: Lightstack allows duplicate flavor names (flavor1=%s, flavor2=%s)", flavor1.ID, flavor2.ID)
 	}
 }
 
 // TestNovaFlavorUnauthorized_Contract tests auth failure handling
 func TestNovaFlavorUnauthorized_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	// Create client with invalid token
 	provider, err := getAuthenticatedProvider()
@@ -157,7 +157,7 @@ func TestNovaFlavorUnauthorized_Contract(t *testing.T) {
 
 // TestNovaFlavorAccessControl_Contract tests admin-only operations
 func TestNovaFlavorAccessControl_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	// This test assumes flavor creation is admin-only
 	// Would need non-admin user setup to test properly
@@ -166,7 +166,7 @@ func TestNovaFlavorAccessControl_Contract(t *testing.T) {
 
 // TestNovaFlavorListPagination_Contract tests pagination handling
 func TestNovaFlavorListPagination_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -223,7 +223,7 @@ func TestNovaFlavorListPagination_Contract(t *testing.T) {
 
 // TestNovaFlavorInvalidID_Contract tests invalid UUID handling
 func TestNovaFlavorInvalidID_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

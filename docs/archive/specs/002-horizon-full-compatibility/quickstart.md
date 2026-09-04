@@ -1,15 +1,15 @@
-# Quickstart: Deploy Horizon with O3K
+# Quickstart: Deploy Horizon with Lightstack
 
 **Feature**: OpenStack Horizon 100% Compatibility
 **Time to Complete**: 15-30 minutes
-**Target Audience**: Cloud administrators, developers evaluating O3K
+**Target Audience**: Cloud administrators, developers evaluating Lightstack
 **Status**: Production Ready
 
 **Complete Deployment Guide**: For comprehensive deployment instructions, troubleshooting, and production configuration, see [docs/HORIZON_DEPLOYMENT.md](../../docs/HORIZON_DEPLOYMENT.md).
 
 ## Overview
 
-This quickstart provides a streamlined path to deploying OpenStack Horizon dashboard with O3K. After completion, you'll have a fully functional web-based cloud management interface.
+This quickstart provides a streamlined path to deploying OpenStack Horizon dashboard with lightstack. After completion, you'll have a fully functional web-based cloud management interface.
 
 **What You'll Get**:
 - Horizon dashboard accessible at http://localhost
@@ -48,20 +48,20 @@ df -h
 
 ---
 
-## Step 1: Deploy O3K Backend
+## Step 1: Deploy Lightstack Backend
 
-### 1.1 Clone O3K Repository (if not already done)
+### 1.1 Clone Lightstack Repository (if not already done)
 
 ```bash
 cd ~/projects
-git clone https://github.com/yourusername/o3k.git
-cd o3k
+git clone https://github.com/yourusername/lightstack.git
+cd lightstack
 ```
 
-### 1.2 Start O3K Services
+### 1.2 Start Lightstack Services
 
 ```bash
-# Start PostgreSQL database and O3K
+# Start PostgreSQL database and lightstack
 docker compose -f deployments/docker-compose.yml up -d
 
 # Verify services running
@@ -69,11 +69,11 @@ docker compose -f deployments/docker-compose.yml ps
 
 # Expected output:
 # NAME                 STATUS    PORTS
-# o3k-postgres         Up        5432/tcp
-# o3k                  Up        0.0.0.0:35357->35357/tcp, ...
+# lightstack-postgres         Up        5432/tcp
+# lightstack                  Up        0.0.0.0:35357->35357/tcp, ...
 ```
 
-### 1.3 Verify O3K API Accessibility
+### 1.3 Verify Lightstack API Accessibility
 
 ```bash
 # Test Keystone endpoint
@@ -86,7 +86,7 @@ curl -s http://localhost:35357/v3 | jq '.version'
 # }
 
 # Configure OpenStack CLI environment
-cat > ~/.o3k-env <<EOF
+cat > ~/.lightstack-env <<EOF
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
@@ -96,7 +96,7 @@ export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 EOF
 
-source ~/.o3k-env
+source ~/.lightstack-env
 
 # Test authentication
 openstack token issue
@@ -113,8 +113,8 @@ openstack token issue
 Create a directory for Horizon configuration:
 
 ```bash
-mkdir -p ~/o3k-horizon/config
-cd ~/o3k-horizon
+mkdir -p ~/lightstack-horizon/config
+cd ~/lightstack-horizon
 ```
 
 Create `config/local_settings.py`:
@@ -130,7 +130,7 @@ LOGOUT_URL = '/dashboard/auth/logout/'
 LOGIN_REDIRECT_URL = '/dashboard/'
 
 # OpenStack API Configuration
-OPENSTACK_HOST = "o3k"  # Docker service name
+OPENSTACK_HOST = "lightstack"  # Docker service name
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
 
@@ -146,8 +146,8 @@ OPENSTACK_API_VERSIONS = {
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
 OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
 
-# Session Timeout (match O3K token TTL)
-SESSION_TIMEOUT = 14400  # 4 hours (matches O3K default)
+# Session Timeout (match lightstack token TTL)
+SESSION_TIMEOUT = 14400  # 4 hours (matches lightstack default)
 
 # Enable Console Access
 CONSOLE_TYPE = 'novnc'
@@ -182,7 +182,7 @@ DEBUG = False
 
 ### 2.2 Create Docker Compose Configuration
 
-Create `docker-compose.yml` in `~/o3k-horizon/`:
+Create `docker-compose.yml` in `~/lightstack-horizon/`:
 
 ```yaml
 version: '3.8'
@@ -190,7 +190,7 @@ version: '3.8'
 services:
   horizon:
     image: kolla/ubuntu-horizon:zed
-    container_name: o3k-horizon
+    container_name: lightstack-horizon
     ports:
       - "80:80"
     environment:
@@ -198,35 +198,35 @@ services:
     volumes:
       - ./config/local_settings.py:/etc/openstack-dashboard/local_settings.py:ro
     networks:
-      - o3k-network
+      - lightstack-network
     depends_on:
       - novnc
     restart: unless-stopped
 
   novnc:
     image: novnc/noVNC:latest
-    container_name: o3k-novnc
+    container_name: lightstack-novnc
     ports:
       - "6080:6080"
     environment:
-      - VNC_HOST=o3k
+      - VNC_HOST=lightstack
       - VNC_PORT=5900
     networks:
-      - o3k-network
+      - lightstack-network
     restart: unless-stopped
 
 networks:
-  o3k-network:
+  lightstack-network:
     external: true
-    name: o3k_default
+    name: lightstack_default
 ```
 
-**Note**: Assumes O3K Docker Compose created `o3k_default` network. If different, adjust network name.
+**Note**: Assumes Lightstack Docker Compose created `lightstack_default` network. If different, adjust network name.
 
 ### 2.3 Start Horizon
 
 ```bash
-# From ~/o3k-horizon directory
+# From ~/lightstack-horizon directory
 docker compose up -d
 
 # Verify containers running
@@ -234,8 +234,8 @@ docker compose ps
 
 # Expected output:
 # NAME            STATUS    PORTS
-# o3k-horizon     Up        0.0.0.0:80->80/tcp
-# o3k-novnc       Up        0.0.0.0:6080->6080/tcp
+# lightstack-horizon     Up        0.0.0.0:80->80/tcp
+# lightstack-novnc       Up        0.0.0.0:6080->6080/tcp
 
 # Check Horizon logs
 docker compose logs horizon | tail -20
@@ -262,7 +262,7 @@ xdg-open http://localhost/dashboard
 
 ### 3.2 Login
 
-**Credentials** (from O3K seed data):
+**Credentials** (from Lightstack seed data):
 - **Domain**: Default
 - **User Name**: admin
 - **Password**: secret
@@ -331,9 +331,9 @@ Expected view after login:
 
 ### 5.1 CORS Configuration (if needed)
 
-If Horizon runs on different hostname/port than O3K, configure CORS in O3K:
+If Horizon runs on different hostname/port than lightstack, configure CORS in lightstack:
 
-**Edit**: `o3k/config/o3k.yaml`
+**Edit**: `lightstack/config/lightstack.yaml`
 
 ```yaml
 cors:
@@ -354,17 +354,17 @@ cors:
     - "X-Subject-Token"
 ```
 
-**Restart O3K**:
+**Restart lightstack**:
 ```bash
-cd ~/projects/o3k
-docker compose -f deployments/docker-compose.yml restart o3k
+cd ~/projects/lightstack
+docker compose -f deployments/docker-compose.yml restart lightstack
 ```
 
 ### 5.2 Token TTL Tuning
 
-Match Horizon session timeout with O3K token TTL:
+Match Horizon session timeout with Lightstack token TTL:
 
-**O3K Configuration** (`config/o3k.yaml`):
+**lightstack Configuration** (`config/lightstack.yaml`):
 ```yaml
 keystone:
   jwt_secret: "production-secret-key-here"
@@ -373,7 +373,7 @@ keystone:
 
 **Horizon Configuration** (`config/local_settings.py`):
 ```python
-SESSION_TIMEOUT = 14400  # Match O3K token_ttl
+SESSION_TIMEOUT = 14400  # Match lightstack token_ttl
 ```
 
 **Recommended Settings**:
@@ -396,7 +396,7 @@ SESSION_TIMEOUT = 14400  # Match O3K token_ttl
 novnc:
   image: novnc/noVNC:latest
   environment:
-    - TOKEN_VALIDATION_URL=http://o3k:35357/v3/auth/tokens
+    - TOKEN_VALIDATION_URL=http://lightstack:35357/v3/auth/tokens
     - VNC_TIMEOUT=30
   volumes:
     - ./novnc-certs:/etc/novnc/certs:ro  # SSL certificates
@@ -408,30 +408,30 @@ novnc:
 
 ### 6.1 "Unable to retrieve version information"
 
-**Symptoms**: Horizon cannot connect to O3K services
+**Symptoms**: Horizon cannot connect to Lightstack services
 
 **Diagnosis**:
 ```bash
-# Check O3K services running
-docker ps | grep o3k
+# Check lightstack services running
+docker ps | grep lightstack
 
 # Test Keystone endpoint
 curl http://localhost:35357/v3
 
-# Check Horizon can reach O3K (from within Horizon container)
-docker exec o3k-horizon ping -c 3 o3k
+# Check Horizon can reach lightstack (from within Horizon container)
+docker exec lightstack-horizon ping -c 3 lightstack
 ```
 
 **Solutions**:
-1. Verify O3K is running: `docker compose -f deployments/docker-compose.yml up -d`
+1. Verify Lightstack is running: `docker compose -f deployments/docker-compose.yml up -d`
 2. Check network connectivity between containers
-3. Verify `OPENSTACK_HOST` in `local_settings.py` matches O3K container name
+3. Verify `OPENSTACK_HOST` in `local_settings.py` matches Lightstack container name
 
 ### 6.2 "CORS policy: No 'Access-Control-Allow-Origin'"
 
 **Symptoms**: Browser console shows CORS errors
 
-**Solution**: Enable CORS in O3K (see [Step 5.1](#51-cors-configuration-if-needed))
+**Solution**: Enable CORS in Lightstack (see [Step 5.1](#51-cors-configuration-if-needed))
 
 ### 6.3 Console Not Available
 
@@ -452,7 +452,7 @@ curl -X POST http://localhost:8774/v2.1/servers/{SERVER_ID}/remote-consoles \
 
 **Solutions**:
 1. Verify noVNC proxy running: `docker ps | grep novnc`
-2. Check noVNC logs: `docker logs o3k-novnc`
+2. Check noVNC logs: `docker logs lightstack-novnc`
 3. Ensure instance is in ACTIVE state
 4. Verify port 6080 accessible: `curl http://localhost:6080`
 
@@ -468,15 +468,15 @@ curl -X POST http://localhost:8774/v2.1/servers/{SERVER_ID}/remote-consoles \
 
 **Diagnosis**:
 ```bash
-# Check O3K resource usage
-docker stats o3k
+# Check lightstack resource usage
+docker stats lightstack
 
 # Check database connections
-docker exec o3k-postgres psql -U o3k -d o3k -c "SELECT count(*) FROM pg_stat_activity;"
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "SELECT count(*) FROM pg_stat_activity;"
 ```
 
 **Solutions**:
-1. Increase O3K memory allocation (edit docker-compose.yml)
+1. Increase Lightstack memory allocation (edit docker-compose.yml)
 2. Optimize database queries (run `ANALYZE` on tables)
 3. Reduce resource count (delete unused instances/networks)
 
@@ -510,16 +510,16 @@ openstack port list
 - [ ] Configure noVNC proxy with SSL certificates
 - [ ] Set up backups for PostgreSQL database
 - [ ] Configure firewall rules (restrict port access)
-- [ ] Set production-grade `JWT_SECRET` in O3K config
+- [ ] Set production-grade `JWT_SECRET` in Lightstack config
 - [ ] Enable logging and monitoring
 - [ ] Review and adjust token TTL based on security requirements
 
 ### Additional Resources
 
-- **O3K Documentation**: `/Users/I761222/git/o3k/docs/`
+- **lightstack Documentation**: `/Users/I761222/git/lightstack/docs/`
 - **Horizon Documentation**: https://docs.openstack.org/horizon/latest/
 - **OpenStack CLI Guide**: https://docs.openstack.org/python-openstackclient/latest/
-- **O3K GitHub Repository**: https://github.com/yourusername/o3k
+- **lightstack GitHub Repository**: https://github.com/yourusername/lightstack
 
 ### Learning More
 
@@ -609,19 +609,19 @@ image: quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
 
 ### Network Connectivity
 
-**Problem**: Horizon can't connect to O3K services
+**Problem**: Horizon can't connect to Lightstack services
 
 **Solution**:
 ```bash
 # Check network exists
-docker network ls | grep o3k
+docker network ls | grep lightstack
 
 # Verify containers on same network
-docker network inspect deployments_o3k-network
+docker network inspect deployments_lightstack-network
 
 # Test connectivity from Horizon container
-docker exec o3k-horizon ping -c 3 o3k
-docker exec o3k-horizon curl -v http://o3k:35357/v3
+docker exec lightstack-horizon ping -c 3 lightstack
+docker exec lightstack-horizon curl -v http://lightstack:35357/v3
 ```
 
 ### Authentication Issues
@@ -629,9 +629,9 @@ docker exec o3k-horizon curl -v http://o3k:35357/v3
 **Problem**: "Unable to authenticate" errors
 
 **Solution**:
-- Verify O3K Keystone is running: `curl http://localhost:35357/v3`
+- Verify Lightstack Keystone is running: `curl http://localhost:35357/v3`
 - Check `local_settings.py` OPENSTACK_HOST matches container name
-- Ensure project "default" and user "admin" exist in O3K
+- Ensure project "default" and user "admin" exist in Lightstack
 - Verify token TTL matches SESSION_TIMEOUT (14400 seconds)
 
 ### Alternative Deployment Methods
@@ -652,15 +652,15 @@ To remove all components:
 
 ```bash
 # Stop and remove Horizon
-cd ~/o3k-horizon
+cd ~/lightstack-horizon
 docker compose down -v
 
-# Stop and remove O3K
-cd ~/projects/o3k
+# Stop and remove lightstack
+cd ~/projects/lightstack
 docker compose -f deployments/docker-compose.yml down -v
 
 # Remove configuration directory (optional)
-rm -rf ~/o3k-horizon
+rm -rf ~/lightstack-horizon
 ```
 
 **Warning**: This deletes all data including instances, networks, volumes, and images.
@@ -669,12 +669,12 @@ rm -rf ~/o3k-horizon
 
 ## Support
 
-**Issues**: https://github.com/yourusername/o3k/issues
+**Issues**: https://github.com/yourusername/lightstack/issues
 **Community**: (link to community forum/Slack/Discord)
-**Email**: support@o3k-project.org
+**Email**: support@lightstack-project.org
 
 ---
 
 **Last Updated**: 2026-03-13
-**O3K Version**: 1.0.0+
+**lightstack Version**: 1.0.0+
 **Horizon Version**: Zed (tested), Yoga (compatible)

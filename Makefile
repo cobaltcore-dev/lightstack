@@ -1,7 +1,7 @@
-.PHONY: build run test chart-test clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick
+.PHONY: build run test chart-test test-endpoint-migration test-compose-identity clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick
 
 # Build variables
-BINARY_NAME=o3k
+BINARY_NAME=lightstack
 BUILD_DIR=bin
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
@@ -10,13 +10,13 @@ LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 POSTGRES_VERSION?=18
 # Development-only defaults. Do NOT use in production.
 # Production should set DB_URL via environment variable with sslmode=require.
-DB_URL?=postgres://o3k:secret@localhost:5432/o3k?sslmode=disable
+DB_URL?=postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable
 
 # Build the binary
 build:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/o3k
+	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/lightstack
 
 # Build eBPF programs
 build-ebpf:
@@ -27,12 +27,12 @@ build-ebpf:
 
 # Build with eBPF support
 build-with-ebpf: build-ebpf build
-	@echo "Built O3K with eBPF support"
+	@echo "Built Lightstack with eBPF support"
 
 # Run the application
 run: build
-	@echo "Starting O3K..."
-	./$(BUILD_DIR)/$(BINARY_NAME) --config config/o3k.yaml --migrations migrations
+	@echo "Starting lightstack..."
+	./$(BUILD_DIR)/$(BINARY_NAME) --config config/lightstack.yaml --migrations migrations
 
 # Install dependencies
 install-deps:
@@ -45,49 +45,64 @@ test:
 	@echo "Running tests..."
 	go test -v ./...
 
-# Run contract tests (requires O3K to be running)
+# Run contract tests (requires Lightstack to be running)
 test-contract:
 	@echo "Running contract tests..."
-	@echo "Checking O3K is running..."
-	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running. Run 'docker compose -f deployments/docker-compose.yml up -d' or 'make run' first." && exit 1)
+	@echo "Checking Lightstack is running..."
+	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: Lightstack not running. Run 'docker compose -f deployments/docker-compose.yml up -d' or 'make run' first." && exit 1)
 	@echo "Running gophercloud contract tests..."
 	go test -v ./test/contract/... -timeout 5m
 
-# Run integration tests (requires O3K to be running)
+# Run integration tests (requires Lightstack to be running)
 test-integration:
 	@echo "Running integration tests..."
-	@echo "Checking O3K is running..."
-	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running. Run 'docker compose -f deployments/docker-compose.yml up -d' first." && exit 1)
+	@echo "Checking Lightstack is running..."
+	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: Lightstack not running. Run 'docker compose -f deployments/docker-compose.yml up -d' first." && exit 1)
 	@echo "Running integration test suite..."
 	@bash test/integration_test.sh
 
 # Run multi-tenancy tests
 test-multi-tenant:
 	@echo "Running multi-tenancy tests..."
-	@echo "Checking O3K is running..."
-	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running." && exit 1)
+	@echo "Checking Lightstack is running..."
+	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: Lightstack not running." && exit 1)
 	@bash test/multi_tenant_test.sh
 
 # Run performance tests
 test-performance:
 	@echo "Running performance tests..."
-	@echo "Checking O3K is running..."
-	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running." && exit 1)
+	@echo "Checking Lightstack is running..."
+	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: Lightstack not running." && exit 1)
 	@bash test/performance_test.sh
 
 # Run error handling tests
 test-errors:
 	@echo "Running error handling tests..."
-	@echo "Checking O3K is running..."
-	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running." && exit 1)
+	@echo "Checking Lightstack is running..."
+	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: Lightstack not running." && exit 1)
 	@bash test/error_handling_test.sh
 
-# Run Helm chart tests (helm lint + template + unittest; no cluster or running O3K needed)
+# Verify the endpoint-hostname forward migration (cloud-storage#575). Needs a PostgreSQL it
+# may create a scratch database in; the database named in the URL is never touched. No
+# running Lightstack required.
+test-endpoint-migration:
+	@echo "Running endpoint-hostname migration tests..."
+	@test -n "$(LIGHTSTACK_TEST_DB_URL)" || (echo "ERROR: set LIGHTSTACK_TEST_DB_URL, e.g. postgres://lightstack:secret@127.0.0.1:5432/postgres" && exit 1)
+	@bash test/endpoint_hostname_migration_test.sh
+
+# Check that the Compose stacks' database identity is overridable (cloud-storage#575).
+# Renders each stack with `compose config`; no containers started, no running Lightstack.
+test-compose-identity:
+	@echo "Running Compose database-identity tests..."
+	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' not found." && exit 1)
+	@bash test/compose_db_identity_test.sh
+
+# Run Helm chart tests (helm lint + template + unittest; no cluster or running Lightstack needed)
 chart-test:
 	@echo "Running Helm chart tests (lint + template + unittest)..."
 	@command -v helm >/dev/null 2>&1 || (echo "ERROR: helm not found. Run 'make install-tools' first." && exit 1)
 	@helm plugin list 2>/dev/null | grep -q '^unittest' || (echo "ERROR: helm-unittest plugin not found. Run 'make install-tools' first." && exit 1)
-	@bash charts/o3k/ci/run-tests.sh
+	@bash charts/lightstack/ci/run-tests.sh
 
 # Run all tests (unit + chart + contract + integration + performance)
 test-all: test chart-test test-contract test-integration test-multi-tenant test-errors test-performance
@@ -102,8 +117,8 @@ clean:
 # Run comprehensive performance benchmarks (Sprint 69)
 bench:
 	@echo "Running comprehensive performance benchmarks..."
-	@echo "Checking O3K is running..."
-	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: O3K not running. Run 'docker compose -f deployments/docker-compose.yml up -d' first." && exit 1)
+	@echo "Checking Lightstack is running..."
+	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: Lightstack not running. Run 'docker compose -f deployments/docker-compose.yml up -d' first." && exit 1)
 	@bash test/benchmark/run_benchmarks.sh
 
 # Run quick benchmarks (Go only, no k6)
@@ -123,9 +138,9 @@ migrate:
 # Start PostgreSQL in Docker (for development)
 db-up:
 	@echo "Starting PostgreSQL..."
-	docker run -d --name o3k-postgres \
-		-e POSTGRES_DB=o3k \
-		-e POSTGRES_USER=o3k \
+	docker run -d --name lightstack-postgres \
+		-e POSTGRES_DB=lightstack \
+		-e POSTGRES_USER=lightstack \
 		-e POSTGRES_PASSWORD=secret \
 		-p 5432:5432 \
 		postgres:$(POSTGRES_VERSION)
@@ -135,8 +150,8 @@ db-up:
 # Stop PostgreSQL
 db-down:
 	@echo "Stopping PostgreSQL..."
-	docker stop o3k-postgres || true
-	docker rm o3k-postgres || true
+	docker stop lightstack-postgres || true
+	docker rm lightstack-postgres || true
 
 # Run with hot reload (requires air: go install github.com/cosmtrek/air@latest)
 dev:
@@ -165,7 +180,7 @@ install-tools:
 		echo "  helm not found - installing via the official get-helm-3 script (may prompt for sudo)..."; \
 		curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash; \
 	fi
-	@echo "Installing/updating the helm-unittest plugin (for 'helm unittest charts/o3k')..."
+	@echo "Installing/updating the helm-unittest plugin (for 'helm unittest charts/lightstack')..."
 	@if helm plugin list 2>/dev/null | grep -q '^unittest'; then \
 		helm plugin update unittest; \
 	else \
@@ -175,7 +190,7 @@ install-tools:
 # Install eBPF development tools (Linux only)
 install-ebpf-tools:
 	@echo "Installing eBPF development tools..."
-	@echo "NOTE: This requires Linux. On macOS/Windows, O3K runs in stub mode."
+	@echo "NOTE: This requires Linux. On macOS/Windows, Lightstack runs in stub mode."
 	@if [ "$$(uname)" = "Linux" ]; then \
 		echo "Installing clang, llvm, libbpf-dev..."; \
 		sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev linux-headers-$$(uname -r); \
@@ -187,13 +202,13 @@ install-ebpf-tools:
 
 # Show help
 help:
-	@echo "O3K Makefile targets:"
+	@echo "Lightstack Makefile targets:"
 	@echo "  build            - Build the binary"
 	@echo "  build-ebpf       - Compile eBPF programs (Linux only)"
 	@echo "  build-with-ebpf  - Build binary with eBPF support"
 	@echo "  run              - Build and run the application"
 	@echo "  test             - Run unit tests"
-	@echo "  test-contract    - Run contract tests (requires O3K running)"
+	@echo "  test-contract    - Run contract tests (requires Lightstack running)"
 	@echo "  test-integration - Run integration tests"
 	@echo "  test-multi-tenant - Run multi-tenancy isolation tests"
 	@echo "  test-performance - Run performance and load tests"

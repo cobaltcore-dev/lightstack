@@ -8,7 +8,7 @@ plan calls for schema-rejection tests RED before schema completion. Here "tests"
 (helm-unittest + `helm template`/`lint` assertions in `ci/run-tests.sh`), not Go tests.
 
 **Organization**: By user story (US1 input/schema P1, US2 status+endpoint conventions P2, US3 published
-contract P3). This is a documentation + schema + tests feature on `charts/o3k/` — no Go/runtime/migration changes.
+contract P3). This is a documentation + schema + tests feature on `charts/lightstack/` — no Go/runtime/migration changes.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -18,7 +18,7 @@ contract P3). This is a documentation + schema + tests feature on `charts/o3k/` 
 
 ## Path Conventions
 
-All work is under `charts/o3k/` (chart) and `docs/specs/012-integration-contract/` (design). No `src/`.
+All work is under `charts/lightstack/` (chart) and `docs/specs/012-integration-contract/` (design). No `src/`.
 
 ---
 
@@ -26,8 +26,8 @@ All work is under `charts/o3k/` (chart) and `docs/specs/012-integration-contract
 
 **Purpose**: Establish the green baseline and test scaffolding before any change.
 
-- [X] T001 [P] Confirm the helm-unittest plugin is installed and run `charts/o3k/ci/run-tests.sh` on the unchanged chart; record the GREEN baseline (lint + template + unittest pass today).
-- [X] T002 [P] Create the directory `charts/o3k/ci/invalid-values/` to hold schema-rejection fixtures (helmignored — `ci/` is excluded from the package).
+- [X] T001 [P] Confirm the helm-unittest plugin is installed and run `charts/lightstack/ci/run-tests.sh` on the unchanged chart; record the GREEN baseline (lint + template + unittest pass today).
+- [X] T002 [P] Create the directory `charts/lightstack/ci/invalid-values/` to hold schema-rejection fixtures (helmignored — `ci/` is excluded from the package).
 
 ---
 
@@ -37,7 +37,7 @@ All work is under `charts/o3k/` (chart) and `docs/specs/012-integration-contract
 
 **⚠️ CRITICAL**: Complete before US1/US3 schema work.
 
-- [X] T003 Reconcile the authoritative top-level input key inventory in `charts/o3k/values.yaml` against `docs/specs/012-integration-contract/data-model.md` §1 (every group + leaf keys, and which are free-form maps); this list is the source of truth for both `values.schema.json` coverage and the drift gate.
+- [X] T003 Reconcile the authoritative top-level input key inventory in `charts/lightstack/values.yaml` against `docs/specs/012-integration-contract/data-model.md` §1 (every group + leaf keys, and which are free-form maps); this list is the source of truth for both `values.schema.json` coverage and the drift gate.
 
 **Checkpoint**: Key inventory agreed → schema + tests can proceed.
 
@@ -54,18 +54,18 @@ value set renders. (`contracts/input-contract.md` matrix.)
 
 ### Tests for User Story 1 (write FIRST — confirm RED) ⚠️
 
-- [X] T004 [P] [US1] Author invalid-values fixtures in `charts/o3k/ci/invalid-values/`: `unknown-key.yaml`, `bad-enum.yaml`, `bad-storagemode.yaml`, `out-of-range.yaml`, `missing-image.yaml`, `malformed-db.yaml`, plus a complete `valid-complete.yaml` (per `contracts/input-contract.md` §"Rejection test matrix").
-- [X] T005 [US1] Extend `charts/o3k/ci/run-tests.sh` with a rejection block: assert `helm template r charts/o3k -f ci/invalid-values/<fixture>` FAILS for each invalid fixture and RENDERS for `valid-complete.yaml`; run it and confirm RED (today's schema doesn't yet reject unknown-key / bad-storagemode / malformed-db).
-- [X] T006 [P] [US1] Add `charts/o3k/tests/schema_test.yaml` (helm-unittest) asserting representative structural rejections (`failedTemplate` on unknown top-level key and bad `glance.storageMode`); confirm RED. If helm-unittest does not surface schema-validation errors, delete this file and rely on the T005 bash gate (note the decision in the test file's comment).
+- [X] T004 [P] [US1] Author invalid-values fixtures in `charts/lightstack/ci/invalid-values/`: `unknown-key.yaml`, `bad-enum.yaml`, `bad-storagemode.yaml`, `out-of-range.yaml`, `missing-image.yaml`, `malformed-db.yaml`, plus a complete `valid-complete.yaml` (per `contracts/input-contract.md` §"Rejection test matrix").
+- [X] T005 [US1] Extend `charts/lightstack/ci/run-tests.sh` with a rejection block: assert `helm template r charts/lightstack -f ci/invalid-values/<fixture>` FAILS for each invalid fixture and RENDERS for `valid-complete.yaml`; run it and confirm RED (today's schema doesn't yet reject unknown-key / bad-storagemode / malformed-db).
+- [X] T006 [P] [US1] Add `charts/lightstack/tests/schema_test.yaml` (helm-unittest) asserting representative structural rejections (`failedTemplate` on unknown top-level key and bad `glance.storageMode`); confirm RED. If helm-unittest does not surface schema-validation errors, delete this file and rely on the T005 bash gate (note the decision in the test file's comment).
 
 ### Implementation for User Story 1 (make GREEN)
 
-- [X] T007 [US1] In `charts/o3k/values.schema.json`: add a `description` to every property and set `additionalProperties: false` at the top level.
-- [X] T008 [US1] In `charts/o3k/values.schema.json`: model the currently-bare/under-typed objects with `additionalProperties: false` (leaving free-form maps open) — `database` (url/existingSecret/existingSecretKey), `secrets` (jwtSecret/adminUser/adminPassword/existingSecret), `ingress`, `multiNode` (incl. `vxlanPort` port range + `minProductVersion` description), `realMode` (all fields), `cache` (redisUrl), `podSecurity`, `service` (type enum + open `annotations`), `endpointHost`, `logging`.
-- [X] T009 [US1] In `charts/o3k/values.schema.json`: add `storageMode` enums — `cinder` = stub/local/rbd/local,rbd; `glance` = stub/local/rbd/s3/local,rbd/local,s3/rbd,s3.
-- [X] T010 [US1] In `charts/o3k/values.schema.json`: document `image.tag` as the version input (typed string, no enum, defaults to `appVersion`) and `multiNode.minProductVersion` as the separate advisory-only floor (#52).
-- [X] T011 [US1] Verify the render-time conditional guards still hold under the now-strict schema (jwtSecret/adminPassword/database.url required-unless-`existingSecret`; `teardown.kubectlImage` under `dataRetentionPolicy: delete`; multi-node+real rejects `local` glance/cinder) against `charts/o3k/templates/_helpers.tpl`; extend a guard only if T012 reveals a gap. Reference existing `charts/o3k/tests/gates_test.yaml`.
-- [X] T012 [US1] Run `charts/o3k/ci/run-tests.sh`: confirm all T005/T006 rejection cases are now GREEN and that `ci/test-values.yaml` still renders across stub, real-mode, and TLS permutations (no real key rejected by `additionalProperties`).
+- [X] T007 [US1] In `charts/lightstack/values.schema.json`: add a `description` to every property and set `additionalProperties: false` at the top level.
+- [X] T008 [US1] In `charts/lightstack/values.schema.json`: model the currently-bare/under-typed objects with `additionalProperties: false` (leaving free-form maps open) — `database` (url/existingSecret/existingSecretKey), `secrets` (jwtSecret/adminUser/adminPassword/existingSecret), `ingress`, `multiNode` (incl. `vxlanPort` port range + `minProductVersion` description), `realMode` (all fields), `cache` (redisUrl), `podSecurity`, `service` (type enum + open `annotations`), `endpointHost`, `logging`.
+- [X] T009 [US1] In `charts/lightstack/values.schema.json`: add `storageMode` enums — `cinder` = stub/local/rbd/local,rbd; `glance` = stub/local/rbd/s3/local,rbd/local,s3/rbd,s3.
+- [X] T010 [US1] In `charts/lightstack/values.schema.json`: document `image.tag` as the version input (typed string, no enum, defaults to `appVersion`) and `multiNode.minProductVersion` as the separate advisory-only floor (#52).
+- [X] T011 [US1] Verify the render-time conditional guards still hold under the now-strict schema (jwtSecret/adminPassword/database.url required-unless-`existingSecret`; `teardown.kubectlImage` under `dataRetentionPolicy: delete`; multi-node+real rejects `local` glance/cinder) against `charts/lightstack/templates/_helpers.tpl`; extend a guard only if T012 reveals a gap. Reference existing `charts/lightstack/tests/gates_test.yaml`.
+- [X] T012 [US1] Run `charts/lightstack/ci/run-tests.sh`: confirm all T005/T006 rejection cases are now GREEN and that `ci/test-values.yaml` still renders across stub, real-mode, and TLS permutations (no real key rejected by `additionalProperties`).
 
 **Checkpoint**: US1 complete — the input contract validates and rejects, fail-fast, before execution.
 
@@ -80,10 +80,10 @@ deterministic conventions.
 Provisioning/Ready/Failed from `helm status` + pod readiness (both topologies) and resolves endpoints
 via the Keystone anchor + service catalog. (`contracts/status-contract.md`, `quickstart.md` §3–4.)
 
-- [X] T013 [P] [US2] Create `charts/o3k/CONTRACT.md` (with SPDX header) and write the **Status derivation** section: signals (`helm status -o json` `.info.status`, Deployment vs DaemonSet readiness fields, terminal pod states), the state-mapping table, the `--wait --timeout` readiness gate, and the Failed triggers. Source: `contracts/status-contract.md` + `data-model.md` §2.
-- [X] T014 [US2] Add the **Endpoint resolution** section to `charts/o3k/CONTRACT.md`: identity-anchored Keystone `/v3` (in-cluster Service + advertised host/scheme), service-catalog discovery for the other five, the `endpointHost` coupling, metadata exclusion, and the Flamingo API versions. Source: `contracts/status-contract.md` + `data-model.md` §3.
-- [X] T015 [P] [US2] Update `charts/o3k/templates/NOTES.txt`: mark the six in-cluster ports as non-authoritative debugging info, point the reader at the Keystone endpoint + `openstack catalog list`, and note that external consumers must set `endpointHost`.
-- [X] T016 [US2] Add/extend a helm-unittest assertion in `charts/o3k/tests/notes_test.yaml` that NOTES renders the Keystone endpoint and the non-authoritative caveat (RED → GREEN after T015).
+- [X] T013 [P] [US2] Create `charts/lightstack/CONTRACT.md` (with SPDX header) and write the **Status derivation** section: signals (`helm status -o json` `.info.status`, Deployment vs DaemonSet readiness fields, terminal pod states), the state-mapping table, the `--wait --timeout` readiness gate, and the Failed triggers. Source: `contracts/status-contract.md` + `data-model.md` §2.
+- [X] T014 [US2] Add the **Endpoint resolution** section to `charts/lightstack/CONTRACT.md`: identity-anchored Keystone `/v3` (in-cluster Service + advertised host/scheme), service-catalog discovery for the other five, the `endpointHost` coupling, metadata exclusion, and the Flamingo API versions. Source: `contracts/status-contract.md` + `data-model.md` §3.
+- [X] T015 [P] [US2] Update `charts/lightstack/templates/NOTES.txt`: mark the six in-cluster ports as non-authoritative debugging info, point the reader at the Keystone endpoint + `openstack catalog list`, and note that external consumers must set `endpointHost`.
+- [X] T016 [US2] Add/extend a helm-unittest assertion in `charts/lightstack/tests/notes_test.yaml` that NOTES renders the Keystone endpoint and the non-authoritative caveat (RED → GREEN after T015).
 
 **Checkpoint**: US2 complete — status + endpoint conventions are written and follow-able.
 
@@ -99,11 +99,11 @@ inputs/status/endpoints match the actual schema + NOTES (drift gate green).
 
 > Builds on US2 (which creates `CONTRACT.md`). Run US3 after US2.
 
-- [X] T017 [US3] Add the **Inputs** section to `charts/o3k/CONTRACT.md`: summarize the input groups (referencing `values.schema.json`), the `additionalProperties: false` strictness + open free-form maps, version = `image.tag`, and credential presence-only policy. Source: `contracts/input-contract.md`.
-- [X] T018 [US3] Add the **Versioning & compatibility** section to `charts/o3k/CONTRACT.md`: the contract rides `Chart.version` (SemVer) — MAJOR may break, MINOR/PATCH backward-compatible; `appVersion`/`image.tag` is the independent product-version axis.
-- [X] T019 [P] [US3] Link `CONTRACT.md` from `charts/o3k/README.md` under a clear "Integration contract (sci-in-a-box)" pointer.
-- [X] T020 [US3] Add a packaging assertion to `charts/o3k/ci/run-tests.sh`: `helm package` output (or `helm template` manifest set) includes `CONTRACT.md` — i.e. it is not excluded by `.helmignore` (`tar tzf <pkg>.tgz | grep CONTRACT.md`).
-- [X] T021 [US3] Add the schema↔values **drift/coverage gate** to `charts/o3k/ci/run-tests.sh`: fail if the set of top-level keys in `values.yaml` ≠ the set of properties in `values.schema.json` (catches a real key rejected by `additionalProperties:false` and any undocumented input). Source: `contracts/input-contract.md` coverage invariant.
+- [X] T017 [US3] Add the **Inputs** section to `charts/lightstack/CONTRACT.md`: summarize the input groups (referencing `values.schema.json`), the `additionalProperties: false` strictness + open free-form maps, version = `image.tag`, and credential presence-only policy. Source: `contracts/input-contract.md`.
+- [X] T018 [US3] Add the **Versioning & compatibility** section to `charts/lightstack/CONTRACT.md`: the contract rides `Chart.version` (SemVer) — MAJOR may break, MINOR/PATCH backward-compatible; `appVersion`/`image.tag` is the independent product-version axis.
+- [X] T019 [P] [US3] Link `CONTRACT.md` from `charts/lightstack/README.md` under a clear "Integration contract (sci-in-a-box)" pointer.
+- [X] T020 [US3] Add a packaging assertion to `charts/lightstack/ci/run-tests.sh`: `helm package` output (or `helm template` manifest set) includes `CONTRACT.md` — i.e. it is not excluded by `.helmignore` (`tar tzf <pkg>.tgz | grep CONTRACT.md`).
+- [X] T021 [US3] Add the schema↔values **drift/coverage gate** to `charts/lightstack/ci/run-tests.sh`: fail if the set of top-level keys in `values.yaml` ≠ the set of properties in `values.schema.json` (catches a real key rejected by `additionalProperties:false` and any undocumented input). Source: `contracts/input-contract.md` coverage invariant.
 
 **Checkpoint**: US3 complete — the contract is published, linked, shipping, and drift-guarded.
 
@@ -111,7 +111,7 @@ inputs/status/endpoints match the actual schema + NOTES (drift gate green).
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [X] T022 [P] Run the full `charts/o3k/ci/run-tests.sh` (lint + template permutations + unittest + rejection fixtures + packaging + drift gate) → all GREEN.
+- [X] T022 [P] Run the full `charts/lightstack/ci/run-tests.sh` (lint + template permutations + unittest + rejection fixtures + packaging + drift gate) → all GREEN.
 - [X] T023 [P] Walk `docs/specs/012-integration-contract/quickstart.md` end-to-end (optionally on kind/k3s via `test/helm_singlenode_stub_test.sh`) to validate the US1→US2→US3 acceptance scenarios (SC-001..006).
 - [X] T024 Tick the three acceptance-criteria boxes on cloud-storage#474 and add a "done" comment summarizing the schema + status conventions + published `CONTRACT.md`.
 - [ ] T025 Run `/review-branch` and address findings before pushing.
@@ -149,8 +149,8 @@ inputs/status/endpoints match the actual schema + NOTES (drift gate green).
 
 ```bash
 # RED first — different files, run together:
-Task: "Author invalid-values fixtures in charts/o3k/ci/invalid-values/ (T004)"
-Task: "Add charts/o3k/tests/schema_test.yaml helm-unittest rejection cases (T006)"
+Task: "Author invalid-values fixtures in charts/lightstack/ci/invalid-values/ (T004)"
+Task: "Add charts/lightstack/tests/schema_test.yaml helm-unittest rejection cases (T006)"
 # Then schema edits are sequential (same file values.schema.json): T007 → T008 → T009 → T010
 ```
 

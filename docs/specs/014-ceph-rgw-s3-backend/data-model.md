@@ -34,7 +34,7 @@ Relevant columns: `size_bytes`, `disk_format`, `checksum VARCHAR(255)` (exists, 
 ## New (non-DB) entities
 
 ### Local image cache base — filesystem
-- Path: `/var/lib/o3k/images/image-<id>.raw` (the `LocalImagePath` single-source-of-truth).
+- Path: `/var/lib/lightstack/images/image-<id>.raw` (the `LocalImagePath` single-source-of-truth).
 - Producer: Glance local upload, **or** `storage.EnsureLocalBase` lazy fetch (S3 → normalize → verify).
 - Consumer: Nova `StageOverlay` (qcow2 overlay backing file).
 - Concurrency: created via temp-file + atomic `os.Rename`, guarded by a per-image in-process lock.

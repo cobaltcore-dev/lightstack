@@ -11,7 +11,7 @@ import (
 )
 
 func TestCinderListServices_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

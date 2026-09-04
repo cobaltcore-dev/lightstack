@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This directory contains Architecture Decision Records (ADRs) for the O3K project.
+This directory contains Architecture Decision Records (ADRs) for the Lightstack project.
 
 ## Format
 

@@ -13,7 +13,7 @@ import (
 
 // TestCinderGetSnapshotMetadata_Contract tests GET /v3/:project/snapshots/:id/metadata
 func TestCinderGetSnapshotMetadata_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -93,7 +93,7 @@ func TestCinderGetSnapshotMetadata_Contract(t *testing.T) {
 
 // TestCinderSetSnapshotMetadataKey_Contract tests PUT /v3/:project/snapshots/:id/metadata/:key
 func TestCinderSetSnapshotMetadataKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -168,7 +168,7 @@ func TestCinderSetSnapshotMetadataKey_Contract(t *testing.T) {
 
 // TestCinderGetSnapshotMetadataKey_Contract tests GET /v3/:project/snapshots/:id/metadata/:key
 func TestCinderGetSnapshotMetadataKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -256,7 +256,7 @@ func TestCinderGetSnapshotMetadataKey_Contract(t *testing.T) {
 
 // TestCinderUpdateAllSnapshotMetadata_Contract tests POST /v3/:project/snapshots/:id/metadata
 func TestCinderUpdateAllSnapshotMetadata_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -331,7 +331,7 @@ func TestCinderUpdateAllSnapshotMetadata_Contract(t *testing.T) {
 
 // TestCinderDeleteSnapshotMetadataKey_Contract tests DELETE /v3/:project/snapshots/:id/metadata/:key
 func TestCinderDeleteSnapshotMetadataKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

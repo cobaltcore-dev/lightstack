@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# O3K Single-Node Deployment Script
-# Interactively configures and deploys O3K with KVM hypervisor on a single host
+# Lightstack Single-Node Deployment Script
+# Interactively configures and deploys Lightstack with KVM hypervisor on a single host
 #
 # Usage: sudo ./scripts/deploy-single-node.sh
 #
@@ -37,8 +37,8 @@ show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║   O3K Single-Node Deployment Script                      ║
-║   Deploy O3K + KVM Hypervisor on Single Host            ║
+║   lightstack Single-Node Deployment Script                      ║
+║   Deploy lightstack + KVM Hypervisor on Single Host            ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 EOF
@@ -127,8 +127,8 @@ get_configuration() {
     echo ""
 
     # Hostname
-    read -p "Enter hostname for this node [o3k-demo]: " HOSTNAME
-    HOSTNAME=${HOSTNAME:-o3k-demo}
+    read -p "Enter hostname for this node [lightstack-demo]: " HOSTNAME
+    HOSTNAME=${HOSTNAME:-lightstack-demo}
 
     # Show available network interfaces
     echo ""
@@ -161,7 +161,7 @@ get_configuration() {
     DNS_SERVERS=${DNS_SERVERS:-"8.8.8.8,8.8.4.4"}
 
     # Database password
-    read -sp "Enter PostgreSQL password for O3K database: " DB_PASSWORD
+    read -sp "Enter PostgreSQL password for Lightstack database: " DB_PASSWORD
     echo ""
     if [ -z "$DB_PASSWORD" ]; then
         DB_PASSWORD=$(openssl rand -base64 32)
@@ -173,14 +173,14 @@ get_configuration() {
     log_info "Generated JWT secret for Keystone"
 
     # Storage paths
-    read -p "Enter storage path for volumes [/var/lib/o3k/volumes]: " VOLUME_PATH
-    VOLUME_PATH=${VOLUME_PATH:-/var/lib/o3k/volumes}
+    read -p "Enter storage path for volumes [/var/lib/lightstack/volumes]: " VOLUME_PATH
+    VOLUME_PATH=${VOLUME_PATH:-/var/lib/lightstack/volumes}
 
-    read -p "Enter storage path for images [/var/lib/o3k/images]: " IMAGE_PATH
-    IMAGE_PATH=${IMAGE_PATH:-/var/lib/o3k/images}
+    read -p "Enter storage path for images [/var/lib/lightstack/images]: " IMAGE_PATH
+    IMAGE_PATH=${IMAGE_PATH:-/var/lib/lightstack/images}
 
-    read -p "Enter storage path for instances [/var/lib/o3k/instances]: " INSTANCE_PATH
-    INSTANCE_PATH=${INSTANCE_PATH:-/var/lib/o3k/instances}
+    read -p "Enter storage path for instances [/var/lib/lightstack/instances]: " INSTANCE_PATH
+    INSTANCE_PATH=${INSTANCE_PATH:-/var/lib/lightstack/instances}
 
     # Horizon deployment
     read -p "Deploy Horizon dashboard? [Y/n]: " DEPLOY_HORIZON
@@ -274,7 +274,7 @@ configure_networking() {
     IFS=',' read -ra DNS_LIST <<< "$DNS_SERVERS"
 
     # Create bridge configuration with proper YAML formatting
-    cat > /etc/netplan/01-o3k-bridge.yaml <<'NETPLAN_EOF'
+    cat > /etc/netplan/01-lightstack-bridge.yaml <<'NETPLAN_EOF'
 network:
   version: 2
   renderer: networkd
@@ -301,14 +301,14 @@ DNS_SERVERS_PLACEHOLDER
 NETPLAN_EOF
 
     # Replace placeholders with actual values (using temp file for portability)
-    sed "s/NETWORK_IFACE_PLACEHOLDER/$NETWORK_IFACE/g" /etc/netplan/01-o3k-bridge.yaml > /etc/netplan/01-o3k-bridge.yaml.tmp
-    mv /etc/netplan/01-o3k-bridge.yaml.tmp /etc/netplan/01-o3k-bridge.yaml
+    sed "s/NETWORK_IFACE_PLACEHOLDER/$NETWORK_IFACE/g" /etc/netplan/01-lightstack-bridge.yaml > /etc/netplan/01-lightstack-bridge.yaml.tmp
+    mv /etc/netplan/01-lightstack-bridge.yaml.tmp /etc/netplan/01-lightstack-bridge.yaml
 
-    sed "s|HOST_IP_PLACEHOLDER|$HOST_IP|g" /etc/netplan/01-o3k-bridge.yaml > /etc/netplan/01-o3k-bridge.yaml.tmp
-    mv /etc/netplan/01-o3k-bridge.yaml.tmp /etc/netplan/01-o3k-bridge.yaml
+    sed "s|HOST_IP_PLACEHOLDER|$HOST_IP|g" /etc/netplan/01-lightstack-bridge.yaml > /etc/netplan/01-lightstack-bridge.yaml.tmp
+    mv /etc/netplan/01-lightstack-bridge.yaml.tmp /etc/netplan/01-lightstack-bridge.yaml
 
-    sed "s/GATEWAY_PLACEHOLDER/$GATEWAY/g" /etc/netplan/01-o3k-bridge.yaml > /etc/netplan/01-o3k-bridge.yaml.tmp
-    mv /etc/netplan/01-o3k-bridge.yaml.tmp /etc/netplan/01-o3k-bridge.yaml
+    sed "s/GATEWAY_PLACEHOLDER/$GATEWAY/g" /etc/netplan/01-lightstack-bridge.yaml > /etc/netplan/01-lightstack-bridge.yaml.tmp
+    mv /etc/netplan/01-lightstack-bridge.yaml.tmp /etc/netplan/01-lightstack-bridge.yaml
 
     # Insert DNS servers with proper indentation
     # Build the DNS lines in a temporary file to avoid sed escaping issues
@@ -328,12 +328,12 @@ NETPLAN_EOF
             next
         }
         {print}
-    ' /etc/netplan/01-o3k-bridge.yaml > /etc/netplan/01-o3k-bridge.yaml.tmp
-    mv /etc/netplan/01-o3k-bridge.yaml.tmp /etc/netplan/01-o3k-bridge.yaml
+    ' /etc/netplan/01-lightstack-bridge.yaml > /etc/netplan/01-lightstack-bridge.yaml.tmp
+    mv /etc/netplan/01-lightstack-bridge.yaml.tmp /etc/netplan/01-lightstack-bridge.yaml
     rm -f "$DNS_TEMP"
 
     # Set proper permissions
-    chmod 600 /etc/netplan/01-o3k-bridge.yaml
+    chmod 600 /etc/netplan/01-lightstack-bridge.yaml
 
     # Validate netplan configuration
     log_info "Validating netplan configuration..."
@@ -341,14 +341,14 @@ NETPLAN_EOF
         log_error "Invalid netplan configuration:"
         cat /tmp/netplan-error.log
         log_error "Restoring previous configuration..."
-        rm /etc/netplan/01-o3k-bridge.yaml
+        rm /etc/netplan/01-lightstack-bridge.yaml
         cp /etc/netplan/backup/*.yaml /etc/netplan/ 2>/dev/null || true
         exit 1
     fi
 
     # Show generated config for verification
     log_info "Generated netplan configuration:"
-    cat /etc/netplan/01-o3k-bridge.yaml
+    cat /etc/netplan/01-lightstack-bridge.yaml
 
     # Apply netplan
     log_warning "Applying network configuration. SSH connection may be interrupted briefly..."
@@ -356,7 +356,7 @@ NETPLAN_EOF
         log_error "Failed to apply netplan configuration:"
         cat /tmp/netplan-apply.log
         log_error "Restoring previous configuration..."
-        rm /etc/netplan/01-o3k-bridge.yaml
+        rm /etc/netplan/01-lightstack-bridge.yaml
         cp /etc/netplan/backup/*.yaml /etc/netplan/
         netplan apply
         exit 1
@@ -369,7 +369,7 @@ NETPLAN_EOF
     else
         log_error "Failed to create bridge br-ext"
         log_error "Restoring previous configuration..."
-        rm /etc/netplan/01-o3k-bridge.yaml
+        rm /etc/netplan/01-lightstack-bridge.yaml
         cp /etc/netplan/backup/*.yaml /etc/netplan/
         netplan apply
         exit 1
@@ -380,7 +380,7 @@ NETPLAN_EOF
 
     # Load bridge netfilter module and persist at boot
     if modprobe br_netfilter 2>/dev/null; then
-        echo "br_netfilter" > /etc/modules-load.d/o3k.conf
+        echo "br_netfilter" > /etc/modules-load.d/lightstack.conf
         log_success "Bridge netfilter module loaded"
     else
         log_warning "Could not load br_netfilter module (may not be needed)"
@@ -389,7 +389,7 @@ NETPLAN_EOF
     # Add sysctl configuration
     cat >> /etc/sysctl.conf <<EOF
 
-# O3K networking
+# Lightstack networking
 net.ipv4.ip_forward=1
 net.ipv4.conf.all.forwarding=1
 net.ipv6.conf.all.forwarding=1
@@ -425,10 +425,10 @@ install_postgresql() {
 
     # Create database and user
     sudo -u postgres psql <<EOF
-CREATE DATABASE o3k;
-CREATE USER o3k WITH ENCRYPTED PASSWORD '$DB_PASSWORD';
-GRANT ALL PRIVILEGES ON DATABASE o3k TO o3k;
-ALTER DATABASE o3k OWNER TO o3k;
+CREATE DATABASE lightstack;
+CREATE USER lightstack WITH ENCRYPTED PASSWORD '$DB_PASSWORD';
+GRANT ALL PRIVILEGES ON DATABASE lightstack TO lightstack;
+ALTER DATABASE lightstack OWNER TO lightstack;
 EOF
 
     log_success "PostgreSQL installed and configured"
@@ -451,26 +451,26 @@ install_docker() {
     log_success "Docker and Docker Compose installed"
 }
 
-# Clone O3K repository
-clone_o3k() {
-    log_info "Cloning O3K repository..."
+# Clone Lightstack repository
+clone_lightstack() {
+    log_info "Cloning Lightstack repository..."
 
     apt-get install -y -qq git > /dev/null
 
-    if [ -d /opt/o3k ]; then
-        log_warning "/opt/o3k already exists. Pulling latest changes..."
-        cd /opt/o3k
+    if [ -d /opt/lightstack ]; then
+        log_warning "/opt/lightstack already exists. Pulling latest changes..."
+        cd /opt/lightstack
         git pull origin main
     else
-        git clone https://github.com/cobaltcore-dev/o3k.git /opt/o3k
+        git clone https://github.com/cobaltcore-dev/lightstack.git /opt/lightstack
     fi
 
-    log_success "O3K repository ready"
+    log_success "Lightstack repository ready"
 }
 
-# Build O3K
-build_o3k() {
-    log_info "Building O3K binary..."
+# Build Lightstack
+build_lightstack() {
+    log_info "Building Lightstack binary..."
 
     # Install Go if not present
     if ! command -v go &> /dev/null; then
@@ -490,37 +490,37 @@ build_o3k() {
         log_success "Go 1.26.1 installed"
     fi
 
-    log_info "Building O3K binary (this may take 2-3 minutes)..."
-    cd /opt/o3k
+    log_info "Building Lightstack binary (this may take 2-3 minutes)..."
+    cd /opt/lightstack
 
     # Show build progress
     if make build 2>&1 | grep -E "(Building|Compiling|go build)" | head -10; then
-        log_success "O3K binary built: /opt/o3k/bin/o3k"
+        log_success "Lightstack binary built: /opt/lightstack/bin/lightstack"
     else
         # If grep filters everything, just run silently
-        make build > /tmp/o3k-build.log 2>&1
-        if [ -f /opt/o3k/bin/o3k ]; then
-            log_success "O3K binary built: /opt/o3k/bin/o3k"
+        make build > /tmp/lightstack-build.log 2>&1
+        if [ -f /opt/lightstack/bin/lightstack ]; then
+            log_success "Lightstack binary built: /opt/lightstack/bin/lightstack"
         else
-            log_error "Build failed. Check /tmp/o3k-build.log"
-            cat /tmp/o3k-build.log
+            log_error "Build failed. Check /tmp/lightstack-build.log"
+            cat /tmp/lightstack-build.log
             exit 1
         fi
     fi
 }
 
-# Create O3K configuration
+# Create Lightstack configuration
 create_config() {
-    log_info "Creating O3K configuration..."
+    log_info "Creating Lightstack configuration..."
 
-    mkdir -p /opt/o3k/config
+    mkdir -p /opt/lightstack/config
 
-    cat > /opt/o3k/config/o3k.yaml <<EOF
-# O3K Single-Node Configuration
+    cat > /opt/lightstack/config/lightstack.yaml <<EOF
+# Lightstack Single-Node Configuration
 # Generated by deploy-single-node.sh on $(date)
 
 database:
-  url: "postgres://o3k:$DB_PASSWORD@localhost:5432/o3k?sslmode=disable"
+  url: "postgres://lightstack:$DB_PASSWORD@localhost:5432/lightstack?sslmode=disable"
 
 keystone:
   host: "0.0.0.0"
@@ -565,8 +565,8 @@ compute:
   tunnel_ip: "$HOST_IP"
 EOF
 
-    chmod 600 /opt/o3k/config/o3k.yaml
-    log_success "Configuration created: /opt/o3k/config/o3k.yaml"
+    chmod 600 /opt/lightstack/config/lightstack.yaml
+    log_success "Configuration created: /opt/lightstack/config/lightstack.yaml"
 }
 
 # Create storage directories
@@ -583,8 +583,8 @@ create_storage_dirs() {
 run_migrations() {
     log_info "Running database migrations..."
 
-    cd /opt/o3k
-    ./bin/o3k migrate --config config/o3k.yaml
+    cd /opt/lightstack
+    ./bin/lightstack migrate --config config/lightstack.yaml
 
     log_success "Database migrations completed"
 }
@@ -593,16 +593,16 @@ run_migrations() {
 create_systemd_service() {
     log_info "Creating systemd service..."
 
-    cat > /etc/systemd/system/o3k.service <<EOF
+    cat > /etc/systemd/system/lightstack.service <<EOF
 [Unit]
-Description=O3K OpenStack Services
+Description=lightstack OpenStack Services
 After=network.target postgresql.service libvirtd.service
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/o3k
-ExecStart=/opt/o3k/bin/o3k --config /opt/o3k/config/o3k.yaml
+WorkingDirectory=/opt/lightstack
+ExecStart=/opt/lightstack/bin/lightstack --config /opt/lightstack/config/lightstack.yaml
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -613,16 +613,16 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable o3k.service
-    systemctl start o3k.service
+    systemctl enable lightstack.service
+    systemctl start lightstack.service
 
     # Wait for services to start
     sleep 5
 
-    if systemctl is-active --quiet o3k.service; then
-        log_success "O3K service started successfully"
+    if systemctl is-active --quiet lightstack.service; then
+        log_success "Lightstack service started successfully"
     else
-        log_error "O3K service failed to start. Check logs: journalctl -u o3k.service -n 50"
+        log_error "Lightstack service failed to start. Check logs: journalctl -u lightstack.service -n 50"
         exit 1
     fi
 }
@@ -659,7 +659,7 @@ services:
     volumes:
       - ./local_settings.py:/etc/openstack-dashboard/local_settings.py:ro
     networks:
-      - o3k-net
+      - lightstack-net
 
   novnc:
     image: quay.io/openstack.kolla/nova-novncproxy:2025.2-ubuntu-noble
@@ -675,10 +675,10 @@ services:
       --novncproxy_host=0.0.0.0
       --novncproxy_port=6080
     networks:
-      - o3k-net
+      - lightstack-net
 
 networks:
-  o3k-net:
+  lightstack-net:
     driver: bridge
 EOF
 
@@ -786,8 +786,8 @@ install_openstack_cli() {
 create_env_file() {
     log_info "Creating environment file..."
 
-    cat > /root/.o3k-env <<EOF
-# O3K Environment Variables
+    cat > /root/.lightstack-env <<EOF
+# Lightstack Environment Variables
 export OS_AUTH_URL=http://$HOST_IP:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
@@ -798,11 +798,11 @@ export OS_IDENTITY_API_VERSION=3
 EOF
 
     # Add to .bashrc
-    if ! grep -q ".o3k-env" /root/.bashrc; then
-        echo "source /root/.o3k-env" >> /root/.bashrc
+    if ! grep -q ".lightstack-env" /root/.bashrc; then
+        echo "source /root/.lightstack-env" >> /root/.bashrc
     fi
 
-    log_success "Environment file created: /root/.o3k-env"
+    log_success "Environment file created: /root/.lightstack-env"
 }
 
 # Verify installation
@@ -810,7 +810,7 @@ verify_installation() {
     log_info "Verifying installation..."
 
     # Source environment
-    source /root/.o3k-env
+    source /root/.lightstack-env
 
     # Wait for services to be ready
     log_info "Waiting for services to be ready (30 seconds)..."
@@ -849,7 +849,7 @@ show_completion() {
     echo ""
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║                                                           ║"
-    echo "║   O3K Single-Node Deployment Complete! 🎉                ║"
+    echo "║   Lightstack Single-Node Deployment Complete! 🎉                ║"
     echo "║                                                           ║"
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
@@ -875,21 +875,21 @@ show_completion() {
         echo ""
     fi
 
-    echo "  Configuration:        /opt/o3k/config/o3k.yaml"
-    echo "  Environment:          /root/.o3k-env"
-    echo "  Logs:                 journalctl -u o3k.service -f"
+    echo "  Configuration:        /opt/lightstack/config/lightstack.yaml"
+    echo "  Environment:          /root/.lightstack-env"
+    echo "  Logs:                 journalctl -u lightstack.service -f"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     log_info "Next Steps:"
-    echo "  1. Source environment: source /root/.o3k-env"
+    echo "  1. Source environment: source /root/.lightstack-env"
     echo "  2. Test authentication: openstack token issue"
     echo "  3. Create your first VM: openstack server create --help"
     if [[ "$DEPLOY_HORIZON" =~ ^[Yy]$ ]]; then
         echo "  4. Access Horizon: http://$HOST_IP"
     fi
     echo ""
-    log_info "Documentation: https://github.com/cobaltcore-dev/o3k/blob/main/docs/SINGLE_NODE_DEPLOYMENT.md"
+    log_info "Documentation: https://github.com/cobaltcore-dev/lightstack/blob/main/docs/SINGLE_NODE_DEPLOYMENT.md"
     echo ""
 }
 
@@ -912,8 +912,8 @@ main() {
     configure_networking
     install_postgresql
     install_docker
-    clone_o3k
-    build_o3k
+    clone_lightstack
+    build_lightstack
     create_config
     create_storage_dirs
     run_migrations
@@ -927,7 +927,7 @@ main() {
     if verify_installation; then
         show_completion
     else
-        log_error "Installation completed but verification failed. Check logs: journalctl -u o3k.service -n 50"
+        log_error "Installation completed but verification failed. Check logs: journalctl -u lightstack.service -n 50"
         exit 1
     fi
 }

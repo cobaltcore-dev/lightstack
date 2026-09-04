@@ -7,15 +7,15 @@ import (
 	"net"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/networking"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/rs/zerolog/log"
 )
 
 // NetworkReconciler rebuilds real-mode network state from the database on
-// startup and periodically, so VM networking survives an O3K control-plane
+// startup and periodically, so VM networking survives a Lightstack control-plane
 // restart/upgrade (SPEC-009 WS-2). On a pod restart the kernel objects
-// (bridges, netns, taps, iptables) persist, but dnsmasq is an O3K child process
+// (bridges, netns, taps, iptables) persist, but dnsmasq is a Lightstack child process
 // that dies with the pod — so the operative job is re-spawning DHCP, with a
 // best-effort bridge ensure. Reconciliation is idempotent and best-effort per
 // resource: one bad tenant never blocks the others or control-plane readiness.
@@ -69,7 +69,7 @@ func (r *NetworkReconciler) reconcile(ctx context.Context) {
 
 // reconcileNAT re-asserts egress SNAT for every router with an external gateway
 // (per attached internal subnet) and re-asserts every associated floating IP's
-// NAT — so VM internet access and floating-IP reachability survive an O3K
+// NAT — so VM internet access and floating-IP reachability survive a Lightstack
 // control-plane restart (SPEC-009 WS-3 / T035). Idempotent.
 func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 	// Egress: internal subnets behind a router that has an external gateway.

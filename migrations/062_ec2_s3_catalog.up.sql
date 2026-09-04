@@ -7,12 +7,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_access_key
     ON credentials(access_key) WHERE access_key IS NOT NULL;
 
 -- Advertise the object-store endpoint under the `s3` service type (NOT the Swift
--- `object-store` type — o3k exposes no Swift API; SPEC-014 FR-009). Uses service
+-- `object-store` type — Lightstack exposes no Swift API; SPEC-014 FR-009). Uses service
 -- id ...016 — ids ...010–...015 are already taken (migrations 040 and 054).
 --
 -- The URL below is an INERT placeholder that is NEVER served to a client. At token
 -- issue time the catalog always substitutes the resolved config value
--- (glance.s3_endpoint / O3K_GLANCE_S3_ENDPOINT, wired via SetGlanceS3Endpoint — the
+-- (glance.s3_endpoint / LIGHTSTACK_GLANCE_S3_ENDPOINT, wired via SetGlanceS3Endpoint — the
 -- same source the S3 client uses), and omits the `s3` service entirely when RGW is
 -- unconfigured. Both the DB-backed catalog and the hardcoded fallback behave this way
 -- (internal/keystone/auth.go). Consequence: editing this endpoint row — e.g. with

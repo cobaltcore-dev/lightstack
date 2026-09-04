@@ -4,10 +4,10 @@
 # released (-> available), a delete_on_termination volume is deleted.
 set -euo pipefail
 : "${OS_AUTH_URL:?source your OpenStack env first}"
-IMG="${O3K_TEST_IMAGE:-cirros}"
-NET="${O3K_TEST_NET:-net1}"
-KEY="${O3K_TEST_KEY:-k1}"
-SSHKEY="${O3K_SSH_KEY:-$HOME/.ssh/id_rsa}"
+IMG="${LIGHTSTACK_TEST_IMAGE:-cirros}"
+NET="${LIGHTSTACK_TEST_NET:-net1}"
+KEY="${LIGHTSTACK_TEST_KEY:-k1}"
+SSHKEY="${LIGHTSTACK_SSH_KEY:-$HOME/.ssh/id_rsa}"
 BVOL=ws5-bfv-vol
 VM=ws5-bfv-vm
 DOTVOL=ws5-dot-vol

@@ -3,14 +3,14 @@ version: '3.8'
 services:
   test-runner:
     image: golang:1.26
-    container_name: o3k-test-runner
+    container_name: lightstack-test-runner
     working_dir: /workspace
     volumes:
       - ../:/workspace
     networks:
-      - o3k-network
+      - lightstack-network
     environment:
-      OS_AUTH_URL: "http://o3k:35357/v3"
+      OS_AUTH_URL: "http://lightstack:35357/v3"
       OS_USERNAME: "admin"
       OS_PASSWORD: "secret"
       OS_PROJECT_NAME: "default"
@@ -58,6 +58,6 @@ services:
       "
 
 networks:
-  o3k-network:
+  lightstack-network:
     external: true
-    name: deployments_o3k-network
+    name: deployments_lightstack-network

@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document outlines a comprehensive strategy for extending O3K's test coverage beyond contract tests to include end-to-end (E2E) testing and continuous integration (CI) pipeline automation. Current status: 82% contract test coverage (157/191 passing), ready for E2E scenarios and CI integration.
+This document outlines a comprehensive strategy for extending lightstack's test coverage beyond contract tests to include end-to-end (E2E) testing and continuous integration (CI) pipeline automation. Current status: 82% contract test coverage (157/191 passing), ready for E2E scenarios and CI integration.
 
 ---
 
@@ -71,7 +71,7 @@ This document outlines a comprehensive strategy for extending O3K's test coverag
 
 | Scenario | Services | Validation |
 |----------|----------|------------|
-| **High Availability** | All | Kill O3K process → restart → verify state consistency |
+| **High Availability** | All | Kill Lightstack process → restart → verify state consistency |
 | **Database Migration** | Database + all | Apply new migration → verify no data loss → rollback → verify |
 | **Multi-Node VXLAN** | Neutron + Nova + Compute nodes | Deploy VMs on 2 nodes → verify cross-node connectivity |
 | **Performance Under Load** | All | 100 concurrent API requests → measure response times → verify no degradation |
@@ -238,7 +238,7 @@ graph LR
 - Race detector
 
 **Stage 3: Contract Tests** (< 5 minutes)
-- Spin up O3K + PostgreSQL
+- Spin up Lightstack + PostgreSQL
 - Run 191 contract tests
 - Report pass/fail by service
 
@@ -311,7 +311,7 @@ jobs:
 
       - name: Check binary size
         run: |
-          SIZE=$(stat -f%z bin/o3k)
+          SIZE=$(stat -f%z bin/lightstack)
           if [ $SIZE -gt 40000000 ]; then
             echo "Binary too large: ${SIZE} bytes (max 40MB)"
             exit 1
@@ -352,7 +352,7 @@ jobs:
         with:
           go-version: '1.26'
 
-      - name: Start O3K
+      - name: Start lightstack
         run: |
           docker compose up -d
           sleep 10
@@ -371,7 +371,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start O3K
+      - name: Start lightstack
         run: docker compose up -d
 
       - name: Run integration tests
@@ -387,7 +387,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start O3K
+      - name: Start lightstack
         run: docker compose up -d
 
       - name: Run fast E2E tests
@@ -407,7 +407,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start O3K
+      - name: Start lightstack
         run: docker compose up -d
 
       - name: Run full E2E tests
@@ -687,6 +687,6 @@ Use GitHub Actions annotations to show test results in PR comments:
 ---
 
 **Document Created**: March 25, 2026
-**Author**: O3K Development Team
+**Author**: Lightstack Development Team
 **Status**: Proposal - Ready for Implementation
 **Review Date**: After Phase 1 completion

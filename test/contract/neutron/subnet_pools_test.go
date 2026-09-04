@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +15,7 @@ import (
 
 // TestNeutronListSubnetPools_Contract tests GET /v2.0/subnetpools
 func TestNeutronListSubnetPools_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -43,7 +43,7 @@ func TestNeutronListSubnetPools_Contract(t *testing.T) {
 
 // TestNeutronCreateSubnetPool_Contract tests POST /v2.0/subnetpools
 func TestNeutronCreateSubnetPool_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -87,7 +87,7 @@ func TestNeutronCreateSubnetPool_Contract(t *testing.T) {
 
 // TestNeutronGetSubnetPool_Contract tests GET /v2.0/subnetpools/:id
 func TestNeutronGetSubnetPool_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -121,7 +121,7 @@ func TestNeutronGetSubnetPool_Contract(t *testing.T) {
 
 // TestNeutronUpdateSubnetPool_Contract tests PUT /v2.0/subnetpools/:id
 func TestNeutronUpdateSubnetPool_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -161,7 +161,7 @@ func TestNeutronUpdateSubnetPool_Contract(t *testing.T) {
 
 // TestNeutronDeleteSubnetPool_Contract tests DELETE /v2.0/subnetpools/:id
 func TestNeutronDeleteSubnetPool_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

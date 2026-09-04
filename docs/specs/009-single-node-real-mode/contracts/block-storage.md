@@ -6,7 +6,7 @@ External interface = OpenStack Block Storage (Cinder) v3 + Nova volume attachmen
 
 | ID | Given | When | Then |
 |----|-------|------|------|
-| C-WS5-1 | real mode | `openstack volume create --size N v1` | real backing storage is provisioned (node-local default at `/var/lib/o3k/volumes`, or RBD); volume → `available`. |
+| C-WS5-1 | real mode | `openstack volume create --size N v1` | real backing storage is provisioned (node-local default at `/var/lib/lightstack/volumes`, or RBD); volume → `available`. |
 | C-WS5-2 | a running VM and `available` volume | `openstack server add volume vm1 v1` | the call returns only after libvirt `attach-device` succeeds (synchronous, fail-fast); the guest sees a new block device; DB and hypervisor agree. `server remove volume` detaches and returns the volume to `available`. |
 | C-WS5-3 | a volume attached, written, detached | re-attach (same or other VM) | previously written data is present (persisted on the node hostPath). |
 | C-WS5-4 | an image | `openstack server create --volume ...` / `--block-device ... boot_index=0` | a bootable volume is created from the image and the VM boots from it; `delete_on_termination` governs volume cleanup on server delete. |
@@ -23,5 +23,5 @@ External interface = OpenStack Block Storage (Cinder) v3 + Nova volume attachmen
 
 ## Notes
 - Attach correctness: the existing flow updates the DB then calls libvirt in a background goroutine that never reverts on failure (`internal/nova/volume_attachment.go:126-167`). This contract requires the synchronous + fail-fast behavior (research R11; Constitution II).
-- Local volume path moves to `/var/lib/o3k/volumes` (research R6) so volumes persist across pod restarts.
+- Local volume path moves to `/var/lib/lightstack/volumes` (research R6) so volumes persist across pod restarts.
 - `volumes.source_image_id` is the new column (migration `060`); it distinguishes CoW clones (pin the image) from independent copies (do not).

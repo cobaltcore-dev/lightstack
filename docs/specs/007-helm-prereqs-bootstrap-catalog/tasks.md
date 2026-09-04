@@ -14,7 +14,7 @@
 
 ## Path Conventions
 
-Single Go binary (modular monolith): `internal/`, `cmd/o3k/`, `test/` at repo root (per plan.md Structure Decision).
+Single Go binary (modular monolith): `internal/`, `cmd/lightstack/`, `test/` at repo root (per plan.md Structure Decision).
 
 ---
 
@@ -22,7 +22,7 @@ Single Go binary (modular monolith): `internal/`, `cmd/o3k/`, `test/` at repo ro
 
 **Purpose**: Surface the configuration knobs; no new packages or dependencies.
 
-- [X] T001 [P] Document the configuration surface: add `O3K_ENDPOINT_SCHEME` (`http`|`https`, default `http`) to `config/o3k.yaml` comments and `.env.example`, and confirm `keystone.admin_user` / `keystone.admin_password` are present and commented in `config/o3k.yaml` (fields already exist at `internal/common/config.go:48-49`).
+- [X] T001 [P] Document the configuration surface: add `LIGHTSTACK_ENDPOINT_SCHEME` (`http`|`https`, default `http`) to `config/lightstack.yaml` comments and `.env.example`, and confirm `keystone.admin_user` / `keystone.admin_password` are present and commented in `config/lightstack.yaml` (fields already exist at `internal/common/config.go:48-49`).
 
 ---
 
@@ -32,7 +32,7 @@ Single Go binary (modular monolith): `internal/`, `cmd/o3k/`, `test/` at repo ro
 
 **⚠️ CRITICAL**: Must complete before the DB-backed test tasks (T003, T004, T010) can run.
 
-- [X] T002 Add a test-DB harness in `internal/keystone/maindb_test.go` (new): a `TestMain` that connects to `O3K_TEST_DB_URL`, runs `database.MigrateUp`, exposes the seeded DB (admin `…0001`/bcrypt('secret'), `Default` domain `…0100`, `default` project `…0002`, `admin` role `…0003`, seeded `endpoints`) to package tests, and `t.Skip`s every DB-backed test when `O3K_TEST_DB_URL` is unset. (Verified: no keystone `_test.go` or DB helper exists yet — this is new; mirrors the integration suite's real-Postgres approach per Constitution "real dependencies over mocks".)
+- [X] T002 Add a test-DB harness in `internal/keystone/maindb_test.go` (new): a `TestMain` that connects to `LIGHTSTACK_TEST_DB_URL`, runs `database.MigrateUp`, exposes the seeded DB (admin `…0001`/bcrypt('secret'), `Default` domain `…0100`, `default` project `…0002`, `admin` role `…0003`, seeded `endpoints`) to package tests, and `t.Skip`s every DB-backed test when `LIGHTSTACK_TEST_DB_URL` is unset. (Verified: no keystone `_test.go` or DB helper exists yet — this is new; mirrors the integration suite's real-Postgres approach per Constitution "real dependencies over mocks".)
 
 **Checkpoint**: Foundation ready — US1 and US2 can proceed (in parallel if staffed).
 
@@ -42,7 +42,7 @@ Single Go binary (modular monolith): `internal/`, `cmd/o3k/`, `test/` at repo ro
 
 **Goal**: At startup, provision the admin account from `keystone.admin_password` as a first-boot seed so no deployment ships reachable with `admin/secret` when a password is configured.
 
-**Independent Test**: Configure `admin_password`, start O3K, `openstack token issue` succeeds with the configured password and fails with `secret`. Fully testable without WS-3.
+**Independent Test**: Configure `admin_password`, start lightstack, `openstack token issue` succeeds with the configured password and fails with `secret`. Fully testable without WS-3.
 
 ### Tests for User Story 1 (write first — confirm RED) ⚠️
 
@@ -53,7 +53,7 @@ Single Go binary (modular monolith): `internal/`, `cmd/o3k/`, `test/` at repo ro
 ### Implementation for User Story 1
 
 - [X] T006 [US1] Implement `BootstrapAdmin(ctx, cfg common.KeystoneConfig)` in `internal/keystone/bootstrap.go` (new): trim password and treat empty/whitespace as unsupplied (FR-006/006a); resolve admin row and apply R2 precedence (already-configured → no-op; default `secret` → write configured; else leave); default-name path uses optimistic `UPDATE … WHERE id=…0001 AND password_hash=<observed>`; custom-name path uses `INSERT … ON CONFLICT (name) DO NOTHING` with `domain_id=…0100`, `INSERT role_assignments(…,…0002,…0003) ON CONFLICT DO NOTHING`, and `UPDATE users SET enabled=false WHERE name='admin'` (R3/R4); reuse `HashPassword` (bcrypt, FR-005); emit one structured log on create/seed without the password (FR-006b) and a `WARN` when unset (FR-006); MUST NOT alter any other identity (FR-007). (depends on T003, T004, T005 being RED)
-- [X] T007 [US1] Wire `keystone.BootstrapAdmin(ctx, cfg.Keystone)` into `cmd/o3k/main.go` immediately after `database.MigrateUp` and before service wiring (R1); fail-soft (log, do not crash) consistent with FR-006. (depends on T006)
+- [X] T007 [US1] Wire `keystone.BootstrapAdmin(ctx, cfg.Keystone)` into `cmd/lightstack/main.go` immediately after `database.MigrateUp` and before service wiring (R1); fail-soft (log, do not crash) consistent with FR-006. (depends on T006)
 
 **Checkpoint**: US1 fully functional and independently testable — MVP deliverable.
 
@@ -61,21 +61,21 @@ Single Go binary (modular monolith): `internal/`, `cmd/o3k/`, `test/` at repo ro
 
 ## Phase 4: User Story 2 — Configurable catalog scheme + self-links (Priority: P2)
 
-**Goal**: `O3K_ENDPOINT_SCHEME=https` makes the advertised catalog **and** resource self-links use `https://<host>:<port>`; default/invalid stays `http`. Catalog shape unchanged.
+**Goal**: `LIGHTSTACK_ENDPOINT_SCHEME=https` makes the advertised catalog **and** resource self-links use `https://<host>:<port>`; default/invalid stays `http`. Catalog shape unchanged.
 
-**Independent Test**: With `O3K_ENDPOINT_SCHEME=https`, `openstack catalog list` URLs and resource self-links are `https://`; unset/invalid → `http://`; catalog is identical except the scheme. Testable independently of WS-2.
+**Independent Test**: With `LIGHTSTACK_ENDPOINT_SCHEME=https`, `openstack catalog list` URLs and resource self-links are `https://`; unset/invalid → `http://`; catalog is identical except the scheme. Testable independently of WS-2.
 
 ### Tests for User Story 2 (write first — confirm RED) ⚠️
 
 - [X] T008 [P] [US2] Unit tests for the scheme helper in `internal/common/scheme_test.go`: `EndpointScheme()` returns `http` when unset/empty, `https` when set, is case-insensitive + trimmed, and on an invalid value warns once (`WARN`) and returns `http` (FR-009/011/014); `ForceScheme(url, scheme)` rewrites a leading `http://`/`https://`.
-- [X] T009 [P] [US2] Unit test in `internal/common/baseurl_test.go`: `BaseURL` returns `https://…` when `O3K_ENDPOINT_SCHEME=https` (with `O3K_ENDPOINT_HOST` set) and `http://…` by default (FR-013a).
+- [X] T009 [P] [US2] Unit test in `internal/common/baseurl_test.go`: `BaseURL` returns `https://…` when `LIGHTSTACK_ENDPOINT_SCHEME=https` (with `LIGHTSTACK_ENDPOINT_HOST` set) and `http://…` by default (FR-013a).
 - [X] T010 [P] [US2] Unit tests in `internal/keystone/auth_catalog_test.go`: `BuildServiceCatalog` (DB path) and `buildHardcodedCatalog` (fallback) apply the scheme to every endpoint URL; structure identical between `http` and `https` except the scheme (FR-010/011/013, SC-006).
-- [X] T011 [P] [US2] Integration test `test/spec007_catalog_scheme_test.sh`: `O3K_ENDPOINT_SCHEME=https` → all `openstack catalog list` URLs and a resource self-link (e.g. `server list --long`) are `https://`; unset and invalid (`ftp`) → `http://` with one `WARN` (quickstart §WS-3).
+- [X] T011 [P] [US2] Integration test `test/spec007_catalog_scheme_test.sh`: `LIGHTSTACK_ENDPOINT_SCHEME=https` → all `openstack catalog list` URLs and a resource self-link (e.g. `server list --long`) are `https://`; unset and invalid (`ftp`) → `http://` with one `WARN` (quickstart §WS-3).
 
 ### Implementation for User Story 2
 
-- [X] T012 [US2] Implement the shared helper in `internal/common/scheme.go` (new): `EndpointScheme()` (read `O3K_ENDPOINT_SCHEME`, trim + lowercase, default `http`, accept `http`/`https`, else `sync.Once` `WARN` + `http`) and `ForceScheme(url, scheme string) string` (R5). (depends on T008–T011 being RED)
-- [X] T013 [P] [US2] Apply scheme in `internal/keystone/auth.go`: call `common.ForceScheme(url, common.EndpointScheme())` in `substituteURLTemplates` (after the existing `O3K_ENDPOINT_HOST` rewrite, `auth.go:642`) and in `buildHardcodedCatalog` so every advertised URL honors the scheme (FR-010/012/013). (depends on T012)
+- [X] T012 [US2] Implement the shared helper in `internal/common/scheme.go` (new): `EndpointScheme()` (read `LIGHTSTACK_ENDPOINT_SCHEME`, trim + lowercase, default `http`, accept `http`/`https`, else `sync.Once` `WARN` + `http`) and `ForceScheme(url, scheme string) string` (R5). (depends on T008–T011 being RED)
+- [X] T013 [P] [US2] Apply scheme in `internal/keystone/auth.go`: call `common.ForceScheme(url, common.EndpointScheme())` in `substituteURLTemplates` (after the existing `LIGHTSTACK_ENDPOINT_HOST` rewrite, `auth.go:642`) and in `buildHardcodedCatalog` so every advertised URL honors the scheme (FR-010/012/013). (depends on T012)
 - [X] T014 [P] [US2] Apply scheme in `internal/common/baseurl.go`: replace the hardcoded `http://` (line 13) with `common.EndpointScheme()` / `ForceScheme` so self-links and pagination honor the scheme (FR-013a). (depends on T012)
 
 **Checkpoint**: US1 and US2 both work independently.
@@ -87,7 +87,7 @@ Single Go binary (modular monolith): `internal/`, `cmd/o3k/`, `test/` at repo ro
 - [ ] T015 [P] Run `quickstart.md` verification end-to-end for WS-2 and WS-3 (all cases A–D / http-https-invalid).
 - [ ] T016 Run the SPEC-000 contract tests with both workstreams enabled and confirm 100% pass + existing OpenStack CLI/Terraform flows unchanged (FR-015, FR-016, SC-007).
 - [X] T017 [P] Assert the admin password value never appears in any log output (SC-008) — add a log-capture assertion in `bootstrap_test.go` and a grep gate in the integration test.
-- [X] T018 [P] Update docs: `docs/KUBERNETES_DEPLOYMENT.md` (note `O3K_ENDPOINT_SCHEME` + the **port-based TLS** requirement, Option B) and `docs/CONFIGURATION.md` (`admin_user`/`admin_password`, `O3K_ENDPOINT_SCHEME`).
+- [X] T018 [P] Update docs: `docs/KUBERNETES_DEPLOYMENT.md` (note `LIGHTSTACK_ENDPOINT_SCHEME` + the **port-based TLS** requirement, Option B) and `docs/CONFIGURATION.md` (`admin_user`/`admin_password`, `LIGHTSTACK_ENDPOINT_SCHEME`).
 - [X] T019 Run `go test ./...` and `make lint` — no regressions.
 
 ---

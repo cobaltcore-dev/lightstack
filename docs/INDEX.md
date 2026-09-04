@@ -1,6 +1,6 @@
-# O3K Documentation Index
+# Lightstack Documentation Index
 
-**Complete guide to O3K - OpenStack 3 Kubernetes-style**
+**Complete guide to Lightstack - OpenStack 3 Kubernetes-style**
 
 This documentation covers everything from getting started to production deployment, architecture deep-dives, and API compatibility.
 
@@ -10,11 +10,11 @@ This documentation covers everything from getting started to production deployme
 
 ### 🚀 Getting Started
 
-Start here if you're new to O3K or want to quickly evaluate it.
+Start here if you're new to Lightstack or want to quickly evaluate it.
 
 1. **[README](README.md)** - Project overview and quick links
-2. **[QUICKSTART](QUICKSTART.md)** - Get O3K running in 5 minutes
-3. **[UNIFIED_DEPLOYMENT](UNIFIED_DEPLOYMENT.md)** - Deploy O3K + Horizon in one command
+2. **[QUICKSTART](QUICKSTART.md)** - Get Lightstack running in 5 minutes
+3. **[UNIFIED_DEPLOYMENT](UNIFIED_DEPLOYMENT.md)** - Deploy Lightstack + Horizon in one command
 4. **[QUICK_REFERENCE](QUICK_REFERENCE.md)** - Command cheat sheet
 
 **Recommended Path**: README → QUICKSTART → UNIFIED_DEPLOYMENT
@@ -46,6 +46,7 @@ Choose your deployment strategy based on your use case.
   - VXLAN multi-node networking
   - Load balancing, monitoring, backup, disaster recovery
   - Complete production operations guide
+- **[UPGRADING](UPGRADING.md)** - Upgrade an existing install (incl. nodes installed under the previous product name)
 
 #### Kubernetes
 - **[KUBERNETES_DEPLOYMENT](KUBERNETES_DEPLOYMENT.md)** ⭐ **NEW**
@@ -67,7 +68,7 @@ Choose your deployment strategy based on your use case.
 
 ### 🌐 Horizon Dashboard Integration
 
-O3K provides 100% compatibility with OpenStack Horizon dashboard.
+Lightstack provides 100% compatibility with OpenStack Horizon dashboard.
 
 - **[HORIZON_FULL_COMPATIBILITY_REPORT](HORIZON_FULL_COMPATIBILITY_REPORT.md)** ⭐ **NEW** - Complete 100% compatibility verification
   - All core API endpoints tested with Horizon
@@ -77,16 +78,16 @@ O3K provides 100% compatibility with OpenStack Horizon dashboard.
   - Production deployment scenarios
   - Troubleshooting guide
 - **[HORIZON_INTEGRATION](HORIZON_INTEGRATION.md)** - Integration overview and architecture
-- **[HORIZON_DEPLOYMENT](HORIZON_DEPLOYMENT.md)** - Deploy Horizon separately to existing O3K
+- **[HORIZON_DEPLOYMENT](HORIZON_DEPLOYMENT.md)** - Deploy Horizon separately to existing Lightstack
 - **[HORIZON_SETUP](HORIZON_SETUP.md)** - Configuration and troubleshooting
 
-**Related**: See UNIFIED_DEPLOYMENT.md for combined O3K + Horizon deployment.
+**Related**: See UNIFIED_DEPLOYMENT.md for combined Lightstack + Horizon deployment.
 
 ---
 
 ### 🔧 Configuration
 
-Detailed configuration guides for all O3K modes and backends.
+Detailed configuration guides for all Lightstack modes and backends.
 
 #### Core Configuration
 - **[CONFIGURATION](CONFIGURATION.md)** - Complete configuration reference
@@ -107,14 +108,14 @@ Detailed configuration guides for all O3K modes and backends.
 
 ### 🏗️ Architecture & API
 
-Understand O3K's design, implementation, and OpenStack compatibility.
+Understand lightstack's design, implementation, and OpenStack compatibility.
 
 #### Architecture
 - **[ARCHITECTURE](ARCHITECTURE.md)** - System design and component overview
 - **[KEYSTONE_AUTH_FLOW](KEYSTONE_AUTH_FLOW.md)** - JWT authentication flow
 
 #### API Compatibility
-- **[BLUEPRINT](blueprint.md)** ⭐ **AUTHORITATIVE** - o3k ↔ OpenStack compatibility blueprint: service map, ~330 functional operations (counting rule stated), per-service matrix, storage backends, sync-architecture trade-offs, Terraform coverage, sci-in-a-box surface, and known gaps. Pinned to OpenStack 2025.2 (Flamingo).
+- **[BLUEPRINT](blueprint.md)** ⭐ **AUTHORITATIVE** - Lightstack ↔ OpenStack compatibility blueprint: service map, ~330 functional operations (counting rule stated), per-service matrix, storage backends, sync-architecture trade-offs, Terraform coverage, sci-in-a-box surface, and known gaps. Pinned to OpenStack 2025.2 (Flamingo).
 - **[compatibility/OPENSTACK_COMPATIBILITY_REPORT](compatibility/OPENSTACK_COMPATIBILITY_REPORT.md)** - Deep per-endpoint analysis + contract-test results (BLUEPRINT's appendix)
 - **[API](API.md)** - Quick-start auth / catalog examples
 - **[API_COVERAGE_REPORT](API_COVERAGE_REPORT.md)** - ⚠️ Superseded: older "104% (342/330)" count; see BLUEPRINT for the reconciled figure
@@ -125,7 +126,7 @@ Understand O3K's design, implementation, and OpenStack compatibility.
   - [ADR-001](adr/ADR-001-database-dependency-injection.md) - Database dependency injection approach
   - [ADR-002](adr/ADR-002-rate-limiting-architecture.md) - Rate limiting architecture
 
-**Key Stats**: O3K implements ~330 functional operations across the 5 core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance). See [BLUEPRINT](blueprint.md) for the counting rule and per-service breakdown.
+**Key Stats**: Lightstack implements ~330 functional operations across the 5 core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance). See [BLUEPRINT](blueprint.md) for the counting rule and per-service breakdown.
 
 ---
 
@@ -178,8 +179,8 @@ Test reports, strategies, and code quality reviews.
 - **[TROUBLESHOOTING](TROUBLESHOOTING.md)** - Common issues and solutions
 
 For additional help:
-- GitHub Issues: https://github.com/cobaltcore-dev/o3k/issues
-- Project discussions: https://github.com/cobaltcore-dev/o3k/discussions
+- GitHub Issues: https://github.com/cobaltcore-dev/lightstack/issues
+- Project discussions: https://github.com/cobaltcore-dev/lightstack/discussions
 
 ---
 
@@ -189,7 +190,7 @@ Analysis of dashboard compatibility and integration options.
 
 - **[ELEKTRA_INTEGRATION_ANALYSIS](ELEKTRA_INTEGRATION_ANALYSIS.md)** ⭐ **NEW**
   - Comprehensive analysis of SAP Elektra dashboard
-  - **Verdict**: Not compatible with O3K (requires SAP infrastructure)
+  - **Verdict**: Not compatible with Lightstack (requires SAP infrastructure)
   - Detailed comparison with Horizon
   - Recommendation: Continue with Horizon (100% compatible)
 
@@ -198,7 +199,7 @@ Analysis of dashboard compatibility and integration options.
 ## 🗺️ Recommended Learning Paths
 
 ### Path 1: Quick Evaluation (30 minutes)
-1. [QUICKSTART](QUICKSTART.md) - Get O3K running
+1. [QUICKSTART](QUICKSTART.md) - Get Lightstack running
 2. [QUICK_REFERENCE](QUICK_REFERENCE.md) - Try basic commands
 3. [API_COVERAGE_REPORT](API_COVERAGE_REPORT.md) - Understand capabilities
 
@@ -218,7 +219,7 @@ Analysis of dashboard compatibility and integration options.
 
 ### Path 4: Horizon Dashboard Integration (1 day)
 1. [HORIZON_INTEGRATION](HORIZON_INTEGRATION.md) - Understand integration
-2. [UNIFIED_DEPLOYMENT](UNIFIED_DEPLOYMENT.md) - Deploy O3K + Horizon together
+2. [UNIFIED_DEPLOYMENT](UNIFIED_DEPLOYMENT.md) - Deploy Lightstack + Horizon together
 3. [HORIZON_DEPLOYMENT](HORIZON_DEPLOYMENT.md) - Or deploy Horizon separately
 4. [HORIZON_SETUP](HORIZON_SETUP.md) - Configure and troubleshoot
 
@@ -297,8 +298,8 @@ Analysis of dashboard compatibility and integration options.
 - Glance: https://docs.openstack.org/glance/latest/
 - Keystone: https://docs.openstack.org/keystone/latest/
 
-**O3K Project**:
-- GitHub: https://github.com/cobaltcore-dev/o3k
+**lightstack Project**:
+- GitHub: https://github.com/cobaltcore-dev/lightstack
 - License: Apache 2.0
 - Current Version: v0.6.0 (Production Ready)
 - API Coverage: ~329 functional operations across 5 core services (see [BLUEPRINT](blueprint.md))
@@ -308,13 +309,13 @@ Analysis of dashboard compatibility and integration options.
 ## 📧 Getting Help
 
 **Documentation Issues**:
-- Missing information? Open an issue: https://github.com/cobaltcore-dev/o3k/issues/new
+- Missing information? Open an issue: https://github.com/cobaltcore-dev/lightstack/issues/new
 - Unclear documentation? Request clarification in discussions
 
 **Technical Support**:
 - Check [TROUBLESHOOTING](TROUBLESHOOTING.md) first
-- Search existing issues: https://github.com/cobaltcore-dev/o3k/issues
-- Ask in discussions: https://github.com/cobaltcore-dev/o3k/discussions
+- Search existing issues: https://github.com/cobaltcore-dev/lightstack/issues
+- Ask in discussions: https://github.com/cobaltcore-dev/lightstack/discussions
 
 **Contributing**:
 - Read [CONTRIBUTING](CONTRIBUTING.md)

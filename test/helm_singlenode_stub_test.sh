@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
-# SPEC-008 T011 — single-node stub smoke test for the O3K Helm chart.
+# SPEC-008 T011 — single-node stub smoke test for the Lightstack Helm chart.
 # Requires: a Kubernetes cluster (kind/k3s), kubectl, helm, the openstack CLI,
-# a reachable external PostgreSQL, and an O3K image. Validates SC-001/002 (stub subset)
+# a reachable external PostgreSQL, and a Lightstack image. Validates SC-001/002 (stub subset)
 # and the helm test hook (FR-015).
 #
-#   O3K_IMAGE_REPO=ghcr.io/you/o3k O3K_IMAGE_TAG=v0.7.0 \
-#   O3K_DB_URL='postgres://o3k:pw@host:5432/o3k?sslmode=disable' \
+#   LIGHTSTACK_IMAGE_REPO=ghcr.io/you/lightstack LIGHTSTACK_IMAGE_TAG=v0.7.0 \
+#   LIGHTSTACK_DB_URL='postgres://lightstack:pw@host:5432/lightstack?sslmode=disable' \
 #   ./test/helm_singlenode_stub_test.sh
 set -euo pipefail
 
-REL="${REL:-o3k-smoke}"
-NS="${NS:-o3k-smoke}"
+REL="${REL:-lightstack-smoke}"
+NS="${NS:-lightstack-smoke}"
 ADMIN_PW="Smoke-Admin-1"
-CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/o3k"
+CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/lightstack"
 
 helm install "$REL" "$CHART" -n "$NS" --create-namespace \
-  --set image.repository="${O3K_IMAGE_REPO:?set O3K_IMAGE_REPO}" \
-  --set image.tag="${O3K_IMAGE_TAG:-latest}" \
+  --set image.repository="${LIGHTSTACK_IMAGE_REPO:?set LIGHTSTACK_IMAGE_REPO}" \
+  --set image.tag="${LIGHTSTACK_IMAGE_TAG:-latest}" \
   --set secrets.jwtSecret="$(openssl rand -hex 16)" \
   --set secrets.adminPassword="$ADMIN_PW" \
-  --set database.url="${O3K_DB_URL:?set O3K_DB_URL}"
+  --set database.url="${LIGHTSTACK_DB_URL:?set LIGHTSTACK_DB_URL}"
 
-kubectl -n "$NS" rollout status "deploy/${REL}-o3k" --timeout=300s
+kubectl -n "$NS" rollout status "deploy/${REL}-lightstack" --timeout=300s
 helm test "$REL" -n "$NS"
 
 # Forward every API port the CLI follows from the catalog (it advertises localhost:<port>);
 # 35357 alone is not enough — the first compute/image call would be connection-refused.
-kubectl -n "$NS" port-forward "svc/${REL}-o3k" \
+kubectl -n "$NS" port-forward "svc/${REL}-lightstack" \
   35357:35357 8774:8774 8778:8778 9696:9696 8776:8776 9292:9292 >/dev/null 2>&1 &
 PF=$!; trap 'kill $PF 2>/dev/null || true' EXIT
 sleep 4
@@ -43,9 +43,9 @@ echo "PASS: default 'secret' rejected"
 
 OS_PASSWORD="$ADMIN_PW" openstack flavor list >/dev/null && echo "PASS: compute catalog endpoint reachable"
 # Stub glance seeds no image; create one so the server has something to boot from.
-head -c 1024 /dev/zero > /tmp/o3k-smoke.img
+head -c 1024 /dev/zero > /tmp/lightstack-smoke.img
 OS_PASSWORD="$ADMIN_PW" openstack image create cirros \
-  --disk-format qcow2 --container-format bare --public --file /tmp/o3k-smoke.img >/dev/null
+  --disk-format qcow2 --container-format bare --public --file /tmp/lightstack-smoke.img >/dev/null
 OS_PASSWORD="$ADMIN_PW" openstack server create --flavor m1.small --image cirros smoke-vm --wait >/dev/null \
   && echo "PASS: stub server create"
 OS_PASSWORD="$ADMIN_PW" openstack server list >/dev/null && echo "PASS: stub server lifecycle"

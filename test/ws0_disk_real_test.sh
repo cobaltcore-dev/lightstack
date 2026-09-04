@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # SPEC-009 WS-0 (T008): real-mode VM disk — per-instance qcow2 overlay over a
 # raw base + two-VM isolation. Run on the libvirt host against a running
-# real-mode O3K (see docs/specs/009-single-node-real-mode/quickstart.md).
+# real-mode Lightstack (see docs/specs/009-single-node-real-mode/quickstart.md).
 set -euo pipefail
-: "${OS_AUTH_URL:?source your OpenStack env (~/.o3k-env) first}"
-IMG="${O3K_TEST_IMAGE:-cirros}"
-NET="${O3K_TEST_NET:-net1}"
+: "${OS_AUTH_URL:?source your OpenStack env (~/.lightstack-env) first}"
+IMG="${LIGHTSTACK_TEST_IMAGE:-cirros}"
+NET="${LIGHTSTACK_TEST_NET:-net1}"
 
 cleanup() { openstack server delete ws0-vm1 ws0-vm2 2>/dev/null || true; }
 trap cleanup EXIT
@@ -21,7 +21,7 @@ dom1="instance-${id1:0:8}"
 disk1=$(sudo virsh domblklist "$dom1" | awk '/disk.qcow2|vda/{print $2}' | head -1)
 echo "[ws0] vm1 disk = $disk1"
 case "$disk1" in
-  /var/lib/o3k/instances/*/disk.qcow2) echo "PASS: per-instance overlay path" ;;
+  /var/lib/lightstack/instances/*/disk.qcow2) echo "PASS: per-instance overlay path" ;;
   *) echo "FAIL: expected a per-instance overlay, got '$disk1'"; exit 1 ;;
 esac
 

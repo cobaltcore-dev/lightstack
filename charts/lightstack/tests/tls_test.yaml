@@ -1,0 +1,38 @@
+# helm-unittest specs for the optional-TLS path (T010, FR-008b).
+suite: tls / catalog scheme
+templates:
+  - templates/deployment.yaml
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+tests:
+  - it: sets LIGHTSTACK_ENDPOINT_SCHEME=https when tls.enabled
+    set:
+      tls.enabled: true
+      tls.secretName: lightstack-cert
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_ENDPOINT_SCHEME
+            value: "https"
+  - it: emits no env block at all by default (no empty env key)
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env
+  - it: does not set the https scheme when only the endpoint host is configured
+    set:
+      endpointHost: lightstack.example.com
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_ENDPOINT_SCHEME
+            value: "https"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_ENDPOINT_HOST
+            value: "lightstack.example.com"

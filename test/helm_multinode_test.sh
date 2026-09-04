@@ -7,25 +7,25 @@
 # but lifecycle ops are not yet guaranteed to reach the hosting node.
 set -euo pipefail
 
-if [ "${O3K_RUN_DEFERRED_MULTINODE:-}" != "1" ]; then
+if [ "${LIGHTSTACK_RUN_DEFERRED_MULTINODE:-}" != "1" ]; then
   echo "SKIP: multi-node e2e is deferred until the post-conditions land (issue #52 / WS-1)."
-  echo "      Set O3K_RUN_DEFERRED_MULTINODE=1 to run once a WS-1-capable product image exists,"
-  echo "      on a multi-node cluster with >=2 nodes labeled ${O3K_NODE_LABEL:-o3k.io/compute=true}."
+  echo "      Set LIGHTSTACK_RUN_DEFERRED_MULTINODE=1 to run once a WS-1-capable product image exists,"
+  echo "      on a multi-node cluster with >=2 nodes labeled ${LIGHTSTACK_NODE_LABEL:-lightstack.io/compute=true}."
   exit 0
 fi
 
-REL="${REL:-o3k-mn}"; NS="${NS:-o3k-mn}"
-CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/o3k"
+REL="${REL:-lightstack-mn}"; NS="${NS:-lightstack-mn}"
+CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/lightstack"
 
 helm install "$REL" "$CHART" -n "$NS" --create-namespace \
   --set deploymentMode=multi-node \
-  --set image.repository="${O3K_IMAGE_REPO:?set O3K_IMAGE_REPO}" \
-  --set image.tag="${O3K_IMAGE_TAG:-latest}" \
+  --set image.repository="${LIGHTSTACK_IMAGE_REPO:?set LIGHTSTACK_IMAGE_REPO}" \
+  --set image.tag="${LIGHTSTACK_IMAGE_TAG:-latest}" \
   --set secrets.jwtSecret="$(openssl rand -hex 16)" \
   --set secrets.adminPassword="Mn-Admin-1" \
-  --set database.url="${O3K_DB_URL:?set O3K_DB_URL}"
+  --set database.url="${LIGHTSTACK_DB_URL:?set LIGHTSTACK_DB_URL}"
 
-kubectl -n "$NS" rollout status "ds/${REL}-o3k" --timeout=300s
+kubectl -n "$NS" rollout status "ds/${REL}-lightstack" --timeout=300s
 
 # SC-003 / SC-004: reuse the existing overlay/multi-node networking suite against the
 # chart-deployed release once WS-1 is available.

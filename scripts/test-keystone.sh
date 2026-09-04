@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test script for O3K Phase 1 (Keystone)
+# Test script for Lightstack Phase 1 (Keystone)
 
 set -e
 
@@ -9,9 +9,14 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-BASE_URL="http://localhost:5000"
+# Identity listens on keystone.port (35357), not the upstream Keystone convention of 5000.
+# OS_AUTH_URL wins when set; its /v3 suffix is stripped because the tests below append
+# their own paths.
+BASE_URL="${OS_AUTH_URL:-http://localhost:35357/v3}"
+BASE_URL="${BASE_URL%/}"
+BASE_URL="${BASE_URL%/v3}"
 
-echo -e "${YELLOW}=== O3K Keystone Test Suite ===${NC}\n"
+echo -e "${YELLOW}=== Lightstack Keystone Test Suite ===${NC}\n"
 
 # Test 1: Version Discovery
 echo -e "${YELLOW}Test 1: Version Discovery${NC}"

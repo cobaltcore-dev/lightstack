@@ -33,7 +33,7 @@ func ws0DeleteImageHTTP(t *testing.T, client *gophercloud.ServiceClient, imageID
 // TestWS0_ImageInUseGuard (FR-004): an image referenced by an instance cannot
 // be deleted (409); once the instance is gone, deletion succeeds.
 func TestWS0_ImageInUseGuard(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 	imgClient := SetupImageV2Client(t)
 	novaClient := SetupComputeV2Client(t)
 
@@ -76,13 +76,13 @@ func TestWS0_ImageInUseGuard(t *testing.T) {
 }
 
 // TestWS0_ImageNormalizesToRaw (FR-003 / T009): an uploaded qcow2 image is
-// normalized to a raw base on ingest. Requires O3K_TEST_QCOW2 (a real qcow2
+// normalized to a raw base on ingest. Requires LIGHTSTACK_TEST_QCOW2 (a real qcow2
 // file) since normalization runs qemu-img convert.
 func TestWS0_ImageNormalizesToRaw(t *testing.T) {
-	SkipIfO3KNotRunning(t)
-	qcow2 := os.Getenv("O3K_TEST_QCOW2")
+	SkipIfLightstackNotRunning(t)
+	qcow2 := os.Getenv("LIGHTSTACK_TEST_QCOW2")
 	if qcow2 == "" {
-		t.Skip("set O3K_TEST_QCOW2 to a qcow2 file path to exercise raw normalization (WS-0 T009)")
+		t.Skip("set LIGHTSTACK_TEST_QCOW2 to a qcow2 file path to exercise raw normalization (WS-0 T009)")
 	}
 	data, err := os.ReadFile(qcow2)
 	require.NoError(t, err)

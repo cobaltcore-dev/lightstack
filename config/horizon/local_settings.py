@@ -4,7 +4,7 @@ from django.utils.translation import gettext_lazy as _
 
 DEBUG = False
 
-# O3K endpoints
+# Lightstack endpoints
 OPENSTACK_HOST = os.environ.get('OPENSTACK_HOST', 'localhost')
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"
@@ -43,7 +43,7 @@ OPENSTACK_NEUTRON_NETWORK = {
 ALLOWED_HOSTS = ['*']
 
 # Security
-SECRET_KEY = 'o3k-horizon-secret-key-change-in-production'
+SECRET_KEY = 'lightstack-horizon-secret-key-change-in-production'
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 
 # Caching (use local memory cache)

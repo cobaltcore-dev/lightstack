@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
@@ -32,7 +32,7 @@ func postEC2Cred(t *testing.T, targetUserID, callerUserID, callerProjectID strin
 	return w
 }
 
-// ec2ErrMessage extracts the message from o3k's Nova-style error envelope
+// ec2ErrMessage extracts the message from Lightstack's Nova-style error envelope
 // ({"<code>":{"message":...}}), so the test can assert the exact text.
 func ec2ErrMessage(t *testing.T, w *httptest.ResponseRecorder) string {
 	t.Helper()

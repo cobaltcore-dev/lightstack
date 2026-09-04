@@ -14,7 +14,7 @@ import (
 
 // TestGlanceListMetadefNamespaces_Contract tests GET /v2/metadefs/namespaces
 func TestGlanceListMetadefNamespaces_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -42,7 +42,7 @@ func TestGlanceListMetadefNamespaces_Contract(t *testing.T) {
 
 // TestGlanceCreateMetadefNamespace_Contract tests POST /v2/metadefs/namespaces
 func TestGlanceCreateMetadefNamespace_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -88,7 +88,7 @@ func TestGlanceCreateMetadefNamespace_Contract(t *testing.T) {
 
 // TestGlanceGetMetadefNamespace_Contract tests GET /v2/metadefs/namespaces/:namespace
 func TestGlanceGetMetadefNamespace_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -120,7 +120,7 @@ func TestGlanceGetMetadefNamespace_Contract(t *testing.T) {
 
 // TestGlanceUpdateMetadefNamespace_Contract tests PUT /v2/metadefs/namespaces/:namespace
 func TestGlanceUpdateMetadefNamespace_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -162,7 +162,7 @@ func TestGlanceUpdateMetadefNamespace_Contract(t *testing.T) {
 
 // TestGlanceDeleteMetadefNamespace_Contract tests DELETE /v2/metadefs/namespaces/:namespace
 func TestGlanceDeleteMetadefNamespace_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -184,7 +184,7 @@ func TestGlanceDeleteMetadefNamespace_Contract(t *testing.T) {
 
 // TestGlanceListMetadefResourceTypes_Contract tests GET /v2/metadefs/resource_types
 func TestGlanceListMetadefResourceTypes_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 

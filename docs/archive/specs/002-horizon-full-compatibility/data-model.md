@@ -27,7 +27,7 @@ Data model additions/modifications for Horizon compatibility. Most features use 
 }
 ```
 
-**Rationale**: Console access is temporary (1-hour tokens). JWT provides stateless, time-limited tokens without database overhead. Aligns with existing O3K token infrastructure.
+**Rationale**: Console access is temporary (1-hour tokens). JWT provides stateless, time-limited tokens without database overhead. Aligns with existing Lightstack token infrastructure.
 
 **Validation Rules**:
 - Token must be valid JWT signature (HMAC-SHA256)

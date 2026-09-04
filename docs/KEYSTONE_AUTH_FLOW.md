@@ -1,11 +1,11 @@
 # Keystone Authentication Flow with Horizon
 
 **Last Updated**: 2026-03-13
-**O3K Version**: 1.0.0+
+**lightstack Version**: 1.0.0+
 
 ## Overview
 
-This document explains how OpenStack Keystone identity service authenticates users and provides service discovery for Horizon dashboard when using O3K as the backend.
+This document explains how OpenStack Keystone identity service authenticates users and provides service discovery for Horizon dashboard when using Lightstack as the backend.
 
 ## Table of Contents
 
@@ -61,7 +61,7 @@ User enters credentials in Horizon:
 
 Step 2: Horizon → Keystone
 ───────────────────────────
-POST http://o3k:35357/v3/auth/tokens
+POST http://lightstack:35357/v3/auth/tokens
 Content-Type: application/json
 
 {
@@ -136,7 +136,7 @@ Builds catalog structure:
       "endpoints": [{
         "interface": "public",
         "region": "RegionOne",
-        "url": "http://o3k-host:8774/v2.1"
+        "url": "http://lightstack-host:8774/v2.1"
       }]
     },
     ...repeat for neutron, cinder, glance...
@@ -176,7 +176,7 @@ Step 7: Horizon Uses Token
 ───────────────────────────
 All subsequent API calls include token:
 
-GET http://o3k:8774/v2.1/servers
+GET http://lightstack:8774/v2.1/servers
 X-Auth-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 Step 8: Token Validation (Every Request)
@@ -196,7 +196,7 @@ Nova/Neutron/Cinder/Glance middleware:
 
 ### Token Format
 
-O3K uses **JSON Web Tokens (JWT)** for stateless authentication.
+Lightstack uses **JSON Web Tokens (JWT)** for stateless authentication.
 
 **Token Structure**:
 ```
@@ -250,14 +250,14 @@ HMACSHA256(
 )
 ```
 
-- **jwt_secret**: Configured in `config/o3k.yaml` (keystone.jwt_secret)
+- **jwt_secret**: Configured in `config/lightstack.yaml` (keystone.jwt_secret)
 - **⚠️ CRITICAL**: Must be kept secret and changed in production
-- **Shared**: All O3K services use the same secret for validation
+- **Shared**: All Lightstack services use the same secret for validation
 
 ### Token Lifetime
 
 - **Default TTL**: 4 hours (14400 seconds)
-- **Configurable**: `keystone.token_ttl` in O3K config
+- **Configurable**: `keystone.token_ttl` in Lightstack config
 - **Non-renewable**: Tokens cannot be refreshed (must re-authenticate)
 - **Stateless**: No database lookups required for validation
 
@@ -306,14 +306,14 @@ The service catalog tells Horizon where to find each OpenStack service (Nova, Ne
           "interface": "public",
           "region": "RegionOne",
           "region_id": "RegionOne",
-          "url": "http://o3k-host:35357/v3"
+          "url": "http://lightstack-host:35357/v3"
         },
         {
           "id": "uuid-of-endpoint-2",
           "interface": "admin",
           "region": "RegionOne",
           "region_id": "RegionOne",
-          "url": "http://o3k-internal:35357/v3"
+          "url": "http://lightstack-internal:35357/v3"
         }
       ]
     },
@@ -325,7 +325,7 @@ The service catalog tells Horizon where to find each OpenStack service (Nova, Ne
         {
           "interface": "public",
           "region": "RegionOne",
-          "url": "http://o3k-host:8774/v2.1"
+          "url": "http://lightstack-host:8774/v2.1"
         }
       ]
     },
@@ -336,7 +336,7 @@ The service catalog tells Horizon where to find each OpenStack service (Nova, Ne
         {
           "interface": "public",
           "region": "RegionOne",
-          "url": "http://o3k-host:9696/v2.0"
+          "url": "http://lightstack-host:9696/v2.0"
         }
       ]
     },
@@ -347,7 +347,7 @@ The service catalog tells Horizon where to find each OpenStack service (Nova, Ne
         {
           "interface": "public",
           "region": "RegionOne",
-          "url": "http://o3k-host:8776/v3/%(project_id)s"
+          "url": "http://lightstack-host:8776/v3/%(project_id)s"
         }
       ]
     },
@@ -358,7 +358,7 @@ The service catalog tells Horizon where to find each OpenStack service (Nova, Ne
         {
           "interface": "public",
           "region": "RegionOne",
-          "url": "http://o3k-host:9292/v2"
+          "url": "http://lightstack-host:9292/v2"
         }
       ]
     }
@@ -376,7 +376,7 @@ The service catalog tells Horizon where to find each OpenStack service (Nova, Ne
 
 Cinder endpoints use URL templates with project_id:
 ```
-http://o3k-host:8776/v3/%(project_id)s
+http://lightstack-host:8776/v3/%(project_id)s
 ```
 
 Horizon substitutes `%(project_id)s` with actual project UUID from token.
@@ -398,7 +398,7 @@ nova_endpoint = catalog.url_for(
     interface='public',
     region_name='RegionOne'
 )
-# Result: http://o3k-host:8774/v2.1
+# Result: http://lightstack-host:8774/v2.1
 
 # List instances
 response = requests.get(
@@ -596,7 +596,7 @@ func AuthMiddleware() gin.HandlerFunc {
    openssl rand -base64 32
    ```
 
-3. **Share secret across all O3K services**
+3. **Share secret across all Lightstack services**
    - All services must use the same secret for validation
    - Store in centralized configuration (HashiCorp Vault, AWS Secrets Manager)
 
@@ -644,7 +644,7 @@ JWT tokens are **stateless** - cannot be revoked before expiration.
 **Production Requirement**: All traffic must use HTTPS:
 
 - **Horizon**: TLS termination at load balancer/nginx
-- **O3K API**: TLS termination at reverse proxy
+- **lightstack API**: TLS termination at reverse proxy
 - **Inter-service**: Can use HTTP if on trusted private network
 
 **Certificate Management**:
@@ -700,7 +700,7 @@ openstack server show <instance-id> -c project_id
 
 **Cause**: Token TTL too short
 
-**Solution**: Increase token_ttl in O3K config and match Horizon SESSION_TIMEOUT
+**Solution**: Increase token_ttl in Lightstack config and match Horizon SESSION_TIMEOUT
 
 ---
 
@@ -759,10 +759,10 @@ func generateToken(user User, project Project, roles []string) (string, error) {
 - **JWT Specification**: https://tools.ietf.org/html/rfc7519
 - **OpenStack Keystone API**: https://docs.openstack.org/api-ref/identity/v3/
 - **OpenStack Auth Tokens**: https://docs.openstack.org/keystone/latest/admin/tokens-overview.html
-- **O3K Source Code**: `/internal/keystone/` and `/internal/middleware/`
+- **lightstack Source Code**: `/internal/keystone/` and `/internal/middleware/`
 
 ---
 
 **Version**: 1.0.0
 **Last Updated**: 2026-03-13
-**Authors**: O3K Development Team
+**Authors**: Lightstack Development Team

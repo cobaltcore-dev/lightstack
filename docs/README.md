@@ -1,8 +1,8 @@
-# O3K Documentation
+# Lightstack Documentation
 
 **📚 Complete Documentation Index: [INDEX.md](INDEX.md)** ⭐
 
-Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive table of contents with learning paths and categorized guides, see **[INDEX.md](INDEX.md)**.
+Welcome to Lightstack (OpenStack 3 Kubernetes-style) documentation. For a comprehensive table of contents with learning paths and categorized guides, see **[INDEX.md](INDEX.md)**.
 
 ---
 
@@ -20,7 +20,7 @@ Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive
 | Production | [SCALING](SCALING.md) | Multi-node HA cluster |
 
 ### Want Horizon Dashboard?
-- **[UNIFIED_DEPLOYMENT](UNIFIED_DEPLOYMENT.md)** - O3K + Horizon in one command
+- **[UNIFIED_DEPLOYMENT](UNIFIED_DEPLOYMENT.md)** - Lightstack + Horizon in one command
 - **[HORIZON_INTEGRATION](HORIZON_INTEGRATION.md)** - Integration overview
 
 ---
@@ -33,7 +33,7 @@ Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive
 - **[QUICK_REFERENCE](QUICK_REFERENCE.md)** - Command cheat sheet
 
 ### Deployment Guides
-- **[UNIFIED_DEPLOYMENT](UNIFIED_DEPLOYMENT.md)** - O3K + Horizon together
+- **[UNIFIED_DEPLOYMENT](UNIFIED_DEPLOYMENT.md)** - Lightstack + Horizon together
 - **[SINGLE_NODE_DEPLOYMENT](SINGLE_NODE_DEPLOYMENT.md)** ⭐ NEW - Single host with KVM
 - **[SCALING](SCALING.md)** ⭐ NEW - Production multi-node deployment
 - **[DOCKER_DEPLOYMENT](DOCKER_DEPLOYMENT.md)** - Docker-specific guide
@@ -53,7 +53,7 @@ Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive
 
 ### Operations & Architecture
 - **[OPERATIONS](OPERATIONS.md)** - Day-to-day management
-- **[BLUEPRINT](blueprint.md)** ⭐ - o3k ↔ OpenStack compatibility blueprint: service map, per-service matrix, storage backends, known gaps (pinned to 2025.2 Flamingo)
+- **[BLUEPRINT](blueprint.md)** ⭐ - Lightstack ↔ OpenStack compatibility blueprint: service map, per-service matrix, storage backends, known gaps (pinned to 2025.2 Flamingo)
 - **[ARCHITECTURE](ARCHITECTURE.md)** - System design
 - **[API](API.md)** - OpenStack API compatibility
 - **[API_COVERAGE_REPORT](API_COVERAGE_REPORT.md)** - ⚠️ older 104% count, superseded by BLUEPRINT
@@ -138,8 +138,8 @@ Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive
 
 **For specific issues**:
 - Check [TROUBLESHOOTING](TROUBLESHOOTING.md)
-- GitHub Issues: https://github.com/cobaltcore-dev/o3k/issues
-- GitHub Discussions: https://github.com/cobaltcore-dev/o3k/discussions
+- GitHub Issues: https://github.com/cobaltcore-dev/lightstack/issues
+- GitHub Discussions: https://github.com/cobaltcore-dev/lightstack/discussions
 
 **For contributing**:
 - Read [CONTRIBUTING](CONTRIBUTING.md)
@@ -149,7 +149,7 @@ Welcome to O3K (OpenStack 3 Kubernetes-style) documentation. For a comprehensive
 
 **Documentation Version**: v1.1
 **Last Updated**: March 17, 2026
-**O3K Version**: v0.5.0 (Production Ready)
+**lightstack Version**: v0.5.0 (Production Ready)
 **API Coverage**: ~329 functional operations across the five core services — see [BLUEPRINT](blueprint.md) (supersedes the older "104% / 342" figure)
 
 **For complete documentation index with learning paths, see [INDEX.md](INDEX.md)** 📚

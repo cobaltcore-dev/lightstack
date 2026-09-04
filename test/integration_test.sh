@@ -1,5 +1,5 @@
 #!/bin/bash
-# O3K Integration Test Suite
+# Lightstack Integration Test Suite
 # Tests all OpenStack API endpoints and Horizon compatibility
 
 # NOT using 'set -e': this suite tracks pass/fail counts itself, and bash's
@@ -18,7 +18,7 @@ TESTS_FAILED=0
 TESTS_TOTAL=0
 
 # Configuration
-O3K_URL="${O3K_URL:-http://localhost:35357}"
+LIGHTSTACK_URL="${LIGHTSTACK_URL:-http://localhost:35357}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-secret}"
 PROJECT_NAME="${PROJECT_NAME:-default}"
@@ -45,15 +45,15 @@ print_info() {
     echo -e "  ℹ  $1"
 }
 
-# Function to check if O3K is running
-check_o3k_running() {
-    print_test "Checking if O3K is running"
-    if curl -s -f "${O3K_URL}/v3" > /dev/null 2>&1; then
-        print_pass "O3K is running on ${O3K_URL}"
+# Function to check if Lightstack is running
+check_lightstack_running() {
+    print_test "Checking if Lightstack is running"
+    if curl -s -f "${LIGHTSTACK_URL}/v3" > /dev/null 2>&1; then
+        print_pass "Lightstack is running on ${LIGHTSTACK_URL}"
         return 0
     else
-        print_fail "O3K is not running on ${O3K_URL}"
-        echo "Start O3K with: ./o3k --config config/o3k.yaml"
+        print_fail "Lightstack is not running on ${LIGHTSTACK_URL}"
+        echo "Start Lightstack with: ./lightstack --config config/lightstack.yaml"
         exit 1
     fi
 }
@@ -62,7 +62,7 @@ check_o3k_running() {
 test_keystone_auth() {
     print_test "Keystone: Unscoped token authentication"
 
-    response=$(curl -s -i -X POST "${O3K_URL}/v3/auth/tokens" \
+    response=$(curl -s -i -X POST "${LIGHTSTACK_URL}/v3/auth/tokens" \
         -H "Content-Type: application/json" \
         -d '{
             "auth": {
@@ -94,7 +94,7 @@ test_keystone_auth() {
     # Test scoped token
     print_test "Keystone: Scoped token authentication"
 
-    response=$(curl -s -i -X POST "${O3K_URL}/v3/auth/tokens" \
+    response=$(curl -s -i -X POST "${LIGHTSTACK_URL}/v3/auth/tokens" \
         -H "Content-Type: application/json" \
         -d '{
             "auth": {
@@ -139,7 +139,7 @@ test_keystone_auth() {
 test_keystone_resources() {
     print_test "Keystone: List users"
 
-    response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${O3K_URL}/v3/users")
+    response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${LIGHTSTACK_URL}/v3/users")
 
     if echo "$response" | grep -q "users"; then
         print_pass "User list retrieved"
@@ -150,7 +150,7 @@ test_keystone_resources() {
 
     print_test "Keystone: List projects"
 
-    response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${O3K_URL}/v3/projects")
+    response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${LIGHTSTACK_URL}/v3/projects")
 
     if echo "$response" | grep -q "projects"; then
         print_pass "Project list retrieved"
@@ -272,7 +272,7 @@ test_cinder_volumes() {
     print_test "Cinder: List volumes"
 
     # Extract project ID from token
-    PROJECT_ID=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${O3K_URL}/v3/auth/projects" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    PROJECT_ID=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${LIGHTSTACK_URL}/v3/auth/projects" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
     response=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "http://localhost:8776/v3/volumes")
 
@@ -470,7 +470,7 @@ test_cleanup() {
 
     # Delete volume
     if [ -n "$VOLUME_ID" ]; then
-        PROJECT_ID=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${O3K_URL}/v3/auth/projects" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        PROJECT_ID=$(curl -s -H "X-Auth-Token: $OS_TOKEN" "${LIGHTSTACK_URL}/v3/auth/projects" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
         curl -s -X DELETE -H "X-Auth-Token: $OS_TOKEN" \
             "http://localhost:8776/v3/volumes/${VOLUME_ID}" > /dev/null
         print_info "Deleted volume: $VOLUME_ID"
@@ -529,7 +529,7 @@ test_stress() {
 # Test 10: Version Discovery
 test_version_discovery() {
     print_test "Version Discovery: Keystone"
-    response=$(curl -s "${O3K_URL}/")
+    response=$(curl -s "${LIGHTSTACK_URL}/")
     if echo "$response" | grep -q "versions"; then
         print_pass "Keystone version discovery works"
     else
@@ -564,11 +564,11 @@ test_version_discovery() {
 # Main test execution
 main() {
     echo "======================================"
-    echo "O3K Integration Test Suite"
+    echo "Lightstack Integration Test Suite"
     echo "======================================"
     echo ""
 
-    check_o3k_running
+    check_lightstack_running
 
     echo ""
     echo "======================================"

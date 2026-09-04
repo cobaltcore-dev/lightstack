@@ -13,12 +13,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 )
 
 // TestNovaAddSecurityGroup_Contract tests POST /v2.1/servers/:id/action (addSecurityGroup)
 func TestNovaAddSecurityGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -54,7 +54,7 @@ func TestNovaAddSecurityGroup_Contract(t *testing.T) {
 
 // TestNovaAddSecurityGroupDuplicate_Contract tests adding same SG twice returns 409
 func TestNovaAddSecurityGroupDuplicate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -107,7 +107,7 @@ func TestNovaAddSecurityGroupDuplicate_Contract(t *testing.T) {
 //
 //	"Security group data for contract tests should be created by the test setup code."
 func TestNovaRemoveSecurityGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 	netClient := contract.SetupNeutronClient(t)
@@ -165,7 +165,7 @@ func TestNovaRemoveSecurityGroup_Contract(t *testing.T) {
 
 // TestNovaChangePassword_Contract tests POST /v2.1/servers/:id/action (changePassword)
 func TestNovaChangePassword_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

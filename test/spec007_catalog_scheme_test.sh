@@ -1,25 +1,25 @@
 #!/bin/bash
 # SPEC-007 WS-3 — Configurable catalog scheme integration test.
 #
-# Prerequisites: O3K running at $O3K_URL, started with O3K_ENDPOINT_SCHEME and
-# O3K_ENDPOINT_HOST. Configure via env:
-#   O3K_URL             base Keystone URL (default http://localhost:35357)
-#   O3K_ADMIN_USER      (default: admin)
-#   O3K_ADMIN_PASSWORD  (default: secret)
-#   EXPECTED_SCHEME     scheme O3K was started with: http|https (default http)
+# Prerequisites: Lightstack running at $LIGHTSTACK_URL, started with LIGHTSTACK_ENDPOINT_SCHEME and
+# LIGHTSTACK_ENDPOINT_HOST. Configure via env:
+#   LIGHTSTACK_URL             base Keystone URL (default http://localhost:35357)
+#   LIGHTSTACK_ADMIN_USER      (default: admin)
+#   LIGHTSTACK_ADMIN_PASSWORD  (default: secret)
+#   EXPECTED_SCHEME     scheme Lightstack was started with: http|https (default http)
 #
 # Verifies (quickstart §WS-3): every advertised service-catalog endpoint URL
 # uses EXPECTED_SCHEME, and a resource self-link does too. Requires `jq`.
 
 set -u
-O3K_URL="${O3K_URL:-http://localhost:35357}"
-ADMIN_USER="${O3K_ADMIN_USER:-admin}"
-ADMIN_PASSWORD="${O3K_ADMIN_PASSWORD:-secret}"
+LIGHTSTACK_URL="${LIGHTSTACK_URL:-http://localhost:35357}"
+ADMIN_USER="${LIGHTSTACK_ADMIN_USER:-admin}"
+ADMIN_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:-secret}"
 EXPECTED_SCHEME="${EXPECTED_SCHEME:-http}"
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 PASS=0; FAIL=0
 
-resp=$(curl -s -X POST "$O3K_URL/v3/auth/tokens" -H 'Content-Type: application/json' \
+resp=$(curl -s -X POST "$LIGHTSTACK_URL/v3/auth/tokens" -H 'Content-Type: application/json' \
   -d "{\"auth\":{\"identity\":{\"methods\":[\"password\"],\"password\":{\"user\":{\"name\":\"$ADMIN_USER\",\"domain\":{\"name\":\"Default\"},\"password\":\"$ADMIN_PASSWORD\"}}},\"scope\":{\"project\":{\"name\":\"default\",\"domain\":{\"name\":\"Default\"}}}}}")
 
 echo "== SPEC-007 WS-3: catalog scheme (expecting ${EXPECTED_SCHEME}://) =="

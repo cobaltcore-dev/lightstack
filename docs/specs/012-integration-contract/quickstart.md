@@ -1,4 +1,4 @@
-# Quickstart — driving o3k through the integration contract
+# Quickstart — driving Lightstack through the integration contract
 
 The end-to-end loop an orchestrator (sci-in-a-box) follows: **validate inputs → install with a bound
 → derive Ready → resolve endpoints**. Mirrors the spec's user stories and acceptance scenarios.
@@ -7,17 +7,17 @@ The end-to-end loop an orchestrator (sci-in-a-box) follows: **validate inputs �
 
 ```bash
 # Unknown/misspelled key → rejected by the schema (additionalProperties)
-helm template r charts/o3k --set databse.url=x          # FAILS: additional property
+helm template r charts/lightstack --set databse.url=x          # FAILS: additional property
 
 # Bad enum → rejected
-helm template r charts/o3k --set service.type=Foo       # FAILS: not one of ClusterIP/NodePort/LoadBalancer
+helm template r charts/lightstack --set service.type=Foo       # FAILS: not one of ClusterIP/NodePort/LoadBalancer
 
 # Missing required image → rejected
-helm template r charts/o3k                               # FAILS: image.repository required
+helm template r charts/lightstack                               # FAILS: image.repository required
 
 # Missing credential (render-time guard) → rejected
-helm template r charts/o3k --set image.repository=ghcr.io/o3k/o3k \
-  --set database.url=postgres://o3k@db/o3k               # FAILS: jwtSecret is required
+helm template r charts/lightstack --set image.repository=ghcr.io/lightstack/lightstack \
+  --set database.url=postgres://lightstack@db/lightstack               # FAILS: jwtSecret is required
 ```
 
 A complete, valid value set passes validation and proceeds.
@@ -25,9 +25,9 @@ A complete, valid value set passes validation and proceeds.
 ## 2. Install with a readiness bound (US2)
 
 ```bash
-helm upgrade --install o3k charts/o3k -n o3k --create-namespace --wait --timeout 10m \
-  --set image.repository=<registry>/o3k --set image.tag=<version> \
-  --set database.url='postgres://o3k:<pw>@<host>:5432/o3k?sslmode=disable' \
+helm upgrade --install lightstack charts/lightstack -n lightstack --create-namespace --wait --timeout 10m \
+  --set image.repository=<registry>/lightstack --set image.tag=<version> \
+  --set database.url='postgres://lightstack:<pw>@<host>:5432/lightstack?sslmode=disable' \
   --set secrets.jwtSecret='<strong-random>' --set secrets.adminPassword='<admin-pw>' \
   --set endpointHost=<reachable-host>          # REQUIRED for an external consumer (catalog correctness)
 ```
@@ -37,8 +37,8 @@ helm upgrade --install o3k charts/o3k -n o3k --create-namespace --wait --timeout
 Apply the `status-contract.md` recipe:
 
 ```bash
-helm status o3k -n o3k -o json | jq -r '.info.status'         # deployed?
-kubectl -n o3k rollout status deploy/o3k-o3k --timeout=0      # ready? (single-node)
+helm status lightstack -n lightstack -o json | jq -r '.info.status'         # deployed?
+kubectl -n lightstack rollout status deploy/lightstack-lightstack --timeout=0      # ready? (single-node)
 # Failed-fast check: any pod CrashLoopBackOff / ImagePullBackOff → Failed without waiting out --timeout
 ```
 
@@ -62,13 +62,13 @@ node-local metadata endpoint is intentionally absent.
 ## 5. The published contract (US3)
 
 ```bash
-helm package charts/o3k && tar tzf o3k-*.tgz | grep CONTRACT.md   # CONTRACT.md ships
-grep -n CONTRACT charts/o3k/README.md                            # README links it
+helm package charts/lightstack && tar tzf lightstack-*.tgz | grep CONTRACT.md   # CONTRACT.md ships
+grep -n CONTRACT charts/lightstack/README.md                            # README links it
 ```
 
 ## Validate the contract (maintainer)
 
 ```bash
-charts/o3k/ci/run-tests.sh        # helm lint + template permutations + helm unittest
+charts/lightstack/ci/run-tests.sh        # helm lint + template permutations + helm unittest
                                   #  + schema-rejection fixtures + schema↔values coverage gate
 ```

@@ -1,4 +1,4 @@
-# Contract — EC2 credentials API (o3k Keystone)
+# Contract — EC2 credentials API (lightstack Keystone)
 
 OpenStack-compatible EC2/S3 credential management. Matches `openstack ec2 credentials …`.
 Routes on the **authenticated** `mgmt` group (user token via `X-Auth-Token`).

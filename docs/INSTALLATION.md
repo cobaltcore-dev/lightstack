@@ -3,7 +3,7 @@
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
-Complete installation guide for O3K (OpenStack-compatible cloud platform).
+Complete installation guide for Lightstack (OpenStack-compatible cloud platform).
 
 ---
 
@@ -52,13 +52,13 @@ Complete installation guide for O3K (OpenStack-compatible cloud platform).
 
 ### Docker Compose (Recommended)
 
-Docker Compose provides the easiest way to get O3K running with all dependencies.
+Docker Compose provides the easiest way to get Lightstack running with all dependencies.
 
 #### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/cobaltcore-dev/o3k.git
-cd o3k
+git clone https://github.com/cobaltcore-dev/lightstack.git
+cd lightstack
 ```
 
 #### Step 2: Start Services
@@ -69,7 +69,7 @@ docker compose up -d
 
 This starts:
 - **PostgreSQL** on port 5432
-- **O3K APIs** on ports 5001, 8774, 9696, 8776, 9292, 8775
+- **lightstack APIs** on ports 5001, 8774, 9696, 8776, 9292, 8775
 
 #### Step 3: Wait for Services
 
@@ -78,7 +78,7 @@ This starts:
 docker compose ps
 
 # Wait for healthy status
-docker compose logs -f o3k
+docker compose logs -f lightstack
 ```
 
 First startup takes 30-60 seconds as migrations run automatically.
@@ -87,7 +87,7 @@ First startup takes 30-60 seconds as migrations run automatically.
 
 ```bash
 # Create environment file
-cat > ~/.o3k-env << 'EOF'
+cat > ~/.lightstack-env << 'EOF'
 export OS_AUTH_URL=http://localhost:5001/v3
 export OS_PROJECT_NAME=default
 export OS_PROJECT_DOMAIN_NAME=Default
@@ -98,7 +98,7 @@ export OS_IDENTITY_API_VERSION=3
 EOF
 
 # Load environment
-source ~/.o3k-env
+source ~/.lightstack-env
 ```
 
 #### Step 5: Install OpenStack CLI
@@ -117,7 +117,7 @@ pipx install python-openstackclient
 
 ### Binary Installation
 
-For advanced users who want to run O3K directly without Docker.
+For advanced users who want to run Lightstack directly without Docker.
 
 #### Step 1: Install PostgreSQL
 
@@ -139,57 +139,57 @@ brew services start postgresql@14
 
 ```bash
 sudo -u postgres psql << EOF
-CREATE DATABASE o3k;
-CREATE USER o3k WITH PASSWORD 'secret';
-GRANT ALL PRIVILEGES ON DATABASE o3k TO o3k;
+CREATE DATABASE lightstack;
+CREATE USER lightstack WITH PASSWORD 'secret';
+GRANT ALL PRIVILEGES ON DATABASE lightstack TO lightstack;
 EOF
 ```
 
-#### Step 3: Build O3K
+#### Step 3: Build Lightstack
 
 ```bash
-git clone https://github.com/cobaltcore-dev/o3k.git
-cd o3k
+git clone https://github.com/cobaltcore-dev/lightstack.git
+cd lightstack
 
 # Build
-go build -o o3k ./cmd/o3k
-go build -o o3k-migrate ./cmd/o3k-migrate
+go build -o lightstack ./cmd/lightstack
+go build -o lightstack-migrate ./cmd/lightstack-migrate
 
 # Move binaries
-sudo mv o3k /usr/local/bin/
-sudo mv o3k-migrate /usr/local/bin/
+sudo mv lightstack /usr/local/bin/
+sudo mv lightstack-migrate /usr/local/bin/
 ```
 
-#### Step 4: Configure O3K
+#### Step 4: Configure Lightstack
 
 ```bash
 # Create config directory
-sudo mkdir -p /etc/o3k
+sudo mkdir -p /etc/lightstack
 
 # Copy config
-sudo cp config/o3k.yaml /etc/o3k/
+sudo cp config/lightstack.yaml /etc/lightstack/
 
 # Edit config
-sudo nano /etc/o3k/o3k.yaml
+sudo nano /etc/lightstack/lightstack.yaml
 ```
 
 Update database URL:
 ```yaml
 database:
-  url: "postgres://o3k:secret@localhost/o3k?sslmode=disable"
+  url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
 ```
 
 #### Step 5: Run Migrations
 
 ```bash
-o3k-migrate up
+lightstack-migrate up
 ```
 
-#### Step 6: Start O3K
+#### Step 6: Start Lightstack
 
 ```bash
 # Run in foreground
-o3k --config /etc/o3k/o3k.yaml
+lightstack --config /etc/lightstack/lightstack.yaml
 
 # Or create systemd service (see docs/OPERATIONS.md)
 ```
@@ -225,9 +225,9 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 ```
 
-Save to `~/.o3k-env` and source it:
+Save to `~/.lightstack-env` and source it:
 ```bash
-source ~/.o3k-env
+source ~/.lightstack-env
 ```
 
 ---
@@ -241,8 +241,8 @@ source ~/.o3k-env
 docker compose ps
 
 # Should show:
-# o3k            Up (healthy)
-# o3k-postgres   Up (healthy)
+# lightstack            Up (healthy)
+# lightstack-postgres   Up (healthy)
 ```
 
 **Binary:**
@@ -254,7 +254,7 @@ curl http://localhost:35357/v3
 ### 2. Test Authentication
 
 ```bash
-source ~/.o3k-env
+source ~/.lightstack-env
 openstack token issue
 ```
 
@@ -300,7 +300,7 @@ openstack server create \
 openstack server list
 ```
 
-✅ **If all commands succeed, O3K is working correctly!**
+✅ **If all commands succeed, Lightstack is working correctly!**
 
 ---
 
@@ -315,10 +315,10 @@ invalid credentials (HTTP 401)
 
 **Solutions:**
 1. Check credentials match defaults (Domain: "Default" with capital D)
-2. Verify O3K is running: `docker compose ps` or `curl http://localhost:35357/v3`
+2. Verify Lightstack is running: `docker compose ps` or `curl http://localhost:35357/v3`
 3. Check database has domain:
    ```bash
-   docker exec o3k-postgres psql -U o3k -d o3k \
+   docker exec lightstack-postgres psql -U lightstack -d lightstack \
      -c "SELECT * FROM domains;"
    ```
 
@@ -353,12 +353,12 @@ failed to connect to postgres
 
 2. Check database exists:
    ```bash
-   docker exec o3k-postgres psql -U o3k -l
+   docker exec lightstack-postgres psql -U lightstack -l
    ```
 
 3. Test connection:
    ```bash
-   psql "postgres://o3k:secret@localhost/o3k?sslmode=disable"
+   psql "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
    ```
 
 ### Issue: Migrations Failed
@@ -371,32 +371,32 @@ migration failed: relation "users" does not exist
 **Solutions:**
 ```bash
 # Check migration status
-docker exec o3k /app/o3k-migrate status
+docker exec lightstack /app/lightstack-migrate status
 
 # Run migrations manually
-docker exec o3k /app/o3k-migrate up
+docker exec lightstack /app/lightstack-migrate up
 
 # Reset and rerun (⚠️ deletes all data)
-docker exec o3k /app/o3k-migrate reset
-docker exec o3k /app/o3k-migrate up
+docker exec lightstack /app/lightstack-migrate reset
+docker exec lightstack /app/lightstack-migrate up
 ```
 
 ### Issue: Service Not Healthy
 
 **Symptoms:**
 ```
-o3k   Up 2 minutes (unhealthy)
+lightstack   Up 2 minutes (unhealthy)
 ```
 
 **Solutions:**
 ```bash
 # Check logs
-docker compose logs o3k --tail=50
+docker compose logs lightstack --tail=50
 
 # Common issues:
 # - Database not ready: wait 10 more seconds
 # - Port conflict: check lsof output
-# - Config error: check o3k.yaml syntax
+# - Config error: check lightstack.yaml syntax
 ```
 
 ### Issue: OpenStack CLI Not Found
@@ -422,12 +422,12 @@ openstack --version
 
 1. **Check logs:**
    ```bash
-   docker compose logs o3k
+   docker compose logs lightstack
    ```
 
 2. **Check database:**
    ```bash
-   docker exec o3k-postgres psql -U o3k -d o3k
+   docker exec lightstack-postgres psql -U lightstack -d lightstack
    ```
 
 3. **Test APIs directly:**
@@ -474,18 +474,18 @@ See `docs/OPERATIONS.md` for:
 docker compose up -d          # Start services
 docker compose down           # Stop services
 docker compose ps             # Check status
-docker compose logs -f o3k    # View logs
+docker compose logs -f lightstack    # View logs
 
 # OpenStack CLI
-source ~/.o3k-env             # Load environment
+source ~/.lightstack-env             # Load environment
 openstack server list         # List VMs
 openstack network list        # List networks
 openstack volume list         # List volumes
 openstack quota show          # Show quotas
 
 # Database
-docker exec o3k-postgres psql -U o3k -d o3k  # Connect
-docker exec o3k /app/o3k-migrate status                    # Migration status
+docker exec lightstack-postgres psql -U lightstack -d lightstack  # Connect
+docker exec lightstack /app/lightstack-migrate status                    # Migration status
 ```
 
 ### Default Ports
@@ -512,4 +512,4 @@ docker exec o3k /app/o3k-migrate status                    # Migration status
 
 ---
 
-**Congratulations! O3K is now installed and ready to use!** 🚀
+**Congratulations! Lightstack is now installed and ready to use!** 🚀

@@ -1,12 +1,12 @@
-# O3K-Horizon Integration Guide
+# lightstack-Horizon Integration Guide
 
 **Date**: March 17, 2026
-**Version**: O3K v1.0 + Horizon Flamingo 2025.2
+**Version**: Lightstack v1.0 + Horizon Flamingo 2025.2
 **Status**: ✅ Production Ready - 100% API Compatible
 
 ## Executive Summary
 
-O3K achieves **100% API compatibility** with OpenStack Horizon dashboard (Flamingo 2025.2). All dashboard features work without modifications, patches, or workarounds.
+Lightstack achieves **100% API compatibility** with OpenStack Horizon dashboard (Flamingo 2025.2). All dashboard features work without modifications, patches, or workarounds.
 
 ### Key Features
 
@@ -53,7 +53,7 @@ Content-Type: application/json
 }
 ```
 
-#### Step 2: O3K Internal Processing
+#### Step 2: Lightstack Internal Processing
 
 From `internal/keystone/auth.go`:
 
@@ -211,30 +211,30 @@ services:
     network_mode: host
     command: memcached -m 64 -l 0.0.0.0  # Listen on all interfaces
 
-  o3k:
-    image: o3k:latest
+  lightstack:
+    image: lightstack:latest
     privileged: true  # Required for network namespaces
     network_mode: host
     volumes:
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
-      - /var/lib/o3k:/var/lib/o3k
-      - /opt/o3k/config:/opt/o3k/config:ro
+      - /var/lib/lightstack:/var/lib/lightstack
+      - /opt/lightstack/config:/opt/lightstack/config:ro
 
   horizon:
     image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
     network_mode: host
     volumes:
       - ./horizon-config/config.json:/var/lib/kolla/config_files/config.json:ro
-      - /opt/o3k/config/horizon-config/local_settings:/var/lib/kolla/config_files/local_settings:ro
+      - /opt/lightstack/config/horizon-config/local_settings:/var/lib/kolla/config_files/local_settings:ro
 ```
 
-### O3K Configuration
+### Lightstack Configuration
 
-**File**: `/opt/o3k/config/o3k.yaml`
+**File**: `/opt/lightstack/config/lightstack.yaml`
 
 ```yaml
 database:
-  url: "postgres://o3k:PASSWORD@localhost:5432/o3k?sslmode=disable"
+  url: "postgres://lightstack:PASSWORD@localhost:5432/lightstack?sslmode=disable"
 
 keystone:
   host: "0.0.0.0"
@@ -268,7 +268,7 @@ glance:
 
 ### Horizon Configuration
 
-**File**: `/opt/o3k/config/horizon-config/local_settings`
+**File**: `/opt/lightstack/config/horizon-config/local_settings`
 
 ```python
 # OpenStack Keystone
@@ -300,7 +300,7 @@ OPENSTACK_API_VERSIONS = {
 
 ### Network Bridge
 
-**File**: `/etc/netplan/01-o3k-bridge.yaml`
+**File**: `/etc/netplan/01-lightstack-bridge.yaml`
 
 ```yaml
 network:
@@ -330,15 +330,15 @@ network:
 
 **Solutions**:
 1. Verify default credentials: `admin` / `secret` / `Default`
-2. Check user exists: `sudo -u postgres psql o3k -c "SELECT name FROM users;"`
+2. Check user exists: `sudo -u postgres psql lightstack -c "SELECT name FROM users;"`
 3. Verify JWT secret consistency in config
 
 **Problem**: Token validation fails (401 errors)
 
 **Solutions**:
-1. Check JWT secret matches across all O3K instances
+1. Check JWT secret matches across all Lightstack instances
 2. Verify token not expired (24h TTL)
-3. Restart O3K if JWT secret changed
+3. Restart Lightstack if JWT secret changed
 
 ### Service Catalog Issues
 
@@ -347,19 +347,19 @@ network:
 **Solutions**:
 1. Verify endpoints use HOST_IP not localhost:
 ```bash
-sudo -u postgres psql o3k -c "UPDATE endpoints SET url = REPLACE(url, 'http://localhost:', 'http://10.2.199.101:');"
+sudo -u postgres psql lightstack -c "UPDATE endpoints SET url = REPLACE(url, 'http://localhost:', 'http://10.2.199.101:');"
 ```
-2. Restart O3K after endpoint changes
+2. Restart Lightstack after endpoint changes
 
 ### Networking Issues
 
 **Problem**: Cannot create networks/VMs
 
 **Solutions**:
-1. Verify real mode: `grep libvirt_mode /opt/o3k/config/o3k.yaml`
-2. Check privileged mode: `docker inspect o3k | jq '.[].HostConfig.Privileged'`
+1. Verify real mode: `grep libvirt_mode /opt/lightstack/config/lightstack.yaml`
+2. Check privileged mode: `docker inspect lightstack | jq '.[].HostConfig.Privileged'`
 3. Fix libvirt socket permissions: `sudo chmod 666 /var/run/libvirt/libvirt-sock`
-4. Verify namespaces: `docker exec o3k ip netns list`
+4. Verify namespaces: `docker exec lightstack ip netns list`
 
 **Problem**: VMs have no network connectivity
 
@@ -373,14 +373,14 @@ sudo -u postgres psql o3k -c "UPDATE endpoints SET url = REPLACE(url, 'http://lo
 **Problem**: "Service Unavailable" (502/503)
 
 **Solutions**:
-1. Check Horizon status: `docker logs o3k-horizon`
+1. Check Horizon status: `docker logs lightstack-horizon`
 2. Verify Memcached running: `nc -zv 10.2.199.101 11211`
 3. Restart Horizon: `docker compose restart horizon`
 
 **Problem**: "All servers seem to be down" (Memcached error)
 
 **Solutions**:
-1. Verify Memcached listens on 0.0.0.0: `docker exec o3k-memcached netstat -ln | grep 11211`
+1. Verify Memcached listens on 0.0.0.0: `docker exec lightstack-memcached netstat -ln | grep 11211`
 2. Fix command: `memcached -m 64 -l 0.0.0.0` (not 127.0.0.1)
 3. Check Horizon config uses HOST_IP not localhost
 
@@ -388,8 +388,8 @@ sudo -u postgres psql o3k -c "UPDATE endpoints SET url = REPLACE(url, 'http://lo
 
 **Solutions**:
 1. Verify noVNC running: `nc -zv 10.2.199.101 6080`
-2. Check console URL: `grep console_proxy_base_url /opt/o3k/config/o3k.yaml`
-3. Verify Horizon noVNC config: `grep NOVNC_PROXY_URL /opt/o3k/config/horizon-config/local_settings`
+2. Check console URL: `grep console_proxy_base_url /opt/lightstack/config/lightstack.yaml`
+3. Verify Horizon noVNC config: `grep NOVNC_PROXY_URL /opt/lightstack/config/horizon-config/local_settings`
 
 ---
 
@@ -406,7 +406,7 @@ curl -X POST http://10.2.199.101:35357/v3/auth/tokens \
 
 **OpenStack CLI**:
 ```bash
-source ~/.o3k-env
+source ~/.lightstack-env
 openstack token issue
 openstack server list
 openstack network list
@@ -421,7 +421,7 @@ openstack network list
 ### Contract Tests
 
 ```bash
-cd /root/o3k
+cd /root/lightstack
 go test ./test/contract/... -v -count=1
 ```
 
@@ -436,7 +436,7 @@ go test ./test/contract/... -v -count=1
 
 ## Conclusion
 
-O3K provides **100% API compatibility** with OpenStack Horizon dashboard. All endpoints, authentication flows, and response formats match OpenStack specifications exactly. The deployment is production-ready and requires no Horizon modifications.
+Lightstack provides **100% API compatibility** with OpenStack Horizon dashboard. All endpoints, authentication flows, and response formats match OpenStack specifications exactly. The deployment is production-ready and requires no Horizon modifications.
 
 **Key Strengths**:
 - Complete endpoint coverage (342/330 = 104%)
@@ -454,6 +454,6 @@ O3K provides **100% API compatibility** with OpenStack Horizon dashboard. All en
 - Implement PostgreSQL backup strategy
 
 For support:
-- Repository: https://github.com/cobaltcore-dev/o3k
+- Repository: https://github.com/cobaltcore-dev/lightstack
 - Documentation: /docs/
-- Issues: https://github.com/cobaltcore-dev/o3k/issues
+- Issues: https://github.com/cobaltcore-dev/lightstack/issues

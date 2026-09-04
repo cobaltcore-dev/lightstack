@@ -19,7 +19,7 @@ description: "Task list — Identity resource not-found for malformed ids (015-i
 
 **Purpose**: Establish the RED baseline and confirm the test harness.
 
-- [X] T001 Confirm baseline gates on the branch: `make build`, `make test`, `make lint` pass; confirm DB-backed keystone tests run with `O3K_TEST_DB_URL` set (existing `requireDB`/`TestMain` in `internal/keystone/maindb_test.go`).
+- [X] T001 Confirm baseline gates on the branch: `make build`, `make test`, `make lint` pass; confirm DB-backed keystone tests run with `LIGHTSTACK_TEST_DB_URL` set (existing `requireDB`/`TestMain` in `internal/keystone/maindb_test.go`).
 - [ ] T002 Capture the RED baseline (reference only): with an admin token, record current responses per `quickstart.md` §1 — `GET /v3/projects/not-a-uuid` → 500; one endpoint per group (roles/groups/services/credentials + a role-assignment path) → 500; `GET /v3/projects/<unknown-uuid>` → 404.
 
 ---

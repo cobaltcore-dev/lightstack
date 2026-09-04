@@ -12,7 +12,7 @@ export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
 export OS_DOMAIN_NAME=Default
 
-echo "1. Authenticating to O3K..."
+echo "1. Authenticating to lightstack..."
 TOKEN=$(openstack token issue -f value -c id)
 if [ -z "$TOKEN" ]; then
   echo "✗ Failed to get authentication token"
@@ -160,4 +160,4 @@ echo "✓ All endpoints responding correctly"
 echo "✓ Service naming compatible with Horizon"
 echo "✓ Authentication and RBAC working"
 echo ""
-echo "O3K is ready for Horizon dashboard integration"
+echo "Lightstack is ready for Horizon dashboard integration"

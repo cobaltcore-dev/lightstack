@@ -1,11 +1,11 @@
-# O3K Performance Benchmarking Suite
+# Lightstack Performance Benchmarking Suite
 
 Sprint 69 Performance Optimization validation suite with Go benchmarks and k6 load tests.
 
 ## Prerequisites
 
-- **O3K running**: `docker compose -f deployments/docker-compose.yml up -d`
-- **Redis enabled**: Set `cache.enabled: true` in `config/o3k.yaml`
+- **lightstack running**: `docker compose -f deployments/docker-compose.yml up -d`
+- **Redis enabled**: Set `cache.enabled: true` in `config/lightstack.yaml`
 - **k6 installed**: https://k6.io/docs/getting-started/installation/
 
 ## Quick Start
@@ -92,7 +92,7 @@ Target: **400 req/s** baseline
 
 ### Environment Variables
 ```bash
-export O3K_URL=http://localhost:8774
+export LIGHTSTACK_URL=http://localhost:8774
 export KEYSTONE_URL=http://localhost:35357
 k6 run test/load/nova_flavors.js
 ```
@@ -144,7 +144,7 @@ pg_isready -h localhost -p 5432
 ```
 
 **k6 tests fail with 401**:
-- Check O3K is running: `curl http://localhost:35357/v3`
+- Check Lightstack is running: `curl http://localhost:35357/v3`
 - Verify credentials: admin/secret with default project
 
 **Low throughput**:

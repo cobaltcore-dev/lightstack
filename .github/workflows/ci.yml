@@ -34,7 +34,7 @@ jobs:
 
       - name: Check binary size
         run: |
-          SIZE=$(stat --format=%s bin/o3k 2>/dev/null || stat -f%z bin/o3k)
+          SIZE=$(stat --format=%s bin/lightstack 2>/dev/null || stat -f%z bin/lightstack)
           SIZE_MB=$(($SIZE / 1048576))
           echo "Binary size: ${SIZE_MB}MB"
           if [ $SIZE -gt 68157440 ]; then
@@ -50,8 +50,8 @@ jobs:
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
         with:
-          name: o3k-binary
-          path: bin/o3k
+          name: lightstack-binary
+          path: bin/lightstack
           retention-days: 7
 
   unit-tests:
@@ -61,18 +61,18 @@ jobs:
     timeout-minutes: 10
 
     # Postgres service so DB-backed unit tests (e.g. keystone admin bootstrap,
-    # SPEC-007 WS-2) run instead of skipping. Tests connect via O3K_TEST_DB_URL.
+    # SPEC-007 WS-2) run instead of skipping. Tests connect via LIGHTSTACK_TEST_DB_URL.
     services:
       postgres:
         image: postgres:18.3-alpine
         env:
-          POSTGRES_USER: o3k
+          POSTGRES_USER: lightstack
           POSTGRES_PASSWORD: secret
-          POSTGRES_DB: o3k_test
+          POSTGRES_DB: lightstack_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U o3k -d o3k_test"
+          --health-cmd "pg_isready -U lightstack -d lightstack_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -97,14 +97,14 @@ jobs:
       - name: Run unit tests with race detector
         run: go test -race -coverprofile=coverage.txt -covermode=atomic $(go list ./... | grep -v '/test/contract')
         env:
-          O3K_TEST_DB_URL: postgres://o3k:secret@localhost:5432/o3k_test?sslmode=disable
+          LIGHTSTACK_TEST_DB_URL: postgres://lightstack:secret@localhost:5432/lightstack_test?sslmode=disable
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.txt
           flags: unittests
-          name: codecov-o3k
+          name: codecov-lightstack
 
   contract-tests:
     name: Contract Tests
@@ -129,15 +129,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      - name: Start O3K services
+      - name: Start lightstack services
         run: |
           docker compose -f deployments/docker-compose.yml up -d
           sleep 10
           docker compose -f deployments/docker-compose.yml ps
 
-      - name: Wait for O3K to be ready
+      - name: Wait for lightstack to be ready
         run: |
-          echo "Waiting for all O3K services to be ready..."
+          echo "Waiting for all Lightstack services to be ready..."
 
           # Check with proper API version paths
           timeout 120 bash -c '
@@ -151,7 +151,7 @@ jobs:
             done
           '
 
-          echo "✅ All O3K services are ready"
+          echo "✅ All Lightstack services are ready"
 
       - name: Run contract tests
         continue-on-error: true
@@ -223,13 +223,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Start O3K services
+      - name: Start lightstack services
         run: |
           docker compose -f deployments/docker-compose.yml up -d
           sleep 15
           docker compose -f deployments/docker-compose.yml ps
 
-      - name: Wait for O3K to be ready
+      - name: Wait for lightstack to be ready
         run: |
           timeout 60 bash -c 'until curl -sf http://localhost:35357/v3 > /dev/null; do sleep 2; done'
 
@@ -267,18 +267,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Start o3k + Postgres + real Ceph RGW (ceph/demo)
+      - name: Start lightstack + Postgres + real Ceph RGW (ceph/demo)
         run: |
-          docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml up -d --build
-          docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml ps
+          docker compose -p lightstack-rgwtest -f deployments/docker-compose.rgw-test.yml up -d --build
+          docker compose -p lightstack-rgwtest -f deployments/docker-compose.rgw-test.yml ps
 
-      - name: Wait for o3k Keystone
+      - name: Wait for lightstack Keystone
         run: |
           timeout 120 bash -c 'until curl -sf http://localhost:45357/v3 > /dev/null; do sleep 3; done'
 
       - name: Wait for RGW→Keystone wireup (capability B)
         run: |
-          timeout 240 bash -c 'until docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml logs rgw 2>/dev/null | grep -q "wireup complete"; do sleep 3; done'
+          timeout 240 bash -c 'until docker compose -p lightstack-rgwtest -f deployments/docker-compose.rgw-test.yml logs rgw 2>/dev/null | grep -q "wireup complete"; do sleep 3; done'
 
       - name: Install test clients (OpenStack CLI + boto3)
         run: |
@@ -289,7 +289,7 @@ jobs:
           chmod +x test/rgw_integration_test.sh
           ./test/rgw_integration_test.sh
         env:
-          O3K_TEST_IMAGE_SIZE: 256M
+          LIGHTSTACK_TEST_IMAGE_SIZE: 256M
 
       - name: Capability B — Tenant object storage via /v3/s3tokens (auth + isolation + revocation)
         run: |
@@ -299,11 +299,11 @@ jobs:
       - name: Dump stack logs on failure
         if: failure()
         run: |
-          docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml logs --tail 300
+          docker compose -p lightstack-rgwtest -f deployments/docker-compose.rgw-test.yml logs --tail 300
 
       - name: Cleanup
         if: always()
-        run: docker compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml down -v
+        run: docker compose -p lightstack-rgwtest -f deployments/docker-compose.rgw-test.yml down -v
 
   # TODO: Add e2e-fast and e2e-full jobs once E2E test scenarios are implemented.
   # Planned: VM lifecycle, volume attach/detach, network isolation, Terraform validation, Horizon UI tests.

@@ -1,0 +1,31 @@
+# helm-unittest specs for multi-node rendering (T018, FR-004/005a/009d).
+suite: multi-node DaemonSet render
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+  deploymentMode: multi-node
+tests:
+  - it: renders a DaemonSet scheduled on the designation label
+    templates:
+      - templates/daemonset.yaml
+    asserts:
+      - isKind:
+          of: DaemonSet
+      - equal:
+          path: spec.template.spec.nodeSelector["lightstack.io/compute"]
+          value: "true"
+  - it: does not render the single-node Deployment in multi-node mode
+    templates:
+      - templates/deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: enables the VXLAN overlay in the rendered config
+    templates:
+      - templates/secret.yaml
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: "vxlan_enabled: true"

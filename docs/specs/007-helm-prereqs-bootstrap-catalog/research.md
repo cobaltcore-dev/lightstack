@@ -4,7 +4,7 @@ The spec is decision-complete (11 clarifications across 4 sessions), so there ar
 
 ## R1 — Bootstrap placement
 
-**Decision**: Add `internal/keystone/bootstrap.go` exposing `BootstrapAdmin(ctx, cfg common.KeystoneConfig) error`, called from `cmd/o3k/main.go` **immediately after `database.MigrateUp`** (`main.go:~86`) and before service wiring.
+**Decision**: Add `internal/keystone/bootstrap.go` exposing `BootstrapAdmin(ctx, cfg common.KeystoneConfig) error`, called from `cmd/lightstack/main.go` **immediately after `database.MigrateUp`** (`main.go:~86`) and before service wiring.
 
 **Rationale**: At that point the pool (`database.DB`) is connected and the seed migration has run, so the admin row exists. Keystone already uses the `database.DB` global (e.g. `BuildServiceCatalog`), so the bootstrap can too — no new DI plumbing. Running before servers start guarantees the credential is in place before the API is reachable.
 
@@ -45,7 +45,7 @@ Account absent → create it (custom-name path, R3).
 ## R5 — Catalog scheme rewrite (WS-3, FR-009–014)
 
 **Decision**: Add a shared helper in `internal/common` (so both `keystone` and `common` use it — `keystone` already imports `common`):
-- `EndpointScheme()` — reads `O3K_ENDPOINT_SCHEME`, trims + lowercases, returns `http` when unset/empty, accepts `http`/`https`, and on any other value logs a one-time warning (via `sync.Once`) and returns `http` (FR-011, FR-014).
+- `EndpointScheme()` — reads `LIGHTSTACK_ENDPOINT_SCHEME`, trims + lowercases, returns `http` when unset/empty, accepts `http`/`https`, and on any other value logs a one-time warning (via `sync.Once`) and returns `http` (FR-011, FR-014).
 - `ForceScheme(url, scheme)` — rewrites a leading `http://`/`https://` to `<scheme>://`.
 
 Call `ForceScheme` at every URL choke-point so **every** advertised URL honors the scheme:
@@ -57,7 +57,7 @@ This covers both the Keystone catalog and the self-links other services emit (FR
 
 **Rationale**: A single choke-point per URL keeps both catalog paths consistent. Validating once avoids per-request/per-URL log spam. The scheme is fixed at process start (env var), so the existing 24h per-project catalog cache stays correct — no cache-key change needed. Stored `endpoints` rows are untouched (FR-013).
 
-**Ordering / host composition**: The DB endpoints are stored as `http://o3k:<port>/...` (seeded in `040`, then rewritten to `o3k:` by migration `052_fix_endpoint_hostnames`). `substituteURLTemplates` already maps `http://o3k:` → `http://<O3K_ENDPOINT_HOST>:`. `forceScheme` runs **after** that host rewrite, so `http://o3k:9292/v2` → `http://<host>:9292/v2` → `https://<host>:9292/v2`. Host and scheme thus compose correctly (FR-012), satisfying User Story 2 (`https://<host>:<port>`).
+**Ordering / host composition**: The DB endpoints are stored as `http://lightstack:<port>/...` (seeded in `040`, then rewritten to `lightstack:` by migration `052_fix_endpoint_hostnames`). `substituteURLTemplates` already maps `http://lightstack:` → `http://<LIGHTSTACK_ENDPOINT_HOST>:`. `forceScheme` runs **after** that host rewrite, so `http://lightstack:9292/v2` → `http://<host>:9292/v2` → `https://<host>:9292/v2`. Host and scheme thus compose correctly (FR-012), satisfying User Story 2 (`https://<host>:<port>`).
 
 **Alternatives considered**: Re-seed `https://` endpoints in migration 040 (clarified option C in round 1) — rejected (bakes scheme into DB; not per-deployment; touches catalog data). A config-struct field instead of env — rejected (the host rewrite it must compose with is env-based; mirroring it is simpler).
 
@@ -77,7 +77,7 @@ This covers both the Keystone catalog and the self-links other services emit (FR
 
 **Decision**: WS-3 advertises `https://<host>:<service-port>`. The SPEC-008 chart MUST terminate TLS **per service port** (port-based — `docs/KUBERNETES_DEPLOYMENT.md` Option B: a LoadBalancer per service, or one L4 LB with TLS on each port). Single-`:443` path-based or per-subdomain ingress is out of scope.
 
-**Rationale**: O3K serves each service on its own port (`main.go`: `:35357`/`:8774`/`:9696`/`:8776`/`:9292`/…), and the catalog lists one URL per service *including its port* (`052_fix_endpoint_hostnames`). A scheme-only rewrite keeps that port, so it composes cleanly with a per-port TLS LB; one host certificate (wildcard/SAN) covers all ports. This matches O3K's existing design and the Docker Compose port layout.
+**Rationale**: Lightstack serves each service on its own port (`main.go`: `:35357`/`:8774`/`:9696`/`:8776`/`:9292`/…), and the catalog lists one URL per service *including its port* (`052_fix_endpoint_hostnames`). A scheme-only rewrite keeps that port, so it composes cleanly with a per-port TLS LB; one host certificate (wildcard/SAN) covers all ports. This matches lightstack's existing design and the Docker Compose port layout.
 
 **Alternatives considered**: Path-based single-`:443` ingress (`/identity`→keystone, `/compute`→nova, …, doc Option A) — rejected: the catalog (and `BaseURL`) would have to advertise per-service path prefixes and drop the port, a change well beyond scheme-only (FR-013), re-opening WS-3 scope. Per-service subdomains on `:443` — rejected: needs per-service DNS + SAN cert + per-service host rewrite.
 
@@ -85,5 +85,5 @@ This covers both the Keystone catalog and the self-links other services emit (FR
 
 - One structured log line when the admin is created or seeded (naming the user, **never** the password).
 - A prominent warning when no password is configured (boots with default — install gate is the chart's, not the binary's).
-- A one-time warning on an invalid `O3K_ENDPOINT_SCHEME`.
+- A one-time warning on an invalid `LIGHTSTACK_ENDPOINT_SCHEME`.
 - Audited via SC-008: assert the log event exists and the password value never appears in output.

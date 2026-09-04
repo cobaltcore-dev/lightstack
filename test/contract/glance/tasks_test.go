@@ -13,7 +13,7 @@ import (
 
 // TestGlanceCreateTask_Contract tests POST /v2/tasks
 func TestGlanceCreateTask_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -55,7 +55,7 @@ func TestGlanceCreateTask_Contract(t *testing.T) {
 
 // TestGlanceListTasks_Contract tests GET /v2/tasks
 func TestGlanceListTasks_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -99,7 +99,7 @@ func TestGlanceListTasks_Contract(t *testing.T) {
 
 // TestGlanceGetTask_Contract tests GET /v2/tasks/:id
 func TestGlanceGetTask_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -160,7 +160,7 @@ func TestGlanceGetTask_Contract(t *testing.T) {
 
 // TestGlanceListStores_Contract tests GET /v2/stores
 func TestGlanceListStores_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 

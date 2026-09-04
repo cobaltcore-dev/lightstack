@@ -14,7 +14,7 @@ import (
 
 // TestKeystoneListCredentials_Contract tests GET /v3/credentials
 func TestKeystoneListCredentials_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -42,7 +42,7 @@ func TestKeystoneListCredentials_Contract(t *testing.T) {
 
 // TestKeystoneCreateCredential_Contract tests POST /v3/credentials
 func TestKeystoneCreateCredential_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -86,7 +86,7 @@ func TestKeystoneCreateCredential_Contract(t *testing.T) {
 
 // TestKeystoneGetCredential_Contract tests GET /v3/credentials/:id
 func TestKeystoneGetCredential_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -120,7 +120,7 @@ func TestKeystoneGetCredential_Contract(t *testing.T) {
 
 // TestKeystoneUpdateCredential_Contract tests PATCH /v3/credentials/:id
 func TestKeystoneUpdateCredential_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -162,7 +162,7 @@ func TestKeystoneUpdateCredential_Contract(t *testing.T) {
 
 // TestKeystoneDeleteCredential_Contract tests DELETE /v3/credentials/:id
 func TestKeystoneDeleteCredential_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 

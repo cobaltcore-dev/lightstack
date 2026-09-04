@@ -3,7 +3,7 @@
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
-Complete reference for configuring O3K.
+Complete reference for configuring lightstack.
 
 ---
 
@@ -24,9 +24,9 @@ Complete reference for configuring O3K.
 
 ## Overview
 
-O3K can be configured through:
+Lightstack can be configured through:
 
-1. **Configuration file** (`config/o3k.yaml`) - Primary configuration method
+1. **Configuration file** (`config/lightstack.yaml`) - Primary configuration method
 2. **Environment variables** - Override specific settings
 3. **Command-line flags** - Runtime overrides
 
@@ -39,23 +39,23 @@ O3K can be configured through:
 ### Location
 
 **Default locations** (checked in order):
-1. `./o3k.yaml` (current directory)
-2. `/etc/o3k/o3k.yaml` (system-wide)
-3. `~/.o3k/o3k.yaml` (user-specific)
+1. `./lightstack.yaml` (current directory)
+2. `/etc/lightstack/lightstack.yaml` (system-wide)
+3. `~/.lightstack/lightstack.yaml` (user-specific)
 
 **Specify custom location:**
 ```bash
-o3k --config /path/to/custom.yaml
+lightstack --config /path/to/custom.yaml
 ```
 
 ### Complete Example
 
-**File:** `config/o3k.yaml`
+**File:** `config/lightstack.yaml`
 
 ```yaml
 # Database connection
 database:
-  url: "postgres://o3k:secret@localhost/o3k?sslmode=disable"
+  url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
   max_connections: 20
   max_idle: 5
   conn_max_lifetime: 1h
@@ -124,43 +124,54 @@ logging:
 ## Environment Variables
 
 > **Correction (SPEC-008).** Earlier versions of this page documented a generic
-> `O3K_<SECTION>_<KEY>` convention (e.g. `O3K_DATABASE_URL`, `O3K_KEYSTONE_ADMIN_PASSWORD`,
-> `O3K_NOVA_LIBVIRT_MODE`). **The binary does not implement that layer** — those variables
+> `lightstack_<SECTION>_<KEY>` convention (e.g. `LIGHTSTACK_DATABASE_URL`, `LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD`,
+> `LIGHTSTACK_NOVA_LIBVIRT_MODE`). **The binary does not implement that layer** — those variables
 > are silently ignored. Everything else (admin password, service modes, VXLAN, cache,
 > logging, ports, …) takes effect **only from the YAML config file** passed via `--config`.
 
-The binary honors exactly **four** environment variables:
+The binary honors exactly **twelve** environment variables:
 
 | Variable | Overrides / controls | Where it is read |
 |----------|----------------------|------------------|
-| `O3K_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
-| `O3K_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
-| `O3K_ENDPOINT_HOST` | advertised catalog / self-link host | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
-| `O3K_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
+| `LIGHTSTACK_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
+| `LIGHTSTACK_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
+| `LIGHTSTACK_DRAIN_SECONDS` | graceful-shutdown drain window | shutdown (`cmd/lightstack/main.go`) |
+| `LIGHTSTACK_GLANCE_STORAGE_MODE` | `glance.storage_mode` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_GLANCE_S3_ENDPOINT` | `glance.s3_endpoint` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_GLANCE_S3_BUCKET` | `glance.s3_bucket` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_GLANCE_S3_REGION` | `glance.s3_region` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_GLANCE_S3_CA_BUNDLE` | `glance.s3_ca_bundle` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_GLANCE_S3_INSECURE_SKIP_VERIFY` | `glance.s3_insecure_skip_verify`. Two-way: `false`/`0` turns it **off** against a config file that shipped it on | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_GLANCE_S3_CONNECT_TIMEOUT` | `glance.s3_connect_timeout`. A Go duration; an unparseable value is ignored with a warning and the file value stands | `internal/common/config.go` (`LoadConfig`) |
 
 ```bash
-export O3K_DB_URL="postgres://user:pass@host/db?sslmode=disable"
-export O3K_JWT_SECRET="your-secret-here"
-export O3K_ENDPOINT_HOST="o3k.example.com"
-export O3K_ENDPOINT_SCHEME="https"   # only when TLS is terminated in front of O3K
+export LIGHTSTACK_DB_URL="postgres://user:pass@host/db?sslmode=disable"
+export LIGHTSTACK_JWT_SECRET="your-secret-here"
+export LIGHTSTACK_ENDPOINT_HOST="lightstack.example.com"
+export LIGHTSTACK_ENDPOINT_SCHEME="https"   # only when TLS is terminated in front of lightstack
 ```
 
+> Upgrading from a release that used the previous product name? These variables were renamed
+> with it and the old spellings are **not** read — see [UPGRADING](UPGRADING.md).
+
 To change anything else, edit (or mount) the config file. The Helm chart, for example,
-renders the full `o3k.yaml` — including `keystone.admin_password` — into a Kubernetes
+renders the full `lightstack.yaml` — including `keystone.admin_password` — into a Kubernetes
 **Secret** mounted at the `--config` path, precisely because no per-key env override exists.
 
 ### Docker Compose Example
 
 ```yaml
 services:
-  o3k:
-    image: o3k:latest
+  lightstack:
+    image: lightstack:latest
     environment:
-      O3K_DB_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
-      O3K_JWT_SECRET: "${JWT_SECRET}"
+      LIGHTSTACK_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
+      LIGHTSTACK_JWT_SECRET: "${JWT_SECRET}"
     volumes:
       # everything else (service modes, admin password, logging, ...) comes from the file:
-      - ./config/o3k.yaml:/app/config/o3k.yaml:ro
+      - ./config/lightstack.yaml:/app/config/lightstack.yaml:ro
 ```
 
 ---
@@ -192,13 +203,13 @@ postgres://[user]:[password]@[host]:[port]/[database]?[parameters]
 
 ```bash
 # Local development (no SSL)
-postgres://o3k:secret@localhost:5432/o3k?sslmode=disable
+postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable
 
 # Production (SSL required)
-postgres://o3k:secret@db.example.com:5432/o3k?sslmode=require
+postgres://lightstack:secret@db.example.com:5432/lightstack?sslmode=require
 
 # With timeout
-postgres://o3k:secret@localhost:5432/o3k?sslmode=disable&connect_timeout=10
+postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable&connect_timeout=10
 ```
 
 ### Connection Pool Tuning
@@ -237,7 +248,7 @@ when the admin account is absent or still carries the well-known default `secret
 once changed it is never overwritten on later starts (rotate via the Identity API,
 e.g. `openstack user password set`, not config). Setting `admin_user` to a name
 other than `admin` provisions that user with the admin role and **disables** the
-seeded `admin` account. When `admin_password` is unset entirely, O3K boots with the
+seeded `admin` account. When `admin_password` is unset entirely, Lightstack boots with the
 default credential and logs a `WARN` — the Helm chart is responsible for requiring a
 password at install time.
 
@@ -251,8 +262,8 @@ password at install time.
   a stale admin account via the Identity API.
 
 **Advertised endpoint scheme:** the service catalog and resource self-links use the
-scheme from the `O3K_ENDPOINT_SCHEME` environment variable (`http` default, or
-`https`), alongside `O3K_ENDPOINT_HOST`. See [Environment Variables](#environment-variables).
+scheme from the `LIGHTSTACK_ENDPOINT_SCHEME` environment variable (`http` default, or
+`https`), alongside `LIGHTSTACK_ENDPOINT_HOST`. See [Environment Variables](#environment-variables).
 
 **Security Notes:**
 - ⚠️ **Always change `jwt_secret` in production!**
@@ -446,8 +457,8 @@ glance:
 ```
 
 **Storage locations:**
-- Volumes: `/var/lib/o3k/volumes/`
-- Images: `/var/lib/o3k/images/`
+- Volumes: `/var/lib/lightstack/volumes/`
+- Images: `/var/lib/lightstack/images/`
 
 **Requirements:**
 - Sufficient disk space
@@ -606,13 +617,13 @@ logging:
 **File** (via systemd):
 ```ini
 [Service]
-StandardOutput=append:/var/log/o3k/o3k.log
-StandardError=append:/var/log/o3k/o3k-error.log
+StandardOutput=append:/var/log/lightstack/lightstack.log
+StandardError=append:/var/log/lightstack/lightstack-error.log
 ```
 
 **Syslog** (via command):
 ```bash
-o3k 2>&1 | logger -t o3k
+lightstack 2>&1 | logger -t lightstack
 ```
 
 ---
@@ -674,7 +685,7 @@ neutron:
 
 ## Rate Limiting Configuration
 
-O3K supports two-tier rate limiting to protect against brute-force attacks and resource exhaustion. See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural details.
+Lightstack supports two-tier rate limiting to protect against brute-force attacks and resource exhaustion. See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural details.
 
 ### Configuration
 
@@ -721,7 +732,7 @@ rate_limiting:
 
 ### Monitoring
 
-When rate limiting triggers, O3K logs at WARN level:
+When rate limiting triggers, Lightstack logs at WARN level:
 ```json
 {"level":"warn","project_id":"abc123","rate":"100/m","msg":"rate limit exceeded"}
 ```
@@ -734,10 +745,10 @@ When rate limiting triggers, O3K logs at WARN level:
 
 ```bash
 # Check config syntax
-o3k --config /path/to/o3k.yaml --validate
+lightstack --config /path/to/lightstack.yaml --validate
 
 # Dry-run (validate without starting)
-o3k --config /path/to/o3k.yaml --dry-run
+lightstack --config /path/to/lightstack.yaml --dry-run
 ```
 
 ### Common Issues
@@ -765,7 +776,7 @@ Error: port 8774 already in use
 
 ```yaml
 database:
-  url: "postgres://o3k:secret@localhost/o3k?sslmode=disable"
+  url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
 
 keystone:
   jwt_secret: "dev-secret-do-not-use-in-prod"
@@ -792,7 +803,7 @@ logging:
 
 ```yaml
 database:
-  url: "postgres://o3k:${DB_PASSWORD}@db.internal:5432/o3k?sslmode=require"
+  url: "postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
   max_connections: 50
 
 keystone:
@@ -825,7 +836,7 @@ logging:
 
 ```yaml
 database:
-  url: "postgres://o3k:${DB_PASSWORD}@db.internal:5432/o3k?sslmode=require"
+  url: "postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
 
 compute:
   tunnel_ip: auto
@@ -868,6 +879,6 @@ logging:
 - ✅ Set appropriate log levels
 
 **Next steps:**
-- [INSTALLATION.md](INSTALLATION.md) - Install O3K
+- [INSTALLATION.md](INSTALLATION.md) - Install Lightstack
 - [OPERATIONS.md](OPERATIONS.md) - Day-to-day operations
 - [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md) - Docker-specific config

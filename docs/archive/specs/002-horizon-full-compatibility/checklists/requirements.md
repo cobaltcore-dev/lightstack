@@ -60,6 +60,6 @@
 ## Notes
 
 - Specification is complete and ready for `/speckit.plan` phase
-- No clarifications needed - leverages existing O3K Horizon compatibility (19/19 tests passing)
+- No clarifications needed - leverages existing Lightstack Horizon compatibility (19/19 tests passing)
 - Feature scope well-defined: enhance existing compatibility to 100%, add missing features, document integration
 - Success criteria focus on user experience and measurable outcomes rather than technical metrics

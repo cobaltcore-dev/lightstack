@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPEC-014 T020: tenant object-storage (capability B) integration test.
-# Drives the docker-compose.rgw-test.yml stack (o3k + ceph/demo RGW wired to o3k
-# Keystone) and proves an o3k-minted EC2 credential authenticates S3 requests
+# Drives the docker-compose.rgw-test.yml stack (Lightstack + ceph/demo RGW wired to Lightstack
+# Keystone) and proves a lightstack-minted EC2 credential authenticates S3 requests
 # against the real RGW via POST /v3/s3tokens, with fail-closed negatives:
 #   - valid key         -> bucket create + object put/get round-trips (SC-004)
 #   - tampered secret   -> denied (signature mismatch)              (SC-005)
@@ -9,7 +9,7 @@
 #   - revoked (deleted) -> denied on the next request               (SC-005)
 #   - cross-project     -> a tenant cannot see another project's bucket (FR-007)
 #
-#   podman compose -p o3k-rgwtest -f deployments/docker-compose.rgw-test.yml up -d --build
+#   podman compose -p lightstack-rgwtest -f deployments/docker-compose.rgw-test.yml up -d --build
 #   ./test/tenant_s3_rgw_test.sh
 #
 # Identity ops go straight to Keystone (curl) to avoid the service catalog, which
@@ -34,10 +34,10 @@ die()  { echo "FATAL: $*" >&2; exit 1; }
 command -v python3 >/dev/null || die "python3 required"
 python3 -c 'import boto3' 2>/dev/null || die "boto3 required (pip install boto3)"
 
-# --- wait for o3k + rgw ---
-log "waiting for o3k keystone ($OS_AUTH_URL) + rgw ($RGW_URL)"
+# --- wait for Lightstack + rgw ---
+log "waiting for Lightstack keystone ($OS_AUTH_URL) + rgw ($RGW_URL)"
 for _ in $(seq 1 80); do curl -sf "$OS_AUTH_URL" >/dev/null 2>&1 && break; sleep 3; done
-curl -sf "$OS_AUTH_URL" >/dev/null 2>&1 || die "o3k not ready"
+curl -sf "$OS_AUTH_URL" >/dev/null 2>&1 || die "Lightstack not ready"
 for _ in $(seq 1 80); do curl -s "$RGW_URL" >/dev/null 2>&1 && break; sleep 3; done
 curl -s "$RGW_URL" >/dev/null 2>&1 || die "rgw not ready"
 
@@ -103,7 +103,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-BUCKET_A="tenant-a-$TS"; BUCKET_B="tenant-b-$TS"; OBJ="secret.txt"; DATA="o3k-rgw-tenant-$TS"
+BUCKET_A="tenant-a-$TS"; BUCKET_B="tenant-b-$TS"; OBJ="secret.txt"; DATA="lightstack-rgw-tenant-$TS"
 
 # --- Test 1: valid key round-trips (SC-004) ---
 log "T1: valid EC2 key -> bucket + object round-trip"

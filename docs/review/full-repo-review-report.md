@@ -8,7 +8,7 @@
 
 ## Codebase Summary
 
-O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) plus Placement and Metadata. It runs 7 HTTP servers on different ports, uses PostgreSQL for all state, and supports stub/real modes for external dependencies (libvirt, Ceph, S3, iptables).
+Lightstack is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) plus Placement and Metadata. It runs 7 HTTP servers on different ports, uses PostgreSQL for all state, and supports stub/real modes for external dependencies (libvirt, Ceph, S3, iptables).
 
 ---
 
@@ -27,22 +27,22 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 - **Fix**: Wrap related DB operations in `pgx.BeginTx()`. Start with the highest-traffic endpoints: volume creation, server creation, metadata operations.
 
 ### C-3. MAC address generation uses math/rand (not crypto/rand)
-- **File**: `/Users/I761222/git/o3k/internal/neutron/network.go:1126-1131`
+- **File**: `/Users/I761222/git/lightstack/internal/neutron/network.go:1126-1131`
 - **Pattern**: `rand.Read(buf)` using `math/rand` for MAC address generation.
 - **Risk**: Predictable MAC addresses in a multi-tenant environment. An attacker could predict MAC addresses of other tenants' ports, enabling potential ARP spoofing in real networking mode.
 - **Fix**: Replace `"math/rand"` import with `"crypto/rand"` and use `crypto/rand.Read(buf)`.
 
 ### C-4. Hardcoded passwords in API responses
-- **File**: `/Users/I761222/git/o3k/internal/nova/handlers.go:500,1783`
+- **File**: `/Users/I761222/git/lightstack/internal/nova/handlers.go:500,1783`
 - **Pattern**: `"adminPass": "generated-password"` and `"adminPass": "rescuepass123"` returned to clients.
 - **Risk**: Every server creation and rescue operation returns the same known password. In real mode, this means all VMs get the same admin password.
 - **Fix**: Generate cryptographically random passwords using `crypto/rand` (16+ character alphanumeric). The `keypairs.go` already has `crypto/rand` usage as a reference pattern.
 
 ### C-5. Wildcard CORS allows any origin
-- **File**: `/Users/I761222/git/o3k/internal/middleware/logging.go:252`
+- **File**: `/Users/I761222/git/lightstack/internal/middleware/logging.go:252`
 - **Pattern**: `Access-Control-Allow-Origin: *`
 - **Risk**: Any website can make authenticated API calls if a user's browser has a valid token. Combined with the cookie-less X-Auth-Token header approach this is somewhat mitigated, but it is still a violation of defense-in-depth.
-- **Fix**: Make CORS origins configurable via `o3k.yaml`. Default to the Horizon host or `localhost` in development.
+- **Fix**: Make CORS origins configurable via `lightstack.yaml`. Default to the Horizon host or `localhost` in development.
 
 ---
 
@@ -61,19 +61,19 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 - **Fix**: Audit each service and replace inline error JSON with `common.SendError()` calls. The error framework is already well-designed -- it is just not being used.
 
 ### H-3. Global mutable database pool `var DB *pgxpool.Pool`
-- **File**: `/Users/I761222/git/o3k/internal/database/db.go:15`
+- **File**: `/Users/I761222/git/lightstack/internal/database/db.go:15`
 - **Pattern**: 665 direct references to `database.DB` across all packages.
 - **Risk**: Impossible to test with a mock database, impossible to run parallel tests, tight coupling between all packages and the global state. Makes dependency injection impractical.
 - **Fix**: Pass `*pgxpool.Pool` (or a `DB` interface) through service constructors. Start by defining an interface with `QueryRow`, `Query`, `Exec` methods, then inject into service structs.
 
 ### H-4. Linting disabled in CI pipeline
-- **File**: `/Users/I761222/git/o3k/.github/workflows/ci.yml:52-55`
+- **File**: `/Users/I761222/git/lightstack/.github/workflows/ci.yml:52-55`
 - **Pattern**: `echo "Linting temporarily disabled - test file cleanup in progress"`
 - **Risk**: Code quality regressions accumulate unchecked. The comment mentions "78 test file errors to fix" which suggests technical debt is growing.
 - **Fix**: Fix the 78 lint errors in test files, re-enable linting in CI. Consider running lint on production code only (`./internal/... ./pkg/... ./cmd/...`) while test files are being cleaned up.
 
 ### H-5. Missing migration file 042
-- **Files**: `/Users/I761222/git/o3k/migrations/` -- sequence jumps from 041 to 043.
+- **Files**: `/Users/I761222/git/lightstack/migrations/` -- sequence jumps from 041 to 043.
 - **Risk**: While `golang-migrate` handles gaps fine, this suggests a migration was deleted or incorrectly numbered. Could indicate a lost schema change or a merge conflict that was resolved incorrectly.
 - **Fix**: Verify migration 042 was intentionally skipped. If it was removed, document why. If it was lost, recreate it.
 
@@ -90,19 +90,19 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 - **Fix**: Add a `sync.WaitGroup` to service structs. Register goroutines at launch, wait during shutdown. For stub-mode `time.Sleep` goroutines, use `context.WithCancel` to enable fast shutdown.
 
 ### H-8. Duplicate route registration in Cinder
-- **File**: `/Users/I761222/git/o3k/internal/cinder/volumes.go:38-166`
+- **File**: `/Users/I761222/git/lightstack/internal/cinder/volumes.go:38-166`
 - **Pattern**: Many routes are registered twice -- once without `project_id` prefix and once with. Example: `r.POST("/v3/volumes", svc.CreateVolume)` and `v3.POST("/volumes", svc.CreateVolume)`.
 - **Risk**: Route conflicts, confusion about which path is canonical, potential for inconsistent behavior. Handlers must check both `c.Param("project_id")` and `c.GetString("project_id")` for the same operation.
 - **Fix**: Pick one canonical route structure and redirect the other. OpenStack Cinder API uses `v3/{project_id}/volumes` as the canonical form.
 
 ### H-9. ErrorHandlingMiddleware defined but not used
-- **File**: `/Users/I761222/git/o3k/internal/middleware/errors.go:11` and `/Users/I761222/git/o3k/cmd/o3k/main.go:276-400`
+- **File**: `/Users/I761222/git/lightstack/internal/middleware/errors.go:11` and `/Users/I761222/git/lightstack/cmd/lightstack/main.go:276-400`
 - **Pattern**: `ErrorHandlingMiddleware()` and `NotFoundHandler()` / `MethodNotAllowedHandler()` are defined but never registered in any of the `createXxxServer()` functions.
 - **Risk**: Panics in handlers result in Gin's default recovery response (which does not match OpenStack format). Undefined routes return Gin's default 404 rather than an OpenStack-formatted error.
 - **Fix**: Add `r.Use(middleware.ErrorHandlingMiddleware())` to each server factory. Register `NotFoundHandler()` via `r.NoRoute()`.
 
 ### H-10. Placement service returns inconsistent version numbers
-- **File**: `/Users/I761222/git/o3k/internal/placement/placement.go:39,59`
+- **File**: `/Users/I761222/git/lightstack/internal/placement/placement.go:39,59`
 - **Pattern**: `GetVersions` returns `max_version: "1.40"` but `GetVersion` returns `max_version: "1.39"`.
 - **Risk**: Clients may negotiate different API versions depending on which endpoint they hit, leading to unpredictable behavior.
 - **Fix**: Use a single constant for the supported placement API version.
@@ -110,11 +110,11 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 ### H-11. Hardcoded `localhost` URLs in response bodies
 - **Files**: 15+ occurrences across nova/handlers.go, nova/console.go, keystone/handlers.go, keystone/services.go
 - **Pattern**: `"href": "http://localhost:8774/v2.1/servers/%s"` -- self-links and console URLs hardcode `localhost`.
-- **Risk**: When O3K runs behind a load balancer or in Docker, these URLs point to the wrong host. Clients following HATEOAS links will fail.
-- **Fix**: Extract base URL from the incoming request's `Host` header or from configuration (similar to how `O3K_ENDPOINT_HOST` is already used for the service catalog).
+- **Risk**: When Lightstack runs behind a load balancer or in Docker, these URLs point to the wrong host. Clients following HATEOAS links will fail.
+- **Fix**: Extract base URL from the incoming request's `Host` header or from configuration (similar to how `LIGHTSTACK_ENDPOINT_HOST` is already used for the service catalog).
 
 ### H-12. Nova `GetLimits` returns hardcoded quota values
-- **File**: `/Users/I761222/git/o3k/internal/nova/handlers.go:1396-1442`
+- **File**: `/Users/I761222/git/lightstack/internal/nova/handlers.go:1396-1442`
 - **Pattern**: `"maxTotalInstances": 100, "maxTotalCores": 200` are hardcoded despite a quota system existing in the database.
 - **Risk**: Quota changes made via `UpdateQuotaSet` are not reflected in the limits API. Terraform and Horizon show incorrect quota information.
 - **Fix**: Query the `nova_quotas` table for the project's actual limits (falling back to defaults if no custom quota exists).
@@ -145,7 +145,7 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 - **Fix**: Log scan errors at warning level, include a count of failed rows in debug output.
 
 ### M-5. `Flavor.IsPublic` JSON tag is wrong in model
-- **File**: `/Users/I761222/git/o3k/internal/database/models.go:58`
+- **File**: `/Users/I761222/git/lightstack/internal/database/models.go:58`
 - **Pattern**: `IsPublic bool \`json:"OS-FLV-EXT-DATA:ephemeral"\`` -- the `IsPublic` field has the JSON tag for the `ephemeral` field.
 - **Fix**: Change to `json:"os-flavor-access:is_public"`.
 
@@ -165,39 +165,39 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 - **Fix**: Remove `RunMigrations` from db.go and use `MigrateUp` everywhere.
 
 ### M-9. Docker health check port mismatch
-- **File**: `/Users/I761222/git/o3k/build/package/Dockerfile:69,72`
+- **File**: `/Users/I761222/git/lightstack/build/package/Dockerfile:69,72`
 - **Pattern**: `EXPOSE 5000 8774 9696 8776 9292 8775` exposes port 5000 (which is not used), but does not expose 35357 (Keystone). The health check correctly uses 35357.
 - **Fix**: Replace `5000` with `35357` in the EXPOSE directive.
 
 ### M-10. `ListFlavorsDetail` pagination with `id > $marker` assumes UUID ordering
-- **File**: `/Users/I761222/git/o3k/internal/nova/handlers.go:1088-1089`
+- **File**: `/Users/I761222/git/lightstack/internal/nova/handlers.go:1088-1089`
 - **Pattern**: `query += " AND id > $marker"` -- lexicographic UUID comparison does not provide deterministic pagination order.
 - **Fix**: Use `created_at`-based cursor pagination (consistent with ListServers).
 
 ### M-11. Metadata service uses `context.Background()` for all DB queries
-- **File**: `/Users/I761222/git/o3k/internal/metadata/service.go:286,296,309`
+- **File**: `/Users/I761222/git/lightstack/internal/metadata/service.go:286,296,309`
 - **Pattern**: All database queries use `context.Background()` instead of the request context.
 - **Fix**: Pass `c.Request.Context()` through to database queries.
 
 ### M-12. `generate-password` placeholder in Makefile DB URL
-- **File**: `/Users/I761222/git/o3k/Makefile:10`
-- **Pattern**: `DB_URL?=postgres://o3k:secret@localhost:5432/o3k?sslmode=disable`
+- **File**: `/Users/I761222/git/lightstack/Makefile:10`
+- **Pattern**: `DB_URL?=postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable`
 - **Risk**: Default password `secret` is fine for development but the `sslmode=disable` default is a concern if the Makefile is used in production-like environments.
 - **Fix**: Document that this is development-only. Consider defaulting to `sslmode=prefer`.
 
 ### M-13. E2E tests are empty stubs in CI
-- **File**: `/Users/I761222/git/o3k/.github/workflows/ci.yml:270-273,301-304`
+- **File**: `/Users/I761222/git/lightstack/.github/workflows/ci.yml:270-273,301-304`
 - **Pattern**: Both e2e-fast and e2e-full jobs are no-ops that print "not yet implemented".
 - **Fix**: Either implement the E2E tests or remove the jobs from CI to avoid false confidence.
 
 ### M-14. Glance image update allows SQL column injection via PATCH field names
-- **File**: `/Users/I761222/git/o3k/internal/glance/images.go:486`
+- **File**: `/Users/I761222/git/lightstack/internal/glance/images.go:486`
 - **Pattern**: `query := fmt.Sprintf("UPDATE images SET %s = $1...", field)` where `field` comes from JSON keys in the PATCH request body.
 - **Risk**: While Gin's JSON binding limits this somewhat, a crafted PATCH body could inject SQL column names. The existing code does whitelist fields, but the pattern is fragile.
 - **Fix**: Use an explicit allowlist map (`validFields["name"] = "name"`) and reject any field not in the map before interpolation.
 
 ### M-15. `db-up` in Makefile uses postgres:16, docs say PostgreSQL 18
-- **File**: `/Users/I761222/git/o3k/Makefile:121` vs. CLAUDE.md
+- **File**: `/Users/I761222/git/lightstack/Makefile:121` vs. CLAUDE.md
 - **Pattern**: `docker run ... postgres:16` but documentation states "PostgreSQL 18".
 - **Fix**: Align the version. Use a variable: `POSTGRES_VERSION?=18`.
 
@@ -206,26 +206,26 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 ## Low (nice to have)
 
 ### L-1. TODO comments in storage package
-- **File**: `/Users/I761222/git/o3k/pkg/storage/image_store.go:207,350,450,533`
+- **File**: `/Users/I761222/git/lightstack/pkg/storage/image_store.go:207,350,450,533`
 - **Pattern**: 4 TODO comments about using go-ceph for RBD operations.
 
 ### L-2. `Dockerfile` creates non-root user but runs as root
-- **File**: `/Users/I761222/git/o3k/build/package/Dockerfile:42-43,65`
-- **Pattern**: Creates user `o3k` but does not `USER o3k`. Comment explains this is for network namespace operations.
+- **File**: `/Users/I761222/git/lightstack/build/package/Dockerfile:42-43,65`
+- **Pattern**: Creates user `lightstack` but does not `USER lightstack`. Comment explains this is for network namespace operations.
 
 ### L-3. `Access-Control-Allow-Headers` is incomplete
-- **File**: `/Users/I761222/git/o3k/internal/middleware/logging.go:254`
+- **File**: `/Users/I761222/git/lightstack/internal/middleware/logging.go:254`
 - **Pattern**: Only allows `Content-Type, X-Auth-Token, X-Subject-Token`. Missing headers like `OpenStack-API-Version`, `X-OpenStack-Nova-API-Version`, `Accept`.
 
 ### L-4. Nova version discovery returns inconsistent version numbers
-- **File**: `/Users/I761222/git/o3k/internal/nova/handlers.go:191,208`
+- **File**: `/Users/I761222/git/lightstack/internal/nova/handlers.go:191,208`
 - **Pattern**: `ListVersions` says `"version": "2.79"` but `GetVersion` says `"version": "2.90"`.
 
 ### L-5. Benchmark scripts not integrated into CI
 - **Files**: `test/benchmark/` contains Go benchmarks and shell scripts but they are not run in CI.
 
 ### L-6. `database/query_logger.go` exists but is not used
-- **File**: `/Users/I761222/git/o3k/internal/database/query_logger.go`
+- **File**: `/Users/I761222/git/lightstack/internal/database/query_logger.go`
 - **Pattern**: `QueryLogger` struct is defined but never instantiated in `main.go`.
 
 ### L-7. Docker Compose files proliferation
@@ -233,7 +233,7 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 - **Fix**: Consolidate into docker-compose.yml + docker-compose.override.yml + docker-compose.test.yml.
 
 ### L-8. `run_nova_tests_with_fix.sh` in repo root
-- **File**: `/Users/I761222/git/o3k/run_nova_tests_with_fix.sh`
+- **File**: `/Users/I761222/git/lightstack/run_nova_tests_with_fix.sh`
 - **Pattern**: Appears to be a leftover debug/fix script committed to root.
 - **Fix**: Move to `test/` or delete if no longer needed.
 
@@ -242,7 +242,7 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 - **Pattern**: Both files contain similar auth/client setup code.
 
 ### L-10. Missing `.golangci.yml` configuration review
-- **File**: `/Users/I761222/git/o3k/.golangci.yml`
+- **File**: `/Users/I761222/git/lightstack/.golangci.yml`
 - **Pattern**: Linter config exists but linting is disabled in CI (see H-4). Config may be stale.
 
 ---
@@ -277,7 +277,7 @@ O3K is a single-binary Go implementation of 5 OpenStack services (Keystone, Nova
 ---
 
 ## Review Metadata
-- **Packages analyzed**: 12 Go packages (cmd/o3k, internal/*, pkg/*)
+- **Packages analyzed**: 12 Go packages (cmd/lightstack, internal/*, pkg/*)
 - **Non-Go files reviewed**: Makefile, Dockerfile, CI pipeline, docker-compose files, migration files
 - **Approach**: Full source file scan with pattern-based analysis across all packages
 - **Score pre-check**: N/A (score-component.py not available for Go projects)

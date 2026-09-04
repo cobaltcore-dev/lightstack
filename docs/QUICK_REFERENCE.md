@@ -1,4 +1,4 @@
-# O3K + Horizon Quick Reference
+# Lightstack + Horizon Quick Reference
 
 **Deployment**: `docker-compose-horizon.yml`
 **Documentation**: [docs/UNIFIED_DEPLOYMENT.md](UNIFIED_DEPLOYMENT.md)
@@ -7,7 +7,7 @@
 
 ```bash
 # Start everything
-cd o3k/deployments
+cd lightstack/deployments
 docker compose -f docker-compose-horizon.yml up -d
 
 # Access Horizon
@@ -32,14 +32,14 @@ docker compose -f docker-compose-horizon.yml down            # Remove containers
 docker compose -f docker-compose-horizon.yml down -v         # Remove all (including data)
 
 # Logs
-docker compose -f docker-compose-horizon.yml logs -f o3k     # O3K logs
+docker compose -f docker-compose-horizon.yml logs -f lightstack     # lightstack logs
 docker compose -f docker-compose-horizon.yml logs -f horizon # Horizon logs
 docker compose -f docker-compose-horizon.yml logs --tail 100 # Last 100 lines
 
 # Shell Access
-docker exec -it o3k /bin/sh                    # O3K container
-docker exec -it o3k-horizon /bin/bash          # Horizon container
-docker exec -it o3k-postgres psql -U o3k       # Database
+docker exec -it lightstack /bin/sh                    # lightstack container
+docker exec -it lightstack-horizon /bin/bash          # Horizon container
+docker exec -it lightstack-postgres psql -U lightstack       # Database
 ```
 
 ## Service Ports
@@ -107,12 +107,12 @@ docker compose -f docker-compose-horizon.yml logs <service>
 docker compose -f docker-compose-horizon.yml restart <service>
 
 # Horizon connection errors
-docker exec o3k-horizon curl http://o3k:35357/v3
+docker exec lightstack-horizon curl http://lightstack:35357/v3
 docker compose -f docker-compose-horizon.yml restart horizon
 
 # Database issues
 docker compose -f docker-compose-horizon.yml ps postgres
-docker exec o3k-postgres pg_isready -U o3k
+docker exec lightstack-postgres pg_isready -U lightstack
 
 # Reset everything (destroys data!)
 docker compose -f docker-compose-horizon.yml down -v
@@ -147,13 +147,13 @@ docker compose -f docker-compose-horizon.yml ps --format "table {{.Name}}\t{{.St
 
 ```bash
 # Database
-docker exec o3k-postgres pg_dump -U o3k o3k > backup-$(date +%Y%m%d).sql
+docker exec lightstack-postgres pg_dump -U lightstack lightstack > backup-$(date +%Y%m%d).sql
 
 # Configuration
 tar czf config-backup-$(date +%Y%m%d).tar.gz docker-compose-horizon.yml horizon-config/
 
 # Restore database
-cat backup-20260313.sql | docker exec -i o3k-postgres psql -U o3k o3k
+cat backup-20260313.sql | docker exec -i lightstack-postgres psql -U lightstack lightstack
 ```
 
 ## Default Credentials
@@ -183,4 +183,4 @@ cat backup-20260313.sql | docker exec -i o3k-postgres psql -U o3k o3k
 
 - **Full Guide**: [docs/UNIFIED_DEPLOYMENT.md](UNIFIED_DEPLOYMENT.md)
 - **Horizon Deployment**: [docs/HORIZON_DEPLOYMENT.md](HORIZON_DEPLOYMENT.md)
-- **Issues**: https://github.com/cobaltcore-dev/o3k/issues
+- **Issues**: https://github.com/cobaltcore-dev/lightstack/issues

@@ -8,9 +8,9 @@ Format per item: **Decision / Rationale / Alternatives considered / Touches**.
 
 ## R1 — Real-mode VM disk: per-instance qcow2 overlay over a raw base (WS-0)
 
-**Decision**: At VM create, before `CreateVM`, stage `/var/lib/o3k/instances/<instance-id>/disk.qcow2` as a qcow2 overlay backing the Glance raw base (`qemu-img create -f qcow2 -b /var/lib/o3k/images/image-<image-id>.raw -F raw <overlay>`), chown/chmod for the host qemu uid, then point libvirt at the overlay. Introduce a single shared image-path helper used by both Glance's write sites and Nova's read site so they cannot diverge.
+**Decision**: At VM create, before `CreateVM`, stage `/var/lib/lightstack/instances/<instance-id>/disk.qcow2` as a qcow2 overlay backing the Glance raw base (`qemu-img create -f qcow2 -b /var/lib/lightstack/images/image-<image-id>.raw -F raw <overlay>`), chown/chmod for the host qemu uid, then point libvirt at the overlay. Introduce a single shared image-path helper used by both Glance's write sites and Nova's read site so they cannot diverge.
 
-**Rationale**: Mirrors the upstream Nova default (qcow2 overlay over a base, `force_raw_images`). Today Nova hardcodes `ImagePath = /var/lib/o3k/images/<imageUUID>.qcow2` (`internal/nova/handlers.go:465`) — the **image** UUID, a file that never exists, so no real VM boots; and all VMs of an image would collide on one file. An overlay gives per-VM isolation (FR-002) at near-zero cost (CoW, no copy → keeps VM-create < 10 s). The XML already declares the disk as qcow2 (`pkg/hypervisor/xml_template.go:113`), so only the path/source changes.
+**Rationale**: Mirrors the upstream Nova default (qcow2 overlay over a base, `force_raw_images`). Today Nova hardcodes `ImagePath = /var/lib/lightstack/images/<imageUUID>.qcow2` (`internal/nova/handlers.go:465`) — the **image** UUID, a file that never exists, so no real VM boots; and all VMs of an image would collide on one file. An overlay gives per-VM isolation (FR-002) at near-zero cost (CoW, no copy → keeps VM-create < 10 s). The XML already declares the disk as qcow2 (`pkg/hypervisor/xml_template.go:113`), so only the path/source changes.
 
 **Alternatives considered**: Full raw copy per instance (rejected — slow, space-heavy, the spec confirmed overlay); qcow2-over-qcow2 (rejected — raw base is RBD-compatible and the upstream default).
 
@@ -38,13 +38,13 @@ Format per item: **Decision / Rationale / Alternatives considered / Touches**.
 
 ## R4 — Network-state reconciler: startup + periodic, best-effort, idempotent (WS-2)
 
-**Decision**: Add `internal/neutron/reconciler.go` modeled on the **existing VXLAN coordinator** (`internal/neutron/vxlan_coordinator.go`): a `NewNetworkReconciler(...)` + `Start(ctx)` that does an initial sync then a ticker-driven resync on a configurable interval, with a `Stop()`. Each pass reads the DB (networks → bridges, subnets+DHCP → dnsmasq, ports → taps/bridge attach, security groups → iptables chains, routers/floating-IPs → NAT) and rebuilds kernel state **idempotently** (check-then-create). Per-resource failures are isolated, logged, and retried next tick; they do not block readiness. Wire `go reconciler.Start(ctx)` into `cmd/o3k/main.go` after the VXLAN-coordinator block (≈ line 185), gated on `networkingMode != "stub"`; add `reconciler.Stop()` to the shutdown block (≈ lines 268-276).
+**Decision**: Add `internal/neutron/reconciler.go` modeled on the **existing VXLAN coordinator** (`internal/neutron/vxlan_coordinator.go`): a `NewNetworkReconciler(...)` + `Start(ctx)` that does an initial sync then a ticker-driven resync on a configurable interval, with a `Stop()`. Each pass reads the DB (networks → bridges, subnets+DHCP → dnsmasq, ports → taps/bridge attach, security groups → iptables chains, routers/floating-IPs → NAT) and rebuilds kernel state **idempotently** (check-then-create). Per-resource failures are isolated, logged, and retried next tick; they do not block readiness. Wire `go reconciler.Start(ctx)` into `cmd/lightstack/main.go` after the VXLAN-coordinator block (≈ line 185), gated on `networkingMode != "stub"`; add `reconciler.Stop()` to the shutdown block (≈ lines 268-276).
 
-**Rationale**: dnsmasq is an o3k child process whose PID lives in an in-memory map (`pkg/networking/dhcp.go`) lost on restart, and `internal/neutron/network.go` builds kernel state only on API calls — nothing replays it on boot. The VXLAN coordinator already proves the pattern (initial + periodic DB-driven idempotent sync) and is constitution-accepted, so this is reuse, not a new concept. Periodic resync self-heals a dead dnsmasq / flushed rules (clarification R2-Q2); best-effort isolation keeps one bad tenant from blocking the cloud (R2-Q3).
+**Rationale**: dnsmasq is a Lightstack child process whose PID lives in an in-memory map (`pkg/networking/dhcp.go`) lost on restart, and `internal/neutron/network.go` builds kernel state only on API calls — nothing replays it on boot. The VXLAN coordinator already proves the pattern (initial + periodic DB-driven idempotent sync) and is constitution-accepted, so this is reuse, not a new concept. Periodic resync self-heals a dead dnsmasq / flushed rules (clarification R2-Q2); best-effort isolation keeps one bad tenant from blocking the cloud (R2-Q3).
 
 **Alternatives considered**: One-shot startup rebuild (rejected R2-Q2 — misses mid-run drift); event-driven only (rejected — can't heal out-of-band drift); global fail-fast on any tenant failure (rejected R2-Q3).
 
-**Touches**: `internal/neutron/reconciler.go` (NEW), `internal/neutron/network.go`/`ports.go` (reuse build funcs), `pkg/networking/dhcp.go` (rebuild from DB), `cmd/o3k/main.go` (wire + shutdown), config (`neutron.reconcile_interval`).
+**Touches**: `internal/neutron/reconciler.go` (NEW), `internal/neutron/network.go`/`ports.go` (reuse build funcs), `pkg/networking/dhcp.go` (rebuild from DB), `cmd/lightstack/main.go` (wire + shutdown), config (`neutron.reconcile_interval`).
 
 ## R5 — Stable IP across restart via DB-driven dnsmasq host reservations (WS-2)
 
@@ -58,23 +58,23 @@ Format per item: **Decision / Rationale / Alternatives considered / Touches**.
 
 ## R6 — Node-local persistence + fix the Cinder local path (WS-2 / FR-006a)
 
-**Decision**: All real-mode VM data lives under the persistent hostPath `/var/lib/o3k`: `images/` (raw bases, already correct), `instances/<id>/disk.qcow2` (overlays, R1), `cloud-init/<id>.iso` (config drive, already there — `xml_template.go:171`), and `volumes/` (local volumes). **Fix Cinder's local path** from `~/.o3k/volumes` (`pkg/storage/ceph.go:36-38`) to `/var/lib/o3k/volumes` via a `resolveLocalPath` helper.
+**Decision**: All real-mode VM data lives under the persistent hostPath `/var/lib/lightstack`: `images/` (raw bases, already correct), `instances/<id>/disk.qcow2` (overlays, R1), `cloud-init/<id>.iso` (config drive, already there — `xml_template.go:171`), and `volumes/` (local volumes). **Fix Cinder's local path** from `~/.lightstack/volumes` (`pkg/storage/ceph.go:36-38`) to `/var/lib/lightstack/volumes` via a `resolveLocalPath` helper.
 
-**Rationale**: The Helm chart mounts `/var/lib/o3k` as the node's persistent hostPath; the home-dir path is ephemeral inside the pod, so local volumes vanish on a pod restart — breaking FR-006a (disk survives restart) and FR-022 (volume data persists). Glance already uses `/var/lib/o3k/images` correctly; Cinder is the outlier. (Note: the SPEC-009-teardown branch fixed the same bug independently; this branch needs its own fix.)
+**Rationale**: The Helm chart mounts `/var/lib/lightstack` as the node's persistent hostPath; the home-dir path is ephemeral inside the pod, so local volumes vanish on a pod restart — breaking FR-006a (disk survives restart) and FR-022 (volume data persists). Glance already uses `/var/lib/lightstack/images` correctly; Cinder is the outlier. (Note: the SPEC-009-teardown branch fixed the same bug independently; this branch needs its own fix.)
 
-**Alternatives considered**: Leave Cinder on `~/.o3k` and special-case the chart (rejected — fragile, contradicts the persistence guarantee).
+**Alternatives considered**: Leave Cinder on `~/.lightstack` and special-case the chart (rejected — fragile, contradicts the persistence guarantee).
 
 **Touches**: `pkg/storage/ceph.go` (`resolveLocalPath`/`LocalVolumeDir`), `build/package/Dockerfile` (pre-create dirs — already creates `volumes`/`images`).
 
 ## R7 — Metadata reachability: per-namespace 169.254.169.254 → metadata DNAT (WS-4)
 
-**Decision**: Bind the metadata HTTP server (root namespace) on a host address reachable from tenant namespaces — concretely the per-network bridge gateway IP (or a dedicated metadata address on that bridge), port `8775` — not `localhost`. Inside each tenant network namespace, program a DNAT redirect `169.254.169.254:80 → <bridge metadata addr>:8775` (iptables in the netns, plus the route). **Program this synchronously when the subnet/namespace is created** (the same point DHCP is started today) so reachability is immediate, and **replay it in the reconciler (R4)** so it survives restart. Change `metadata.NewService("localhost:8775")` (`cmd/o3k/main.go:217`) accordingly.
+**Decision**: Bind the metadata HTTP server (root namespace) on a host address reachable from tenant namespaces — concretely the per-network bridge gateway IP (or a dedicated metadata address on that bridge), port `8775` — not `localhost`. Inside each tenant network namespace, program a DNAT redirect `169.254.169.254:80 → <bridge metadata addr>:8775` (iptables in the netns, plus the route). **Program this synchronously when the subnet/namespace is created** (the same point DHCP is started today) so reachability is immediate, and **replay it in the reconciler (R4)** so it survives restart. Change `metadata.NewService("localhost:8775")` (`cmd/lightstack/main.go:217`) accordingly.
 
 **Rationale**: Today metadata binds `localhost:8775` with zero link-local routing (`internal/metadata/service.go`, only comments reference `169.254.169.254`), so guests can't fetch cloud-init. Per-namespace DNAT is exactly how upstream Neutron's metadata path works and composes with the existing netns model. Adding it to the reconciler makes it durable (R4).
 
 **Alternatives considered**: DHCP option-121 route to a host-bound metadata (rejected as primary — DNAT in-namespace is more robust and standard; option-121 can be a secondary hint); a metadata agent per namespace as a separate process (rejected — violates single-binary Principle VI).
 
-**Touches**: `pkg/networking/metadata_redirect.go` (NEW), `internal/metadata/service.go` (bind), `cmd/o3k/main.go` (bind addr), reconciler (R4).
+**Touches**: `pkg/networking/metadata_redirect.go` (NEW), `internal/metadata/service.go` (bind), `cmd/lightstack/main.go` (bind addr), reconciler (R4).
 
 ## R8 — Metadata identity: namespace/project-aware (overlapping subnets) (WS-4)
 

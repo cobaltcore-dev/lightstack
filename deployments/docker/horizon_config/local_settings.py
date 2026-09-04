@@ -1,5 +1,5 @@
-# O3K Horizon Configuration
-# Custom settings for OpenStack Horizon to connect to O3K
+# Lightstack Horizon Configuration
+# Custom settings for OpenStack Horizon to connect to Lightstack
 
 import os
 
@@ -149,5 +149,5 @@ LOGGING = {
     },
 }
 
-print("O3K Horizon configuration loaded")
+print("Lightstack Horizon configuration loaded")
 print(f"Keystone URL: {OPENSTACK_KEYSTONE_URL}")

@@ -12,7 +12,7 @@ import (
 
 // TestKeystoneAssignRoleToUser_Contract tests PUT /v3/projects/:pid/users/:uid/roles/:rid
 func TestKeystoneAssignRoleToUser_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -68,7 +68,7 @@ func TestKeystoneAssignRoleToUser_Contract(t *testing.T) {
 
 // TestKeystoneUnassignRoleFromUser_Contract tests DELETE /v3/projects/:pid/users/:uid/roles/:rid
 func TestKeystoneUnassignRoleFromUser_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -112,7 +112,7 @@ func TestKeystoneUnassignRoleFromUser_Contract(t *testing.T) {
 
 // TestKeystoneListUserRoles_Contract tests GET /v3/projects/:pid/users/:uid/roles
 func TestKeystoneListUserRoles_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -169,7 +169,7 @@ func TestKeystoneListUserRoles_Contract(t *testing.T) {
 
 // TestKeystoneCheckRoleAssignment_Contract tests GET /v3/projects/:pid/users/:uid/roles/:rid
 func TestKeystoneCheckRoleAssignment_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
