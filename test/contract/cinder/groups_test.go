@@ -14,7 +14,7 @@ import (
 
 // TestCinderListGroups_Contract tests GET /v3/:project/groups
 func TestCinderListGroups_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -42,7 +42,7 @@ func TestCinderListGroups_Contract(t *testing.T) {
 
 // TestCinderCreateGroup_Contract tests POST /v3/:project/groups
 func TestCinderCreateGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -86,7 +86,7 @@ func TestCinderCreateGroup_Contract(t *testing.T) {
 
 // TestCinderGetGroup_Contract tests GET /v3/:project/groups/:id
 func TestCinderGetGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -120,7 +120,7 @@ func TestCinderGetGroup_Contract(t *testing.T) {
 
 // TestCinderUpdateGroup_Contract tests PUT /v3/:project/groups/:id
 func TestCinderUpdateGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -164,7 +164,7 @@ func TestCinderUpdateGroup_Contract(t *testing.T) {
 
 // TestCinderDeleteGroup_Contract tests DELETE /v3/:project/groups/:id
 func TestCinderDeleteGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

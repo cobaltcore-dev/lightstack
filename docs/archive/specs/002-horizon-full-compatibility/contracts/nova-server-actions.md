@@ -10,7 +10,7 @@
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -91,7 +91,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -179,7 +179,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -260,7 +260,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -293,7 +293,7 @@ Content-Type: application/json
 
 ```http
 HTTP/1.1 202 Accepted
-Location: http://o3k-host:9292/v2/images/12345678-abcd-ef12-3456-0123456789ab
+Location: http://lightstack-host:9292/v2/images/12345678-abcd-ef12-3456-0123456789ab
 Content-Type: application/json
 
 {
@@ -365,7 +365,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -453,7 +453,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -555,7 +555,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {admin-token}
 Content-Type: application/json
 
@@ -651,7 +651,7 @@ Content-Type: application/json
 ⚠️ **INCOMPLETE** - Sprint 56-57 in progress
 
 **Current Implementation**:
-- File: `/Users/I761222/git/o3k/internal/nova/advanced_actions.go`
+- File: `/Users/I761222/git/lightstack/internal/nova/advanced_actions.go`
 - Status: All endpoints registered, most are incomplete stubs
 - Security Issue: `os-resetState` missing admin role check
 

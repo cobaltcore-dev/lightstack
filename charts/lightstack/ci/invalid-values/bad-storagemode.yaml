@@ -1,0 +1,10 @@
+# INVALID: glance.storageMode outside the allowed combos. MUST be rejected by the enum.
+image:
+  repository: ghcr.io/lightstack/lightstack
+secrets:
+  jwtSecret: x
+  adminPassword: x
+database:
+  url: postgres://lightstack@db/lightstack
+glance:
+  storageMode: nfs

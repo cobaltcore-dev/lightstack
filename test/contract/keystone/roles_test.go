@@ -11,7 +11,7 @@ import (
 
 // TestKeystoneCreateRole_Contract tests POST /v3/roles endpoint
 func TestKeystoneCreateRole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -42,7 +42,7 @@ func TestKeystoneCreateRole_Contract(t *testing.T) {
 
 // TestKeystoneUpdateRole_Contract tests PATCH /v3/roles/:id endpoint
 func TestKeystoneUpdateRole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -70,7 +70,7 @@ func TestKeystoneUpdateRole_Contract(t *testing.T) {
 
 // TestKeystoneUpdateRoleName_Contract tests updating role name
 func TestKeystoneUpdateRoleName_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -98,7 +98,7 @@ func TestKeystoneUpdateRoleName_Contract(t *testing.T) {
 
 // TestKeystoneDeleteRole_Contract tests DELETE /v3/roles/:id endpoint
 func TestKeystoneDeleteRole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -123,7 +123,7 @@ func TestKeystoneDeleteRole_Contract(t *testing.T) {
 
 // TestKeystoneDeleteNonExistentRole_Contract tests 404 handling
 func TestKeystoneDeleteNonExistentRole_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -138,7 +138,7 @@ func TestKeystoneDeleteNonExistentRole_Contract(t *testing.T) {
 
 // TestKeystoneRoleCRUD_Lifecycle tests full CRUD lifecycle
 func TestKeystoneRoleCRUD_Lifecycle(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 

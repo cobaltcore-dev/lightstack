@@ -1,11 +1,11 @@
-# O3K Specifications Index
+# Lightstack Specifications Index
 
 **Version**: 1.0
 **Last Updated**: 2026-03-09
 
 ## Overview
 
-This directory contains technical specifications for O3K development. Each specification follows the library-first, test-first approach defined in the project constitution.
+This directory contains technical specifications for Lightstack development. Each specification follows the library-first, test-first approach defined in the project constitution.
 
 ## Active Specifications
 
@@ -14,7 +14,7 @@ This directory contains technical specifications for O3K development. Each speci
 #### [SPEC-000: OpenStack API Compliance Framework](./000-api-compliance/README.md)
 **Status**: Draft | **Priority**: ZERO (Supersedes All) | **Timeline**: Continuous
 
-**THE FOUNDATIONAL REQUIREMENT** - O3K must be 100% OpenStack API compliant. This is non-negotiable.
+**THE FOUNDATIONAL REQUIREMENT** - Lightstack must be 100% OpenStack API compliant. This is non-negotiable.
 
 **Key Deliverables**:
 - Contract tests with OpenStack clients
@@ -35,7 +35,7 @@ This directory contains technical specifications for O3K development. Each speci
 #### [SPEC-001: Modular Architecture Transformation](./001-modular-architecture/README.md)
 **Status**: Draft | **Priority**: Critical | **Timeline**: 16 weeks
 
-Transform O3K from monolithic to modular architecture with independent services.
+Transform Lightstack from monolithic to modular architecture with independent services.
 
 **Key Deliverables**:
 - Independent binaries per service
@@ -234,12 +234,12 @@ Each specification must pass:
 
 ## Questions?
 
-- GitHub Discussions: [O3K Discussions](https://github.com/your-org/o3k/discussions)
-- Slack: #o3k-dev
-- Email: o3k-dev@example.com
+- GitHub Discussions: [lightstack Discussions](https://github.com/your-org/lightstack/discussions)
+- Slack: #lightstack-dev
+- Email: lightstack-dev@example.com
 
 ---
 
-**Maintained by**: O3K Core Team
+**Maintained by**: Lightstack Core Team
 **Last Review**: 2026-03-09
 **Next Review**: 2026-04-09

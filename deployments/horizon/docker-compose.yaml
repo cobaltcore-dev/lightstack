@@ -1,31 +1,33 @@
 services:
   postgres:
     image: postgres:18-alpine
-    container_name: o3k-postgres
+    container_name: lightstack-postgres
     environment:
-      POSTGRES_DB: o3k
-      POSTGRES_USER: o3k
-      POSTGRES_PASSWORD: secret
+      # See deployments/docker-compose.yml — the identity of a retained volume wins
+      # over the file's defaults (cloud-storage#575).
+      POSTGRES_DB: ${POSTGRES_DB:-lightstack}
+      POSTGRES_USER: ${POSTGRES_USER:-lightstack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
     volumes:
       - postgres_data:/var/lib/postgresql
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U o3k"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightstack}"]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
-      - o3k-network
+      - lightstack-network
 
-  # O3K is already running on your host, so we'll connect to it via host.docker.internal
-  # If you want to run O3K in Docker instead, uncomment the section below
+  # Lightstack is already running on your host, so we'll connect to it via host.docker.internal
+  # If you want to run Lightstack in Docker instead, uncomment the section below
 
-  # o3k:
+  # lightstack:
   #   build:
   #     context: ../..
   #     dockerfile: deployments/docker/Dockerfile
-  #   container_name: o3k
+  #   container_name: lightstack
   #   depends_on:
   #     postgres:
   #       condition: service_healthy
@@ -37,26 +39,26 @@ services:
   #     - "9292:9292"    # Glance
   #     - "8775:8775"    # Metadata
   #   environment:
-  #     O3K_DB_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
-  #     O3K_JWT_SECRET: "${O3K_JWT_SECRET:-change-me-in-production}"
+  #     LIGHTSTACK_DB_URL: "postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable"
+  #     LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
   #   networks:
-  #     - o3k-network
+  #     - lightstack-network
   #   restart: unless-stopped
 
   horizon:
     image: tenstartups/openstack-horizon:latest
-    container_name: o3k-horizon
+    container_name: lightstack-horizon
     ports:
       - "80:80"
       - "443:443"
     environment:
-      # Connect to O3K running on host machine
+      # Connect to Lightstack running on host machine
       KOLLA_SERVICE_NAME: horizon
     volumes:
       - ./horizon_settings.py:/etc/openstack-dashboard/local_settings.d/_10_custom.py:ro
       - horizon_static:/var/lib/kolla/venv/lib/python3.*/site-packages/static
     networks:
-      - o3k-network
+      - lightstack-network
     extra_hosts:
       # Allow container to reach host services
       - "host.docker.internal:host-gateway"
@@ -74,5 +76,5 @@ volumes:
     driver: local
 
 networks:
-  o3k-network:
+  lightstack-network:
     driver: bridge

@@ -10,7 +10,7 @@
 
 ```http
 POST /v2.1/servers/{server_id}/remote-consoles HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -51,7 +51,7 @@ Content-Type: application/json
   "remote_console": {
     "protocol": "vnc",
     "type": "novnc",
-    "url": "http://o3k-host:6080/vnc_auto.html?token=eyJhbGciOiJIUzI1NiIs..."
+    "url": "http://lightstack-host:6080/vnc_auto.html?token=eyJhbGciOiJIUzI1NiIs..."
   }
 }
 ```
@@ -124,7 +124,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -153,7 +153,7 @@ Content-Type: application/json
 {
   "console": {
     "type": "novnc",
-    "url": "http://o3k-host:6080/vnc_auto.html?token=eyJhbGciOiJIUzI1NiIs..."
+    "url": "http://lightstack-host:6080/vnc_auto.html?token=eyJhbGciOiJIUzI1NiIs..."
   }
 }
 ```
@@ -170,7 +170,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -199,7 +199,7 @@ Content-Type: application/json
 {
   "console": {
     "type": "spice-html5",
-    "url": "http://o3k-host:6082/spice_auto.html?token=eyJhbGciOiJIUzI1NiIs..."
+    "url": "http://lightstack-host:6082/spice_auto.html?token=eyJhbGciOiJIUzI1NiIs..."
   }
 }
 ```
@@ -212,7 +212,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -241,7 +241,7 @@ Content-Type: application/json
 {
   "console": {
     "type": "serial",
-    "url": "ws://o3k-host:6083/?token=eyJhbGciOiJIUzI1NiIs..."
+    "url": "ws://lightstack-host:6083/?token=eyJhbGciOiJIUzI1NiIs..."
   }
 }
 ```
@@ -256,7 +256,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -285,7 +285,7 @@ Content-Type: application/json
 {
   "console": {
     "type": "rdp-html5",
-    "url": "http://o3k-host:6084/rdp_auto.html?token=eyJhbGciOiJIUzI1NiIs..."
+    "url": "http://lightstack-host:6084/rdp_auto.html?token=eyJhbGciOiJIUzI1NiIs..."
   }
 }
 ```
@@ -298,7 +298,7 @@ Content-Type: application/json
 
 ```http
 POST /v2.1/servers/{server_id}/action HTTP/1.1
-Host: o3k-host:8774
+Host: lightstack-host:8774
 X-Auth-Token: {token}
 Content-Type: application/json
 
@@ -356,7 +356,7 @@ Content-Type: application/json
 }
 ```
 
-**Signature**: HMAC-SHA256 using O3K JWT secret
+**Signature**: HMAC-SHA256 using Lightstack JWT secret
 
 **Token Validity**: 1 hour from issuance
 
@@ -364,7 +364,7 @@ Content-Type: application/json
 1. Verify JWT signature using shared secret
 2. Check expiration (exp > current_time)
 3. Extract server_id and console_type
-4. Query O3K for instance details
+4. Query Lightstack for instance details
 5. Connect to libvirt VNC/SPICE port for that instance
 
 ---
@@ -374,11 +374,11 @@ Content-Type: application/json
 ✅ **COMPLETE** - Implemented in Sprint 58-59
 
 **Current Files**:
-- `/Users/I761222/git/o3k/internal/nova/console.go` - Console endpoint handlers
-- `/Users/I761222/git/o3k/pkg/hypervisor/console.go` - libvirt console access
+- `/Users/I761222/git/lightstack/internal/nova/console.go` - Console endpoint handlers
+- `/Users/I761222/git/lightstack/pkg/hypervisor/console.go` - libvirt console access
 
 **Contract Test**:
-- `/Users/I761222/git/o3k/test/contract/nova/console_test.go` - Validate API compliance
+- `/Users/I761222/git/lightstack/test/contract/nova/console_test.go` - Validate API compliance
 
 ---
 
@@ -390,7 +390,7 @@ Content-Type: application/json
 # Console access configuration
 CONSOLE_TYPE = 'novnc'
 
-# noVNC proxy URL (must match O3K console URL)
+# noVNC proxy URL (must match lightstack console URL)
 OPENSTACK_API_VERSIONS = {
     "compute": "2.53",  # Modern console API version
 }
@@ -400,7 +400,7 @@ OPENSTACK_API_VERSIONS = {
 
 1. User clicks "Console" button on instance details page in Horizon
 2. Horizon calls `POST /v2.1/servers/{id}/remote-consoles`
-3. O3K generates console URL with JWT token
+3. Lightstack generates console URL with JWT token
 4. Horizon opens popup window with console URL
 5. Browser loads noVNC viewer HTML page
 6. noVNC JavaScript validates token and connects to proxy
@@ -408,7 +408,7 @@ OPENSTACK_API_VERSIONS = {
 
 ### Required Infrastructure
 
-**noVNC Proxy Deployment** (separate from O3K):
+**noVNC Proxy Deployment** (separate from lightstack):
 ```yaml
 # docker-compose.yml
 novnc:
@@ -416,8 +416,8 @@ novnc:
   ports:
     - "6080:6080"
   environment:
-    - VNC_HOST=o3k-compute-node
-    - TOKEN_VALIDATION_URL=http://o3k:35357/v3/auth/tokens
+    - VNC_HOST=lightstack-compute-node
+    - TOKEN_VALIDATION_URL=http://lightstack:35357/v3/auth/tokens
   volumes:
     - ./novnc-config:/etc/novnc
 ```
@@ -535,4 +535,4 @@ openstack server delete $SERVER_ID
 - Horizon compatibility validated
 - Token-based security ensures console access control
 - 1-hour token TTL balances security and usability
-- Requires separate noVNC proxy deployment (not part of O3K binary)
+- Requires separate noVNC proxy deployment (not part of Lightstack binary)

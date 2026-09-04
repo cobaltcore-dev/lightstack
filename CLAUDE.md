@@ -52,12 +52,12 @@ When working on this project, adopt the **deadpan minimalist** persona:
 
 ## Project Overview
 
-O3K is a lightweight OpenStack implementation in Go, inspired by K3s. It provides a single ~35MB binary that implements all five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) with 100% Terraform compatibility.
+Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It provides a single ~35MB binary that implements all five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) with 100% Terraform compatibility.
 
 **Core Philosophy:**
 - **Terraform Compatibility First**: Users can use existing Terraform OpenStack provider scripts unchanged
 - **UI/CLI Compatibility**: Horizon dashboard and OpenStack CLI work identically
-- **Drop-in Replacement**: Zero modifications needed to migrate from OpenStack to O3K
+- **Drop-in Replacement**: Zero modifications needed to migrate from OpenStack to Lightstack
 - **Synchronous Operations**: No message queues - operations complete before API returns
 - **Fail-Fast Design**: External dependency failures return immediately (< 1 second timeouts)
 - **Multi-mode Support**: Each service supports stub mode (development) and real mode (production)
@@ -67,11 +67,11 @@ O3K is a lightweight OpenStack implementation in Go, inspired by K3s. It provide
 ### Quick Start with Docker Compose
 
 ```bash
-# Start all services (PostgreSQL + O3K)
+# Start all services (PostgreSQL + lightstack)
 docker compose -f deployments/docker-compose.yml up -d
 
 # Configure environment
-source ~/.o3k-env         # Sets OS_AUTH_URL, OS_USERNAME, etc.
+source ~/.lightstack-env         # Sets OS_AUTH_URL, OS_USERNAME, etc.
 
 # Test it works
 openstack token issue
@@ -81,10 +81,10 @@ openstack token issue
 
 ```bash
 # Build the main binary
-make build                    # Outputs to bin/o3k
+make build                    # Outputs to bin/lightstack
 
 # Run with configuration
-make run                      # Builds and starts with config/o3k.yaml
+make run                      # Builds and starts with config/lightstack.yaml
 
 # Development with hot reload (requires air)
 make dev                      # Auto-restarts on code changes
@@ -142,7 +142,7 @@ make install-tools            # Installs air, golangci-lint, migrate
 
 ### Service Structure
 
-O3K runs as a single process (`cmd/o3k/main.go`) that starts six HTTP servers on different ports:
+Lightstack runs as a single process (`cmd/lightstack/main.go`) that starts six HTTP servers on different ports:
 - **Keystone** (35357): Identity service, JWT-based authentication
 - **Nova** (8774): Compute service, VM lifecycle via libvirt
 - **Neutron** (9696): Network service, namespace isolation via netlink
@@ -269,7 +269,7 @@ Migrations in `migrations/` directory, applied via `golang-migrate/migrate`.
 
 ### Integration Tests
 All integration tests are bash scripts in `test/` directory that:
-1. Start O3K in background
+1. Start Lightstack in background
 2. Use OpenStack CLI (`openstack` command) to test workflows
 3. Verify responses with `jq` for JSON parsing
 4. Clean up resources
@@ -286,8 +286,8 @@ openstack server delete test-vm
 ```
 
 ### Running Tests
-- Integration tests require O3K to be running: `docker compose up -d` or `make run`
-- Tests use environment variables from `.env` or `~/.o3k-env`
+- Integration tests require Lightstack to be running: `docker compose up -d` or `make run`
+- Tests use environment variables from `.env` or `~/.lightstack-env`
 - Quick validation: `./test/quick_test.sh` (runs in ~30 seconds)
 
 ### Test-First Development (Constitution Article III)
@@ -302,7 +302,7 @@ This is **NON-NEGOTIABLE** per the project constitution.
 
 ## Configuration
 
-Configuration loaded from `config/o3k.yaml` (or via `--config` flag).
+Configuration loaded from `config/lightstack.yaml` (or via `--config` flag).
 
 **Critical settings:**
 - `database.url`: PostgreSQL connection string
@@ -420,9 +420,9 @@ if requestedVersion == "" {
 ## Active Technologies
 - Go 1.26 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking) (002-horizon-full-compatibility)
 - PostgreSQL 18 (primary database) (002-horizon-full-compatibility)
-- 007-helm-prereqs-bootstrap-catalog: admin-password bootstrap (bcrypt, `internal/keystone`) + `O3K_ENDPOINT_SCHEME` catalog scheme — no new dependencies, no schema change
-- 009-single-node-real-mode: real-mode single node — per-instance qcow2 overlay over a raw base, startup+periodic network reconciler, metadata/cloud-init reachability + `user_data`, north-south (reuse router NAT), block storage (sync attach + boot-from-volume). No new Go deps; image adds `qemu-img`+`genisoimage`; migration 060 (`volumes.source_image_id`); node-local data under `/var/lib/o3k`.
-- 011-ensure-storage-subdirs: real-mode node-local storage subdirs guaranteed to exist — Glance creates its canonical `/var/lib/o3k/images` (drops the `~/.o3k` fallback; matches `ceph.go`) + chart initContainer pre-creates all subdirs on the `host-storage` hostPath. No new Go/chart deps, no schema change.
+- 007-helm-prereqs-bootstrap-catalog: admin-password bootstrap (bcrypt, `internal/keystone`) + `LIGHTSTACK_ENDPOINT_SCHEME` catalog scheme — no new dependencies, no schema change
+- 009-single-node-real-mode: real-mode single node — per-instance qcow2 overlay over a raw base, startup+periodic network reconciler, metadata/cloud-init reachability + `user_data`, north-south (reuse router NAT), block storage (sync attach + boot-from-volume). No new Go deps; image adds `qemu-img`+`genisoimage`; migration 060 (`volumes.source_image_id`); node-local data under `/var/lib/lightstack`.
+- 011-ensure-storage-subdirs: real-mode node-local storage subdirs guaranteed to exist — Glance creates its canonical `/var/lib/lightstack/images` (drops the `~/.lightstack` fallback; matches `ceph.go`) + chart initContainer pre-creates all subdirs on the `host-storage` hostPath. No new Go/chart deps, no schema change.
 - Helm 3.12+ chart (Go `text/template`); JSON Schema **draft-07**; Markdown docs. No Go code changes. + Helm's built-in `values.schema.json` validation + release-status/pod-readiness reporting; the **helm-unittest** plugin (existing harness). No new Go modules, no chart dependencies. (012-integration-contract)
 - N/A — the external PostgreSQL is the product's and is untouched; this feature adds no schema or migration. (012-integration-contract)
 - Go 1.26 + Gin (HTTP), pgx/pgxpool (existing `database.HealthCheck`). **No new Go modules.** Chart: Helm 3.12+, JSON Schema draft-07, helm-unittest (existing harness) — no new chart deps. (013-readiness-liveness-probes)
@@ -430,10 +430,13 @@ if requestedVersion == "" {
 - 014-ceph-rgw-s3-backend: Ceph RGW (S3) as Glance backend (validate + implement) + tenant object storage. Existing aws-sdk-go-v2 with a custom `http.Client` (CA pool + connect/first-byte transport timeouts; body streams, no total cap); stdlib `crypto/hmac`+`sha256` for server-side S3 SigV4/SigV2 verification; OpenStack EC2-credentials API reusing the `credentials` table (+ `access_key` col); Nova lazy fetch-on-boot via `storage.EnsureLocalBase` (+ checksum-on-upload, node-local base reclaim). Migration 062 (`credentials.access_key` + `s3` catalog seed); RGW `implicit tenants=s3`. No new Go modules.
 - Go 1.26 (module targets 1.21+) + gin-gonic/gin v1.12.0 (HTTP), google/uuid v1.6.0 (`uuid.Validate` — already imported), jackc/pgx/v5 v5.10.0 (`pgx.ErrNoRows`). No new modules. (015-identity-uuid-404)
 - PostgreSQL — **no schema change, no migration** (identity id columns stay `uuid`). (015-identity-uuid-404)
+- 026-rename-to-lightstack: product rename to `lightstack` across 6,749 occurrences / 482 files / 51 paths. Go 1.26.2, **no dependency change**. Module path becomes `github.com/cobaltcore-dev/lightstack`, matching the repository. Case by role: `Lightstack` prose, `lightstack` identifiers/paths, `LIGHTSTACK_` for the 77 env vars. Three hand-written exceptions: iptables chain prefixes → `LS-SG-`/`LS-NSI-` (the full name overflows the 28-char budget), the catalog host token (migration `052` + `auth.go:684,686` must move together), and the acceptance check written as a character class so it does not match itself. No new tests — verification is the acceptance check plus manual checks.
+- PostgreSQL — **no schema change, no new migration**; migration `052` edited in place (five `endpoints.url` rows). Nothing is deployed. (026-rename-to-lightstack)
 
 ## Recent Changes
+- 026-rename-to-lightstack: plan — staged rename (8 stages, gates green per stage); spec dir stays **untracked** (it cannot shed its own 70 occurrences); real-mode host validation mandatory (stub mode never reaches the chain namer or the state root) (SPEC-026 plan)
 - 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)
-- 011-ensure-storage-subdirs: fix real-mode storage-subdir gap (cloud-storage#510) — Glance no longer falls back to `~/.o3k`; chart initContainer pre-creates node-local subdirs (SPEC-011 plan)
+- 011-ensure-storage-subdirs: fix real-mode storage-subdir gap (cloud-storage#510) — Glance no longer falls back to `~/.lightstack`; chart initContainer pre-creates node-local subdirs (SPEC-011 plan)
 - v0.7.0 planning: Database DI (ADR-001), rate limiting (ADR-002), Terraform conformance, CI linting, Cinder route redirect, pagination standardization (SPEC-006)
 - 002-horizon-full-compatibility: Added Go 1.26 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking)
 - 009-single-node-real-mode: real-mode VM disk/network/metadata/north-south + block storage on a single node (SPEC-009 plan)

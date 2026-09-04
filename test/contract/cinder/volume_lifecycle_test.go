@@ -12,7 +12,7 @@ import (
 
 // TestCinderVolumeCreate_Contract tests basic volume creation
 func TestCinderVolumeCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -46,7 +46,7 @@ func TestCinderVolumeCreate_Contract(t *testing.T) {
 
 // TestCinderVolumeList_Contract tests listing volumes
 func TestCinderVolumeList_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -73,7 +73,7 @@ func TestCinderVolumeList_Contract(t *testing.T) {
 
 // TestCinderVolumeAttach_Contract tests volume attachment workflow
 func TestCinderVolumeAttach_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -99,7 +99,7 @@ func TestCinderVolumeAttach_Contract(t *testing.T) {
 
 // TestCinderSnapshotCreate_Contract tests volume snapshot creation
 func TestCinderSnapshotCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -141,7 +141,7 @@ func TestCinderSnapshotCreate_Contract(t *testing.T) {
 
 // TestCinderVolumeLifecycle_Contract tests complete volume lifecycle
 func TestCinderVolumeLifecycle_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

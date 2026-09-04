@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# O3K Turnkey Deployment Script
-# One-command deployment of O3K + Horizon + KVM
+# Lightstack Turnkey Deployment Script
+# One-command deployment of Lightstack + Horizon + KVM
 #
 # Usage:
 #   sudo ./scripts/deploy-turnkey.sh
 #
 # This script deploys a complete, production-ready OpenStack environment:
-#   - O3K (all 5 core services) with real KVM hypervisor
+#   - Lightstack (all 5 core services) with real KVM hypervisor
 #   - Horizon dashboard (Flamingo 2025.2) with noVNC console
 #   - PostgreSQL 18 database
 #   - Network bridge (br-ext) on ens19 for VM external connectivity
@@ -40,11 +40,11 @@ NETWORK_IFACE="ens19"
 GATEWAY="10.2.199.254"
 DNS_SERVERS="8.8.8.8"
 NETMASK="24"
-DB_PASSWORD="O3kSecure2026Password"
+DB_PASSWORD="lightstackSecure2026Password"
 JWT_SECRET="$(openssl rand -hex 32 2>/dev/null || echo 'change-this-jwt-secret-in-production-12345')"
-INSTALL_DIR="/opt/o3k"
-CONFIG_DIR="/opt/o3k/config"
-STORAGE_DIR="/var/lib/o3k"
+INSTALL_DIR="/opt/lightstack"
+CONFIG_DIR="/opt/lightstack/config"
+STORAGE_DIR="/var/lib/lightstack"
 GO_VERSION="1.26.1"
 
 # Logging functions
@@ -58,7 +58,7 @@ show_banner() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║   O3K Turnkey Deployment                                 ║
+║   lightstack Turnkey Deployment                                 ║
 ║   Complete OpenStack in One Command                      ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
@@ -181,7 +181,7 @@ configure_networking() {
     fi
 
     # Create netplan configuration
-    cat > /etc/netplan/01-o3k-bridge.yaml <<EOF
+    cat > /etc/netplan/01-lightstack-bridge.yaml <<EOF
 network:
   version: 2
   renderer: networkd
@@ -225,14 +225,14 @@ configure_bridge_netfilter() {
     log_info "Configuring bridge netfilter..."
 
     if modprobe br_netfilter 2>/dev/null; then
-        echo "br_netfilter" > /etc/modules-load.d/o3k.conf
+        echo "br_netfilter" > /etc/modules-load.d/lightstack.conf
 
-        cat > /etc/sysctl.d/99-o3k-bridge.conf <<EOF
+        cat > /etc/sysctl.d/99-lightstack-bridge.conf <<EOF
 net.bridge.bridge-nf-call-iptables = 1
 net.bridge.bridge-nf-call-ip6tables = 1
 net.ipv4.ip_forward = 1
 EOF
-        sysctl -p /etc/sysctl.d/99-o3k-bridge.conf > /dev/null 2>&1
+        sysctl -p /etc/sysctl.d/99-lightstack-bridge.conf > /dev/null 2>&1
         log_success "Bridge netfilter configured"
     else
         log_warning "Could not load br_netfilter module (may not be needed)"
@@ -247,10 +247,10 @@ setup_database() {
 
     # Create database and user
     sudo -u postgres psql > /dev/null 2>&1 <<EOF || true
-CREATE DATABASE o3k;
-CREATE USER o3k WITH ENCRYPTED PASSWORD '$DB_PASSWORD';
-GRANT ALL PRIVILEGES ON DATABASE o3k TO o3k;
-ALTER DATABASE o3k OWNER TO o3k;
+CREATE DATABASE lightstack;
+CREATE USER lightstack WITH ENCRYPTED PASSWORD '$DB_PASSWORD';
+GRANT ALL PRIVILEGES ON DATABASE lightstack TO lightstack;
+ALTER DATABASE lightstack OWNER TO lightstack;
 EOF
 
     # Allow local connections
@@ -258,8 +258,8 @@ EOF
     PG_HBA="/etc/postgresql/$PG_VERSION/main/pg_hba.conf"
 
     if [ -f "$PG_HBA" ]; then
-        if ! grep -q "host.*o3k.*o3k.*127.0.0.1" "$PG_HBA"; then
-            echo "host    o3k    o3k    127.0.0.1/32    md5" >> "$PG_HBA"
+        if ! grep -q "host.*lightstack.*lightstack.*127.0.0.1" "$PG_HBA"; then
+            echo "host    lightstack    lightstack    127.0.0.1/32    md5" >> "$PG_HBA"
             systemctl restart postgresql
         fi
     fi
@@ -277,17 +277,17 @@ create_storage() {
     log_success "Storage directories created at $STORAGE_DIR"
 }
 
-# Generate O3K configuration
+# Generate Lightstack configuration
 generate_config() {
-    log_info "Generating O3K configuration..."
+    log_info "Generating Lightstack configuration..."
 
-    REPO_DIR="/root/o3k"
+    REPO_DIR="/root/lightstack"
     mkdir -p "$CONFIG_DIR"
 
-    # O3K main configuration
-    cat > "$CONFIG_DIR/o3k.yaml" <<EOF
+    # Lightstack main configuration
+    cat > "$CONFIG_DIR/lightstack.yaml" <<EOF
 database:
-  url: "postgres://o3k:$DB_PASSWORD@localhost:5432/o3k?sslmode=disable"
+  url: "postgres://lightstack:$DB_PASSWORD@localhost:5432/lightstack?sslmode=disable"
   max_connections: 20
 
 keystone:
@@ -349,7 +349,7 @@ EOF
         "$REPO_DIR/deployments/horizon-config/local_settings" > "$CONFIG_DIR/horizon-config/local_settings"
 
     # Also fix OPENSTACK_HOST to use HOST_IP for host networking
-    sed -i "s/OPENSTACK_HOST = \"o3k\"/OPENSTACK_HOST = \"$HOST_IP\"/g" "$CONFIG_DIR/horizon-config/local_settings"
+    sed -i "s/OPENSTACK_HOST = \"lightstack\"/OPENSTACK_HOST = \"$HOST_IP\"/g" "$CONFIG_DIR/horizon-config/local_settings"
 
     # Fix noVNC URL to use HOST_IP
     sed -i "s/novnc:6080/$HOST_IP:6080/g" "$CONFIG_DIR/horizon-config/local_settings"
@@ -361,7 +361,7 @@ EOF
 create_docker_compose() {
     log_info "Creating Docker Compose configuration..."
 
-    REPO_DIR="/root/o3k"
+    REPO_DIR="/root/lightstack"
     cd "$REPO_DIR"
 
     cat > "$REPO_DIR/deployments/docker-compose-turnkey.yml" <<EOF
@@ -369,19 +369,19 @@ services:
   # Memcached for Horizon sessions
   memcached:
     image: memcached:1.6-alpine
-    container_name: o3k-memcached
+    container_name: lightstack-memcached
     hostname: memcached
     network_mode: host
     command: memcached -m 64 -l 0.0.0.0
     restart: unless-stopped
 
-  # O3K OpenStack Services with KVM
-  o3k:
+  # Lightstack OpenStack Services with KVM
+  lightstack:
     build:
       context: ..
       dockerfile: build/package/Dockerfile
-    image: o3k:latest
-    container_name: o3k
+    image: lightstack:latest
+    container_name: lightstack
     privileged: true
     network_mode: host
     volumes:
@@ -389,8 +389,8 @@ services:
       - $STORAGE_DIR/volumes:$STORAGE_DIR/volumes
       - $STORAGE_DIR/images:$STORAGE_DIR/images
       - $STORAGE_DIR/instances:$STORAGE_DIR/instances
-      - $CONFIG_DIR:/opt/o3k/config:ro
-    command: [/app/o3k, -config, /opt/o3k/config/o3k.yaml]
+      - $CONFIG_DIR:/opt/lightstack/config:ro
+    command: [/app/lightstack, -config, /opt/lightstack/config/lightstack.yaml]
     restart: unless-stopped
     healthcheck:
       test: [CMD-SHELL, "curl -f http://localhost:35357/v3 || exit 1"]
@@ -401,7 +401,7 @@ services:
   # noVNC Console Proxy
   novnc:
     image: dougw/novnc:latest
-    container_name: o3k-novnc
+    container_name: lightstack-novnc
     hostname: novnc
     network_mode: host
     environment:
@@ -417,11 +417,11 @@ services:
   # OpenStack Horizon Dashboard (using working config from repo)
   horizon:
     image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
-    container_name: o3k-horizon
+    container_name: lightstack-horizon
     hostname: horizon
     network_mode: host
     depends_on:
-      o3k:
+      lightstack:
         condition: service_healthy
       novnc:
         condition: service_started
@@ -453,13 +453,13 @@ EOF
 
 # Build and start services
 deploy_services() {
-    log_info "Building O3K image (this may take several minutes)..."
+    log_info "Building Lightstack image (this may take several minutes)..."
 
-    REPO_DIR="/root/o3k"
+    REPO_DIR="/root/lightstack"
     cd "$REPO_DIR/deployments"
 
     docker compose -f docker-compose-turnkey.yml build --quiet
-    log_success "O3K image built"
+    log_success "Lightstack image built"
 
     log_info "Starting services..."
     docker compose -f docker-compose-turnkey.yml up -d
@@ -467,15 +467,15 @@ deploy_services() {
     log_info "Waiting for services to be ready..."
     sleep 10
 
-    # Wait for O3K to be healthy
+    # Wait for Lightstack to be healthy
     for i in {1..30}; do
         if curl -sf http://localhost:35357/v3 > /dev/null 2>&1; then
-            log_success "O3K services are ready"
+            log_success "Lightstack services are ready"
             break
         fi
         if [ $i -eq 30 ]; then
-            log_error "O3K failed to start within 5 minutes"
-            docker compose -f docker-compose-turnkey.yml logs o3k
+            log_error "Lightstack failed to start within 5 minutes"
+            docker compose -f docker-compose-turnkey.yml logs lightstack
             exit 1
         fi
         sleep 10
@@ -499,8 +499,8 @@ deploy_services() {
 create_cli_env() {
     log_info "Creating OpenStack CLI environment file..."
 
-    cat > /root/.o3k-env <<EOF
-# O3K OpenStack Environment
+    cat > /root/.lightstack-env <<EOF
+# Lightstack OpenStack Environment
 export OS_AUTH_URL=http://$HOST_IP:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
@@ -511,8 +511,8 @@ export OS_IDENTITY_API_VERSION=3
 EOF
 
     # Add to bashrc if not already there
-    if ! grep -q "source /root/.o3k-env" /root/.bashrc; then
-        echo "source /root/.o3k-env" >> /root/.bashrc
+    if ! grep -q "source /root/.lightstack-env" /root/.bashrc; then
+        echo "source /root/.lightstack-env" >> /root/.bashrc
     fi
 
     log_success "CLI environment configured"
@@ -520,7 +520,7 @@ EOF
 
 # Show completion message
 show_completion() {
-    log_success "O3K deployment complete!"
+    log_success "Lightstack deployment complete!"
     echo ""
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║                    Access Information                      ║"
@@ -536,15 +536,15 @@ show_completion() {
     echo "   URL: http://$HOST_IP:6080"
     echo ""
     echo "🔧 OpenStack CLI:"
-    echo "   source /root/.o3k-env"
+    echo "   source /root/.lightstack-env"
     echo "   openstack token issue"
     echo "   openstack server list"
     echo ""
     echo "📊 Service Status:"
-    echo "   docker compose -f /root/o3k/deployments/docker-compose-turnkey.yml ps"
+    echo "   docker compose -f /root/lightstack/deployments/docker-compose-turnkey.yml ps"
     echo ""
     echo "📋 Logs:"
-    echo "   docker compose -f /root/o3k/deployments/docker-compose-turnkey.yml logs -f"
+    echo "   docker compose -f /root/lightstack/deployments/docker-compose-turnkey.yml logs -f"
     echo ""
     echo "Network Configuration:"
     echo "   Bridge: br-ext"
@@ -553,7 +553,7 @@ show_completion() {
     echo "   Gateway: $GATEWAY"
     echo ""
     echo "⚡ Quick Test:"
-    echo "   source /root/.o3k-env"
+    echo "   source /root/.lightstack-env"
     echo "   openstack network create test-net"
     echo "   openstack server create --flavor m1.small --image cirros --network test-net test-vm"
     echo "   openstack server list"

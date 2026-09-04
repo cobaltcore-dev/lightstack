@@ -1,0 +1,148 @@
+# helm-unittest specs for the one-time legacy node-local state migration
+# (cobaltcore-dev/cloud-storage#575, PR review). The product rename moved the
+# node-local root from the pre-rename path to /var/lib/lightstack. pkg/paths.Base is a
+# compile-time constant, so an upgraded pod writes to the new root and stops
+# seeing the image bases, volume files, instance overlays, cloud-init ISOs and
+# dnsmasq state a pre-rename install left under the old one.
+#
+# realMode.legacyStatePath is the opt-in: set it to the old root and an extra
+# initContainer moves that node's state across once, before init-host-storage
+# pre-creates the subdirs. Empty (the default) renders nothing, so fresh
+# installs and every existing test stay exactly as they were.
+suite: real-mode legacy state migration initContainer
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+tests:
+  - it: default renders no migration initContainer and leaves init-host-storage first
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: init-host-storage
+      - notExists:
+          path: spec.template.spec.initContainers[1]
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: legacy-state
+            hostPath:
+              path: /var/lib/legacy-root
+              type: DirectoryOrCreate
+
+  - it: legacyStatePath prepends the migration initContainer before init-host-storage
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.legacyStatePath: /var/lib/legacy-root
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: migrate-legacy-state
+      - equal:
+          path: spec.template.spec.initContainers[1].name
+          value: init-host-storage
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].image
+          pattern: ghcr.io/lightstack/lightstack
+
+  - it: the migration merges every paths.go subdir file by file, and fails on a conflict
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.legacyStatePath: /var/lib/legacy-root
+    asserts:
+      # Per file, not per directory: the two roots are separate volumes, so every move is
+      # an interruptible copy, and a per-directory `mv -n` would refuse a half-populated
+      # destination directory on every later run.
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: mv -n
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: -type f -o -type l
+      # A path under both roots is unresolvable, so the container must not exit 0.
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: exit 1
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: images volumes instances cloud-init dhcp
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: /var/lib/legacy-root
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: /var/lib/lightstack
+
+  - it: the migration mounts both roots read-write
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.legacyStatePath: /var/lib/legacy-root
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          content:
+            name: legacy-state
+            mountPath: /var/lib/legacy-root
+      - contains:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          content:
+            name: host-storage
+            mountPath: /var/lib/lightstack
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: legacy-state
+            hostPath:
+              path: /var/lib/legacy-root
+              type: DirectoryOrCreate
+
+  - it: multi-node real mode migrates on every node (shared podSpec covers the DaemonSet)
+    template: templates/daemonset.yaml
+    set:
+      deploymentMode: multi-node
+      realMode.enabled: true
+      realMode.legacyStatePath: /var/lib/legacy-root
+      glance.storageMode: rbd   # multi-node gates (FR-012e); node-local state still moves
+      cinder.storageMode: rbd
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: migrate-legacy-state
+      - contains:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          content:
+            name: legacy-state
+            mountPath: /var/lib/legacy-root
+
+  - it: honors a custom hostStoragePath as the migration target
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.hostStoragePath: /data/lightstack
+      realMode.legacyStatePath: /var/lib/legacy-root
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: /data/lightstack
+
+  - it: stub mode renders no initContainer even with legacyStatePath set (realMode gates it)
+    template: templates/deployment.yaml
+    set:
+      realMode.legacyStatePath: /var/lib/legacy-root
+    asserts:
+      - notExists:
+          path: spec.template.spec.initContainers
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: legacy-state
+            hostPath:
+              path: /var/lib/legacy-root
+              type: DirectoryOrCreate

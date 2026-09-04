@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-This specification defines a minimal IAM enhancement for O3K Keystone that adds two critical capabilities:
+This specification defines a minimal IAM enhancement for Lightstack Keystone that adds two critical capabilities:
 
 1. **Application Credentials** (Enhanced): Long-lived API keys for CI/CD automation with fine-grained access control
 2. **Policy Engine** (New): Resource-level authorization beyond simple role-based access control
@@ -94,7 +94,7 @@ Phase 5: Refactor (KEEP GREEN ✅)
 
 ### Article IX: Integration-First
 
-**Compliance**: Contract tests use real OpenStack SDK (gophercloud), real PostgreSQL, real O3K binary - not mocks.
+**Compliance**: Contract tests use real OpenStack SDK (gophercloud), real PostgreSQL, real Lightstack binary - not mocks.
 
 ---
 
@@ -102,7 +102,7 @@ Phase 5: Refactor (KEEP GREEN ✅)
 
 ### Current Application Credentials Implementation
 
-**Location**: `/Users/I761222/git/o3k/internal/keystone/application_credentials.go`
+**Location**: `/Users/I761222/git/lightstack/internal/keystone/application_credentials.go`
 **Migration**: `029_keystone_application_credentials.up.sql`
 
 **Current Schema** (Migration 029):
@@ -220,8 +220,8 @@ import (
 
 var (
     testPostgresURL string
-    testO3KURL      string
-    testO3KProcess  *os.Process
+    testLightstackURL      string
+    testLightstackProcess  *os.Process
 )
 
 func TestMain(m *testing.M) {
@@ -241,15 +241,15 @@ func TestMain(m *testing.M) {
         panic(fmt.Sprintf("Failed to run migrations: %v", err))
     }
 
-    // Start O3K binary
-    if err := startO3K(testPostgresURL); err != nil {
-        panic(fmt.Sprintf("Failed to start O3K: %v", err))
+    // Start lightstack binary
+    if err := startLightstack(testPostgresURL); err != nil {
+        panic(fmt.Sprintf("Failed to start lightstack: %v", err))
     }
-    defer stopO3K()
+    defer stopLightstack()
 
-    // Wait for O3K to be ready
-    if err := waitForO3K(); err != nil {
-        panic(fmt.Sprintf("O3K failed to start: %v", err))
+    // Wait for lightstack to be ready
+    if err := waitForLightstack(); err != nil {
+        panic(fmt.Sprintf("lightstack failed to start: %v", err))
     }
 
     // Run tests
@@ -279,12 +279,12 @@ func startPostgresContainer(ctx context.Context) (testcontainers.Container, erro
 }
 
 func runMigrations(dbURL string) error {
-    cmd := exec.Command("../../../bin/o3k", "migrate", "--database-url", dbURL)
+    cmd := exec.Command("../../../bin/lightstack", "migrate", "--database-url", dbURL)
     return cmd.Run()
 }
 
-func startO3K(dbURL string) error {
-    cmd := exec.Command("../../../bin/o3k", "--database-url", dbURL, "--port", "35357")
+func startLightstack(dbURL string) error {
+    cmd := exec.Command("../../../bin/lightstack", "--database-url", dbURL, "--port", "35357")
     cmd.Stdout = os.Stdout
     cmd.Stderr = os.Stderr
 
@@ -292,37 +292,37 @@ func startO3K(dbURL string) error {
         return err
     }
 
-    testO3KProcess = cmd.Process
-    testO3KURL = "http://localhost:35357/v3"
+    testLightstackProcess = cmd.Process
+    testLightstackURL = "http://localhost:35357/v3"
 
     return nil
 }
 
-func stopO3K() {
-    if testO3KProcess != nil {
-        testO3KProcess.Kill()
+func stopLightstack() {
+    if testLightstackProcess != nil {
+        testLightstackProcess.Kill()
     }
 }
 
-func waitForO3K() error {
+func waitForLightstack() error {
     client := &http.Client{Timeout: 2 * time.Second}
 
     for i := 0; i < 30; i++ {
-        resp, err := client.Get(testO3KURL + "/")
+        resp, err := client.Get(testLightstackURL + "/")
         if err == nil && resp.StatusCode == 200 {
             return nil
         }
         time.Sleep(1 * time.Second)
     }
 
-    return fmt.Errorf("O3K failed to become ready after 30 seconds")
+    return fmt.Errorf("lightstack failed to become ready after 30 seconds")
 }
 
 // Helper functions for tests
 
 func setupKeystoneClient(t *testing.T) *KeystoneClient {
     return &KeystoneClient{
-        BaseURL:    testO3KURL,
+        BaseURL:    testLightstackURL,
         HTTPClient: &http.Client{Timeout: 5 * time.Second},
     }
 }
@@ -2022,7 +2022,7 @@ func (c *Cache) cleanup() {
 ## Configuration
 
 ```yaml
-# config/o3k.yaml (enhanced Keystone section)
+# config/lightstack.yaml (enhanced Keystone section)
 
 keystone:
   # Existing configuration
@@ -2042,7 +2042,7 @@ keystone:
   # Policy Engine
   policy:
     enabled: true
-    default_policy_file: "/etc/o3k/policy.json"
+    default_policy_file: "/etc/lightstack/policy.json"
     cache_ttl: 5m
     fail_open: false                  # Fail-closed (deny if policy check errors)
 

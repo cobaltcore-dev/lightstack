@@ -14,7 +14,7 @@ import (
 
 // TestGlanceStageImageData_Contract tests POST /v2/images/:id/stage
 func TestGlanceStageImageData_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -48,7 +48,7 @@ func TestGlanceStageImageData_Contract(t *testing.T) {
 
 // TestGlanceImportImage_Contract tests POST /v2/images/:id/import
 func TestGlanceImportImage_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 
@@ -95,7 +95,7 @@ func TestGlanceImportImage_Contract(t *testing.T) {
 
 // TestGlanceGetImageImportInfo_Contract tests GET /v2/images/:id/import
 func TestGlanceGetImageImportInfo_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupGlanceClient(t)
 

@@ -4,11 +4,11 @@
 # cloud-storage#515 — identity by-id lookups must return 404 (not 500) for a
 # non-UUID id, so the openstack CLI / Terraform name->id resolution works.
 #
-# Requires a running o3k and OS_* admin credentials in the environment
-# (e.g. `source ~/.o3k-env`) plus the `openstack` CLI. Exits non-zero on failure.
+# Requires a running Lightstack and OS_* admin credentials in the environment
+# (e.g. `source ~/.lightstack-env`) plus the `openstack` CLI. Exits non-zero on failure.
 set -euo pipefail
 
-: "${OS_AUTH_URL:?source your o3k env (OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, ...)}"
+: "${OS_AUTH_URL:?source your Lightstack env (OS_AUTH_URL, OS_USERNAME, OS_PASSWORD, ...)}"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 

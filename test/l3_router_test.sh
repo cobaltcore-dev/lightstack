@@ -1,5 +1,5 @@
 #!/bin/bash
-# O3K L3 Router API Test (macOS Compatible - Stub Mode)
+# Lightstack L3 Router API Test (macOS Compatible - Stub Mode)
 # Tests router and floating IP API endpoints without requiring Linux networking
 
 set -e
@@ -12,7 +12,7 @@ NC='\033[0m'
 PASSED=0
 FAILED=0
 
-O3K_URL="http://localhost:35357"
+LIGHTSTACK_URL="http://localhost:35357"
 NEUTRON_URL="http://localhost:9696"
 
 print_test() {
@@ -36,7 +36,7 @@ print_info() {
 # Test 1: Authenticate
 print_test "Authentication"
 
-response=$(curl -s -i -X POST "${O3K_URL}/v3/auth/tokens" \
+response=$(curl -s -i -X POST "${LIGHTSTACK_URL}/v3/auth/tokens" \
     -H "Content-Type: application/json" \
     -d '{
         "auth": {

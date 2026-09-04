@@ -3,7 +3,7 @@
 **Feature Branch**: `015-identity-uuid-404`  
 **Created**: 2026-07-10  
 **Status**: Draft  
-**Input**: cloud-storage#515 — "o3k Identity API returns 500 instead of 404 for non-UUID project/user/role ids" (issue title + body + the two scoping comments agreeing full-identity-surface coverage)
+**Input**: cloud-storage#515 — "lightstack Identity API returns 500 instead of 404 for non-UUID project/user/role ids" (issue title + body + the two scoping comments agreeing full-identity-surface coverage)
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -72,7 +72,7 @@ Operators monitoring the service do not see malformed-identifier requests report
 
 - Q: Which not-found cases get Keystone's verbatim message? → A: All identity not-found responses — both malformed and valid-but-unknown ids — return Keystone-verbatim `"Could not find <resource>: <id>."`; the two cases are byte-identical and match Keystone (normalizing the valid-but-unknown path is in scope, not only the malformed path).
 - Q: Are query/filter-parameter ids (e.g. `role_assignments ?user.id=`) in scope? → A: No — path ids only. Malformed ids in query *filters* are a distinct surface (different expected behavior — often a 200 empty-list, not 404) and are tracked as a separate follow-up.
-- Q: Which error envelope does the 404 use? → A: Keep o3k's existing Nova-style envelope (`{"itemNotFound": {…}}`); only status + message are made Keystone-exact. Identity-v3 `{"error":{…}}` envelope conformance is deferred surface-wide to #518.
+- Q: Which error envelope does the 404 use? → A: Keep lightstack's existing Nova-style envelope (`{"itemNotFound": {…}}`); only status + message are made Keystone-exact. Identity-v3 `{"error":{…}}` envelope conformance is deferred surface-wide to #518.
 - Q: For admin-/owner-gated endpoints, does an unauthorized caller's *malformed* id return 403 or 404? → A: 403 — authorization precedence (like authentication → 401), decided before id validation, matching Keystone's authn→authz→look-up order. Affects user-delete, password-change, and the EC2-credential endpoints; implies id validation on those runs *after* their authz check, not via a pre-handler middleware.
 - Q: On handlers that currently mask all errors as 404 (domains, `UpdateUser`, `GET /users/:id/{projects,groups}`), fix the masking or just change the message? → A: Fix it. Since #515 already rewrites their not-found path for the verbatim message (Q1), those handlers also start distinguishing `ErrNoRows` (→ verbatim 404) from a genuine error (→ 500) — matching Keystone (verified via `/openstack/keystone` api-ref: 404 = "resource could not be found", a distinct status from the 5xx server/service errors; a backend fault is never collapsed into 404). Masking on handlers #515 does not touch stays a separate follow-up.
 
@@ -112,7 +112,7 @@ Operators monitoring the service do not see malformed-identifier requests report
 - **404, not 400, for malformed ids**: Upstream OpenStack Keystone treats identifiers as opaque strings and returns not-found for anything unknown; it does not reject non-UUID ids as bad-request. The ticket also requires 404 specifically, because client name→id resolution keys its fallback on a 404. A 400 would not trigger that fallback. Therefore malformed ids resolve to 404.
 - **Identifier format**: the product's identity identifiers are UUIDs, so any identifier that is not a well-formed UUID cannot match a stored resource. Standard UUID textual formats are accepted; anything outside them is malformed.
 - **Scope decided with the reporter**: coverage is the full identity surface (not only projects/users/roles), agreed in the issue comments.
-- **Not-found message**: all identity by-id not-found responses (malformed and valid-but-unknown) use Keystone's verbatim message `"Could not find <resource>: <id>."` (FR-004), replacing o3k's prior generic not-found text on the identity surface. The response *envelope* is a separate concern (see Out of Scope).
+- **Not-found message**: all identity by-id not-found responses (malformed and valid-but-unknown) use Keystone's verbatim message `"Could not find <resource>: <id>."` (FR-004), replacing lightstack's prior generic not-found text on the identity surface. The response *envelope* is a separate concern (see Out of Scope).
 
 ## Out of Scope
 
@@ -120,7 +120,7 @@ Operators monitoring the service do not see malformed-identifier requests report
 - Changes to non-identity services (compute, network, block storage, image) — even if they share similar patterns.
 - Any change to how resources are looked up by name (the `?name=` filter itself), which already works.
 - **Query/filter-parameter ids** (e.g. `GET /v3/role_assignments?user.id=`, `?scope.project.id=`): a malformed id in a query *filter* can also currently 500, but it's a distinct surface — the path-param mechanism doesn't see query params, and Keystone's expected response for an unknown filter is typically an empty list (200), not 404. Fixing it needs per-endpoint, handler-level handling with its own Keystone verification; tracked as a separate follow-up.
-- **Identity-v3 error envelope**: not-found responses keep o3k's existing Nova-style envelope (`{"itemNotFound": {…}}`); only status and message are made Keystone-exact here. Converting keystone to Keystone's `{"error": {code, title, message}}` envelope is a surface-wide change tracked in #518.
+- **Identity-v3 error envelope**: not-found responses keep lightstack's existing Nova-style envelope (`{"itemNotFound": {…}}`); only status and message are made Keystone-exact here. Converting keystone to Keystone's `{"error": {code, title, message}}` envelope is a surface-wide change tracked in #518.
 
 ## Dependencies
 

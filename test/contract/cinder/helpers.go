@@ -17,7 +17,8 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-func skipIfO3KNotRunning(t *testing.T) {
+func skipIfLightstackNotRunning(t *testing.T) {
+	t.Helper()
 	// Try to connect - if it fails, skip the test
 	authURL := getEnvOrDefault("OS_AUTH_URL", "http://localhost:35357/v3")
 	opts := gophercloud.AuthOptions{
@@ -30,7 +31,7 @@ func skipIfO3KNotRunning(t *testing.T) {
 
 	provider, err := openstack.AuthenticatedClient(context.Background(), opts)
 	if err != nil {
-		t.Skipf("O3K not running or not accessible: %v", err)
+		t.Skipf("Lightstack not running or not accessible: %v", err)
 	}
 
 	// Try to create a Cinder client
@@ -41,6 +42,7 @@ func skipIfO3KNotRunning(t *testing.T) {
 }
 
 func setupCinderClient(t *testing.T) *gophercloud.ServiceClient {
+	t.Helper()
 	authURL := getEnvOrDefault("OS_AUTH_URL", "http://localhost:35357/v3")
 	opts := gophercloud.AuthOptions{
 		IdentityEndpoint: authURL,

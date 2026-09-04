@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # setup-rook-rgw.sh — stand up a single-node Rook Ceph cluster with an RGW (S3)
-# endpoint on a dedicated minikube profile, for validating o3k's Glance S3 backend
+# endpoint on a dedicated minikube profile, for validating Lightstack's Glance S3 backend
 # against real Ceph RGW (cloud-storage#480).
 #
 # Rook is installed via its official Helm chart — nothing from Rook is vendored
@@ -12,10 +12,10 @@
 #   ./setup-rook-rgw.sh            # bring everything up (idempotent-ish)
 #   ./setup-rook-rgw.sh --delete   # tear the whole profile down
 #
-#   # capability B (SPEC-014 #480): wire the RGW's S3 auth to o3k Keystone so
-#   # tenant EC2 keys validate via /v3/s3tokens. Run AFTER o3k is up and reachable
-#   # from this cluster (pass o3k's Keystone URL — cross-cluster, use a routable IP):
-#   O3K_KEYSTONE_URL=http://<o3k-node-ip>:35357 ./setup-rook-rgw.sh --wire-keystone
+#   # capability B (SPEC-014 #480): wire the RGW's S3 auth to Lightstack Keystone so
+#   # tenant EC2 keys validate via /v3/s3tokens. Run AFTER Lightstack is up and reachable
+#   # from this cluster (pass Lightstack's Keystone URL — cross-cluster, use a routable IP):
+#   LIGHTSTACK_KEYSTONE_URL=http://<lightstack-node-ip>:35357 ./setup-rook-rgw.sh --wire-keystone
 #
 # Requirements: minikube (kvm2 driver + libvirt), kubectl, helm 3.13+, and
 # optionally the aws CLI for the end-to-end S3 smoke test.
@@ -25,7 +25,7 @@ set -euo pipefail
 PROFILE="${PROFILE:-rook}"
 NS="${NS:-rook-ceph}"
 STORE="${STORE:-my-store}"
-OBJ_USER="${OBJ_USER:-o3k}"
+OBJ_USER="${OBJ_USER:-lightstack}"
 NODEPORT="${NODEPORT:-30080}"
 # Validated pair (manual run 2026-07): Rook v1.20.1 + Ceph v20.2.2 (tentacle).
 # If helm can't find the chart version, run:
@@ -37,15 +37,15 @@ MK_CPUS="${MK_CPUS:-4}"
 MK_DISK="${MK_DISK:-40g}"
 MK_EXTRA_DISKS="${MK_EXTRA_DISKS:-2}"   # raw disks -> OSDs; needs a VM driver
 
-# capability-B (RGW -> o3k Keystone) wireup — used only by --wire-keystone.
-# O3K_KEYSTONE_URL has no default: it is o3k's Keystone as reachable FROM this
+# capability-B (RGW -> Lightstack Keystone) wireup — used only by --wire-keystone.
+# LIGHTSTACK_KEYSTONE_URL has no default: it is Lightstack's Keystone as reachable FROM this
 # cluster (cross-cluster, so a node IP + :35357, not localhost/a cluster DNS name).
-O3K_KEYSTONE_URL="${O3K_KEYSTONE_URL:-}"
-KS_ADMIN_USER="${O3K_KEYSTONE_ADMIN_USER:-admin}"
-KS_ADMIN_PASSWORD="${O3K_KEYSTONE_ADMIN_PASSWORD:-secret}"
-KS_ADMIN_PROJECT="${O3K_KEYSTONE_ADMIN_PROJECT:-default}"
-KS_ADMIN_DOMAIN="${O3K_KEYSTONE_ADMIN_DOMAIN:-Default}"
-KS_ROLES="${O3K_KEYSTONE_ACCEPTED_ROLES:-admin,member,reader,_member_}"
+LIGHTSTACK_KEYSTONE_URL="${LIGHTSTACK_KEYSTONE_URL:-}"
+KS_ADMIN_USER="${LIGHTSTACK_KEYSTONE_ADMIN_USER:-admin}"
+KS_ADMIN_PASSWORD="${LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD:-secret}"
+KS_ADMIN_PROJECT="${LIGHTSTACK_KEYSTONE_ADMIN_PROJECT:-default}"
+KS_ADMIN_DOMAIN="${LIGHTSTACK_KEYSTONE_ADMIN_DOMAIN:-Default}"
+KS_ROLES="${LIGHTSTACK_KEYSTONE_ACCEPTED_ROLES:-admin,member,reader,_member_}"
 
 CTX="$PROFILE"                          # minikube names the context after the profile
 K="kubectl --context $CTX -n $NS"       # every op is pinned to the rook profile,
@@ -55,7 +55,7 @@ log(){ printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 die(){ printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
-# wire_keystone — point the RGW's S3 auth at o3k Keystone (SPEC-014 #480 capability
+# wire_keystone — point the RGW's S3 auth at Lightstack Keystone (SPEC-014 #480 capability
 # B). Injects the rgw keystone options into the rook-config-override ConfigMap
 # (preserving the single-node tuning) and restarts the RGW so it re-reads them
 # (rgw_keystone_url is startup-only). These are the exact options validated against
@@ -70,15 +70,15 @@ need(){ command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 # then Keystone.
 wire_keystone(){
   need minikube; need kubectl
-  [ -n "$O3K_KEYSTONE_URL" ] || die "set O3K_KEYSTONE_URL=http://<o3k-node-ip>:35357 (o3k Keystone as reachable from the '$PROFILE' cluster)"
+  [ -n "$LIGHTSTACK_KEYSTONE_URL" ] || die "set LIGHTSTACK_KEYSTONE_URL=http://<lightstack-node-ip>:35357 (Lightstack Keystone as reachable from the '$PROFILE' cluster)"
 
-  log "Checking o3k Keystone reachability from the '$PROFILE' cluster ($O3K_KEYSTONE_URL/v3)"
+  log "Checking Lightstack Keystone reachability from the '$PROFILE' cluster ($LIGHTSTACK_KEYSTONE_URL/v3)"
   $K delete pod ks-probe --ignore-not-found >/dev/null 2>&1 || true
   if $K run ks-probe --image=curlimages/curl:latest --restart=Never --rm -i --quiet \
-       -- -m 8 -sf "$O3K_KEYSTONE_URL/v3" >/dev/null 2>&1; then
+       -- -m 8 -sf "$LIGHTSTACK_KEYSTONE_URL/v3" >/dev/null 2>&1; then
     echo "  reachable"
   else
-    echo "  WARNING: could not reach $O3K_KEYSTONE_URL/v3 from the cluster — fix cross-cluster routing or tenant auth will fail"
+    echo "  WARNING: could not reach $LIGHTSTACK_KEYSTONE_URL/v3 from the cluster — fix cross-cluster routing or tenant auth will fail"
   fi
 
   log "Injecting RGW->Keystone S3 auth into rook-config-override"
@@ -93,7 +93,7 @@ data:
     osd pool default size = 2
     osd crush chooseleaf type = 0
     rgw s3 auth use keystone = true
-    rgw keystone url = ${O3K_KEYSTONE_URL}
+    rgw keystone url = ${LIGHTSTACK_KEYSTONE_URL}
     rgw keystone api version = 3
     rgw keystone implicit tenants = s3
     rgw keystone accepted roles = ${KS_ROLES}
@@ -118,22 +118,22 @@ YAML
   cat <<EOF
 
 ============================================================
-RGW S3 auth wired to o3k Keystone (capability B).
+RGW S3 auth wired to lightstack Keystone (capability B).
 
   RGW endpoint:   http://${IP}:${NODEPORT}   (path-style — use the IP)
-  Keystone:       ${O3K_KEYSTONE_URL}
-  Validates via:  ${O3K_KEYSTONE_URL}/v3/s3tokens
+  Keystone:       ${LIGHTSTACK_KEYSTONE_URL}
+  Validates via:  ${LIGHTSTACK_KEYSTONE_URL}/v3/s3tokens
   implicit tenants = s3   (per-project bucket namespaces)
   token cache = 0         (revocation takes effect immediately)
 
-Tenant flow (run on the o3k side, then use any S3 client against the endpoint above):
+Tenant flow (run on the lightstack side, then use any S3 client against the endpoint above):
   openstack ec2 credentials create -f value -c access -c secret
   AWS_ACCESS_KEY_ID=<access> AWS_SECRET_ACCESS_KEY=<secret> \\
     <s3 client> --endpoint-url http://${IP}:${NODEPORT} ...   # path-style
 
 Notes:
   - Glance's LOCAL RGW user (${OBJ_USER}) keeps working alongside Keystone.
-  - o3k /v3/s3tokens must be reachable from THIS cluster (cross-cluster routing).
+  - lightstack /v3/s3tokens must be reachable from THIS cluster (cross-cluster routing).
   - Re-run without --wire-keystone to reset, or --delete to tear down.
 ============================================================
 EOF
@@ -255,7 +255,7 @@ metadata:
   name: ${OBJ_USER}
 spec:
   store: ${STORE}
-  displayName: "o3k glance"
+  displayName: "Lightstack glance"
 YAML
 
 secret="rook-ceph-object-user-${STORE}-${OBJ_USER}"
@@ -317,7 +317,7 @@ Rook Ceph RGW fixture ready.   S3 smoke test: ${SMOKE}
   Secret key:    ${SECRET}
   Region:        us-east-1  (path-style)
 
-o3k Glance (storage_mode: s3):
+lightstack Glance (storage_mode: s3):
   glance:
     storage_mode: s3
     s3_endpoint: ${RGW_EXT}
@@ -325,8 +325,8 @@ o3k Glance (storage_mode: s3):
     s3_region:   us-east-1
   env: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  (values above)
 
-Capability B (tenant object storage) — after o3k is up and reachable:
-  O3K_KEYSTONE_URL=http://<o3k-node-ip>:35357 $0 --wire-keystone
+Capability B (tenant object storage) — after lightstack is up and reachable:
+  LIGHTSTACK_KEYSTONE_URL=http://<lightstack-node-ip>:35357 $0 --wire-keystone
 
 Teardown:  $0 --delete
 ============================================================

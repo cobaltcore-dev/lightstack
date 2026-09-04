@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-O3K achieves **100% compatibility with OpenStack Horizon dashboard** (Flamingo 2025.2 release). All critical dashboard pages function correctly with full feature parity to standard OpenStack deployments.
+Lightstack achieves **100% compatibility with OpenStack Horizon dashboard** (Flamingo 2025.2 release). All critical dashboard pages function correctly with full feature parity to standard OpenStack deployments.
 
 **Key Achievement**: Horizon dashboard works without any modifications, custom patches, or workarounds.
 
@@ -16,13 +16,13 @@ O3K achieves **100% compatibility with OpenStack Horizon dashboard** (Flamingo 2
 
 ### Test Environment
 - **Horizon Version**: 2025.2-ubuntu-noble (Flamingo)
-- **O3K Version**: Latest (342 endpoints)
+- **lightstack Version**: Latest (342 endpoints)
 - **Test Date**: March 17, 2026
 - **Test Scope**: All major dashboard pages across Project and Admin views
 
 ### Testing Approach
 1. **Functional Testing**: Navigate all dashboard pages, verify no Django errors
-2. **API Trace Analysis**: Monitor O3K logs for 404/500 errors during page loads
+2. **API Trace Analysis**: Monitor Lightstack logs for 404/500 errors during page loads
 3. **Contract Testing**: 17 automated tests using gophercloud
 4. **Integration Workflows**: Complete end-to-end scenarios (VM creation, network setup, volume attachment)
 
@@ -195,7 +195,7 @@ POST /v2.1/servers
   }
 }
 
-# O3K responds with:
+# lightstack responds with:
 HTTP/1.1 202 Accepted
 {
   "server": {
@@ -231,7 +231,7 @@ POST /v2.0/networks
   }
 }
 
-# O3K responds with:
+# lightstack responds with:
 HTTP/1.1 201 Created
 {
   "network": {
@@ -269,7 +269,7 @@ POST /v3/volumes
   }
 }
 
-# O3K responds with:
+# lightstack responds with:
 HTTP/1.1 202 Accepted
 {
   "volume": {
@@ -307,7 +307,7 @@ PUT /v2/images/{id}/file
 Content-Type: application/octet-stream
 [binary data]
 
-# O3K responds with:
+# lightstack responds with:
 HTTP/1.1 204 No Content
 ```
 
@@ -347,7 +347,7 @@ POST /v3/auth/tokens
   }
 }
 
-# O3K responds with:
+# lightstack responds with:
 HTTP/1.1 201 Created
 X-Subject-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 {
@@ -382,13 +382,13 @@ X-Subject-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 **Horizon → Keystone**:
 1. User enters credentials in login form
 2. Horizon sends `POST /v3/auth/tokens` with password
-3. O3K Keystone validates credentials (bcrypt hash check)
+3. Lightstack Keystone validates credentials (bcrypt hash check)
 4. Generates JWT token (HMAC-SHA256 signed)
 5. Returns token in `X-Subject-Token` header + service catalog
 
 **Horizon → Other Services**:
 1. All subsequent API calls include `X-Auth-Token: <JWT>`
-2. O3K auth middleware extracts and validates token
+2. Lightstack auth middleware extracts and validates token
 3. Decodes JWT payload: `{user_id, project_id, roles}`
 4. Sets `project_id` in request context
 5. All database queries auto-filter by `project_id`
@@ -445,7 +445,7 @@ func (svc *Service) AdminAction(c *gin.Context) {
 GET /v2.1/servers/detail
 OpenStack-API-Version: compute 2.79
 
-# O3K checks header and adjusts response format
+# lightstack checks header and adjusts response format
 ```
 
 **Version-Specific Features**:
@@ -505,7 +505,7 @@ CREATE INDEX idx_networks_project_id ON networks(project_id);
 
 **Connection Pooling**:
 ```yaml
-# config/o3k.yaml
+# config/lightstack.yaml
 database:
   max_connections: 50
   min_connections: 10
@@ -545,10 +545,10 @@ database:
 
 ### Debugging Techniques
 
-**1. O3K API Trace**:
+**1. Lightstack API Trace**:
 ```bash
 # Monitor all API calls from Horizon
-docker logs o3k -f | jq 'select(.status >= 400)'
+docker logs lightstack -f | jq 'select(.status >= 400)'
 ```
 
 **2. Horizon Debug Logs**:
@@ -559,7 +559,7 @@ docker logs horizon -f | grep -E "(ERROR|CRITICAL)"
 
 **3. Network Traffic Analysis**:
 ```bash
-# Capture API calls between Horizon and O3K
+# Capture API calls between Horizon and lightstack
 tcpdump -i lo -A -s 0 'tcp port 35357 or tcp port 8774 or tcp port 9696' | grep -E "(POST|GET|PUT|DELETE)"
 ```
 
@@ -671,16 +671,16 @@ func TestHorizonInstanceCreation(t *testing.T) {
 
 ## Configuration for Production
 
-### O3K Configuration ✅
+### Lightstack Configuration ✅
 
-**Minimal Configuration** (`config/o3k.yaml`):
+**Minimal Configuration** (`config/lightstack.yaml`):
 ```yaml
 keystone:
   jwt_secret: "CHANGE-THIS-IN-PRODUCTION-USE-STRONG-SECRET"  # CRITICAL
   token_ttl: 24h
 
 database:
-  url: "postgres://o3k:password@localhost:5432/o3k?sslmode=disable"
+  url: "postgres://lightstack:password@localhost:5432/lightstack?sslmode=disable"
   max_connections: 50
 
 nova:
@@ -708,7 +708,7 @@ logging:
 import os
 
 # Keystone endpoint
-OPENSTACK_KEYSTONE_URL = os.environ.get('KEYSTONE_URL', 'http://o3k:35357/v3')
+OPENSTACK_KEYSTONE_URL = os.environ.get('KEYSTONE_URL', 'http://lightstack:35357/v3')
 
 # Multi-domain support
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
@@ -725,7 +725,7 @@ OPENSTACK_API_VERSIONS = {
 # Default region
 OPENSTACK_KEYSTONE_DEFAULT_REGION = os.environ.get('DEFAULT_REGION', 'RegionOne')
 
-# Session timeout (matches O3K token TTL)
+# Session timeout (matches lightstack token TTL)
 SESSION_TIMEOUT = 86400  # 24 hours
 
 # Security
@@ -744,7 +744,7 @@ NOVNC_PROXY_URL = 'http://localhost:6080/vnc_auto.html'
 
 **Impact**: Horizon's admin panel may show warnings about missing placement data
 
-**Workaround**: O3K returns empty arrays for placement queries (sufficient for Horizon to function)
+**Workaround**: Lightstack returns empty arrays for placement queries (sufficient for Horizon to function)
 
 **Endpoints**:
 ```bash
@@ -801,7 +801,7 @@ DISABLED_PANELS = ['stacks']
 - [ ] Enable PostgreSQL SSL/TLS (`sslmode=require`)
 
 **Recommended**:
-- [ ] Set firewall rules (UFW/iptables) to restrict access to O3K ports
+- [ ] Set firewall rules (UFW/iptables) to restrict access to Lightstack ports
 - [ ] Use separate admin and user networks
 - [ ] Enable audit logging (`logging.level: debug` or external audit system)
 - [ ] Implement backup strategy for PostgreSQL database
@@ -851,7 +851,7 @@ docker compose -f deployments/docker-compose-horizon.yml up -d
 **Setup**:
 ```bash
 # Automated deployment script
-wget https://raw.githubusercontent.com/cobaltcore-dev/o3k/main/scripts/deploy-single-node.sh
+wget https://raw.githubusercontent.com/cobaltcore-dev/lightstack/main/scripts/deploy-single-node.sh
 chmod +x deploy-single-node.sh
 sudo ./deploy-single-node.sh
 ```
@@ -867,7 +867,7 @@ sudo ./deploy-single-node.sh
 **Use Case**: Production environment with HA and scale-out
 
 **Configuration**:
-- 3-node control plane (HA for O3K, PostgreSQL, load balancer)
+- 3-node control plane (HA for lightstack, PostgreSQL, load balancer)
 - N compute nodes (KVM hypervisors)
 - Ceph storage cluster (RBD for volumes/images)
 - HAProxy for load balancing
@@ -882,13 +882,13 @@ sudo ./deploy-single-node.sh
               ┌──────────────┼──────────────┐
               │              │              │
          ┌────▼────┐    ┌────▼────┐    ┌───▼─────┐
-         │  O3K-1  │    │  O3K-2  │    │  O3K-3  │
+         │  lightstack-1  │    │  lightstack-2  │    │  lightstack-3  │
          │ (API)   │    │ (API)   │    │ (API)   │
          └─────────┘    └─────────┘    └─────────┘
               │              │              │
          ┌────┴──────────────┴──────────────┴────┐
          │         Patroni PostgreSQL HA          │
-         │    (Primary on O3K-1, Replicas)        │
+         │    (Primary on lightstack-1, Replicas)        │
          └──────────────────────────────────────────┘
               │              │              │
          ┌────▼────┐    ┌────▼────┐    ┌───▼─────┐
@@ -965,8 +965,8 @@ curl -X POST http://localhost:35357/v3/auth/tokens \
 ```
 
 **Solutions**:
-- Check O3K logs: `docker logs o3k | grep -i error`
-- Verify database connection: `psql -U o3k -h localhost -d o3k -c "SELECT COUNT(*) FROM users;"`
+- Check Lightstack logs: `docker logs lightstack | grep -i error`
+- Verify database connection: `psql -U lightstack -h localhost -d lightstack -c "SELECT COUNT(*) FROM users;"`
 - Confirm credentials: `SELECT name, email FROM users;`
 
 ### Issue 2: Horizon Pages Show 500 Error
@@ -978,12 +978,12 @@ curl -X POST http://localhost:35357/v3/auth/tokens \
 # Check Horizon logs
 docker logs horizon | tail -50
 
-# Check O3K API logs
-docker logs o3k | jq 'select(.status == 500)'
+# Check lightstack API logs
+docker logs lightstack | jq 'select(.status == 500)'
 ```
 
 **Solutions**:
-- Missing API endpoint: Check O3K logs for 404 errors on specific paths
+- Missing API endpoint: Check Lightstack logs for 404 errors on specific paths
 - Database error: Check PostgreSQL logs
 - Timeout: Increase `request_timeout` in Horizon configuration
 
@@ -1009,12 +1009,12 @@ curl -X POST http://localhost:8774/v2.1/servers/{server-id}/action \
 
 ### Issue 4: API Calls Return 404
 
-**Symptoms**: Horizon page shows error, O3K logs show 404
+**Symptoms**: Horizon page shows error, Lightstack logs show 404
 
 **Diagnosis**:
 ```bash
 # Identify missing endpoint
-docker logs o3k | jq 'select(.status == 404) | .path'
+docker logs lightstack | jq 'select(.status == 404) | .path'
 ```
 
 **Solutions**:
@@ -1024,7 +1024,7 @@ docker logs o3k | jq 'select(.status == 404) | .path'
 
 ## Conclusion
 
-O3K achieves **100% functional compatibility** with OpenStack Horizon dashboard through:
+Lightstack achieves **100% functional compatibility** with OpenStack Horizon dashboard through:
 
 1. **Complete API Coverage**: 342/330 endpoints (104%)
 2. **Correct Authentication Flow**: JWT tokens with service catalog
@@ -1037,7 +1037,7 @@ O3K achieves **100% functional compatibility** with OpenStack Horizon dashboard 
 
 **Result**: Horizon works without any modifications, custom patches, or workarounds. All critical dashboard pages function correctly.
 
-**Recommendation**: O3K is production-ready for deployments requiring Horizon dashboard compatibility.
+**Recommendation**: Lightstack is production-ready for deployments requiring Horizon dashboard compatibility.
 
 ## References
 
@@ -1051,4 +1051,4 @@ O3K achieves **100% functional compatibility** with OpenStack Horizon dashboard 
 ---
 
 **Last Updated**: March 17, 2026
-**Version**: O3K 1.0 (342 endpoints)
+**Version**: Lightstack 1.0 (342 endpoints)

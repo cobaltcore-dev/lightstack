@@ -3,8 +3,8 @@
 # Does NOT delete the shared test image — only asserts the in-use rejection.
 set -euo pipefail
 : "${OS_AUTH_URL:?source your OpenStack env first}"
-IMG="${O3K_TEST_IMAGE:-cirros}"
-NET="${O3K_TEST_NET:-net1}"
+IMG="${LIGHTSTACK_TEST_IMAGE:-cirros}"
+NET="${LIGHTSTACK_TEST_NET:-net1}"
 imgid=$(openstack image show "$IMG" -f value -c id)
 
 cleanup() { openstack server delete ws0-inuse-vm 2>/dev/null || true; }

@@ -1,0 +1,10 @@
+# INVALID: misspelled top-level key ("databse"). MUST be rejected by additionalProperties:false.
+image:
+  repository: ghcr.io/lightstack/lightstack
+secrets:
+  jwtSecret: x
+  adminPassword: x
+database:
+  url: postgres://lightstack@db/lightstack
+databse:               # typo of "database"
+  url: postgres://lightstack@db/lightstack

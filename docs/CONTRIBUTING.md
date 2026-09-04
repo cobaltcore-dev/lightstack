@@ -1,6 +1,6 @@
-# Contributing to O3K
+# Contributing to Lightstack
 
-Thank you for considering contributing to O3K! This document provides guidelines for contributing to the project.
+Thank you for considering contributing to lightstack! This document provides guidelines for contributing to the project.
 
 ---
 
@@ -45,9 +45,9 @@ This project follows a standard code of conduct:
 
 ```bash
 # Fork the repository on GitHub, then:
-git clone https://github.com/YOUR_USERNAME/o3k.git
-cd o3k
-git remote add upstream https://github.com/cobaltcore-dev/o3k.git
+git clone https://github.com/YOUR_USERNAME/lightstack.git
+cd lightstack
+git remote add upstream https://github.com/cobaltcore-dev/lightstack.git
 ```
 
 ---
@@ -68,9 +68,9 @@ make install-tools
 
 ```bash
 # Using Docker
-docker run -d --name o3k-postgres \
-  -e POSTGRES_DB=o3k \
-  -e POSTGRES_USER=o3k \
+docker run -d --name lightstack-postgres \
+  -e POSTGRES_DB=lightstack \
+  -e POSTGRES_USER=lightstack \
   -e POSTGRES_PASSWORD=secret \
   -p 5432:5432 postgres:18.3
 
@@ -90,7 +90,7 @@ make migrate-up
 make build
 
 # Run
-./bin/o3k --config config/o3k.yaml
+./bin/lightstack --config config/lightstack.yaml
 
 # Or run with hot reload
 make dev
@@ -156,8 +156,8 @@ docs(readme): update installation instructions
 ### Code Organization
 
 ```
-o3k/
-├── cmd/o3k/               # Main binary entry point
+lightstack/
+├── cmd/lightstack/               # Main binary entry point
 ├── internal/              # Internal packages (not importable)
 │   ├── keystone/         # Keystone service implementation
 │   ├── nova/             # Nova service implementation
@@ -281,7 +281,7 @@ openstack image delete test-image
 
 ### Go Style Guidelines
 
-O3K follows standard Go conventions:
+Lightstack follows standard Go conventions:
 
 1. **Naming:**
    - Use `camelCase` for local variables
@@ -328,8 +328,8 @@ import (
     "github.com/gin-gonic/gin"
     "github.com/google/uuid"
 
-    "github.com/cobaltcore-dev/o3k/internal/database"
-    "github.com/cobaltcore-dev/o3k/pkg/storage"
+    "github.com/cobaltcore-dev/lightstack/internal/database"
+    "github.com/cobaltcore-dev/lightstack/pkg/storage"
 )
 
 // CreateImage creates a new image in the image service.
@@ -476,7 +476,7 @@ func (svc *Service) CreateVolume(ctx context.Context, size int, name string) (st
 
 ## Getting Help
 
-- **GitHub Issues**: https://github.com/cobaltcore-dev/o3k/issues
+- **GitHub Issues**: https://github.com/cobaltcore-dev/lightstack/issues
 - **Documentation**: `docs/` directory
 - **Code Examples**: `test/` directory
 
@@ -484,8 +484,8 @@ func (svc *Service) CreateVolume(ctx context.Context, size int, name string) (st
 
 ## License
 
-By contributing to O3K, you agree that your contributions will be licensed under the Apache License 2.0.
+By contributing to lightstack, you agree that your contributions will be licensed under the Apache License 2.0.
 
 ---
 
-**Thank you for contributing to O3K!**
+**Thank you for contributing to lightstack!**

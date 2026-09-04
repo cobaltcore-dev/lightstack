@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/cobaltcore-dev/o3k/pkg/networking/ebpf"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking/ebpf"
 	"github.com/coreos/go-iptables/iptables"
 )
 
@@ -19,13 +19,14 @@ type SecurityGroupManager struct {
 }
 
 // sgChainName returns a safe iptables chain name for a security group ID.
-// Chain names are limited to 8 chars from the UUID to stay under iptables' 28-char limit.
+// Chain names are limited to 8 chars from the UUID, and the prefix is the short
+// form, to stay under iptables' 28-char limit: "LS-SG-" + 8 = 14.
 func sgChainName(securityGroupID string) string {
 	id := securityGroupID
 	if len(id) > 8 {
 		id = id[:8]
 	}
-	return "O3K-SG-" + id
+	return "LS-SG-" + id
 }
 
 // NewSecurityGroupManager creates a new security group manager

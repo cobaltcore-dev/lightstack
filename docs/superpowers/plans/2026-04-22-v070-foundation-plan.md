@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Execute all 7 steps from [SPEC-006](../../specs/006-v070-foundation/README.md) to harden O3K's codebase quality and add trust signals for CTO evaluation.
+**Goal:** Execute all 7 steps from [SPEC-006](../../specs/006-v070-foundation/README.md) to harden lightstack's codebase quality and add trust signals for CTO evaluation.
 
 **Spec**: [SPEC-006](../../specs/006-v070-foundation/README.md)
 **ADRs**: [ADR-001](../../adr/ADR-001-database-dependency-injection.md), [ADR-002](../../adr/ADR-002-rate-limiting-architecture.md)
@@ -43,8 +43,8 @@
 - [ ] Create `test/terraform/` directory
 - [ ] Write 15 `.tf` files (one per resource type from SPEC-006)
 - [ ] Create `test/terraform/run-conformance.sh` wrapper script
-- [ ] Add conformance job to `.github/workflows/ci.yml` (sequential, after O3K starts)
-- [ ] Verify: `terraform init && terraform plan` succeeds for each config against running O3K
+- [ ] Add conformance job to `.github/workflows/ci.yml` (sequential, after Lightstack starts)
+- [ ] Verify: `terraform init && terraform plan` succeeds for each config against running Lightstack
 
 ### Task 1.4: Map failing contract tests
 
@@ -120,7 +120,7 @@
 
 - [ ] Add `RateLimitingConfig` struct to `internal/common/config.go`
 - [ ] Add `rate_limiting` field to `Config` struct
-- [ ] Config already documented in `config/o3k.yaml` (added in docs update)
+- [ ] Config already documented in `config/lightstack.yaml` (added in docs update)
 
 ### Task 3.2: Implement rate limiting middleware
 

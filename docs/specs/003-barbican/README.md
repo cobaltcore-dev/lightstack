@@ -76,7 +76,7 @@ pkg/barbican/
 └── cli/
     └── main.go          # CLI tool
 
-cmd/o3k-barbican/
+cmd/lightstack-barbican/
 └── main.go              # Standalone binary
 
 internal/barbican/
@@ -308,7 +308,7 @@ barbican:
 
   # SoftHSM mode
   softhsm:
-    token_label: o3k-barbican
+    token_label: lightstack-barbican
     user_pin: encrypted-pin
     key_label: master-kek
 
@@ -395,19 +395,19 @@ cloudInit := generateCloudInit(map[string]string{
 
 ```bash
 # Create secret
-o3k-barbican-cli secret store --name db-password --payload "secret123"
+lightstack-barbican-cli secret store --name db-password --payload "secret123"
 
 # Retrieve secret
-o3k-barbican-cli secret get --id <uuid> --payload
+lightstack-barbican-cli secret get --id <uuid> --payload
 
 # List secrets
-o3k-barbican-cli secret list --project-id <uuid>
+lightstack-barbican-cli secret list --project-id <uuid>
 
 # Create key order
-o3k-barbican-cli order create --type key --algorithm aes --bit-length 256
+lightstack-barbican-cli order create --type key --algorithm aes --bit-length 256
 
 # Create certificate container
-o3k-barbican-cli container create --type certificate \
+lightstack-barbican-cli container create --type certificate \
   --name "web-cert" \
   --secret-ref certificate=<cert-id> \
   --secret-ref private_key=<key-id>
@@ -428,7 +428,7 @@ o3k-barbican-cli container create --type certificate \
 # test/integration/barbican_test.sh
 
 # Start Barbican with SoftHSM
-o3k-barbican --config test-config.yaml &
+lightstack-barbican --config test-config.yaml &
 
 # Create secret
 SECRET_ID=$(openstack secret store --name test --payload "secret" -f value -c "Secret href")

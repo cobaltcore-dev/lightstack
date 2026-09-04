@@ -14,7 +14,7 @@ import (
 )
 
 func TestNovaFlavorExtraSpecs_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

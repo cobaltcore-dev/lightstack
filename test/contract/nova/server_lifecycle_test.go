@@ -14,7 +14,7 @@ import (
 // TestNovaServerCreate_Contract tests basic server creation
 // This is a HIGH priority test validating core Nova functionality
 func TestNovaServerCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -49,7 +49,7 @@ func TestNovaServerCreate_Contract(t *testing.T) {
 
 // TestNovaServerList_Contract tests listing servers
 func TestNovaServerList_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -65,7 +65,7 @@ func TestNovaServerList_Contract(t *testing.T) {
 
 // TestNovaServerGet_Contract tests fetching a specific server
 func TestNovaServerGet_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -95,7 +95,7 @@ func TestNovaServerGet_Contract(t *testing.T) {
 
 // TestNovaServerDelete_Contract tests server deletion
 func TestNovaServerDelete_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -126,7 +126,7 @@ func TestNovaServerDelete_Contract(t *testing.T) {
 
 // TestNovaServerReboot_Contract tests server reboot action
 func TestNovaServerReboot_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -178,7 +178,7 @@ func TestNovaServerReboot_Contract(t *testing.T) {
 
 // TestNovaServerUpdate_Contract tests server update operation
 func TestNovaServerUpdate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -214,7 +214,7 @@ func TestNovaServerUpdate_Contract(t *testing.T) {
 
 // TestNovaServerLifecycle_Contract tests complete server lifecycle
 func TestNovaServerLifecycle_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

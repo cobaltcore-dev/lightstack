@@ -13,7 +13,7 @@ import (
 )
 
 func TestNovaListAvailabilityZones_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -39,7 +39,7 @@ func TestNovaListAvailabilityZones_Contract(t *testing.T) {
 
 // TestNovaListAvailabilityZonesDetail_Contract tests GET /v2.1/os-availability-zone/detail
 func TestNovaListAvailabilityZonesDetail_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -85,7 +85,7 @@ func TestNovaListAvailabilityZonesDetail_Contract(t *testing.T) {
 
 // TestNovaAvailabilityZonesWithAggregates_Contract tests dynamic zone listing from aggregates
 func TestNovaAvailabilityZonesWithAggregates_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -142,7 +142,7 @@ func TestNovaAvailabilityZonesWithAggregates_Contract(t *testing.T) {
 					break
 				}
 			}
-			// Note: May not find zone if aggregates aren't enabled in this O3K instance
+			// Note: May not find zone if aggregates aren't enabled in this Lightstack instance
 			// This test validates the contract, not that aggregates are mandatory
 			_ = foundZone
 		}

@@ -1,4 +1,4 @@
-# O3K Development Roadmap
+# Lightstack Development Roadmap
 
 **Version**: 1.2
 **Last Updated**: 2026-04-07
@@ -6,14 +6,14 @@
 
 ## Executive Summary
 
-O3K is transforming from a working proof-of-concept into a production-ready modular OpenStack alternative. This roadmap defines the path from the current monolithic implementation to a fully modular, enterprise-grade cloud infrastructure platform with **100% Terraform compatibility** as the primary success metric.
+Lightstack is transforming from a working proof-of-concept into a production-ready modular OpenStack alternative. This roadmap defines the path from the current monolithic implementation to a fully modular, enterprise-grade cloud infrastructure platform with **100% Terraform compatibility** as the primary success metric.
 
 **Current State**: 5 core services in single binary (Keystone, Nova, Neutron, Cinder, Glance)
 **Target State**: 8+ independent services, enhanced authentication, full Terraform/Horizon/CLI compatibility
 
 ## Vision
 
-> **O3K: The Drop-in OpenStack Replacement**
+> **lightstack: The Drop-in OpenStack Replacement**
 >
 > Zero-modification migration from OpenStack - users deploy existing Terraform scripts, use Horizon UI, and run OpenStack CLI commands unchanged. Modular, observable, fail-early cloud infrastructure that shows operators exactly what's happening—no hidden queues, no state mysteries.
 
@@ -52,7 +52,7 @@ Total Timeline: ~56 weeks (~13 months)
 
 ## Phase 1: Modular Transformation (Weeks 1-16)
 
-**Goal**: Separate monolithic O3K into independent service modules
+**Goal**: Separate monolithic Lightstack into independent service modules
 
 ### Milestones
 
@@ -61,12 +61,12 @@ Total Timeline: ~56 weeks (~13 months)
 **Objective**: Convert internal services to standalone libraries
 
 **Deliverables**:
-- [ ] Extract Keystone: `pkg/keystone/` library + `cmd/o3k-keystone/` binary
-- [ ] Extract Nova: `pkg/nova/` library + `cmd/o3k-nova/` binary
-- [ ] Extract Neutron: `pkg/neutron/` library + `cmd/o3k-neutron/` binary
-- [ ] Extract Cinder: `pkg/cinder/` library + `cmd/o3k-cinder/` binary
-- [ ] Extract Glance: `pkg/glance/` library + `cmd/o3k-glance/` binary
-- [ ] CLI tools: `o3k-{service}-cli` for each service
+- [ ] Extract Keystone: `pkg/keystone/` library + `cmd/lightstack-keystone/` binary
+- [ ] Extract Nova: `pkg/nova/` library + `cmd/lightstack-nova/` binary
+- [ ] Extract Neutron: `pkg/neutron/` library + `cmd/lightstack-neutron/` binary
+- [ ] Extract Cinder: `pkg/cinder/` library + `cmd/lightstack-cinder/` binary
+- [ ] Extract Glance: `pkg/glance/` library + `cmd/lightstack-glance/` binary
+- [ ] CLI tools: `lightstack-{service}-cli` for each service
 
 **Validation Gates**:
 - Each service runs as standalone binary
@@ -108,11 +108,11 @@ Total Timeline: ~56 weeks (~13 months)
 **Objective**: Independent configuration per service
 
 **Deliverables**:
-- [ ] `/etc/o3k/keystone.yaml` - Keystone config
-- [ ] `/etc/o3k/nova.yaml` - Nova config
-- [ ] `/etc/o3k/neutron.yaml` - Neutron config
-- [ ] `/etc/o3k/cinder.yaml` - Cinder config
-- [ ] `/etc/o3k/glance.yaml` - Glance config
+- [ ] `/etc/lightstack/keystone.yaml` - Keystone config
+- [ ] `/etc/lightstack/nova.yaml` - Nova config
+- [ ] `/etc/lightstack/neutron.yaml` - Neutron config
+- [ ] `/etc/lightstack/cinder.yaml` - Cinder config
+- [ ] `/etc/lightstack/glance.yaml` - Glance config
 - [ ] Configuration validation per service
 - [ ] Environment variable override support
 
@@ -264,8 +264,8 @@ Total Timeline: ~56 weeks (~13 months)
 
 **Deliverables**:
 - [ ] Library: `pkg/barbican/`
-- [ ] Binary: `cmd/o3k-barbican/`
-- [ ] CLI: `cmd/o3k-barbican-cli/`
+- [ ] Binary: `cmd/lightstack-barbican/`
+- [ ] CLI: `cmd/lightstack-barbican-cli/`
 - [ ] Database schema (6 tables)
 - [ ] SoftHSM backend
 - [ ] Cinder volume encryption integration
@@ -291,8 +291,8 @@ Total Timeline: ~56 weeks (~13 months)
 
 **Deliverables**:
 - [ ] Library: `pkg/designate/`
-- [ ] Binary: `cmd/o3k-designate/`
-- [ ] CLI: `cmd/o3k-designate-cli/`
+- [ ] Binary: `cmd/lightstack-designate/`
+- [ ] CLI: `cmd/lightstack-designate-cli/`
 - [ ] Database schema (8 tables)
 - [ ] BIND9 backend
 - [ ] Neutron floating IP auto-DNS
@@ -317,8 +317,8 @@ Total Timeline: ~56 weeks (~13 months)
 
 **Deliverables**:
 - [ ] Library: `pkg/octavia/`
-- [ ] Binary: `cmd/o3k-octavia/`
-- [ ] CLI: `cmd/o3k-octavia-cli/`
+- [ ] Binary: `cmd/lightstack-octavia/`
+- [ ] CLI: `cmd/lightstack-octavia-cli/`
 - [ ] Database schema (10 tables)
 - [ ] HAProxy backend
 - [ ] Namespace-based isolation
@@ -549,16 +549,16 @@ Total Timeline: ~56 weeks (~13 months)
 ### Configuration
 
 ```yaml
-# Horizon configuration for O3K
+# Horizon configuration for lightstack
 OPENSTACK_API_VERSIONS = {
     "identity": 3,
     "image": 2,
     "volume": 3,
 }
 
-OPENSTACK_KEYSTONE_URL = "http://o3k-keystone:35357"
+OPENSTACK_KEYSTONE_URL = "http://lightstack-keystone:35357"
 
-OPENSTACK_HOST = "o3k-keystone"
+OPENSTACK_HOST = "lightstack-keystone"
 OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"
 
 # OAuth2 support (Phase 2)
@@ -575,7 +575,7 @@ services:
     ports:
       - "80:80"
     environment:
-      - OS_AUTH_URL=http://o3k-keystone:35357/v3
+      - OS_AUTH_URL=http://lightstack-keystone:35357/v3
       - OS_PROJECT_DOMAIN_ID=default
       - OS_USER_DOMAIN_ID=default
     volumes:
@@ -755,6 +755,6 @@ Phase 1 ──┐
 
 ---
 
-**Document Ownership**: O3K Core Team
+**Document Ownership**: Lightstack Core Team
 **Review Cycle**: Quarterly
 **Next Review**: 2026-07-07

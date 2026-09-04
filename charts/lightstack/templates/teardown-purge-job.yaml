@@ -1,0 +1,64 @@
+{{- /*
+Teardown purge hook (SPEC-010): the blocking, fail-closed gate — runs `lightstack cleanup`
+with real-mode host access; a non-zero exit halts uninstall. hook-weight 0, after quiesce.
+*/ -}}
+{{- if eq .Values.dataRetentionPolicy "delete" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "lightstack.teardown.fullname" . }}-purge
+  labels:
+    {{- include "lightstack.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.teardown.timeoutSeconds }}
+  template:
+    metadata:
+      labels:
+        # Distinct from the workload's selectorLabels (no app.kubernetes.io/name) so a
+        # workload-pod wait never matches this hook pod (cf. the quiesce Job).
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: teardown-purge
+    spec:
+      restartPolicy: Never
+      {{- if and .Values.realMode.enabled .Values.realMode.hostNetwork }}
+      hostNetwork: true
+      {{- end }}
+      containers:
+        - name: purge
+          image: {{ include "lightstack.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/lightstack", "cleanup", "--config", "/app/config/lightstack.yaml"]
+          {{- if .Values.realMode.enabled }}
+          securityContext:
+            privileged: {{ .Values.realMode.privileged }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            {{- if .Values.realMode.enabled }}
+            - name: libvirt-sock
+              mountPath: {{ .Values.realMode.libvirtSocketPath }}
+            - name: host-storage
+              mountPath: {{ .Values.realMode.hostStoragePath }}
+            {{- end }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ include "lightstack.configSecretName" . }}
+        {{- if .Values.realMode.enabled }}
+        - name: libvirt-sock
+          hostPath:
+            path: {{ .Values.realMode.libvirtSocketPath }}
+            type: Socket
+        - name: host-storage
+          hostPath:
+            path: {{ .Values.realMode.hostStoragePath }}
+            type: DirectoryOrCreate
+        {{- end }}
+{{- end }}

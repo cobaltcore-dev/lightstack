@@ -4,27 +4,30 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:18.4-alpine
-    container_name: o3k-postgres
+    container_name: lightstack-postgres
     environment:
-      POSTGRES_DB: o3k
-      POSTGRES_USER: o3k
-      POSTGRES_PASSWORD: secret
+      # Read from the environment so an upgrade onto a retained volume can keep the
+      # identity that volume was initialised with — initdb honours these only on an
+      # empty data directory (cloud-storage#575). Defaults are the current names.
+      POSTGRES_DB: ${POSTGRES_DB:-lightstack}
+      POSTGRES_USER: ${POSTGRES_USER:-lightstack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
     volumes:
       - postgres_data:/var/lib/postgresql
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U o3k"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightstack}"]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
-      - o3k-network
+      - lightstack-network
 
   # Redis Cache (optional - for performance optimization)
   redis:
     image: redis:7-alpine
-    container_name: o3k-redis
+    container_name: lightstack-redis
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -36,15 +39,15 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - o3k-network
+      - lightstack-network
     restart: unless-stopped
 
-  # O3K OpenStack-Compatible Cloud
-  o3k:
+  # Lightstack OpenStack-Compatible Cloud
+  lightstack:
     build:
       context: ..
       dockerfile: build/package/Dockerfile
-    container_name: o3k
+    container_name: lightstack
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,15 +61,15 @@ services:
       - "9292:9292" # Glance (Image)
       - "8775:8775" # Metadata Service
     environment:
-      O3K_DB_URL: "postgres://o3k:secret@postgres:5432/o3k?sslmode=disable"
-      O3K_REDIS_URL: "redis://redis:6379/0"
-      O3K_CACHE_ENABLED: "true"
-      O3K_JWT_SECRET: "${O3K_JWT_SECRET:-change-me-in-production}"
-      O3K_LOG_LEVEL: "info"
-      O3K_LOG_FORMAT: "json"
-      O3K_ENDPOINT_HOST: "localhost" # Use localhost for service catalog URLs (accessible from host)
+      LIGHTSTACK_DB_URL: "postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable"
+      LIGHTSTACK_REDIS_URL: "redis://redis:6379/0"
+      LIGHTSTACK_CACHE_ENABLED: "true"
+      LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
+      LIGHTSTACK_LOG_LEVEL: "info"
+      LIGHTSTACK_LOG_FORMAT: "json"
+      LIGHTSTACK_ENDPOINT_HOST: "localhost" # Use localhost for service catalog URLs (accessible from host)
     networks:
-      - o3k-network
+      - lightstack-network
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:35357/v3 || exit 1"]
@@ -91,9 +94,9 @@ services:
   #
   # horizon:
   #   image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
-  #   container_name: o3k-horizon
+  #   container_name: lightstack-horizon
   #   depends_on:
-  #     o3k:
+  #     lightstack:
   #       condition: service_healthy
   #   ports:
   #     - "80:80"
@@ -101,14 +104,14 @@ services:
   #   environment:
   #     KOLLA_SERVICE_NAME: horizon
   #     KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
-  #     OPENSTACK_HOST: o3k
+  #     OPENSTACK_HOST: lightstack
   #   volumes:
   #     - ./deployments/horizon/kolla_config/config.json:/var/lib/kolla/config_files/config.json:ro
   #     - ./deployments/horizon/horizon_settings.py:/var/lib/kolla/config_files/horizon_settings.py:ro
   #     - horizon_logs:/var/log/apache2
   #     - horizon_kolla_logs:/var/log/kolla/horizon
   #   networks:
-  #     - o3k-network
+  #     - lightstack-network
   #   restart: unless-stopped
   #   platform: linux/amd64
 
@@ -125,5 +128,5 @@ volumes:
     driver: local
 
 networks:
-  o3k-network:
+  lightstack-network:
     driver: bridge

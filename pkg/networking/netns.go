@@ -311,7 +311,7 @@ func (m *BridgeManager) DeleteBridge(bridgeName string, inNamespace bool, nsName
 	return netlink.LinkDel(link)
 }
 
-// isManagedBridge reports whether name is an o3k per-network bridge: "br-" plus
+// isManagedBridge reports whether name is a Lightstack per-network bridge: "br-" plus
 // the first 8 hex chars of a network UUID (neutron builds "br-"+networkID[:8]).
 // The strict shape ensures the reconciler never prunes a foreign bridge (docker
 // uses br-<12hex>, libvirt uses virbrN).
@@ -327,7 +327,7 @@ func isManagedBridge(name string) bool {
 	return true
 }
 
-// ListManagedBridges returns the names of all o3k-managed bridges (br-<id8>)
+// ListManagedBridges returns the names of all lightstack-managed bridges (br-<id8>)
 // present in the default namespace, so the reconciler can prune the ones whose
 // network was deleted (SPEC-009 WS-2).
 func (m *BridgeManager) ListManagedBridges() ([]string, error) {

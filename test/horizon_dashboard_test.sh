@@ -1,6 +1,6 @@
 #!/bin/bash
 # Enhanced Horizon Dashboard Integration Test Suite
-# Comprehensive testing of all Horizon features with O3K
+# Comprehensive testing of all Horizon features with Lightstack
 
 set -e
 
@@ -14,7 +14,7 @@ PASSED=0
 FAILED=0
 TOTAL=0
 
-O3K_URL="http://localhost:35357"
+LIGHTSTACK_URL="http://localhost:35357"
 ADMIN_USER="admin"
 ADMIN_PASSWORD="secret"
 PROJECT_NAME="default"
@@ -43,7 +43,7 @@ test_authentication() {
     print_test "Horizon Authentication Flow"
 
     # Get scoped token
-    response=$(curl -s -i -X POST "${O3K_URL}/v3/auth/tokens" \
+    response=$(curl -s -i -X POST "${LIGHTSTACK_URL}/v3/auth/tokens" \
         -H "Content-Type: application/json" \
         -d '{
             "auth": {
@@ -432,7 +432,7 @@ test_instance_actions() {
 # Main execution
 main() {
     echo "=========================================="
-    echo " O3K Horizon Dashboard Integration Test"
+    echo " Lightstack Horizon Dashboard Integration Test"
     echo "=========================================="
     echo ""
 
@@ -466,7 +466,7 @@ main() {
     if [ $FAILED -eq 0 ]; then
         echo -e "${GREEN}✅ ALL HORIZON INTEGRATION TESTS PASSED!${NC}"
         echo ""
-        echo "O3K is fully compatible with Horizon Dashboard!"
+        echo "Lightstack is fully compatible with Horizon Dashboard!"
         echo ""
         echo "Next steps:"
         echo "  1. Deploy Horizon with Docker: docker-compose up horizon"

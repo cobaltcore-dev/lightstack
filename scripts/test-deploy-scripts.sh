@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Test Suite for O3K Deployment Scripts
+# Test Suite for Lightstack Deployment Scripts
 # Tests deploy-single-node.sh functions in isolation
 #
 # Usage: ./scripts/test-deploy-scripts.sh
@@ -17,7 +17,7 @@ NC='\033[0m'
 
 TESTS_PASSED=0
 TESTS_FAILED=0
-TEST_DIR="/tmp/o3k-test-$$"
+TEST_DIR="/tmp/lightstack-test-$$"
 
 log_test() {
     echo -e "${BLUE}[TEST]${NC} $1"
@@ -304,7 +304,7 @@ test_path_validation() {
     log_test "Testing storage path validation"
 
     # Test valid absolute path
-    VOLUME_PATH="/var/lib/o3k/volumes"
+    VOLUME_PATH="/var/lib/lightstack/volumes"
     if [[ $VOLUME_PATH = /* ]]; then
         log_pass "Valid absolute path: $VOLUME_PATH"
     else
@@ -313,7 +313,7 @@ test_path_validation() {
     fi
 
     # Test invalid relative path
-    VOLUME_PATH="var/lib/o3k/volumes"
+    VOLUME_PATH="var/lib/lightstack/volumes"
     if [[ $VOLUME_PATH = /* ]]; then
         log_fail "Relative path accepted as absolute"
         return 1
@@ -328,7 +328,7 @@ test_path_validation() {
 test_service_validation() {
     log_test "Testing systemd service naming"
 
-    SERVICE_NAME="o3k.service"
+    SERVICE_NAME="lightstack.service"
 
     # Check service name format
     if [[ $SERVICE_NAME =~ ^[a-z0-9_-]+\.service$ ]]; then
@@ -396,7 +396,7 @@ test_hostname_validation() {
     log_test "Testing hostname validation"
 
     # Valid hostnames
-    VALID_NAMES=("o3k-demo" "cloud-01" "openstack" "node1")
+    VALID_NAMES=("lightstack-demo" "cloud-01" "openstack" "node1")
     for name in "${VALID_NAMES[@]}"; do
         if [[ $name =~ ^[a-z0-9-]+$ ]]; then
             log_pass "Valid hostname: $name"
@@ -407,7 +407,7 @@ test_hostname_validation() {
     done
 
     # Invalid hostnames
-    INVALID_NAMES=("o3k_demo" "cloud.01" "Open Stack" "node#1")
+    INVALID_NAMES=("lightstack_demo" "cloud.01" "Open Stack" "node#1")
     for name in "${INVALID_NAMES[@]}"; do
         if [[ $name =~ ^[a-z0-9-]+$ ]]; then
             log_fail "Invalid hostname accepted: $name"
@@ -420,11 +420,145 @@ test_hostname_validation() {
     return 0
 }
 
+# Repo root, so these checks read the real scripts rather than the test sandbox.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Test: the pg_hba line must name the database and role the script actually creates, and
+# the guard must match the line it writes (or the line is re-appended on every run).
+# Both sides are derived from the script itself — nothing here is hardcoded.
+test_pg_hba_identifier_case() {
+    log_test "Testing pg_hba identifiers match the database deploy-turnkey.sh creates"
+
+    local script="$REPO_ROOT/scripts/deploy-turnkey.sh"
+    local created_db created_role appended guard line_db line_role
+
+    created_db="$(sed -n 's/^CREATE DATABASE \([A-Za-z0-9_]*\);.*/\1/p' "$script" | head -1)"
+    created_role="$(sed -n 's/^CREATE USER \([A-Za-z0-9_]*\) WITH.*/\1/p' "$script" | head -1)"
+    appended="$(sed -n 's/.*echo "\(host  *[^"]*\)".*PG_HBA.*/\1/p' "$script" | head -1)"
+    guard="$(sed -n 's/.*grep -q "\([^"]*\)".*PG_HBA.*/\1/p' "$script" | head -1)"
+
+    if [ -z "$created_db" ] || [ -z "$created_role" ] || [ -z "$appended" ] || [ -z "$guard" ]; then
+        log_fail "could not read the database setup out of deploy-turnkey.sh (db='$created_db' role='$created_role' line='$appended' guard='$guard')"
+        return
+    fi
+
+    line_db="$(echo "$appended" | awk '{print $2}')"
+    line_role="$(echo "$appended" | awk '{print $3}')"
+
+    if [ "$line_db" != "$created_db" ]; then
+        log_fail "pg_hba names database '$line_db' but the script creates '$created_db' (pg_hba matching is case-sensitive)"
+        return
+    fi
+    if [ "$line_role" != "$created_role" ]; then
+        log_fail "pg_hba names role '$line_role' but the script creates '$created_role' (pg_hba matching is case-sensitive)"
+        return
+    fi
+    if ! echo "$appended" | grep -qE "$guard"; then
+        log_fail "the guard '$guard' does not match the line it writes — it would be appended on every run"
+        return
+    fi
+    log_pass "pg_hba names $created_db/$created_role and the guard matches the line"
+}
+
+# Test: the "check the logs" hints must name a real Compose service / container. Both name
+# sets are read out of the compose file, so this cannot drift from it.
+test_compose_log_hints() {
+    log_test "Testing log hints name a real Compose service and container"
+
+    local compose="$REPO_ROOT/deployments/docker-compose.yml"
+    local services containers name
+
+    # Only keys inside the services: block — top-level volumes/networks are not services.
+    services="$(awk '/^services:/{inblock=1; next} /^[a-zA-Z]/{inblock=0} inblock && /^  [a-z][a-z0-9_-]*:[[:space:]]*$/{gsub(/[ :]/, ""); print}' "$compose")"
+    containers="$(sed -n 's/^ *container_name: *\([^ ]*\).*/\1/p' "$compose")"
+    if [ -z "$services" ] || [ -z "$containers" ]; then
+        log_fail "could not read service/container names out of $compose"
+        return
+    fi
+
+    # scripts/start.sh points at a Compose service.
+    name="$(sed -n 's/.*COMPOSE_CMD logs \([^"]*\)".*/\1/p' "$REPO_ROOT/scripts/start.sh" | head -1)"
+    if [ -z "$name" ]; then
+        log_fail "could not find the compose log hint in scripts/start.sh"
+        return
+    fi
+    if ! echo "$services" | grep -qx "$name"; then
+        log_fail "start.sh suggests 'logs $name', which is not a Compose service ($(echo $services | tr '\n' ' '))"
+        return
+    fi
+
+    # scripts/start_validation.sh points at a container.
+    name="$(sed -n 's/.*docker logs \([^"]*\)".*/\1/p' "$REPO_ROOT/scripts/start_validation.sh" | head -1)"
+    if [ -z "$name" ]; then
+        log_fail "could not find the docker log hint in scripts/start_validation.sh"
+        return
+    fi
+    if ! echo "$containers" | grep -qx "$name"; then
+        log_fail "start_validation.sh suggests 'docker logs $name', which is not a container ($(echo $containers | tr '\n' ' '))"
+        return
+    fi
+    log_pass "both log hints name real Compose objects"
+}
+
+# Test: scripts must target the identity port the shipped config actually serves. The
+# upstream Keystone convention is 5000; this product listens on keystone.port, so a script
+# hardcoding 5000 points at a port nothing binds. The expected value is read from the config.
+test_identity_port_consistency() {
+    log_test "Testing scripts target the identity port from config/lightstack.yaml"
+
+    local port offenders declared
+    port="$(awk '/^keystone:/{f=1; next} /^[a-z]/{f=0} f && /^  port:/{print $2; exit}' \
+        "$REPO_ROOT/config/lightstack.yaml")"
+    if [ -z "$port" ]; then
+        log_fail "could not read keystone.port from config/lightstack.yaml"
+        return
+    fi
+
+    # No script may point at the upstream port unless the config actually moved there.
+    if [ "$port" != "5000" ]; then
+        # Character class so this check does not match its own source file.
+        offenders="$(grep -rn "localhost:[5]000" "$REPO_ROOT"/scripts/*.sh 2>/dev/null || true)"
+        if [ -n "$offenders" ]; then
+            log_fail "identity is on $port, but these point at 5000:"$'\n'"$offenders"
+            return
+        fi
+    fi
+
+    # start.sh's readiness probe and port-conflict check share one declared default.
+    declared="$(sed -n 's/^KEYSTONE_PORT="\${KEYSTONE_PORT:-\([0-9]*\)}"/\1/p' \
+        "$REPO_ROOT/scripts/start.sh" | head -1)"
+    if [ -z "$declared" ]; then
+        log_fail "scripts/start.sh does not declare a KEYSTONE_PORT default"
+        return
+    fi
+    if [ "$declared" != "$port" ]; then
+        log_fail "start.sh defaults KEYSTONE_PORT to $declared, config says $port"
+        return
+    fi
+
+    # The two keystone test scripts derive their base URL from OS_AUTH_URL with a default.
+    local script name
+    for script in test-keystone.sh test-all.sh; do
+        name="$(sed -n "s|.*OS_AUTH_URL:-http://localhost:\([0-9]*\)/v3}.*|\1|p" \
+            "$REPO_ROOT/scripts/$script" | head -1)"
+        if [ -z "$name" ]; then
+            log_fail "scripts/$script does not default its base URL from OS_AUTH_URL"
+            return
+        fi
+        if [ "$name" != "$port" ]; then
+            log_fail "scripts/$script defaults to port $name, config says $port"
+            return
+        fi
+    done
+
+    log_pass "every script targets the configured identity port ($port)"
+}
+
 # Run all tests
 run_all_tests() {
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║                                                           ║"
-    echo "║   O3K Deployment Script Test Suite                       ║"
+    echo "║   Lightstack Deployment Script Test Suite                       ║"
     echo "║                                                           ║"
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
@@ -442,6 +576,9 @@ run_all_tests() {
     test_network_detection || true
     test_gateway_detection || true
     test_hostname_validation || true
+    test_pg_hba_identifier_case || true
+    test_compose_log_hints || true
+    test_identity_port_consistency || true
 
     cleanup_test_env
 

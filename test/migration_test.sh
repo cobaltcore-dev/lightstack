@@ -28,15 +28,15 @@ log_fail() {
 
 # Test 1: Verify migration tool exists
 log_test "Migration tool binary exists"
-if [ -f "./o3k-migrate" ]; then
-    log_pass "o3k-migrate binary found"
+if [ -f "./lightstack-migrate" ]; then
+    log_pass "lightstack-migrate binary found"
 else
-    log_fail "o3k-migrate binary not found"
+    log_fail "lightstack-migrate binary not found"
 fi
 
 # Test 2: Check migration status command
 log_test "Migration status command"
-STATUS_OUTPUT=$(./o3k-migrate status 2>&1)
+STATUS_OUTPUT=$(./lightstack-migrate status 2>&1)
 
 if echo "$STATUS_OUTPUT" | grep -q "Current Version:"; then
     VERSION=$(echo "$STATUS_OUTPUT" | grep "Current Version:" | awk '{print $3}')
@@ -98,7 +98,7 @@ fi
 
 # Test 8: Verify rollback command exists
 log_test "Verify rollback command exists (dry-run)"
-HELP_OUTPUT=$(./o3k-migrate 2>&1)
+HELP_OUTPUT=$(./lightstack-migrate 2>&1)
 if echo "$HELP_OUTPUT" | grep -q "down"; then
     log_pass "Rollback (down) command available"
 else
@@ -199,9 +199,9 @@ if [ $TESTS_FAILED -eq 0 ]; then
     echo "  - force N: Force migration version to N (for dirty state)"
     echo ""
     echo "Usage Examples:"
-    echo "  ./o3k-migrate status"
-    echo "  ./o3k-migrate up"
-    echo "  ./o3k-migrate goto 5"
+    echo "  ./lightstack-migrate status"
+    echo "  ./lightstack-migrate up"
+    echo "  ./lightstack-migrate goto 5"
     echo ""
     exit 0
 else

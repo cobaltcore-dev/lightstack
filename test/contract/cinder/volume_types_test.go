@@ -13,7 +13,7 @@ import (
 
 // TestCinderListVolumeTypes_Contract tests GET /v3/:project_id/types
 func TestCinderListVolumeTypes_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -38,7 +38,7 @@ func TestCinderListVolumeTypes_Contract(t *testing.T) {
 
 // TestCinderCreateVolumeType_Contract tests POST /v3/:project_id/types
 func TestCinderCreateVolumeType_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -75,7 +75,7 @@ func TestCinderCreateVolumeType_Contract(t *testing.T) {
 
 // TestCinderGetVolumeType_Contract tests GET /v3/:project_id/types/:id
 func TestCinderGetVolumeType_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -121,7 +121,7 @@ func TestCinderGetVolumeType_Contract(t *testing.T) {
 
 // TestCinderUpdateVolumeType_Contract tests PUT /v3/:project_id/types/:id
 func TestCinderUpdateVolumeType_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -164,7 +164,7 @@ func TestCinderUpdateVolumeType_Contract(t *testing.T) {
 
 // TestCinderDeleteVolumeType_Contract tests DELETE /v3/:project_id/types/:id
 func TestCinderDeleteVolumeType_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -200,7 +200,7 @@ func TestCinderDeleteVolumeType_Contract(t *testing.T) {
 
 // TestCinderListVolumeTypeExtraSpecs_Contract tests GET /v3/:project_id/types/:id/extra_specs
 func TestCinderListVolumeTypeExtraSpecs_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"golang.org/x/crypto/bcrypt"
 )
 

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +15,7 @@ import (
 
 // TestNeutronCreateRBACPolicy_Contract tests POST /v2.0/rbac-policies
 func TestNeutronCreateRBACPolicy_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -73,7 +73,7 @@ func TestNeutronCreateRBACPolicy_Contract(t *testing.T) {
 
 // TestNeutronListRBACPolicies_Contract tests GET /v2.0/rbac-policies
 func TestNeutronListRBACPolicies_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -126,7 +126,7 @@ func TestNeutronListRBACPolicies_Contract(t *testing.T) {
 
 // TestNeutronGetRBACPolicy_Contract tests GET /v2.0/rbac-policies/:id
 func TestNeutronGetRBACPolicy_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -192,7 +192,7 @@ func TestNeutronGetRBACPolicy_Contract(t *testing.T) {
 
 // TestNeutronUpdateRBACPolicy_Contract tests PUT /v2.0/rbac-policies/:id
 func TestNeutronUpdateRBACPolicy_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -264,7 +264,7 @@ func TestNeutronUpdateRBACPolicy_Contract(t *testing.T) {
 
 // TestNeutronDeleteRBACPolicy_Contract tests DELETE /v2.0/rbac-policies/:id
 func TestNeutronDeleteRBACPolicy_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

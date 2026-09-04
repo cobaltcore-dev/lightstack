@@ -1,6 +1,6 @@
 # Phase 0 Research: Integration Contract
 
-All decisions below are grounded in the existing chart (`charts/o3k/`). No NEEDS CLARIFICATION
+All decisions below are grounded in the existing chart (`charts/lightstack/`). No NEEDS CLARIFICATION
 remains in the spec; these resolve the plan-level "how", not spec-level "what".
 
 ## R1 — Conditional requirement enforcement: render-time guards, not schema `if/then`
@@ -52,7 +52,7 @@ structural validation is expressible without conditionals.
   `deployed`, `failed`, …}.
 - **Workload readiness** (topology-appropriate):
   - single-node **Deployment**: ready when `.status.updatedReplicas == .spec.replicas` **and**
-    `.status.availableReplicas == .spec.replicas` (equivalently `kubectl rollout status deploy/<rel>-o3k`).
+    `.status.availableReplicas == .spec.replicas` (equivalently `kubectl rollout status deploy/<rel>-lightstack`).
   - multi-node **DaemonSet**: ready when `.status.numberReady == .status.desiredNumberScheduled`
     **and** `.status.updatedNumberScheduled == .status.desiredNumberScheduled`.
 - **Terminal failure** (fail-fast before the bound): any pod with
@@ -73,7 +73,7 @@ the wait); ship a status script (rejected by clarification — contract is docum
 
 **Decision**: Two complementary gates.
 
-1. **Rejection (bash, primary)**: add `charts/o3k/ci/invalid-values/*.yaml` fixtures (unknown key,
+1. **Rejection (bash, primary)**: add `charts/lightstack/ci/invalid-values/*.yaml` fixtures (unknown key,
    missing required, malformed DB ref, bad storageMode, out-of-range replicaCount) and assert in
    `ci/run-tests.sh` that `helm template r <chart> -f <fixture>` **fails** for each, and that a
    complete valid fixture renders.
@@ -94,10 +94,10 @@ release-breaker).
 ## R6 — Endpoint resolution (identity-anchored)
 
 **Decision**: The contract guarantees the **Keystone `/v3` endpoint** — in-cluster Service
-`http://<release>-o3k:35357/v3`, or advertised `<scheme>://<endpointHost>:35357/v3` when configured.
+`http://<release>-lightstack:35357/v3`, or advertised `<scheme>://<endpointHost>:35357/v3` when configured.
 The other five services (compute, placement, network, volumev3, image) are discovered from the
 **service catalog** in the Keystone token (`auth.go:334`/`BuildServiceCatalog`, fallback
-`buildHardcodedCatalog`). Catalog URLs honor `O3K_ENDPOINT_HOST` + scheme; the six in-cluster ports
+`buildHardcodedCatalog`). Catalog URLs honor `LIGHTSTACK_ENDPOINT_HOST` + scheme; the six in-cluster ports
 in `NOTES.txt` are marked **non-authoritative** debugging info. The node-local metadata endpoint is
 not in the catalog and is excluded.
 

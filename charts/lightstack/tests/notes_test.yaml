@@ -1,0 +1,34 @@
+# helm-unittest specs for the NOTES.txt rollout command (PR #54 review C6).
+# Single-node deploys a Deployment (rollout status deploy/…); multi-node a DaemonSet
+# (rollout status ds/…). Uses raw-string assertions since NOTES.txt is not a manifest.
+suite: NOTES rollout command
+templates:
+  - templates/NOTES.txt
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+tests:
+  - it: single-node points rollout status at the Deployment
+    asserts:
+      - matchRegexRaw:
+          pattern: "rollout status deploy/"
+      - notMatchRegexRaw:
+          pattern: "rollout status ds/"
+  - it: multi-node points rollout status at the DaemonSet
+    set:
+      deploymentMode: multi-node
+    asserts:
+      - matchRegexRaw:
+          pattern: "rollout status ds/"
+      - notMatchRegexRaw:
+          pattern: "rollout status deploy/"
+  - it: documents the Keystone integration entry point + non-authoritative caveat (US2 / FR-012)
+    asserts:
+      - matchRegexRaw:
+          pattern: "identity \\(Keystone\\)"
+      - matchRegexRaw:
+          pattern: "NON-AUTHORITATIVE"
+      - matchRegexRaw:
+          pattern: "CONTRACT\\.md"

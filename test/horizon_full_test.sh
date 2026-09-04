@@ -2,7 +2,7 @@
 set -e
 
 # Horizon Full Functionality Test
-# Tests all major Horizon dashboard features against O3K
+# Tests all major Horizon dashboard features against Lightstack
 
 echo "================================"
 echo "Horizon Full Functionality Test"

@@ -4,16 +4,16 @@
 #   - it stays PINNED while ANY instance still references the image;
 #   - it is RECLAIMED when the last referencing instance is deleted.
 #
-# Run ON the libvirt host against a running real-mode o3k (nova libvirt_mode:real,
+# Run ON the libvirt host against a running real-mode Lightstack (nova libvirt_mode:real,
 # glance storage_mode:s3). The image must be RGW-backed. Source your OpenStack env:
 #   OS_AUTH_URL=... ./test/cache_eviction_test.sh
 set -euo pipefail
 : "${OS_AUTH_URL:?source your OpenStack env first}"
 
-IMG="${O3K_TEST_IMAGE:-cirros}"
-NET="${O3K_TEST_NET:-net1}"
-FLAVOR="${O3K_TEST_FLAVOR:-m1.tiny}"
-BASE_DIR="${O3K_IMAGE_DIR:-/var/lib/o3k/images}"
+IMG="${LIGHTSTACK_TEST_IMAGE:-cirros}"
+NET="${LIGHTSTACK_TEST_NET:-net1}"
+FLAVOR="${LIGHTSTACK_TEST_FLAVOR:-m1.tiny}"
+BASE_DIR="${LIGHTSTACK_IMAGE_DIR:-/var/lib/lightstack/images}"
 
 imgid=$(openstack image show "$IMG" -f value -c id)
 base="$BASE_DIR/image-${imgid}.raw"

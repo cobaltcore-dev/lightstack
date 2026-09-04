@@ -14,7 +14,7 @@ import (
 
 // TestCinderCreateVolumeTransfer_Contract tests POST /v3/:project_id/volume-transfers
 func TestCinderCreateVolumeTransfer_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -99,7 +99,7 @@ func TestCinderCreateVolumeTransfer_Contract(t *testing.T) {
 
 // TestCinderListVolumeTransfers_Contract tests GET /v3/:project_id/volume-transfers
 func TestCinderListVolumeTransfers_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -175,7 +175,7 @@ func TestCinderListVolumeTransfers_Contract(t *testing.T) {
 
 // TestCinderGetVolumeTransfer_Contract tests GET /v3/:project_id/volume-transfers/:id
 func TestCinderGetVolumeTransfer_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -266,7 +266,7 @@ func TestCinderGetVolumeTransfer_Contract(t *testing.T) {
 
 // TestCinderDeleteVolumeTransfer_Contract tests DELETE /v3/:project_id/volume-transfers/:id
 func TestCinderDeleteVolumeTransfer_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -342,7 +342,7 @@ func TestCinderDeleteVolumeTransfer_Contract(t *testing.T) {
 
 // TestCinderAcceptVolumeTransfer_Contract tests POST /v3/:project_id/volume-transfers/:id/accept
 func TestCinderAcceptVolumeTransfer_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

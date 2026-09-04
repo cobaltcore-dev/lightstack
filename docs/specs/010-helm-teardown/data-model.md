@@ -6,7 +6,7 @@ This feature adds no database tables. Its "data model" is three things: (1) the 
 
 ---
 
-## 1. Configuration values (`charts/o3k/values.yaml`)
+## 1. Configuration values (`charts/lightstack/values.yaml`)
 
 ### Existing — semantics finalized here
 
@@ -28,7 +28,7 @@ This feature adds no database tables. Its "data model" is three things: (1) the 
 
 ---
 
-## 2. Enumerated entities (what `o3k cleanup` purges)
+## 2. Enumerated entities (what `lightstack cleanup` purges)
 
 The cleanup reads these from the database (source of truth) and removes the host artifact — compute/network via the existing per-resource functions, node-local storage by wholesale tree removal. The operator-owned database is read to enumerate but **never reset** (FR-013, revised 2026-06-24). Names/locations are the product's verified conventions.
 
@@ -38,7 +38,7 @@ The cleanup reads these from the database (source of truth) and removes the host
 | **Project namespace** | `networks.project_id` | netns `light-ns-<project_id>` | `NetworkNamespaceManager.DeleteNamespace` | network |
 | **Router namespace** | `routers.id` | netns `qrouter-<router_id[:11]>` | `RouterManager.DeleteRouterNamespace` | network |
 | **Bridge / TAP** | `ports` / network records | host/in-ns links | `BridgeManager.DeleteBridge`, `TAPDeviceManager.DeleteTAPDevice` | network |
-| **NAT / iptables / SG chains** | floating-IP / SNAT / SG / metadata records | host netfilter (DNAT, MASQUERADE, `O3K-NSI-*`/`O3K-SG-*` chains, the `/32` on the uplink) | `WithdrawFloatingIP`, `RemoveEgressSNAT`, `RemoveIngressFilter`, `DeleteSecurityGroupChain`, `mdRedirect.Remove` | network |
+| **NAT / iptables / SG chains** | floating-IP / SNAT / SG / metadata records | host netfilter (DNAT, MASQUERADE, `lightstack-NSI-*`/`lightstack-SG-*` chains, the `/32` on the uplink) | `WithdrawFloatingIP`, `RemoveEgressSNAT`, `RemoveIngressFilter`, `DeleteSecurityGroupChain`, `mdRedirect.Remove` | network |
 | **VM disk overlays** | `instances` | `<hostStoragePath>/instances/` | `os.RemoveAll` (whole tree) | storage |
 | **Config-drive ISOs** | per-instance | `<hostStoragePath>/cloud-init/` | `os.RemoveAll` (whole tree) | storage |
 | **Local image files** | `images` (local-backed) | `<hostStoragePath>/images/` | `os.RemoveAll` (whole tree) | storage |
@@ -56,7 +56,7 @@ The cleanup reads these from the database (source of truth) and removes the host
 
 ## 3. Rendered Kubernetes resources (chart)
 
-All carry `helm.sh/hook: pre-delete` and render **only when `dataRetentionPolicy: delete`**. Names are release-scoped via `o3k.fullname` (e.g. `<release>-o3k-teardown-*`); labels reuse `o3k.labels`.
+All carry `helm.sh/hook: pre-delete` and render **only when `dataRetentionPolicy: delete`**. Names are release-scoped via `lightstack.fullname` (e.g. `<release>-lightstack-teardown-*`); labels reuse `lightstack.labels`.
 
 | Resource | Hook weight | Purpose | Key spec |
 |----------|------------:|---------|----------|
@@ -64,7 +64,7 @@ All carry `helm.sh/hook: pre-delete` and render **only when `dataRetentionPolicy
 | **Role** `…-teardown` | -20 | least-privilege (R7): `deployments` get/list/patch; `pods` get/list; `persistentvolumeclaims` get/list/delete | namespaced |
 | **RoleBinding** `…-teardown` | -20 | bind SA → Role | namespaced |
 | **Job** `…-teardown-quiesce` | -10 | `kubectlImage`; scale Deployment→0, `wait --for=delete pod`, then `delete pvc -l instance=<release>` (if `deletePVCs`) | `backoffLimit: 0` |
-| **Job** `…-teardown-purge` | 0 | o3k image, privileged + host mounts + config Secret; runs `o3k cleanup`; **blocking, fail-closed** | `activeDeadlineSeconds: {{ timeoutSeconds }}`, `backoffLimit: 0`, `restartPolicy: Never` |
+| **Job** `…-teardown-purge` | 0 | Lightstack image, privileged + host mounts + config Secret; runs `lightstack cleanup`; **blocking, fail-closed** | `activeDeadlineSeconds: {{ timeoutSeconds }}`, `backoffLimit: 0`, `restartPolicy: Never` |
 
 `hook-delete-policy: before-hook-creation,hook-succeeded` on all (re-runnable; succeeded hooks are cleaned up; a failed purge Job is retained for its logs).
 
@@ -76,7 +76,7 @@ helm uninstall (dataRetentionPolicy: delete)
         ▼
 [-20] RBAC created
 [-10] quiesce Job:  scale Deployment→0 ─► wait pods gone ─► delete release PVCs
-[  0] purge Job (o3k cleanup, blocking):
+[  0] purge Job (lightstack cleanup, blocking):
           enumerate from DB (read-only) ─► compute ─► network ─► storage   (DB never reset — operator-owned)
           (DB unreachable → skip DB enumeration; netns-prefix scan + wholesale storage purge; domains/bridges/iptables left to operator)
           success ─────────────► hook passes

@@ -13,7 +13,7 @@ import (
 
 // TestNovaListInstanceActions_Contract tests GET /v2.1/servers/:id/os-instance-actions
 func TestNovaListInstanceActions_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -68,7 +68,7 @@ func TestNovaListInstanceActions_Contract(t *testing.T) {
 
 // TestNovaGetInstanceAction_Contract tests GET /v2.1/servers/:id/os-instance-actions/:request_id
 func TestNovaGetInstanceAction_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

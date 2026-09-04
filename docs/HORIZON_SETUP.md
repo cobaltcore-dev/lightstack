@@ -1,16 +1,16 @@
-# Horizon Setup Guide for O3K
+# Horizon Setup Guide for Lightstack
 
-**IMPORTANT**: Horizon dashboard integration is **extended functionality**, not a core O3K feature. Horizon requires independent setup, configuration, and (optionally) rebranding to work with O3K.
+**IMPORTANT**: Horizon dashboard integration is **extended functionality**, not a core Lightstack feature. Horizon requires independent setup, configuration, and (optionally) rebranding to work with lightstack.
 
 ---
 
 ## Overview
 
-O3K provides 100% API compatibility with OpenStack Horizon dashboard, but Horizon itself is:
-- **Optional**: O3K works perfectly without Horizon (CLI/API/SDK are primary interfaces)
+Lightstack provides 100% API compatibility with OpenStack Horizon dashboard, but Horizon itself is:
+- **Optional**: Lightstack works perfectly without Horizon (CLI/API/SDK are primary interfaces)
 - **Independent**: Horizon runs as a separate service (Django application)
-- **Configurable**: Requires specific configuration to connect to O3K
-- **Rebrandable**: Can be customized with O3K branding (optional)
+- **Configurable**: Requires specific configuration to connect to Lightstack
+- **Rebrandable**: Can be customized with Lightstack branding (optional)
 
 ---
 
@@ -18,15 +18,15 @@ O3K provides 100% API compatibility with OpenStack Horizon dashboard, but Horizo
 
 | Component | Version | Requirement |
 |-----------|---------|-------------|
-| O3K | v0.5.0+ | Required |
+| Lightstack | v0.5.0+ | Required |
 | OpenStack | Flamingo 2025.2+ | Required |
 | Horizon | Flamingo 2025.2+ | Required |
 | Earlier Versions | Zed, Yoga, etc. | **NOT SUPPORTED** |
 
 **Why Flamingo only?**
-- O3K is designed for modern OpenStack (2025.2+)
+- Lightstack is designed for modern OpenStack (2025.2+)
 - Earlier versions use deprecated APIs and patterns
-- Maintaining backward compatibility would compromise O3K's lightweight design
+- Maintaining backward compatibility would compromise lightstack's lightweight design
 
 ---
 
@@ -34,16 +34,16 @@ O3K provides 100% API compatibility with OpenStack Horizon dashboard, but Horizo
 
 ### Option 1: Unified Deployment (Recommended)
 
-Deploy O3K and Horizon together using `docker-compose-horizon.yml`:
+Deploy Lightstack and Horizon together using `docker-compose-horizon.yml`:
 
 ```bash
-cd o3k/deployments
+cd lightstack/deployments
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
 **What's included**:
 - PostgreSQL 18 database
-- O3K services (Keystone, Nova, Neutron, Cinder, Glance)
+- Lightstack services (Keystone, Nova, Neutron, Cinder, Glance)
 - Horizon Flamingo 2025.2
 - noVNC console proxy
 - Memcached (for Django sessions)
@@ -56,16 +56,16 @@ docker compose -f docker-compose-horizon.yml up -d
 
 ### Option 2: Separate Horizon Deployment
 
-Deploy Horizon separately to existing O3K installation:
+Deploy Horizon separately to existing Lightstack installation:
 
 ```bash
-cd o3k/deployments
+cd lightstack/deployments
 docker compose -f docker-compose-horizon.yml up -d horizon
 ```
 
 **Prerequisites**:
-- O3K services already running
-- O3K accessible at known hostname/IP
+- Lightstack services already running
+- Lightstack accessible at known hostname/IP
 
 **Documentation**: [HORIZON_DEPLOYMENT.md](HORIZON_DEPLOYMENT.md)
 
@@ -75,11 +75,11 @@ docker compose -f docker-compose-horizon.yml up -d horizon
 
 ### Step 1: Horizon local_settings.py
 
-Horizon must be configured to connect to O3K services:
+Horizon must be configured to connect to Lightstack services:
 
 ```python
 # deployments/horizon-config/local_settings
-OPENSTACK_HOST = "o3k"  # Docker service name or IP
+OPENSTACK_HOST = "lightstack"  # Docker service name or IP
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 
 # API Versions (Flamingo compatible)
@@ -94,7 +94,7 @@ OPENSTACK_API_VERSIONS = {
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
 OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
 
-# Session Configuration (matches O3K token TTL)
+# Session Configuration (matches lightstack token TTL)
 SESSION_TIMEOUT = 14400  # 4 hours
 SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 
@@ -104,9 +104,9 @@ NOVNC_PROXY_URL = 'http://localhost:6080'
 ```
 
 **Key Configuration Points**:
-- `OPENSTACK_HOST`: Must resolve to O3K service
-- `OPENSTACK_API_VERSIONS`: Match O3K implemented versions
-- `SESSION_TIMEOUT`: Should match O3K JWT token TTL (default 24h, recommended 4h for Horizon)
+- `OPENSTACK_HOST`: Must resolve to Lightstack service
+- `OPENSTACK_API_VERSIONS`: Match Lightstack implemented versions
+- `SESSION_TIMEOUT`: Should match Lightstack JWT token TTL (default 24h, recommended 4h for Horizon)
 - `CONSOLE_TYPE`: Must match deployed console proxy (noVNC, SPICE, etc.)
 
 ---
@@ -128,29 +128,29 @@ services:
 
 ### Step 3: Network Configuration
 
-Horizon must communicate with O3K services:
+Horizon must communicate with Lightstack services:
 
 ```yaml
 # docker-compose-horizon.yml
 services:
   horizon:
     environment:
-      - OPENSTACK_HOST=o3k
-      - OPENSTACK_KEYSTONE_URL=http://o3k:35357/v3
+      - OPENSTACK_HOST=lightstack
+      - OPENSTACK_KEYSTONE_URL=http://lightstack:35357/v3
     networks:
-      - o3k-network  # Must be on same network as O3K
+      - lightstack-network  # Must be on same network as lightstack
 ```
 
 ---
 
 ## Optional: Horizon Rebranding
 
-Horizon can be customized with O3K branding (logo, colors, name):
+Horizon can be customized with Lightstack branding (logo, colors, name):
 
 ### Rebranding Script (Future)
 
 A standalone rebranding script will be provided to:
-- Replace OpenStack logos with O3K logos
+- Replace OpenStack logos with Lightstack logos
 - Update site title and branding text
 - Customize color scheme
 - Add custom CSS/JavaScript
@@ -161,13 +161,13 @@ A standalone rebranding script will be provided to:
 
 ```python
 # Site branding
-SITE_BRANDING = "O3K Cloud Dashboard"
+SITE_BRANDING = "lightstack Cloud Dashboard"
 SITE_BRANDING_LINK = "/"
 
 # Custom product name
-CUSTOM_DASHBOARD_NAME = "O3K Horizon Dashboard"
-CUSTOM_PRODUCT_NAME = "O3K OpenStack Platform"
-CUSTOM_WELCOME_MESSAGE = "Welcome to O3K - Lightweight OpenStack"
+CUSTOM_DASHBOARD_NAME = "lightstack Horizon Dashboard"
+CUSTOM_PRODUCT_NAME = "lightstack OpenStack Platform"
+CUSTOM_WELCOME_MESSAGE = "Welcome to lightstack - Lightweight OpenStack"
 ```
 
 ---
@@ -221,20 +221,20 @@ Use default credentials or your configured credentials.
 **Symptoms**: Login page loads but authentication fails
 
 **Causes**:
-- O3K services not running
+- Lightstack services not running
 - Incorrect `OPENSTACK_KEYSTONE_URL`
 - Network connectivity issue
 
 **Fix**:
 ```bash
-# Verify O3K is running
-docker ps | grep o3k
+# Verify lightstack is running
+docker ps | grep lightstack
 
 # Test Keystone endpoint
 curl http://localhost:35357/v3
 
 # Check Horizon logs
-docker logs o3k-horizon
+docker logs lightstack-horizon
 ```
 
 ---
@@ -249,7 +249,7 @@ docker logs o3k-horizon
 
 **Fix**:
 ```python
-# Verify API versions match O3K
+# Verify API versions match lightstack
 OPENSTACK_API_VERSIONS = {
     "identity": 3,
     "image": 2,
@@ -278,8 +278,8 @@ SESSION_TIMEOUT = 14400  # 4 hours
 docker ps | grep memcached
 
 # Check container time sync
-docker exec o3k-horizon date
-docker exec o3k date
+docker exec lightstack-horizon date
+docker exec lightstack date
 ```
 
 ---
@@ -302,7 +302,7 @@ docker ps | grep novnc
 curl http://localhost:6080
 
 # Check Nova console configuration
-grep console_proxy config/o3k.yaml
+grep console_proxy config/lightstack.yaml
 ```
 
 ---
@@ -311,7 +311,7 @@ grep console_proxy config/o3k.yaml
 
 ### Identity Projects Page (404)
 
-**Status**: Known Horizon/Kolla configuration issue (NOT an O3K bug)
+**Status**: Known Horizon/Kolla configuration issue (NOT a Lightstack bug)
 
 **Symptoms**: `/dashboard/identity/projects/` returns HTTP 404
 
@@ -329,7 +329,7 @@ openstack project create --domain Default my-project
 openstack project delete my-project
 ```
 
-**Resolution**: This is a Horizon packaging issue, not an O3K API issue. The Keystone `/v3/projects` API endpoint works perfectly.
+**Resolution**: This is a Horizon packaging issue, not a Lightstack API issue. The Keystone `/v3/projects` API endpoint works perfectly.
 
 **Documentation**: [HORIZON_PROJECTS_ISSUE.md](HORIZON_PROJECTS_ISSUE.md)
 
@@ -339,10 +339,10 @@ openstack project delete my-project
 
 ### Database Connection Pooling
 
-Horizon makes many API calls per page load. Ensure O3K has sufficient database connections:
+Horizon makes many API calls per page load. Ensure Lightstack has sufficient database connections:
 
 ```yaml
-# config/o3k.yaml
+# config/lightstack.yaml
 database:
   max_open_conns: 50  # Increase for high Horizon traffic
   max_idle_conns: 10
@@ -395,7 +395,7 @@ ALLOWED_HOSTS = ['your-domain.com']  # NOT ['*']
 
 4. **Change JWT secret**:
 ```yaml
-# config/o3k.yaml
+# config/lightstack.yaml
 keystone:
   jwt_secret: "USE-STRONG-RANDOM-SECRET"
 ```
@@ -408,7 +408,7 @@ keystone:
 
 ```
 ┌─────────────┐      HTTP      ┌──────────────┐      HTTP      ┌─────────────┐
-│   Browser   │ ───────────────>│   Horizon    │ ───────────────>│     O3K     │
+│   Browser   │ ───────────────>│   Horizon    │ ───────────────>│     lightstack     │
 │             │                 │  (Django)    │                 │  Services   │
 └─────────────┘                 └──────────────┘                 └─────────────┘
                                       │                                 │
@@ -421,8 +421,8 @@ keystone:
 
 **Key Points**:
 - Horizon is stateless (sessions in Memcached)
-- O3K uses JWT tokens (no session database)
-- All API calls go through O3K (Horizon → O3K → PostgreSQL)
+- Lightstack uses JWT tokens (no session database)
+- All API calls go through Lightstack (Horizon → Lightstack → PostgreSQL)
 - noVNC proxy provides console access (separate WebSocket connection)
 
 ---
@@ -430,10 +430,10 @@ keystone:
 ## Summary
 
 **Horizon is extended functionality**:
-- O3K works perfectly without Horizon (CLI/API/SDK are primary)
+- Lightstack works perfectly without Horizon (CLI/API/SDK are primary)
 - Horizon requires independent setup and configuration
 - Version requirement: Flamingo 2025.2+ only
-- Rebranding script (future): Optional customization for O3K branding
+- Rebranding script (future): Optional customization for Lightstack branding
 
 **Deployment Guides**:
 - [UNIFIED_DEPLOYMENT.md](UNIFIED_DEPLOYMENT.md) - Complete setup
@@ -443,6 +443,6 @@ keystone:
 
 **Support**:
 - API compatibility: 100% (all Horizon workflows functional)
-- Known issues: Identity projects page 404 (Horizon bug, not O3K)
+- Known issues: Identity projects page 404 (Horizon bug, not lightstack)
 - Primary interfaces: OpenStack CLI, API, SDK
 - Web UI: Optional Horizon dashboard

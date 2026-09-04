@@ -2,11 +2,11 @@
 
 Resolves every deferred/unknown decision from the spec (incl. the `/cl.plan`-deferred items) and grounds each in the current code. Format: **Decision / Rationale / Alternatives**.
 
-## 1. RGW↔o3k trust mechanism (the deferred decision) — `/v3/s3tokens` is public + self-validating
+## 1. RGW↔lightstack trust mechanism (the deferred decision) — `/v3/s3tokens` is public + self-validating
 
-- **Decision**: Implement `POST /v3/s3tokens` (and `/v3/ec2tokens`) as a **public, unauthenticated** endpoint on Keystone's `v3` group. It validates the request by looking up the EC2 credential by access key and **recomputing the S3 signature** from the stored secret; on success it returns the resolved user/project/roles. RGW is configured with `rgw s3 auth use keystone = true` + `rgw keystone url = <o3k>` + `rgw keystone api version = 3`; **no o3k admin/service token is required** from RGW.
-- **Rationale**: This is exactly how OpenStack Keystone works — the S3 signature *is* the credential, so the endpoint self-validates and needs no caller auth. Grounded: o3k has **no service/admin-token concept** today (only user JWT via `X-Auth-Token`; `internal/middleware/auth.go`), and the public-vs-authenticated split is by route group (`v3` vs `mgmt`) in `internal/keystone/handlers.go:33-124`. Registering `s3tokens` on the `v3` group cleanly bypasses `authMiddleware`.
-- **Alternatives rejected**: (a) *Static `rgw keystone admin token`* — o3k has no static-token type; adds config + a shared secret for no security gain over signature self-validation. (b) *Admin service-user* — RGW would need to hold/refresh a real o3k admin **user** JWT; not how RGW's keystone integration authenticates s3token calls, and heavier.
+- **Decision**: Implement `POST /v3/s3tokens` (and `/v3/ec2tokens`) as a **public, unauthenticated** endpoint on Keystone's `v3` group. It validates the request by looking up the EC2 credential by access key and **recomputing the S3 signature** from the stored secret; on success it returns the resolved user/project/roles. RGW is configured with `rgw s3 auth use keystone = true` + `rgw keystone url = <lightstack>` + `rgw keystone api version = 3`; **no Lightstack admin/service token is required** from RGW.
+- **Rationale**: This is exactly how OpenStack Keystone works — the S3 signature *is* the credential, so the endpoint self-validates and needs no caller auth. Grounded: Lightstack has **no service/admin-token concept** today (only user JWT via `X-Auth-Token`; `internal/middleware/auth.go`), and the public-vs-authenticated split is by route group (`v3` vs `mgmt`) in `internal/keystone/handlers.go:33-124`. Registering `s3tokens` on the `v3` group cleanly bypasses `authMiddleware`.
+- **Alternatives rejected**: (a) *Static `rgw keystone admin token`* — Lightstack has no static-token type; adds config + a shared secret for no security gain over signature self-validation. (b) *Admin service-user* — RGW would need to hold/refresh a real Lightstack admin **user** JWT; not how RGW's keystone integration authenticates s3token calls, and heavier.
 
 ## 2. EC2-credentials storage — reuse `credentials` table + an `access_key` lookup column
 
@@ -18,13 +18,13 @@ Resolves every deferred/unknown decision from the spec (incl. the `/cl.plan`-def
 ## 3. S3 signature verification — recompute SigV4 (and SigV2) in-process, stdlib only
 
 - **Decision**: Verify AWS **SigV4** primarily (the aws-sdk-go-v2 default RGW clients use), with **SigV2** as a fallback for older clients. Recompute using stdlib `crypto/hmac` + `crypto/sha256` from the `s3tokens` request body (RGW forwards the string-to-sign / canonical request + the client's signature + access key). Compare in constant time.
-- **Rationale**: No server-side signature *verification* exists in o3k today (only client-side signing via aws-sdk). stdlib HMAC/SHA-256 is sufficient; no new dependency. The `s3tokens` body format is defined by Keystone/RGW (see `contracts/s3tokens.md`).
+- **Rationale**: No server-side signature *verification* exists in Lightstack today (only client-side signing via aws-sdk). stdlib HMAC/SHA-256 is sufficient; no new dependency. The `s3tokens` body format is defined by Keystone/RGW (see `contracts/s3tokens.md`).
 - **Alternatives rejected**: Pulling a third-party SigV4 *verifier* — unnecessary; the algorithm is small and stdlib-friendly, and avoids a dependency (Constitution: minimal deps).
 
 ## 4. Per-project isolation mechanism — RGW `implicit tenants = s3`
 
-- **Decision**: Configure RGW with `rgw keystone implicit tenants = s3`, mapping each o3k project to its own RGW tenant → per-project bucket namespace (FR-008). Cross-tenant access requires explicit `tenant:bucket` addressing + permission. o3k's `s3tokens` response returns the project id as the tenant so RGW namespaces correctly.
-- **Rationale**: This reproduces the OpenStack/Swift `AUTH_<project>` account model (confirmed via Ceph reef docs during clarification). It's RGW-side config, not o3k code — o3k only needs to return the correct project/tenant in the s3token response.
+- **Decision**: Configure RGW with `rgw keystone implicit tenants = s3`, mapping each Lightstack project to its own RGW tenant → per-project bucket namespace (FR-008). Cross-tenant access requires explicit `tenant:bucket` addressing + permission. lightstack's `s3tokens` response returns the project id as the tenant so RGW namespaces correctly.
+- **Rationale**: This reproduces the OpenStack/Swift `AUTH_<project>` account model (confirmed via Ceph reef docs during clarification). It's RGW-side config, not Lightstack code — Lightstack only needs to return the correct project/tenant in the s3token response.
 - **Alternatives rejected**: Shared global namespace (AWS-S3 default) — breaks multi-tenant isolation expectations; rejected in clarification.
 
 ## 5. Lazy fetch-on-boot seam — `storage.EnsureLocalBase` + Nova gets a `*storage.ImageStore`
@@ -41,8 +41,8 @@ Resolves every deferred/unknown decision from the spec (incl. the `/cl.plan`-def
 
 ## 7. Node-local cache eviction (FR-016) — cluster-wide refcount now; per-node needs a future `host` column
 
-- **Decision**: A reclamation pass deletes `/var/lib/o3k/images/image-<id>.raw` when **no** row references the image: `SELECT 1 FROM instances WHERE image_id=$1 UNION ALL SELECT 1 FROM volumes WHERE source_image_id=$1` (the exact predicate Glance's `DeleteImage` already uses, `internal/glance/images.go:462-477`). Trigger: on instance delete and/or a periodic sweep.
-- **Rationale**: Instance deletes are **hard deletes** (no `DELETED` rows), so the refcount is accurate. o3k is effectively single-node (all state under `/var/lib/o3k`; **no `host`/`node_id` column on `instances`**), so cluster-wide == node-local today. On a genuine multi-node cluster this refcount is *conservative* (a node retains a base while the image is used anywhere) — safe, never evicts an in-use base, just less aggressive.
+- **Decision**: A reclamation pass deletes `/var/lib/lightstack/images/image-<id>.raw` when **no** row references the image: `SELECT 1 FROM instances WHERE image_id=$1 UNION ALL SELECT 1 FROM volumes WHERE source_image_id=$1` (the exact predicate Glance's `DeleteImage` already uses, `internal/glance/images.go:462-477`). Trigger: on instance delete and/or a periodic sweep.
+- **Rationale**: Instance deletes are **hard deletes** (no `DELETED` rows), so the refcount is accurate. Lightstack is effectively single-node (all state under `/var/lib/lightstack`; **no `host`/`node_id` column on `instances`**), so cluster-wide == node-local today. On a genuine multi-node cluster this refcount is *conservative* (a node retains a base while the image is used anywhere) — safe, never evicts an in-use base, just less aggressive.
 - **Limitation recorded**: precise per-node eviction needs a `host` column on `instances` (set on create, filtered in the refcount) — **out of scope**, future work. Note: the existing Glance image-cache handlers (`internal/glance/cache.go`, `images.cached_at`) are a *separate* mechanism and are not reused here.
 - **Alternatives rejected**: LRU/size-cap without refcount — risks evicting a base a stopped-but-restartable VM still backs onto.
 
@@ -61,13 +61,13 @@ Resolves every deferred/unknown decision from the spec (incl. the `/cl.plan`-def
 ## 10. Catalog `s3` entry — migration `062` + hardcoded fallback
 
 - **Decision**: Migration `062` inserts a `services` row `type='s3'` (name e.g. `rgw`) and an `endpoints` row (interface `public`, region set, url = RGW S3 endpoint). Mirror an `s3` entry in `buildHardcodedCatalog` (`auth.go:675-728`). The catalog entry is for discovery/completeness (S3 clients configure the endpoint directly); FR-009.
-- **Rationale**: Catalog is seeded purely in SQL migrations (no `o3k seed`); next free number is `062` (latest `061`); `ValidateMigrations` requires paired up/down. Types today: identity/compute/network/volumev3/image (+ placement fallback).
+- **Rationale**: Catalog is seeded purely in SQL migrations (no `lightstack seed`); next free number is `062` (latest `061`); `ValidateMigrations` requires paired up/down. Types today: identity/compute/network/volumev3/image (+ placement fallback).
 - **Alternatives rejected**: `object-store` (Swift) type — misleads Swift clients (no Swift API); rejected in clarification (FR-009 uses `s3`).
 
 ## 11. CI RGW fixture + s3tokens loopback — `ceph/demo` in docker-compose
 
-- **Decision**: A CI job runs `ceph/demo` (all-in-one real RGW) + o3k + postgres in one docker-compose network; a bash driver validates (A) Glance upload/download/checksum + boot-fetch and (B) EC2-creds → S3 client (runner-as-VM) → RGW → o3k `/v3/s3tokens`. RGW reaches o3k over the compose network (both containers); the runner reaches RGW via a published port.
-- **Rationale**: Rook/k8s is impractical in CI (established in clarification). `ceph/demo` gives real RGW quirks. The s3tokens loopback (RGW→o3k) works because both are on the same docker network. The "tenant" is the CI runner acting as an S3 client (no guest VM; FR gate = auth chain).
+- **Decision**: A CI job runs `ceph/demo` (all-in-one real RGW) + Lightstack + postgres in one docker-compose network; a bash driver validates (A) Glance upload/download/checksum + boot-fetch and (B) EC2-creds → S3 client (runner-as-VM) → RGW → Lightstack `/v3/s3tokens`. RGW reaches Lightstack over the compose network (both containers); the runner reaches RGW via a published port.
+- **Rationale**: Rook/k8s is impractical in CI (established in clarification). `ceph/demo` gives real RGW quirks. The s3tokens loopback (RGW→lightstack) works because both are on the same docker network. The "tenant" is the CI runner acting as an S3 client (no guest VM; FR gate = auth chain).
 - **Alternatives rejected**: MinIO (not RGW — no keystone/implicit-tenants), two k8s clusters (infeasible on runners).
 
 ## 12. Config threading — options struct over positional bloat
@@ -78,4 +78,4 @@ Resolves every deferred/unknown decision from the spec (incl. the `/cl.plan`-def
 
 ## Resolved unknowns summary
 
-All Technical-Context items are resolved (no remaining NEEDS CLARIFICATION). Open, explicitly-deferred **future** items (out of scope, recorded): per-node cache eviction via a `host` column; SigV2-only ancient clients beyond the fallback; Swift API (o3k#15).
+All Technical-Context items are resolved (no remaining NEEDS CLARIFICATION). Open, explicitly-deferred **future** items (out of scope, recorded): per-node cache eviction via a `host` column; SigV2-only ancient clients beyond the fallback; Swift API (lightstack#15).

@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestNeutronListQoSPolicies_Contract tests GET /v2.0/qos/policies
 func TestNeutronListQoSPolicies_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -39,7 +39,7 @@ func TestNeutronListQoSPolicies_Contract(t *testing.T) {
 
 // TestNeutronCreateQoSPolicy_Contract tests POST /v2.0/qos/policies
 func TestNeutronCreateQoSPolicy_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -76,7 +76,7 @@ func TestNeutronCreateQoSPolicy_Contract(t *testing.T) {
 
 // TestNeutronGetQoSPolicy_Contract tests GET /v2.0/qos/policies/:id
 func TestNeutronGetQoSPolicy_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -117,7 +117,7 @@ func TestNeutronGetQoSPolicy_Contract(t *testing.T) {
 
 // TestNeutronUpdateQoSPolicy_Contract tests PUT /v2.0/qos/policies/:id
 func TestNeutronUpdateQoSPolicy_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -160,7 +160,7 @@ func TestNeutronUpdateQoSPolicy_Contract(t *testing.T) {
 
 // TestNeutronDeleteQoSPolicy_Contract tests DELETE /v2.0/qos/policies/:id
 func TestNeutronDeleteQoSPolicy_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -196,7 +196,7 @@ func TestNeutronDeleteQoSPolicy_Contract(t *testing.T) {
 
 // TestNeutronListBandwidthLimitRules_Contract tests GET /v2.0/qos/policies/:id/bandwidth_limit_rules
 func TestNeutronListBandwidthLimitRules_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -238,7 +238,7 @@ func TestNeutronListBandwidthLimitRules_Contract(t *testing.T) {
 
 // TestNeutronCreateBandwidthLimitRule_Contract tests POST /v2.0/qos/policies/:id/bandwidth_limit_rules
 func TestNeutronCreateBandwidthLimitRule_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -282,7 +282,7 @@ func TestNeutronCreateBandwidthLimitRule_Contract(t *testing.T) {
 
 // TestNeutronGetBandwidthLimitRule_Contract tests GET /v2.0/qos/policies/:id/bandwidth_limit_rules/:rule_id
 func TestNeutronGetBandwidthLimitRule_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -340,7 +340,7 @@ func TestNeutronGetBandwidthLimitRule_Contract(t *testing.T) {
 
 // TestNeutronUpdateBandwidthLimitRule_Contract tests PUT /v2.0/qos/policies/:id/bandwidth_limit_rules/:rule_id
 func TestNeutronUpdateBandwidthLimitRule_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -400,7 +400,7 @@ func TestNeutronUpdateBandwidthLimitRule_Contract(t *testing.T) {
 
 // TestNeutronDeleteBandwidthLimitRule_Contract tests DELETE /v2.0/qos/policies/:id/bandwidth_limit_rules/:rule_id
 func TestNeutronDeleteBandwidthLimitRule_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

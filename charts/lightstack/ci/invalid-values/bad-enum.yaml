@@ -1,0 +1,10 @@
+# INVALID: service.type outside the allowed set. MUST be rejected by the enum.
+image:
+  repository: ghcr.io/lightstack/lightstack
+secrets:
+  jwtSecret: x
+  adminPassword: x
+database:
+  url: postgres://lightstack@db/lightstack
+service:
+  type: Foo

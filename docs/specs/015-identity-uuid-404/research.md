@@ -61,7 +61,7 @@ All decisions below were settled during specification + two `/cl.clarify` sessio
 
 ## D8 — Test strategy (test-first, Constitution Art. III)
 
-**Decision**: (1) Middleware **unit tests, no DB** — `gin.CreateTestContext`, set `c.Params` + `FullPath`, assert 404 + verbatim message + `IsAborted()`; cover valid/`not-a-uuid`/`access`-skipped/each param name/first-malformed-in-path/noun derivation. (2) **DB-backed e2e** via `requireDB`/`O3K_TEST_DB_URL` — one representative endpoint per resource group: malformed→404 verbatim, valid-unknown→404 verbatim (identical), valid-existing→200/204. (3) **Authz precedence** — non-admin+malformed→403 on DeleteUser/ChangePassword/EC2; unauth+malformed→401; admin+malformed→404. (4) **Masking fix** — a genuine backend error on a touched handler still →5xx. All RED first.
+**Decision**: (1) Middleware **unit tests, no DB** — `gin.CreateTestContext`, set `c.Params` + `FullPath`, assert 404 + verbatim message + `IsAborted()`; cover valid/`not-a-uuid`/`access`-skipped/each param name/first-malformed-in-path/noun derivation. (2) **DB-backed e2e** via `requireDB`/`LIGHTSTACK_TEST_DB_URL` — one representative endpoint per resource group: malformed→404 verbatim, valid-unknown→404 verbatim (identical), valid-existing→200/204. (3) **Authz precedence** — non-admin+malformed→403 on DeleteUser/ChangePassword/EC2; unauth+malformed→401; admin+malformed→404. (4) **Masking fix** — a genuine backend error on a touched handler still →5xx. All RED first.
 **Rationale**: Middleware is cheaply unit-testable without a DB; handler behavior needs the real DB per Constitution Art. III/IV (real deps over mocks). No HTTP/router test harness exists in `internal/keystone` yet — build a minimal one in the test file.
 
 ## D9 — Landing / branch

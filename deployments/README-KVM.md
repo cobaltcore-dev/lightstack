@@ -1,6 +1,6 @@
-# O3K Docker Compose Deployment with KVM Support
+# Lightstack Docker Compose Deployment with KVM Support
 
-This deployment configuration runs O3K in a Docker container with access to the host's KVM/libvirt for real virtualization.
+This deployment configuration runs Lightstack in a Docker container with access to the host's KVM/libvirt for real virtualization.
 
 ## Prerequisites
 
@@ -12,20 +12,20 @@ This deployment configuration runs O3K in a Docker container with access to the 
    ```
 3. **Docker and Docker Compose** installed
 4. **PostgreSQL 18** running on host (for database)
-5. **Storage base directory** — subdirs are auto-created by o3k on startup (SPEC-011 / #510);
-   this is needed only if o3k runs as a non-root user that cannot create `/var/lib/o3k`:
+5. **Storage base directory** — subdirs are auto-created by Lightstack on startup (SPEC-011 / #510);
+   this is needed only if Lightstack runs as a non-root user that cannot create `/var/lib/lightstack`:
    ```bash
-   sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/o3k
+   sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/lightstack
    ```
-6. **Configuration file** at `/opt/o3k/config/o3k.yaml`
+6. **Configuration file** at `/opt/lightstack/config/lightstack.yaml`
 
 ## Configuration
 
-Create `/opt/o3k/config/o3k.yaml`:
+Create `/opt/lightstack/config/lightstack.yaml`:
 
 ```yaml
 database:
-  url: "postgres://o3k:YOUR_PASSWORD@localhost:5432/o3k?sslmode=disable"
+  url: "postgres://lightstack:YOUR_PASSWORD@localhost:5432/lightstack?sslmode=disable"
   max_connections: 20
 
 keystone:
@@ -39,7 +39,7 @@ nova:
   port: 8774
   libvirt_mode: real
   libvirt_uri: "qemu:///system"
-  instance_storage_path: "/var/lib/o3k/instances"
+  instance_storage_path: "/var/lib/lightstack/instances"
   console_proxy_base_url: "http://YOUR_HOST_IP:6080/vnc_auto.html"
 
 neutron:
@@ -53,13 +53,13 @@ cinder:
   host: "0.0.0.0"
   port: 8776
   storage_mode: local
-  local_storage_path: "/var/lib/o3k/volumes"
+  local_storage_path: "/var/lib/lightstack/volumes"
 
 glance:
   host: "0.0.0.0"
   port: 9292
   storage_mode: local
-  local_storage_path: "/var/lib/o3k/images"
+  local_storage_path: "/var/lib/lightstack/images"
 
 metadata:
   host: "0.0.0.0"
@@ -77,29 +77,29 @@ Create the PostgreSQL database and user:
 
 ```bash
 sudo -u postgres psql << EOF
-CREATE DATABASE o3k;
-CREATE USER o3k WITH ENCRYPTED PASSWORD 'YOUR_PASSWORD';
-GRANT ALL PRIVILEGES ON DATABASE o3k TO o3k;
-ALTER DATABASE o3k OWNER TO o3k;
+CREATE DATABASE lightstack;
+CREATE USER lightstack WITH ENCRYPTED PASSWORD 'YOUR_PASSWORD';
+GRANT ALL PRIVILEGES ON DATABASE lightstack TO lightstack;
+ALTER DATABASE lightstack OWNER TO lightstack;
 EOF
 ```
 
 ## Build and Deploy
 
-1. **Build the O3K image**:
+1. **Build the Lightstack image**:
    ```bash
-   cd /path/to/o3k
+   cd /path/to/lightstack
    docker compose -f deployments/docker-compose-kvm.yml build
    ```
 
-2. **Start O3K**:
+2. **Start lightstack**:
    ```bash
    docker compose -f deployments/docker-compose-kvm.yml up -d
    ```
 
 3. **Check logs**:
    ```bash
-   docker logs o3k -f
+   docker logs lightstack -f
    ```
 
 4. **Verify services**:
@@ -111,15 +111,15 @@ EOF
 
 This deployment uses:
 
-- **Host networking** (`network_mode: host`): Allows O3K to bind directly to host ports
+- **Host networking** (`network_mode: host`): Allows Lightstack to bind directly to host ports
 - **Privileged mode**: Required for network namespace operations
 - **Libvirt socket mount**: `/var/run/libvirt/libvirt-sock` for KVM access
 - **Storage directories**: Mounted from host for persistence
-- **Config mount**: `/opt/o3k/config` (read-only)
+- **Config mount**: `/opt/lightstack/config` (read-only)
 
 ## Why Not Pure Docker Compose?
 
-The standard `docker-compose.yml` runs O3K in a container without libvirt access, suitable for:
+The standard `docker-compose.yml` runs Lightstack in a container without libvirt access, suitable for:
 - Development with stub mode
 - Testing without real VMs
 - macOS/Windows development
@@ -155,7 +155,7 @@ ss -tulpn | grep 5432
 Verify connection from container:
 
 ```bash
-docker exec o3k psql -h localhost -U o3k -d o3k -c "SELECT version();"
+docker exec lightstack psql -h localhost -U lightstack -d lightstack -c "SELECT version();"
 ```
 
 ### Services Not Starting
@@ -170,20 +170,20 @@ systemctl status libvirtd
 systemctl status postgresql
 
 # Check storage directories
-ls -la /var/lib/o3k/
+ls -la /var/lib/lightstack/
 ```
 
 ## Stopping and Cleanup
 
 ```bash
-# Stop O3K
+# Stop lightstack
 docker compose -f deployments/docker-compose-kvm.yml down
 
 # Remove image
-docker rmi deployments-o3k
+docker rmi deployments-lightstack
 
 # Clean storage (CAUTION: Deletes all VMs, volumes, images)
-sudo rm -rf /var/lib/o3k/*
+sudo rm -rf /var/lib/lightstack/*
 ```
 
 ## See Also

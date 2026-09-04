@@ -1,4 +1,4 @@
-module github.com/cobaltcore-dev/o3k
+module github.com/cobaltcore-dev/lightstack
 
 go 1.26.2
 

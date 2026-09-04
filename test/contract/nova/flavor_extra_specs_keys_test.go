@@ -15,7 +15,7 @@ import (
 
 // TestNovaGetFlavorExtraSpecKey_Contract tests GET /v2.1/flavors/:id/os-extra_specs/:key
 func TestNovaGetFlavorExtraSpecKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -65,7 +65,7 @@ func TestNovaGetFlavorExtraSpecKey_Contract(t *testing.T) {
 
 // TestNovaUpdateFlavorExtraSpecKey_Contract tests PUT /v2.1/flavors/:id/os-extra_specs/:key
 func TestNovaUpdateFlavorExtraSpecKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -134,7 +134,7 @@ func TestNovaUpdateFlavorExtraSpecKey_Contract(t *testing.T) {
 
 // TestNovaDeleteFlavorExtraSpecKey_Contract tests DELETE /v2.1/flavors/:id/os-extra_specs/:key
 func TestNovaDeleteFlavorExtraSpecKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

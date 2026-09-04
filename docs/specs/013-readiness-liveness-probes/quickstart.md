@@ -5,7 +5,7 @@ Walkthrough mapping each guarantee to an observable check. Run after implementat
 ## Local (binary, stub mode — macOS/Linux dev)
 
 ```bash
-make build && ./bin/o3k --config config/o3k.yaml &
+make build && ./bin/lightstack --config config/lightstack.yaml &
 
 # livez: up regardless of deps
 curl -fsS localhost:35357/livez            # → 200 "ok"
@@ -19,7 +19,7 @@ curl -isS -H 'Accept: application/json' localhost:35357/healthcheck   # → 200 
 curl -IsS localhost:35357/healthcheck                          # HEAD → 200, no body
 
 # CLI subcommand
-./bin/o3k healthcheck --ready ; echo "exit=$?"   # → exit 0 (ready) / 1 (not)
+./bin/lightstack healthcheck --ready ; echo "exit=$?"   # → exit 0 (ready) / 1 (not)
 ```
 
 **DB-down (the core fix, US1/SC-001):** point `database.url` at a dead host (or stop PostgreSQL) →
@@ -32,26 +32,26 @@ curl -fsS localhost:35357/livez      # → 200  (liveness independent of DB, US2
 ## Kubernetes (the real consumption path)
 
 ```bash
-helm install o3k charts/o3k -f my-values.yaml --wait     # blocks until Pod Ready (US3)
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=o3k --timeout=180s
+helm install lightstack charts/lightstack -f my-values.yaml --wait     # blocks until Pod Ready (US3)
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=lightstack --timeout=180s
 ```
 
 - **Honest readiness (US1, SC-002):** `kubectl delete pod <postgres>` (or NetworkPolicy-block the DB) →
   ```bash
-  kubectl get pod -l app.kubernetes.io/name=o3k        # READY 0/1 within ~30 s
-  kubectl get endpointslices                           # o3k pod IP removed → no traffic
+  kubectl get pod -l app.kubernetes.io/name=lightstack        # READY 0/1 within ~30 s
+  kubectl get endpointslices                           # lightstack pod IP removed → no traffic
   ```
   Restore the DB → pod returns to `1/1` and is re-added. The container is **not** restarted (RESTARTS unchanged) — runtime outage ≠ crash loop (US2/SC-009).
 
-- **Slow DB at boot (SC-005):** start o3k before the DB; within the ~150 s startup grace it is not restarted; once the DB accepts connections it goes Ready.
+- **Slow DB at boot (SC-005):** start Lightstack before the DB; within the ~150 s startup grace it is not restarted; once the DB accepts connections it goes Ready.
 - **DB never up at boot (Q6):** leave the DB down past the startup grace → `CrashLoopBackOff` (expected for an unmet boot dependency).
 - **Wedged process (SC-004):** liveness failure → kubelet restarts within ~60 s.
-- **Zero-downtime rollout (SC-006):** `kubectl rollout restart deploy/o3k` under `hey`/`wrk` load → no dropped requests (old pod flips not-ready and drains before terminating).
-- **Native signal (AC4):** `kubectl get pod -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'` is the consumed truth — no custom o3k status call.
+- **Zero-downtime rollout (SC-006):** `kubectl rollout restart deploy/lightstack` under `hey`/`wrk` load → no dropped requests (old pod flips not-ready and drains before terminating).
+- **Native signal (AC4):** `kubectl get pod -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'` is the consumed truth — no custom Lightstack status call.
 
 ## Chart tests
 ```bash
-charts/o3k/ci/run-tests.sh          # helm-unittest: probe wiring (Deployment + DaemonSet), defaults, overrides, schema rejects bad probe values
+charts/lightstack/ci/run-tests.sh          # helm-unittest: probe wiring (Deployment + DaemonSet), defaults, overrides, schema rejects bad probe values
 ```
 
 ## Gates (Principle I — no regression)

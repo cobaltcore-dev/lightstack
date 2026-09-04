@@ -3,8 +3,8 @@ package middleware
 import (
 	"strings"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/keystone"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/keystone"
 	"github.com/gin-gonic/gin"
 )
 

@@ -1,18 +1,18 @@
 # Horizon Dashboard Deployment Guide
 
-**O3K Version**: v0.5.0+
+**lightstack Version**: v0.5.0+
 **Last Updated**: 2026-03-13
 **Status**: Production Ready
 
 ## Overview
 
-This guide provides step-by-step instructions for deploying OpenStack Horizon dashboard with O3K as the backend. O3K provides 100% API compatibility with Horizon, supporting all dashboard features including instance management, networking, volumes, images, and VNC console access.
+This guide provides step-by-step instructions for deploying OpenStack Horizon dashboard with Lightstack as the backend. Lightstack provides 100% API compatibility with Horizon, supporting all dashboard features including instance management, networking, volumes, images, and VNC console access.
 
 ## Prerequisites
 
-- O3K v0.5.0 or higher running
+- Lightstack v0.5.0 or higher running
 - Docker and Docker Compose installed
-- Network connectivity between Horizon and O3K services
+- Network connectivity between Horizon and Lightstack services
 - 2GB RAM minimum for Horizon container
 - Port 80 (HTTP) available for Horizon dashboard
 
@@ -25,8 +25,8 @@ This approach uses a lightweight Horizon configuration without complex Kolla inf
 #### Step 1: Create Deployment Directory
 
 ```bash
-mkdir -p ~/o3k-horizon
-cd ~/o3k-horizon
+mkdir -p ~/lightstack-horizon
+cd ~/lightstack-horizon
 ```
 
 #### Step 2: Create Horizon Configuration
@@ -34,7 +34,7 @@ cd ~/o3k-horizon
 Create `local_settings.py`:
 
 ```python
-# O3K Horizon Configuration
+# lightstack Horizon Configuration
 import os
 
 # Basic Django Settings
@@ -43,11 +43,11 @@ ALLOWED_HOSTS = ['*']
 SECRET_KEY = 'CHANGE-THIS-IN-PRODUCTION-' + os.urandom(32).hex()
 
 # OpenStack Backend Configuration
-OPENSTACK_HOST = "o3k"  # Docker service name (or IP if not using Docker)
+OPENSTACK_HOST = "lightstack"  # Docker service name (or IP if not using Docker)
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
 
-# API Version Configuration (matches O3K)
+# API Version Configuration (matches lightstack)
 OPENSTACK_API_VERSIONS = {
     "identity": 3,      # Keystone v3
     "image": 2,         # Glance v2
@@ -59,7 +59,7 @@ OPENSTACK_API_VERSIONS = {
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
 OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
 
-# Session Configuration (matches O3K token TTL)
+# Session Configuration (matches lightstack token TTL)
 SESSION_TIMEOUT = 14400  # 4 hours
 SESSION_COOKIE_SECURE = False  # Set True with HTTPS in production
 CSRF_COOKIE_SECURE = False     # Set True with HTTPS in production
@@ -129,7 +129,7 @@ version: '3.8'
 services:
   horizon:
     image: quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
-    container_name: o3k-horizon
+    container_name: lightstack-horizon
     hostname: horizon
     ports:
       - "80:80"
@@ -141,7 +141,7 @@ services:
       - horizon-static:/var/lib/kolla/venv/lib/python3.10/site-packages/static:rw
       - horizon-logs:/var/log/kolla/horizon:rw
     networks:
-      - o3k-network
+      - lightstack-network
     depends_on:
       - novnc
     restart: unless-stopped
@@ -154,7 +154,7 @@ services:
 
   novnc:
     image: dougw/novnc:latest
-    container_name: o3k-novnc
+    container_name: lightstack-novnc
     hostname: novnc
     ports:
       - "6080:6080"
@@ -162,7 +162,7 @@ services:
       - DISPLAY_WIDTH=1024
       - DISPLAY_HEIGHT=768
     networks:
-      - o3k-network
+      - lightstack-network
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "6080"]
@@ -171,9 +171,9 @@ services:
       retries: 3
 
 networks:
-  o3k-network:
+  lightstack-network:
     external: true
-    name: deployments_o3k-network  # Must match O3K network name
+    name: deployments_lightstack-network  # Must match lightstack network name
 
 volumes:
   horizon-static:
@@ -259,13 +259,13 @@ version: '3.8'
 services:
   horizon:
     image: quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
-    container_name: o3k-horizon-dev
+    container_name: lightstack-horizon-dev
     ports:
       - "8080:80"
     environment:
       - KOLLA_INSTALL_TYPE=source
       - KOLLA_CONFIG_STRATEGY=COPY_ALWAYS
-      - OPENSTACK_HOST=host.docker.internal  # For local O3K
+      - OPENSTACK_HOST=host.docker.internal  # For local lightstack
       - OPENSTACK_KEYSTONE_URL=http://host.docker.internal:35357/v3
     volumes:
       - ./kolla-config:/var/lib/kolla/config_files:ro
@@ -280,38 +280,38 @@ networks:
 
 ### Network Configuration
 
-**Docker Network Name**: The `o3k-network` must match your O3K deployment network. Check with:
+**Docker Network Name**: The `lightstack-network` must match your Lightstack deployment network. Check with:
 
 ```bash
-docker network ls | grep o3k
+docker network ls | grep lightstack
 ```
 
 Common network names:
-- `deployments_o3k-network` (deployments/docker-compose.yml)
-- `o3k_default` (root docker-compose.yml)
-- Custom name specified in your O3K compose file
+- `deployments_lightstack-network` (deployments/docker-compose.yml)
+- `lightstack_default` (root docker-compose.yml)
+- Custom name specified in your Lightstack compose file
 
 Update `docker-compose.yml` accordingly:
 
 ```yaml
 networks:
-  o3k-network:
+  lightstack-network:
     external: true
     name: YOUR_ACTUAL_NETWORK_NAME
 ```
 
 ### Service Discovery
 
-Horizon resolves O3K services using the `OPENSTACK_HOST` setting. Options:
+Horizon resolves Lightstack services using the `OPENSTACK_HOST` setting. Options:
 
-1. **Docker service name** (recommended): `OPENSTACK_HOST = "o3k"`
-   - Requires Horizon and O3K on same Docker network
+1. **Docker service name** (recommended): `OPENSTACK_HOST = "lightstack"`
+   - Requires Horizon and Lightstack on same Docker network
 
 2. **Host IP address**: `OPENSTACK_HOST = "192.168.1.100"`
-   - Use for non-Docker O3K deployments
+   - Use for non-Docker Lightstack deployments
 
 3. **Localhost (host.docker.internal)**: `OPENSTACK_HOST = "host.docker.internal"`
-   - For O3K running on Docker host machine
+   - For Lightstack running on Docker host machine
 
 ### Console Access
 
@@ -321,7 +321,7 @@ VNC console requires noVNC proxy. Configuration:
 CONSOLE_TYPE = 'novnc'
 ```
 
-O3K generates console tokens that Horizon uses to establish VNC connections through the noVNC proxy (port 6080).
+Lightstack generates console tokens that Horizon uses to establish VNC connections through the noVNC proxy (port 6080).
 
 ## Verification
 
@@ -334,8 +334,8 @@ docker compose ps
 # Verify Horizon is responding
 curl -I http://localhost/dashboard/auth/login/
 
-# Check O3K connectivity from Horizon
-docker exec o3k-horizon curl -s http://o3k:35357/v3 | jq
+# Check lightstack connectivity from Horizon
+docker exec lightstack-horizon curl -s http://lightstack:35357/v3 | jq
 ```
 
 ### 2. Login Test
@@ -377,7 +377,7 @@ Test key Horizon features:
 
 **Diagnosis**:
 ```bash
-docker logs o3k-horizon --tail 50
+docker logs lightstack-horizon --tail 50
 ```
 
 **Common Issues**:
@@ -414,17 +414,17 @@ docker logs o3k-horizon --tail 50
 **Diagnosis**:
 ```bash
 # From Horizon container
-docker exec o3k-horizon curl -v http://o3k:35357/v3
+docker exec lightstack-horizon curl -v http://lightstack:35357/v3
 
 # Check network connectivity
-docker exec o3k-horizon ping -c 3 o3k
+docker exec lightstack-horizon ping -c 3 lightstack
 ```
 
 **Solutions**:
 
 1. **Wrong network**: Verify both containers on same network:
    ```bash
-   docker network inspect deployments_o3k-network
+   docker network inspect deployments_lightstack-network
    ```
 
 2. **Wrong OPENSTACK_HOST**: Update `local_settings.py`:
@@ -432,9 +432,9 @@ docker exec o3k-horizon ping -c 3 o3k
    OPENSTACK_HOST = "correct-service-name"
    ```
 
-3. **O3K not running**: Start O3K services:
+3. **lightstack not running**: Start Lightstack services:
    ```bash
-   cd ~/git/o3k
+   cd ~/git/lightstack
    docker compose -f deployments/docker-compose.yml up -d
    ```
 
@@ -444,7 +444,7 @@ docker exec o3k-horizon ping -c 3 o3k
 
 **Checks**:
 
-1. Verify O3K Keystone is responsive:
+1. Verify Lightstack Keystone is responsive:
    ```bash
    curl http://localhost:35357/v3
    ```
@@ -463,7 +463,7 @@ docker exec o3k-horizon ping -c 3 o3k
 
 3. Check Horizon logs for authentication errors:
    ```bash
-   docker logs o3k-horizon | grep -i auth
+   docker logs lightstack-horizon | grep -i auth
    ```
 
 ### VNC Console Issues
@@ -478,7 +478,7 @@ docker exec o3k-horizon ping -c 3 o3k
    curl http://localhost:6080
    ```
 
-2. Check O3K Nova console token generation:
+2. Check Lightstack Nova console token generation:
    ```bash
    # Create instance first
    openstack server create --flavor m1.small --image cirros test-vm
@@ -487,7 +487,7 @@ docker exec o3k-horizon ping -c 3 o3k
    openstack console url show test-vm
    ```
 
-3. Verify network connectivity between Horizon, noVNC, and O3K
+3. Verify network connectivity between Horizon, noVNC, and Lightstack
 
 ### Performance Issues
 
@@ -520,9 +520,9 @@ docker exec o3k-horizon ping -c 3 o3k
    ```yaml
    memcached:
      image: memcached:alpine
-     container_name: o3k-memcached
+     container_name: lightstack-memcached
      networks:
-       - o3k-network
+       - lightstack-network
    ```
 
 3. **Reduce session timeout**: Lower SESSION_TIMEOUT in `local_settings.py`
@@ -586,10 +586,10 @@ Monitor Horizon health:
 
 ```bash
 # Container metrics
-docker stats o3k-horizon
+docker stats lightstack-horizon
 
 # Application logs
-docker logs -f o3k-horizon
+docker logs -f lightstack-horizon
 
 # HTTP response times
 curl -w "@curl-format.txt" -o /dev/null -s http://localhost/dashboard/
@@ -635,7 +635,7 @@ Remove Horizon deployment:
 docker compose down -v
 
 # Remove configuration
-cd ~ && rm -rf o3k-horizon
+cd ~ && rm -rf lightstack-horizon
 ```
 
 ## Advanced Configuration
@@ -663,7 +663,7 @@ COPY panel-config.py /etc/openstack-dashboard/enabled/
 Build and use custom image:
 
 ```bash
-docker build -t o3k-horizon-custom .
+docker build -t lightstack-horizon-custom .
 ```
 
 Update docker-compose.yml:
@@ -671,12 +671,12 @@ Update docker-compose.yml:
 ```yaml
 services:
   horizon:
-    image: o3k-horizon-custom
+    image: lightstack-horizon-custom
 ```
 
 ### Multi-Region Support
 
-Configure Horizon for multiple O3K regions:
+Configure Horizon for multiple Lightstack regions:
 
 ```python
 AVAILABLE_REGIONS = [
@@ -688,13 +688,13 @@ OPENSTACK_KEYSTONE_URL = AVAILABLE_REGIONS[0][0]
 
 ## Support
 
-- **Documentation**: https://github.com/cobaltcore-dev/o3k/tree/main/docs
-- **Issues**: https://github.com/cobaltcore-dev/o3k/issues
+- **Documentation**: https://github.com/cobaltcore-dev/lightstack/tree/main/docs
+- **Issues**: https://github.com/cobaltcore-dev/lightstack/issues
 - **Spec**: [OpenStack Horizon 100% Compatibility](archive/specs/002-horizon-full-compatibility/)
 
 ## References
 
 - OpenStack Horizon Documentation: https://docs.openstack.org/horizon/latest/
 - Kolla Documentation: https://docs.openstack.org/kolla/latest/
-- O3K API Documentation: [docs/API.md](./API.md)
-- O3K Configuration Guide: [docs/CONFIGURATION.md](./CONFIGURATION.md)
+- Lightstack API Documentation: [docs/API.md](./API.md)
+- Lightstack Configuration Guide: [docs/CONFIGURATION.md](./CONFIGURATION.md)

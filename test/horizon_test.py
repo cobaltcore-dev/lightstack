@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-O3K Horizon Compatibility Test
-Simulates Horizon dashboard operations to validate O3K API compatibility
+lightstack Horizon Compatibility Test
+Simulates Horizon dashboard operations to validate lightstack API compatibility
 """
 
 import requests
@@ -15,8 +15,8 @@ RED = '\033[0;31m'
 YELLOW = '\033[1;33m'
 NC = '\033[0m'  # No Color
 
-# O3K configuration
-O3K_URL = "http://localhost:35357"
+# Lightstack configuration
+LIGHTSTACK_URL = "http://localhost:35357"
 ADMIN_USER = "admin"
 ADMIN_PASSWORD = "secret"
 PROJECT_NAME = "default"
@@ -75,7 +75,7 @@ class HorizonSimulator:
         }
 
         response = requests.post(
-            f"{O3K_URL}/v3/auth/tokens",
+            f"{LIGHTSTACK_URL}/v3/auth/tokens",
             json=auth_payload,
             headers={"Content-Type": "application/json"}
         )
@@ -96,7 +96,7 @@ class HorizonSimulator:
         }
 
         response = requests.post(
-            f"{O3K_URL}/v3/auth/tokens",
+            f"{LIGHTSTACK_URL}/v3/auth/tokens",
             json=auth_payload,
             headers={"Content-Type": "application/json"}
         )
@@ -422,7 +422,7 @@ class HorizonSimulator:
 
 def main():
     print("==========================================")
-    print(" O3K Horizon Compatibility Test")
+    print(" Lightstack Horizon Compatibility Test")
     print("==========================================")
     print()
 

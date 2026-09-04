@@ -70,7 +70,7 @@ pkg/designate/
 └── cli/
     └── main.go          # CLI tool
 
-cmd/o3k-designate/
+cmd/lightstack-designate/
 └── main.go              # Standalone binary
 
 internal/designate/
@@ -437,25 +437,25 @@ designate:
 
 ```bash
 # Create zone
-o3k-designate-cli zone create --name example.com --email admin@example.com
+lightstack-designate-cli zone create --name example.com --email admin@example.com
 
 # List zones
-o3k-designate-cli zone list
+lightstack-designate-cli zone list
 
 # Create A record
-o3k-designate-cli recordset create example.com --name www --type A --records 192.168.1.10
+lightstack-designate-cli recordset create example.com --name www --type A --records 192.168.1.10
 
 # Create CNAME
-o3k-designate-cli recordset create example.com --name blog --type CNAME --records www.example.com
+lightstack-designate-cli recordset create example.com --name blog --type CNAME --records www.example.com
 
 # Update record
-o3k-designate-cli recordset update example.com www --records 192.168.1.20
+lightstack-designate-cli recordset update example.com www --records 192.168.1.20
 
 # Delete record
-o3k-designate-cli recordset delete example.com www
+lightstack-designate-cli recordset delete example.com www
 
 # Set PTR for floating IP
-o3k-designate-cli floatingip set RegionOne:fip-uuid --ptrdname vm1.example.com
+lightstack-designate-cli floatingip set RegionOne:fip-uuid --ptrdname vm1.example.com
 ```
 
 ## Testing Strategy
@@ -474,7 +474,7 @@ o3k-designate-cli floatingip set RegionOne:fip-uuid --ptrdname vm1.example.com
 
 # Start Designate with BIND9 backend
 docker run -d --name bind9 ubuntu/bind9
-o3k-designate --config test-config.yaml &
+lightstack-designate --config test-config.yaml &
 
 # Create zone
 ZONE_ID=$(openstack zone create --email admin@test.com test.com. -f value -c id)

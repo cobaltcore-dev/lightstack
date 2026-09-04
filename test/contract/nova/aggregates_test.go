@@ -13,7 +13,7 @@ import (
 
 // TestNovaListAggregates_Contract tests GET /v2.1/os-aggregates
 func TestNovaListAggregates_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -38,7 +38,7 @@ func TestNovaListAggregates_Contract(t *testing.T) {
 
 // TestNovaCreateAggregate_Contract tests POST /v2.1/os-aggregates
 func TestNovaCreateAggregate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -75,7 +75,7 @@ func TestNovaCreateAggregate_Contract(t *testing.T) {
 
 // TestNovaGetAggregate_Contract tests GET /v2.1/os-aggregates/:id
 func TestNovaGetAggregate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -116,7 +116,7 @@ func TestNovaGetAggregate_Contract(t *testing.T) {
 
 // TestNovaUpdateAggregate_Contract tests PUT /v2.1/os-aggregates/:id
 func TestNovaUpdateAggregate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -159,7 +159,7 @@ func TestNovaUpdateAggregate_Contract(t *testing.T) {
 
 // TestNovaDeleteAggregate_Contract tests DELETE /v2.1/os-aggregates/:id
 func TestNovaDeleteAggregate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -195,7 +195,7 @@ func TestNovaDeleteAggregate_Contract(t *testing.T) {
 
 // TestNovaAddHostToAggregate_Contract tests POST /v2.1/os-aggregates/:id/action (add_host)
 func TestNovaAddHostToAggregate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -239,7 +239,7 @@ func TestNovaAddHostToAggregate_Contract(t *testing.T) {
 
 // TestNovaRemoveHostFromAggregate_Contract tests POST /v2.1/os-aggregates/:id/action (remove_host)
 func TestNovaRemoveHostFromAggregate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -291,7 +291,7 @@ func TestNovaRemoveHostFromAggregate_Contract(t *testing.T) {
 
 // TestNovaSetAggregateMetadata_Contract tests POST /v2.1/os-aggregates/:id/action (set_metadata)
 func TestNovaSetAggregateMetadata_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

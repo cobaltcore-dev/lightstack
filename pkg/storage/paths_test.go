@@ -2,17 +2,17 @@ package storage
 
 import "testing"
 
-// The node-local layout under /var/lib/o3k is a contract: the chart's persistent
+// The node-local layout under /var/lib/lightstack is a contract: the chart's persistent
 // hostPath, Nova's overlay backing, and the volume attach/delete paths all depend
 // on these exact paths (SPEC-009 WS-0/WS-5).
 func TestLocalPaths(t *testing.T) {
 	cases := []struct {
 		name, got, want string
 	}{
-		{"volume dir", LocalVolumeDir(), "/var/lib/o3k/volumes"},
-		{"volume path", LocalVolumePath("abc"), "/var/lib/o3k/volumes/volume-abc.qcow2"},
-		{"image dir", LocalImageDir(), "/var/lib/o3k/images"},
-		{"image path (raw base)", LocalImagePath("abc"), "/var/lib/o3k/images/image-abc.raw"},
+		{"volume dir", LocalVolumeDir(), "/var/lib/lightstack/volumes"},
+		{"volume path", LocalVolumePath("abc"), "/var/lib/lightstack/volumes/volume-abc.qcow2"},
+		{"image dir", LocalImageDir(), "/var/lib/lightstack/images"},
+		{"image path (raw base)", LocalImagePath("abc"), "/var/lib/lightstack/images/image-abc.raw"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

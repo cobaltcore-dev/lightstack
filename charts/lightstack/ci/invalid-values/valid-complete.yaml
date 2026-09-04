@@ -1,0 +1,21 @@
+# Complete, VALID value set — MUST render. Baseline for the rejection matrix
+# (charts/lightstack/ci/invalid-values/, exercised by ci/run-tests.sh). Test-only; not for production.
+image:
+  repository: ghcr.io/lightstack/lightstack
+  tag: "0.7.0"
+secrets:
+  jwtSecret: test-jwt-secret-value
+  adminPassword: test-admin-password
+database:
+  url: postgres://lightstack:pw@db:5432/lightstack?sslmode=disable
+deploymentMode: single-node
+replicaCount: 1
+nova:
+  libvirtMode: stub
+glance:
+  storageMode: local
+cinder:
+  storageMode: local
+logging:
+  level: info
+  format: json

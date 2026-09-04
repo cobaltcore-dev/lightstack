@@ -1,32 +1,32 @@
-# o3k Blueprint & OpenStack Compatibility Design
+# Lightstack Blueprint & OpenStack Compatibility Design
 
 **Status**: Living document (cloud-storage#420; updated for SPEC-014 — cloud-storage#480)
 **Created**: 2026-06-30
 **Reference release**: OpenStack **2025.2 (Flamingo)**
-**o3k version**: v0.6.1 (2026-04-22) + SPEC-014 (Ceph RGW S3 backend, EC2/S3 tenant credentials — cloud-storage#480)
-**Tracking**: [cloud-storage#420](https://github.com/cobaltcore-dev/cloud-storage/issues/420) (epic #413 — o3k for validation)
+**lightstack version**: v0.6.1 (2026-04-22) + SPEC-014 (Ceph RGW S3 backend, EC2/S3 tenant credentials — cloud-storage#480)
+**Tracking**: [cloud-storage#420](https://github.com/cobaltcore-dev/cloud-storage/issues/420) (epic #413 — Lightstack for validation)
 
-This is the **authoritative top-level** compatibility reference for o3k. It serves two audiences:
+This is the **authoritative top-level** compatibility reference for lightstack. It serves two audiences:
 
-1. **Engineers working on o3k** — an accurate map of what is implemented, how, and where the edges are.
-2. **Teams evaluating o3k as a devstack replacement** — an honest compatibility surface and an explicit list of gaps.
+1. **Engineers working on lightstack** — an accurate map of what is implemented, how, and where the edges are.
+2. **Teams evaluating Lightstack as a devstack replacement** — an honest compatibility surface and an explicit list of gaps.
 
 Deep per-endpoint detail and contract-test results live in
 [`compatibility/OPENSTACK_COMPATIBILITY_REPORT.md`](compatibility/OPENSTACK_COMPATIBILITY_REPORT.md)
 (linked appendix). Architecture rationale lives in [`ARCHITECTURE.md`](ARCHITECTURE.md). This document
-is the single source of truth for *"what does o3k implement, and what doesn't it?"*
+is the single source of truth for *"what does Lightstack implement, and what doesn't it?"*
 
-> **A note on numbers.** Earlier docs report o3k coverage as "104% (342/330 endpoints)." That figure
+> **A note on numbers.** Earlier docs report Lightstack coverage as "104% (342/330 endpoints)." That figure
 > counts raw HTTP routes (including URL aliases and version-discovery) against a hand-picked baseline.
 > This blueprint counts **functional OpenStack API operations** under one stated rule (below) and reports
-> honest per-resource coverage instead of a single percentage. The external epic (#413) assesses o3k at
+> honest per-resource coverage instead of a single percentage. The external epic (#413) assesses Lightstack at
 > "~70% complete"; both views are reconciled in [§8 Known gaps](#8-known-gaps--limitations).
 
 ---
 
 ## Table of contents
 
-1. [Service map (o3k ↔ OpenStack)](#1-service-map)
+1. [Service map (lightstack ↔ OpenStack)](#1-service-map)
 2. [API surface & counting methodology](#2-api-surface--counting-methodology)
 3. [Compatibility matrix (per service)](#3-compatibility-matrix)
 4. [Storage backends](#4-storage-backends)
@@ -39,11 +39,11 @@ is the single source of truth for *"what does o3k implement, and what doesn't it
 
 ## 1. Service map
 
-o3k runs as a single Go binary that starts independent HTTP servers, one per OpenStack service,
+Lightstack runs as a single Go binary that starts independent HTTP servers, one per OpenStack service,
 plus a metadata server and Kubernetes health endpoints. All share one PostgreSQL pool and one stateless
 JWT auth path.
 
-| o3k service | OpenStack counterpart | API version | Port | Catalog type | Status |
+| Lightstack service | OpenStack counterpart | API version | Port | Catalog type | Status |
 |---|---|---|---|---|---|
 | Keystone | Identity | v3 | 35357 | `identity` | Core |
 | Nova | Compute | v2.1 (microversions 2.1–2.90) | 8774 | `compute` | Core |
@@ -64,7 +64,7 @@ under a non-standard **`s3`** service type (migration 062) for tenant object sto
 
 Endpoint counts in prior docs disagreed (README: 342; OPENSTACK_COMPATIBILITY_REPORT: per-service tallies
 summing differently; raw route greps: higher still) because none stated *what they counted*. This blueprint
-fixes one rule and re-derives everything from the route registrations in `cmd/o3k/main.go` and
+fixes one rule and re-derives everything from the route registrations in `cmd/lightstack/main.go` and
 `internal/*/`.
 
 **Counting rule.** A *functional operation* is a unique (HTTP method × canonical resource path). Excluded
@@ -74,7 +74,7 @@ from the functional count:
 - **Cinder project-scoped URL aliases** — Cinder registers most operations twice: a token-scoped form
   (`/v3/volumes`) and a project-in-path form (`/v3/{project_id}/volumes`). These are the *same* operation
   at two URLs; counted once.
-- **PUT/PATCH duplicate registrations** bound to the same handler (o3k accepts both for client tolerance;
+- **PUT/PATCH duplicate registrations** bound to the same handler (lightstack accepts both for client tolerance;
   e.g. Neutron `networks`/`subnets`/`ports`/`security-groups`). Counted once, by the OpenStack-canonical verb.
 
 Reported **separately** (not part of the five-service OpenStack API count): Placement (stub), Metadata, Health.
@@ -94,7 +94,7 @@ Reported **separately** (not part of the five-service OpenStack API count): Plac
 | Health | 4 | 3 | `/livez`, `/readyz`, `/healthcheck` (GET+HEAD) |
 | **Total routes served** | **≈407** | | |
 
-**Result:** o3k implements **~335 functional operations** across the five core OpenStack services (329 at
+**Result:** Lightstack implements **~335 functional operations** across the five core OpenStack services (329 at
 the v0.6.1 baseline + 6 from SPEC-014's EC2/S3 credential surface). That is the honest figure behind the
 "330 baseline"; the previous "342 / 104%" came from counting raw routes (aliases + discovery) against it. Coverage is substantial — the per-resource detail is in
 [§3](#3-compatibility-matrix), and what's genuinely *missing* is in [§8](#8-known-gaps--limitations).
@@ -105,7 +105,7 @@ the v0.6.1 baseline + 6 from SPEC-014's EC2/S3 credential surface). That is the 
 
 ## 3. Compatibility matrix
 
-Per service, each canonical OpenStack **api-ref** resource group (2025.2) is mapped to o3k's
+Per service, each canonical OpenStack **api-ref** resource group (2025.2) is mapped to lightstack's
 implementation status, derived from the route registrations in `internal/<service>/`. Status legend:
 
 - ✅ **Implemented** — operation(s) present, exercised by tests or clients
@@ -122,7 +122,7 @@ point-in-time, and a few report claims overstate the current code — flagged in
 
 Canonical group list from the OpenStack Identity v3 api-ref (core operations + CURRENT extensions).
 
-| Canonical group (Identity v3) | o3k | Notes |
+| Canonical group (Identity v3) | Lightstack | Notes |
 |---|:--:|---|
 | Authentication & token mgmt | ⚠️ | `POST`/`GET`/`DELETE /v3/auth/tokens` + `GET /v3/auth/projects`. Missing `HEAD /auth/tokens` (check), `GET /auth/catalog`, `GET /auth/system`/`domains`, MFA auth-receipts |
 | Users | ✅ | CRUD + `password` + `/users/:id/projects` + `/users/:id/groups` |
@@ -154,7 +154,7 @@ Canonical group list from the OpenStack Identity v3 api-ref (core operations + C
 `GET /v3/auth/catalog` as implemented; neither is registered in the current code. The status column
 above reflects the code, not the report.
 
-**Validation verdict:** o3k implements the full **core IAM surface** that Terraform, Horizon, and the
+**Validation verdict:** Lightstack implements the full **core IAM surface** that Terraform, Horizon, and the
 OpenStack CLI exercise — token auth, users, projects, domains, groups, roles, project role-assignments,
 service catalog, credentials, application credentials, and (SPEC-014) EC2/S3 credentials + S3/EC2
 signature validation for Ceph RGW. Every ❌ above is an enterprise SSO / delegation / policy / limits
@@ -168,7 +168,7 @@ in `handlers.go`) via `OpenStack-API-Version: compute …` (and legacy `X-OpenSt
 The bulk of compute behaviour rides on `POST /servers/{id}/action`, a single route that dispatches the
 full action set (below).
 
-| Compute v2.1 group | o3k | Notes |
+| Compute v2.1 group | Lightstack | Notes |
 |---|:--:|---|
 | Servers (CRUD) | ✅ | list / detail / create / show / update (PUT + PATCH) / delete |
 | Server actions (`/servers/{id}/action`) | ✅ | start, stop, reboot, pause/unpause, suspend/resume, shelve/shelveOffload/unshelve, lock/unlock, resize/confirmResize/revertResize, rebuild, **rescue** (no unrescue), evacuate, migrate, live-migrate, createImage (snapshot), createBackup, restore, changePassword, add/removeSecurityGroup, forceDelete, os-resetState, os-resetNetwork, + 5 console actions |
@@ -213,10 +213,10 @@ attach a volume, associate a floating IP) is fully supported. Every ❌/⚠️ i
 
 ### 3.3 Neutron — Network v2.0 (94 functional operations)
 
-o3k covers the full L2/L3 + security surface plus many common extensions; the gaps are advanced /
+Lightstack covers the full L2/L3 + security surface plus many common extensions; the gaps are advanced /
 enterprise networking extensions and some partial management surfaces.
 
-| Neutron v2.0 group | o3k | Notes |
+| Neutron v2.0 group | Lightstack | Notes |
 |---|:--:|---|
 | Networks | ✅ | CRUD (PUT + PATCH) |
 | Subnets | ✅ | CRUD (PUT + PATCH) |
@@ -262,12 +262,12 @@ quotas are read-only, so quota seeding goes through Nova.
 > **Surface breadth ≠ tested depth — read this before the matrix.** Two in-repo sources disagree sharply:
 > the compat report claims **65/68 (~96%)** by *code analysis* (route existence), while the README's own
 > *contract-test* result is **4/22 (18%)** — *"Basic volumes work, groups need implementation."* Both are
-> accurate for what they measure. o3k **registers** a broad Cinder surface (67 functional ops), but working,
+> accurate for what they measure. Lightstack **registers** a broad Cinder surface (67 functional ops), but working,
 > contract-verified behaviour is concentrated in **core volume / snapshot / type** operations. The core
 > volume lifecycle *is* real and host-validated (SPEC-009: create, attach, detach, delete, boot-from-volume,
 > volume-from-image, on local **and** RBD). Read the 96% as "routes present," not "features working."
 
-| Cinder v3 group | o3k | Notes |
+| Cinder v3 group | Lightstack | Notes |
 |---|:--:|---|
 | Volumes (CRUD) | ✅ | list / detail / create / show / update (PUT + PATCH) / delete — **core lifecycle host-validated in real mode** |
 | Volume actions (`/volumes/{id}/action`) | ⚠️ | attach / detach / extend / retype / reset-status / readonly / reimage / force-detach wired (verified in the dispatcher); migrate / revert-to-snapshot / upload-to-image / set-bootable absent |
@@ -289,7 +289,7 @@ quotas are read-only, so quota seeding goes through Nova.
 | Attachments API (`/attachments`) · group_snapshots · group_types · default-types · capabilities · messages · clusters · snapshot actions · … | ❌ | see §8.4 |
 
 **Contract tests** (`test/contract/cinder/`, ~18 files): README reports **4/22 (18%)** — the lowest per-service
-signal in o3k. Not CI-gated. Core volume/attach paths are separately covered by SPEC-009 host tests
+signal in lightstack. Not CI-gated. Core volume/attach paths are separately covered by SPEC-009 host tests
 (`ws5_attach_real`, `ws5_boot_from_volume`, `ws5_volume_from_image`) and `test/volume_attach_test.sh`.
 
 **Doc-vs-code reconciliation:** the compat report's **65/68 (~96%)** counts *registered routes*; the README's
@@ -306,11 +306,11 @@ path.
 
 ### 3.5 Glance — Image v2 (38 functional operations)
 
-o3k advertises **v2.9**. Version discovery (`GET /`, `GET /v2`) is in `main.go`; the service registers
+Lightstack advertises **v2.9**. Version discovery (`GET /`, `GET /v2`) is in `main.go`; the service registers
 routes without the `/v2` prefix (gophercloud appends it). Core image lifecycle is solid; the coverage gap
 is concentrated in the metadefs sub-resources.
 
-| Glance v2 group | o3k | Notes |
+| Glance v2 group | Lightstack | Notes |
 |---|:--:|---|
 | Images (CRUD) | ✅ | list / create / show / update (PATCH) / delete |
 | Image data | ✅ | `PUT /images/{id}/file` (upload) · `GET …/file` (download) — **validation-critical for #422 (RGW/S3 backend)** |
@@ -320,7 +320,7 @@ is concentrated in the metadefs sub-resources.
 | Image actions | ✅ | deactivate / reactivate |
 | Schemas | ✅ | image / images / member / members |
 | Tasks | ✅ | create / list / show |
-| Info / stores | ✅ | `GET /stores`, `/stores/info` (o3k paths; canonical is `/v2/info/stores` + `/v2/info/import`) |
+| Info / stores | ✅ | `GET /stores`, `/stores/info` (lightstack paths; canonical is `/v2/info/stores` + `/v2/info/import`) |
 | Cache | ✅ | list / queue (prefetch) / delete / clear |
 | Metadefs | ⚠️ | namespaces CRUD + global `resource_types` list only — **no properties / objects / tags / namespace-RT associations** (~15 ops) |
 | Multi-store data ops · metadefs sub-resources | ❌ | see §8.5 |
@@ -343,14 +343,14 @@ what Nova consumes for boot-from-image. Metadefs sub-resources and multi-store o
 
 ## 4. Storage backends
 
-o3k persists two kinds of data through pluggable backends selected per service by `storage_mode`
+Lightstack persists two kinds of data through pluggable backends selected per service by `storage_mode`
 (both default to `local`). The epic (#413) advertises "Ceph RBD, S3, and MinIO"; the honest per-service
 reality — from `pkg/storage/image_store.go` (Glance) and `pkg/storage/ceph.go` + `ceph_rbd.go` (Cinder) — is:
 
 | Backend | Glance (images) | Cinder (volumes) | Notes |
 |---|:--:|:--:|---|
 | `stub` | ✅ | ✅ | in-memory, no I/O — dev / unit tests |
-| `local` | ✅ | ✅ | Glance: raw at `/var/lib/o3k/images`; Cinder: qcow2 at `/var/lib/o3k/volumes` |
+| `local` | ✅ | ✅ | Glance: raw at `/var/lib/lightstack/images`; Cinder: qcow2 at `/var/lib/lightstack/volumes` |
 | `rbd` (Ceph) | ⚠️ placeholder | ✅ *(build-tag)* | Cinder: real `go-ceph` (`ceph_rbd.go`, `//go:build ceph`); Glance: the `rbd` case exists but replication is log-only / not wired |
 | `s3` (AWS / MinIO / Ceph RGW) | ✅ | ❌ | **Glance only** — AWS SDK v2, `s3_endpoint` + path-style for MinIO/RGW; optional TLS CA bundle / skip-verify (`s3_ca_bundle`, `s3_insecure_skip_verify`) + upload checksum (SPEC-014) |
 | hybrid | `local,s3` ✅ · `local,rbd` ⚠️ · `rbd,s3` ❌ *(rejected)* | `local,rbd` ✅ | first backend = primary, rest = fallback/replica |
@@ -379,7 +379,7 @@ synchronous request.
 **Mapping to #422 (Ceph RGW + RBD).**
 - **Glance on Ceph RGW / MinIO** → `storage_mode: s3` (+ `s3_endpoint`, path-style). **Real, works today.**
 - **Cinder on Ceph RBD** → `storage_mode: rbd` / `local,rbd`. **Real go-ceph, but only in a `ceph`-tagged build.**
-- **Tenant object read/write** (also named in #422's scope) → **available via S3, not Swift**: o3k still
+- **Tenant object read/write** (also named in #422's scope) → **available via S3, not Swift**: Lightstack still
   exposes no Swift/`object-store` API, but SPEC-014 added the Keystone-side S3 auth bridge — EC2 credentials
   (`…/OS-EC2`) + public `POST /v3/s3tokens` — so tenants use **Ceph RGW's S3 API** as a per-project object
   store (RGW `implicit tenants=s3`), advertised under the `s3` catalog type. S3/RGW is therefore both a
@@ -387,13 +387,13 @@ synchronous request.
   [§8](#8-known-gaps--limitations)).
 
 **VM disks (Nova).** Not a Cinder backend, but storage-adjacent: each instance gets a per-instance qcow2
-**overlay over a shared raw base** under `/var/lib/o3k` (SPEC-009); boot-from-volume instead routes the root
+**overlay over a shared raw base** under `/var/lib/lightstack` (SPEC-009); boot-from-volume instead routes the root
 disk to a Cinder volume. Node-local storage (a `hostPath`, with subdirectories pre-created by the chart
 initContainer per SPEC-011) — so local-disk instances are not live-migratable across nodes.
 
 ## 5. Synchronous architecture & trade-offs
 
-o3k is a **single Go binary, one process**: `cmd/o3k/main.go` starts one `http.Server` per service
+Lightstack is a **single Go binary, one process**: `cmd/lightstack/main.go` starts one `http.Server` per service
 (Keystone, Nova, Neutron, Cinder, Glance, Placement, Metadata, + health) as goroutines on distinct ports,
 all sharing one `pgxpool` connection pool and one JWT auth middleware, with graceful shutdown. There is
 **no message queue** — grep confirms no AMQP / RabbitMQ / oslo.messaging dependency in `go.mod`. Services
@@ -416,7 +416,7 @@ connect / ~30 s boot, DB health-check 30 s — a slow dependency errors quickly 
 
 ### Trade-offs vs. traditional (RabbitMQ/oslo.messaging) OpenStack
 
-| Concern | Traditional OpenStack | o3k | Consequence |
+| Concern | Traditional OpenStack | Lightstack | Consequence |
 |---|---|---|---|
 | Messaging | RabbitMQ + oslo.messaging | none — in-process calls | no broker to operate; no distributed RPC layer |
 | Task orchestration | Nova conductor / scheduler, cast+call | synchronous; one goroutine for VM boot | far simpler; **no retry/backoff, no task queue** |
@@ -431,16 +431,16 @@ connect / ~30 s boot, DB health-check 30 s — a slow dependency errors quickly 
 means a test runner sees success/failure immediately (no polling task state, no broker flakiness), the
 whole control plane is one restartable pod, and a clean deploy/destroy cycle (#421) has no queue state to
 leak. The costs — no independent per-service scaling, no async retry, VM boot as the sole background step —
-are acceptable for a single-node (or small multi-node) validation cloud, which is exactly o3k's target.
+are acceptable for a single-node (or small multi-node) validation cloud, which is exactly lightstack's target.
 
 ## 6. Terraform coverage
 
-o3k's headline claim is "100 % Terraform compatible." The evidence is one curated module,
+lightstack's headline claim is "100 % Terraform compatible." The evidence is one curated module,
 `test/terraform/sc007/main.tf` (SPEC-009 SC-007 / FR-018), which stands up a full single-node topology with
 the **unmodified** OpenStack provider and asserts `terraform apply` + `destroy` both succeed. It exercises
 **10 resource types + 2 data sources** (14 blocks):
 
-| Terraform type | sc007 | Backing o3k API |
+| Terraform type | sc007 | Backing Lightstack API |
 |---|:--:|---|
 | `openstack_images_image_v2` *(data)* | ✅ | Glance |
 | `openstack_networking_network_v2` / `subnet_v2` | ✅ | Neutron (tenant + external) |
@@ -452,7 +452,7 @@ the **unmodified** OpenStack provider and asserts `terraform apply` + `destroy` 
 | `openstack_compute_volume_attach_v2` | ✅ | Nova volume-attach |
 | `openstack_blockstorage_volume_v3` | ✅ | Cinder |
 
-**Documented deviation (the "100 %" asterisk).** o3k's server detail **doesn't populate the per-interface
+**Documented deviation (the "100 %" asterisk).** lightstack's server detail **doesn't populate the per-interface
 `port` id**, so the idiomatic `openstack_compute_instance_v2.network[0].port` is `null`. sc007 works around
 it by resolving the port through a `data "openstack_networking_port_v2"` (filtered by `device_id`) and
 feeding that into the floating-IP association (`main.tf:83-93`). So FIP-to-instance is **compatible with a
@@ -460,7 +460,7 @@ one-line workaround**, not literally zero-modification — worth stating plainly
 scripts" promise.
 
 **What's tested, and what isn't.**
-- **Real-mode only, not CI-gated** — sc007 runs against a live o3k on a Linux/k3s host (`test/terraform/README.md`), never in the pipeline. (That README also still lists `ws3/ws4/ws5` module dirs that no longer exist — only `sc007/` remains; stale.)
+- **Real-mode only, not CI-gated** — sc007 runs against a live Lightstack on a Linux/k3s host (`test/terraform/README.md`), never in the pipeline. (That README also still lists `ws3/ws4/ws5` module dirs that no longer exist — only `sc007/` remains; stale.)
 - It is a **smoke test of one topology**, not exhaustive coverage of the `openstack_*` provider.
 
 **Coverage vs. #423's required smoke set.** #423 asks Terraform to cover *compute instances, networks,
@@ -472,7 +472,7 @@ security groups, volumes, object storage*:
 | Networks | ✅ | network / subnet / router / FIP |
 | Volumes | ✅ | `blockstorage_volume_v3` (core Cinder) |
 | Security groups | ❌ | **not in sc007** — the Neutron secgroup API exists (§3.3) but no `openstack_networking_secgroup_v2` is exercised |
-| Object storage | ❌ | Terraform's `openstack_objectstorage_*` is **Swift**-based, which o3k doesn't expose; tenant object storage exists via **S3** (RGW + EC2 creds, §4 / §7) but not through this provider |
+| Object storage | ❌ | Terraform's `openstack_objectstorage_*` is **Swift**-based, which Lightstack doesn't expose; tenant object storage exists via **S3** (RGW + EC2 creds, §4 / §7) but not through this provider |
 
 **Verdict.** For the compute + network + volume + image resources it covers, the drop-in Terraform claim
 holds (modulo the port-id workaround), and it's validated end-to-end in real mode. But "100 %" is
@@ -482,7 +482,7 @@ fail; drop it or track against the Swift decision, §7). Neither is CI-gated yet
 
 ## 7. sci-in-a-box integration surface
 
-**sci-in-a-box** is o3k's primary consumer: it drives an instance's lifecycle **through Helm — not a CRD**.
+**sci-in-a-box** is lightstack's primary consumer: it drives an instance's lifecycle **through Helm — not a CRD**.
 The interface is a two-half contract, defined by the chart's `CONTRACT.md` + `values.schema.json` and the
 SPEC-013 health endpoints.
 
@@ -506,13 +506,13 @@ recipe: `helm status`, `kubectl rollout`/DaemonSet readiness, and terminal-failu
 `CrashLoopBackOff` / `ImagePullBackOff`), owning the bounded wait itself. Endpoints are resolved
 Keystone-first, then discovered from the service catalog.
 
-**Health signal (SPEC-013 / #475).** o3k exposes three unauthenticated endpoints on the identity listener
+**Health signal (SPEC-013 / #475).** Lightstack exposes three unauthenticated endpoints on the identity listener
 (`:35357`): `GET /livez` (liveness — process only, never touches the DB), `GET /readyz` (readiness — `200`
 only when all listeners are bound, the DB `Ping` succeeds, and the pod isn't draining; `503` with a short
 curated reason otherwise, bounded to <1 s), and `GET|HEAD /healthcheck` (an OpenStack-compatible,
 content-negotiated alias of `/readyz`). The **machine-readable signal sci-in-a-box consumes is the
 Kubernetes Pod `Ready` condition** (the aggregate of the readiness probe and its roll-ups) — *not* a bespoke
-o3k status protocol. The chart wires `liveness`/`readiness`/`startup` probes accordingly.
+Lightstack status protocol. The chart wires `liveness`/`readiness`/`startup` probes accordingly.
 
 **Lifecycle automation (#421).** Maps onto this contract directly: **deploy** = `helm install` with
 schema-validated values → wait on Pod `Ready`; **populate** = seed users / projects / quotas (the binary
@@ -524,21 +524,21 @@ teardown hooks (blocking purge of host + network state) — **already in `main` 
 | Gap | Impact | Lands / tracked via |
 |---|---|---|
 | SPEC-012 contract not fully complete | `values.schema.json`, `CONTRACT.md`, and the honest `/readyz` (SPEC-013) are in `main`; #474's remaining acceptance criteria are still open | #474 (SPEC-012) |
-| **No Swift / `object-store` API** | Swift-protocol scenarios unservable; but tenant object read/write **is** servable via S3 (RGW + EC2 creds + `/v3/s3tokens`, SPEC-014) | Swift decision: o3k#15 (§8) |
-| No CI wiring o3k ↔ orchestrator | integration is validated manually / out-of-tree; contract + Terraform tests aren't CI-gated | #421 / #424 |
+| **No Swift / `object-store` API** | Swift-protocol scenarios unservable; but tenant object read/write **is** servable via S3 (RGW + EC2 creds + `/v3/s3tokens`, SPEC-014) | Swift decision: lightstack#15 (§8) |
+| No CI wiring Lightstack ↔ orchestrator | integration is validated manually / out-of-tree; contract + Terraform tests aren't CI-gated | #421 / #424 |
 | Multi-node Helm deferred | only single-node deploys today; #421's multi-node configuration is unmet | #52 |
 | Ceph-less stock image | Cinder-on-RBD (#422) needs a custom `-tags ceph` image variant | #422 (§4) |
 
 ## 8. Known gaps & limitations
 
-This section collects (a) the **cross-cutting limitations** that shape whether o3k fits the validation use
-case, and (b) per-service lists of canonical OpenStack endpoints o3k does not implement (§8.1–§8.5).
+This section collects (a) the **cross-cutting limitations** that shape whether Lightstack fits the validation use
+case, and (b) per-service lists of canonical OpenStack endpoints Lightstack does not implement (§8.1–§8.5).
 
 ### Cross-cutting limitations
 
 | Limitation | Detail | Impact / tracked |
 |---|---|---|
-| **No Swift / `object-store` API** | the catalog advertises `identity / compute / placement / network / volumev3 / image` + a non-standard **`s3`** (RGW) type (SPEC-014); tenants get object storage via **S3** (EC2 creds + `/v3/s3tokens` + RGW `implicit tenants`), but the **Swift** protocol is absent | S3 object read/write servable; Swift-only scenarios await the o3k#15 decision |
+| **No Swift / `object-store` API** | the catalog advertises `identity / compute / placement / network / volumev3 / image` + a non-standard **`s3`** (RGW) type (SPEC-014); tenants get object storage via **S3** (EC2 creds + `/v3/s3tokens` + RGW `implicit tenants`), but the **Swift** protocol is absent | S3 object read/write servable; Swift-only scenarios await the lightstack#15 decision |
 | **Ceph behind a build tag** | `pkg/storage/ceph_rbd.go` is `//go:build ceph`; neither `make build` nor `build/package/Dockerfile` pass `-tags ceph`, so the stock binary/image are Ceph-less | Cinder-on-RBD (#422) needs a custom Ceph-enabled image (§4) |
 | **Cinder advanced surface is thin** | ~96 % of routes registered but only ~18 % pass contract tests; groups / QoS specs / transfers / backup export-import are registered-but-thin | core volume ops are ✅ and host-validated; advanced ops unverified (§3.4) |
 | **Multi-node Helm deferred** | the VXLAN overlay + node registry exist, but the chart deploys single-node only | #52; #421's multi-node configuration is unmet |
@@ -547,7 +547,7 @@ case, and (b) per-service lists of canonical OpenStack endpoints o3k does not im
 | **Terraform "100 %" is qualified** | one topology (sc007), real-mode / not-CI, plus the port-id workaround; security groups untested and object storage impossible | §6; two of #423's five smoke categories unmet |
 | **SPEC-012 contract in progress** | `CONTRACT.md`, `values.schema.json`, and the honest `/readyz` (SPEC-013 / #475) are in `main`; #474's remaining acceptance criteria are still being completed | §7 |
 
-**On the headline numbers.** o3k implements **~335 functional operations** across the five core services
+**On the headline numbers.** Lightstack implements **~335 functional operations** across the five core services
 (§2). The repo's "104 % (342/330)" counted *raw routes* — URL aliases + version-discovery — against a
 self-selected 330-endpoint baseline; the epic's "~70 % complete" (#413) is a holistic assessment weighted by
 the thin Cinder advanced surface, the absent Swift API, and the metadefs/extension gaps. Both are true of
@@ -561,29 +561,29 @@ single percentage.
 > for completeness against the OpenStack Identity v3 api-ref (2025.2). The one *in-scope* Keystone defect
 > is a **bug**, not a missing endpoint: catalog URL-template substitution (see §3.1).
 
-The table lists every canonical Identity v3 operation o3k does not implement, with **Impl.**
+The table lists every canonical Identity v3 operation Lightstack does not implement, with **Impl.**
 (⚠️ group partially implemented · ❌ group absent) and the reason it is unimplemented. Multiple
 endpoints per group are separated by a line break (`<br>`).
 
 | Identity v3 group | Impl. | Not-implemented endpoint(s) | Justification |
 |---|:--:|---|---|
-| Authentication & token mgmt | ⚠️ | `HEAD /v3/auth/tokens`<br>`GET /v3/auth/catalog`<br>`GET /v3/auth/domains`<br>`GET /v3/auth/system`<br>`GET, HEAD /v3/auth/receipts` | o3k validates tokens via `GET /v3/auth/tokens` and embeds the catalog in the token-issue response; the separate check / catalog / domains / system discovery calls aren't required by Horizon, Terraform, or the CLI against o3k. MFA receipts assume a multi-step auth-plugin chain the single HMAC-JWT issuer doesn't model. |
+| Authentication & token mgmt | ⚠️ | `HEAD /v3/auth/tokens`<br>`GET /v3/auth/catalog`<br>`GET /v3/auth/domains`<br>`GET /v3/auth/system`<br>`GET, HEAD /v3/auth/receipts` | Lightstack validates tokens via `GET /v3/auth/tokens` and embeds the catalog in the token-issue response; the separate check / catalog / domains / system discovery calls aren't required by Horizon, Terraform, or the CLI against lightstack. MFA receipts assume a multi-step auth-plugin chain the single HMAC-JWT issuer doesn't model. |
 | Service catalog & endpoints | ⚠️ | `GET /v3/endpoints/{endpoint_id}`<br>`PATCH /v3/endpoints/{endpoint_id}` | The catalog is seeded at bootstrap and read through the token; per-endpoint show/update is an admin catalog-editing convenience the validation clients never call. |
-| Domain configuration | ⚠️ | `PUT, PATCH, DELETE /v3/domains/{id}/config`<br>`GET /v3/domains/config/default`<br>`…/config/{group}` (GET / PATCH / DELETE)<br>`…/config/{group}/{option}` (GET / PATCH / DELETE) | Per-domain config drives multi-backend Keystone (per-domain LDAP / identity drivers). o3k is single-backend (PostgreSQL + HMAC-JWT), so writable domain config has no effect; the read-only `GET …/config` exists only for Horizon's identity panel. |
-| Role assignments (advanced) | ⚠️ | `HEAD /v3/projects/{pid}/users/{uid}/roles/{rid}` (check)<br>group-on-project, user/group-on-domain (assign / list / check)<br>implied roles `…/roles/{id}/implies/{id}`, `GET /v3/role_inferences` | o3k's RBAC is the project-scoped user→role model Terraform / Horizon / CLI use. Group- and domain-scoped grants and role-inference trees are advanced RBAC the validation scenarios don't exercise. |
+| Domain configuration | ⚠️ | `PUT, PATCH, DELETE /v3/domains/{id}/config`<br>`GET /v3/domains/config/default`<br>`…/config/{group}` (GET / PATCH / DELETE)<br>`…/config/{group}/{option}` (GET / PATCH / DELETE) | Per-domain config drives multi-backend Keystone (per-domain LDAP / identity drivers). Lightstack is single-backend (PostgreSQL + HMAC-JWT), so writable domain config has no effect; the read-only `GET …/config` exists only for Horizon's identity panel. |
+| Role assignments (advanced) | ⚠️ | `HEAD /v3/projects/{pid}/users/{uid}/roles/{rid}` (check)<br>group-on-project, user/group-on-domain (assign / list / check)<br>implied roles `…/roles/{id}/implies/{id}`, `GET /v3/role_inferences` | lightstack's RBAC is the project-scoped user→role model Terraform / Horizon / CLI use. Group- and domain-scoped grants and role-inference trees are advanced RBAC the validation scenarios don't exercise. |
 | Project tags | ❌ | `GET, PUT, DELETE /v3/projects/{pid}/tags`<br>`GET, PUT, DELETE /v3/projects/{pid}/tags/{value}` | Project tagging is a metadata / search convenience; no validation scenario filters projects by tag. |
-| Regions | ❌ | `GET, POST /v3/regions`<br>`GET, PUT, PATCH, DELETE /v3/regions/{id}` | o3k is a single-region deployment; multi-region catalog topology is out of scope. |
-| Policies | ❌ | `GET, POST /v3/policies`<br>`GET, PATCH, DELETE /v3/policies/{id}` | The policy API stores / distributes RBAC policy blobs; o3k enforces authorization in-code (role checks in middleware), so there is no policy document to serve. De-emphasized upstream. |
-| System role assignments | ❌ | `GET, PUT, HEAD, DELETE /v3/system/users/{uid}/roles/{rid}` (+ list)<br>`…/system/groups/{gid}/roles/{rid}` (+ list) | System-scoped roles govern deployment-wide cloud-admin operations; o3k has no system scope — it uses project / admin role checks. |
-| Unified limits | ❌ | `GET, POST /v3/registered_limits`, `GET, PATCH, DELETE /v3/registered_limits/{id}`<br>`GET, POST /v3/limits`, `GET, PATCH, DELETE /v3/limits/{id}`, `GET /v3/limits/model` | o3k enforces quotas per-service (Nova / Cinder / Neutron `quota-sets`), not via Keystone's centralized unified-limits model; the validation path uses the per-service quota APIs. |
-| OS-INHERIT | ❌ | `PUT, HEAD, DELETE …/roles/{rid}/inherited_to_projects` (+ `GET …/roles/inherited_to_projects`; domain- & project-scoped, user & group) | Inherited (domain→project) role assignments are an advanced RBAC convenience; o3k's flat project-scoped model has no inheritance. |
+| Regions | ❌ | `GET, POST /v3/regions`<br>`GET, PUT, PATCH, DELETE /v3/regions/{id}` | Lightstack is a single-region deployment; multi-region catalog topology is out of scope. |
+| Policies | ❌ | `GET, POST /v3/policies`<br>`GET, PATCH, DELETE /v3/policies/{id}` | The policy API stores / distributes RBAC policy blobs; Lightstack enforces authorization in-code (role checks in middleware), so there is no policy document to serve. De-emphasized upstream. |
+| System role assignments | ❌ | `GET, PUT, HEAD, DELETE /v3/system/users/{uid}/roles/{rid}` (+ list)<br>`…/system/groups/{gid}/roles/{rid}` (+ list) | System-scoped roles govern deployment-wide cloud-admin operations; Lightstack has no system scope — it uses project / admin role checks. |
+| Unified limits | ❌ | `GET, POST /v3/registered_limits`, `GET, PATCH, DELETE /v3/registered_limits/{id}`<br>`GET, POST /v3/limits`, `GET, PATCH, DELETE /v3/limits/{id}`, `GET /v3/limits/model` | Lightstack enforces quotas per-service (Nova / Cinder / Neutron `quota-sets`), not via Keystone's centralized unified-limits model; the validation path uses the per-service quota APIs. |
+| OS-INHERIT | ❌ | `PUT, HEAD, DELETE …/roles/{rid}/inherited_to_projects` (+ `GET …/roles/inherited_to_projects`; domain- & project-scoped, user & group) | Inherited (domain→project) role assignments are an advanced RBAC convenience; lightstack's flat project-scoped model has no inheritance. |
 | OS-TRUST | ❌ | `GET, POST /v3/OS-TRUST/trusts`<br>`GET, DELETE /v3/OS-TRUST/trusts/{id}` (+ trust-roles) | Trusts delegate roles for unattended / Heat-style workflows; not used by the validation scenarios. |
-| OS-FEDERATION | ❌ | identity providers · protocols · mappings · service providers · `GET /v3/OS-FEDERATION/projects` · `/domains` · SAML2/ECP auth (entire extension) | Federated identity (external IdPs / SAML / OIDC) is enterprise SSO; o3k authenticates locally against its own user store. |
+| OS-FEDERATION | ❌ | identity providers · protocols · mappings · service providers · `GET /v3/OS-FEDERATION/projects` · `/domains` · SAML2/ECP auth (entire extension) | Federated identity (external IdPs / SAML / OIDC) is enterprise SSO; Lightstack authenticates locally against its own user store. |
 | OS-OAUTH1 / OS-OAUTH2 | ❌ | consumers, request / access tokens, authorization; OAuth2 token + discovery (entire extensions) | OAuth delegation flows are enterprise integrations outside the validation scope. |
-| OS-EP-FILTER | ❌ | endpoint groups CRUD + project↔endpoint / project↔endpoint-group associations | Endpoint filtering tailors the catalog per project; o3k serves a single flat catalog. |
+| OS-EP-FILTER | ❌ | endpoint groups CRUD + project↔endpoint / project↔endpoint-group associations | Endpoint filtering tailors the catalog per project; Lightstack serves a single flat catalog. |
 | OS-ENDPOINT-POLICY | ❌ | policy↔endpoint / policy↔service associations | Associates policy blobs with endpoints; depends on the (absent) policy API. |
-| OS-REVOKE | ❌ | `GET /v3/OS-REVOKE/events` | Revocation-event lists invalidate cached tokens; o3k tokens are stateless short-TTL JWTs validated by signature, so there is no revocation list to publish (`DELETE /v3/auth/tokens` still works locally). |
-| OS-SIMPLE-CERT *(deprecated)* | ❌ | `GET /v3/OS-SIMPLE-CERT/ca`<br>`GET /v3/OS-SIMPLE-CERT/certificates` | Served signing certs for the deprecated PKI token format; obsolete — o3k uses HMAC-JWT. |
+| OS-REVOKE | ❌ | `GET /v3/OS-REVOKE/events` | Revocation-event lists invalidate cached tokens; Lightstack tokens are stateless short-TTL JWTs validated by signature, so there is no revocation list to publish (`DELETE /v3/auth/tokens` still works locally). |
+| OS-SIMPLE-CERT *(deprecated)* | ❌ | `GET /v3/OS-SIMPLE-CERT/ca`<br>`GET /v3/OS-SIMPLE-CERT/certificates` | Served signing certs for the deprecated PKI token format; obsolete — Lightstack uses HMAC-JWT. |
 | OS-PKI *(deprecated)* | ❌ | revoked-token list | Deprecated PKI token revocation list; obsolete. |
 
 ### 8.2 Nova — not-implemented endpoints
@@ -599,17 +599,17 @@ endpoints per group are separated by a line break (`<br>`).
 | Volume attachments | ⚠️ | `PUT /servers/{id}/os-volume_attachments/{id}` | Volume swap/update is an advanced (live-migration-adjacent) op; attach + detach cover the validation workflow. |
 | Interface attachments | ⚠️ | `GET /servers/{id}/os-interface/{port_id}` | List + attach + detach cover the workflow; per-port show is a minor convenience. |
 | Services management | ⚠️ | `PUT /os-services/{enable,disable,force-down}` | Single-node has no compute-service fleet to enable/disable; `GET /os-services` (list) suffices. |
-| Server password | ❌ | `GET, DELETE /servers/{id}/os-server-password` | Returns the encrypted admin password set at boot (Windows get-password flow); o3k injects SSH keys via cloud-init and the validation path uses keypairs, not password retrieval. |
+| Server password | ❌ | `GET, DELETE /servers/{id}/os-server-password` | Returns the encrypted admin password set at boot (Windows get-password flow); Lightstack injects SSH keys via cloud-init and the validation path uses keypairs, not password retrieval. |
 | Server IPs | ❌ | `GET /servers/{id}/ips`<br>`GET /servers/{id}/ips/{network}` | Addresses are already returned inline in server show/detail; the standalone IPs sub-resource is redundant. |
 | Server topology | ❌ | `GET /servers/{id}/topology` | NUMA / CPU-pinning introspection for perf tuning; out of scope for single-node validation. |
-| Quota class sets | ❌ | `GET, PUT /os-quota-class-sets/{id}` | Class-level default quotas across projects; o3k sets per-project quotas via `os-quota-sets`. |
+| Quota class sets | ❌ | `GET, PUT /os-quota-class-sets/{id}` | Class-level default quotas across projects; Lightstack sets per-project quotas via `os-quota-sets`. |
 | Extensions | ❌ | `GET /extensions`<br>`GET /extensions/{alias}` | Legacy extension-discovery list; modern clients negotiate via microversions. Horizon tolerates its absence. |
 | Assisted volume snapshots | ❌ | `POST, DELETE /os-assisted-volume-snapshots` | Cinder-orchestrated snapshot assist for specific backends; not used by the validation path. |
-| Server external events | ❌ | `POST /os-server-external-events` | Lets Neutron notify Nova of port/network status; o3k's synchronous in-process model updates state directly, so no callback channel is needed. |
+| Server external events | ❌ | `POST /os-server-external-events` | Lets Neutron notify Nova of port/network status; lightstack's synchronous in-process model updates state directly, so no callback channel is needed. |
 | os-agents | ❌ | `GET, POST, PUT, DELETE /os-agents` | Guest-agent build registry (xen-era); unused. |
 | Instance usage audit log | ❌ | `GET /os-instance_usage_audit_log` | Billing / audit-log aggregation; out of scope. |
 | os-hosts *(deprecated)* | ❌ | `GET, PUT /os-hosts/{host}` | Deprecated host power / maintenance management. |
-| Nova-network proxies *(deprecated)* | ❌ | `os-networks` · `os-floating-ips` · `os-floating-ip-pools` · `os-fixed-ips` · `os-security-groups` | Deprecated Nova proxies to the old nova-network; superseded by Neutron, which o3k implements directly. |
+| Nova-network proxies *(deprecated)* | ❌ | `os-networks` · `os-floating-ips` · `os-floating-ip-pools` · `os-fixed-ips` · `os-security-groups` | Deprecated Nova proxies to the old nova-network; superseded by Neutron, which Lightstack implements directly. |
 
 ### 8.3 Neutron — not-implemented endpoints
 
@@ -621,17 +621,17 @@ endpoints per group are separated by a line break (`<br>`).
 | Neutron v2.0 group | Impl. | Not-implemented endpoint(s) | Justification |
 |---|:--:|---|---|
 | QoS rules | ⚠️ | `dscp_marking_rules`<br>`minimum_bandwidth_rules`<br>`minimum_packet_rate_rules`<br>`GET /qos/rule-types` | Only bandwidth-limit shaping is wired; the other rule types target DSCP marking / SR-IOV min-bandwidth / packet-rate QoS, none used by the validation scenarios. |
-| Quotas | ⚠️ | `PUT /quotas/{id}` (update)<br>`DELETE /quotas/{id}` (reset)<br>`GET /quotas` (list)<br>`GET /quotas/{id}/default` | Neutron quota is read-only in o3k; network quotas are set through Nova `os-quota-sets` (which covers networks / subnets / ports / routers / floatingips), so the Neutron write endpoints are redundant. |
+| Quotas | ⚠️ | `PUT /quotas/{id}` (update)<br>`DELETE /quotas/{id}` (reset)<br>`GET /quotas` (list)<br>`GET /quotas/{id}/default` | Neutron quota is read-only in lightstack; network quotas are set through Nova `os-quota-sets` (which covers networks / subnets / ports / routers / floatingips), so the Neutron write endpoints are redundant. |
 | Agents | ⚠️ | `PUT /agents/{id}` (enable/disable)<br>`DELETE /agents/{id}`<br>`DELETE /routers/{id}/l3-agents/{agent_id}`<br>DHCP-agent scheduling (`/agents/{id}/dhcp-networks`, `/networks/{id}/dhcp-agents`) | Single-node has no agent fleet to schedule or drain; list + show + L3-agent-add satisfy Horizon's agent panel. |
 | Routers | ⚠️ | `PUT /routers/{id}/add_extraroutes`<br>`PUT /routers/{id}/remove_extraroutes` | Extra routes are set via the router `PUT` (`routes` attribute); the atomic add/remove is a concurrency convenience. |
 | FWaaS v2 | ❌ | `/fwaas/firewall_groups`<br>`/fwaas/firewall_policies`<br>`/fwaas/firewall_rules` | Firewall-as-a-Service; tenant traffic filtering is handled by security groups (✅), which is what the validation path uses. |
 | VPNaaS | ❌ | `/vpn/vpnservices` · `/ikepolicies` · `/ipsecpolicies` · `/ipsec-site-connections` · `/endpoint-groups` | Site-to-site IPsec VPN; not used by the validation scenarios. |
 | BGP / BGP-VPN | ❌ | `/bgp-speakers` · `/bgp-peers` · `/bgpvpn/*` | Dynamic routing / L3VPN for multi-site fabrics; out of scope for single-node. |
 | Service Function Chaining | ❌ | `/sfc/port_chains` · `/port_pair_groups` · `/port_pairs` · `/flow_classifiers` | NFV traffic steering; enterprise-only. |
-| Network segments | ❌ | `/segments` | Multi-segment (routed / L2) provider networks; o3k uses flat + VXLAN tenant networks. |
+| Network segments | ❌ | `/segments` | Multi-segment (routed / L2) provider networks; Lightstack uses flat + VXLAN tenant networks. |
 | Logging | ❌ | `/log/logs` · `/log/loggable-resources` | Security-group / FWaaS packet-flow logging; not used. |
 | Tap-as-a-Service | ❌ | `/taas/tap_services` · `/taas/tap_flows` | Port mirroring for IDS / monitoring; out of scope. |
-| Neutron flavors + service profiles | ❌ | `/flavors` · `/service_profiles` | The Neutron flavor framework selects pluggable L3 / LB service drivers; o3k ships a single built-in L3 implementation. |
+| Neutron flavors + service profiles | ❌ | `/flavors` · `/service_profiles` | The Neutron flavor framework selects pluggable L3 / LB service drivers; Lightstack ships a single built-in L3 implementation. |
 | Local IPs · NDP proxies · conntrack helpers · port bindings · address groups · default SG rules · L2 gateway | ❌ | `/local_ips` · `/ndp_proxies` · `/ports/{id}/conntrack_helpers` · `/ports/{id}/bindings` · `/address-groups` · `/default-security-group-rules` · `/l2-gateways` | Niche / newer extensions (node-local IP, IPv6 NDP proxy, ALG helpers, multi-binding for live-migration, named CIDR groups, SG-rule templates, VXLAN↔VLAN bridging); none on the validation path. |
 
 ### 8.4 Cinder — not-implemented endpoints
@@ -647,13 +647,13 @@ endpoints per group are separated by a line break (`<br>`).
 | Volume groups | ⚠️ | `POST /groups/{id}/action` (+ group replication) | `/groups` CRUD is registered but the README flags groups as needing implementation; consistency-group actions are absent. |
 | Backups | ⚠️ | `GET /backups/{id}/export_record`<br>`POST /backups/import_record` | Backup-metadata export/import for DR portability; the validation path doesn't back up volumes. |
 | Services | ⚠️ | `PUT /os-services/{enable,disable}` | Single-node has no storage-service fleet to enable/disable. |
-| Attachments API *(v3.27+)* | ❌ | `GET, POST /attachments`<br>`GET, PUT, DELETE /attachments/{id}`<br>`POST /attachments/{id}/action` | The microversioned Cinder attachments resource; o3k attaches volumes through Nova's `os-volume_attachments` (✅), which is what Terraform and Horizon use. |
+| Attachments API *(v3.27+)* | ❌ | `GET, POST /attachments`<br>`GET, PUT, DELETE /attachments/{id}`<br>`POST /attachments/{id}/action` | The microversioned Cinder attachments resource; Lightstack attaches volumes through Nova's `os-volume_attachments` (✅), which is what Terraform and Horizon use. |
 | Group snapshots | ❌ | `/group_snapshots` (+ action) | Consistency-group snapshots; the volume-groups feature itself is thin. |
 | Group types | ❌ | `/group_types`<br>`/group_types/{id}/group_specs` | Types for volume groups; groups are thin. |
-| Default volume types | ❌ | `GET, PUT, DELETE /default-types` | Per-project default-type override (3.62+); o3k uses a single default type. |
+| Default volume types | ❌ | `GET, PUT, DELETE /default-types` | Per-project default-type override (3.62+); Lightstack uses a single default type. |
 | Snapshot actions | ❌ | `POST /snapshots/{id}/action` | reset-status / force-delete / update-status admin actions; core snapshot CRUD suffices. |
 | Capabilities | ❌ | `GET /capabilities/{host}` | Backend capability discovery for the scheduler; single-backend deployment. |
-| Messages | ❌ | `GET, DELETE /messages` | Async user-facing fault messages; o3k is synchronous — errors are returned inline. |
+| Messages | ❌ | `GET, DELETE /messages` | Async user-facing fault messages; Lightstack is synchronous — errors are returned inline. |
 | Clusters / Workers | ❌ | `/clusters` · `/workers/cleanup` | Active/active HA service-cluster management; single-node. |
 | Quota class sets · resource filters · manageable snapshots · extensions | ❌ | `/os-quota-class-sets/{id}` · `/resource_filters` · `/manageable_snapshots` · `/extensions` | Class-default quotas (per-project quota-sets used instead), filterable-attribute discovery, adopt-existing-snapshot listing, legacy extension list — niche. |
 
@@ -667,5 +667,5 @@ endpoints per group are separated by a line break (`<br>`).
 | Glance v2 group | Impl. | Not-implemented endpoint(s) | Justification |
 |---|:--:|---|---|
 | Metadefs | ⚠️ | `/metadefs/namespaces/{ns}/properties` (CRUD)<br>`/metadefs/namespaces/{ns}/objects` (CRUD)<br>`/metadefs/namespaces/{ns}/tags` (CRUD)<br>`/metadefs/namespaces/{ns}/resource_types` (associate / disassociate) | Namespaces + the global `resource_types` list are present; the property / object / tag sub-resources are a metadata-schema catalog (<5% upstream adoption) that no validation scenario reads. |
-| Multi-store data ops | ❌ | `POST /images/{id}/import` with `copy-image` + `stores`<br>`DELETE /stores/{store_id}/{image_id}` (delete-from-store) | Per-store placement / copy / delete for multi-store Glance; o3k uses a single active backend (or hybrid failover), so per-store operations don't apply. |
-| Info discovery paths | ⚠️ | canonical `GET /v2/info/stores`<br>`GET /v2/info/import` | o3k serves the same data at `GET /stores` + `/stores/info`; only the path differs (clients hard-coding `/v2/info/…` won't find it). |
+| Multi-store data ops | ❌ | `POST /images/{id}/import` with `copy-image` + `stores`<br>`DELETE /stores/{store_id}/{image_id}` (delete-from-store) | Per-store placement / copy / delete for multi-store Glance; Lightstack uses a single active backend (or hybrid failover), so per-store operations don't apply. |
+| Info discovery paths | ⚠️ | canonical `GET /v2/info/stores`<br>`GET /v2/info/import` | Lightstack serves the same data at `GET /stores` + `/stores/info`; only the path differs (clients hard-coding `/v2/info/…` won't find it). |

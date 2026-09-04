@@ -13,7 +13,7 @@ import (
 
 // TestChangePassword_Contract tests the changePassword server action
 func TestChangePassword_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -61,7 +61,7 @@ func TestChangePassword_Contract(t *testing.T) {
 
 // TestChangePasswordInvalidLength_Contract tests password validation
 func TestChangePasswordInvalidLength_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -105,7 +105,7 @@ func TestChangePasswordInvalidLength_Contract(t *testing.T) {
 
 // TestCreateBackup_Contract tests instance backup creation
 func TestCreateBackup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -157,7 +157,7 @@ func TestCreateBackup_Contract(t *testing.T) {
 
 // TestMigrateServer_Contract tests server migration
 func TestMigrateServer_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -199,7 +199,7 @@ func TestMigrateServer_Contract(t *testing.T) {
 
 // TestResetStateAdmin_Contract tests os-resetState succeeds with admin role
 func TestResetStateAdmin_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	// Use admin client
 	client := setupNovaClient(t)
@@ -251,7 +251,7 @@ func TestResetStateAdmin_Contract(t *testing.T) {
 
 // TestEvacuateAdmin_Contract tests evacuate succeeds with admin role
 func TestEvacuateAdmin_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -295,7 +295,7 @@ func TestEvacuateAdmin_Contract(t *testing.T) {
 
 // TestAddSecurityGroup_Contract tests adding security group to instance
 func TestAddSecurityGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -340,7 +340,7 @@ func TestAddSecurityGroup_Contract(t *testing.T) {
 
 // TestRemoveSecurityGroup_Contract tests removing security group from instance
 func TestRemoveSecurityGroup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

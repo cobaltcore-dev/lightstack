@@ -1,4 +1,4 @@
-# Host testing — O3K integration contract on k3s: inputs → status → endpoints → published doc
+# Host testing — Lightstack integration contract on k3s: inputs → status → endpoints → published doc
 
 End-to-end validation of the **integration contract (#474)** on real k3s: prove the chart **rejects
 invalid configuration before execution** (AC1), that an orchestrator can **derive Provisioning /
@@ -17,9 +17,9 @@ external Postgres → AC1 reject-before-execution → AC2 Ready (+ forced Failed
 > `docs/specs/011-ensure-storage-subdirs/HOST-TESTING.md`. The contract holds the same either way.
 
 > **Run two shells:** **T1** = host + `kubectl`/`helm`. **T2** = the OpenStack CLI
-> (`source ~/.o3k-ct-env`, used only in §8).
+> (`source ~/.lightstack-ct-env`, used only in §8).
 >
-> **Build + deploy from THIS worktree** (`/home/fnk/code/sap/ora/o3k/feature/474`): the chart here
+> **Build + deploy from THIS worktree** (`/home/fnk/code/sap/ora/lightstack/feature/474`): the chart here
 > carries the completed `values.schema.json`, the published `CONTRACT.md`, and the rejection/drift
 > gates in `ci/run-tests.sh`.
 
@@ -43,12 +43,12 @@ jq --version
 ## 1. Clean slate
 
 ```bash
-helm uninstall o3k -n o3k --no-hooks 2>/dev/null || true
-kubectl wait --for=delete ns/o3k --timeout=120s 2>/dev/null || true
-kubectl delete ns o3k --ignore-not-found 2>/dev/null || true
-podman rm -f o3k-postgres 2>/dev/null; docker rm -f o3k-postgres 2>/dev/null; true
+helm uninstall lightstack -n lightstack --no-hooks 2>/dev/null || true
+kubectl wait --for=delete ns/lightstack --timeout=120s 2>/dev/null || true
+kubectl delete ns lightstack --ignore-not-found 2>/dev/null || true
+podman rm -f lightstack-postgres 2>/dev/null; docker rm -f lightstack-postgres 2>/dev/null; true
 ```
-Verify clean: `kubectl get ns o3k 2>&1 | grep -q NotFound && echo "clean: ns gone"`.
+Verify clean: `kubectl get ns lightstack 2>&1 | grep -q NotFound && echo "clean: ns gone"`.
 
 ---
 
@@ -58,8 +58,8 @@ The chart's own gate validates the contract without k3s: lint, the schema-reject
 schema↔values drift gate, the unittest suites, and that `CONTRACT.md` packages.
 
 ```bash
-cd /home/fnk/code/sap/ora/o3k/feature/474
-charts/o3k/ci/run-tests.sh
+cd /home/fnk/code/sap/ora/lightstack/feature/474
+charts/lightstack/ci/run-tests.sh
 ```
 **Pass** = ends with `chart tests OK` — every `ci/invalid-values/*` is rejected, `valid-complete`
 renders, `key coverage OK (… top-level keys)`, all unittest suites pass, `CONTRACT.md packaged OK`.
@@ -83,14 +83,14 @@ kubectl get nodes                                # Ready
 ## 4. Build the image (this worktree) and import it into k3s
 
 k3s has its own containerd; podman/docker images aren't visible until imported. **Tag with the full
-`docker.io/library/` name** or `image.repository=o3k` won't match (see §11).
+`docker.io/library/` name** or `image.repository=lightstack` won't match (see §11).
 
 ```bash
-cd /home/fnk/code/sap/ora/o3k/feature/474
-podman build -t docker.io/library/o3k:dev -f build/package/Dockerfile .   # docker: identical flags
-podman save  docker.io/library/o3k:dev -o /tmp/o3k-dev.tar
-sudo k3s ctr images import /tmp/o3k-dev.tar
-sudo k3s ctr images ls | grep -i o3k             # → docker.io/library/o3k:dev
+cd /home/fnk/code/sap/ora/lightstack/feature/474
+podman build -t docker.io/library/lightstack:dev -f build/package/Dockerfile .   # docker: identical flags
+podman save  docker.io/library/lightstack:dev -o /tmp/lightstack-dev.tar
+sudo k3s ctr images import /tmp/lightstack-dev.tar
+sudo k3s ctr images ls | grep -i lightstack             # → docker.io/library/lightstack:dev
 ```
 
 ---
@@ -98,14 +98,14 @@ sudo k3s ctr images ls | grep -i o3k             # → docker.io/library/o3k:dev
 ## 5. External Postgres (the chart deploys none — FR-006)
 
 ```bash
-cd /home/fnk/code/sap/ora/o3k/feature/474
-make db-up                                       # o3k-postgres on :5432 (o3k/secret/o3k)
+cd /home/fnk/code/sap/ora/lightstack/feature/474
+make db-up                                       # lightstack-postgres on :5432 (lightstack/secret/lightstack)
 HOSTIP=$(ip route get 1.1.1.1 | awk '{print $7; exit}'); echo "HOSTIP=$HOSTIP"
-DBURL="postgres://o3k:secret@${HOSTIP}:5432/o3k?sslmode=disable"
+DBURL="postgres://lightstack:secret@${HOSTIP}:5432/lightstack?sslmode=disable"
 ```
 > **Stub mode is NOT `hostNetwork`** (unlike the real-mode docs), so the pod's `127.0.0.1` is the pod,
 > not the host. Use the **node/host IP** (`$HOSTIP`) in the DB URL so the pod reaches the published
-> `:5432`. O3K auto-migrates the schema on startup.
+> `:5432`. Lightstack auto-migrates the schema on startup.
 
 ---
 
@@ -115,27 +115,27 @@ DBURL="postgres://o3k:secret@${HOSTIP}:5432/o3k?sslmode=disable"
 top-level key aborts the install with **nothing deployed**:
 
 ```bash
-cd /home/fnk/code/sap/ora/o3k/feature/474
-helm install o3k charts/o3k -n o3k --create-namespace \
-  --set image.repository=o3k --set image.tag=dev \
+cd /home/fnk/code/sap/ora/lightstack/feature/474
+helm install lightstack charts/lightstack -n lightstack --create-namespace \
+  --set image.repository=lightstack --set image.tag=dev \
   --set database.url="$DBURL" --set secrets.jwtSecret=x --set secrets.adminPassword=x \
   --set databse.url=oops                              # ← misspelled "database"
 # → Error: ... Additional property databse is not allowed
-helm list -n o3k                                      # EMPTY — the release was never created
-kubectl get all -n o3k 2>/dev/null | grep -q . && echo "BUG: resources created" || echo "ok: nothing deployed"
+helm list -n lightstack                                      # EMPTY — the release was never created
+kubectl get all -n lightstack 2>/dev/null | grep -q . && echo "BUG: resources created" || echo "ok: nothing deployed"
 ```
 
 Run the rest of the rejection matrix fast with `--dry-run` (schema validation still fires):
 
 ```bash
 for bad in "service.type=Foo" "glance.storageMode=nfs" "replicaCount=0"; do
-  if helm install o3k charts/o3k -n o3k --dry-run \
-       --set image.repository=o3k --set database.url="$DBURL" \
+  if helm install lightstack charts/lightstack -n lightstack --dry-run \
+       --set image.repository=lightstack --set database.url="$DBURL" \
        --set secrets.jwtSecret=x --set secrets.adminPassword=x --set "$bad" >/dev/null 2>&1
   then echo "BUG: accepted $bad"; else echo "rejected: $bad"; fi
 done
 # missing required image:
-helm install o3k charts/o3k -n o3k --dry-run \
+helm install lightstack charts/lightstack -n lightstack --dry-run \
   --set database.url="$DBURL" --set secrets.jwtSecret=x --set secrets.adminPassword=x >/dev/null 2>&1 \
   && echo "BUG: accepted missing image" || echo "rejected: missing image"
 ```
@@ -149,8 +149,8 @@ Install a valid stub release with the readiness gate the contract documents
 (`CONTRACT.md` §2):
 
 ```bash
-helm install o3k charts/o3k -n o3k --create-namespace --wait --timeout 5m \
-  --set image.repository=o3k --set image.tag=dev --set image.pullPolicy=Never \
+helm install lightstack charts/lightstack -n lightstack --create-namespace --wait --timeout 5m \
+  --set image.repository=lightstack --set image.tag=dev --set image.pullPolicy=Never \
   --set database.url="$DBURL" \
   --set secrets.jwtSecret="$(openssl rand -hex 16)" \
   --set secrets.adminPassword='Host-Admin-1' \
@@ -158,8 +158,8 @@ helm install o3k charts/o3k -n o3k --create-namespace --wait --timeout 5m \
 ```
 Derive the state exactly as an orchestrator would:
 ```bash
-helm status o3k -n o3k -o json | jq -r '.info.status'                 # → deployed
-kubectl -n o3k get deploy o3k-o3k \
+helm status lightstack -n lightstack -o json | jq -r '.info.status'                 # → deployed
+kubectl -n lightstack get deploy lightstack-lightstack \
   -o jsonpath='{.status.updatedReplicas}/{.status.availableReplicas}/{.spec.replicas}{"\n"}'   # → 1/1/1
 ```
 **Ready** ⇔ `deployed` **and** `updated == available == desired`. (Readiness is real: the pod's
@@ -167,18 +167,18 @@ probe is `GET /v3` on Keystone, so Ready means the API answers.)
 
 Now force **Failed** and confirm the recipe catches it *fast* (terminal pod, before the timeout):
 ```bash
-helm upgrade o3k charts/o3k -n o3k --reuse-values --set image.tag=nope --wait --timeout 90s &
+helm upgrade lightstack charts/lightstack -n lightstack --reuse-values --set image.tag=nope --wait --timeout 90s &
 sleep 25
-kubectl -n o3k get pods -l app.kubernetes.io/instance=o3k \
+kubectl -n lightstack get pods -l app.kubernetes.io/instance=lightstack \
   -o jsonpath='{range .items[*]}{.status.phase}{" "}{range .status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}{end}'
 # → ErrImageNeverPull  ⇒ terminal ⇒ FAILED per CONTRACT.md §2 (no need to wait out the 90s)
 wait                                                # the helm upgrade exits non-zero
-helm status o3k -n o3k -o json | jq -r '.info.status'                 # → failed / pending-upgrade
+helm status lightstack -n lightstack -o json | jq -r '.info.status'                 # → failed / pending-upgrade
 ```
 Recover:
 ```bash
-helm rollback o3k -n o3k
-kubectl -n o3k rollout status deploy/o3k-o3k --timeout=120s           # back to Ready
+helm rollback lightstack -n lightstack
+kubectl -n lightstack rollout status deploy/lightstack-lightstack --timeout=120s           # back to Ready
 ```
 **Pass** = Ready derived from `deployed`+`1/1/1`; the bad-tag upgrade surfaces a terminal pod reason
 (Failed) and helm reports a non-`deployed` status; rollback returns to Ready.
@@ -191,8 +191,8 @@ The contract guarantees **one** endpoint (Keystone `/v3`); the rest come from th
 Port-forward the front-door Service and authenticate (**T2**):
 
 ```bash
-kubectl -n o3k port-forward svc/o3k-o3k 35357:35357 >/tmp/pf.log 2>&1 &  PF=$!; sleep 2
-cat > ~/.o3k-ct-env <<'EOF'
+kubectl -n lightstack port-forward svc/lightstack-lightstack 35357:35357 >/tmp/pf.log 2>&1 &  PF=$!; sleep 2
+cat > ~/.lightstack-ct-env <<'EOF'
 export OS_AUTH_URL=http://127.0.0.1:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD='Host-Admin-1'                 # ← MUST match §7 secrets.adminPassword
@@ -201,7 +201,7 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 EOF
-source ~/.o3k-ct-env
+source ~/.lightstack-ct-env
 openstack token issue >/dev/null && echo "auth OK (Keystone anchor)"
 
 # the other five services are DISCOVERED from the catalog (not enumerated by the consumer):
@@ -225,10 +225,10 @@ coupling, FR-012a); `metadata` is absent.
 ## 9. AC3 — the contract ships with the chart
 
 ```bash
-cd /home/fnk/code/sap/ora/o3k/feature/474
-helm package charts/o3k -d /tmp >/dev/null
-tar tzf /tmp/o3k-*.tgz | grep 'o3k/CONTRACT.md' && echo "ok: CONTRACT.md packaged"
-grep -n 'CONTRACT.md' charts/o3k/README.md            # README links it
+cd /home/fnk/code/sap/ora/lightstack/feature/474
+helm package charts/lightstack -d /tmp >/dev/null
+tar tzf /tmp/lightstack-*.tgz | grep 'lightstack/CONTRACT.md' && echo "ok: CONTRACT.md packaged"
+grep -n 'CONTRACT.md' charts/lightstack/README.md            # README links it
 ```
 **Pass** = `CONTRACT.md` is inside the packaged `.tgz` and the README links it.
 
@@ -237,32 +237,32 @@ grep -n 'CONTRACT.md' charts/o3k/README.md            # README links it
 ## 10. Cleanup / reset between runs
 
 ```bash
-helm uninstall o3k -n o3k --no-hooks 2>/dev/null || true   # chart manages the o3k namespace…
-kubectl wait --for=delete ns/o3k --timeout=120s 2>/dev/null || true   # …so WAIT before any reinstall
-podman rm -f o3k-postgres 2>/dev/null || true
+helm uninstall lightstack -n lightstack --no-hooks 2>/dev/null || true   # chart manages the lightstack namespace…
+kubectl wait --for=delete ns/lightstack --timeout=120s 2>/dev/null || true   # …so WAIT before any reinstall
+podman rm -f lightstack-postgres 2>/dev/null || true
 # wipe the cluster entirely:  /usr/local/bin/k3s-uninstall.sh
 ```
-> Stub mode leaves **no** host network/storage state — there is nothing under `/var/lib/o3k` to clean
+> Stub mode leaves **no** host network/storage state — there is nothing under `/var/lib/lightstack` to clean
 > (that is a real-mode concern).
 
 ---
 
 ## 11. Troubleshooting
 
-- **Pod `ErrImageNeverPull` (`image "o3k:dev" is not present with pull policy of Never`)** → the image
-  isn't in k3s containerd under the expected name. Redo §4 with the `docker.io/library/o3k:dev` tag
-  (a bare `podman build -t o3k:dev` becomes `localhost/o3k:dev`). Check:
-  `sudo k3s ctr -n k8s.io images ls | grep o3k`.
+- **Pod `ErrImageNeverPull` (`image "lightstack:dev" is not present with pull policy of Never`)** → the image
+  isn't in k3s containerd under the expected name. Redo §4 with the `docker.io/library/lightstack:dev` tag
+  (a bare `podman build -t lightstack:dev` becomes `localhost/lightstack:dev`). Check:
+  `sudo k3s ctr -n k8s.io images ls | grep lightstack`.
 - **Pod `CrashLoopBackOff`, log: DB connection refused/timeout** → in **stub mode the pod is not
   `hostNetwork`**, so `127.0.0.1` is the pod. Use `$HOSTIP` in `database.url` (§5). Confirm the
   Postgres container publishes `0.0.0.0:5432` and the host firewall allows the pod CIDR.
-- **`INSTALLATION FAILED: … namespace o3k … is being terminated`** → the chart manages the `o3k`
-  namespace; a back-to-back install races the uninstall. `kubectl wait --for=delete ns/o3k
+- **`INSTALLATION FAILED: … namespace lightstack … is being terminated`** → the chart manages the `lightstack`
+  namespace; a back-to-back install races the uninstall. `kubectl wait --for=delete ns/lightstack
   --timeout=120s` first.
 - **`401 "Unrecognized schema in response body"` / auth fails** → `OS_PASSWORD` ≠ §7
-  `secrets.adminPassword`; re-source `~/.o3k-ct-env`.
+  `secrets.adminPassword`; re-source `~/.lightstack-ct-env`.
 - **`openstack` can't connect on `127.0.0.1:35357`** → the port-forward died; restart
-  `kubectl -n o3k port-forward svc/o3k-o3k 35357:35357` and check `/tmp/pf.log`.
+  `kubectl -n lightstack port-forward svc/lightstack-lightstack 35357:35357` and check `/tmp/pf.log`.
 - **`catalog show compute` host is `localhost`, not `$HOSTIP`** → `endpointHost` wasn't set on this
   release; reinstall with `--set endpointHost=$HOSTIP` (this is the FR-012a coupling, working as
   documented).

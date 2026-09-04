@@ -18,13 +18,13 @@
 ## User Scenarios & Testing *(mandatory)*
 
 The contract has two halves and one publication requirement. The orchestrator that consumes
-it is **sci-in-a-box**, which drives an o3k instance's lifecycle through Helm (explicitly
+it is **sci-in-a-box**, which drives a Lightstack instance's lifecycle through Helm (explicitly
 **not** a CRD): it submits configuration as Helm values (the input contract) and observes the
 running release to derive lifecycle state and endpoints (the output/status contract).
 
 ### User Story 1 - Reject invalid configuration before anything is deployed (Priority: P1)
 
-As the orchestrator (or an operator) installing or upgrading o3k via Helm, when I submit
+As the orchestrator (or an operator) installing or upgrading Lightstack via Helm, when I submit
 configuration values, the chart validates the **complete** set of inputs against a published
 schema and rejects structurally invalid configuration **up front — before any workload is
 created** — with a message that names the offending value. A complete, valid configuration
@@ -59,10 +59,10 @@ configuration proceeds.
 
 ### User Story 2 - Derive lifecycle state and endpoints from the release (Priority: P2)
 
-As sci-in-a-box, after I install or upgrade an o3k release, I can deterministically classify it
+As sci-in-a-box, after I install or upgrade a Lightstack release, I can deterministically classify it
 as **Provisioning**, **Ready**, or **Failed** using only Helm release status plus pod
 readiness, and I can resolve the Keystone endpoint (a stable, release-scoped Service) and read
-the other service URLs from its OpenStack service catalog — without o3k-specific internal
+the other service URLs from its OpenStack service catalog — without lightstack-specific internal
 knowledge.
 
 **Why this priority**: This is the output half of the contract. An orchestrator drives
@@ -97,7 +97,7 @@ derivation is identical in intent for single-node and multi-node topologies.
 
 As a consumer or operator, I can find a **single contract document published alongside the
 chart** that ties the inputs (schema) to the outputs (status + endpoints), so I can integrate
-against o3k without reading its source. The document travels with the chart and matches the
+against Lightstack without reading its source. The document travels with the chart and matches the
 version I deployed.
 
 **Why this priority**: Discoverability and drift-prevention. A contract that lives only in
@@ -180,7 +180,7 @@ endpoints match the actual schema and release notes.
   e.g. real mode pinning to a single replica, or multi-node + cache without a shared Redis — are
   auto-corrected or warned, matching the chart's existing behavior.
 - **FR-008**: The "version" input is the **product image tag** (`image.tag`) that selects which
-  o3k build is deployed; when unset it falls back to the chart's product version (`appVersion`).
+  Lightstack build is deployed; when unset it falls back to the chart's product version (`appVersion`).
   The schema MUST name and document it as the version input and type it (an image tag is an
   open-ended string — registry-defined — so validation is type + description, not an allowed-set
   enum). The multi-node `minProductVersion` is a SEPARATE, advisory-only compatibility floor
@@ -204,7 +204,7 @@ endpoints match the actual schema and release notes.
   topology-appropriate workload object to watch (single-node vs multi-node).
 - **FR-012**: The contract MUST document endpoint resolution as **identity-anchored**: the
   guaranteed entry point is the Keystone `/v3` endpoint — the in-cluster Service name
-  (`<release>-o3k:35357`) and, when configured, the advertised host/scheme. The other five
+  (`<release>-lightstack:35357`) and, when configured, the advertised host/scheme. The other five
   services (compute, placement, network, volumev3, image) are discovered from the OpenStack
   **service catalog** returned in the Keystone token, NOT enumerated as a separate guarantee.
   The chart's release notes MAY list the six in-cluster ports as a debugging convenience, marked
@@ -252,7 +252,7 @@ endpoints match the actual schema and release notes.
   missing-required, malformed database reference, unknown key) is rejected before any workload
   is created, and every valid case proceeds — 0 invalid cases reach execution.
 - **SC-003**: Using only Helm release status and pod readiness, an integrator classifies a
-  release as Provisioning, Ready, or Failed with no o3k-specific source knowledge by following
+  release as Provisioning, Ready, or Failed with no lightstack-specific source knowledge by following
   the documented convention — demonstrated for both topologies.
 - **SC-004**: Following the contract, an integrator resolves the Keystone endpoint and obtains
   all other service URLs from the token's service catalog on the first attempt — matching the
@@ -260,14 +260,14 @@ endpoints match the actual schema and release notes.
   node-local metadata endpoint present.
 - **SC-005**: The packaged chart contains the contract document, the README links it, and an
   automated gate fails if the schema, release notes, and contract drift out of sync.
-- **SC-006**: An integrator unfamiliar with o3k internals completes an install → detect-Ready →
+- **SC-006**: An integrator unfamiliar with Lightstack internals completes an install → detect-Ready →
   resolve-endpoints loop using only the published contract (no source reading).
 
 ## Assumptions
 
 - **Contract-only scope.** This feature formalizes/validates **existing** chart inputs and
   documents the status + endpoint conventions. It does NOT add new runtime features or change
-  what o3k deploys. The deferred multi-node cross-node behavior (issue #52) is out of scope and
+  what Lightstack deploys. The deferred multi-node cross-node behavior (issue #52) is out of scope and
   appears only as a documented caveat.
 - **Strict by default.** Unknown top-level/typed-object keys are rejected (per the user's
   stated lean in the issue checklist); free-form maps stay open. Revisit if operators rely on
@@ -285,7 +285,7 @@ endpoints match the actual schema and release notes.
 
 ## Dependencies
 
-- The existing o3k Helm chart — its values, schema, release notes, README, and test harness;
+- The existing Lightstack Helm chart — its values, schema, release notes, README, and test harness;
   this feature extends them.
 - Helm's built-in values-schema validation and its release-status / pod-readiness reporting, as
   the enforcement and signal mechanisms the contract is defined against.

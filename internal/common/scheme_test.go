@@ -6,12 +6,12 @@ import (
 )
 
 func TestEndpointScheme(t *testing.T) {
-	orig, had := os.LookupEnv("O3K_ENDPOINT_SCHEME")
+	orig, had := os.LookupEnv("LIGHTSTACK_ENDPOINT_SCHEME")
 	t.Cleanup(func() {
 		if had {
-			os.Setenv("O3K_ENDPOINT_SCHEME", orig)
+			os.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", orig)
 		} else {
-			os.Unsetenv("O3K_ENDPOINT_SCHEME")
+			os.Unsetenv("LIGHTSTACK_ENDPOINT_SCHEME")
 		}
 	})
 
@@ -25,13 +25,13 @@ func TestEndpointScheme(t *testing.T) {
 		{"gopher://x", "http"}, // unsupported → default http
 	}
 	for _, c := range cases {
-		os.Setenv("O3K_ENDPOINT_SCHEME", c.in)
+		os.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", c.in)
 		if got := EndpointScheme(); got != c.want {
 			t.Errorf("EndpointScheme(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 
-	os.Unsetenv("O3K_ENDPOINT_SCHEME")
+	os.Unsetenv("LIGHTSTACK_ENDPOINT_SCHEME")
 	if got := EndpointScheme(); got != "http" {
 		t.Errorf("EndpointScheme(unset) = %q, want http", got)
 	}
@@ -39,7 +39,7 @@ func TestEndpointScheme(t *testing.T) {
 
 func TestForceScheme(t *testing.T) {
 	cases := []struct{ url, scheme, want string }{
-		{"http://o3k:9292/v2", "https", "https://o3k:9292/v2"},
+		{"http://lightstack:9292/v2", "https", "https://lightstack:9292/v2"},
 		{"http://host:35357/v3", "http", "http://host:35357/v3"},
 		{"https://host:8774", "http", "http://host:8774"},
 		{"https://host:8774", "https", "https://host:8774"},

@@ -3,8 +3,8 @@
 #
 # The stock ceph/demo entrypoint (/opt/ceph-container/bin/demo) bootstraps a
 # single-node Ceph + RGW and creates the local demo user/bucket that Glance uses
-# (capability A). This wrapper additionally points the RGW's S3 auth at o3k's
-# Keystone so *tenant* S3 keys minted by o3k (openstack ec2 credentials) validate
+# (capability A). This wrapper additionally points the RGW's S3 auth at Lightstack's
+# Keystone so *tenant* S3 keys minted by Lightstack (openstack ec2 credentials) validate
 # via /v3/s3tokens (capability B) — while the local demo user keeps working (RGW
 # tries local users first, then Keystone).
 #
@@ -18,8 +18,8 @@
 #     an IP) is treated as the endpoint, not a vhost bucket. Set on the radosgw
 #     command line because it must override the demo's ceph.conf value.
 #   - rgw_keystone_token_cache_size=0 — re-validate every request so a revoked
-#     (deleted) credential is refused immediately (o3k is synchronous/fail-fast).
-#   (o3k's /v3/s3tokens returns a full Keystone token with expires_at and
+#     (deleted) credential is refused immediately (Lightstack is synchronous/fail-fast).
+#   (Lightstack's /v3/s3tokens returns a full Keystone token with expires_at and
 #    dash-free canonical project.id — RGW tenant names reject dashes.)
 #
 # rgw_keystone_url is startup-only, so we let demo finish its bootstrap (it starts
@@ -28,14 +28,14 @@
 # it re-reads them and its log stays visible in `docker/podman logs`.
 set -uo pipefail
 
-KEYSTONE_URL="${O3K_KEYSTONE_URL:-http://o3k:35357}"
-KEYSTONE_ROLES="${O3K_KEYSTONE_ACCEPTED_ROLES:-admin,member,reader,_member_}"
-ADMIN_USER="${O3K_KEYSTONE_ADMIN_USER:-admin}"
-ADMIN_PASSWORD="${O3K_KEYSTONE_ADMIN_PASSWORD:-secret}"
-ADMIN_PROJECT="${O3K_KEYSTONE_ADMIN_PROJECT:-default}"
-ADMIN_DOMAIN="${O3K_KEYSTONE_ADMIN_DOMAIN:-Default}"
+KEYSTONE_URL="${LIGHTSTACK_KEYSTONE_URL:-http://lightstack:35357}"
+KEYSTONE_ROLES="${LIGHTSTACK_KEYSTONE_ACCEPTED_ROLES:-admin,member,reader,_member_}"
+ADMIN_USER="${LIGHTSTACK_KEYSTONE_ADMIN_USER:-admin}"
+ADMIN_PASSWORD="${LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD:-secret}"
+ADMIN_PROJECT="${LIGHTSTACK_KEYSTONE_ADMIN_PROJECT:-default}"
+ADMIN_DOMAIN="${LIGHTSTACK_KEYSTONE_ADMIN_DOMAIN:-Default}"
 RGW_NAME="${RGW_NAME:-rgw}"
-DEMO_UID="${CEPH_DEMO_UID:-o3k}"
+DEMO_UID="${CEPH_DEMO_UID:-lightstack}"
 RGW_SECTION="client.rgw.${RGW_NAME}"
 RGW_KEYRING="/var/lib/ceph/radosgw/ceph-rgw.${RGW_NAME}/keyring"
 

@@ -13,7 +13,7 @@ import (
 
 // TestCinderGetVolumeMetadata_Contract tests GET /v3/:project/volumes/:id/metadata
 func TestCinderGetVolumeMetadata_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -67,7 +67,7 @@ func TestCinderGetVolumeMetadata_Contract(t *testing.T) {
 
 // TestCinderSetVolumeMetadataKey_Contract tests PUT /v3/:project/volumes/:id/metadata/:key
 func TestCinderSetVolumeMetadataKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -116,7 +116,7 @@ func TestCinderSetVolumeMetadataKey_Contract(t *testing.T) {
 
 // TestCinderGetVolumeMetadataKey_Contract tests GET /v3/:project/volumes/:id/metadata/:key
 func TestCinderGetVolumeMetadataKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -178,7 +178,7 @@ func TestCinderGetVolumeMetadataKey_Contract(t *testing.T) {
 
 // TestCinderUpdateAllVolumeMetadata_Contract tests POST /v3/:project/volumes/:id/metadata
 func TestCinderUpdateAllVolumeMetadata_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -227,7 +227,7 @@ func TestCinderUpdateAllVolumeMetadata_Contract(t *testing.T) {
 
 // TestCinderDeleteVolumeMetadataKey_Contract tests DELETE /v3/:project/volumes/:id/metadata/:key
 func TestCinderDeleteVolumeMetadataKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# O3K Horizon Compatibility Test (Bash version)
+# Lightstack Horizon Compatibility Test (Bash version)
 # Simulates Horizon dashboard API calls
 
 set -e
@@ -12,7 +12,7 @@ NC='\033[0m'
 PASSED=0
 FAILED=0
 
-O3K_URL="http://localhost:35357"
+LIGHTSTACK_URL="http://localhost:35357"
 ADMIN_USER="admin"
 ADMIN_PASSWORD="secret"
 PROJECT_NAME="default"
@@ -40,7 +40,7 @@ test_login() {
     print_test "Horizon Login Flow"
 
     # Get scoped token
-    response=$(curl -s -i -X POST "${O3K_URL}/v3/auth/tokens" \
+    response=$(curl -s -i -X POST "${LIGHTSTACK_URL}/v3/auth/tokens" \
         -H "Content-Type: application/json" \
         -d '{
             "auth": {
@@ -103,7 +103,7 @@ test_dashboard() {
         print_pass "Neutron - List networks" || print_fail "Neutron - List networks"
 
     # Get project ID
-    PROJECT_ID=$(curl -s -X POST "${O3K_URL}/v3/auth/tokens" \
+    PROJECT_ID=$(curl -s -X POST "${LIGHTSTACK_URL}/v3/auth/tokens" \
         -H "Content-Type: application/json" \
         -d '{
             "auth": {
@@ -336,7 +336,7 @@ test_launch_instance() {
 
 # Main
 echo "=========================================="
-echo " O3K Horizon Compatibility Test"
+echo " Lightstack Horizon Compatibility Test"
 echo "=========================================="
 echo ""
 

@@ -1,4 +1,4 @@
-// k6 load testing script for O3K performance benchmarks
+// k6 load testing script for Lightstack performance benchmarks
 // Run: k6 run test/load/keystone_auth.js
 
 import http from 'k6/http';
@@ -28,7 +28,7 @@ export const options = {
   },
 };
 
-const BASE_URL = __ENV.O3K_URL || 'http://localhost:35357';
+const BASE_URL = __ENV.LIGHTSTACK_URL || 'http://localhost:35357';
 
 export default function () {
   // Authenticate with password

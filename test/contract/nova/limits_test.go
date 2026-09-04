@@ -9,7 +9,7 @@ import (
 )
 
 func TestNovaGetLimits_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

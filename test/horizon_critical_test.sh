@@ -54,9 +54,9 @@ PROJECT_ID=$(curl -s -X POST http://10.2.199.101:35357/v3/auth/tokens \
   }' | jq -r '.token.project.id')
 
 echo "1. Service Catalog - Neutron endpoint"
-echo "   Expected: http://o3k:9696 (no /v2.0 suffix)"
+echo "   Expected: http://lightstack:9696 (no /v2.0 suffix)"
 echo "   Got: $TOKEN"
-if [[ "$TOKEN" == "http://o3k:9696" ]]; then
+if [[ "$TOKEN" == "http://lightstack:9696" ]]; then
     echo -e "   ${GREEN}✓ PASS${NC}"
 else
     echo -e "   ${RED}✗ FAIL${NC}"

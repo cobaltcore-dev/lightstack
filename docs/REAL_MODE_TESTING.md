@@ -18,7 +18,7 @@
 
 ### Test Performed:
 ```yaml
-# config/o3k.yaml
+# config/lightstack.yaml
 nova:
   libvirt_mode: real
 ```
@@ -32,7 +32,7 @@ WARNING: Failed to initialize hypervisor:
 ```
 
 ### Behavior:
-✅ **Graceful degradation** - O3K started successfully
+✅ **Graceful degradation** - Lightstack started successfully
 ✅ **Services available** - All 5 services running
 ⚠️ **VM operations disabled** - Nova will return "hypervisor not available"
 
@@ -85,9 +85,9 @@ sudo systemctl enable libvirtd
 virsh list --all
 ```
 
-### Step 2: Configure O3K for Real Mode
+### Step 2: Configure Lightstack for Real Mode
 ```yaml
-# config/o3k.yaml
+# config/lightstack.yaml
 nova:
   port: 8774
   libvirt_uri: "qemu:///system"
@@ -95,9 +95,9 @@ nova:
   libvirt_mode: real  # Enable real mode
 ```
 
-### Step 3: Start O3K
+### Step 3: Start Lightstack
 ```bash
-./bin/o3k --config config/o3k.yaml
+./bin/lightstack --config config/lightstack.yaml
 ```
 
 **Expected Output:**
@@ -157,7 +157,7 @@ virsh list --all  # Should be gone
 
 ### Connection Flow:
 ```
-1. O3K starts with libvirt_mode: real
+1. lightstack starts with libvirt_mode: real
    ↓
 2. VMManager.connectLibvirt() called
    ↓
@@ -258,17 +258,17 @@ apt-get update && apt-get install -y qemu-system libvirt-daemon-system
 ### Option 2: Linux VM (Recommended)
 ```bash
 # Use Multipass, Vagrant, or Docker Desktop with Linux VM
-multipass launch --name o3k-test --cpus 4 --mem 8G
+multipass launch --name lightstack-test --cpus 4 --mem 8G
 
-multipass shell o3k-test
-# Install O3K and libvirt inside
+multipass shell lightstack-test
+# Install lightstack and libvirt inside
 ```
 
 ### Option 3: Cloud VM (Best for Real Testing)
 ```bash
 # AWS EC2, GCP, Azure, or DigitalOcean
 # Choose instance type with nested virtualization support
-# Install O3K and test real mode
+# Install lightstack and test real mode
 ```
 
 ## Expected Real Mode Behavior
@@ -339,14 +339,14 @@ $ openstack server delete test-vm    # virsh destroy + undefine
 
 ### Check Mode:
 ```bash
-# In O3K logs
-grep "mode" /var/log/o3k.log
+# In lightstack logs
+grep "mode" /var/log/lightstack.log
 # Should show: "Hypervisor initialized successfully in real mode"
 ```
 
 ### Check Connection:
 ```bash
-# As O3K user
+# As lightstack user
 virsh -c qemu:///system list --all
 # Should list domains
 ```

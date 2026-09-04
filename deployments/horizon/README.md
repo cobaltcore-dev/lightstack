@@ -2,11 +2,11 @@
 
 ## Quick Start
 
-This guide shows you how to access your running O3K instance via the OpenStack Horizon Dashboard.
+This guide shows you how to access your running Lightstack instance via the OpenStack Horizon Dashboard.
 
 ## Prerequisites
 
-- O3K running on your host machine (ports 35357, 8774, 9696, 8776, 9292)
+- Lightstack running on your host machine (ports 35357, 8774, 9696, 8776, 9292)
 - Docker and Docker Compose installed
 - At least 2GB free RAM for Horizon container
 
@@ -21,7 +21,7 @@ docker-compose up -d
 
 This will:
 - Start the Horizon container
-- Connect it to O3K running on your host
+- Connect it to Lightstack running on your host
 - Expose the dashboard on http://localhost
 
 ### Step 2: Wait for Horizon to Start
@@ -95,14 +95,14 @@ kolla-ansible deploy -i all-in-one
 ### Issue: "Can't connect to Keystone"
 
 **Solution:**
-1. Verify O3K is running:
+1. Verify Lightstack is running:
    ```bash
    curl http://localhost:35357/v3
    ```
 
-2. Check O3K logs:
+2. Check Lightstack logs:
    ```bash
-   tail -f /tmp/o3k*.log
+   tail -f /tmp/lightstack*.log
    ```
 
 3. Verify ports are accessible:
@@ -130,7 +130,7 @@ docker-compose up -d --build
 1. ✅ Domain: `Default` (case-sensitive)
 2. ✅ Username: `admin`
 3. ✅ Password: `secret`
-4. ✅ O3K is running
+4. ✅ Lightstack is running
 
 **Test authentication manually:**
 ```bash
@@ -167,7 +167,7 @@ You should get a `201 Created` response with `X-Subject-Token` header.
 2. Database connection issue
 3. API version mismatch
 
-**Check O3K status:**
+**Check Lightstack status:**
 ```bash
 # Verify all services responding
 curl -s http://localhost:35357/v3 | jq .
@@ -304,9 +304,9 @@ CACHES = {
 ```yaml
 memcached:
   image: memcached:alpine
-  container_name: o3k-memcached
+  container_name: lightstack-memcached
   networks:
-    - o3k-network
+    - lightstack-network
 ```
 
 ### Reduce API Calls
@@ -380,7 +380,7 @@ LOGGING = {
 
 ## Advanced: Multi-Region Setup
 
-To add multiple O3K regions:
+To add multiple Lightstack regions:
 
 ```python
 AVAILABLE_REGIONS = [
@@ -472,7 +472,7 @@ docker-compose restart horizon
 ### What You Should See
 
 1. **Login Page**
-   - O3K OpenStack Dashboard header
+   - Lightstack OpenStack Dashboard header
    - Domain, Username, Password fields
    - "Sign In" button
 
@@ -491,7 +491,7 @@ docker-compose restart horizon
 4. **Launch Instance Dialog**
    - Multi-step wizard
    - Details, Source, Flavor, Networks tabs
-   - Form fields populated from O3K
+   - Form fields populated from Lightstack
 
 5. **Networks Tab**
    - Network topology view (optional)
@@ -504,7 +504,7 @@ docker-compose restart horizon
 
 ### Getting Help
 
-1. Check O3K logs: `tail -f /tmp/o3k*.log`
+1. Check Lightstack logs: `tail -f /tmp/lightstack*.log`
 2. Check Horizon logs: `docker-compose logs horizon`
 3. Verify services: `curl http://localhost:35357/v3`
 4. Check documentation: `docs/HORIZON_TESTING_COMPLETE.md`
@@ -517,10 +517,10 @@ docker-compose restart horizon
 
 ### Report Issues
 
-File issues at: https://github.com/cobaltcore-dev/o3k/issues
+File issues at: https://github.com/cobaltcore-dev/lightstack/issues
 
 Include:
-- O3K version
+- Lightstack version
 - Horizon logs
 - Browser console errors
 - Steps to reproduce

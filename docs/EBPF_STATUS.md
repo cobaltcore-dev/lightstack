@@ -49,7 +49,7 @@
 **File**: `Makefile`
 
 - `make build-ebpf` - Compiles eBPF C programs with clang
-- `make build-with-ebpf` - Builds O3K with eBPF support
+- `make build-with-ebpf` - Builds Lightstack with eBPF support
 - `make install-ebpf-tools` - Installs dependencies (clang, llvm, libbpf-dev)
 
 **Status**: ✅ Complete
@@ -57,7 +57,7 @@
 ---
 
 ### 5. Configuration (Complete)
-**File**: `config/o3k.yaml`
+**File**: `config/lightstack.yaml`
 
 - `neutron.security_group_mode: ebpf` option
 - `neutron.ebpf_object_path` for compiled object file
@@ -200,7 +200,7 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 ## Current Workaround
 
-For now, O3K uses **iptables mode** for security groups:
+For now, Lightstack uses **iptables mode** for security groups:
 - `security_group_mode: iptables` (default)
 - Fully functional and tested
 - ~50µs packet filtering latency
@@ -246,7 +246,7 @@ See **Integration TODO** above. Key steps:
 ## Using eBPF (When Complete)
 
 ```yaml
-# config/o3k.yaml
+# config/lightstack.yaml
 neutron:
   networking_mode: real
   security_group_mode: ebpf  # Switch from iptables to ebpf
@@ -260,11 +260,11 @@ make install-ebpf-tools
 # Build eBPF programs
 make build-ebpf
 
-# Build O3K with eBPF support
+# Build lightstack with eBPF support
 make build-with-ebpf
 
 # Run
-./bin/o3k --config config/o3k.yaml
+./bin/lightstack --config config/lightstack.yaml
 ```
 
 ---

@@ -21,8 +21,8 @@ import (
 //
 // Example: Testing Keystone CreateUser endpoint
 func TestTemplate_CreateResource_Contract(t *testing.T) {
-	// Skip if O3K is not running (prevents CI false positives)
-	SkipIfO3KNotRunning(t)
+	// Skip if Lightstack is not running (prevents CI false positives)
+	SkipIfLightstackNotRunning(t)
 
 	// Setup: Create authenticated client
 	client := SetupIdentityV3Client(t) // or SetupComputeV2Client, SetupNetworkV2Client, etc.
@@ -57,7 +57,7 @@ func TestTemplate_CreateResource_Contract(t *testing.T) {
 
 // TestTemplate_UpdateResource_Contract tests PATCH endpoint
 func TestTemplate_UpdateResource_Contract(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 
 	client := SetupIdentityV3Client(t)
 
@@ -81,7 +81,7 @@ func TestTemplate_UpdateResource_Contract(t *testing.T) {
 
 // TestTemplate_DeleteResource_Contract tests DELETE endpoint
 func TestTemplate_DeleteResource_Contract(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 
 	client := SetupIdentityV3Client(t)
 
@@ -105,7 +105,7 @@ func TestTemplate_DeleteResource_Contract(t *testing.T) {
 
 // TestTemplate_GetResource_Contract tests GET endpoint
 func TestTemplate_GetResource_Contract(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 
 	client := SetupIdentityV3Client(t)
 
@@ -128,7 +128,7 @@ func TestTemplate_GetResource_Contract(t *testing.T) {
 
 // TestTemplate_ListResources_Contract tests GET collection endpoint
 func TestTemplate_ListResources_Contract(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 
 	client := SetupIdentityV3Client(t)
 
@@ -154,7 +154,7 @@ func TestTemplate_ListResources_Contract(t *testing.T) {
 
 // TestTemplate_ErrorHandling_Contract tests error responses (404, 400, 403)
 func TestTemplate_ErrorHandling_Contract(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 
 	client := SetupIdentityV3Client(t)
 
@@ -176,7 +176,7 @@ func TestTemplate_ErrorHandling_Contract(t *testing.T) {
 
 // TestTemplate_Pagination_Contract tests pagination for list endpoints
 func TestTemplate_Pagination_Contract(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 
 	client := SetupIdentityV3Client(t)
 
@@ -204,7 +204,7 @@ func TestTemplate_Pagination_Contract(t *testing.T) {
 
 // TestTemplate_Filtering_Contract tests query filtering
 func TestTemplate_Filtering_Contract(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 
 	client := SetupIdentityV3Client(t)
 

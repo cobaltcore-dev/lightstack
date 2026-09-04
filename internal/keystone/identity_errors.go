@@ -3,7 +3,7 @@ package keystone
 import (
 	"errors"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"

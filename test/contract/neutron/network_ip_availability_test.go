@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestNeutronListNetworkIPAvailabilities_Contract tests GET /v2.0/network-ip-availabilities
 func TestNeutronListNetworkIPAvailabilities_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -41,7 +41,7 @@ func TestNeutronListNetworkIPAvailabilities_Contract(t *testing.T) {
 
 // TestNeutronGetNetworkIPAvailability_Contract tests GET /v2.0/network-ip-availabilities/:id
 func TestNeutronGetNetworkIPAvailability_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

@@ -12,7 +12,7 @@ import (
 
 // TestKeystoneChangePassword_Contract tests POST /v3/users/:id/password endpoint
 func TestKeystoneChangePassword_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -46,7 +46,7 @@ func TestKeystoneChangePassword_Contract(t *testing.T) {
 
 // TestKeystoneChangePasswordValidation_Contract tests password change validation
 func TestKeystoneChangePasswordValidation_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -77,7 +77,7 @@ func TestKeystoneChangePasswordValidation_Contract(t *testing.T) {
 
 // TestKeystoneGetUserGroups_Contract tests GET /v3/users/:id/groups endpoint
 func TestKeystoneGetUserGroups_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -106,7 +106,7 @@ func TestKeystoneGetUserGroups_Contract(t *testing.T) {
 
 // TestKeystoneGetUserGroupsForNewUser_Contract tests groups for a new user
 func TestKeystoneGetUserGroupsForNewUser_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 

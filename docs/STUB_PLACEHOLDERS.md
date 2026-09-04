@@ -16,7 +16,7 @@
 
 ## Executive Summary
 
-~~O3K contains several "implemented" features that are actually placeholders or stubs.~~ **UPDATE**: All stub placeholders have been resolved as of Sprint 70-73.
+~~lightstack contains several "implemented" features that are actually placeholders or stubs.~~ **UPDATE**: All stub placeholders have been resolved as of Sprint 70-73.
 
 ### ✅ Fixed Issues (Sprint 70-73)
 
@@ -64,7 +64,7 @@ if svc.sgManager != nil && svc.mode == "ebpf" {
 ```
 
 ### How to Use
-Set in `config/o3k.yaml`:
+Set in `config/lightstack.yaml`:
 ```yaml
 neutron:
   security_group_mode: ebpf  # Enable eBPF mode
@@ -181,7 +181,7 @@ for _, network := range req.Server.Networks {
 }
 ```
 
-**Service Wiring** (`cmd/o3k/main.go`):
+**Service Wiring** (`cmd/lightstack/main.go`):
 ```go
 novaService := nova.NewService(libvirtURI, libvirtMode, cacheInstance)
 neutronService := neutron.NewService(networkingMode, cacheInstance)
@@ -315,7 +315,7 @@ sudo apt-get install librados-dev libceph-dev
 go build -tags ceph
 ```
 
-**Configuration** (`config/o3k.yaml`):
+**Configuration** (`config/lightstack.yaml`):
 ```yaml
 cinder:
   storage_mode: rbd  # or "local,rbd" for hybrid
@@ -338,7 +338,7 @@ cinder:
 
 ### What Was Fixed
 - ✅ Replaced TODO stub with actual genisoimage/mkisofs implementation
-- ✅ Proper directory creation (/var/lib/o3k/cloud-init/)
+- ✅ Proper directory creation (/var/lib/lightstack/cloud-init/)
 - ✅ Temporary directory handling for cloud-init files
 - ✅ Meta-data and user-data file generation
 - ✅ ISO generation with genisoimage (mkisofs fallback)
@@ -356,7 +356,7 @@ func GenerateCloudInitISO(uuid string, config *CloudInitConfig) (string, error) 
         return "", nil
     }
 
-    isoDir := "/var/lib/o3k/cloud-init"
+    isoDir := "/var/lib/lightstack/cloud-init"
     isoPath := fmt.Sprintf("%s/%s.iso", isoDir, uuid)
 
     // Create directory if it doesn't exist
@@ -462,7 +462,7 @@ if spec.CloudInit != nil {
     sb.WriteString(fmt.Sprintf(`
     <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
-      <source file='/var/lib/o3k/cloud-init/%s.iso'/>
+      <source file='/var/lib/lightstack/cloud-init/%s.iso'/>
       <target dev='hdc' bus='ide'/>
       <readonly/>
     </disk>
@@ -649,9 +649,9 @@ After fixes, verify:
 
 ## Conclusion
 
-~~O3K has significant "implementation debt" - features that exist in code but are disconnected from actual workflows.~~
+~~lightstack has significant "implementation debt" - features that exist in code but are disconnected from actual workflows.~~
 
-**UPDATE (Sprint 70-73)**: All stub placeholders have been resolved. O3K now has:
+**UPDATE (Sprint 70-73)**: All stub placeholders have been resolved. Lightstack now has:
 
 ✅ **Working VM Networking**: VMs get proper network interfaces from Neutron with port allocation
 ✅ **Functional Floating IPs**: NAT rules use actual port IP addresses, not hardcoded placeholders
@@ -663,7 +663,7 @@ After fixes, verify:
 
 **Remaining Work**: None - All identified stub placeholders have been implemented
 
-O3K is now **production-ready** for enterprise OpenStack deployments with:
+Lightstack is now **production-ready** for enterprise OpenStack deployments with:
 - Complete networking stack (VXLAN, floating IPs, security groups)
 - Multiple storage backends (local, Ceph RBD, S3)
 - VM lifecycle automation (cloud-init, SSH keys)

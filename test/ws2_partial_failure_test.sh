@@ -2,14 +2,14 @@
 # SPEC-009 WS-2 (T016 / FR-008a): best-effort reconciliation — a corrupt subnet
 # row must not block the control plane or other tenants. Automated: inject an
 # unparseable CIDR into a THROWAWAY subnet and verify the API and the healthy
-# tenant's DHCP are unaffected after one reconcile pass. DB access via O3K_PSQL
-# (default: the o3k-postgres podman container).
+# tenant's DHCP are unaffected after one reconcile pass. DB access via LIGHTSTACK_PSQL
+# (default: the lightstack-postgres podman container).
 set -euo pipefail
 : "${OS_AUTH_URL:?source your OpenStack env first}"
-INTERVAL="${O3K_RECONCILE_INTERVAL:-35}"
-PSQL="${O3K_PSQL:-podman exec -i o3k-postgres psql -U o3k -d o3k}"
+INTERVAL="${LIGHTSTACK_RECONCILE_INTERVAL:-35}"
+PSQL="${LIGHTSTACK_PSQL:-podman exec -i lightstack-postgres psql -U lightstack -d lightstack}"
 
-dnsmasq_count() { pgrep -fa dnsmasq 2>/dev/null | grep -c var/lib/o3k/dhcp || true; }
+dnsmasq_count() { pgrep -fa dnsmasq 2>/dev/null | grep -c var/lib/lightstack/dhcp || true; }
 
 # Baseline: a healthy tenant (a DHCP network + VM) must already be serving.
 [ "$(dnsmasq_count)" -ge 1 ] || { echo "FAIL: need a healthy DHCP network+VM running first (the reconciler must already serve one)"; exit 1; }

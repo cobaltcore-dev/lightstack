@@ -248,7 +248,7 @@ func TestProjectIsolation_Contract(t *testing.T) {
 // TestReadOnlyRoleCannotCreate_Contract verifies read-only users cannot create resources
 func TestReadOnlyRoleCannotCreate_Contract(t *testing.T) {
 	// This test validates that role-based permissions work
-	// In O3K, read-only users (reader role) should not be able to create resources
+	// In Lightstack, read-only users (reader role) should not be able to create resources
 
 	adminProvider, _ := setupAdminClient(t)
 

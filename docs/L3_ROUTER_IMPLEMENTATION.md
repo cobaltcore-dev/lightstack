@@ -8,7 +8,7 @@
 
 ## Overview
 
-O3K now includes full L3 router functionality with NAT and floating IP support, completing the single-node networking feature set. This implementation uses Linux network namespaces, iptables for NAT, and follows OpenStack's network architecture patterns.
+Lightstack now includes full L3 router functionality with NAT and floating IP support, completing the single-node networking feature set. This implementation uses Linux network namespaces, iptables for NAT, and follows OpenStack's network architecture patterns.
 
 ---
 
@@ -369,7 +369,7 @@ Internet (203.0.113.0/24)
 
 ### Enable L3 Routing
 
-L3 routing is controlled by the networking mode in `config/o3k.yaml`:
+L3 routing is controlled by the networking mode in `config/lightstack.yaml`:
 
 ```yaml
 neutron:
@@ -582,7 +582,7 @@ go test ./internal/neutron -run TestRouterInterface
 
 ## API Compliance
 
-O3K's L3 router implementation is **100% compatible** with OpenStack Neutron L3 API:
+lightstack's L3 router implementation is **100% compatible** with OpenStack Neutron L3 API:
 
 - ✅ Router CRUD operations
 - ✅ Router interface management
@@ -623,7 +623,7 @@ iptables NAT provides:
 
 ## Conclusion
 
-O3K now has full L3 routing capabilities with NAT and floating IPs, completing the single-node networking feature set. The implementation:
+Lightstack now has full L3 routing capabilities with NAT and floating IPs, completing the single-node networking feature set. The implementation:
 
 ✅ **OpenStack Compatible**: 100% API compliance
 ✅ **Production Ready**: Uses proven Linux primitives
@@ -637,4 +637,4 @@ Next step: Multi-node VXLAN overlay for distributed deployments (Phase 2B).
 
 **Document Version**: 1.0
 **Last Updated**: 2026-03-07
-**Author**: O3K Development Team
+**Author**: Lightstack Development Team

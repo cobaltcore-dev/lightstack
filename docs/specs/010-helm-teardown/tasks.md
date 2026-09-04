@@ -2,11 +2,11 @@
 
 **Input**: Design documents from `docs/specs/010-helm-teardown/`
 **Prerequisites**: plan.md, spec.md, research.md (R1–R9), data-model.md, contracts/ (cli-cleanup, teardown-hooks, values), quickstart.md
-**Tracking issue**: [#53](https://github.com/cobaltcore-dev/o3k/issues/53)
+**Tracking issue**: [#53](https://github.com/cobaltcore-dev/lightstack/issues/53)
 
 **Tests**: INCLUDED and written **RED-first** — mandated by Constitution Article III (Test-First, NON-NEGOTIABLE) and research R8.
 
-**Delivery scope**: the validated done-line is **single-node `dataRetentionPolicy: delete`** (US1+US2+US3, single-node). Per research R1 the o3k binary stays **Kubernetes-API-free** — a kubectl-image hook Job does scale/PVC, a privileged `o3k cleanup` Job does host/storage/DB purge. **Multi-node DaemonSet host-purge is [DEFERRED #52]** (FR-014, SC-007) — not authored or validated here; it needs functioning cross-node real mode.
+**Delivery scope**: the validated done-line is **single-node `dataRetentionPolicy: delete`** (US1+US2+US3, single-node). Per research R1 the Lightstack binary stays **Kubernetes-API-free** — a kubectl-image hook Job does scale/PVC, a privileged `lightstack cleanup` Job does host/storage/DB purge. **Multi-node DaemonSet host-purge is [DEFERRED #52]** (FR-014, SC-007) — not authored or validated here; it needs functioning cross-node real mode.
 
 ## Format: `[ID] [P?] [Story] Description with file path`
 
@@ -20,8 +20,8 @@
 
 **Purpose**: the teardown configuration surface every hook keys off. Backward-compatible — defaults reproduce SPEC-008 exactly.
 
-- [X] T001 Add the `teardown.*` block (`kubectlImage`, `timeoutSeconds: 600`, `deletePVCs: true`) and expand the `dataRetentionPolicy` doc in `charts/o3k/values.yaml`; add their schema to `charts/o3k/values.schema.json` (FR-002/016/018; contracts/values.md)
-- [X] T002 [P] Add teardown helpers to `charts/o3k/templates/_helpers.tpl`: name/label helpers (`o3k.fullname`-prefixed `-teardown*`), a kubectl-image helper, and the `dataRetentionPolicy == "delete" && teardown.kubectlImage == ""` → `fail` gate (FR-018; R1)
+- [X] T001 Add the `teardown.*` block (`kubectlImage`, `timeoutSeconds: 600`, `deletePVCs: true`) and expand the `dataRetentionPolicy` doc in `charts/lightstack/values.yaml`; add their schema to `charts/lightstack/values.schema.json` (FR-002/016/018; contracts/values.md)
+- [X] T002 [P] Add teardown helpers to `charts/lightstack/templates/_helpers.tpl`: name/label helpers (`lightstack.fullname`-prefixed `-teardown*`), a kubectl-image helper, and the `dataRetentionPolicy == "delete" && teardown.kubectlImage == ""` → `fail` gate (FR-018; R1)
 
 ---
 
@@ -32,10 +32,10 @@
 **⚠️ CRITICAL**: no user-story work begins until this phase is complete.
 
 - [X] T003 [P] RED test: `pkg/storage/ceph_test.go` — assert the Cinder local-volume path resolves under the configured base (`<hostStoragePath>/volumes`), mirroring Glance's `<hostStoragePath>/images`; must FAIL against current code (FR-020; research R6)
-- [X] T004 Fix `pkg/storage/ceph.go` (`NewCephClient`): local volumes under `<hostStoragePath>/volumes` (configurable base, `~/.o3k/volumes` fallback) — makes T003 pass (FR-020)
-- [X] T005 Add the `cleanup` subcommand to `cmd/o3k/main.go` (`os.Args[1] == "cleanup"` → run teardown and exit, before the server path) and scaffold `internal/teardown/teardown.go` (config load, DB-connect-or-fallback, exit-code contract 0/1/2, `--dry-run` flag) (FR-010; contracts/cli-cleanup.md)
+- [X] T004 Fix `pkg/storage/ceph.go` (`NewCephClient`): local volumes under `<hostStoragePath>/volumes` (configurable base, `~/.lightstack/volumes` fallback) — makes T003 pass (FR-020)
+- [X] T005 Add the `cleanup` subcommand to `cmd/lightstack/main.go` (`os.Args[1] == "cleanup"` → run teardown and exit, before the server path) and scaffold `internal/teardown/teardown.go` (config load, DB-connect-or-fallback, exit-code contract 0/1/2, `--dry-run` flag) (FR-010; contracts/cli-cleanup.md)
 
-**Checkpoint**: Cinder data lands on the mount; `o3k cleanup` is invokable. User stories can begin.
+**Checkpoint**: Cinder data lands on the mount; `lightstack cleanup` is invokable. User stories can begin.
 
 ---
 
@@ -48,7 +48,7 @@
 ### Tests for User Story 1 (write FIRST — confirm RED) ⚠️
 
 - [X] T006 [P] [US1] `internal/teardown/teardown_test.go` (stub mode): enumeration maps DB records → the correct delete calls; dependency-safe order (compute → network → storage; DB read-only, never reset); idempotency (not-found = success); DB-unreachable host-prefix fallback (research R3/R9; data-model §2)
-- [X] T007 [P] [US1] `charts/o3k/tests/teardown_test.yaml` (helm-unittest): RBAC + both Jobs render **iff** `dataRetentionPolicy: delete` and are **absent** under `retain`; Role rules == the least-privilege set (R7); purge Job has `command:[o3k,cleanup]`, `activeDeadlineSeconds`, `backoffLimit:0`, real-mode host mounts; `kubectlImage:""` under `delete` → render fails (contracts/teardown-hooks.md)
+- [X] T007 [P] [US1] `charts/lightstack/tests/teardown_test.yaml` (helm-unittest): RBAC + both Jobs render **iff** `dataRetentionPolicy: delete` and are **absent** under `retain`; Role rules == the least-privilege set (R7); purge Job has `command:[lightstack,cleanup]`, `activeDeadlineSeconds`, `backoffLimit:0`, real-mode host mounts; `kubectlImage:""` under `delete` → render fails (contracts/teardown-hooks.md)
 - [X] T008 [P] [US1] `test/helm_teardown_test.sh` (scaffold + US1 assertions): single-node stub install → create resources → `helm uninstall` (delete) → assert uninstall **blocks** on the hook, then zero residue (no workloads/PVCs/domains/netns/local-storage; DB left intact — operator-owned) (SC-001/003) _(authored in test/helm_teardown_test.sh; e2e on a cluster/CI, not run in sandbox)_
 
 ### Implementation for User Story 1
@@ -57,12 +57,12 @@
 - [X] T010 [US1] `internal/teardown`: compute purge — `VMManager.DeleteVM(uuid)` (destroy + undefine) per enumerated domain (FR-003)
 - [X] T011 [US1] `internal/teardown`: network purge — `DeleteNamespace`/`DeleteRouterNamespace` + bridges/TAP/iptables/VXLAN per enumerated id (FR-004)
 - [X] T012 [US1] `internal/teardown`: storage purge — delete node-local volume/image files under `hostStoragePath`; bounded orphan sweep within that tree (single-release per FR-003b) (FR-005/006; depends on T004)
-- [~] T013 [US1] ~~DB reset via `database.MigrateReset()` last~~ — **DROPPED (scope change 2026-06-24)**: the database is operator-owned and is never reset; `o3k cleanup` only reads it read-only to enumerate (FR-013, revised)
+- [~] T013 [US1] ~~DB reset via `database.MigrateReset()` last~~ — **DROPPED (scope change 2026-06-24)**: the database is operator-owned and is never reset; `lightstack cleanup` only reads it read-only to enumerate (FR-013, revised)
 - [X] T014 [US1] `internal/teardown`: fail-closed roll-up over required classes + idempotency + structured-JSON audit logging + exit codes — makes T006 pass (FR-008/012/016; R9)
-- [X] T015 [P] [US1] `charts/o3k/templates/teardown-rbac.yaml`: ServiceAccount + namespaced Role + RoleBinding (pre-delete, hook-weight `-20`, gated on `delete`); verbs = deployments get/list/patch, pods get/list, pvc get/list/delete (FR-011; R7)
-- [X] T016 [P] [US1] `charts/o3k/templates/teardown-quiesce-job.yaml`: kubectl Job (hook-weight `-10`) — scale Deployment→0, `wait --for=delete pod`, then delete release PVCs if `deletePVCs`; `backoffLimit:0` (FR-019/005; quiesce-first per C6)
-- [X] T017 [US1] `charts/o3k/templates/teardown-purge-job.yaml`: privileged `o3k cleanup` Job (hook-weight `0`) with real-mode host mounts + config Secret; `activeDeadlineSeconds: {{ .Values.teardown.timeoutSeconds }}`, `backoffLimit:0`, `restartPolicy:Never` — the blocking, fail-closed gate; makes T007 pass (FR-001/003/016)
-- [X] T018 [US1] `charts/o3k/templates/NOTES.txt`: add the teardown note + the `helm uninstall --no-hooks` escape hatch (C5/FR-016)
+- [X] T015 [P] [US1] `charts/lightstack/templates/teardown-rbac.yaml`: ServiceAccount + namespaced Role + RoleBinding (pre-delete, hook-weight `-20`, gated on `delete`); verbs = deployments get/list/patch, pods get/list, pvc get/list/delete (FR-011; R7)
+- [X] T016 [P] [US1] `charts/lightstack/templates/teardown-quiesce-job.yaml`: kubectl Job (hook-weight `-10`) — scale Deployment→0, `wait --for=delete pod`, then delete release PVCs if `deletePVCs`; `backoffLimit:0` (FR-019/005; quiesce-first per C6)
+- [X] T017 [US1] `charts/lightstack/templates/teardown-purge-job.yaml`: privileged `lightstack cleanup` Job (hook-weight `0`) with real-mode host mounts + config Secret; `activeDeadlineSeconds: {{ .Values.teardown.timeoutSeconds }}`, `backoffLimit:0`, `restartPolicy:Never` — the blocking, fail-closed gate; makes T007 pass (FR-001/003/016)
+- [X] T018 [US1] `charts/lightstack/templates/NOTES.txt`: add the teardown note + the `helm uninstall --no-hooks` escape hatch (C5/FR-016)
 
 **Checkpoint**: single-node `delete` teardown works end-to-end and blocks until clean. MVP deliverable.
 
@@ -96,7 +96,7 @@
 
 ### Implementation for User Story 3
 
-- [X] T021 [P] [US3] Reconcile `charts/o3k/README.md`: rewrite the Uninstall section (supersede "clean node-local data manually when `delete`"); document the `delete` purge order, DB reset, irreversibility, operator-owned boundaries (external DB beyond this release / networked RBD/S3 not purged — C4/FR-015), and the `--no-hooks` escape; add the `teardown.*` rows to the values table (FR-018/SC-006)
+- [X] T021 [P] [US3] Reconcile `charts/lightstack/README.md`: rewrite the Uninstall section (supersede "clean node-local data manually when `delete`"); document the `delete` purge order, DB reset, irreversibility, operator-owned boundaries (external DB beyond this release / networked RBD/S3 not purged — C4/FR-015), and the `--no-hooks` escape; add the `teardown.*` rows to the values table (FR-018/SC-006)
 - [X] T022 [P] [US3] Reconcile the SPEC-008 docs to match what ships: `docs/specs/008-helm-charts/spec.md` (FR-014 — purge quiesces; DB operator-owned, never reset), `data-model.md` (uninstall/`dataRetentionPolicy` lifecycle), `tasks.md` (T027/T029 deferral notes → "done in #53"), `quickstart.md` (Uninstall: add the `delete` path) (FR-018)
 
 **Checkpoint**: all three stories independently functional; safety + docs complete.
@@ -125,7 +125,7 @@
 - T009 (enumerate) precedes T010–T013 (per-class purges depend on enumerated ids).
 - T012 (storage purge) depends on T004 (Cinder path fix).
 - T014 (roll-up/idempotency/logging) after T010–T013.
-- Chart templates T015/T016 are [P] (distinct files); T017 (purge Job) invokes `o3k cleanup` (T005/T014).
+- Chart templates T015/T016 are [P] (distinct files); T017 (purge Job) invokes `lightstack cleanup` (T005/T014).
 
 ### Parallel opportunities
 
@@ -140,7 +140,7 @@
 
 ```bash
 Task: "internal/teardown/teardown_test.go — enumeration/order/idempotency/DB-unreachable (T006)"
-Task: "charts/o3k/tests/teardown_test.yaml — render-gating + RBAC + purge-Job specs (T007)"
+Task: "charts/lightstack/tests/teardown_test.yaml — render-gating + RBAC + purge-Job specs (T007)"
 Task: "test/helm_teardown_test.sh — blocking + zero-residue scenario (T008)"
 ```
 

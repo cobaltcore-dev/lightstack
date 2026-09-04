@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/pkg/paths"
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
 
@@ -34,7 +34,7 @@ type stubVolume struct {
 }
 
 // LocalVolumeDir is the node-local directory for local-mode volumes — the
-// chart's persistent hostPath. Previously ~/.o3k/volumes, which lives outside
+// chart's persistent hostPath. Previously ~/.lightstack/volumes, which lives outside
 // the mount and so did not survive pod restarts (SPEC-009 FR-006a). NOTE:
 // feature/53 adds an equivalent helper to this file; coordinate on merge.
 func LocalVolumeDir() string { return paths.VolumesDir() }

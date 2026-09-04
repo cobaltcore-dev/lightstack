@@ -1,4 +1,4 @@
-# Multi-stage build for O3K - Multi-architecture support
+# Multi-stage build for Lightstack - Multi-architecture support
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 # Build arguments for cross-compilation
@@ -20,11 +20,11 @@ COPY . .
 
 # Build the binary for target architecture
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-w -s" -o o3k ./cmd/o3k
+    go build -ldflags="-w -s" -o lightstack ./cmd/lightstack
 
 # Build the migration tool for target architecture
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-w -s" -o o3k-migrate ./cmd/o3k-migrate
+    go build -ldflags="-w -s" -o lightstack-migrate ./cmd/lightstack-migrate
 
 # Runtime stage - automatically uses target platform
 FROM alpine:3.24
@@ -45,30 +45,30 @@ RUN apk add --no-cache \
     cdrkit
 
 # Create non-root user (but will run as root in privileged mode for networking)
-RUN addgroup -g 1000 o3k && \
-    adduser -D -u 1000 -G o3k o3k
+RUN addgroup -g 1000 lightstack && \
+    adduser -D -u 1000 -G lightstack lightstack
 
 # Set working directory
 WORKDIR /app
 
 # Copy binaries from builder
-COPY --from=builder /build/o3k /app/o3k
-COPY --from=builder /build/o3k-migrate /app/o3k-migrate
+COPY --from=builder /build/lightstack /app/lightstack
+COPY --from=builder /build/lightstack-migrate /app/lightstack-migrate
 
 # Copy migrations
 COPY migrations /app/migrations
 
 # Copy default config
-COPY config/o3k.yaml /app/config/o3k.yaml
+COPY config/lightstack.yaml /app/config/lightstack.yaml
 
 # Create node-local storage directories (persistent hostPath in real mode):
 # images (raw bases), volumes (local volumes), instances (per-instance overlays),
 # cloud-init (config-drive ISOs).
-RUN mkdir -p /var/lib/o3k/images /var/lib/o3k/volumes /var/lib/o3k/instances /var/lib/o3k/cloud-init && \
-    chown -R o3k:o3k /var/lib/o3k
+RUN mkdir -p /var/lib/lightstack/images /var/lib/lightstack/volumes /var/lib/lightstack/instances /var/lib/lightstack/cloud-init && \
+    chown -R lightstack:lightstack /var/lib/lightstack
 
 # Change ownership
-RUN chown -R o3k:o3k /app
+RUN chown -R lightstack:lightstack /app
 
 # Note: Running as root for network namespace operations in privileged mode
 # The container must be run with privileged: true for real networking mode
@@ -80,5 +80,5 @@ EXPOSE 35357 8774 9696 8776 9292 8775
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:35357/v3 || exit 1
 
-# Run migrations and start O3K
-CMD ["/bin/sh", "-c", "/app/o3k-migrate up && /app/o3k --config /app/config/o3k.yaml"]
+# Run migrations and start Lightstack
+CMD ["/bin/sh", "-c", "/app/lightstack-migrate up && /app/lightstack --config /app/config/lightstack.yaml"]

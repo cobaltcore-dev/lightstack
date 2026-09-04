@@ -29,7 +29,7 @@ log_warning() {
 cleanup() {
     log_info "Cleaning up test environment..."
 
-    # Stop O3K instances
+    # Stop Lightstack instances
     if [ -f "$TEST_DIR/node1.pid" ]; then
         kill $(cat "$TEST_DIR/node1.pid") 2>/dev/null || true
         rm "$TEST_DIR/node1.pid"
@@ -56,8 +56,8 @@ check_prerequisites() {
         exit 1
     fi
 
-    if [ ! -f "$PROJECT_ROOT/bin/o3k" ]; then
-        log_error "O3K binary not found. Run 'make build' first."
+    if [ ! -f "$PROJECT_ROOT/bin/lightstack" ]; then
+        log_error "Lightstack binary not found. Run 'make build' first."
         exit 1
     fi
 
@@ -73,7 +73,7 @@ setup_test_env() {
     # Create config for node 1
     cat > "$TEST_DIR/node1.yaml" <<EOF
 database:
-  url: "postgres://o3k:o3k@localhost/o3k"
+  url: "postgres://lightstack:lightstack@localhost/lightstack"
   max_connections: 10
 
 keystone:
@@ -119,7 +119,7 @@ EOF
     # Create config for node 2
     cat > "$TEST_DIR/node2.yaml" <<EOF
 database:
-  url: "postgres://o3k:o3k@localhost/o3k"
+  url: "postgres://lightstack:lightstack@localhost/lightstack"
   max_connections: 10
 
 keystone:
@@ -165,14 +165,14 @@ EOF
     log_info "Test environment ready"
 }
 
-# Start O3K nodes
+# Start Lightstack nodes
 start_nodes() {
-    log_info "Starting O3K node 1..."
-    "$PROJECT_ROOT/bin/o3k" --config "$TEST_DIR/node1.yaml" > "$TEST_DIR/node1.log" 2>&1 &
+    log_info "Starting Lightstack node 1..."
+    "$PROJECT_ROOT/bin/lightstack" --config "$TEST_DIR/node1.yaml" > "$TEST_DIR/node1.log" 2>&1 &
     echo $! > "$TEST_DIR/node1.pid"
 
-    log_info "Starting O3K node 2..."
-    "$PROJECT_ROOT/bin/o3k" --config "$TEST_DIR/node2.yaml" > "$TEST_DIR/node2.log" 2>&1 &
+    log_info "Starting Lightstack node 2..."
+    "$PROJECT_ROOT/bin/lightstack" --config "$TEST_DIR/node2.yaml" > "$TEST_DIR/node2.log" 2>&1 &
     echo $! > "$TEST_DIR/node2.pid"
 
     # Wait for nodes to start
@@ -203,11 +203,11 @@ test_node_registration() {
     sleep 6
 
     # Check compute_nodes table
-    NODE_COUNT=$(psql -U o3k -d o3k -tAc "SELECT COUNT(*) FROM compute_nodes WHERE status = 'active';")
+    NODE_COUNT=$(psql -U lightstack -d lightstack -tAc "SELECT COUNT(*) FROM compute_nodes WHERE status = 'active';")
 
     if [ "$NODE_COUNT" != "2" ]; then
         log_error "Expected 2 active nodes, found $NODE_COUNT"
-        psql -U o3k -d o3k -c "SELECT * FROM compute_nodes;"
+        psql -U lightstack -d lightstack -c "SELECT * FROM compute_nodes;"
         exit 1
     fi
 
@@ -268,7 +268,7 @@ test_vni_allocation() {
     sleep 3
 
     # Check VNI allocation in database
-    VNI=$(psql -U o3k -d o3k -tAc "SELECT vni FROM network_vni_allocations WHERE network_id = '$NETWORK_ID';")
+    VNI=$(psql -U lightstack -d lightstack -tAc "SELECT vni FROM network_vni_allocations WHERE network_id = '$NETWORK_ID';")
 
     if [ -z "$VNI" ]; then
         log_error "VNI not allocated for network $NETWORK_ID"
@@ -315,7 +315,7 @@ test_fdb_sync() {
         }' | jq -r '.token.token' 2>/dev/null)
 
     # Get network ID
-    NETWORK_ID=$(psql -U o3k -d o3k -tAc "SELECT id FROM networks WHERE name = 'test-vxlan-network' LIMIT 1;")
+    NETWORK_ID=$(psql -U lightstack -d lightstack -tAc "SELECT id FROM networks WHERE name = 'test-vxlan-network' LIMIT 1;")
 
     # Create subnet
     SUBNET_ID=$(curl -s -X POST http://localhost:9696/v2.0/subnets \
@@ -359,11 +359,11 @@ test_fdb_sync() {
     sleep 3
 
     # Check FDB entry in database
-    FDB_COUNT=$(psql -U o3k -d o3k -tAc "SELECT COUNT(*) FROM vxlan_fdb_entries WHERE network_id = '$NETWORK_ID' AND mac_address = '$MAC_ADDRESS';")
+    FDB_COUNT=$(psql -U lightstack -d lightstack -tAc "SELECT COUNT(*) FROM vxlan_fdb_entries WHERE network_id = '$NETWORK_ID' AND mac_address = '$MAC_ADDRESS';")
 
     if [ "$FDB_COUNT" != "1" ]; then
         log_error "Expected 1 FDB entry, found $FDB_COUNT"
-        psql -U o3k -d o3k -c "SELECT * FROM vxlan_fdb_entries;"
+        psql -U lightstack -d lightstack -c "SELECT * FROM vxlan_fdb_entries;"
         exit 1
     fi
 
@@ -377,7 +377,7 @@ test_fdb_sync() {
     sleep 3
 
     # Check FDB entry removed
-    FDB_COUNT=$(psql -U o3k -d o3k -tAc "SELECT COUNT(*) FROM vxlan_fdb_entries WHERE port_id = '$PORT_ID';")
+    FDB_COUNT=$(psql -U lightstack -d lightstack -tAc "SELECT COUNT(*) FROM vxlan_fdb_entries WHERE port_id = '$PORT_ID';")
 
     if [ "$FDB_COUNT" != "0" ]; then
         log_error "FDB entry not removed after port deletion"
@@ -400,7 +400,7 @@ test_coordinator_resilience() {
     sleep 16
 
     # Check node 2 status
-    NODE2_STATUS=$(psql -U o3k -d o3k -tAc "SELECT status FROM compute_nodes WHERE hostname LIKE '%node-2%';")
+    NODE2_STATUS=$(psql -U lightstack -d lightstack -tAc "SELECT status FROM compute_nodes WHERE hostname LIKE '%node-2%';")
 
     if [ "$NODE2_STATUS" == "active" ]; then
         log_warning "Node 2 still marked as active (heartbeat may not have timed out yet)"
@@ -409,7 +409,7 @@ test_coordinator_resilience() {
     fi
 
     # Node 1 should still be operational
-    NODE1_STATUS=$(psql -U o3k -d o3k -tAc "SELECT status FROM compute_nodes WHERE hostname LIKE '%node-1%';")
+    NODE1_STATUS=$(psql -U lightstack -d lightstack -tAc "SELECT status FROM compute_nodes WHERE hostname LIKE '%node-1%';")
 
     if [ "$NODE1_STATUS" != "active" ]; then
         log_error "Node 1 is not active"

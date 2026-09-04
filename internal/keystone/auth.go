@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/cache"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
@@ -45,7 +45,7 @@ func NewAuthService(jwtSecret string, tokenTTL time.Duration, cacheInstance *cac
 }
 
 // SetGlanceS3Endpoint wires the resolved Glance S3/RGW endpoint (cfg.Glance.S3Endpoint,
-// which the config layer resolves from YAML or O3K_GLANCE_S3_ENDPOINT) so the service
+// which the config layer resolves from YAML or LIGHTSTACK_GLANCE_S3_ENDPOINT) so the service
 // catalog advertises the real external RGW rather than a placeholder. Set once at
 // startup, mirroring nova.SetImageStore.
 func (s *AuthService) SetGlanceS3Endpoint(url string) { s.glanceS3Endpoint = url }
@@ -607,8 +607,8 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache, s3Endpoin
 		// The `s3` (Ceph RGW) service is an external endpoint configured out-of-band.
 		// Serve the resolved config value (cfg.Glance.S3Endpoint — YAML or env, wired
 		// via SetGlanceS3Endpoint, same source the S3 client uses), never migration
-		// 062's seeded placeholder (substituteURLTemplates rewrites only `http://o3k:`,
-		// never `localhost`) nor the o3k host; omit it when RGW isn't configured.
+		// 062's seeded placeholder (substituteURLTemplates rewrites only `http://lightstack:`,
+		// never `localhost`) nor the Lightstack host; omit it when RGW isn't configured.
 		// Matches the fallback catalog (PR #73 review r3558646680).
 		if svcType == "s3" && s3Endpoint == "" {
 			continue
@@ -674,16 +674,16 @@ func substituteURLTemplates(url, projectID string) string {
 	// Also handle plain %s format (legacy)
 	url = strings.ReplaceAll(url, "%s", projectID)
 
-	// Replace hostname based on O3K_ENDPOINT_HOST environment variable
-	// This allows using 'localhost' in CI and 'o3k' in docker-compose
-	baseHost := os.Getenv("O3K_ENDPOINT_HOST")
+	// Replace hostname based on LIGHTSTACK_ENDPOINT_HOST environment variable
+	// This allows using 'localhost' in CI and 'lightstack' in docker-compose
+	baseHost := os.Getenv("LIGHTSTACK_ENDPOINT_HOST")
 	if baseHost == "" {
 		baseHost = "localhost"
 	}
-	// Replace http://o3k: with the configured host
-	url = strings.ReplaceAll(url, "http://o3k:", "http://"+baseHost+":")
-	// Also handle https://o3k: for future SSL support
-	url = strings.ReplaceAll(url, "https://o3k:", "https://"+baseHost+":")
+	// Replace http://lightstack: with the configured host
+	url = strings.ReplaceAll(url, "http://lightstack:", "http://"+baseHost+":")
+	// Also handle https://lightstack: for future SSL support
+	url = strings.ReplaceAll(url, "https://lightstack:", "https://"+baseHost+":")
 
 	// Apply the configured advertised scheme (SPEC-007 WS-3, FR-010/012/013).
 	url = common.ForceScheme(url, common.EndpointScheme())
@@ -693,8 +693,8 @@ func substituteURLTemplates(url, projectID string) string {
 
 // buildHardcodedCatalog provides fallback catalog (previous implementation)
 func buildHardcodedCatalog(projectID, s3Endpoint string) []CatalogEntry {
-	// Use O3K_ENDPOINT_HOST env var, default to "localhost" for CI compatibility
-	baseHost := os.Getenv("O3K_ENDPOINT_HOST")
+	// Use LIGHTSTACK_ENDPOINT_HOST env var, default to "localhost" for CI compatibility
+	baseHost := os.Getenv("LIGHTSTACK_ENDPOINT_HOST")
 	if baseHost == "" {
 		baseHost = "localhost"
 	}

@@ -3,7 +3,7 @@ package neutron_test
 import (
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,7 +11,7 @@ import (
 
 // TestPortForwardingLifecycle_Contract tests complete port forwarding lifecycle
 func TestPortForwardingLifecycle_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -131,7 +131,7 @@ func TestPortForwardingLifecycle_Contract(t *testing.T) {
 
 // TestPortForwardingValidation_Contract tests input validation
 func TestPortForwardingValidation_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

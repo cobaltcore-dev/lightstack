@@ -1,6 +1,6 @@
 # Ceph RGW (S3) fixture via Rook on minikube
 
-A standalone, single-node **Ceph RGW** endpoint for validating o3k's Glance image
+A standalone, single-node **Ceph RGW** endpoint for validating lightstack's Glance image
 storage against a real S3/RGW backend (cloud-storage#480) — and, later, tenant
 object-storage. This is the manual / deployment-parity fixture; CI uses the
 lighter `ceph/demo` docker-compose instead (RGW can't run on GitHub runners).
@@ -13,7 +13,7 @@ which needs deliberate tuning (see [Single-node HEALTH_OK](#single-node-health_o
 - **Nothing from Rook is vendored.** The operator is installed from Rook's
   official Helm chart (`rook-release/rook-ceph`); only the small `CephCluster` /
   `CephObjectStore` / user / `Service` CRs are ours, tuned for one node.
-- **Licensing:** o3k and Rook are both Apache-2.0. Because we reference the chart
+- **Licensing:** Lightstack and Rook are both Apache-2.0. Because we reference the chart
   at runtime and copy no Rook files, there is no attribution/NOTICE obligation.
   Container images (Ceph = LGPL-2.1, Rook = Apache-2.0) are pulled at runtime,
   not redistributed.
@@ -33,13 +33,13 @@ deployments/rook/setup-rook-rgw.sh
 
 The script is idempotent-ish and pins all operations to a dedicated `rook`
 minikube profile (context `rook`), so it never touches your other clusters
-(e.g. the k3s cluster running o3k). It:
+(e.g. the k3s cluster running lightstack). It:
 
 1. starts the `rook` minikube profile (kvm2, 2 extra disks → 2 OSDs);
 2. installs the Rook operator via Helm;
 3. applies the single-node config override, `CephCluster`, `CephObjectStore`,
    S3 user, and a durable NodePort service;
-4. waits for `HEALTH_OK` and prints the S3 endpoint + credentials + the o3k
+4. waits for `HEALTH_OK` and prints the S3 endpoint + credentials + the Lightstack
    Glance config snippet.
 
 Tear it all down:
@@ -82,7 +82,7 @@ kubectl -n rook-ceph exec -it deploy/rook-ceph-tools -- bash -c '
   ceph status'
 ```
 
-## Using it from o3k
+## Using it from Lightstack
 
 The script prints the endpoint (`http://<minikube-ip>:30080`), bucket, and keys.
 Point Glance at it:
@@ -94,27 +94,27 @@ glance:
   s3_bucket: images
   s3_region: us-east-1
 ```
-with `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in o3k's environment (o3k reads
-S3 credentials from the AWS default chain, not from `o3k.yaml`).
+with `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in lightstack's environment (lightstack reads
+S3 credentials from the AWS default chain, not from `lightstack.yaml`).
 
-**Cross-cluster note:** for o3k running on a *separate* k3s cluster to reach the
+**Cross-cluster note:** for Lightstack running on a *separate* k3s cluster to reach the
 RGW, the k3s node must route to the minikube VM IP. When both are libvirt VMs on
 the same host this usually works; otherwise add MetalLB or a static IP.
 
-## Tenant object storage — capability B (RGW → o3k Keystone)
+## Tenant object storage — capability B (RGW → Lightstack Keystone)
 
 The steps above give the **Glance image backend** (capability A): Glance writes
 image data to RGW using the local RGW user's keys. **Capability B** lets *tenants*
-use their own S3 keys — RGW validates each S3 signature against o3k's Keystone
-(`POST /v3/s3tokens`), so a VM/user with an o3k-minted EC2 credential can talk to
+use their own S3 keys — RGW validates each S3 signature against lightstack's Keystone
+(`POST /v3/s3tokens`), so a VM/user with a lightstack-minted EC2 credential can talk to
 RGW directly. Local (Glance) and Keystone auth coexist: RGW tries the local user
 first, then Keystone.
 
-Run this **after** o3k is up and its Keystone is reachable *from the rook cluster*,
-passing o3k's Keystone URL (cross-cluster → a routable node IP, not `localhost`):
+Run this **after** Lightstack is up and its Keystone is reachable *from the rook cluster*,
+passing lightstack's Keystone URL (cross-cluster → a routable node IP, not `localhost`):
 
 ```bash
-O3K_KEYSTONE_URL=http://<o3k-node-ip>:35357 deployments/rook/setup-rook-rgw.sh --wire-keystone
+LIGHTSTACK_KEYSTONE_URL=http://<lightstack-node-ip>:35357 deployments/rook/setup-rook-rgw.sh --wire-keystone
 ```
 
 It injects the RGW keystone options into `rook-config-override` and restarts the
@@ -124,7 +124,7 @@ the CI `ceph/demo` fixture (`deployments/rgw-keystone-entrypoint.sh`) — are:
 ```ini
 [global]
 rgw s3 auth use keystone   = true
-rgw keystone url           = http://<o3k-node-ip>:35357
+rgw keystone url           = http://<lightstack-node-ip>:35357
 rgw keystone api version   = 3
 rgw keystone implicit tenants = s3          # per-project bucket namespaces (isolation)
 rgw keystone accepted roles = admin,member,reader,_member_
@@ -136,10 +136,10 @@ rgw keystone admin domain  = Default        #   keystone access"
 rgw keystone token cache size = 0           # revoked EC2 key refused on next request
 ```
 
-Override any of them via env: `O3K_KEYSTONE_ADMIN_USER/PASSWORD/PROJECT/DOMAIN`,
-`O3K_KEYSTONE_ACCEPTED_ROLES`.
+Override any of them via env: `LIGHTSTACK_KEYSTONE_ADMIN_USER/PASSWORD/PROJECT/DOMAIN`,
+`LIGHTSTACK_KEYSTONE_ACCEPTED_ROLES`.
 
-Then, on the **o3k** side, mint a tenant credential and use it with any S3 client
+Then, on the **lightstack** side, mint a tenant credential and use it with any S3 client
 against the RGW NodePort endpoint (path-style — use the IP):
 
 ```bash
@@ -150,14 +150,14 @@ AWS_ACCESS_KEY_ID=<ACCESS> AWS_SECRET_ACCESS_KEY=<SECRET> \
 
 **Gotchas (learned against real RGW):**
 
-- **Bidirectional cross-cluster routing.** Capability A needs o3k → RGW
-  (`:30080`); capability B *additionally* needs RGW → o3k Keystone (`:35357`).
+- **Bidirectional cross-cluster routing.** Capability A needs Lightstack → RGW
+  (`:30080`); capability B *additionally* needs RGW → Lightstack Keystone (`:35357`).
   The `--wire-keystone` step runs a best-effort reachability probe and warns if
   the second direction is broken.
 - **Path-style only.** Use the NodePort **IP** endpoint; RGW treats an IP host as
   the endpoint, so buckets stay in the path. (A hostname endpoint would need
   `rgw dns name` set, or RGW mis-reads the host as the bucket.)
-- **o3k IDs are dash-free in `/v3/s3tokens`.** RGW tenant names reject `-`; o3k
+- **lightstack IDs are dash-free in `/v3/s3tokens`.** RGW tenant names reject `-`; Lightstack
   already returns keystone-canonical (32-hex) project IDs, so nothing to do here.
 - **aws CLI vs RGW errors.** Some aws-cli builds crash on RGW's empty error
   `<Message>`; `boto3` / `s3cmd` / `mc` don't. Prefer those for negative tests.

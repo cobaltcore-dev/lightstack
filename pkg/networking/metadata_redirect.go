@@ -9,7 +9,7 @@ import (
 // metadata datasource query for instance metadata.
 const MetadataIP = "169.254.169.254"
 
-// MetadataServicePort is the host port the O3K metadata service listens on. The
+// MetadataServicePort is the host port the Lightstack metadata service listens on. The
 // guest hits MetadataIP:80; we DNAT that to the host on this port.
 const MetadataServicePort = 8775
 

@@ -69,15 +69,15 @@ fi
 
 echo ""
 
-# Step 2: Verify O3K Deployment
-echo "Step 2: Verify O3K Deployment"
+# Step 2: Verify Lightstack Deployment
+echo "Step 2: Verify Lightstack Deployment"
 echo "------------------------------"
 
-# Check if O3K is running
-if docker ps | grep -q "o3k"; then
-    pass "O3K container running"
+# Check if Lightstack is running
+if docker ps | grep -q "lightstack"; then
+    pass "Lightstack container running"
 else
-    fail "O3K container not running (run: docker compose -f deployments/docker-compose.yml up -d)"
+    fail "Lightstack container not running (run: docker compose -f deployments/docker-compose.yml up -d)"
 fi
 
 # Check if PostgreSQL is running
@@ -238,15 +238,15 @@ echo "Step 7: Verify Database Indexes"
 echo "--------------------------------"
 
 # Check if migration 055 was applied
-if docker exec o3k-postgres psql -U o3k -d o3k -tAc "SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname = 'idx_instances_status');" | grep -q "t"; then
+if docker exec lightstack-postgres psql -U lightstack -d lightstack -tAc "SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname = 'idx_instances_status');" | grep -q "t"; then
     pass "Performance indexes applied (idx_instances_status exists)"
 else
     fail "Performance indexes not applied (migration 055 may not have run)"
 fi
 
 # Check database connection pool
-if docker exec o3k-postgres psql -U o3k -d o3k -tAc "SELECT count(*) FROM pg_stat_activity;" > /dev/null; then
-    ACTIVE_CONNECTIONS=$(docker exec o3k-postgres psql -U o3k -d o3k -tAc "SELECT count(*) FROM pg_stat_activity;")
+if docker exec lightstack-postgres psql -U lightstack -d lightstack -tAc "SELECT count(*) FROM pg_stat_activity;" > /dev/null; then
+    ACTIVE_CONNECTIONS=$(docker exec lightstack-postgres psql -U lightstack -d lightstack -tAc "SELECT count(*) FROM pg_stat_activity;")
     pass "Database connection pool active ($ACTIVE_CONNECTIONS connections)"
 else
     fail "Database connection pool check failed"
@@ -276,7 +276,7 @@ else
     echo "Please fix the issues above before deploying Horizon."
     echo ""
     echo "Common fixes:"
-    echo "- Ensure O3K is running: docker compose -f deployments/docker-compose.yml up -d"
+    echo "- Ensure Lightstack is running: docker compose -f deployments/docker-compose.yml up -d"
     echo "- Wait for services to initialize (30-60 seconds)"
     echo "- Run migrations: make migrate"
     echo "- Check logs: docker compose -f deployments/docker-compose.yml logs"

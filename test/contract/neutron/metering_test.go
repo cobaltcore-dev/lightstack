@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/gophercloud/gophercloud"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +15,7 @@ import (
 
 // TestNeutronListMeteringLabels_Contract tests GET /v2.0/metering/metering-labels
 func TestNeutronListMeteringLabels_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -43,7 +43,7 @@ func TestNeutronListMeteringLabels_Contract(t *testing.T) {
 
 // TestNeutronCreateMeteringLabel_Contract tests POST /v2.0/metering/metering-labels
 func TestNeutronCreateMeteringLabel_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -89,7 +89,7 @@ func TestNeutronCreateMeteringLabel_Contract(t *testing.T) {
 
 // TestNeutronGetMeteringLabel_Contract tests GET /v2.0/metering/metering-labels/:id
 func TestNeutronGetMeteringLabel_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -124,7 +124,7 @@ func TestNeutronGetMeteringLabel_Contract(t *testing.T) {
 
 // TestNeutronDeleteMeteringLabel_Contract tests DELETE /v2.0/metering/metering-labels/:id
 func TestNeutronDeleteMeteringLabel_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -146,7 +146,7 @@ func TestNeutronDeleteMeteringLabel_Contract(t *testing.T) {
 
 // TestNeutronListMeteringLabelRules_Contract tests GET /v2.0/metering/metering-label-rules
 func TestNeutronListMeteringLabelRules_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 
@@ -174,7 +174,7 @@ func TestNeutronListMeteringLabelRules_Contract(t *testing.T) {
 
 // TestNeutronCreateMeteringLabelRule_Contract tests POST /v2.0/metering/metering-label-rules
 func TestNeutronCreateMeteringLabelRule_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := contract.SetupNeutronClient(t)
 

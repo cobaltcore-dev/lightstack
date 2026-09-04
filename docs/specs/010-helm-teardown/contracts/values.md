@@ -1,6 +1,6 @@
 # Contract: teardown configuration values
 
-**Feature**: SPEC-010 | **Surface**: `charts/o3k/values.yaml` + `values.schema.json` | **Refs**: FR-002/005/016/018, R1
+**Feature**: SPEC-010 | **Surface**: `charts/lightstack/values.yaml` + `values.schema.json` | **Refs**: FR-002/005/016/018, R1
 
 The operator-facing config contract this feature adds/finalizes. Backward compatible: defaults reproduce SPEC-008 behavior exactly.
 
@@ -11,7 +11,7 @@ The operator-facing config contract this feature adds/finalizes. Backward compat
 #    workloads, leave ALL persisted/runtime state (SPEC-008 SC-006, unchanged).
 #    delete = run the blocking pre-delete teardown: quiesce, then purge libvirt
 #    domains + ALL host network state (bridges, SNAT/FIP/SG/metadata iptables,
-#    dnsmasq, namespaces) + ALL node-local storage under /var/lib/o3k + release PVCs.
+#    dnsmasq, namespaces) + ALL node-local storage under /var/lib/lightstack + release PVCs.
 #    IRREVERSIBLE on the node. The external DATABASE is operator-owned and is NOT
 #    touched. Single-node only today; multi-node host purge is tracked in issue #52.
 #    (FR-002/013/014; issue #53; scope revised 2026-06-24)

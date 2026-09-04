@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/pkg/cache"
+	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 )
 
 // BenchmarkCacheGet measures Redis cache read performance
@@ -14,7 +14,7 @@ func BenchmarkCacheGet(b *testing.B) {
 	c, err := cache.NewCache(cache.Config{
 		RedisURL:   "redis://localhost:6379/0",
 		Enabled:    true,
-		KeyPrefix:  "o3k:bench:",
+		KeyPrefix:  "lightstack:bench:",
 		DefaultTTL: 1 * time.Hour,
 	})
 	if err != nil {
@@ -46,7 +46,7 @@ func BenchmarkCacheSet(b *testing.B) {
 	c, err := cache.NewCache(cache.Config{
 		RedisURL:   "redis://localhost:6379/0",
 		Enabled:    true,
-		KeyPrefix:  "o3k:bench:",
+		KeyPrefix:  "lightstack:bench:",
 		DefaultTTL: 1 * time.Hour,
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func BenchmarkCacheMiss(b *testing.B) {
 	c, err := cache.NewCache(cache.Config{
 		RedisURL:   "redis://localhost:6379/0",
 		Enabled:    true,
-		KeyPrefix:  "o3k:bench:",
+		KeyPrefix:  "lightstack:bench:",
 		DefaultTTL: 1 * time.Hour,
 	})
 	if err != nil {
@@ -103,7 +103,7 @@ func BenchmarkCacheHitVsMiss(b *testing.B) {
 	c, err := cache.NewCache(cache.Config{
 		RedisURL:   "redis://localhost:6379/0",
 		Enabled:    true,
-		KeyPrefix:  "o3k:bench:",
+		KeyPrefix:  "lightstack:bench:",
 		DefaultTTL: 1 * time.Hour,
 	})
 	if err != nil {

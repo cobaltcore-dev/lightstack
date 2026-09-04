@@ -5,14 +5,14 @@
 
 ## Summary
 
-Keystone identity lookups by path id return HTTP 500 for a non-UUID id (the `id` columns are Postgres `uuid`; a non-UUID raises `22P02`, surfaced as 500) instead of the Keystone-conformant 404. Fix the whole identity path-id surface with a **hybrid** mechanism: a keystone-scoped **UUID path-param middleware** on the non-authz-gated routes, plus **in-handler** id validation *after* the authorization check on the authz-gated routes (so 401/403 still precede 404). Both paths emit one shared, Keystone-verbatim 404 — `"Could not find <resource>: <id>."` — via a new `common.NewIdentityNotFoundError`. Valid-but-unknown ids are normalized to the identical response, and handlers that currently mask all errors as 404 are fixed to distinguish `ErrNoRows` (404) from a genuine backend error (5xx). Envelope stays o3k's Nova-style form (Identity-v3 envelope deferred to #518). No schema change, no new dependency.
+Keystone identity lookups by path id return HTTP 500 for a non-UUID id (the `id` columns are Postgres `uuid`; a non-UUID raises `22P02`, surfaced as 500) instead of the Keystone-conformant 404. Fix the whole identity path-id surface with a **hybrid** mechanism: a keystone-scoped **UUID path-param middleware** on the non-authz-gated routes, plus **in-handler** id validation *after* the authorization check on the authz-gated routes (so 401/403 still precede 404). Both paths emit one shared, Keystone-verbatim 404 — `"Could not find <resource>: <id>."` — via a new `common.NewIdentityNotFoundError`. Valid-but-unknown ids are normalized to the identical response, and handlers that currently mask all errors as 404 are fixed to distinguish `ErrNoRows` (404) from a genuine backend error (5xx). Envelope stays lightstack's Nova-style form (Identity-v3 envelope deferred to #518). No schema change, no new dependency.
 
 ## Technical Context
 
 **Language/Version**: Go 1.26 (module targets 1.21+)
 **Primary Dependencies**: gin-gonic/gin v1.12.0 (HTTP), google/uuid v1.6.0 (`uuid.Validate` — already imported), jackc/pgx/v5 v5.10.0 (`pgx.ErrNoRows`). No new modules.
 **Storage**: PostgreSQL — **no schema change, no migration** (identity id columns stay `uuid`).
-**Testing**: `go test` (unit, race) — middleware unit-tested with `gin.CreateTestContext` (no DB); DB-backed handler/e2e tests via the existing `requireDB` / `O3K_TEST_DB_URL` harness (`internal/keystone/maindb_test.go`); optional integration bash in `test/`.
+**Testing**: `go test` (unit, race) — middleware unit-tested with `gin.CreateTestContext` (no DB); DB-backed handler/e2e tests via the existing `requireDB` / `LIGHTSTACK_TEST_DB_URL` harness (`internal/keystone/maindb_test.go`); optional integration bash in `test/`.
 **Target Platform**: Linux server / single binary. Keystone identity is DB-only (no libvirt/Ceph/netlink), so behavior is identical in stub and real modes.
 **Project Type**: Single Go binary, web-service (six embedded HTTP services).
 **Performance Goals**: unchanged; middleware adds one `uuid.Validate` per request (negligible). Metadata ops < 100ms (constitution) unaffected.

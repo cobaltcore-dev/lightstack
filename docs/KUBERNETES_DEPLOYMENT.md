@@ -1,6 +1,6 @@
 # Kubernetes Deployment Guide
 
-O3K runs as a single binary serving all OpenStack services, making it straightforward to deploy on Kubernetes. This guide covers manual manifests and Helm chart deployment.
+Lightstack runs as a single binary serving all OpenStack services, making it straightforward to deploy on Kubernetes. This guide covers manual manifests and Helm chart deployment.
 
 ## Prerequisites
 
@@ -8,11 +8,11 @@ O3K runs as a single binary serving all OpenStack services, making it straightfo
 - kubectl configured for your cluster
 - Helm 3.x (for Helm deployment)
 - PostgreSQL 18+ (external or in-cluster)
-- Container image: `ghcr.io/cobaltcore-dev/o3k:0.6.0`
+- Container image: `ghcr.io/cobaltcore-dev/lightstack:0.6.0`
 
 ## Architecture
 
-O3K deploys as a single pod running 6 HTTP servers on different ports:
+Lightstack deploys as a single pod running 6 HTTP servers on different ports:
 
 | Service | Port | Purpose |
 |---------|------|---------|
@@ -37,7 +37,7 @@ Apply all resources in order, or combine them into a single file separated by `-
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: o3k
+  name: lightstack
 ```
 
 ### Secret
@@ -48,8 +48,8 @@ Sensitive values (database password, JWT secret) belong in a Secret, not a Confi
 apiVersion: v1
 kind: Secret
 metadata:
-  name: o3k-secrets
-  namespace: o3k
+  name: lightstack-secrets
+  namespace: lightstack
 type: Opaque
 stringData:
   jwt-secret: "replace-with-a-random-256-bit-value"
@@ -64,18 +64,18 @@ openssl rand -hex 32
 
 ### ConfigMap
 
-The ConfigMap carries the full `o3k.yaml` configuration. The database password and JWT secret are injected at runtime via environment variables (the application reads `O3K_DB_URL` and `O3K_JWT_SECRET` when present, overriding the config file values).
+The ConfigMap carries the full `lightstack.yaml` configuration. The database password and JWT secret are injected at runtime via environment variables (the application reads `LIGHTSTACK_DB_URL` and `LIGHTSTACK_JWT_SECRET` when present, overriding the config file values).
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: o3k-config
-  namespace: o3k
+  name: lightstack-config
+  namespace: lightstack
 data:
-  o3k.yaml: |
+  lightstack.yaml: |
     database:
-      url: "postgres://o3k:$(DB_PASSWORD)@postgres.o3k.svc.cluster.local:5432/o3k?sslmode=disable"
+      url: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
       max_connections: 50
       min_connections: 2
       max_conn_lifetime: 1h
@@ -151,15 +151,15 @@ Key settings to adjust before deploying:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: o3k
-  namespace: o3k
+  name: lightstack
+  namespace: lightstack
   labels:
-    app: o3k
+    app: lightstack
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: o3k
+      app: lightstack
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -168,7 +168,7 @@ spec:
   template:
     metadata:
       labels:
-        app: o3k
+        app: lightstack
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "35357"
@@ -178,22 +178,22 @@ spec:
       # only starts once the schema is current.
       initContainers:
         - name: migrate
-          image: ghcr.io/cobaltcore-dev/o3k:0.6.0
-          command: ["/app/o3k-migrate", "up"]
+          image: ghcr.io/cobaltcore-dev/lightstack:0.6.0
+          command: ["/app/lightstack-migrate", "up"]
           env:
-            - name: O3K_DB_URL
-              value: "postgres://o3k:$(DB_PASSWORD)@postgres.o3k.svc.cluster.local:5432/o3k?sslmode=disable"
+            - name: LIGHTSTACK_DB_URL
+              value: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: o3k-secrets
+                  name: lightstack-secrets
                   key: db-password
       containers:
-        - name: o3k
-          image: ghcr.io/cobaltcore-dev/o3k:0.6.0
+        - name: lightstack
+          image: ghcr.io/cobaltcore-dev/lightstack:0.6.0
           # Override the default CMD to skip the built-in migration step
           # (init container already ran it).
-          command: ["/app/o3k", "--config", "/app/config/o3k.yaml"]
+          command: ["/app/lightstack", "--config", "/app/config/lightstack.yaml"]
           ports:
             - name: keystone
               containerPort: 35357
@@ -214,28 +214,28 @@ spec:
               containerPort: 8775
               protocol: TCP
           env:
-            - name: O3K_JWT_SECRET
+            - name: LIGHTSTACK_JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: o3k-secrets
+                  name: lightstack-secrets
                   key: jwt-secret
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: o3k-secrets
+                  name: lightstack-secrets
                   key: db-password
-            - name: O3K_DB_URL
-              value: "postgres://o3k:$(DB_PASSWORD)@postgres.o3k.svc.cluster.local:5432/o3k?sslmode=disable"
-            - name: O3K_LOG_LEVEL
+            - name: LIGHTSTACK_DB_URL
+              value: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
+            - name: LIGHTSTACK_LOG_LEVEL
               value: "info"
-            - name: O3K_LOG_FORMAT
+            - name: LIGHTSTACK_LOG_FORMAT
               value: "json"
           volumeMounts:
             - name: config
-              mountPath: /app/config/o3k.yaml
-              subPath: o3k.yaml
+              mountPath: /app/config/lightstack.yaml
+              subPath: lightstack.yaml
             - name: storage
-              mountPath: /var/lib/o3k
+              mountPath: /var/lib/lightstack
           livenessProbe:
             httpGet:
               path: /v3
@@ -262,7 +262,7 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: o3k-config
+            name: lightstack-config
         - name: storage
           # For local storage mode. Replace with a PVC for persistent storage,
           # or remove entirely when using rbd/s3 backends.
@@ -279,8 +279,8 @@ Replace the `emptyDir` volume with this PVC when using `local` storage:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: o3k-storage
-  namespace: o3k
+  name: lightstack-storage
+  namespace: lightstack
 spec:
   accessModes:
     - ReadWriteOnce
@@ -296,7 +296,7 @@ Then update the Deployment volume entry:
 volumes:
   - name: storage
     persistentVolumeClaim:
-      claimName: o3k-storage
+      claimName: lightstack-storage
 ```
 
 Note that `ReadWriteOnce` limits you to a single replica when using local storage. For multi-replica deployments, use `rbd` or `s3` storage backends.
@@ -307,14 +307,14 @@ Note that `ReadWriteOnce` limits you to a single replica when using local storag
 apiVersion: v1
 kind: Service
 metadata:
-  name: o3k
-  namespace: o3k
+  name: lightstack
+  namespace: lightstack
   labels:
-    app: o3k
+    app: lightstack
 spec:
   type: ClusterIP
   selector:
-    app: o3k
+    app: lightstack
   ports:
     - name: keystone
       port: 35357
@@ -350,13 +350,13 @@ Ensures at least one replica stays available during rolling updates or node drai
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: o3k-pdb
-  namespace: o3k
+  name: lightstack-pdb
+  namespace: lightstack
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app: o3k
+      app: lightstack
 ```
 
 ---
@@ -374,7 +374,7 @@ If Keystone responds, the process is up and all six services are running — the
 
 ## Ingress Configuration
 
-O3K uses non-standard ports. Two approaches work in practice.
+Lightstack uses non-standard ports. Two approaches work in practice.
 
 ### Option A: Path-based routing (single hostname)
 
@@ -384,8 +384,8 @@ Route all OpenStack API traffic through a single hostname using path prefixes:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: o3k
-  namespace: o3k
+  name: lightstack
+  namespace: lightstack
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     nginx.ingress.kubernetes.io/use-regex: "true"
@@ -399,35 +399,35 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: o3k
+                name: lightstack
                 port:
                   name: keystone
           - path: /compute(/|$)(.*)
             pathType: ImplementationSpecific
             backend:
               service:
-                name: o3k
+                name: lightstack
                 port:
                   name: nova
           - path: /network(/|$)(.*)
             pathType: ImplementationSpecific
             backend:
               service:
-                name: o3k
+                name: lightstack
                 port:
                   name: neutron
           - path: /volume(/|$)(.*)
             pathType: ImplementationSpecific
             backend:
               service:
-                name: o3k
+                name: lightstack
                 port:
                   name: cinder
           - path: /image(/|$)(.*)
             pathType: ImplementationSpecific
             backend:
               service:
-                name: o3k
+                name: lightstack
                 port:
                   name: glance
 ```
@@ -435,14 +435,14 @@ spec:
 ### TLS and the advertised catalog scheme
 
 The Keystone service catalog advertises one URL per service, **including its port**
-(e.g. `https://<host>:9292`). To make those URLs `https`, set the `O3K_ENDPOINT_SCHEME=https`
-environment variable (default `http`) alongside `O3K_ENDPOINT_HOST`; this rewrites the
+(e.g. `https://<host>:9292`). To make those URLs `https`, set the `LIGHTSTACK_ENDPOINT_SCHEME=https`
+environment variable (default `http`) alongside `LIGHTSTACK_ENDPOINT_HOST`; this rewrites the
 scheme of every catalog endpoint and resource self-link at presentation time.
 
 Because the advertised URLs keep their per-service ports, TLS must be terminated
 **per service port** — use **Option B (port-based)** below with TLS on each port (one
 host/wildcard certificate covers them all). A single-`:443` path-based ingress (Option A)
-is *not* compatible with `O3K_ENDPOINT_SCHEME=https`, since the catalog would still point
+is *not* compatible with `LIGHTSTACK_ENDPOINT_SCHEME=https`, since the catalog would still point
 clients at `https://<host>:<service-port>` rather than `https://<host>/<service-path>`.
 
 ### Option B: Port-based routing (separate LoadBalancer services)
@@ -453,12 +453,12 @@ The simpler approach when you can allocate multiple external IPs or use a cloud 
 apiVersion: v1
 kind: Service
 metadata:
-  name: o3k-keystone-lb
-  namespace: o3k
+  name: lightstack-keystone-lb
+  namespace: lightstack
 spec:
   type: LoadBalancer
   selector:
-    app: o3k
+    app: lightstack
   ports:
     - port: 35357
       targetPort: keystone
@@ -466,12 +466,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: o3k-nova-lb
-  namespace: o3k
+  name: lightstack-nova-lb
+  namespace: lightstack
 spec:
   type: LoadBalancer
   selector:
-    app: o3k
+    app: lightstack
   ports:
     - port: 8774
       targetPort: nova
@@ -483,10 +483,10 @@ Repeat for each service. This matches the port layout used in the Docker Compose
 
 ## Scaling
 
-O3K is stateless — all state lives in PostgreSQL. Scale horizontally by increasing `replicas`:
+Lightstack is stateless — all state lives in PostgreSQL. Scale horizontally by increasing `replicas`:
 
 ```bash
-kubectl scale deployment o3k -n o3k --replicas=3
+kubectl scale deployment lightstack -n lightstack --replicas=3
 ```
 
 ### HorizontalPodAutoscaler
@@ -495,13 +495,13 @@ kubectl scale deployment o3k -n o3k --replicas=3
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: o3k-hpa
-  namespace: o3k
+  name: lightstack-hpa
+  namespace: lightstack
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: o3k
+    name: lightstack
   minReplicas: 2
   maxReplicas: 10
   metrics:
@@ -521,12 +521,12 @@ spec:
 
 ### Connection pooling
 
-With multiple replicas each holding up to 50 database connections, connection count grows linearly. Use [PgBouncer](https://www.pgbouncer.org/) in transaction mode between O3K pods and PostgreSQL to cap actual backend connections:
+With multiple replicas each holding up to 50 database connections, connection count grows linearly. Use [PgBouncer](https://www.pgbouncer.org/) in transaction mode between Lightstack pods and PostgreSQL to cap actual backend connections:
 
 ```yaml
 # Add to your deployment environment:
-- name: O3K_DB_URL
-  value: "postgres://o3k:$(DB_PASSWORD)@pgbouncer.o3k.svc.cluster.local:5432/o3k?sslmode=disable"
+- name: LIGHTSTACK_DB_URL
+  value: "postgres://lightstack:$(DB_PASSWORD)@pgbouncer.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
 ```
 
 ---
@@ -549,12 +549,12 @@ Add a `ServiceMonitor` if you use the Prometheus Operator:
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: o3k
-  namespace: o3k
+  name: lightstack
+  namespace: lightstack
 spec:
   selector:
     matchLabels:
-      app: o3k
+      app: lightstack
   endpoints:
     - port: keystone
       path: /metrics
@@ -565,12 +565,12 @@ spec:
 
 ## Helm Chart (Planned)
 
-A full Helm chart is planned for a future release. When available it will live at `deployments/helm/o3k/` and expose the following `values.yaml` structure:
+A full Helm chart is planned for a future release. When available it will live at `deployments/helm/lightstack/` and expose the following `values.yaml` structure:
 
 ```yaml
 # Intended values.yaml structure (not yet available)
 image:
-  repository: ghcr.io/cobaltcore-dev/o3k
+  repository: ghcr.io/cobaltcore-dev/lightstack
   tag: "0.6.0"
   pullPolicy: IfNotPresent
 
@@ -668,7 +668,7 @@ For `s3` mode, set `glance.s3_bucket`, `glance.s3_region`, and optionally `glanc
 
 ### Networking mode
 
-`neutron.networking_mode: iptables` requires the pod to run privileged with access to host network namespaces. Only use this on Linux worker nodes with the appropriate node-level permissions. For most Kubernetes deployments, `stub` mode is the right choice unless O3K is managing actual VM networking on bare-metal nodes.
+`neutron.networking_mode: iptables` requires the pod to run privileged with access to host network namespaces. Only use this on Linux worker nodes with the appropriate node-level permissions. For most Kubernetes deployments, `stub` mode is the right choice unless Lightstack is managing actual VM networking on bare-metal nodes.
 
 ### JWT secret rotation
 

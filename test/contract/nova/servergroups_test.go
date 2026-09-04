@@ -9,7 +9,7 @@ import (
 )
 
 func TestNovaServerGroupsCRUD_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

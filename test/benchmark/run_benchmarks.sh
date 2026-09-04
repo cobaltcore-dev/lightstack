@@ -5,7 +5,7 @@
 set -e
 
 echo "==================================================================="
-echo "O3K Performance Benchmark Suite - Sprint 69 Validation"
+echo "Lightstack Performance Benchmark Suite - Sprint 69 Validation"
 echo "==================================================================="
 echo ""
 
@@ -18,10 +18,10 @@ NC='\033[0m' # No Color
 # Check prerequisites
 echo "Checking prerequisites..."
 
-# Check if O3K is running
+# Check if Lightstack is running
 if ! curl -s http://localhost:35357/v3 > /dev/null 2>&1; then
-    echo -e "${RED}ERROR: O3K is not running on localhost:35357${NC}"
-    echo "Start O3K with: docker compose -f deployments/docker-compose.yml up -d"
+    echo -e "${RED}ERROR: Lightstack is not running on localhost:35357${NC}"
+    echo "Start Lightstack with: docker compose -f deployments/docker-compose.yml up -d"
     exit 1
 fi
 

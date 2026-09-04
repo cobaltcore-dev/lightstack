@@ -1,12 +1,12 @@
-# O3K Deployment Scripts
+# Lightstack Deployment Scripts
 
-Automated deployment scripts for O3K installation.
+Automated deployment scripts for Lightstack installation.
 
 ---
 
 ## deploy-single-node.sh
 
-**Purpose**: Interactive single-node O3K deployment with KVM hypervisor
+**Purpose**: Interactive single-node Lightstack deployment with KVM hypervisor
 
 **What it does**:
 - ✅ Checks hardware requirements (CPU, RAM, disk, virtualization support)
@@ -14,10 +14,10 @@ Automated deployment scripts for O3K installation.
 - ✅ Configures network bridge for external connectivity
 - ✅ Installs PostgreSQL 18 database
 - ✅ Installs Docker and Docker Compose
-- ✅ Clones and builds O3K from source
+- ✅ Clones and builds Lightstack from source
 - ✅ Creates optimized configuration file
 - ✅ Runs database migrations
-- ✅ Creates systemd service for O3K
+- ✅ Creates systemd service for Lightstack
 - ✅ Optionally deploys Horizon dashboard + noVNC
 - ✅ Configures firewall (UFW)
 - ✅ Installs OpenStack CLI tools
@@ -35,7 +35,7 @@ Automated deployment scripts for O3K installation.
 
 ```bash
 # Download the script
-wget https://raw.githubusercontent.com/cobaltcore-dev/o3k/main/scripts/deploy-single-node.sh
+wget https://raw.githubusercontent.com/cobaltcore-dev/lightstack/main/scripts/deploy-single-node.sh
 
 # Make executable
 chmod +x deploy-single-node.sh
@@ -48,7 +48,7 @@ sudo ./deploy-single-node.sh
 
 The script will ask you to configure:
 
-1. **Hostname** - Name for this node (default: o3k-demo)
+1. **Hostname** - Name for this node (default: lightstack-demo)
 2. **Host IP** - IP address for this host (auto-detected)
 3. **Network Interface** - Primary network interface (auto-detected)
 4. **Gateway** - Network gateway (auto-detected)
@@ -64,8 +64,8 @@ $ sudo ./deploy-single-node.sh
 
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║   O3K Single-Node Deployment Script                      ║
-║   Deploy O3K + KVM Hypervisor on Single Host            ║
+║   lightstack Single-Node Deployment Script                      ║
+║   Deploy lightstack + KVM Hypervisor on Single Host            ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 
@@ -78,15 +78,15 @@ $ sudo ./deploy-single-node.sh
 
 [INFO] Starting interactive configuration...
 
-Enter hostname for this node [o3k-demo]: my-cloud
+Enter hostname for this node [lightstack-demo]: my-cloud
 Enter host IP address [192.168.1.100]:
 Enter primary network interface [eth0]:
 Enter network gateway [192.168.1.1]:
 Enter DNS servers [8.8.8.8,8.8.4.4]:
-Enter PostgreSQL password for O3K database: ********
-Enter storage path for volumes [/var/lib/o3k/volumes]:
-Enter storage path for images [/var/lib/o3k/images]:
-Enter storage path for instances [/var/lib/o3k/instances]:
+Enter PostgreSQL password for lightstack database: ********
+Enter storage path for volumes [/var/lib/lightstack/volumes]:
+Enter storage path for images [/var/lib/lightstack/images]:
+Enter storage path for instances [/var/lib/lightstack/instances]:
 Deploy Horizon dashboard? [Y/n]: Y
 
 [INFO] Configuration Summary:
@@ -96,9 +96,9 @@ Deploy Horizon dashboard? [Y/n]: Y
   Network Interface:  eth0
   Gateway:            192.168.1.1
   DNS Servers:        8.8.8.8,8.8.4.4
-  Volume Path:        /var/lib/o3k/volumes
-  Image Path:         /var/lib/o3k/images
-  Instance Path:      /var/lib/o3k/instances
+  Volume Path:        /var/lib/lightstack/volumes
+  Image Path:         /var/lib/lightstack/images
+  Instance Path:      /var/lib/lightstack/instances
   Deploy Horizon:     Y
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -119,23 +119,23 @@ Proceed with installation? [Y/n]: Y
 **What Gets Installed**:
 
 ```
-/opt/o3k/                          # O3K installation
-├── bin/o3k                        # O3K binary
-├── config/o3k.yaml                # Configuration file
+/opt/lightstack/                          # lightstack installation
+├── bin/lightstack                        # lightstack binary
+├── config/lightstack.yaml                # Configuration file
 └── ...
 
 /opt/horizon/                      # Horizon dashboard (optional)
 ├── docker-compose.yml
 └── local_settings.py
 
-/var/lib/o3k/                      # Storage directories
+/var/lib/lightstack/                      # Storage directories
 ├── volumes/                       # Cinder volumes
 ├── images/                        # Glance images
 └── instances/                     # Nova instances
 
-/etc/systemd/system/o3k.service    # Systemd service
+/etc/systemd/system/lightstack.service    # Systemd service
 
-/root/.o3k-env                     # Environment file for CLI
+/root/.lightstack-env                     # Environment file for CLI
 ```
 
 **Post-Installation**:
@@ -144,7 +144,7 @@ After successful installation:
 
 ```bash
 # Source environment
-source /root/.o3k-env
+source /root/.lightstack-env
 
 # Test authentication
 openstack token issue
@@ -164,11 +164,11 @@ open http://YOUR_HOST_IP
 **Verify Installation**:
 
 ```bash
-# Check O3K service status
-systemctl status o3k.service
+# Check lightstack service status
+systemctl status lightstack.service
 
-# View O3K logs
-journalctl -u o3k.service -f
+# View lightstack logs
+journalctl -u lightstack.service -f
 
 # Check Horizon (if deployed)
 docker ps | grep horizon
@@ -189,8 +189,8 @@ openstack catalog list
    - Verify netplan syntax: `netplan try`
    - Rollback: `cp /etc/netplan/backup/*.yaml /etc/netplan/`
 
-3. **O3K service won't start**:
-   - Check logs: `journalctl -u o3k.service -n 100`
+3. **lightstack service won't start**:
+   - Check logs: `journalctl -u lightstack.service -n 100`
    - Verify PostgreSQL: `systemctl status postgresql`
    - Check libvirt: `systemctl status libvirtd`
 
@@ -201,25 +201,25 @@ openstack catalog list
 
 **Uninstall**:
 
-To remove O3K:
+To remove lightstack:
 
 ```bash
 # Stop services
-systemctl stop o3k.service
-systemctl disable o3k.service
+systemctl stop lightstack.service
+systemctl disable lightstack.service
 cd /opt/horizon && docker compose down
 
 # Remove installation
-rm -rf /opt/o3k /opt/horizon
-rm /etc/systemd/system/o3k.service
-rm /root/.o3k-env
+rm -rf /opt/lightstack /opt/horizon
+rm /etc/systemd/system/lightstack.service
+rm /root/.lightstack-env
 
 # Remove storage (CAUTION: deletes all VMs, volumes, images)
-rm -rf /var/lib/o3k
+rm -rf /var/lib/lightstack
 
 # Restore network (optional)
 cp /etc/netplan/backup/*.yaml /etc/netplan/
-rm /etc/netplan/01-o3k-bridge.yaml
+rm /etc/netplan/01-lightstack-bridge.yaml
 netplan apply
 ```
 
@@ -230,15 +230,15 @@ netplan apply
 
 ---
 
-## upgrade-o3k.sh
+## upgrade-lightstack.sh
 
-**Purpose**: Safely upgrade O3K to the latest version with automatic backup and rollback capability
+**Purpose**: Safely upgrade Lightstack to the latest version with automatic backup and rollback capability
 
 **What it does**:
 - ✅ Creates automatic backup before upgrade
 - ✅ Checks current installation and version
 - ✅ Pulls latest code from Git repository
-- ✅ Builds new O3K binary
+- ✅ Builds new Lightstack binary
 - ✅ Runs database migrations
 - ✅ Performs service restart
 - ✅ Verifies upgrade success
@@ -246,7 +246,7 @@ netplan apply
 - ✅ Keeps last 5 backups automatically
 
 **Requirements**:
-- Existing O3K installation at /opt/o3k
+- Existing Lightstack installation at /opt/lightstack
 - Root/sudo access
 - Git repository intact
 - Go compiler installed
@@ -255,19 +255,19 @@ netplan apply
 
 ```bash
 # Upgrade to latest version (main branch)
-sudo ./scripts/upgrade-o3k.sh
+sudo ./scripts/upgrade-lightstack.sh
 
 # Upgrade to specific version/tag
-sudo ./scripts/upgrade-o3k.sh --version v0.6.0
+sudo ./scripts/upgrade-lightstack.sh --version v0.6.0
 
 # Force upgrade even if same version
-sudo ./scripts/upgrade-o3k.sh --force
+sudo ./scripts/upgrade-lightstack.sh --force
 
 # Skip backup (not recommended)
-sudo ./scripts/upgrade-o3k.sh --no-backup
+sudo ./scripts/upgrade-lightstack.sh --no-backup
 
 # Show help
-sudo ./scripts/upgrade-o3k.sh --help
+sudo ./scripts/upgrade-lightstack.sh --help
 ```
 
 **Command Line Options**:
@@ -282,10 +282,10 @@ sudo ./scripts/upgrade-o3k.sh --help
 Automatic backup before every upgrade:
 
 ```
-/opt/o3k-backups/
-└── o3k-backup-YYYYMMDD-HHMMSS-<commit>/
-    ├── o3k-binary              # Current binary
-    ├── o3k.yaml                # Configuration
+/opt/lightstack-backups/
+└── lightstack-backup-YYYYMMDD-HHMMSS-<commit>/
+    ├── lightstack-binary              # Current binary
+    ├── lightstack.yaml                # Configuration
     ├── commit-hash.txt         # Git commit
     ├── version.txt             # Version tag
     └── metadata.txt            # Backup info
@@ -294,7 +294,7 @@ Automatic backup before every upgrade:
 **Upgrade Process**:
 
 1. **Pre-checks**:
-   - Verify O3K installation exists
+   - Verify Lightstack installation exists
    - Get current version and commit
    - Check if service is running
 
@@ -304,7 +304,7 @@ Automatic backup before every upgrade:
    - Keep last 5 backups
 
 3. **Stop Service**:
-   - Stop o3k.service gracefully
+   - Stop lightstack.service gracefully
    - Wait for clean shutdown
 
 4. **Update Code**:
@@ -321,7 +321,7 @@ Automatic backup before every upgrade:
    - Handle migration failures
 
 7. **Start Service**:
-   - Start o3k.service
+   - Start lightstack.service
    - Wait for services to be ready
 
 8. **Verify**:
@@ -332,26 +332,26 @@ Automatic backup before every upgrade:
 **Example Session**:
 
 ```bash
-$ sudo ./scripts/upgrade-o3k.sh
+$ sudo ./scripts/upgrade-lightstack.sh
 
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║   O3K Upgrade Script                                     ║
+║   lightstack Upgrade Script                                     ║
 ║   Safely upgrade to the latest version                   ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 
-[INFO] O3K installation found at /opt/o3k
+[INFO] lightstack installation found at /opt/lightstack
 [INFO] Current version: v0.5.0 (commit: c75f9dd)
-[INFO] O3K service is running
+[INFO] lightstack service is running
 
 [INFO] Starting upgrade process...
 
 [INFO] Creating backup...
-[SUCCESS] Backup created: /opt/o3k-backups/o3k-backup-20260317-143022-c75f9dd
+[SUCCESS] Backup created: /opt/lightstack-backups/lightstack-backup-20260317-143022-c75f9dd
 [INFO] Kept last 5 backups, removed older ones
 
-[INFO] Stopping O3K service...
+[INFO] Stopping lightstack service...
 [SUCCESS] Service stopped
 
 [INFO] Updating code from repository...
@@ -360,14 +360,14 @@ $ sudo ./scripts/upgrade-o3k.sh
 [INFO] Checking out origin/main...
 [SUCCESS] Code updated to origin/main (commit: a1b2c3d)
 
-[INFO] Building new O3K binary...
+[INFO] Building new lightstack binary...
 [SUCCESS] Binary built successfully
 [INFO] Binary size: 36M
 
 [INFO] Running database migrations...
 [SUCCESS] Database migrations completed
 
-[INFO] Starting O3K service...
+[INFO] Starting lightstack service...
 [SUCCESS] Service started successfully
 
 [INFO] Verifying upgrade...
@@ -378,7 +378,7 @@ $ sudo ./scripts/upgrade-o3k.sh
 
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║   O3K Upgrade Complete! 🎉                               ║
+║   lightstack Upgrade Complete! 🎉                               ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
 
@@ -388,15 +388,15 @@ $ sudo ./scripts/upgrade-o3k.sh
   Previous Version:  v0.5.0 (commit: c75f9dd)
   New Version:       v0.6.0 (commit: a1b2c3d)
 
-  Backup Location:   /opt/o3k-backups/o3k-backup-20260317-143022-c75f9dd
-  Configuration:     /opt/o3k/config/o3k.yaml
+  Backup Location:   /opt/lightstack-backups/lightstack-backup-20260317-143022-c75f9dd
+  Configuration:     /opt/lightstack/config/lightstack.yaml
   Service Status:    active
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 [INFO] Next Steps:
-  1. Verify services: systemctl status o3k.service
-  2. Check logs: journalctl -u o3k.service -f
+  1. Verify services: systemctl status lightstack.service
+  2. Check logs: journalctl -u lightstack.service -f
   3. Test API: openstack token issue
 ```
 
@@ -404,22 +404,22 @@ $ sudo ./scripts/upgrade-o3k.sh
 
 1. **Regular Upgrade to Latest**:
    ```bash
-   sudo ./scripts/upgrade-o3k.sh
+   sudo ./scripts/upgrade-lightstack.sh
    ```
 
 2. **Upgrade to Specific Release**:
    ```bash
-   sudo ./scripts/upgrade-o3k.sh --version v0.6.0
+   sudo ./scripts/upgrade-lightstack.sh --version v0.6.0
    ```
 
 3. **Upgrade to Branch**:
    ```bash
-   sudo ./scripts/upgrade-o3k.sh --version feature/new-api
+   sudo ./scripts/upgrade-lightstack.sh --version feature/new-api
    ```
 
 4. **Force Rebuild**:
    ```bash
-   sudo ./scripts/upgrade-o3k.sh --force
+   sudo ./scripts/upgrade-lightstack.sh --force
    ```
 
 **Automatic Rollback on Failure**:
@@ -427,11 +427,11 @@ $ sudo ./scripts/upgrade-o3k.sh
 If migration fails or service won't start:
 
 ```
-[ERROR] Migration failed. See /tmp/o3k-migrate.log for details
+[ERROR] Migration failed. See /tmp/lightstack-migrate.log for details
 Rollback to previous version? [Y/n]: Y
 
 [WARNING] Starting rollback...
-[INFO] Rolling back to: o3k-backup-20260317-143022-c75f9dd
+[INFO] Rolling back to: lightstack-backup-20260317-143022-c75f9dd
 [SUCCESS] Binary restored
 [SUCCESS] Service started successfully
 [SUCCESS] Rollback completed
@@ -443,16 +443,16 @@ If you need to rollback after upgrade:
 
 ```bash
 # Find latest backup
-ls -t /opt/o3k-backups/ | head -n1
+ls -t /opt/lightstack-backups/ | head -n1
 
 # Restore from backup
-sudo systemctl stop o3k.service
-sudo cp /opt/o3k-backups/o3k-backup-TIMESTAMP/o3k-binary /opt/o3k/bin/o3k
-sudo chmod +x /opt/o3k/bin/o3k
-sudo systemctl start o3k.service
+sudo systemctl stop lightstack.service
+sudo cp /opt/lightstack-backups/lightstack-backup-TIMESTAMP/lightstack-binary /opt/lightstack/bin/lightstack
+sudo chmod +x /opt/lightstack/bin/lightstack
+sudo systemctl start lightstack.service
 
 # Verify
-systemctl status o3k.service
+systemctl status lightstack.service
 openstack token issue
 ```
 
@@ -460,22 +460,22 @@ openstack token issue
 
 1. **Build fails**:
    - Check Go installation: `go version`
-   - View build log: `cat /tmp/o3k-build.log`
+   - View build log: `cat /tmp/lightstack-build.log`
    - Ensure all dependencies available
 
 2. **Migration fails**:
    - Check database connectivity
-   - View migration log: `cat /tmp/o3k-migrate.log`
+   - View migration log: `cat /tmp/lightstack-migrate.log`
    - Verify PostgreSQL is running: `systemctl status postgresql`
 
 3. **Service won't start**:
-   - Check logs: `journalctl -u o3k.service -n 100`
-   - Verify configuration: `cat /opt/o3k/config/o3k.yaml`
+   - Check logs: `journalctl -u lightstack.service -n 100`
+   - Verify configuration: `cat /opt/lightstack/config/lightstack.yaml`
    - Check port availability: `netstat -tulpn | grep -E '35357|8774|9696|8776|9292'`
 
 4. **API not responding**:
    - Wait longer (services may need 30+ seconds to start)
-   - Check service status: `systemctl status o3k.service`
+   - Check service status: `systemctl status lightstack.service`
    - Test manually: `curl http://localhost:35357/v3`
 
 **Safety Features**:
@@ -504,11 +504,11 @@ openstack token issue
 # Automated upgrade in CI/CD pipeline
 
 # Run upgrade
-if sudo /opt/o3k/scripts/upgrade-o3k.sh --version "$NEW_VERSION"; then
+if sudo /opt/lightstack/scripts/upgrade-lightstack.sh --version "$NEW_VERSION"; then
   echo "Upgrade successful"
 
   # Run smoke tests
-  /opt/o3k/test/smoke_test.sh
+  /opt/lightstack/test/smoke_test.sh
 
 else
   echo "Upgrade failed, rollback performed"
@@ -530,8 +530,8 @@ Planned deployment scripts:
 - `deploy-multi-node.sh` - Multi-node cluster deployment
 - `deploy-ha-cluster.sh` - High availability cluster setup
 - `add-compute-node.sh` - Add compute node to existing cluster
-- `backup-o3k.sh` - Backup configuration and database
-- `restore-o3k.sh` - Restore from backup
+- `backup-lightstack.sh` - Backup configuration and database
+- `restore-lightstack.sh` - Restore from backup
 
 ---
 

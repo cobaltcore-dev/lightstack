@@ -107,13 +107,13 @@ FAIL: 2 tests (minor issues)
 ### Problem
 
 Glance tests were failing with 404 errors due to URL path doubling:
-- Expected: `http://o3k:9292/v2/images`
-- Actual: `http://o3k:9292/v2/v2/images`
+- Expected: `http://lightstack:9292/v2/images`
+- Actual: `http://lightstack:9292/v2/v2/images`
 
 ### Root Cause
 
 Triple layering of `/v2` in URL path:
-1. **Service catalog** returned `http://o3k:9292/v2`
+1. **Service catalog** returned `http://lightstack:9292/v2`
 2. **Route registration** used nested `v2 := r.Group("/v2")`
 3. **gophercloud SDK** `NewImageServiceV2()` always appends `/v2` automatically
 
@@ -126,7 +126,7 @@ Three-part fix to ensure single `/v2` layer:
    Changed: http://localhost:9292/v2 → http://localhost:9292
    ```
 
-2. **Parent router group** (cmd/o3k/main.go):
+2. **Parent router group** (cmd/lightstack/main.go):
    ```go
    authGroup := r.Group("/v2")  // Parent provides /v2 prefix
    authGroup.Use(middleware.AuthMiddleware(authService))
@@ -143,7 +143,7 @@ Three-part fix to ensure single `/v2` layer:
 
 ### Files Changed
 
-- `cmd/o3k/main.go` - Modified createGlanceServer to use `/v2` parent group
+- `cmd/lightstack/main.go` - Modified createGlanceServer to use `/v2` parent group
 - `internal/glance/images.go` - Removed nested `/v2` route group
 - `internal/keystone/auth.go` - Updated hardcoded catalog endpoint
 - `migrations/040_keystone_catalog.up.sql` - Fixed initial seed data
@@ -165,7 +165,7 @@ After fix:
 
 ### 1. Nova Tests
 - ✅ Removed `contract_test` package imports
-- ✅ Added local helper functions (`setupNovaClient`, `skipIfO3KNotRunning`)
+- ✅ Added local helper functions (`setupNovaClient`, `skipIfLightstackNotRunning`)
 - ✅ Fixed list assertion (nil → empty list handling)
 - ✅ Added PUT route for server updates in `internal/nova/handlers.go`
 
@@ -217,7 +217,7 @@ After fix:
    - Removed duplicate helpers
    - Uses helpers from members_test.go
 
-6. **cmd/o3k/main.go**
+6. **cmd/lightstack/main.go**
    - Modified createGlanceServer to use `/v2` parent group
 
 7. **internal/glance/images.go**
@@ -247,22 +247,22 @@ After fix:
 
 ### Docker-Based Testing
 
-Tests run inside a golang:1.26 container on the same Docker network as O3K:
+Tests run inside a golang:1.26 container on the same Docker network as lightstack:
 
 ```bash
 docker compose -f deployments/docker-compose.test.yml run --rm test-runner
 ```
 
 **Configuration**:
-- Network: `deployments_o3k-network`
+- Network: `deployments_lightstack-network`
 - Environment:
-  - `OS_AUTH_URL=http://o3k:35357/v3`
+  - `OS_AUTH_URL=http://lightstack:35357/v3`
   - `OS_USERNAME=admin`
   - `OS_PASSWORD=secret`
   - `OS_PROJECT_NAME=default`
 
 **Benefits**:
-- ✅ Hostname `o3k` resolves correctly
+- ✅ Hostname `lightstack` resolves correctly
 - ✅ No `/etc/hosts` modifications needed
 - ✅ Isolated test environment
 - ✅ Consistent results

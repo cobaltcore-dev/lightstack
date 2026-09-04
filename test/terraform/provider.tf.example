@@ -1,6 +1,6 @@
 # Copy into each test/terraform/wsN/ directory as provider.tf, then
 # `terraform init && terraform apply`. Credentials come from the standard
-# OpenStack environment variables (source ~/.o3k-env) — no edits needed.
+# OpenStack environment variables (source ~/.lightstack-env) — no edits needed.
 
 terraform {
   required_version = ">= 1.5"

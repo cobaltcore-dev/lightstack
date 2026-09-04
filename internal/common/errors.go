@@ -83,7 +83,7 @@ func NewResourceNotFoundError(resourceType, resourceID string) *OpenStackError {
 // "<Resource>NotFound" text verbatim ("Could not find <resource>: <id>."), so
 // identity endpoints that reference a resource by id don't diverge from
 // Keystone's message text. Only the message + status are Keystone-exact; the
-// envelope stays o3k's Nova-style form (envelope divergence tracked in
+// envelope stays Lightstack's Nova-style form (envelope divergence tracked in
 // cloud-storage#518).
 func NewIdentityNotFoundError(resource, id string) *OpenStackError {
 	return &OpenStackError{

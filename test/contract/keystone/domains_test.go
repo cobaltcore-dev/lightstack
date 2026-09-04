@@ -14,7 +14,7 @@ import (
 
 // TestKeystoneListDomains_Contract tests GET /v3/domains
 func TestKeystoneListDomains_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -44,7 +44,7 @@ func TestKeystoneListDomains_Contract(t *testing.T) {
 
 // TestKeystoneCreateDomain_Contract tests POST /v3/domains
 func TestKeystoneCreateDomain_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -88,7 +88,7 @@ func TestKeystoneCreateDomain_Contract(t *testing.T) {
 
 // TestKeystoneGetDomain_Contract tests GET /v3/domains/:id
 func TestKeystoneGetDomain_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -122,7 +122,7 @@ func TestKeystoneGetDomain_Contract(t *testing.T) {
 
 // TestKeystoneUpdateDomain_Contract tests PATCH /v3/domains/:id
 func TestKeystoneUpdateDomain_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -165,7 +165,7 @@ func TestKeystoneUpdateDomain_Contract(t *testing.T) {
 
 // TestKeystoneDeleteDomain_Contract tests DELETE /v3/domains/:id
 func TestKeystoneDeleteDomain_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 
@@ -201,7 +201,7 @@ func TestKeystoneDeleteDomain_Contract(t *testing.T) {
 
 // TestKeystoneGetDomainConfig_Contract tests GET /v3/domains/:id/config
 func TestKeystoneGetDomainConfig_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 

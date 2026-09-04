@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
 )
 
 func setSchemeEnv(t *testing.T, scheme string) {
 	t.Helper()
-	for _, k := range []string{"O3K_ENDPOINT_SCHEME", "O3K_ENDPOINT_HOST"} {
+	for _, k := range []string{"LIGHTSTACK_ENDPOINT_SCHEME", "LIGHTSTACK_ENDPOINT_HOST"} {
 		v, had := os.LookupEnv(k)
 		k := k
 		t.Cleanup(func() {
@@ -21,11 +21,11 @@ func setSchemeEnv(t *testing.T, scheme string) {
 			}
 		})
 	}
-	os.Setenv("O3K_ENDPOINT_HOST", "o3k.example.com")
+	os.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.example.com")
 	if scheme == "" {
-		os.Unsetenv("O3K_ENDPOINT_SCHEME")
+		os.Unsetenv("LIGHTSTACK_ENDPOINT_SCHEME")
 	} else {
-		os.Setenv("O3K_ENDPOINT_SCHEME", scheme)
+		os.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", scheme)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestBuildServiceCatalogScheme(t *testing.T) {
 func TestBuildServiceCatalogS3EndpointFromConfig(t *testing.T) {
 	requireDB(t)
 	const rgw = "http://rgw.example.test:8080"
-	t.Setenv("O3K_GLANCE_S3_ENDPOINT", "") // Helm-style: value comes from config, not env
+	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // Helm-style: value comes from config, not env
 
 	var got string
 	for _, e := range BuildServiceCatalog("proj-s3", nil, rgw) { // nil cache => fresh; rgw = cfg value
@@ -127,7 +127,7 @@ func TestBuildServiceCatalogS3EndpointFromConfig(t *testing.T) {
 // (PR #73 review r3710751586). DB required: the harness migrates 062, which seeds it.
 func TestBuildServiceCatalogOmitsS3WhenUnconfigured(t *testing.T) {
 	requireDB(t)
-	t.Setenv("O3K_GLANCE_S3_ENDPOINT", "") // unconfigured deployment
+	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // unconfigured deployment
 
 	cat := BuildServiceCatalog("proj-unconf", nil, "") // "" = cfg.Glance.S3Endpoint unset
 	if len(cat) == 0 {

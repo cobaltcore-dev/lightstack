@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/pkg/storage"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1996,7 +1996,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 		"services": []gin.H{
 			{
 				"binary":          "cinder-volume",
-				"host":            "o3k-volume-1",
+				"host":            "lightstack-volume-1",
 				"zone":            "nova",
 				"status":          "enabled",
 				"state":           "up",
@@ -2005,7 +2005,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 			},
 			{
 				"binary":          "cinder-scheduler",
-				"host":            "o3k-controller",
+				"host":            "lightstack-controller",
 				"zone":            "internal",
 				"status":          "enabled",
 				"state":           "up",
@@ -2014,7 +2014,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 			},
 			{
 				"binary":          "cinder-backup",
-				"host":            "o3k-backup-1",
+				"host":            "lightstack-backup-1",
 				"zone":            "nova",
 				"status":          "enabled",
 				"state":           "up",
@@ -2038,7 +2038,7 @@ func (svc *Service) GetVersions(c *gin.Context) {
 				"links": []gin.H{
 					{
 						"rel":  "self",
-						"href": "http://o3k:8776/v3/",
+						"href": "http://lightstack:8776/v3/",
 					},
 				},
 				"media-types": []gin.H{
@@ -2064,7 +2064,7 @@ func (svc *Service) GetVersionV3(c *gin.Context) {
 			"links": []gin.H{
 				{
 					"rel":  "self",
-					"href": "http://o3k:8776/v3/",
+					"href": "http://lightstack:8776/v3/",
 				},
 			},
 			"media-types": []gin.H{

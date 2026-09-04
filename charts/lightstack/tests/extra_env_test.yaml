@@ -1,0 +1,52 @@
+# helm-unittest specs for the extraEnv passthrough (SPEC-014): the Lightstack container must
+# carry arbitrary env vars — the Glance s3 backend reads its RGW credentials
+# (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) from the environment, not from lightstack.yaml.
+suite: extraEnv passthrough
+templates:
+  - templates/deployment.yaml
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+tests:
+  - it: injects plain extraEnv entries into the container env
+    set:
+      extraEnv:
+        - name: AWS_ACCESS_KEY_ID
+          value: AKIAX
+        - name: AWS_SECRET_ACCESS_KEY
+          value: SEKRET
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AWS_ACCESS_KEY_ID
+            value: AKIAX
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AWS_SECRET_ACCESS_KEY
+            value: SEKRET
+  - it: supports Secret-backed extraEnv (valueFrom.secretKeyRef)
+    set:
+      extraEnv:
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: rgw-s3-creds
+              key: secretKey
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: rgw-s3-creds
+                key: secretKey
+  - it: renders no env block when extraEnv is empty and nothing else needs it
+    set:
+      database.url: postgres://lightstack@db/lightstack
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env

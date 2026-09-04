@@ -36,14 +36,14 @@ ALTER TABLE volumes DROP COLUMN IF EXISTS source_image_id;
 
 ## On-disk artifact layout (node-local, persistent)
 
-All under the chart's persistent hostPath `/var/lib/o3k` (R6):
+All under the chart's persistent hostPath `/var/lib/lightstack` (R6):
 
 ```text
-/var/lib/o3k/
+/var/lib/lightstack/
 ├── images/        image-<image-id>.raw          # raw base (Glance; normalized on ingest, R2)
 ├── instances/     <instance-id>/disk.qcow2       # per-instance qcow2 overlay backing the raw base (R1)
 ├── cloud-init/    <instance-id>.iso              # config-drive ISO (genisoimage; attached as CDROM)
-└── volumes/       volume-<volume-id>.qcow2        # local volumes  (MOVED from ~/.o3k/volumes, R6)
+└── volumes/       volume-<volume-id>.qcow2        # local volumes  (MOVED from ~/.lightstack/volumes, R6)
 ```
 
 - Overlay relationship: `instances/<id>/disk.qcow2` —(qcow2 backing, `-F raw`)→ `images/image-<imgid>.raw`. Deleting the image is blocked while the overlay exists (R3); the overlay dir is removed on VM delete.

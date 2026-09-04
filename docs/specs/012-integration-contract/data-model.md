@@ -24,7 +24,7 @@ Every top-level group the chart reads. **Validation** = the structural rule the 
 | `secrets.jwtSecret` | string | type (presence-only) | C | required unless `existingSecret`; **no strength check** |
 | `secrets.adminUser` | string | type | — | default `admin` |
 | `secrets.adminPassword` | string | type (presence-only) | C | required unless `existingSecret`; **no strength check** |
-| `secrets.existingSecret` | string | type | — | pre-rendered `o3k.yaml` Secret (GitOps) |
+| `secrets.existingSecret` | string | type | — | pre-rendered `lightstack.yaml` Secret (GitOps) |
 | `endpointHost` | string | type | — | advertised catalog host; **required for external consumers** (R6/FR-012a) |
 | `service.type` | string | enum `ClusterIP/NodePort/LoadBalancer` | — | AP ✓ |
 | `service.annotations` | object | open map | — | open |
@@ -91,9 +91,9 @@ derives correctly for what is scheduled, and the contract documents the caveat.
 
 | Element | Value |
 |---|---|
-| **Anchor (guaranteed)** | Keystone `/v3`: in-cluster `http://<release>-o3k:35357/v3`, or advertised `<scheme>://<endpointHost>:35357/v3` when set |
+| **Anchor (guaranteed)** | Keystone `/v3`: in-cluster `http://<release>-lightstack:35357/v3`, or advertised `<scheme>://<endpointHost>:35357/v3` when set |
 | **Discovered** | compute / placement / network / volumev3 / image — from the service catalog in the Keystone token (honors `endpointHost` + scheme) |
-| **Non-authoritative** | the six in-cluster `<release>-o3k:<port>` addresses listed in `NOTES.txt` (debugging convenience) |
+| **Non-authoritative** | the six in-cluster `<release>-lightstack:<port>` addresses listed in `NOTES.txt` (debugging convenience) |
 | **Excluded** | metadata `:8775` — node-local, reached by VMs via link-local; not a Service, not in the catalog |
 | **Coupling** | catalog correctness requires `endpointHost` set (else `localhost`); scheme follows `tls.enabled` |
 
@@ -104,8 +104,8 @@ Block Storage v3, Image v2, Placement v1.0.
 
 | Attribute | Value |
 |---|---|
-| Artifact | `charts/o3k/CONTRACT.md` (ships in the package; SPDX header) |
+| Artifact | `charts/lightstack/CONTRACT.md` (ships in the package; SPDX header) |
 | Sections | inputs (→ schema), status derivation (→ status-contract), endpoints (→ identity-anchored), versioning (rides `Chart.version`) |
-| Discoverability | linked from `charts/o3k/README.md` |
+| Discoverability | linked from `charts/lightstack/README.md` |
 | Versioning | rides `Chart.version` SemVer; MAJOR may break, MINOR/PATCH compatible (R7) |
 | Drift control | schema↔values coverage gate + rejection tests keep it honest (SC-005) |

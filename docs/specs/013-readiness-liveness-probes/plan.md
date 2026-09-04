@@ -5,29 +5,29 @@
 
 ## Summary
 
-Wire o3k's already-present-but-unwired `database.HealthCheck` into honest, k8s-native health endpoints. Add a small `internal/health` package that serves, **unauthenticated on the identity listener (35357) only**:
+Wire lightstack's already-present-but-unwired `database.HealthCheck` into honest, k8s-native health endpoints. Add a small `internal/health` package that serves, **unauthenticated on the identity listener (35357) only**:
 
 - `GET /readyz` — DB-gated (pgx pool `Ping`, sub-second timeout) **AND** all-listeners-bound; `200`/`503` with a short curated reason.
 - `GET /livez` — process-up, **no external deps**; `200`.
 - `GET|HEAD /healthcheck` — OpenStack/oslo-compatible **alias of readiness**, content-negotiating text/JSON.
 
-The chart repoints `livenessProbe → /livez`, `readinessProbe → /readyz`, adds `startupProbe → /readyz` (slow-DB grace), all configurable via `values.yaml` + draft-07 schema. On `SIGTERM` o3k flips readiness to not-ready and drains before shutting listeners. An `o3k healthcheck` subcommand queries the endpoints locally. Downstream consumes the **Pod `Ready` condition** (no custom protocol); `CONTRACT.md` is reconciled from `/v3` to `/readyz`. Tier-2 rich `/healthz` is out of scope.
+The chart repoints `livenessProbe → /livez`, `readinessProbe → /readyz`, adds `startupProbe → /readyz` (slow-DB grace), all configurable via `values.yaml` + draft-07 schema. On `SIGTERM` Lightstack flips readiness to not-ready and drains before shutting listeners. An `lightstack healthcheck` subcommand queries the endpoints locally. Downstream consumes the **Pod `Ready` condition** (no custom protocol); `CONTRACT.md` is reconciled from `/v3` to `/readyz`. Tier-2 rich `/healthz` is out of scope.
 
 ## Technical Context
 
 **Language/Version**: Go 1.26
 **Primary Dependencies**: Gin (HTTP), pgx/pgxpool (existing `database.HealthCheck`). **No new Go modules.** Chart: Helm 3.12+, JSON Schema draft-07, helm-unittest (existing harness) — no new chart deps.
 **Storage**: External PostgreSQL — **no schema, no migration, no persisted data** (readiness is a live `Ping`).
-**Testing**: `go test` unit (`-race`, `net/http/httptest`); helm-unittest (`charts/o3k/tests/`); bash integration (`test/`); gophercloud/`openstack` for the no-regression contract gate (Principle I).
+**Testing**: `go test` unit (`-race`, `net/http/httptest`); helm-unittest (`charts/lightstack/tests/`); bash integration (`test/`); gophercloud/`openstack` for the no-regression contract gate (Principle I).
 **Target Platform**: Linux (Kubernetes via the chart: single-node Deployment + multi-node DaemonSet). Stub mode runs on macOS for dev/unit tests.
-**Project Type**: Single Go binary (`cmd/o3k`) + Helm chart (`charts/o3k`).
+**Project Type**: Single Go binary (`cmd/lightstack`) + Helm chart (`charts/lightstack`).
 **Performance Goals**: health check returns within 1 s even when the DB is unresponsive (SC-003); sub-second component timeout (fail-fast, Principle III).
 **Constraints**: thin signal only — DB ping + listeners-bound, no wide diagnostics (FR-013); endpoints unauthenticated; must work identically in stub and real mode.
 **Scale/Scope**: small. ~1 new package, edits to `main.go`, the chart pod-spec helper + values + schema, docs, and four test surfaces.
 
 ## Constitution Check
 
-*GATE: must pass before Phase 0 and re-checked after Phase 1. Governing file: `.specify/memory/constitution.md` (6 O3K principles).*
+*GATE: must pass before Phase 0 and re-checked after Phase 1. Governing file: `.specify/memory/constitution.md` (6 Lightstack principles).*
 
 | Principle | Verdict | Note |
 |-----------|---------|------|
@@ -41,7 +41,7 @@ The chart repoints `livenessProbe → /livez`, `readinessProbe → /readyz`, add
 | Test-First workflow | **PLANNED** | Unit + helm-unittest tests authored RED before implementation (tasks phase). |
 | Quality gates (no secrets, stub+real) | **PASS** | No credentials; stub+real both exercised. |
 
-**Note (citation reconciliation)**: the spec originally cited "Constitution Art. II — CLI Interface" / "Art. V — Observability" from the CLAUDE.md *Nine Articles* description, which does **not** match the on-disk governing constitution (6 O3K principles; the `memory/constitution.md` Nine-Articles file does not exist). The `o3k healthcheck` CLI (FR-011) and transition logging (FR-015) stand on their own merits and on consistency with the existing `o3k cleanup` subcommand; the FR-011 citation was corrected in the spec. No constitution amendment needed.
+**Note (citation reconciliation)**: the spec originally cited "Constitution Art. II — CLI Interface" / "Art. V — Observability" from the CLAUDE.md *Nine Articles* description, which does **not** match the on-disk governing constitution (6 Lightstack principles; the `memory/constitution.md` Nine-Articles file does not exist). The `lightstack healthcheck` CLI (FR-011) and transition logging (FR-015) stand on their own merits and on consistency with the existing `lightstack cleanup` subcommand; the FR-011 citation was corrected in the spec. No constitution amendment needed.
 
 **No violations → Complexity Tracking empty.**
 
@@ -68,21 +68,21 @@ internal/health/                 # NEW — the only new package
 ├── health.go                    #   Checker (DI named checks), Ready/Live handlers, /healthcheck negotiation
 └── health_test.go               #   unit tests (httptest): livez/readyz/healthcheck, timeout, not-started, drain
 
-cmd/o3k/main.go                  # MODIFIED
+cmd/lightstack/main.go                  # MODIFIED
                                  #   - net.Listen() the 7 servers up-front → flip "ready" flag after all bound
                                  #   - register /readyz,/livez,/healthcheck on the Keystone engine (beside root "/")
                                  #   - SIGTERM: set not-ready + drain delay BEFORE Shutdown()
-                                 #   - `o3k healthcheck [--ready|--live]` subcommand dispatch (like `o3k cleanup`)
+                                 #   - `lightstack healthcheck [--ready|--live]` subcommand dispatch (like `lightstack cleanup`)
 internal/database/db.go          # UNCHANGED — reuse HealthCheck (FR-007/Q7)
 
-charts/o3k/templates/_helpers.tpl   # MODIFIED — o3k.podSpec: liveness→/livez, readiness→/readyz, +startupProbe→/readyz (rendered from values)
-charts/o3k/values.yaml              # MODIFIED — `probes:` block (per-probe enable/path/period/timeout/thresholds) + drain knobs
-charts/o3k/values.schema.json       # MODIFIED — draft-07 constraints for the probes block
-charts/o3k/CONTRACT.md              # MODIFIED — readiness anchor /v3 → /readyz (Pod Ready stays the signal)
-charts/o3k/README.md, templates/NOTES.txt   # MODIFIED — operator health guidance + external-restriction note (Q8)
+charts/lightstack/templates/_helpers.tpl   # MODIFIED — lightstack.podSpec: liveness→/livez, readiness→/readyz, +startupProbe→/readyz (rendered from values)
+charts/lightstack/values.yaml              # MODIFIED — `probes:` block (per-probe enable/path/period/timeout/thresholds) + drain knobs
+charts/lightstack/values.schema.json       # MODIFIED — draft-07 constraints for the probes block
+charts/lightstack/CONTRACT.md              # MODIFIED — readiness anchor /v3 → /readyz (Pod Ready stays the signal)
+charts/lightstack/README.md, templates/NOTES.txt   # MODIFIED — operator health guidance + external-restriction note (Q8)
 
-charts/o3k/tests/probes_test.yaml   # NEW — helm-unittest: probe wiring (Deployment + DaemonSet), defaults, overrides
-charts/o3k/ci/invalid-values/*.yaml # NEW — bad probe values rejected by schema
+charts/lightstack/tests/probes_test.yaml   # NEW — helm-unittest: probe wiring (Deployment + DaemonSet), defaults, overrides
+charts/lightstack/ci/invalid-values/*.yaml # NEW — bad probe values rejected by schema
 test/readyz_test.sh                 # NEW — bash integration: DB up/down → 200/503, EndpointSlice removal
 test/contract/ (existing harness)   # no-regression run: existing OpenStack contract tests still pass
 ```

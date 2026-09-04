@@ -6,8 +6,8 @@ bin/
 *.dylib
 
 # Compiled binaries in root
-/o3k
-/o3k-migrate
+/lightstack
+/lightstack-migrate
 
 # Test binary
 *.test

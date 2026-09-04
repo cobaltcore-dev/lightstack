@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
@@ -29,7 +29,7 @@ type s3TokenRequest struct {
 
 // S3Tokens validates an S3-signed request on behalf of Ceph RGW
 // (rgw s3 auth use keystone). Public + self-validating: the S3 signature IS the
-// credential — o3k resolves the EC2 credential by access key and recomputes the
+// credential — Lightstack resolves the EC2 credential by access key and recomputes the
 // signature from the stored secret (SPEC-014 FR-006). POST /v3/s3tokens.
 func (svc *Service) S3Tokens(c *gin.Context) { svc.validateSignedRequest(c) }
 
@@ -74,7 +74,7 @@ func (svc *Service) validateSignedRequest(c *gin.Context) {
 		`SELECT user_id, project_id, blob FROM credentials WHERE access_key = $1 AND type = 'ec2'`,
 		req.Credentials.Access).Scan(&userID, &projectID, &blob)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Unknown access key: not an o3k EC2 credential. Return 404 (as real
+		// Unknown access key: not a Lightstack EC2 credential. Return 404 (as real
 		// Keystone does) so RGW *falls through* to its next auth engine instead of
 		// hard-rejecting the request — this lets local RGW users (e.g. the one
 		// Glance uses for image storage) keep authenticating alongside Keystone.
@@ -196,7 +196,7 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 	//
 	// RGW derives the S3 tenant namespace from project.id and only accepts
 	// alphanumerics + underscore (no dashes). Real OpenStack keystone IDs are
-	// 32-hex without dashes; o3k stores dashed UUIDs, so present the
+	// 32-hex without dashes; Lightstack stores dashed UUIDs, so present the
 	// keystone-canonical (dash-free) form — bijective, unique per project, and a
 	// valid RGW tenant name.
 	const ksTime = "2006-01-02T15:04:05.000000Z"
@@ -213,6 +213,6 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 	})
 }
 
-// canonicalID renders an o3k UUID in the keystone-canonical, RGW-safe form:
+// canonicalID renders a Lightstack UUID in the keystone-canonical, RGW-safe form:
 // 32 hex chars with no dashes (RGW tenant/user names reject dashes).
 func canonicalID(id string) string { return strings.ReplaceAll(id, "-", "") }

@@ -1,9 +1,9 @@
-# Single-Node O3K Deployment with KVM
+# Single-Node Lightstack Deployment with KVM
 
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
-**Purpose**: Deploy O3K on a single host with KVM hypervisor for demonstration and testing
+**Purpose**: Deploy Lightstack on a single host with KVM hypervisor for demonstration and testing
 **Target Audience**: Developers, evaluators, demo environments
 **Production Ready**: No - for single-node demos only (see SCALING.md for production)
 
@@ -11,10 +11,10 @@
 
 ## Overview
 
-This guide deploys O3K with **real mode** on a single Linux host with KVM, enabling full virtualization capabilities for demonstrating OpenStack functionality via Horizon dashboard.
+This guide deploys Lightstack with **real mode** on a single Linux host with KVM, enabling full virtualization capabilities for demonstrating OpenStack functionality via Horizon dashboard.
 
 **What You Get**:
-- ✅ O3K services (Keystone, Nova, Neutron, Cinder, Glance) in real mode
+- ✅ Lightstack services (Keystone, Nova, Neutron, Cinder, Glance) in real mode
 - ✅ KVM hypervisor for actual VM creation
 - ✅ Horizon dashboard for web UI access
 - ✅ noVNC console for VM access
@@ -28,7 +28,7 @@ This guide deploys O3K with **real mode** on a single Linux host with KVM, enabl
 │                     Single Host (Linux)                      │
 ├─────────────────────────────────────────────────────────────┤
 │  Horizon Dashboard         :80                              │
-│  O3K Services                                                │
+│  lightstack Services                                                │
 │    ├─ Keystone            :35357                            │
 │    ├─ Nova                :8774                             │
 │    ├─ Neutron             :9696                             │
@@ -40,7 +40,7 @@ This guide deploys O3K with **real mode** on a single Linux host with KVM, enabl
 │                                                              │
 │  KVM/libvirt              (VMs run here)                    │
 │  Linux Networking         (bridges, namespaces)             │
-│  Local Storage            (/var/lib/o3k/volumes)            │
+│  Local Storage            (/var/lib/lightstack/volumes)            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -108,11 +108,11 @@ DNS: 8.8.8.8, 8.8.4.4
 sudo apt update && sudo apt upgrade -y
 
 # Set hostname
-sudo hostnamectl set-hostname o3k-demo
+sudo hostnamectl set-hostname lightstack-demo
 
 # Configure /etc/hosts
-echo "127.0.0.1 o3k-demo" | sudo tee -a /etc/hosts
-echo "192.168.1.100 o3k-demo" | sudo tee -a /etc/hosts  # Replace with your IP
+echo "127.0.0.1 lightstack-demo" | sudo tee -a /etc/hosts
+echo "192.168.1.100 lightstack-demo" | sudo tee -a /etc/hosts  # Replace with your IP
 ```
 
 ### Step 2: Install KVM and Dependencies
@@ -156,7 +156,7 @@ sudo apt install -y bridge-utils net-tools
 # Note: This assumes eth0 is your primary interface
 # Adjust if using different interface name (ip link show)
 
-sudo tee /etc/netplan/01-o3k-bridge.yaml <<EOF
+sudo tee /etc/netplan/01-lightstack-bridge.yaml <<EOF
 network:
   version: 2
   renderer: networkd
@@ -231,45 +231,45 @@ sudo apt install -y postgresql-18 postgresql-client-18
 # Start and enable PostgreSQL
 sudo systemctl enable --now postgresql
 
-# Create O3K database and user
+# Create lightstack database and user
 sudo -u postgres psql <<EOF
-CREATE DATABASE o3k;
-CREATE USER o3k WITH ENCRYPTED PASSWORD 'your-secure-password';
-GRANT ALL PRIVILEGES ON DATABASE o3k TO o3k;
-ALTER DATABASE o3k OWNER TO o3k;
+CREATE DATABASE lightstack;
+CREATE USER lightstack WITH ENCRYPTED PASSWORD 'your-secure-password';
+GRANT ALL PRIVILEGES ON DATABASE lightstack TO lightstack;
+ALTER DATABASE lightstack OWNER TO lightstack;
 \q
 EOF
 
 # Verify connection
-psql -h localhost -U o3k -d o3k -c "SELECT version();"
+psql -h localhost -U lightstack -d lightstack -c "SELECT version();"
 # Enter password when prompted
 ```
 
-### Step 6: Clone O3K Repository
+### Step 6: Clone Lightstack Repository
 
 ```bash
 # Install Git
 sudo apt install -y git
 
-# Clone O3K
+# Clone lightstack
 cd /opt
-sudo git clone https://github.com/cobaltcore-dev/o3k.git
-sudo chown -R $USER:$USER o3k
-cd o3k
+sudo git clone https://github.com/cobaltcore-dev/lightstack.git
+sudo chown -R $USER:$USER lightstack
+cd lightstack
 ```
 
-### Step 7: Configure O3K for Single-Node Real Mode
+### Step 7: Configure Lightstack for Single-Node Real Mode
 
 Create configuration file:
 
 ```bash
-mkdir -p /opt/o3k/config
-cat > /opt/o3k/config/o3k.yaml <<'EOF'
-# O3K Single-Node Configuration
+mkdir -p /opt/lightstack/config
+cat > /opt/lightstack/config/lightstack.yaml <<'EOF'
+# lightstack Single-Node Configuration
 # Real mode with KVM hypervisor
 
 database:
-  url: "postgres://o3k:your-secure-password@localhost:5432/o3k?sslmode=disable"
+  url: "postgres://lightstack:your-secure-password@localhost:5432/lightstack?sslmode=disable"
 
 keystone:
   host: "0.0.0.0"
@@ -282,7 +282,7 @@ nova:
   port: 8774
   libvirt_mode: real  # IMPORTANT: Enable real KVM mode
   libvirt_uri: "qemu:///system"
-  instance_storage_path: "/var/lib/o3k/instances"
+  instance_storage_path: "/var/lib/lightstack/instances"
   console_proxy_base_url: "http://192.168.1.100:6080/vnc_auto.html"  # Replace with your host IP
 
 neutron:
@@ -296,13 +296,13 @@ cinder:
   host: "0.0.0.0"
   port: 8776
   storage_mode: local  # Local filesystem storage
-  local_storage_path: "/var/lib/o3k/volumes"
+  local_storage_path: "/var/lib/lightstack/volumes"
 
 glance:
   host: "0.0.0.0"
   port: 9292
   storage_mode: local
-  local_storage_path: "/var/lib/o3k/images"
+  local_storage_path: "/var/lib/lightstack/images"
 
 metadata:
   host: "0.0.0.0"
@@ -310,55 +310,55 @@ metadata:
 
 compute:
   node_id: "compute-node-1"
-  node_name: "o3k-demo"
+  node_name: "lightstack-demo"
   tunnel_ip: "192.168.1.100"  # Replace with your host IP
 EOF
 
 # Replace password and IPs
-sed -i 's/your-secure-password/YourActualPassword/g' /opt/o3k/config/o3k.yaml
-sed -i 's/192.168.1.100/YOUR_HOST_IP/g' /opt/o3k/config/o3k.yaml  # Replace YOUR_HOST_IP
+sed -i 's/your-secure-password/YourActualPassword/g' /opt/lightstack/config/lightstack.yaml
+sed -i 's/192.168.1.100/YOUR_HOST_IP/g' /opt/lightstack/config/lightstack.yaml  # Replace YOUR_HOST_IP
 ```
 
 ### Step 8: Storage Directory (auto-created)
 
-o3k creates its node-local storage subdirs (`images/ volumes/ instances/ cloud-init/ dhcp/`
-under `/var/lib/o3k`) on startup — per-service `MkdirAll`, plus the Helm chart's initContainer
+Lightstack creates its node-local storage subdirs (`images/ volumes/ instances/ cloud-init/ dhcp/`
+under `/var/lib/lightstack`) on startup — per-service `MkdirAll`, plus the Helm chart's initContainer
 when deployed via the chart (SPEC-011 / cloud-storage#510). No manual subdirectory creation is
 required.
 
-Only if o3k runs as a non-root user that cannot create `/var/lib/o3k`, create the base directory
+Only if Lightstack runs as a non-root user that cannot create `/var/lib/lightstack`, create the base directory
 once and grant it ownership:
 
 ```bash
-sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/o3k
-ls -la /var/lib/o3k/
+sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/lightstack
+ls -la /var/lib/lightstack/
 ```
 
-### Step 9: Build and Run O3K
+### Step 9: Build and Run Lightstack
 
 ```bash
-cd /opt/o3k
+cd /opt/lightstack
 
-# Build O3K binary
+# Build lightstack binary
 make build
 
 # Run database migrations
 make migrate
 
-# Start O3K services
-./bin/o3k --config config/o3k.yaml &
+# Start lightstack services
+./bin/lightstack --config config/lightstack.yaml &
 
 # Or use systemd (recommended)
-sudo tee /etc/systemd/system/o3k.service <<'EOF'
+sudo tee /etc/systemd/system/lightstack.service <<'EOF'
 [Unit]
-Description=O3K OpenStack Services
+Description=lightstack OpenStack Services
 After=network.target postgresql.service libvirtd.service
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/o3k
-ExecStart=/opt/o3k/bin/o3k --config /opt/o3k/config/o3k.yaml
+WorkingDirectory=/opt/lightstack
+ExecStart=/opt/lightstack/bin/lightstack --config /opt/lightstack/config/lightstack.yaml
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -368,15 +368,15 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# Enable and start O3K service
+# Enable and start lightstack service
 sudo systemctl daemon-reload
-sudo systemctl enable --now o3k.service
+sudo systemctl enable --now lightstack.service
 
 # Check status
-sudo systemctl status o3k.service
+sudo systemctl status lightstack.service
 
 # View logs
-sudo journalctl -u o3k.service -f
+sudo journalctl -u lightstack.service -f
 ```
 
 ### Step 10: Deploy Horizon Dashboard
@@ -405,7 +405,7 @@ services:
     volumes:
       - ./local_settings.py:/etc/openstack-dashboard/local_settings.py:ro
     networks:
-      - o3k-net
+      - lightstack-net
 
   novnc:
     image: quay.io/openstack.kolla/nova-novncproxy:2025.2-ubuntu-noble
@@ -421,10 +421,10 @@ services:
       --novncproxy_host=0.0.0.0
       --novncproxy_port=6080
     networks:
-      - o3k-net
+      - lightstack-net
 
 networks:
-  o3k-net:
+  lightstack-net:
     driver: bridge
 EOF
 
@@ -529,8 +529,8 @@ sudo ufw status
 ### Step 12: Verify Installation
 
 ```bash
-# Check O3K services
-sudo systemctl status o3k.service
+# Check lightstack services
+sudo systemctl status lightstack.service
 
 # Check Horizon
 docker ps | grep horizon
@@ -677,10 +677,10 @@ openstack security group rule list default
 
 ```bash
 # Generate SSH key
-ssh-keygen -t rsa -b 2048 -f ~/.ssh/o3k-demo -N ""
+ssh-keygen -t rsa -b 2048 -f ~/.ssh/lightstack-demo -N ""
 
 # Import to OpenStack
-openstack keypair create --public-key ~/.ssh/o3k-demo.pub demo-key
+openstack keypair create --public-key ~/.ssh/lightstack-demo.pub demo-key
 
 # Verify
 openstack keypair list
@@ -736,7 +736,7 @@ openstack keypair list
 
 6. **SSH to VM**:
    ```bash
-   ssh -i ~/.ssh/o3k-demo cirros@192.168.1.200
+   ssh -i ~/.ssh/lightstack-demo cirros@192.168.1.200
    ```
 
 ### Scenario 2: Create Volume and Attach
@@ -756,7 +756,7 @@ openstack keypair list
 3. **Verify in VM**:
    ```bash
    # SSH to VM
-   ssh -i ~/.ssh/o3k-demo cirros@192.168.1.200
+   ssh -i ~/.ssh/lightstack-demo cirros@192.168.1.200
 
    # Check block devices
    lsblk
@@ -831,7 +831,7 @@ echo "Allocated IP: $FIP"
 openstack server add floating ip demo-vm-2 $FIP
 
 # SSH to instance
-ssh -i ~/.ssh/o3k-demo cirros@$FIP
+ssh -i ~/.ssh/lightstack-demo cirros@$FIP
 
 # Stop instance
 openstack server stop demo-vm-2
@@ -847,11 +847,11 @@ openstack server delete demo-vm-2
 
 ## Troubleshooting
 
-### Issue 1: O3K Service Won't Start
+### Issue 1: Lightstack Service Won't Start
 
 **Check logs**:
 ```bash
-sudo journalctl -u o3k.service -n 100 --no-pager
+sudo journalctl -u lightstack.service -n 100 --no-pager
 ```
 
 **Common causes**:
@@ -871,7 +871,7 @@ sudo systemctl status libvirtd
 **Check Nova configuration**:
 ```bash
 # Verify libvirt_mode is "real"
-grep libvirt_mode /opt/o3k/config/o3k.yaml
+grep libvirt_mode /opt/lightstack/config/lightstack.yaml
 
 # Check libvirt connection
 virsh -c qemu:///system list --all
@@ -879,8 +879,8 @@ virsh -c qemu:///system list --all
 
 **Check storage directories**:
 ```bash
-ls -la /var/lib/o3k/instances/
-sudo chmod 755 /var/lib/o3k/instances
+ls -la /var/lib/lightstack/instances/
+sudo chmod 755 /var/lib/lightstack/instances
 ```
 
 ### Issue 3: Horizon Not Accessible
@@ -914,7 +914,7 @@ sudo netstat -tulpn | grep 6080
 
 **Check Nova console URL configuration**:
 ```bash
-grep console_proxy_base_url /opt/o3k/config/o3k.yaml
+grep console_proxy_base_url /opt/lightstack/config/lightstack.yaml
 # Should match your host IP
 ```
 
@@ -1002,8 +1002,8 @@ sudo systemctl restart postgresql
 
 **Check Service Health**:
 ```bash
-# O3K services
-sudo systemctl status o3k.service
+# lightstack services
+sudo systemctl status lightstack.service
 
 # Horizon
 cd /opt/horizon && docker compose ps
@@ -1012,7 +1012,7 @@ cd /opt/horizon && docker compose ps
 sudo systemctl status postgresql
 
 # Check logs
-sudo journalctl -u o3k.service --since "1 hour ago"
+sudo journalctl -u lightstack.service --since "1 hour ago"
 ```
 
 **Monitor Resources**:
@@ -1021,7 +1021,7 @@ sudo journalctl -u o3k.service --since "1 hour ago"
 htop
 
 # Disk usage
-df -h /var/lib/o3k
+df -h /var/lib/lightstack
 
 # Network
 iftop -i br-ext
@@ -1032,29 +1032,29 @@ iftop -i br-ext
 **Database Backup**:
 ```bash
 # Backup database
-pg_dump -U o3k -h localhost o3k > o3k-backup-$(date +%Y%m%d).sql
+pg_dump -U lightstack -h localhost lightstack > lightstack-backup-$(date +%Y%m%d).sql
 
 # Restore
-psql -U o3k -h localhost o3k < o3k-backup-20260317.sql
+psql -U lightstack -h localhost lightstack < lightstack-backup-20260317.sql
 ```
 
 **Configuration Backup**:
 ```bash
 # Backup configs
-tar -czf o3k-config-$(date +%Y%m%d).tar.gz \
-  /opt/o3k/config \
+tar -czf lightstack-config-$(date +%Y%m%d).tar.gz \
+  /opt/lightstack/config \
   /opt/horizon/docker-compose.yml \
   /opt/horizon/local_settings.py
 ```
 
 ### Updates
 
-**Update O3K**:
+**Update lightstack**:
 ```bash
-cd /opt/o3k
+cd /opt/lightstack
 git pull origin main
 make build
-sudo systemctl restart o3k.service
+sudo systemctl restart lightstack.service
 ```
 
 **Update Horizon**:
@@ -1093,7 +1093,7 @@ docker compose up -d
 **Advanced Features**:
 - Multi-node networking with VXLAN
 - Ceph RBD for shared storage
-- Load balancing for O3K services
+- Load balancing for Lightstack services
 - Backup and disaster recovery
 
 ---
@@ -1101,23 +1101,23 @@ docker compose up -d
 ## Reference
 
 **Configuration Files**:
-- O3K config: `/opt/o3k/config/o3k.yaml`
+- Lightstack config: `/opt/lightstack/config/lightstack.yaml`
 - Horizon config: `/opt/horizon/local_settings.py`
-- Systemd service: `/etc/systemd/system/o3k.service`
+- Systemd service: `/etc/systemd/system/lightstack.service`
 
 **Default Credentials**:
 - OpenStack admin: `admin` / `secret`
-- PostgreSQL: `o3k` / (password from config)
+- PostgreSQL: `lightstack` / (password from config)
 - CirrOS VM: `cirros` / `gocubsgo`
 
 **Important Paths**:
-- O3K binary: `/opt/o3k/bin/o3k`
-- VM instances: `/var/lib/o3k/instances/`
-- Volumes: `/var/lib/o3k/volumes/`
-- Images: `/var/lib/o3k/images/`
+- Lightstack binary: `/opt/lightstack/bin/lightstack`
+- VM instances: `/var/lib/lightstack/instances/`
+- Volumes: `/var/lib/lightstack/volumes/`
+- Images: `/var/lib/lightstack/images/`
 
 **Log Locations**:
-- O3K logs: `sudo journalctl -u o3k.service`
+- Lightstack logs: `sudo journalctl -u lightstack.service`
 - Horizon logs: `/opt/horizon && docker compose logs`
 - PostgreSQL logs: `/var/log/postgresql/`
 - libvirt logs: `/var/log/libvirt/`

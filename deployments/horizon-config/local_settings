@@ -1,6 +1,6 @@
-# OpenStack Horizon Configuration for O3K
+# OpenStack Horizon Configuration for Lightstack
 # OpenStack Release: Flamingo (2025.2)
-# O3K Version: v0.5.0+
+# Lightstack Version: v0.5.0+
 # Last Updated: 2026-03-13
 
 import os
@@ -15,7 +15,7 @@ ALLOWED_HOSTS = ['*']
 
 # Generate a unique secret key for production
 # SECURITY WARNING: Keep this secret and change it in production!
-SECRET_KEY = 'o3k-horizon-flamingo-change-in-production-' + os.urandom(32).hex()
+SECRET_KEY = 'lightstack-horizon-flamingo-change-in-production-' + os.urandom(32).hex()
 
 # Web root for Horizon dashboard
 WEBROOT = '/dashboard/'
@@ -29,12 +29,12 @@ STATIC_URL = '/static/'
 # OpenStack Backend Configuration
 # ==========================================
 
-# O3K Service Discovery
-OPENSTACK_HOST = "o3k"  # Docker service name
+# Lightstack Service Discovery
+OPENSTACK_HOST = "lightstack"  # Docker service name
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
 
-# API Version Configuration (O3K Flamingo Compatible)
+# API Version Configuration (Lightstack Flamingo Compatible)
 OPENSTACK_API_VERSIONS = {
     "identity": 3,      # Keystone v3
     "image": 2,         # Glance v2
@@ -59,7 +59,7 @@ OPENSTACK_KEYSTONE_DOMAIN_CHOICES = (
 # Session Configuration
 # ==========================================
 
-# Session timeout (matches O3K token TTL - 4 hours)
+# Session timeout (matches Lightstack token TTL - 4 hours)
 SESSION_TIMEOUT = 14400
 
 # Session engine (use cache with Memcached for multi-process reliability)
@@ -96,7 +96,7 @@ LANGUAGE_CODE = 'en'
 
 # Available regions (add more if multi-region)
 AVAILABLE_REGIONS = [
-    ('http://o3k:35357/v3', 'RegionOne'),
+    ('http://lightstack:35357/v3', 'RegionOne'),
 ]
 
 # ==========================================
@@ -194,7 +194,7 @@ HORIZON_CONFIG = {
     'customization_module': '',
 }
 
-# Disable features not supported by O3K stub mode
+# Disable features not supported by Lightstack stub mode
 HORIZON_IMAGES_UPLOAD_MODE = 'direct'
 
 # ==========================================
@@ -361,7 +361,7 @@ AVAILABLE_THEMES = [
 DEFAULT_THEME = 'default'
 
 # Site branding
-SITE_BRANDING = "O3K Cloud Dashboard"
+SITE_BRANDING = "Lightstack Cloud Dashboard"
 SITE_BRANDING_LINK = "/"
 
 # ==========================================
@@ -382,23 +382,23 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 API_RESULT_LIMIT = 1000
 API_RESULT_PAGE_SIZE = 20
 
-# Swift (Object Storage) - disabled for O3K
+# Swift (Object Storage) - disabled for Lightstack
 SWIFT_FILE_TRANSFER_CHUNK_SIZE = 512 * 1024
 
-# Trove (Database) - disabled for O3K
-# Heat (Orchestration) - disabled for O3K
-# Sahara (Data Processing) - disabled for O3K
+# Trove (Database) - disabled for Lightstack
+# Heat (Orchestration) - disabled for Lightstack
+# Sahara (Data Processing) - disabled for Lightstack
 
 # ==========================================
-# Custom O3K Settings
+# Custom Lightstack Settings
 # ==========================================
 
-# O3K-specific customizations
-CUSTOM_DASHBOARD_NAME = "O3K Horizon Dashboard"
-CUSTOM_PRODUCT_NAME = "O3K OpenStack Platform"
-CUSTOM_WELCOME_MESSAGE = "Welcome to O3K - Lightweight OpenStack"
+# lightstack-specific customizations
+CUSTOM_DASHBOARD_NAME = "Lightstack Horizon Dashboard"
+CUSTOM_PRODUCT_NAME = "Lightstack OpenStack Platform"
+CUSTOM_WELCOME_MESSAGE = "Welcome to Lightstack - Lightweight OpenStack"
 
-# Disable features not available in O3K stub mode
+# Disable features not available in Lightstack stub mode
 SHOW_KEYSTONE_V2_RC = False
 
 # ==========================================

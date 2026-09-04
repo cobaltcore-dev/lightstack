@@ -13,7 +13,7 @@ import (
 
 // TestCinderUpdateSnapshot_Contract tests PUT /v3/:project/snapshots/:id
 func TestCinderUpdateSnapshot_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

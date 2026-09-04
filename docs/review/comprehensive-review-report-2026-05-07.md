@@ -1,4 +1,4 @@
-# Comprehensive Review Report — O3K Repository
+# Comprehensive Review Report — Lightstack Repository
 
 **Review date**: 2026-05-07  
 **Branch**: `fix/comprehensive-review`  
@@ -31,7 +31,7 @@ All findings were fixed. No findings were deferred or marked acceptable.
 ### C-1: Keystone authentication bypass — ALL management routes unauthenticated
 **File**: `internal/keystone/handlers.go`  
 **Issue**: `RegisterRoutes` attached all routes to a single group with no auth middleware. Routes like `GET /v3/users`, `DELETE /v3/users/:id`, `GET /v3/projects`, `POST /v3/roles` were accessible without any token.  
-**Fix**: Split into public group (auth token issuance, token validation, catalog) and protected `mgmt` group with `AuthMiddleware`. Refactored `RegisterRoutes` to accept `authMiddleware gin.HandlerFunc` parameter. Updated `cmd/o3k/main.go` to wire `createKeystoneServer(cfg, keystoneService, authService)`.
+**Fix**: Split into public group (auth token issuance, token validation, catalog) and protected `mgmt` group with `AuthMiddleware`. Refactored `RegisterRoutes` to accept `authMiddleware gin.HandlerFunc` parameter. Updated `cmd/lightstack/main.go` to wire `createKeystoneServer(cfg, keystoneService, authService)`.
 
 ### C-2: Glance authorization bypass — cross-tenant image mutation
 **File**: `internal/glance/images.go`  
@@ -40,7 +40,7 @@ All findings were fixed. No findings were deferred or marked acceptable.
 
 ### C-3: Path traversal in Nova image path construction
 **File**: `internal/nova/handlers.go`  
-**Issue**: `imageRef` from the user request was used directly in `fmt.Sprintf("/var/lib/o3k/images/%s.qcow2", req.Server.ImageRef)` with no validation. Attacker could pass `../../../etc/passwd` as `ImageRef`.  
+**Issue**: `imageRef` from the user request was used directly in `fmt.Sprintf("/var/lib/lightstack/images/%s.qcow2", req.Server.ImageRef)` with no validation. Attacker could pass `../../../etc/passwd` as `ImageRef`.  
 **Fix**: Added `uuid.Parse(req.Server.ImageRef)` validation. Only the canonical UUID string form is used in the path.
 
 ### C-4: SQL placeholder corruption in Neutron trunks UPDATE
@@ -60,7 +60,7 @@ All findings were fixed. No findings were deferred or marked acceptable.
 
 ### C-7: Unguarded [:8] slice panics in security group iptables chains
 **File**: `pkg/networking/security_groups.go`  
-**Issue**: `"O3K-SG-" + securityGroupID[:8]` panics if `securityGroupID` is shorter than 8 characters (malformed UUID input). 12 occurrences.  
+**Issue**: `"lightstack-SG-" + securityGroupID[:8]` panics if `securityGroupID` is shorter than 8 characters (malformed UUID input). 12 occurrences.  
 **Fix**: Introduced `sgChainName(id string)` helper that checks `len(id) > 8` before slicing.
 
 ### C-8: Application credentials stored in plaintext
@@ -85,12 +85,12 @@ All findings were fixed. No findings were deferred or marked acceptable.
 
 ### C-12: Hardcoded JWT secret in docker-compose-horizon.yml
 **File**: `deployments/docker-compose-horizon.yml`  
-**Issue**: `O3K_JWT_SECRET=change-this-secret-in-production-12345` — a weak literal secret committed to the repository.  
-**Fix**: Changed to `${O3K_JWT_SECRET:?O3K_JWT_SECRET must be set}` — compose fails fast if the variable is not set in the environment.
+**Issue**: `LIGHTSTACK_JWT_SECRET=change-this-secret-in-production-12345` — a weak literal secret committed to the repository.  
+**Fix**: Changed to `${LIGHTSTACK_JWT_SECRET:?LIGHTSTACK_JWT_SECRET must be set}` — compose fails fast if the variable is not set in the environment.
 
 ### C-13: Hardcoded SECRET_KEY fallback in Horizon config
 **File**: `deployments/docker/horizon_config/local_settings.py`  
-**Issue**: `SECRET_KEY = os.environ.get('SECRET_KEY', 'o3k-horizon-secret-key')` — the fallback is used silently if the env var is absent.  
+**Issue**: `SECRET_KEY = os.environ.get('SECRET_KEY', 'lightstack-horizon-secret-key')` — the fallback is used silently if the env var is absent.  
 **Fix**: Raise `RuntimeError` if `SECRET_KEY` env var is not set.
 
 ---
@@ -138,7 +138,7 @@ All findings were fixed. No findings were deferred or marked acceptable.
 **Fix**: Both use the `value, ok := x.(T)` two-value form with `!ok` error paths.
 
 ### H-9: HTTP servers missing timeouts (Slowloris vulnerability)
-**File**: `cmd/o3k/main.go`  
+**File**: `cmd/lightstack/main.go`  
 **Issue**: All 7 `http.Server` structs had no timeout configuration. A slow-reading client could hold connections indefinitely.  
 **Fix**: Added `ReadHeaderTimeout: 10s`, `ReadTimeout: 30s`, `WriteTimeout: 60s`, `IdleTimeout: 120s` to all servers. Glance gets extended `WriteTimeout: 300s` for image uploads.
 

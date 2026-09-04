@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add application credentials with bcrypt security and policy-based authorization to O3K Keystone
+**Goal:** Add application credentials with bcrypt security and policy-based authorization to Lightstack Keystone
 
 **Architecture:** TDD-first approach with contract tests, security fix for existing insecure credentials via bcrypt migration, deterministic policy cache, standalone libraries where possible
 
@@ -15,32 +15,32 @@
 ### New Files Created
 
 **Test Infrastructure:**
-- `/Users/I761222/git/o3k/test/contract/keystone/appcreds_test.go` - Contract tests for app credentials (auth, CRUD, access rules)
-- `/Users/I761222/git/o3k/test/contract/keystone/policy_test.go` - Contract tests for policy engine
-- `/Users/I761222/git/o3k/test/contract/keystone/helpers_test.go` - Shared test helpers (setupKeystoneClient, etc.)
+- `/Users/I761222/git/lightstack/test/contract/keystone/appcreds_test.go` - Contract tests for app credentials (auth, CRUD, access rules)
+- `/Users/I761222/git/lightstack/test/contract/keystone/policy_test.go` - Contract tests for policy engine
+- `/Users/I761222/git/lightstack/test/contract/keystone/helpers_test.go` - Shared test helpers (setupKeystoneClient, etc.)
 
 **Implementation:**
-- `/Users/I761222/git/o3k/internal/keystone/appcreds_auth.go` - Application credential authentication middleware
-- `/Users/I761222/git/o3k/internal/keystone/policy_engine.go` - Policy evaluation engine (standalone)
-- `/Users/I761222/git/o3k/internal/keystone/policy_cache.go` - Deterministic policy decision cache
-- `/Users/I761222/git/o3k/internal/keystone/policy_handlers.go` - Policy API handlers
+- `/Users/I761222/git/lightstack/internal/keystone/appcreds_auth.go` - Application credential authentication middleware
+- `/Users/I761222/git/lightstack/internal/keystone/policy_engine.go` - Policy evaluation engine (standalone)
+- `/Users/I761222/git/lightstack/internal/keystone/policy_cache.go` - Deterministic policy decision cache
+- `/Users/I761222/git/lightstack/internal/keystone/policy_handlers.go` - Policy API handlers
 
 **Migrations:**
-- `/Users/I761222/git/o3k/migrations/056_appcreds_security_fix.up.sql` - Add access_rules, legacy_auth, updated_at columns
-- `/Users/I761222/git/o3k/migrations/056_appcreds_security_fix.down.sql` - Rollback migration 056
-- `/Users/I761222/git/o3k/migrations/057_appcreds_roles_junction.up.sql` - Create application_credential_roles table
-- `/Users/I761222/git/o3k/migrations/057_appcreds_roles_junction.down.sql` - Rollback migration 057
-- `/Users/I761222/git/o3k/migrations/058_policy_rules.up.sql` - Create policy_rules table
-- `/Users/I761222/git/o3k/migrations/058_policy_rules.down.sql` - Rollback migration 058
+- `/Users/I761222/git/lightstack/migrations/056_appcreds_security_fix.up.sql` - Add access_rules, legacy_auth, updated_at columns
+- `/Users/I761222/git/lightstack/migrations/056_appcreds_security_fix.down.sql` - Rollback migration 056
+- `/Users/I761222/git/lightstack/migrations/057_appcreds_roles_junction.up.sql` - Create application_credential_roles table
+- `/Users/I761222/git/lightstack/migrations/057_appcreds_roles_junction.down.sql` - Rollback migration 057
+- `/Users/I761222/git/lightstack/migrations/058_policy_rules.up.sql` - Create policy_rules table
+- `/Users/I761222/git/lightstack/migrations/058_policy_rules.down.sql` - Rollback migration 058
 
 ### Files Modified
 
-- `/Users/I761222/git/o3k/internal/keystone/application_credentials.go:114` - Replace plain secret with bcrypt hash
-- `/Users/I761222/git/o3k/internal/keystone/application_credentials.go:89-171` - Add access rules validation to CreateApplicationCredential
-- `/Users/I761222/git/o3k/internal/keystone/auth.go` - Add appcred auth path to AuthMiddleware
-- `/Users/I761222/git/o3k/internal/keystone/handlers.go` - Register new routes for policy API
-- `/Users/I761222/git/o3k/internal/middleware/auth.go` - Add access rules enforcement
-- `/Users/I761222/git/o3k/cmd/o3k/main.go` - Initialize policy engine
+- `/Users/I761222/git/lightstack/internal/keystone/application_credentials.go:114` - Replace plain secret with bcrypt hash
+- `/Users/I761222/git/lightstack/internal/keystone/application_credentials.go:89-171` - Add access rules validation to CreateApplicationCredential
+- `/Users/I761222/git/lightstack/internal/keystone/auth.go` - Add appcred auth path to AuthMiddleware
+- `/Users/I761222/git/lightstack/internal/keystone/handlers.go` - Register new routes for policy API
+- `/Users/I761222/git/lightstack/internal/middleware/auth.go` - Add access rules enforcement
+- `/Users/I761222/git/lightstack/cmd/lightstack/main.go` - Initialize policy engine
 
 ---
 
@@ -49,7 +49,7 @@
 ### Task 1: Contract Test Infrastructure
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/test/contract/keystone/helpers_test.go`
+- Create: `/Users/I761222/git/lightstack/test/contract/keystone/helpers_test.go`
 
 - [ ] **Step 1: Write test helper infrastructure**
 
@@ -73,7 +73,7 @@ import (
 
 var (
 	testPostgresURL = ""
-	o3kProcess      *exec.Cmd
+	lightstackProcess      *exec.Cmd
 )
 
 func TestMain(m *testing.M) {
@@ -85,8 +85,8 @@ func TestMain(m *testing.M) {
 			Image:        "postgres:18-alpine",
 			ExposedPorts: []string{"5432/tcp"},
 			Env: map[string]string{
-				"POSTGRES_DB":       "o3k_test",
-				"POSTGRES_USER":     "o3k_test",
+				"POSTGRES_DB":       "lightstack_test",
+				"POSTGRES_USER":     "lightstack_test",
 				"POSTGRES_PASSWORD": "test_pass",
 			},
 			WaitingFor: wait.ForLog("database system is ready to accept connections").
@@ -103,7 +103,7 @@ func TestMain(m *testing.M) {
 	// Get connection details
 	host, _ := postgresContainer.Host(ctx)
 	port, _ := postgresContainer.MappedPort(ctx, "5432")
-	testPostgresURL = fmt.Sprintf("postgres://o3k_test:test_pass@%s:%s/o3k_test?sslmode=disable", host, port.Port())
+	testPostgresURL = fmt.Sprintf("postgres://lightstack_test:test_pass@%s:%s/lightstack_test?sslmode=disable", host, port.Port())
 
 	// Run migrations
 	migrateCmd := exec.Command("migrate",
@@ -114,23 +114,23 @@ func TestMain(m *testing.M) {
 		panic(fmt.Sprintf("Migration failed: %v", err))
 	}
 
-	// Start O3K binary
-	o3kProcess = exec.Command("../../../bin/o3k",
-		"--config", "../../../test/fixtures/o3k-test.yaml")
-	o3kProcess.Env = append(os.Environ(), fmt.Sprintf("DATABASE_URL=%s", testPostgresURL))
-	if err := o3kProcess.Start(); err != nil {
-		panic(fmt.Sprintf("Failed to start O3K: %v", err))
+	// Start lightstack binary
+	lightstackProcess = exec.Command("../../../bin/lightstack",
+		"--config", "../../../test/fixtures/lightstack-test.yaml")
+	lightstackProcess.Env = append(os.Environ(), fmt.Sprintf("DATABASE_URL=%s", testPostgresURL))
+	if err := lightstackProcess.Start(); err != nil {
+		panic(fmt.Sprintf("Failed to start lightstack: %v", err))
 	}
 
-	// Wait for O3K to be ready
+	// Wait for lightstack to be ready
 	time.Sleep(3 * time.Second)
 
 	code := m.Run()
 
 	// Cleanup
-	if o3kProcess != nil {
-		o3kProcess.Process.Kill()
-		o3kProcess.Wait()
+	if lightstackProcess != nil {
+		lightstackProcess.Process.Kill()
+		lightstackProcess.Wait()
 	}
 
 	os.Exit(code)
@@ -162,16 +162,16 @@ func setupKeystoneClient(t *testing.T) *gophercloud.ServiceClient {
 	return client
 }
 
-func skipIfO3KNotRunning(t *testing.T) {
+func skipIfLightstackNotRunning(t *testing.T) {
 	t.Helper()
-	if os.Getenv("SKIP_O3K_CHECK") == "1" {
+	if os.Getenv("SKIP_LIGHTSTACK_CHECK") == "1" {
 		return
 	}
-	// Check if O3K is reachable
+	// Check if lightstack is reachable
 	authURL := getEnvOrDefault("OS_AUTH_URL", "http://localhost:35357/v3")
 	resp, err := http.Get(authURL)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Skip("O3K not running, skipping integration test")
+		t.Skip("lightstack not running, skipping integration test")
 	}
 }
 
@@ -185,11 +185,11 @@ func getEnvOrDefault(key, defaultVal string) string {
 
 - [ ] **Step 2: Create test fixture config**
 
-Create: `/Users/I761222/git/o3k/test/fixtures/o3k-test.yaml`
+Create: `/Users/I761222/git/lightstack/test/fixtures/lightstack-test.yaml`
 
 ```yaml
 database:
-  url: "postgres://o3k_test:test_pass@localhost:5432/o3k_test?sslmode=disable"
+  url: "postgres://lightstack_test:test_pass@localhost:5432/lightstack_test?sslmode=disable"
 
 keystone:
   port: 35357
@@ -219,12 +219,12 @@ metadata:
 - [ ] **Step 3: Test the test infrastructure**
 
 Run: `cd test/contract/keystone && go test -v -run TestMain`
-Expected: PostgreSQL starts, migrations run, O3K starts, test infrastructure exits cleanly
+Expected: PostgreSQL starts, migrations run, Lightstack starts, test infrastructure exits cleanly
 
 - [ ] **Step 4: Commit test infrastructure**
 
 ```bash
-git add test/contract/keystone/helpers_test.go test/fixtures/o3k-test.yaml
+git add test/contract/keystone/helpers_test.go test/fixtures/lightstack-test.yaml
 git commit -m "test(keystone): add contract test infrastructure with testcontainers"
 ```
 
@@ -233,7 +233,7 @@ git commit -m "test(keystone): add contract test infrastructure with testcontain
 ### Task 2: Application Credentials - Auth Contract Tests (RED Phase)
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/test/contract/keystone/appcreds_test.go`
+- Create: `/Users/I761222/git/lightstack/test/contract/keystone/appcreds_test.go`
 
 - [ ] **Step 1: Write failing auth test**
 
@@ -253,7 +253,7 @@ import (
 
 // TestAppCredAuthentication_Contract tests application credential authentication
 func TestAppCredAuthentication_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	// Step 1: Create app credential via admin token
 	adminClient := setupKeystoneClient(t)
@@ -364,7 +364,7 @@ Add to `test/contract/keystone/appcreds_test.go`:
 ```go
 // TestAppCredAccessRules_Contract tests access rule enforcement
 func TestAppCredAccessRules_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	adminClient := setupKeystoneClient(t)
 	adminToken := adminClient.Token()
@@ -477,10 +477,10 @@ git commit -m "test(keystone): add RED contract tests for appcred auth and acces
 ### Task 3: Database Migrations
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/migrations/056_appcreds_security_fix.up.sql`
-- Create: `/Users/I761222/git/o3k/migrations/056_appcreds_security_fix.down.sql`
-- Create: `/Users/I761222/git/o3k/migrations/057_appcreds_roles_junction.up.sql`
-- Create: `/Users/I761222/git/o3k/migrations/057_appcreds_roles_junction.down.sql`
+- Create: `/Users/I761222/git/lightstack/migrations/056_appcreds_security_fix.up.sql`
+- Create: `/Users/I761222/git/lightstack/migrations/056_appcreds_security_fix.down.sql`
+- Create: `/Users/I761222/git/lightstack/migrations/057_appcreds_roles_junction.up.sql`
+- Create: `/Users/I761222/git/lightstack/migrations/057_appcreds_roles_junction.down.sql`
 
 - [ ] **Step 1: Write migration 056 (security fix)**
 
@@ -562,8 +562,8 @@ git commit -m "feat(keystone): add appcred security fix and roles junction table
 ### Task 4: Bcrypt Security Fix (GREEN Phase)
 
 **Files:**
-- Modify: `/Users/I761222/git/o3k/internal/keystone/application_credentials.go:114`
-- Modify: `/Users/I761222/git/o3k/internal/keystone/application_credentials.go:89-171`
+- Modify: `/Users/I761222/git/lightstack/internal/keystone/application_credentials.go:114`
+- Modify: `/Users/I761222/git/lightstack/internal/keystone/application_credentials.go:89-171`
 
 - [ ] **Step 1: Implement bcrypt hashing**
 
@@ -684,8 +684,8 @@ git commit -m "fix(keystone): replace plain secret storage with bcrypt hashing"
 ### Task 5: Application Credential Authentication (GREEN Phase)
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/internal/keystone/appcreds_auth.go`
-- Modify: `/Users/I761222/git/o3k/internal/keystone/auth.go`
+- Create: `/Users/I761222/git/lightstack/internal/keystone/appcreds_auth.go`
+- Modify: `/Users/I761222/git/lightstack/internal/keystone/auth.go`
 
 - [ ] **Step 1: Create application credential auth handler**
 
@@ -699,7 +699,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -905,7 +905,7 @@ import (
 
 - [ ] **Step 4: Run tests (should be GREEN now)**
 
-Run: `cd /Users/I761222/git/o3k/test/contract/keystone && go test -v -run TestAppCredAuthentication_Contract`
+Run: `cd /Users/I761222/git/lightstack/test/contract/keystone && go test -v -run TestAppCredAuthentication_Contract`
 Expected: PASS - authentication works
 
 - [ ] **Step 4.5: Test legacy credential compatibility**
@@ -951,8 +951,8 @@ git commit -m "feat(keystone): implement application credential authentication w
 ### Task 6: Access Rules Enforcement (GREEN Phase)
 
 **Files:**
-- Modify: `/Users/I761222/git/o3k/internal/keystone/appcreds_auth.go`
-- Modify: `/Users/I761222/git/o3k/internal/middleware/auth.go`
+- Modify: `/Users/I761222/git/lightstack/internal/keystone/appcreds_auth.go`
+- Modify: `/Users/I761222/git/lightstack/internal/middleware/auth.go`
 
 - [ ] **Step 1: Extend JWT token to include access_rules**
 
@@ -1101,9 +1101,9 @@ git commit -m "feat(keystone): enforce application credential access rules"
 ### Task 7: Policy Engine Contract Tests (RED Phase)
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/test/contract/keystone/policy_test.go`
-- Create: `/Users/I761222/git/o3k/migrations/058_policy_rules.up.sql`
-- Create: `/Users/I761222/git/o3k/migrations/058_policy_rules.down.sql`
+- Create: `/Users/I761222/git/lightstack/test/contract/keystone/policy_test.go`
+- Create: `/Users/I761222/git/lightstack/migrations/058_policy_rules.up.sql`
+- Create: `/Users/I761222/git/lightstack/migrations/058_policy_rules.down.sql`
 
 - [ ] **Step 1: Write failing policy list test**
 
@@ -1124,7 +1124,7 @@ import (
 
 // TestPolicyList_Contract tests GET /v3/policies
 func TestPolicyList_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 	token := client.Token()
@@ -1149,7 +1149,7 @@ func TestPolicyList_Contract(t *testing.T) {
 
 // TestPolicyCreate_Contract tests POST /v3/policies
 func TestPolicyCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 	token := client.Token()
@@ -1194,7 +1194,7 @@ Add to `test/contract/keystone/policy_test.go`:
 ```go
 // TestPolicyEvaluation_Contract tests policy evaluation logic
 func TestPolicyEvaluation_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupKeystoneClient(t)
 	token := client.Token()
@@ -1293,9 +1293,9 @@ git commit -m "test(keystone): add RED contract tests for policy engine"
 ### Task 8: Policy Engine Implementation (GREEN Phase)
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/internal/keystone/policy_engine.go`
-- Create: `/Users/I761222/git/o3k/internal/keystone/policy_cache.go`
-- Create: `/Users/I761222/git/o3k/internal/keystone/policy_handlers.go`
+- Create: `/Users/I761222/git/lightstack/internal/keystone/policy_engine.go`
+- Create: `/Users/I761222/git/lightstack/internal/keystone/policy_cache.go`
+- Create: `/Users/I761222/git/lightstack/internal/keystone/policy_handlers.go`
 
 - [ ] **Step 1: Implement policy rule parser**
 
@@ -1601,7 +1601,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1804,22 +1804,22 @@ git commit -m "feat(keystone): implement policy engine with deterministic cache"
 ⚠️ **CRITICAL**: This task integrates policy checks into Nova, Neutron, Cinder, and Glance to meet spec Week 2 Exit Criteria: "All 5 services enforce policies"
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/internal/common/policy_middleware.go` - Shared policy enforcement middleware
-- Modify: `/Users/I761222/git/o3k/internal/nova/handlers.go` - Add policy checks
-- Modify: `/Users/I761222/git/o3k/internal/neutron/handlers.go` - Add policy checks
-- Modify: `/Users/I761222/git/o3k/internal/cinder/handlers.go` - Add policy checks
-- Modify: `/Users/I761222/git/o3k/internal/glance/handlers.go` - Add policy checks
+- Create: `/Users/I761222/git/lightstack/internal/common/policy_middleware.go` - Shared policy enforcement middleware
+- Modify: `/Users/I761222/git/lightstack/internal/nova/handlers.go` - Add policy checks
+- Modify: `/Users/I761222/git/lightstack/internal/neutron/handlers.go` - Add policy checks
+- Modify: `/Users/I761222/git/lightstack/internal/cinder/handlers.go` - Add policy checks
+- Modify: `/Users/I761222/git/lightstack/internal/glance/handlers.go` - Add policy checks
 
 - [ ] **Step 1: Create shared policy enforcement middleware**
 
 ```go
-// /Users/I761222/git/o3k/internal/common/policy_middleware.go
+// /Users/I761222/git/lightstack/internal/common/policy_middleware.go
 package common
 
 import (
 	"net/http"
 
-	"github.com/cobaltcore-dev/o3k/internal/keystone"
+	"github.com/cobaltcore-dev/lightstack/internal/keystone"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -1891,7 +1891,7 @@ func PolicyMiddleware(policyEngine *keystone.PolicyEngine, action string) gin.Ha
 
 - [ ] **Step 2: Wire policy engine into Nova**
 
-Modify `/Users/I761222/git/o3k/internal/nova/handlers.go`:
+Modify `/Users/I761222/git/lightstack/internal/nova/handlers.go`:
 
 ```go
 // At top of file, add field to Service struct
@@ -1926,7 +1926,7 @@ novaGroup.GET("/servers/:id",
 
 - [ ] **Step 3: Wire policy engine into Neutron**
 
-Modify `/Users/I761222/git/o3k/internal/neutron/handlers.go`:
+Modify `/Users/I761222/git/lightstack/internal/neutron/handlers.go`:
 
 ```go
 // Add field to Service struct
@@ -1955,7 +1955,7 @@ neutronGroup.DELETE("/v2.0/ports/:id",
 
 - [ ] **Step 4: Wire policy engine into Cinder**
 
-Modify `/Users/I761222/git/o3k/internal/cinder/handlers.go`:
+Modify `/Users/I761222/git/lightstack/internal/cinder/handlers.go`:
 
 ```go
 // Add field to Service struct
@@ -1980,7 +1980,7 @@ cinderGroup.POST("/volumes/:id/action",
 
 - [ ] **Step 5: Wire policy engine into Glance**
 
-Modify `/Users/I761222/git/o3k/internal/glance/handlers.go`:
+Modify `/Users/I761222/git/lightstack/internal/glance/handlers.go`:
 
 ```go
 // Add field to Service struct
@@ -2005,7 +2005,7 @@ glanceGroup.PUT("/v2/images/:id/file",
 
 - [ ] **Step 6: Update main.go to pass policy engine to services**
 
-Modify `/Users/I761222/git/o3k/cmd/o3k/main.go`:
+Modify `/Users/I761222/git/lightstack/cmd/lightstack/main.go`:
 
 ```go
 // Initialize policy engine (after Keystone service)
@@ -2023,12 +2023,12 @@ glanceSvc := glance.NewService(cfg.Glance, policyEngine)
 
 - [ ] **Step 7: Test policy enforcement across services**
 
-Run: `cd /Users/I761222/git/o3k/test/contract && go test -v ./... -run "Policy"`
+Run: `cd /Users/I761222/git/lightstack/test/contract && go test -v ./... -run "Policy"`
 Expected: All policy contract tests pass across all services
 
 - [ ] **Step 8: Add performance benchmark test**
 
-Create: `/Users/I761222/git/o3k/internal/keystone/policy_bench_test.go`
+Create: `/Users/I761222/git/lightstack/internal/keystone/policy_bench_test.go`
 
 ```go
 package keystone_test
@@ -2036,7 +2036,7 @@ package keystone_test
 import (
 	"testing"
 
-	"github.com/cobaltcore-dev/o3k/internal/keystone"
+	"github.com/cobaltcore-dev/lightstack/internal/keystone"
 )
 
 func BenchmarkPolicyCache(b *testing.B) {
@@ -2088,7 +2088,7 @@ Expected:
 - [ ] **Step 9: Commit policy integration**
 
 ```bash
-git add internal/common/policy_middleware.go internal/nova/handlers.go internal/neutron/handlers.go internal/cinder/handlers.go internal/glance/handlers.go cmd/o3k/main.go internal/keystone/policy_bench_test.go
+git add internal/common/policy_middleware.go internal/nova/handlers.go internal/neutron/handlers.go internal/cinder/handlers.go internal/glance/handlers.go cmd/lightstack/main.go internal/keystone/policy_bench_test.go
 git commit -m "feat(all): integrate policy engine across all five services"
 ```
 
@@ -2099,8 +2099,8 @@ git commit -m "feat(all): integrate policy engine across all five services"
 ### Task 9: Integration Testing
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/test/integration/appcreds_security_test.sh`
-- Create: `/Users/I761222/git/o3k/test/integration/policy_enforcement_test.sh`
+- Create: `/Users/I761222/git/lightstack/test/integration/appcreds_security_test.sh`
+- Create: `/Users/I761222/git/lightstack/test/integration/policy_enforcement_test.sh`
 
 - [ ] **Step 1: Write application credentials security test**
 
@@ -2110,7 +2110,7 @@ git commit -m "feat(all): integrate policy engine across all five services"
 
 set -e
 
-source ~/.o3k-env
+source ~/.lightstack-env
 
 echo "=== Application Credentials Security Test ==="
 
@@ -2196,7 +2196,7 @@ echo "=== All tests passed ==="
 
 set -e
 
-source ~/.o3k-env
+source ~/.lightstack-env
 
 echo "=== Policy Engine Enforcement Test ==="
 
@@ -2268,11 +2268,11 @@ git commit -m "test(keystone): add integration tests for appcred security and po
 ### Task 10: Documentation and Release
 
 **Files:**
-- Create: `/Users/I761222/git/o3k/docs/keystone/application-credentials.md`
-- Create: `/Users/I761222/git/o3k/docs/keystone/policy-engine.md`
-- Modify: `/Users/I761222/git/o3k/STATUS.md`
-- Modify: `/Users/I761222/git/o3k/README.md`
-- Create: `/Users/I761222/git/o3k/CHANGELOG.md`
+- Create: `/Users/I761222/git/lightstack/docs/keystone/application-credentials.md`
+- Create: `/Users/I761222/git/lightstack/docs/keystone/policy-engine.md`
+- Modify: `/Users/I761222/git/lightstack/STATUS.md`
+- Modify: `/Users/I761222/git/lightstack/README.md`
+- Create: `/Users/I761222/git/lightstack/CHANGELOG.md`
 
 - [ ] **Step 1: Write application credentials documentation**
 
@@ -2362,7 +2362,7 @@ All new credentials use bcrypt (cost 12, ~250ms computation time). This prevents
 
 ### Legacy Credentials
 
-Existing credentials from O3K v0.4.x use insecure base64 encoding. These are:
+Existing credentials from lightstack v0.4.x use insecure base64 encoding. These are:
 - Marked with `legacy_auth=true` in database
 - Still functional for backward compatibility
 - Logged with warnings on each use
@@ -2682,8 +2682,8 @@ git commit -m "docs(keystone): add application credentials and policy engine doc
 ### Task 11: Release Preparation
 
 **Files:**
-- Modify: `/Users/I761222/git/o3k/README.md`
-- Modify: `/Users/I761222/git/o3k/CHANGELOG.md`
+- Modify: `/Users/I761222/git/lightstack/README.md`
+- Modify: `/Users/I761222/git/lightstack/CHANGELOG.md`
 
 - [ ] **Step 1: Update README.md**
 
@@ -2739,7 +2739,7 @@ Add to `CHANGELOG.md`:
 ```bash
 git add README.md CHANGELOG.md
 git commit -m "chore: prepare v0.6.0 release (IAM enhancement)"
-git tag -a v0.6.0 -m "O3K v0.6.0: Enhanced IAM with application credentials and policy engine"
+git tag -a v0.6.0 -m "lightstack v0.6.0: Enhanced IAM with application credentials and policy engine"
 ```
 
 - [ ] **Step 4: Final validation**

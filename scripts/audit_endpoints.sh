@@ -2,7 +2,7 @@
 # Comprehensive endpoint audit - verify actual coverage
 # Counts implemented endpoints across all services
 
-echo "=== O3K Endpoint Coverage Audit ==="
+echo "=== Lightstack Endpoint Coverage Audit ==="
 echo ""
 
 # Helper function to count endpoints
@@ -16,7 +16,7 @@ count_endpoints() {
 # Nova endpoints
 echo "## Nova (Compute)"
 NOVA_COUNT=0
-for file in /Users/I761222/git/o3k/internal/nova/*.go; do
+for file in /Users/I761222/git/lightstack/internal/nova/*.go; do
     count=$(grep -c "v[0-9]\+\.\(GET\|POST\|PUT\|PATCH\|DELETE\)" "$file" 2>/dev/null || echo 0)
     NOVA_COUNT=$((NOVA_COUNT + count))
 done
@@ -26,7 +26,7 @@ echo ""
 # Neutron endpoints
 echo "## Neutron (Network)"
 NEUTRON_COUNT=0
-for file in /Users/I761222/git/o3k/internal/neutron/*.go; do
+for file in /Users/I761222/git/lightstack/internal/neutron/*.go; do
     count=$(grep -c "v[0-9]\+\.\(GET\|POST\|PUT\|PATCH\|DELETE\)" "$file" 2>/dev/null || echo 0)
     NEUTRON_COUNT=$((NEUTRON_COUNT + count))
 done
@@ -36,7 +36,7 @@ echo ""
 # Cinder endpoints
 echo "## Cinder (Volume)"
 CINDER_COUNT=0
-for file in /Users/I761222/git/o3k/internal/cinder/*.go; do
+for file in /Users/I761222/git/lightstack/internal/cinder/*.go; do
     count=$(grep -c "v[0-9]\+\.\(GET\|POST\|PUT\|PATCH\|DELETE\)" "$file" 2>/dev/null || echo 0)
     CINDER_COUNT=$((CINDER_COUNT + count))
 done
@@ -46,7 +46,7 @@ echo ""
 # Glance endpoints
 echo "## Glance (Image)"
 GLANCE_COUNT=0
-for file in /Users/I761222/git/o3k/internal/glance/*.go; do
+for file in /Users/I761222/git/lightstack/internal/glance/*.go; do
     count=$(grep -c "v[0-9]\+\.\(GET\|POST\|PUT\|PATCH\|DELETE\)" "$file" 2>/dev/null || echo 0)
     GLANCE_COUNT=$((GLANCE_COUNT + count))
 done
@@ -56,7 +56,7 @@ echo ""
 # Keystone endpoints
 echo "## Keystone (Identity)"
 KEYSTONE_COUNT=0
-for file in /Users/I761222/git/o3k/internal/keystone/*.go; do
+for file in /Users/I761222/git/lightstack/internal/keystone/*.go; do
     count=$(grep -c "v[0-9]\+\.\(GET\|POST\|PUT\|PATCH\|DELETE\)" "$file" 2>/dev/null || echo 0)
     KEYSTONE_COUNT=$((KEYSTONE_COUNT + count))
 done

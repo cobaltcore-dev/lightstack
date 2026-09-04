@@ -20,7 +20,7 @@ External interface = OpenStack Network (Neutron) v2.0 routers, external networks
 - `test/terraform/ws3/`: C-WS3-TF.
 
 ## Notes
-- Egress requires a router + external gateway (standard OpenStack); a router-less network has no egress. "No operator setup" means O3K auto-maps the external network to the uplink (default-route iface) — no `br-ex`/NIC config (research R10).
+- Egress requires a router + external gateway (standard OpenStack); a router-less network has no egress. "No operator setup" means Lightstack auto-maps the external network to the uplink (default-route iface) — no `br-ex`/NIC config (research R10).
 - Floating-IP pool is a standard external/provider network; the operator supplies the range + routing (MetalLB / routed-or-L2 subnet) — documented in quickstart.
 - SGs apply to north-south via standard netfilter ordering (DNAT in PREROUTING, then the SG filter chain sees the fixed IP).
 - IPv4 only. Routing a FIP to a *hosting* node is multi-node (out of scope).

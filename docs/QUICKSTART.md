@@ -2,7 +2,7 @@
 
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
-Get O3K running and create your first VM in **5 minutes**.
+Get Lightstack running and create your first VM in **5 minutes**.
 
 ---
 
@@ -14,18 +14,18 @@ Get O3K running and create your first VM in **5 minutes**.
 
 ---
 
-## Step 1: Start O3K (30 seconds)
+## Step 1: Start Lightstack (30 seconds)
 
 ```bash
-cd /path/to/o3k
+cd /path/to/lightstack
 docker compose up -d
 ```
 
 **Expected output:**
 ```
 [+] Running 2/2
- ✔ Container o3k-postgres  Started
- ✔ Container o3k           Started
+ ✔ Container lightstack-postgres  Started
+ ✔ Container lightstack           Started
 ```
 
 Wait for services to be healthy (~30 seconds):
@@ -36,8 +36,8 @@ docker compose ps
 **Should show:**
 ```
 NAME           STATUS
-o3k            Up (healthy)
-o3k-postgres   Up (healthy)
+lightstack            Up (healthy)
+lightstack-postgres   Up (healthy)
 ```
 
 ---
@@ -63,7 +63,7 @@ openstack --version
 
 ```bash
 # Create environment file
-cat > ~/.o3k-env << 'EOF'
+cat > ~/.lightstack-env << 'EOF'
 export OS_AUTH_URL=http://localhost:5001/v3
 export OS_PROJECT_NAME=default
 export OS_PROJECT_DOMAIN_NAME=Default
@@ -74,7 +74,7 @@ export OS_IDENTITY_API_VERSION=3
 EOF
 
 # Load it
-source ~/.o3k-env
+source ~/.lightstack-env
 ```
 
 ---
@@ -138,7 +138,7 @@ openstack network list
 
 ## Step 6: Add a Boot Image (1 minute)
 
-O3K ships with no images, so upload the tiny CirrOS test image before booting a VM.
+Lightstack ships with no images, so upload the tiny CirrOS test image before booting a VM.
 
 ```bash
 # Download CirrOS (~20 MB cloud test image)
@@ -318,20 +318,20 @@ openstack volume show <volume-name>
 
 ```bash
 # View container logs
-docker compose logs o3k --tail=50
+docker compose logs lightstack --tail=50
 
 # Check health
 docker compose ps
 
 # View database
-docker exec o3k-postgres psql -U o3k -d o3k -c "SELECT COUNT(*) FROM instances;"
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "SELECT COUNT(*) FROM instances;"
 ```
 
 ---
 
 ## Stopping and Restarting
 
-### Stop O3K
+### Stop Lightstack
 
 ```bash
 docker compose down
@@ -339,7 +339,7 @@ docker compose down
 
 **Note:** This preserves all data (VMs, networks, volumes) in the PostgreSQL database.
 
-### Restart O3K
+### Restart Lightstack
 
 ```bash
 docker compose up -d
@@ -347,7 +347,7 @@ docker compose up -d
 
 All your resources will still be there:
 ```bash
-source ~/.o3k-env
+source ~/.lightstack-env
 openstack server list
 ```
 
@@ -373,9 +373,9 @@ docker compose up -d
 echo $OS_AUTH_URL
 
 # Reload environment
-source ~/.o3k-env
+source ~/.lightstack-env
 
-# Check O3K is running
+# Check lightstack is running
 docker compose ps
 ```
 
@@ -388,23 +388,23 @@ docker compose ps
 # Find what's using the port
 lsof -i:5001
 
-# Stop the conflicting service or change O3K port in docker-compose.yml
+# Stop the conflicting service or change lightstack port in docker-compose.yml
 ```
 
 ### Services Not Healthy
 
-**Symptom:** `o3k   Up 2 minutes (unhealthy)`
+**Symptom:** `lightstack   Up 2 minutes (unhealthy)`
 
 **Solution:**
 ```bash
 # Check logs
-docker compose logs o3k --tail=50
+docker compose logs lightstack --tail=50
 
 # Common fix: Wait 10 more seconds for database
 docker compose ps
 
 # Restart if needed
-docker compose restart o3k
+docker compose restart lightstack
 ```
 
 ### OpenStack CLI Not Found
@@ -431,7 +431,7 @@ source ~/.bashrc   # or ~/.zshrc
 
 ```bash
 # Environment
-source ~/.o3k-env                    # Load credentials
+source ~/.lightstack-env                    # Load credentials
 
 # Authentication
 openstack token issue                # Get auth token
@@ -519,13 +519,13 @@ openstack volume list
 You now have a fully functional OpenStack-compatible cloud running locally! 🎉
 
 **What you've accomplished:**
-- ✅ Deployed O3K in Docker containers
+- ✅ Deployed Lightstack in Docker containers
 - ✅ Configured OpenStack CLI
 - ✅ Created virtual machines
 - ✅ Created networks and volumes
 - ✅ Managed resource quotas
 
-**Your O3K cloud can:**
+**Your Lightstack cloud can:**
 - Create and manage virtual machines
 - Provision isolated networks
 - Attach persistent block storage

@@ -74,7 +74,7 @@ pkg/octavia/
 └── cli/
     └── main.go          # CLI tool
 
-cmd/o3k-octavia/
+cmd/lightstack-octavia/
 └── main.go              # Standalone binary
 
 internal/octavia/
@@ -622,26 +622,26 @@ func (s *Service) updateMemberStatuses() {
 
 ```bash
 # Create load balancer
-o3k-octavia-cli lb create --name web-lb --vip-subnet-id <subnet-uuid>
+lightstack-octavia-cli lb create --name web-lb --vip-subnet-id <subnet-uuid>
 
 # Create listener
-o3k-octavia-cli listener create --name http-listener --protocol HTTP \
+lightstack-octavia-cli listener create --name http-listener --protocol HTTP \
   --protocol-port 80 --loadbalancer-id <lb-uuid>
 
 # Create pool
-o3k-octavia-cli pool create --name backend-pool --lb-algorithm ROUND_ROBIN \
+lightstack-octavia-cli pool create --name backend-pool --lb-algorithm ROUND_ROBIN \
   --listener-id <listener-uuid> --protocol HTTP
 
 # Add members
-o3k-octavia-cli member create backend-pool --address 192.168.1.10 --protocol-port 8080
-o3k-octavia-cli member create backend-pool --address 192.168.1.11 --protocol-port 8080
+lightstack-octavia-cli member create backend-pool --address 192.168.1.10 --protocol-port 8080
+lightstack-octavia-cli member create backend-pool --address 192.168.1.11 --protocol-port 8080
 
 # Create health monitor
-o3k-octavia-cli healthmonitor create --type HTTP --delay 5 --timeout 3 \
+lightstack-octavia-cli healthmonitor create --type HTTP --delay 5 --timeout 3 \
   --max-retries 3 --url-path /health --pool-id <pool-uuid>
 
 # Show stats
-o3k-octavia-cli lb stats <lb-uuid>
+lightstack-octavia-cli lb stats <lb-uuid>
 ```
 
 ## Testing Strategy
@@ -659,7 +659,7 @@ o3k-octavia-cli lb stats <lb-uuid>
 # test/integration/octavia_test.sh
 
 # Start HAProxy backend
-o3k-octavia --config test-config.yaml &
+lightstack-octavia --config test-config.yaml &
 
 # Create load balancer
 LB_ID=$(openstack loadbalancer create --name test-lb --vip-subnet-id $SUBNET_ID -f value -c id)

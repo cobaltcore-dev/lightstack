@@ -8,21 +8,21 @@ test and to spec requirements.
 
 ## Binary contracts (unit — `pkg/storage/image_store_test.go`)
 
-- **C-BIN-1 → FR-002, FR-003, INV-1**: `LocalImageDir()` returns `/var/lib/o3k/images`.
+- **C-BIN-1 → FR-002, FR-003, INV-1**: `LocalImageDir()` returns `/var/lib/lightstack/images`.
 - **C-BIN-2 → FR-002, FR-008**: `NewImageStore("local", …)` sets `localPath` to the canonical
-  `LocalImageDir()`; `localPath` is never a home-relative / `~/.o3k` path, regardless of whether the
+  `LocalImageDir()`; `localPath` is never a home-relative / `~/.lightstack` path, regardless of whether the
   canonical dir pre-exists.
 - **C-BIN-3 → FR-006**: behavior matches the existing volume contract (`ceph_test.go`:
-  `LocalVolumeDir()` / `CephClient.localPath` == `/var/lib/o3k/volumes`) — Glance is no longer an
+  `LocalVolumeDir()` / `CephClient.localPath` == `/var/lib/lightstack/volumes`) — Glance is no longer an
   outlier.
 
-## Chart contracts (helm-unittest — `charts/o3k/tests/init_host_storage_test.yaml`)
+## Chart contracts (helm-unittest — `charts/lightstack/tests/init_host_storage_test.yaml`)
 
-Rendered via the shared `o3k.podSpec` (covers `deployment.yaml` and `daemonset.yaml`).
+Rendered via the shared `lightstack.podSpec` (covers `deployment.yaml` and `daemonset.yaml`).
 
 - **C-CHART-1 → FR-001, US1-AC2**: with `realMode.enabled=true`, the pod spec contains an
   `initContainers` entry that:
-  - uses the o3k image and the configured `image.pullPolicy`;
+  - uses the Lightstack image and the configured `image.pullPolicy`;
   - runs a command that `mkdir -p`s `images`, `volumes`, `instances`, `cloud-init`, `dhcp` under
     `realMode.hostStoragePath`;
   - mounts the `host-storage` volume at `realMode.hostStoragePath`.
@@ -35,7 +35,7 @@ Rendered via the shared `o3k.podSpec` (covers `deployment.yaml` and `daemonset.y
 
 - **C-E2E-1 → SC-001/002/005, FR-004**: on a fresh real-mode deploy (no manual `mkdir`),
   `image create` then `server create --wait` reaches **ACTIVE**, and the base image resides at
-  `<base>/images/` (not `~/.o3k`).
+  `<base>/images/` (not `~/.lightstack`).
 - **C-E2E-2 → SC-003, US3**: after removing the node-local trees, a redeploy reaches **ACTIVE**
   again with no manual remediation (idempotence).
 

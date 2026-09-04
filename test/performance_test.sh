@@ -220,7 +220,7 @@ echo -e "${CYAN}=== Test 6: Memory Leak Detection ===${NC}"
 echo "Running repeated operations to detect memory leaks..."
 
 # Take initial snapshot
-INITIAL_CONNS=$(docker exec o3k-postgres psql -U o3k -d o3k -t -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pgx';" 2>/dev/null || echo "0")
+INITIAL_CONNS=$(docker exec lightstack-postgres psql -U lightstack -d lightstack -t -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pgx';" 2>/dev/null || echo "0")
 
 # Run 100 operations
 for i in {1..100}; do
@@ -230,7 +230,7 @@ done
 
 # Check final connections
 sleep 2
-FINAL_CONNS=$(docker exec o3k-postgres psql -U o3k -d o3k -t -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pgx';" 2>/dev/null || echo "0")
+FINAL_CONNS=$(docker exec lightstack-postgres psql -U lightstack -d lightstack -t -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pgx';" 2>/dev/null || echo "0")
 
 INITIAL_CONNS=$(echo $INITIAL_CONNS | xargs)
 FINAL_CONNS=$(echo $FINAL_CONNS | xargs)

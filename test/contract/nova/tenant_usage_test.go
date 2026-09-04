@@ -10,12 +10,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	contract "github.com/cobaltcore-dev/o3k/test/contract"
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 )
 
 // TestNovaListTenantUsage_Contract tests GET /v2.1/:project_id/os-simple-tenant-usage
 func TestNovaListTenantUsage_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -47,7 +47,7 @@ func TestNovaListTenantUsage_Contract(t *testing.T) {
 
 // TestNovaGetTenantUsage_Contract tests GET /v2.1/:project_id/os-simple-tenant-usage/:tenant_id
 func TestNovaGetTenantUsage_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

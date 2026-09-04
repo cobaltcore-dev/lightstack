@@ -46,7 +46,7 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-func skipIfO3KNotRunning(t *testing.T) {
+func skipIfLightstackNotRunning(t *testing.T) {
 	t.Helper()
 
 	// Just skip if environment variable explicitly says to skip
@@ -58,7 +58,7 @@ func skipIfO3KNotRunning(t *testing.T) {
 // TestKeystoneCreateUser_Contract tests POST /v3/users endpoint
 // Per Constitution Article III: This test must FAIL (RED) initially, then pass after implementation (GREEN)
 func TestKeystoneCreateUser_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -93,7 +93,7 @@ func TestKeystoneCreateUser_Contract(t *testing.T) {
 
 // TestKeystoneCreateUserWithEmail_Contract tests user creation with email
 func TestKeystoneCreateUserWithEmail_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -122,7 +122,7 @@ func TestKeystoneCreateUserWithEmail_Contract(t *testing.T) {
 
 // TestKeystoneCreateUserValidation_Contract tests input validation
 func TestKeystoneCreateUserValidation_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -141,7 +141,7 @@ func TestKeystoneCreateUserValidation_Contract(t *testing.T) {
 
 // TestKeystoneUpdateUser_Contract tests PATCH /v3/users/:id endpoint
 func TestKeystoneUpdateUser_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -173,7 +173,7 @@ func TestKeystoneUpdateUser_Contract(t *testing.T) {
 
 // TestKeystoneUpdateUserEnabled_Contract tests enabling/disabling users
 func TestKeystoneUpdateUserEnabled_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -209,7 +209,7 @@ func TestKeystoneUpdateUserEnabled_Contract(t *testing.T) {
 
 // TestKeystoneDeleteUser_Contract tests DELETE /v3/users/:id endpoint
 func TestKeystoneDeleteUser_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -235,7 +235,7 @@ func TestKeystoneDeleteUser_Contract(t *testing.T) {
 
 // TestKeystoneDeleteNonExistentUser_Contract tests 404 handling
 func TestKeystoneDeleteNonExistentUser_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 
@@ -250,7 +250,7 @@ func TestKeystoneDeleteNonExistentUser_Contract(t *testing.T) {
 
 // TestKeystoneGetUserProjects_Contract tests GET /v3/users/:id/projects endpoint
 func TestKeystoneGetUserProjects_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupClient(t)
 

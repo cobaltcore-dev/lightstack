@@ -14,7 +14,7 @@ import (
 
 // TestCinderCreateVolumeTypeExtraSpecs_Contract tests POST /v3/:project_id/types/:id/extra_specs
 func TestCinderCreateVolumeTypeExtraSpecs_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -60,7 +60,7 @@ func TestCinderCreateVolumeTypeExtraSpecs_Contract(t *testing.T) {
 
 // TestCinderGetVolumeTypeExtraSpecKey_Contract tests GET /v3/:project_id/types/:id/extra_specs/:key
 func TestCinderGetVolumeTypeExtraSpecKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -106,7 +106,7 @@ func TestCinderGetVolumeTypeExtraSpecKey_Contract(t *testing.T) {
 
 // TestCinderUpdateVolumeTypeExtraSpecKey_Contract tests PUT /v3/:project_id/types/:id/extra_specs/:key
 func TestCinderUpdateVolumeTypeExtraSpecKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -157,7 +157,7 @@ func TestCinderUpdateVolumeTypeExtraSpecKey_Contract(t *testing.T) {
 
 // TestCinderDeleteVolumeTypeExtraSpecKey_Contract tests DELETE /v3/:project_id/types/:id/extra_specs/:key
 func TestCinderDeleteVolumeTypeExtraSpecKey_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

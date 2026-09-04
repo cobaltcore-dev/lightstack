@@ -8,10 +8,10 @@
 |-------|--------|------|---------|---------|
 | `admin_user` | `config.go` → `KeystoneConfig.AdminUser` (yaml) | string | `admin` (when empty) | WS-2 |
 | `admin_password` | `config.go` → `KeystoneConfig.AdminPassword` (yaml) | string (secret) | _unset_ → boot with default + warn | WS-2 |
-| `O3K_ENDPOINT_SCHEME` | environment | `http` \| `https` (case-insensitive, trimmed) | `http` | WS-3 |
-| `O3K_ENDPOINT_HOST` | environment (existing) | string | `localhost` | WS-3 (composes) |
+| `LIGHTSTACK_ENDPOINT_SCHEME` | environment | `http` \| `https` (case-insensitive, trimmed) | `http` | WS-3 |
+| `LIGHTSTACK_ENDPOINT_HOST` | environment (existing) | string | `localhost` | WS-3 (composes) |
 
-`KeystoneConfig.AdminUser` / `AdminPassword` already exist (`internal/common/config.go:48-49`) — no struct change. `O3K_ENDPOINT_SCHEME` is read directly from the environment (mirrors `O3K_ENDPOINT_HOST`) — no struct field.
+`KeystoneConfig.AdminUser` / `AdminPassword` already exist (`internal/common/config.go:48-49`) — no struct change. `LIGHTSTACK_ENDPOINT_SCHEME` is read directly from the environment (mirrors `LIGHTSTACK_ENDPOINT_HOST`) — no struct field.
 
 ## Entities (existing tables — unchanged schema)
 
@@ -40,7 +40,7 @@
 
 ### Service / Endpoint — `services`, `endpoints` (`040_keystone_catalog`)
 - `endpoints`: `interface` (only `public` seeded), `url`, `region`
-- Stored `url` is `http://o3k:<port>/...` (seeded `localhost` in `040`, rewritten to `o3k:` by `052_fix_endpoint_hostnames`); the existing `O3K_ENDPOINT_HOST` rewrite maps `http://o3k:` → `http://<host>:`
+- Stored `url` is `http://lightstack:<port>/...` (seeded `localhost` in `040`, rewritten to `lightstack:` by `052_fix_endpoint_hostnames`); the existing `LIGHTSTACK_ENDPOINT_HOST` rewrite maps `http://lightstack:` → `http://<host>:`
 - WS-3 **reads only** and rewrites the URL *scheme at presentation time* (after the host rewrite); rows are never modified (FR-013)
 
 ## State transitions — admin provisioning (WS-2)

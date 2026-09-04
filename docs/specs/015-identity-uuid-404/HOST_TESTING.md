@@ -1,14 +1,14 @@
 # Host testing guide — SPEC-015 identity 404 for non-UUID ids
 
 End-to-end validation of the [cloud-storage#515](https://github.com/cobaltcore-dev/cloud-storage/issues/515)
-fix on a real host: o3k's Keystone identity lookups by path id return **404** (not
+fix on a real host: lightstack's Keystone identity lookups by path id return **404** (not
 **500**) for a non-UUID `{id}`, so the openstack CLI / Terraform **name→id
 resolution** works again.
 
-**Topology.** Dead simple — one o3k process + PostgreSQL, no libvirt/Ceph/clusters.
+**Topology.** Dead simple — one Lightstack process + PostgreSQL, no libvirt/Ceph/clusters.
 Keystone identity is DB-only, so **stub mode** (the default) exercises the fix fully;
 no real-mode root needed. Run **two shells**:
-- `# T1 - o3k` — the o3k server process.
+- `# T1 - lightstack` — the Lightstack server process.
 - `# T2 - client` — `curl` + the `openstack` CLI + `go test` + teardown.
 
 | Validates | Where |
@@ -35,18 +35,18 @@ openstack --version || pipx install python-openstackclient
 
 ---
 
-## 1. Setup — build o3k *with the fix* and start it
+## 1. Setup — build Lightstack *with the fix* and start it
 
 ```bash
-# T1 - o3k
-cd /home/fnk/code/sap/ora/o3k/bugfix/515
-make db-up                                   # PostgreSQL on :5432 (o3k/secret/o3k)
-make build                                   # → bin/o3k  (must be this branch, so it contains #515)
-./bin/o3k --config config/o3k.yaml           # foreground; auto-migrates + seeds admin/default on startup
+# T1 - lightstack
+cd /home/fnk/code/sap/ora/lightstack/bugfix/515
+make db-up                                   # PostgreSQL on :5432 (lightstack/secret/lightstack)
+make build                                   # → bin/lightstack  (must be this branch, so it contains #515)
+./bin/lightstack --config config/lightstack.yaml           # foreground; auto-migrates + seeds admin/default on startup
 # leave this running; logs stream here. Keystone listens on :35357.
 ```
 **Pass** = the log shows the services starting and `keystone` listening on `:35357`
-(no crash). o3k applies migrations and seeds the `admin` user (password `secret`) +
+(no crash). Lightstack applies migrations and seeds the `admin` user (password `secret`) +
 `default` project on first start.
 
 > Running the *built binary from this branch* is the whole point — a released image
@@ -59,7 +59,7 @@ make build                                   # → bin/o3k  (must be this branch
 
 ```bash
 # T2 - client
-cat > ~/.o3k-env <<'EOF'
+cat > ~/.lightstack-env <<'EOF'
 export OS_AUTH_URL=http://127.0.0.1:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
@@ -68,7 +68,7 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 EOF
-source ~/.o3k-env
+source ~/.lightstack-env
 TOKEN=$(openstack token issue -f value -c id) && echo "auth OK"
 H=(-H "X-Auth-Token: $TOKEN")
 ```
@@ -158,26 +158,26 @@ openstack role add --project default --user admin admin   # references project/r
 
 ```bash
 # T2 - client  (repo root; a DB is up from §1)
-export O3K_TEST_DB_URL='postgres://o3k:secret@localhost:5432/o3k?sslmode=disable'
+export LIGHTSTACK_TEST_DB_URL='postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable'
 go test ./internal/common/... ./internal/keystone/...     # DB-backed identity 404 tests
-./test/keystone_name_resolution_test.sh                   # needs §1 o3k running + §2 env
+./test/keystone_name_resolution_test.sh                   # needs §1 lightstack running + §2 env
 ```
 **Pass** = both green. (The DB-backed tests migrate + create/clean their own rows on the
-`O3K_TEST_DB_URL` database.)
+`LIGHTSTACK_TEST_DB_URL` database.)
 
 ---
 
 ## 7. Teardown
 
 ```bash
-# T1 - o3k
-# Ctrl-C the o3k process (or: pkill -f 'bin/o3k')
+# T1 - lightstack
+# Ctrl-C the lightstack process (or: pkill -f 'bin/lightstack')
 
 # T2 - client
 make db-down                              # stop + remove the PostgreSQL container (drops all test data, incl. user bob)
-rm -f ~/.o3k-env                          # optional
+rm -f ~/.lightstack-env                          # optional
 ```
-**Pass** = the o3k process is stopped and `docker ps` shows no `o3k-postgres`. Because
+**Pass** = the Lightstack process is stopped and `docker ps` shows no `lightstack-postgres`. Because
 `make db-down` removes the database, the §4 `bob` user and any other test rows are gone —
 no manual cleanup needed. (If you kept the DB, delete them: `openstack user delete bob`.)
 
@@ -186,21 +186,21 @@ no manual cleanup needed. (If you kept the DB, delete them: `openstack user dele
 ## 8. Troubleshooting
 
 - **Still getting `500` on a malformed id** → you're not running the branch build. Rebuild
-  (`make build`) and confirm `bin/o3k` came from a `#515` commit; restart §1.
-- **`Failed to bind :35357: address already in use`** → a prior o3k already holds the port —
-  commonly a **real-mode / `hostNetwork` o3k on k3s** from earlier host-testing (its process
-  is `/app/o3k` with a `kubepods…cri-containerd` cgroup; find it via `pgrep -af o3k`). Scale it
-  to 0 (`sudo k3s kubectl -n <ns> scale deploy/<o3k> --replicas=0`) or `helm uninstall` it, then
+  (`make build`) and confirm `bin/lightstack` came from a `#515` commit; restart §1.
+- **`Failed to bind :35357: address already in use`** → a prior Lightstack already holds the port —
+  commonly a **real-mode / `hostNetwork` Lightstack on k3s** from earlier host-testing (its process
+  is `/app/lightstack` with a `kubepods…cri-containerd` cgroup; find it via `pgrep -af lightstack`). Scale it
+  to 0 (`sudo k3s kubectl -n <ns> scale deploy/<lightstack> --replicas=0`) or `helm uninstall` it, then
   start the host binary.
-- **`401 invalid credentials` from `openstack token issue`** even though `config/o3k.yaml` has
-  `admin_password: secret` → the DB's admin password was overwritten. Most often a **second o3k
+- **`401 invalid credentials` from `openstack token issue`** even though `config/lightstack.yaml` has
+  `admin_password: secret` → the DB's admin password was overwritten. Most often a **second Lightstack
   sharing this host Postgres** — a `hostNetwork` k3s deploy also reaches `127.0.0.1:5432` — has
   re-bootstrapped *its own* admin password into the shared DB. Stop that instance, then
   `make db-down && make db-up` so the host binary is the **sole writer** and re-seeds
   `admin`/`secret`. (Or simply an expired token — re-run §2.)
-- **`curl: connection refused` to `:35357`** → o3k isn't up yet; watch the §1 log until
+- **`curl: connection refused` to `:35357`** → Lightstack isn't up yet; watch the §1 log until
   Keystone is listening.
 - **`openstack project show default` still shows `HttpException 500`** → the by-id probe
   is still 500ing — the fix isn't in the running binary (see the first item).
-- **`go test` all `SKIP`** → `O3K_TEST_DB_URL` isn't exported (§6); the DB-backed tests
+- **`go test` all `SKIP`** → `LIGHTSTACK_TEST_DB_URL` isn't exported (§6); the DB-backed tests
   skip without it.

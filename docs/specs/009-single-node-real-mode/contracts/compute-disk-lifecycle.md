@@ -6,7 +6,7 @@ External interface = OpenStack Compute (Nova) v2.1 + Image (Glance) v2, exercise
 
 | ID | Given | When | Then |
 |----|-------|------|------|
-| C-WS0-1 | real mode, an uploaded image | `openstack server create --image IMG --flavor F vm1` | server → `ACTIVE`; a real libvirt domain exists; its disk is `/var/lib/o3k/instances/<id>/disk.qcow2`, a qcow2 overlay whose backing file is `/var/lib/o3k/images/image-<imgid>.raw`. No disk-path/"image not found" error. |
+| C-WS0-1 | real mode, an uploaded image | `openstack server create --image IMG --flavor F vm1` | server → `ACTIVE`; a real libvirt domain exists; its disk is `/var/lib/lightstack/instances/<id>/disk.qcow2`, a qcow2 overlay whose backing file is `/var/lib/lightstack/images/image-<imgid>.raw`. No disk-path/"image not found" error. |
 | C-WS0-2 | one image | create `vm1` and `vm2` from it | each has its own overlay; writing inside `vm1` is not visible in `vm2` or in the base image. |
 | C-WS0-3 | `vm1` uses image `IMG` | `openstack image delete IMG` | rejected, HTTP 409 "image in use"; `IMG` still usable. |
 | C-WS0-4 | running `vm1` | `openstack server delete vm1` | `instances/<id>/` removed; base image `IMG` intact. |

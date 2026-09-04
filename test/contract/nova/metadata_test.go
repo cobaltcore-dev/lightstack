@@ -45,7 +45,7 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-func skipIfO3KNotRunning(t *testing.T) {
+func skipIfLightstackNotRunning(t *testing.T) {
 	t.Helper()
 	if os.Getenv("SKIP_CONTRACT_TESTS") == "1" {
 		t.Skip("Contract tests skipped (SKIP_CONTRACT_TESTS=1)")
@@ -54,7 +54,7 @@ func skipIfO3KNotRunning(t *testing.T) {
 
 // TestNovaServerMetadataList_Contract tests GET /v2.1/{project_id}/servers/{server_id}/metadata
 func TestNovaServerMetadataList_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -85,7 +85,7 @@ func TestNovaServerMetadataList_Contract(t *testing.T) {
 // TestNovaServerMetadataCreate_Contract tests POST /v2.1/{project_id}/servers/{server_id}/metadata
 // Note: gophercloud uses UpdateMetadata for both create and update operations
 func TestNovaServerMetadataCreate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -118,7 +118,7 @@ func TestNovaServerMetadataCreate_Contract(t *testing.T) {
 // TestNovaServerMetadataUpdate_Contract tests PUT /v2.1/{project_id}/servers/{server_id}/metadata
 // Note: gophercloud uses ResetMetadata for replacing all metadata
 func TestNovaServerMetadataUpdate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -154,7 +154,7 @@ func TestNovaServerMetadataUpdate_Contract(t *testing.T) {
 
 // TestNovaServerMetadataDeleteKeyNotFound_Contract tests 404 handling
 func TestNovaServerMetadataDeleteKeyNotFound_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

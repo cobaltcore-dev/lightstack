@@ -13,7 +13,7 @@ import (
 
 // TestCinderGetQuotaSet_Contract tests GET /v3/:project/quota-sets/:id
 func TestCinderGetQuotaSet_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -45,7 +45,7 @@ func TestCinderGetQuotaSet_Contract(t *testing.T) {
 
 // TestCinderUpdateQuotaSet_Contract tests PUT /v3/:project/quota-sets/:id
 func TestCinderUpdateQuotaSet_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 
@@ -87,7 +87,7 @@ func TestCinderUpdateQuotaSet_Contract(t *testing.T) {
 
 // TestCinderDeleteQuotaSet_Contract tests DELETE /v3/:project/quota-sets/:id
 func TestCinderDeleteQuotaSet_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupCinderClient(t)
 

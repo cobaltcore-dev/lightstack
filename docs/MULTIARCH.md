@@ -1,6 +1,6 @@
 # Multi-Architecture Support Guide
 
-O3K supports both **ARM64** (Apple Silicon, AWS Graviton, Raspberry Pi 4+) and **AMD64** (Intel/AMD) architectures with native performance and automatic platform detection.
+Lightstack supports both **ARM64** (Apple Silicon, AWS Graviton, Raspberry Pi 4+) and **AMD64** (Intel/AMD) architectures with native performance and automatic platform detection.
 
 ---
 
@@ -44,16 +44,16 @@ O3K supports both **ARM64** (Apple Silicon, AWS Graviton, Raspberry Pi 4+) and *
 The simplest approach - automatically detects your architecture:
 
 ```bash
-cd /path/to/o3k
+cd /path/to/lightstack
 
 # Using convenience script
 ./deployments/docker/build-local.sh
 
 # Or with Docker Compose
-docker compose build o3k
+docker compose build lightstack
 
 # Or manually
-docker build -f deployments/docker/Dockerfile -t o3k:latest .
+docker build -f deployments/docker/Dockerfile -t lightstack:latest .
 ```
 
 ### Use with Docker Compose
@@ -84,11 +84,11 @@ ARG TARGETARCH    # Target arch (arm64 or amd64)
 
 # Cross-compile for target architecture
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-w -s" -o o3k ./cmd/o3k
+    go build -ldflags="-w -s" -o lightstack ./cmd/lightstack
 
 # Runtime stage - uses target architecture
 FROM alpine:3.19
-COPY --from=builder /build/o3k /app/o3k
+COPY --from=builder /build/lightstack /app/lightstack
 ```
 
 ### Build Flow
@@ -137,13 +137,13 @@ Build only for your current platform:
 **Manual:**
 ```bash
 # Automatic platform detection
-docker build -f deployments/docker/Dockerfile -t o3k:latest .
+docker build -f deployments/docker/Dockerfile -t lightstack:latest .
 
 # Explicit platform
 docker build \
   --platform linux/arm64 \
   -f deployments/docker/Dockerfile \
-  -t o3k:arm64 \
+  -t lightstack:arm64 \
   .
 ```
 
@@ -161,14 +161,14 @@ docker buildx inspect --bootstrap
 
 **Build and push:**
 ```bash
-./deployments/docker/build-multiarch.sh yourusername/o3k latest true
+./deployments/docker/build-multiarch.sh yourusername/lightstack latest true
 ```
 
 **Or manually:**
 ```bash
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  -t yourusername/o3k:latest \
+  -t yourusername/lightstack:latest \
   --push \
   -f deployments/docker/Dockerfile \
   .
@@ -178,7 +178,7 @@ docker buildx build \
 
 ```bash
 # Pull on any platform - gets correct architecture automatically
-docker pull yourusername/o3k:latest
+docker pull yourusername/lightstack:latest
 
 # On ARM Mac → gets ARM64 image
 # On Intel/AMD → gets AMD64 image
@@ -194,7 +194,7 @@ Build for both architectures but keep locally:
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -f deployments/docker/Dockerfile \
-  -t o3k:multiarch \
+  -t lightstack:multiarch \
   .
 ```
 
@@ -204,7 +204,7 @@ docker buildx build \
 docker buildx build \
   --platform linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
   --load \
-  -t o3k:latest \
+  -t lightstack:latest \
   -f deployments/docker/Dockerfile \
   .
 ```
@@ -217,7 +217,7 @@ docker buildx build \
 
 ```bash
 # Inspect built image
-docker inspect o3k:latest | jq '.[0].Architecture'
+docker inspect lightstack:latest | jq '.[0].Architecture'
 
 # Output examples:
 # "arm64"  → ARM64 image
@@ -228,7 +228,7 @@ docker inspect o3k:latest | jq '.[0].Architecture'
 
 ```bash
 # Check container architecture
-docker exec o3k uname -m
+docker exec lightstack uname -m
 
 # Output examples:
 # "aarch64" → ARM64 (running natively on ARM)
@@ -239,10 +239,10 @@ docker exec o3k uname -m
 
 ```bash
 # Run quick test
-docker run --rm o3k:latest uname -m
+docker run --rm lightstack:latest uname -m
 
 # Or inside running container
-docker exec o3k /bin/sh -c "uname -m"
+docker exec lightstack /bin/sh -c "uname -m"
 ```
 
 ### Check Multi-Arch Manifest
@@ -250,7 +250,7 @@ docker exec o3k /bin/sh -c "uname -m"
 For images pushed to registry:
 
 ```bash
-docker manifest inspect yourusername/o3k:latest
+docker manifest inspect yourusername/lightstack:latest
 ```
 
 **Expected output:**
@@ -283,7 +283,7 @@ docker manifest inspect yourusername/o3k:latest
 docker build \
   --platform linux/arm64 \
   -f deployments/docker/Dockerfile \
-  -t o3k:arm64 \
+  -t lightstack:arm64 \
   .
 ```
 
@@ -295,7 +295,7 @@ docker build \
 docker build \
   --platform linux/amd64 \
   -f deployments/docker/Dockerfile \
-  -t o3k:amd64 \
+  -t lightstack:amd64 \
   .
 ```
 
@@ -305,14 +305,14 @@ docker build \
 
 ```bash
 # Build for different platform
-docker build --platform linux/amd64 -t o3k:amd64 -f deployments/docker/Dockerfile .
+docker build --platform linux/amd64 -t lightstack:amd64 -f deployments/docker/Dockerfile .
 
 # Run with platform override (uses emulation)
-docker run --rm --platform linux/amd64 o3k:amd64 uname -m
+docker run --rm --platform linux/amd64 lightstack:amd64 uname -m
 # Output: x86_64 (even on ARM Mac!)
 
 # Verify it works
-docker run --rm --platform linux/amd64 o3k:amd64 /app/o3k --help
+docker run --rm --platform linux/amd64 lightstack:amd64 /app/lightstack --help
 ```
 
 ---
@@ -348,7 +348,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: yourusername/o3k
+          images: yourusername/lightstack
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -403,8 +403,8 @@ pipeline {
                     docker buildx build \
                         --platform linux/amd64,linux/arm64 \
                         --push \
-                        -t yourusername/o3k:${BUILD_NUMBER} \
-                        -t yourusername/o3k:latest \
+                        -t yourusername/lightstack:${BUILD_NUMBER} \
+                        -t yourusername/lightstack:latest \
                         -f deployments/docker/Dockerfile \
                         .
                 '''
@@ -461,20 +461,20 @@ Emulated AMD64 on Apple M2:
 
 **Symptom:**
 ```bash
-docker run o3k:latest
+docker run lightstack:latest
 # standard_init_linux.go:228: exec user process caused: exec format error
 ```
 
 **Solution:**
 ```bash
 # Option 1: Rebuild for your platform
-docker compose build o3k
+docker compose build lightstack
 
 # Option 2: Specify platform explicitly
-docker run --platform linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') o3k:latest
+docker run --platform linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') lightstack:latest
 
 # Option 3: Use multi-arch image from registry
-docker pull yourusername/o3k:latest  # Auto-selects correct arch
+docker pull yourusername/lightstack:latest  # Auto-selects correct arch
 ```
 
 ### Slow Build Times on Cross-Compilation
@@ -556,7 +556,7 @@ docker buildx ls
 - Legacy infrastructure
 - Maximum software compatibility
 
-### O3K Multi-Arch Benefits
+### Lightstack Multi-Arch Benefits
 
 - ✅ **Zero code changes** - Pure Go, no architecture-specific code
 - ✅ **Single codebase** - Same source builds for both platforms
@@ -572,7 +572,7 @@ docker buildx ls
 
 ```bash
 # Local development: Use native build (fast)
-docker compose build o3k
+docker compose build lightstack
 docker compose up -d
 ```
 
@@ -583,7 +583,7 @@ docker compose up -d
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --push \
-  -t yourusername/o3k:${VERSION} \
+  -t yourusername/lightstack:${VERSION} \
   .
 ```
 
@@ -592,8 +592,8 @@ docker buildx build \
 ```yaml
 # docker-compose.yml
 services:
-  o3k:
-    image: yourusername/o3k:latest  # Multi-arch manifest
+  lightstack:
+    image: yourusername/lightstack:latest  # Multi-arch manifest
     # No platform specified - auto-detects!
 ```
 
@@ -601,14 +601,14 @@ services:
 
 ```bash
 # Test both architectures before release
-docker buildx build --platform linux/amd64,linux/arm64 -t o3k:test .
+docker buildx build --platform linux/amd64,linux/arm64 -t lightstack:test .
 
 # Load and test each
-docker buildx build --platform linux/amd64 --load -t o3k:amd64 .
-docker run --rm o3k:amd64 /app/o3k --help
+docker buildx build --platform linux/amd64 --load -t lightstack:amd64 .
+docker run --rm lightstack:amd64 /app/lightstack --help
 
-docker buildx build --platform linux/arm64 --load -t o3k:arm64 .
-docker run --rm o3k:arm64 /app/o3k --help
+docker buildx build --platform linux/arm64 --load -t lightstack:arm64 .
+docker run --rm lightstack:arm64 /app/lightstack --help
 ```
 
 ---

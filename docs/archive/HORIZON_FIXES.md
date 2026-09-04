@@ -17,18 +17,18 @@
 
 ### 2. Neutron Endpoint - Double /v2.0/ in URLs
 **Symptom**: Network topology and other Neutron endpoints failing with 404
-**Root Cause**: Service catalog had endpoint URL as `http://o3k:9696/v2.0`, but neutronclient automatically adds `/v2.0/` prefix, resulting in `/v2.0/v2.0/...` double prefix
-**Fix**: Updated Neutron endpoint in database to `http://o3k:9696` (without `/v2.0` suffix)
+**Root Cause**: Service catalog had endpoint URL as `http://lightstack:9696/v2.0`, but neutronclient automatically adds `/v2.0/` prefix, resulting in `/v2.0/v2.0/...` double prefix
+**Fix**: Updated Neutron endpoint in database to `http://lightstack:9696` (without `/v2.0` suffix)
 
 **SQL Fix**:
 ```sql
-UPDATE endpoints SET url = 'http://o3k:9696' WHERE url LIKE '%:9696/v2.0';
+UPDATE endpoints SET url = 'http://lightstack:9696' WHERE url LIKE '%:9696/v2.0';
 ```
 
 **Verification**:
 ```bash
 curl -s -X POST http://10.2.199.101:35357/v3/auth/tokens ... | jq '.token.catalog[] | select(.type == "network")'
-# Should show: {"url": "http://o3k:9696"} (no /v2.0 suffix)
+# Should show: {"url": "http://lightstack:9696"} (no /v2.0 suffix)
 ```
 
 ### 3. Added Debug Logging
@@ -41,11 +41,11 @@ curl -s -X POST http://10.2.199.101:35357/v3/auth/tokens ... | jq '.token.catalo
 **Status**: Not resolved yet
 **Symptoms**:
 - HTTP 500 error when accessing `/dashboard/project/network_topology/`
-- No requests reaching O3K backend
+- No requests reaching Lightstack backend
 - No Python tracebacks in Apache error.log
 
 **Possible Causes**:
-1. Horizon unable to resolve `o3k` hostname (Docker service name)
+1. Horizon unable to resolve `lightstack` hostname (Docker service name)
 2. Python exception in Horizon before API calls are made
 3. Cached session data in Memcached (already flushed with `flush_all`)
 4. Missing or misconfigured Neutron extensions
@@ -58,31 +58,31 @@ curl -s -X POST http://10.2.199.101:35357/v3/auth/tokens ... | jq '.token.catalo
 
 ### Service Catalog Endpoint Format
 All OpenStack endpoints should NOT include the API version in the base URL:
-- ✅ Correct: `http://o3k:9696` (neutronclient adds `/v2.0/`)
-- ❌ Wrong: `http://o3k:9696/v2.0` (results in double prefix)
+- ✅ Correct: `http://lightstack:9696` (neutronclient adds `/v2.0/`)
+- ❌ Wrong: `http://lightstack:9696/v2.0` (results in double prefix)
 
 This applies to:
-- Neutron: `http://o3k:9696` (not `/v2.0`)
-- Nova: `http://o3k:8774/v2.1/{project_id}` (version in path is ok here)
-- Glance: `http://o3k:9292` (not `/v2`)
-- Cinder: `http://o3k:8776/v3/{project_id}` (version in path is ok here)
+- Neutron: `http://lightstack:9696` (not `/v2.0`)
+- Nova: `http://lightstack:8774/v2.1/{project_id}` (version in path is ok here)
+- Glance: `http://lightstack:9292` (not `/v2`)
+- Cinder: `http://lightstack:8776/v3/{project_id}` (version in path is ok here)
 
 ## Testing Commands
 
 ```bash
 # Clear Memcached cache
-docker exec o3k-memcached sh -c "echo 'flush_all' | nc localhost 11211"
+docker exec lightstack-memcached sh -c "echo 'flush_all' | nc localhost 11211"
 
 # Check Neutron endpoint in service catalog
-docker exec o3k-postgres psql -U o3k -d o3k -c "SELECT name, type, url FROM endpoints JOIN services ON endpoints.service_id = services.id WHERE type = 'network';"
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "SELECT name, type, url FROM endpoints JOIN services ON endpoints.service_id = services.id WHERE type = 'network';"
 
 # Test quota details endpoint directly
 TOKEN=$(openstack token issue -f value -c id)
 PROJECT_ID=$(openstack token issue -f value -c project_id)
 curl -H "X-Auth-Token: $TOKEN" http://10.2.199.101:9696/v2.0/quotas/$PROJECT_ID/details
 
-# Monitor O3K logs for incoming requests
-docker logs o3k --follow | grep -E "(GET|POST|PUT|DELETE)"
+# Monitor lightstack logs for incoming requests
+docker logs lightstack --follow | grep -E "(GET|POST|PUT|DELETE)"
 ```
 
 ## Next Steps
@@ -90,7 +90,7 @@ docker logs o3k --follow | grep -E "(GET|POST|PUT|DELETE)"
 1. Check if issue persists after clean redeploy
 2. If error persists, capture full 500 error response HTML from browser DevTools
 3. Enable Django debug output in Horizon to see Python tracebacks
-4. Check if `o3k` hostname resolves correctly from Horizon container
+4. Check if `lightstack` hostname resolves correctly from Horizon container
 5. Verify all service endpoints in catalog match recommended format
 
 ## Commit Reference

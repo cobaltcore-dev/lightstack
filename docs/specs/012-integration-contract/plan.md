@@ -5,15 +5,15 @@
 
 ## Summary
 
-Formalize the Helm interface **sci-in-a-box** uses to drive o3k's lifecycle:
+Formalize the Helm interface **sci-in-a-box** uses to drive lightstack's lifecycle:
 
-1. **Input contract** — complete `charts/o3k/values.schema.json` so it documents *and* structurally
+1. **Input contract** — complete `charts/lightstack/values.schema.json` so it documents *and* structurally
    validates every input, rejecting invalid configuration before execution.
 2. **Output/status contract** — define a deterministic, documented recipe mapping `helm status` +
    pod readiness → Provisioning/Ready/Failed (Failed = timeout **or** terminal failure), and
    **identity-anchored** endpoint resolution (guarantee the Keystone `/v3` endpoint; the other five
    services come from the OpenStack service catalog).
-3. **Publication** — a single `charts/o3k/CONTRACT.md` tying inputs to outputs, linked from the
+3. **Publication** — a single `charts/lightstack/CONTRACT.md` tying inputs to outputs, linked from the
    README and shipped in the chart package.
 
 This is **finish-and-formalize** over the existing chart (SPEC-007/008/009/010/011): no Go/runtime
@@ -27,9 +27,9 @@ schema-rejection tests go RED before the schema is completed.
 **Language/Version**: Helm 3.12+ chart (Go `text/template`); JSON Schema **draft-07**; Markdown docs. No Go code changes.
 **Primary Dependencies**: Helm's built-in `values.schema.json` validation + release-status/pod-readiness reporting; the **helm-unittest** plugin (existing harness). No new Go modules, no chart dependencies.
 **Storage**: N/A — the external PostgreSQL is the product's and is untouched; this feature adds no schema or migration.
-**Testing**: helm-unittest (`charts/o3k/tests/*_test.yaml`) + `charts/o3k/ci/run-tests.sh` (helm lint / template permutations / unittest); optional kind/k3s smoke (`test/helm_*`).
+**Testing**: helm-unittest (`charts/lightstack/tests/*_test.yaml`) + `charts/lightstack/ci/run-tests.sh` (helm lint / template permutations / unittest); optional kind/k3s smoke (`test/helm_*`).
 **Target Platform**: Kubernetes ≥1.25 / k3s; consumed by the sci-in-a-box orchestrator via Helm.
-**Project Type**: Helm chart + documentation — single deliverable area (`charts/o3k/` + this spec dir).
+**Project Type**: Helm chart + documentation — single deliverable area (`charts/lightstack/` + this spec dir).
 **Performance Goals**: Validation is install-time (negligible). Status detection is bounded by the orchestrator's `helm --wait --timeout` (operator-set). No runtime performance impact.
 **Constraints**: Contract-only — MUST NOT change runtime behavior. `additionalProperties: false` requires the schema to cover every key the chart reads, or installs break → guarded by a drift/coverage test. Must render in both **stub** and **real** modes. Multi-node cross-node behavior stays deferred (#52), documented as a caveat.
 **Scale/Scope**: One chart; ~22 top-level value groups; 6 services; 2 topologies (Deployment / DaemonSet); 1 published contract document.
@@ -71,7 +71,7 @@ docs/specs/012-integration-contract/
 ### Source Code (repository root)
 
 ```text
-charts/o3k/
+charts/lightstack/
 ├── values.schema.json     # COMPLETE: description on every property; model database, secrets,
 │                          #   cinder/glance (storageMode enums), ingress, multiNode, realMode,
 │                          #   cache, endpointHost, podSecurity, service, logging; image.tag = the
@@ -91,7 +91,7 @@ charts/o3k/
 
 No Go source changes; no migrations; no new dependencies.
 
-**Structure Decision**: Single deliverable area — the existing `charts/o3k/` chart plus this feature's
+**Structure Decision**: Single deliverable area — the existing `charts/lightstack/` chart plus this feature's
 `docs/specs/012-integration-contract/`. The published contract is the chart's `CONTRACT.md`; the
 schema completion and tests live in the chart; the planning/definition artifacts live under the spec
 directory. The two `contracts/*.md` files are the *definition* of the interface; `CONTRACT.md` is the

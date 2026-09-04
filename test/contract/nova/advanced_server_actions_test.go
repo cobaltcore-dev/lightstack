@@ -13,7 +13,7 @@ import (
 
 // TestNovaMigrateServer_Contract tests POST /v2.1/servers/:id/action (migrate)
 func TestNovaMigrateServer_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -67,7 +67,7 @@ func TestNovaMigrateServer_Contract(t *testing.T) {
 
 // TestNovaRestoreInstance_Contract tests POST /v2.1/servers/:id/action (restore)
 func TestNovaRestoreInstance_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -107,7 +107,7 @@ func TestNovaRestoreInstance_Contract(t *testing.T) {
 
 // TestNovaCreateBackup_Contract tests POST /v2.1/servers/:id/action (createBackup)
 func TestNovaCreateBackup_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -151,7 +151,7 @@ func TestNovaCreateBackup_Contract(t *testing.T) {
 
 // TestNovaResetState_Contract tests POST /v2.1/servers/:id/action (os-resetState)
 func TestNovaResetState_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -187,7 +187,7 @@ func TestNovaResetState_Contract(t *testing.T) {
 
 // TestNovaResetNetwork_Contract tests POST /v2.1/servers/:id/action (os-resetNetwork)
 func TestNovaResetNetwork_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

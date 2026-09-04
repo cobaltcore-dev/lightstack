@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cobaltcore-dev/o3k/internal/common"
-	"github.com/cobaltcore-dev/o3k/internal/database"
-	"github.com/cobaltcore-dev/o3k/internal/middleware"
-	"github.com/cobaltcore-dev/o3k/internal/neutron"
-	"github.com/cobaltcore-dev/o3k/pkg/cache"
-	"github.com/cobaltcore-dev/o3k/pkg/hypervisor"
-	"github.com/cobaltcore-dev/o3k/pkg/storage"
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/middleware"
+	"github.com/cobaltcore-dev/lightstack/internal/neutron"
+	"github.com/cobaltcore-dev/lightstack/pkg/cache"
+	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
+	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -570,7 +570,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// Root disk = the bootable volume's backing, selected exactly like the
 				// attach path (volumeDiskXML): if the node-local qcow2 exists it's a
 				// local volume; otherwise it's RBD (rbd:pool/image, which GenerateVMXML
-				// renders as a network disk). Do NOT key off rbd_pool/rbd_image — o3k
+				// renders as a network disk). Do NOT key off rbd_pool/rbd_image — Lightstack
 				// sets those defaults on every volume, local ones included, so they
 				// can't distinguish the backend (SPEC-009 WS-5). Local is the validated
 				// v1 mode; the RBD branch shares the (Ceph-untested) attach RBD path.
@@ -1635,7 +1635,7 @@ func (svc *Service) ListHypervisors(c *gin.Context) {
 	c.JSON(200, gin.H{"hypervisors": []gin.H{
 		{
 			"id":                  1,
-			"hypervisor_hostname": "o3k-node-1",
+			"hypervisor_hostname": "lightstack-node-1",
 			"state":               "up",
 			"status":              "enabled",
 			"hypervisor_type":     "QEMU",
@@ -1660,7 +1660,7 @@ func (svc *Service) ListHypervisorsDetail(c *gin.Context) {
 	c.JSON(200, gin.H{"hypervisors": []gin.H{
 		{
 			"id":                  1,
-			"hypervisor_hostname": "o3k-node-1",
+			"hypervisor_hostname": "lightstack-node-1",
 			"state":               "up",
 			"status":              "enabled",
 			"vcpus":               16,
@@ -1784,7 +1784,7 @@ func (svc *Service) ListAvailabilityZonesDetail(c *gin.Context) {
 			"zoneName":  "nova",
 			"zoneState": gin.H{"available": true},
 			"hosts": gin.H{
-				"o3k-compute-1": gin.H{
+				"lightstack-compute-1": gin.H{
 					"nova-compute": gin.H{
 						"active":    true,
 						"available": true,
@@ -1911,7 +1911,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 			{
 				"id":              1,
 				"binary":          "nova-compute",
-				"host":            "o3k-compute-1",
+				"host":            "lightstack-compute-1",
 				"zone":            "nova",
 				"status":          "enabled",
 				"state":           "up",
@@ -1922,7 +1922,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 			{
 				"id":              2,
 				"binary":          "nova-scheduler",
-				"host":            "o3k-controller",
+				"host":            "lightstack-controller",
 				"zone":            "internal",
 				"status":          "enabled",
 				"state":           "up",
@@ -1933,7 +1933,7 @@ func (svc *Service) ListServices(c *gin.Context) {
 			{
 				"id":              3,
 				"binary":          "nova-conductor",
-				"host":            "o3k-controller",
+				"host":            "lightstack-controller",
 				"zone":            "internal",
 				"status":          "enabled",
 				"state":           "up",

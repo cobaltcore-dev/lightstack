@@ -1,0 +1,32 @@
+{{- if eq .Values.deploymentMode "single-node" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightstack.fullname" . }}
+  labels:
+    {{- include "lightstack.labels" . | nindent 4 }}
+spec:
+  # Real mode pins one replica (privileged + hostNetwork + host ports cannot overlap);
+  # stub mode may scale (all state in the DB). FR-003b.
+  replicas: {{ if .Values.realMode.enabled }}1{{ else }}{{ .Values.replicaCount }}{{ end }}
+  {{- if .Values.realMode.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "lightstack.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lightstack.selectorLabels" . | nindent 8 }}
+      {{- if not .Values.secrets.existingSecret }}
+      annotations:
+        # Roll the pod when the chart-rendered config changes. Omitted when an
+        # external Secret is used — the chart can't hash a Secret it doesn't render,
+        # so rollout on change is the operator's responsibility there.
+        checksum/config: {{ include "lightstack.config" . | sha256sum }}
+      {{- end }}
+    spec:
+      {{- include "lightstack.podSpec" . | nindent 6 }}
+{{- end }}

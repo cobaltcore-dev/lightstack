@@ -19,10 +19,10 @@ import (
 // tenant's RGW namespace (cross-tenant breach).
 //
 // Per Constitution Art III this test is RED before the self-or-admin guard is added
-// to the handlers (o3k currently returns 200/201 to the cross-user calls) and GREEN
-// after. It mirrors the guard o3k already uses in ChangePassword (handlers.go).
+// to the handlers (Lightstack currently returns 200/201 to the cross-user calls) and GREEN
+// after. It mirrors the guard Lightstack already uses in ChangePassword (handlers.go).
 func TestKeystoneEC2Credential_CrossUserForbidden_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 	client := setupKeystoneClient(t)
 
 	const adminUID = "00000000-0000-0000-0000-000000000001"  // seeded admin
@@ -82,7 +82,7 @@ func doJSON(t *testing.T, method, url, token string, body []byte) (int, []byte) 
 }
 
 // createMemberUser creates a user with the `member` role in projectID and returns
-// its id plus a project-scoped token. Uses IDs throughout (o3k's GET-by-name 500s).
+// its id plus a project-scoped token. Uses IDs throughout (Lightstack's GET-by-name 500s).
 func createMemberUser(t *testing.T, client *gophercloud.ServiceClient, projectID, name, password string) (string, string) {
 	t.Helper()
 

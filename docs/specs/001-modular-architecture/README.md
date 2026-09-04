@@ -8,7 +8,7 @@
 
 ## Overview
 
-Transform O3K from a monolithic single-binary system into a truly modular OpenStack alternative where each service (Keystone, Nova, Neutron, Cinder, Glance, Barbican, Designate, Octavia) is independently deployable, developable, and testable.
+Transform Lightstack from a monolithic single-binary system into a truly modular OpenStack alternative where each service (Keystone, Nova, Neutron, Cinder, Glance, Barbican, Designate, Octavia) is independently deployable, developable, and testable.
 
 **Critical Requirement**: Every milestone must maintain 100% OpenStack API compatibility per SPEC-000.
 
@@ -54,7 +54,7 @@ Each service must:
 
 **Current (Monolithic)**:
 ```
-cmd/o3k/main.go → Single Process
+cmd/lightstack/main.go → Single Process
   ├─ Keystone HTTP Server (port 35357)
   ├─ Nova HTTP Server (port 8774)
   ├─ Neutron HTTP Server (port 9696)
@@ -68,21 +68,21 @@ Shared: database.DB, middleware, config
 **Target (Modular)**:
 ```
 cmd/
-├─ o3k-keystone/main.go → Standalone binary
-├─ o3k-nova/main.go → Standalone binary
-├─ o3k-neutron/main.go → Standalone binary
-├─ o3k-cinder/main.go → Standalone binary
-├─ o3k-glance/main.go → Standalone binary
-├─ o3k-barbican/main.go → Standalone binary (NEW)
-├─ o3k-designate/main.go → Standalone binary (NEW)
-├─ o3k-octavia/main.go → Standalone binary (NEW)
-└─ o3k-metadata/main.go → Standalone binary
+├─ lightstack-keystone/main.go → Standalone binary
+├─ lightstack-nova/main.go → Standalone binary
+├─ lightstack-neutron/main.go → Standalone binary
+├─ lightstack-cinder/main.go → Standalone binary
+├─ lightstack-glance/main.go → Standalone binary
+├─ lightstack-barbican/main.go → Standalone binary (NEW)
+├─ lightstack-designate/main.go → Standalone binary (NEW)
+├─ lightstack-octavia/main.go → Standalone binary (NEW)
+└─ lightstack-metadata/main.go → Standalone binary
 
 Each service:
-- Independent config: /etc/o3k/<service>.yaml
+- Independent config: /etc/lightstack/<service>.yaml
 - Independent database schema
 - Service-to-service communication via OpenStack APIs
-- CLI tool: o3k-<service>-cli
+- CLI tool: lightstack-<service>-cli
 ```
 
 ## Technical Design
@@ -127,7 +127,7 @@ Recommend **Option C** with 5-minute catalog cache.
 
 **Option 1: Shared Database, Service Schemas**
 ```
-PostgreSQL: o3k
+PostgreSQL: lightstack
 ├─ keystone_users
 ├─ keystone_tokens
 ├─ nova_instances
@@ -140,11 +140,11 @@ PostgreSQL: o3k
 **Option 2: Database Per Service**
 ```
 PostgreSQL:
-├─ o3k_keystone (users, tokens, projects)
-├─ o3k_nova (instances, flavors)
-├─ o3k_neutron (networks, ports)
-├─ o3k_cinder (volumes)
-└─ o3k_glance (images)
+├─ lightstack_keystone (users, tokens, projects)
+├─ lightstack_nova (instances, flavors)
+├─ lightstack_neutron (networks, ports)
+├─ lightstack_cinder (volumes)
+└─ lightstack_glance (images)
 ```
 
 **Recommendation**: Option 1 initially (simpler migration), Option 2 for production scale.
@@ -154,14 +154,14 @@ PostgreSQL:
 Each service has independent config file:
 
 ```yaml
-# /etc/o3k/nova.yaml
+# /etc/lightstack/nova.yaml
 service:
   name: nova
   bind: 0.0.0.0:8774
   mode: real  # or stub
 
 database:
-  url: postgresql://localhost/o3k
+  url: postgresql://localhost/lightstack
   schema_prefix: nova_
 
 keystone:
@@ -202,8 +202,8 @@ pkg/
 ... (other services)
 
 cmd/
-├─ o3k-keystone/main.go    # Binary entry point
-├─ o3k-nova/main.go
+├─ lightstack-keystone/main.go    # Binary entry point
+├─ lightstack-nova/main.go
 └─ ... (other services)
 
 internal/
@@ -217,8 +217,8 @@ internal/
 
 ### Phase 1: Library Extraction (Weeks 1-3)
 1. Extract `internal/keystone` → `pkg/keystone` as library
-2. Create `cmd/o3k-keystone/main.go` standalone binary
-3. Add CLI tool `cmd/o3k-keystone-cli/main.go`
+2. Create `cmd/lightstack-keystone/main.go` standalone binary
+3. Add CLI tool `cmd/lightstack-keystone-cli/main.go`
 4. Write contract tests against OpenStack API
 5. Validate Horizon compatibility
 
@@ -326,7 +326,7 @@ Before merging any phase:
 ## Open Questions
 
 1. Should monolithic binary remain as deployment option?
-   - **Recommendation**: Yes, via `cmd/o3k-all/main.go` wrapper
+   - **Recommendation**: Yes, via `cmd/lightstack-all/main.go` wrapper
 2. Service discovery mechanism?
    - **Recommendation**: Static config initially, etcd/consul later
 3. TLS between services?

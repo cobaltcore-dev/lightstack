@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cobaltcore-dev/o3k/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // patchJSON issues an authenticated PATCH and returns the status and decoded body.

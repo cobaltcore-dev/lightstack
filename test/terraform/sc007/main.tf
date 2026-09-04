@@ -1,8 +1,8 @@
 # SPEC-009 SC-007 / FR-018: the unmodified Terraform OpenStack provider drives a full
-# single-node real-mode topology against O3K — instance + keypair + user_data + a
+# single-node real-mode topology against Lightstack — instance + keypair + user_data + a
 # floating IP + an attached volume — and tears it down cleanly.
 #
-# Run against a LIVE real-mode O3K (host; see quickstart.md §8):
+# Run against a LIVE real-mode Lightstack (host; see quickstart.md §8):
 #   cd test/terraform/sc007
 #   terraform init
 #   terraform apply -auto-approve
@@ -81,7 +81,7 @@ resource "openstack_networking_floatingip_v2" "fip" {
 }
 
 # Resolve the instance's port via the neutron API (ListPorts honors device_id).
-# O3K's server detail doesn't populate the per-interface port id, so the usual
+# Lightstack's server detail doesn't populate the per-interface port id, so the usual
 # openstack_compute_instance_v2.network[0].port is null — look it up explicitly.
 data "openstack_networking_port_v2" "vm_port" {
   device_id  = openstack_compute_instance_v2.vm.id

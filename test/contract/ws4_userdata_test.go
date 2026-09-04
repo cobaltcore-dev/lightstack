@@ -18,7 +18,9 @@ import (
 // SSH public key — over the EC2 endpoints. Identity uses the X-Instance-ID test
 // header; the source-IP path (from inside a VM) is in test/ws4_metadata_test.sh.
 
-func ws4MetadataURL() string { return getEnvOrDefault("O3K_METADATA_URL", "http://localhost:8775") }
+func ws4MetadataURL() string {
+	return getEnvOrDefault("LIGHTSTACK_METADATA_URL", "http://localhost:8775")
+}
 
 func ws4MetaGet(t *testing.T, path, instanceID string) (int, string) {
 	t.Helper()
@@ -33,14 +35,14 @@ func ws4MetaGet(t *testing.T, path, instanceID string) (int, string) {
 }
 
 func TestWS4_MetadataUserDataKey(t *testing.T) {
-	SkipIfO3KNotRunning(t)
+	SkipIfLightstackNotRunning(t)
 	nova := SetupComputeV2Client(t)
 	glance := SetupImageV2Client(t)
 
-	// Omit PublicKey so o3k generates the keypair (Nova behavior) and returns it.
+	// Omit PublicKey so Lightstack generates the keypair (Nova behavior) and returns it.
 	kp, err := keypairs.Create(nova, keypairs.CreateOpts{Name: "ws4-key"}).Extract()
 	require.NoError(t, err)
-	require.NotEmpty(t, kp.PublicKey, "o3k should generate and return a public key")
+	require.NotEmpty(t, kp.PublicKey, "Lightstack should generate and return a public key")
 	defer func() { _ = keypairs.Delete(nova, kp.Name, nil).ExtractErr() }()
 
 	img, err := images.Create(glance, images.CreateOpts{

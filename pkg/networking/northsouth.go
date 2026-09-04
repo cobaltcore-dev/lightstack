@@ -140,10 +140,12 @@ type IngressRule struct {
 	Remote   string // source CIDR, or "" (any source)
 }
 
-// nsIngressChain is the per-fixed-IP filter chain name (e.g. O3K-NSI-10-0-0-162),
-// well under iptables' 28-char limit.
+// nsIngressChain is the per-fixed-IP filter chain name (e.g. LS-NSI-10-0-0-162).
+// The prefix is the short form deliberately: the full product name would put a
+// three-digit-octet address at 30 chars, over iptables' 28-char limit, and this
+// namer has no truncation guard. Worst case here is "LS-NSI-" + 15 = 22.
 func nsIngressChain(fixedIP string) string {
-	return "O3K-NSI-" + strings.ReplaceAll(fixedIP, ".", "-")
+	return "LS-NSI-" + strings.ReplaceAll(fixedIP, ".", "-")
 }
 
 // EnsureIngressFilter programs default-deny inbound to a VM's fixed IP, allowing

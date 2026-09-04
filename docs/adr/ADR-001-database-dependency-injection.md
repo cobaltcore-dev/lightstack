@@ -2,12 +2,12 @@
 
 **Status**: Accepted
 **Date**: 2026-04-20
-**Deciders**: O3K Core Team
+**Deciders**: Lightstack Core Team
 **Spec**: [SPEC-006](../specs/006-v070-foundation/README.md)
 
 ## Context
 
-O3K uses a global mutable database pool (`var DB *pgxpool.Pool` in `internal/database/db.go:11`) accessed by 661 references across 53 files. This pattern:
+Lightstack uses a global mutable database pool (`var DB *pgxpool.Pool` in `internal/database/db.go:11`) accessed by 661 references across 53 files. This pattern:
 
 - Makes unit testing without a running PostgreSQL instance impossible
 - Couples all service packages to the `database` package
@@ -58,7 +58,7 @@ Define a `DB` interface with `QueryRow`, `Query`, `Exec`, `Begin` methods. Pass 
 ### Per-service connection pools
 Each service gets its own pool with independent connection limits.
 
-**Rejected because**: Unnecessary complexity. O3K is a single-binary deployment where all services share the same PostgreSQL instance. Per-service pools add configuration burden and connection overhead without isolation benefit.
+**Rejected because**: Unnecessary complexity. Lightstack is a single-binary deployment where all services share the same PostgreSQL instance. Per-service pools add configuration burden and connection overhead without isolation benefit.
 
 ### Repository pattern
 Wrap all database access in repository structs with typed methods.
@@ -75,7 +75,7 @@ Wrap all database access in repository structs with typed methods.
 
 ### Negative
 - 661 mechanical changes across 53 files (high blast radius)
-- Every `NewService()` call in `cmd/o3k/main.go` gains a parameter
+- Every `NewService()` call in `cmd/lightstack/main.go` gains a parameter
 - Must coordinate with lint config (staged `unused` disable)
 - `database.DB` global temporarily coexists with injected pools during migration
 

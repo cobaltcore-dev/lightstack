@@ -15,11 +15,11 @@
 
 ## Overview
 
-O3K implements VXLAN (Virtual Extensible LAN) overlay networking to enable L2 connectivity across compute nodes in a multi-node deployment. This allows VMs on different physical hosts to communicate as if they were on the same local network.
+Lightstack implements VXLAN (Virtual Extensible LAN) overlay networking to enable L2 connectivity across compute nodes in a multi-node deployment. This allows VMs on different physical hosts to communicate as if they were on the same local network.
 
 ### Key Features
 
-- **Database-driven coordination**: No message queue required (maintains O3K's synchronous philosophy)
+- **Database-driven coordination**: No message queue required (maintains lightstack's synchronous philosophy)
 - **Automatic VNI allocation**: Sequential VNI assignment with collision prevention
 - **FDB synchronization**: MAC-to-VTEP mappings distributed across all nodes
 - **Node health checking**: Heartbeat-based monitoring with automatic cleanup
@@ -43,7 +43,7 @@ O3K implements VXLAN (Virtual Extensible LAN) overlay networking to enable L2 co
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Compute Node 1                          │
 ├─────────────────────────────────────────────────────────────────┤
-│  O3K Binary (Neutron API + VXLAN Coordinator)                   │
+│  lightstack Binary (Neutron API + VXLAN Coordinator)                   │
 │    ↓                    ↓                      ↓                │
 │  Node Registry    VXLANManager         NamespaceManager         │
 │  (Heartbeat)      (VXLAN/FDB)          (netns isolation)        │
@@ -244,7 +244,7 @@ for vni := 1000; vni <= 10000; vni++ {
 
 ### Enabling VXLAN
 
-Add to `config/o3k.yaml`:
+Add to `config/lightstack.yaml`:
 
 ```yaml
 compute:
@@ -277,7 +277,7 @@ neutron:
 
 ### Tunnel IP Detection
 
-If `tunnel_ip: auto`, O3K will:
+If `tunnel_ip: auto`, Lightstack will:
 
 1. List all network interfaces
 2. Find first non-loopback, IPv4 address
@@ -364,17 +364,17 @@ ALTER TABLE networks ADD COLUMN mtu INTEGER DEFAULT 1500;
 
 ### Single-Node Deployment (Testing)
 
-1. **Configure O3K:**
+1. **Configure lightstack:**
 
 ```yaml
 neutron:
   vxlan_enabled: false  # No multi-node needed
 ```
 
-2. **Start O3K:**
+2. **Start lightstack:**
 
 ```bash
-./bin/o3k --config config/o3k.yaml
+./bin/lightstack --config config/lightstack.yaml
 ```
 
 ### Multi-Node Deployment
@@ -388,7 +388,7 @@ neutron:
 
 #### Node 1 Setup
 
-**`/etc/o3k/node1.yaml`:**
+**`/etc/lightstack/node1.yaml`:**
 
 ```yaml
 compute:
@@ -402,18 +402,18 @@ neutron:
   vni_range_end: 10000
 
 database:
-  url: "postgres://o3k:secret@db.example.com/o3k"
+  url: "postgres://lightstack:secret@db.example.com/lightstack"
 ```
 
 **Start Node 1:**
 
 ```bash
-./bin/o3k --config /etc/o3k/node1.yaml
+./bin/lightstack --config /etc/lightstack/node1.yaml
 ```
 
 #### Node 2 Setup
 
-**`/etc/o3k/node2.yaml`:**
+**`/etc/lightstack/node2.yaml`:**
 
 ```yaml
 compute:
@@ -427,7 +427,7 @@ neutron:
   vni_range_end: 10000
 
 database:
-  url: "postgres://o3k:secret@db.example.com/o3k"  # Same database
+  url: "postgres://lightstack:secret@db.example.com/lightstack"  # Same database
 
 keystone:
   port: 45357  # Different port to avoid conflict
@@ -442,7 +442,7 @@ neutron:
 **Start Node 2:**
 
 ```bash
-./bin/o3k --config /etc/o3k/node2.yaml
+./bin/lightstack --config /etc/lightstack/node2.yaml
 ```
 
 #### Verification
@@ -513,7 +513,7 @@ Expected: Both nodes have `vxlan-<network_id>` interface
 1. **Database connectivity:**
 
 ```bash
-psql -U o3k -d o3k -h db.example.com -c "SELECT 1;"
+psql -U lightstack -d lightstack -h db.example.com -c "SELECT 1;"
 ```
 
 2. **Migration 004 applied:**
@@ -527,7 +527,7 @@ WHERE table_name = 'compute_nodes';
 
 ```bash
 # Check logs for detected tunnel IP
-grep "tunnel IP" /var/log/o3k.log
+grep "tunnel IP" /var/log/lightstack.log
 
 # Manually test detection
 ip -4 addr show | grep inet | grep -v 127.0.0.1
@@ -536,7 +536,7 @@ ip -4 addr show | grep inet | grep -v 127.0.0.1
 **Solutions:**
 
 - Verify database URL in config
-- Run migration: `./bin/o3k --config config/o3k.yaml --migrate`
+- Run migration: `./bin/lightstack --config config/lightstack.yaml --migrate`
 - Set explicit `tunnel_ip` in config if auto-detection fails
 
 ---
@@ -597,7 +597,7 @@ SELECT * FROM vxlan_fdb_entries;
 
 ```bash
 # Check logs for "VXLAN coordinator started"
-grep "coordinator" /var/log/o3k.log
+grep "coordinator" /var/log/lightstack.log
 ```
 
 3. **Poll interval too long:**
@@ -614,7 +614,7 @@ dmesg | grep -i vxlan
 **Solutions:**
 
 - Verify `vxlan_enabled: true` in config
-- Restart O3K to reinitialize coordinator
+- Restart Lightstack to reinitialize coordinator
 - Check Linux kernel VXLAN support:
 
 ```bash
@@ -743,7 +743,7 @@ Run multi-node simulation:
 
 This script:
 
-1. Starts two O3K instances with different ports
+1. Starts two Lightstack instances with different ports
 2. Verifies node registration
 3. Tests VNI allocation
 4. Tests FDB synchronization
@@ -753,7 +753,7 @@ This script:
 
 - PostgreSQL running locally
 - `jq` installed for JSON parsing
-- Database user `o3k` with password `o3k`
+- Database user `lightstack` with password `lightstack`
 
 ### Manual Testing
 

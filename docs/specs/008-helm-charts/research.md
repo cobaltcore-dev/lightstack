@@ -4,19 +4,19 @@ The spec is decision-complete (8 clarification rounds). This records the *how* �
 
 ## R1 — Chart layout & distribution
 
-**Decision**: A single chart at `charts/o3k/`, installed from a local path/checkout (`helm install o3k ./charts/o3k`). No registry publishing in this feature; structure must not preclude adding it (FR-019).
+**Decision**: A single chart at `charts/lightstack/`, installed from a local path/checkout (`helm install lightstack ./charts/lightstack`). No registry publishing in this feature; structure must not preclude adding it (FR-019).
 
 **Rationale**: Matches the in-repo clarification; lowest setup. A standard chart layout (Chart.yaml/values.yaml/values.schema.json/templates/) is registry-publishable later with no rework.
 
 ## R2 — Configuration delivery (values → product config)
 
-**Decision**: Render the **full** `o3k.yaml` from values into a **Secret** and mount it at the binary's `--config` path (`/app/config/o3k.yaml`); this one file carries all settings, including the sensitive `keystone.jwt_secret`, `keystone.admin_password`, and `database.url`. Use environment variables only for the four overrides the binary actually honors: `O3K_DB_URL` and `O3K_JWT_SECRET` (`internal/common/config.go` `LoadConfig`) plus `O3K_ENDPOINT_HOST` and `O3K_ENDPOINT_SCHEME` (read at request time). Those env vars — sourced from a Secret — are the wiring for `existingSecret` and the TLS scheme; everything else (admin password, service modes, vxlan, cache, logging) is set in the rendered file.
+**Decision**: Render the **full** `lightstack.yaml` from values into a **Secret** and mount it at the binary's `--config` path (`/app/config/lightstack.yaml`); this one file carries all settings, including the sensitive `keystone.jwt_secret`, `keystone.admin_password`, and `database.url`. Use environment variables only for the four overrides the binary actually honors: `LIGHTSTACK_DB_URL` and `LIGHTSTACK_JWT_SECRET` (`internal/common/config.go` `LoadConfig`) plus `LIGHTSTACK_ENDPOINT_HOST` and `LIGHTSTACK_ENDPOINT_SCHEME` (read at request time). Those env vars — sourced from a Secret — are the wiring for `existingSecret` and the TLS scheme; everything else (admin password, service modes, vxlan, cache, logging) is set in the rendered file.
 
-**Rationale**: Verified against the code — `LoadConfig` parses the YAML `--config` file and then applies **only** `O3K_DB_URL` → `database.url` and `O3K_JWT_SECRET` → `keystone.jwt_secret`. There is **no** generic `O3K_<SECTION>_<KEY>` / viper `AutomaticEnv` layer, so `admin_password`, `libvirt_mode`, `networking_mode`, `storage_mode`, `vxlan_enabled`, `cache.*`, etc. take effect **only** from the file. Rendering the file into a Secret keeps every credential out of any plaintext ConfigMap without depending on a non-existent env layer.
+**Rationale**: Verified against the code — `LoadConfig` parses the YAML `--config` file and then applies **only** `LIGHTSTACK_DB_URL` → `database.url` and `LIGHTSTACK_JWT_SECRET` → `keystone.jwt_secret`. There is **no** generic `lightstack_<SECTION>_<KEY>` / viper `AutomaticEnv` layer, so `admin_password`, `libvirt_mode`, `networking_mode`, `storage_mode`, `vxlan_enabled`, `cache.*`, etc. take effect **only** from the file. Rendering the file into a Secret keeps every credential out of any plaintext ConfigMap without depending on a non-existent env layer.
 
-**Product divergence (flag)**: `docs/CONFIGURATION.md` documents a broad `O3K_<SECTION>_<KEY>` env convention (e.g. `O3K_KEYSTONE_ADMIN_PASSWORD`, `O3K_NOVA_LIBVIRT_MODE`, `O3K_NEUTRON_VXLAN_ENABLED`) that the code does **not** implement. A follow-up product fix should either wire a real env-override layer or correct the docs; this chart design needs neither.
+**Product divergence (flag)**: `docs/CONFIGURATION.md` documents a broad `lightstack_<SECTION>_<KEY>` env convention (e.g. `LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD`, `LIGHTSTACK_NOVA_LIBVIRT_MODE`, `LIGHTSTACK_NEUTRON_VXLAN_ENABLED`) that the code does **not** implement. A follow-up product fix should either wire a real env-override layer or correct the docs; this chart design needs neither.
 
-**Alternative rejected**: a ConfigMap for non-secret values + env-injected secrets — unsound, because the binary ignores all but the four env vars above (notably it never reads `O3K_KEYSTONE_ADMIN_PASSWORD`, so the admin-password gate would silently fall back to the file's default `secret`).
+**Alternative rejected**: a ConfigMap for non-secret values + env-injected secrets — unsound, because the binary ignores all but the four env vars above (notably it never reads `LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD`, so the admin-password gate would silently fall back to the file's default `secret`).
 
 ## R3 — Minimum Kubernetes version
 
@@ -34,9 +34,9 @@ The spec is decision-complete (8 clarification rounds). This records the *how* �
 
 ## R5 — Exposure & optional TLS
 
-**Decision**: A single Service exposing the seven ports, `ClusterIP` by default; `service.type` (LoadBalancer/NodePort) and an optional Ingress are selectable (FR-008a, FR-009d). Optional TLS = **per-service-port termination** (SPEC-007 R8 / WS-3); when TLS is enabled the chart sets `O3K_ENDPOINT_SCHEME=https` so the catalog and self-links advertise `https://<host>:<port>` (FR-008b). The chart references an operator- or cert-manager-supplied certificate and never generates certs. Metadata is excluded from this front-door Service (reached node-locally — FR-009a).
+**Decision**: A single Service exposing the seven ports, `ClusterIP` by default; `service.type` (LoadBalancer/NodePort) and an optional Ingress are selectable (FR-008a, FR-009d). Optional TLS = **per-service-port termination** (SPEC-007 R8 / WS-3); when TLS is enabled the chart sets `LIGHTSTACK_ENDPOINT_SCHEME=https` so the catalog and self-links advertise `https://<host>:<port>` (FR-008b). The chart references an operator- or cert-manager-supplied certificate and never generates certs. Metadata is excluded from this front-door Service (reached node-locally — FR-009a).
 
-**Rationale**: O3K serves each service on its own port; a scheme-only rewrite keeps the port, composing cleanly with per-port TLS. Single-`:443` path/subdomain routing is out of scope (would need per-service path advertising — beyond the landed SPEC-007 WS-3).
+**Rationale**: Lightstack serves each service on its own port; a scheme-only rewrite keeps the port, composing cleanly with per-port TLS. Single-`:443` path/subdomain routing is out of scope (would need per-service path advertising — beyond the landed SPEC-007 WS-3).
 
 ## R6 — Secrets handling & install gates
 
@@ -54,13 +54,13 @@ The spec is decision-complete (8 clarification rounds). This records the *how* �
 
 **Decision**: Rely on the product's startup migration path serialized by golang-migrate's DB lock; the chart adds **no** migration Job (FR-012b). The chart ensures the DB is reachable before instances become ready (startup migration fails fast otherwise).
 
-**Rationale**: `cmd/o3k/main.go` runs `database.MigrateUp` at startup; the reference image CMD additionally runs `o3k-migrate up` first — both take golang-migrate's lock, so concurrent multi-node boots and rolling upgrades are safe (first instance migrates, others no-op). A dedicated Job would need a product change and is unnecessary.
+**Rationale**: `cmd/lightstack/main.go` runs `database.MigrateUp` at startup; the reference image CMD additionally runs `lightstack-migrate up` first — both take golang-migrate's lock, so concurrent multi-node boots and rolling upgrades are safe (first instance migrates, others no-op). A dedicated Job would need a product change and is unnecessary.
 
 ## R9 — Real-mode host access
 
-**Decision**: Behind `realMode`/privileged toggles only: `privileged` securityContext, `hostNetwork: true`, and `hostPath` mounts for the host libvirt socket (`/var/run/libvirt/libvirt-sock`) and host storage (`/var/lib/o3k`) — FR-012c/012d/012a. The chart can apply the namespace `privileged` PodSecurity label (real-mode toggle) and documents the equivalent OpenShift SCC. Stub mode mounts none of this and passes `restricted` PSA.
+**Decision**: Behind `realMode`/privileged toggles only: `privileged` securityContext, `hostNetwork: true`, and `hostPath` mounts for the host libvirt socket (`/var/run/libvirt/libvirt-sock`) and host storage (`/var/lib/lightstack`) — FR-012c/012d/012a. The chart can apply the namespace `privileged` PodSecurity label (real-mode toggle) and documents the equivalent OpenShift SCC. Stub mode mounts none of this and passes `restricted` PSA.
 
-**Rationale**: O3K connects to a host libvirtd over the unix socket and does not bundle qemu; VMs are host processes that survive pod restarts. **Their networking survives a restart only once WS-6 startup reconciliation lands (FR-012g) — deferred per R12.** Privileged/host access is confined to designation-labeled nodes in multi-node.
+**Rationale**: Lightstack connects to a host libvirtd over the unix socket and does not bundle qemu; VMs are host processes that survive pod restarts. **Their networking survives a restart only once WS-6 startup reconciliation lands (FR-012g) — deferred per R12.** Privileged/host access is confined to designation-labeled nodes in multi-node.
 
 ## R10 — Container image (`dnsmasq`) — FR-012f
 
@@ -70,7 +70,7 @@ The spec is decision-complete (8 clarification rounds). This records the *how* �
 
 ## R11 — Multi-node node designation & overlay
 
-**Decision**: A configurable label (default `o3k.io/compute=true`) selects nodes via the DaemonSet `nodeSelector`. Applying/removing the label starts/evicts an instance with no chart upgrade (FR-005a). VXLAN overlay via `neutron.vxlan_enabled: true` in the rendered config (the binary reads this from the file, not env); ensure node-to-node UDP 4789 reachability (FR-009). Privileged/host access is confined to labeled nodes.
+**Decision**: A configurable label (default `lightstack.io/compute=true`) selects nodes via the DaemonSet `nodeSelector`. Applying/removing the label starts/evicts an instance with no chart upgrade (FR-005a). VXLAN overlay via `neutron.vxlan_enabled: true` in the rendered config (the binary reads this from the file, not env); ensure node-to-node UDP 4789 reachability (FR-009). Privileged/host access is confined to labeled nodes.
 
 **Rationale**: Matches the product's existing node-registry + VXLAN coordinator; the chart only sets config and scheduling.
 
@@ -94,6 +94,6 @@ The spec is decision-complete (8 clarification rounds). This records the *how* �
 
 ## R15 — Multi-release isolation
 
-**Decision**: All resource names release-prefixed (`{{ .Release.Name }}-o3k-*`); per-release scoping of node registration; the configured endpoint host points at the release's Service (FR-016).
+**Decision**: All resource names release-prefixed (`{{ .Release.Name }}-lightstack-*`); per-release scoping of node registration; the configured endpoint host points at the release's Service (FR-016).
 
 **Rationale**: Two releases in one cluster must not collide on names, networking, or registrations.

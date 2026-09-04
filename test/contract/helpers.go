@@ -39,7 +39,7 @@ func SetupNeutronClient(t *testing.T) *gophercloud.ServiceClient {
 }
 
 // SetupOpenStackClient creates an authenticated OpenStack client for contract testing.
-// It uses environment variables (OS_AUTH_URL, OS_USERNAME, etc.) to connect to O3K.
+// It uses environment variables (OS_AUTH_URL, OS_USERNAME, etc.) to connect to lightstack.
 // This function follows the TDD pattern from Constitution Article III.
 func SetupOpenStackClient(t *testing.T) *gophercloud.ProviderClient {
 	t.Helper()
@@ -161,9 +161,9 @@ func GetProjectIDFromToken(t *testing.T, client *gophercloud.ServiceClient) stri
 	return projectID
 }
 
-// SkipIfO3KNotRunning skips the test if O3K is not running.
+// SkipIfLightstackNotRunning skips the test if Lightstack is not running.
 // Use this in contract tests to avoid false failures in CI.
-func SkipIfO3KNotRunning(t *testing.T) {
+func SkipIfLightstackNotRunning(t *testing.T) {
 	t.Helper()
 
 	authURL := getEnvOrDefault("OS_AUTH_URL", "http://localhost:35357/v3")
@@ -177,6 +177,6 @@ func SkipIfO3KNotRunning(t *testing.T) {
 
 	_, err := openstack.AuthenticatedClient(opts)
 	if err != nil {
-		t.Skipf("O3K not running at %s: %v", authURL, err)
+		t.Skipf("Lightstack not running at %s: %v", authURL, err)
 	}
 }

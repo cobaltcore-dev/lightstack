@@ -7,12 +7,12 @@ import "testing"
 // here is a deliberate layout change, not an accident (SPEC-009).
 func TestLayout(t *testing.T) {
 	cases := []struct{ got, want string }{
-		{Base, "/var/lib/o3k"},
-		{ImagesDir(), "/var/lib/o3k/images"},
-		{VolumesDir(), "/var/lib/o3k/volumes"},
-		{InstancesDir(), "/var/lib/o3k/instances"},
-		{CloudInitDir(), "/var/lib/o3k/cloud-init"},
-		{DHCPDir(), "/var/lib/o3k/dhcp"},
+		{Base, "/var/lib/lightstack"},
+		{ImagesDir(), "/var/lib/lightstack/images"},
+		{VolumesDir(), "/var/lib/lightstack/volumes"},
+		{InstancesDir(), "/var/lib/lightstack/instances"},
+		{CloudInitDir(), "/var/lib/lightstack/cloud-init"},
+		{DHCPDir(), "/var/lib/lightstack/dhcp"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

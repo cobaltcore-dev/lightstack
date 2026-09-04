@@ -1,5 +1,5 @@
 #!/bin/bash
-# O3K Volume Attach/Detach Test Suite
+# Lightstack Volume Attach/Detach Test Suite
 # Tests volume lifecycle: create → attach → detach → delete
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -3,7 +3,7 @@ package networking
 import "testing"
 
 // TestIsManagedBridge locks down the strict "br-<8 lowercase hex>" match the
-// reconciler's stale-bridge prune relies on — it must accept o3k bridges and
+// reconciler's stale-bridge prune relies on — it must accept Lightstack bridges and
 // reject everything else (docker br-<12hex>, libvirt virbrN, etc.) so the prune
 // can never delete a foreign bridge (SPEC-009 WS-2).
 func TestIsManagedBridge(t *testing.T) {
@@ -22,7 +22,7 @@ func TestIsManagedBridge(t *testing.T) {
 	}
 	for _, n := range managed {
 		if !isManagedBridge(n) {
-			t.Errorf("isManagedBridge(%q) = false; want true (o3k bridge)", n)
+			t.Errorf("isManagedBridge(%q) = false; want true (Lightstack bridge)", n)
 		}
 	}
 	for _, n := range foreign {

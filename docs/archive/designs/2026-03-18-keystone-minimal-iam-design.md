@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-This specification defines a minimal IAM enhancement for O3K Keystone that adds two critical capabilities:
+This specification defines a minimal IAM enhancement for Lightstack Keystone that adds two critical capabilities:
 
 1. **Application Credentials**: Long-lived API keys for CI/CD automation with fine-grained access control
 2. **Policy Engine**: Resource-level authorization beyond simple role-based access control
@@ -1401,7 +1401,7 @@ set -e
 
 echo "=== Keystone Minimal IAM Integration Tests ==="
 
-# Start O3K
+# Start lightstack
 docker-compose up -d
 sleep 5
 
@@ -1528,7 +1528,7 @@ echo "=== Performance Tests Complete ==="
 ## Configuration
 
 ```yaml
-# config/o3k.yaml (enhanced Keystone section)
+# config/lightstack.yaml (enhanced Keystone section)
 
 keystone:
   # Existing configuration
@@ -1545,7 +1545,7 @@ keystone:
   # Policy Engine (NEW)
   policy:
     enabled: true
-    default_policy_file: "/etc/o3k/policy.json"
+    default_policy_file: "/etc/lightstack/policy.json"
     cache_ttl: 5m                     # Cache policy decisions
 
   # Audit Logging (NEW)
@@ -1623,27 +1623,27 @@ services:
       timeout: 5s
       retries: 5
 
-  o3k:
+  lightstack:
     build:
       context: ..
       dockerfile: deployments/Dockerfile
-    image: o3k:iam-enhanced
+    image: lightstack:iam-enhanced
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      O3K_DATABASE_URL: "postgres://lightstack:secret@postgres/lightstack?sslmode=disable"
+      LIGHTSTACK_DATABASE_URL: "postgres://lightstack:secret@postgres/lightstack?sslmode=disable"
       KEYSTONE_JWT_SECRET: "${KEYSTONE_JWT_SECRET:-dev-secret-change-in-production}"
     volumes:
-      - ./config/o3k.yaml:/etc/o3k/o3k.yaml
-      - ./policy.json:/etc/o3k/policy.json
+      - ./config/lightstack.yaml:/etc/lightstack/lightstack.yaml
+      - ./policy.json:/etc/lightstack/policy.json
     ports:
       - "35357:35357"
       - "8774:8774"
       - "9696:9696"
       - "8776:8776"
       - "9292:9292"
-    command: ["/o3k", "--config", "/etc/o3k/o3k.yaml"]
+    command: ["/lightstack", "--config", "/etc/lightstack/lightstack.yaml"]
 
 volumes:
   postgres-data:
@@ -1657,27 +1657,27 @@ volumes:
 
 set -e
 
-echo "=== O3K IAM Migration ==="
+echo "=== lightstack IAM Migration ==="
 
 # 1. Backup database
 echo "1. Backing up database..."
 docker-compose exec postgres pg_dump -U lightstack lightstack > backup-$(date +%Y%m%d).sql
 
-# 2. Stop O3K
-echo "2. Stopping O3K..."
-docker-compose stop o3k
+# 2. Stop lightstack
+echo "2. Stopping lightstack..."
+docker-compose stop lightstack
 
 # 3. Pull new image
-echo "3. Pulling enhanced O3K image..."
-docker-compose pull o3k
+echo "3. Pulling enhanced lightstack image..."
+docker-compose pull lightstack
 
 # 4. Run migrations
 echo "4. Running database migrations..."
-docker-compose run --rm o3k /o3k migrate --config /etc/o3k/o3k.yaml
+docker-compose run --rm lightstack /lightstack migrate --config /etc/lightstack/lightstack.yaml
 
-# 5. Start O3K
-echo "5. Starting enhanced O3K..."
-docker-compose up -d o3k
+# 5. Start lightstack
+echo "5. Starting enhanced lightstack..."
+docker-compose up -d lightstack
 
 # 6. Verify
 echo "6. Verifying..."
@@ -1741,7 +1741,7 @@ keystone:
 
 **Policy Enforcement API**:
 - Internal only (not exposed externally)
-- Called by O3K services (Nova, Neutron, etc.)
+- Called by Lightstack services (Nova, Neutron, etc.)
 
 ### Audit Logging
 
@@ -1847,7 +1847,7 @@ openstack application credential create restricted \
 
 ```bash
 # Create policy file
-cat > /etc/o3k/policy.json <<EOF
+cat > /etc/lightstack/policy.json <<EOF
 {
   "compute:delete": "role:admin or user_id:%(target.user_id)s"
 }
@@ -1856,7 +1856,7 @@ EOF
 # Load policy
 openstack policy create default \
   --type application/json \
-  --blob @/etc/o3k/policy.json
+  --blob @/etc/lightstack/policy.json
 ```
 
 ## Policy Rule Syntax
@@ -2014,8 +2014,8 @@ OS_USERNAME=admin openstack server delete vm1  # Should succeed (admin)
 - OpenStack Keystone API v3: https://docs.openstack.org/api-ref/identity/v3/
 - Application Credentials: https://docs.openstack.org/keystone/latest/user/application_credentials.html
 - Policy Enforcement: https://docs.openstack.org/oslo.policy/latest/
-- O3K Constitution: memory/constitution.md (Article III: Test-First Development)
-- O3K Roadmap: ROADMAP.md (Phase 1: Modular Transformation)
+- Lightstack Constitution: memory/constitution.md (Article III: Test-First Development)
+- Lightstack Roadmap: ROADMAP.md (Phase 1: Modular Transformation)
 
 ---
 

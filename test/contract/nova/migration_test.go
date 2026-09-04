@@ -14,7 +14,7 @@ import (
 
 // TestNovaServerEvacuate_Contract tests POST /v2.1/servers/:id/action (evacuate)
 func TestNovaServerEvacuate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -48,7 +48,7 @@ func TestNovaServerEvacuate_Contract(t *testing.T) {
 
 // TestNovaServerMigrate_Contract tests POST /v2.1/servers/:id/action (migrate)
 func TestNovaServerMigrate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 
@@ -85,7 +85,7 @@ func TestNovaServerMigrate_Contract(t *testing.T) {
 // live-migrate action path. Re-run on failure before treating it as a real
 // regression.
 func TestNovaServerLiveMigrate_Contract(t *testing.T) {
-	skipIfO3KNotRunning(t)
+	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
 

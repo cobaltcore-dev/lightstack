@@ -1,4 +1,4 @@
-# Contract: `o3k cleanup` command
+# Contract: `lightstack cleanup` command
 
 **Feature**: SPEC-010 | **Surface**: product CLI (the existing single binary) | **Refs**: FR-003/004/005/006/008/010/012/013, R2/R3/R5/R9
 
@@ -7,11 +7,11 @@ The blocking pre-delete hook's purge Job invokes this. It also runs standalone (
 ## Invocation
 
 ```
-o3k cleanup [--config <path>] [--dry-run]
+lightstack cleanup [--config <path>] [--dry-run]
 ```
 
-- Dispatched in `cmd/o3k/main.go` from `os.Args[1] == "cleanup"`, **before** the server path; the process performs the teardown and exits (it does **not** start HTTP servers).
-- `--config`: same flag/default as the server (`config/o3k.yaml`).
+- Dispatched in `cmd/lightstack/main.go` from `os.Args[1] == "cleanup"`, **before** the server path; the process performs the teardown and exits (it does **not** start HTTP servers).
+- `--config`: same flag/default as the server (`config/lightstack.yaml`).
 - `--dry-run`: enumerate and log what *would* be purged; delete nothing; exit 0.
 - **No `--migrations` and no DB write** — the database is operator-owned and is never reset (FR-013, revised 2026-06-24).
 - **No Kubernetes flags/clients** — quiesce, PVC delete, and Deployment scaling are the chart's kubectl Job, not this command (R1).
@@ -21,7 +21,7 @@ o3k cleanup [--config <path>] [--dry-run]
 1. Load config; connect to the operator-owned DB **read-only** to enumerate. If unreachable, ignore it (C9) and fall back to host-only cleanup.
 2. **Compute**: destroy + undefine each enumerated libvirt domain (`VMManager.DeleteVM`).
 3. **Network**: `neutron.PurgeRealModeNetworkState` — remove all host network state (egress SNAT, floating-IP DNAT + the `/32` on the uplink, ingress SG filters, metadata DNAT, dnsmasq, host bridges, router + tenant namespaces).
-4. **Storage**: `os.RemoveAll` every node-local tree under `/var/lib/o3k` (`instances/`, `cloud-init/`, `images/`, `volumes/`, `dhcp/`); covers orphans (FR-006).
+4. **Storage**: `os.RemoveAll` every node-local tree under `/var/lib/lightstack` (`instances/`, `cloud-init/`, `images/`, `volumes/`, `dhcp/`); covers orphans (FR-006).
 
 The **database is never written** (operator-owned, FR-013); the global `net.ipv4.ip_forward` sysctl is left as-is.
 

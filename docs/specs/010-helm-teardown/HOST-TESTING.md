@@ -3,7 +3,7 @@
 End-to-end validation of the **chart deployment + the `dataRetentionPolicy: delete`
 blocking teardown** on a real single-node cluster. This is the piece the SPEC-009
 runbook (`docs/specs/009-single-node-real-mode/HOST-TESTING.md`) can't cover: there
-O3K runs as a bare host process; here it runs as a privileged pod and the teardown
+Lightstack runs as a bare host process; here it runs as a privileged pod and the teardown
 runs as a Helm pre-delete hook Job. The flow is exactly what you asked for:
 
 ```
@@ -24,7 +24,7 @@ helm deploy real mode → smoke + functional tests → tear it down → verify z
 | SC-004 `retain` runs **no** teardown hooks (no regression) | §10 |
 | SC-005 idempotent re-run | §11 |
 | SC-006 `retain` leaves all state intact | §10 |
-| **NEW — real-mode host purge** (domains, netns, bridges, iptables, `/var/lib/o3k`) | §8 snapshot → §9d |
+| **NEW — real-mode host purge** (domains, netns, bridges, iptables, `/var/lib/lightstack`) | §8 snapshot → §9d |
 | DB is operator-owned — **NOT** reset by teardown | §9e |
 
 ---
@@ -42,7 +42,7 @@ helm plugin install https://github.com/helm-unittest/helm-unittest 2>/dev/null |
 # OpenStack client in T2: pipx install python-openstackclient  (or apt)
 ```
 > **k3s must run as real root** (the default `get.k3s.io` systemd install is). Real
-> mode can't work under rootless containers — host netns + root-owned `/var/lib/o3k`
+> mode can't work under rootless containers — host netns + root-owned `/var/lib/lightstack`
 > need real privileges (same constraint #503 hit).
 
 ---
@@ -53,25 +53,25 @@ You said you already cleaned up — this **verifies** it and gives the full rese
 
 ```bash
 # (a) any prior Helm release + k3s leftovers
-sudo k3s kubectl get ns o3k 2>/dev/null && helm uninstall o3k-rt -n o3k --no-hooks 2>/dev/null || true
-sudo k3s kubectl delete ns o3k --ignore-not-found 2>/dev/null || true
+sudo k3s kubectl get ns lightstack 2>/dev/null && helm uninstall lightstack-rt -n lightstack --no-hooks 2>/dev/null || true
+sudo k3s kubectl delete ns lightstack --ignore-not-found 2>/dev/null || true
 
 # (b) host real-mode state — reuse the SPEC-009 reset verbatim (it is authoritative):
-#     VMs (destroy+undefine), o3k dnsmasq, br-* bridges, q*/light-ns-* netns,
-#     O3K iptables, FIP /32s, /var/lib/o3k/*, the o3k-postgres container.
+#     VMs (destroy+undefine), lightstack dnsmasq, br-* bridges, q*/light-ns-* netns,
+#     lightstack iptables, FIP /32s, /var/lib/lightstack/*, the lightstack-postgres container.
 #     See docs/specs/009-single-node-real-mode/HOST-TESTING.md §1 + "Cleanup — full reset".
 ```
 Verify clean:
 ```bash
 sudo virsh list --all                                   # no domains
-sudo ip netns list | grep -E 'light-ns-|qrouter-' || echo "clean: no o3k netns"
-ip -br link show type bridge | grep '^br-'   || echo "clean: no o3k bridges"
-sudo iptables -S | grep 'O3K-'               || echo "clean: no o3k chains"
-sudo ls /var/lib/o3k 2>/dev/null             || echo "clean: /var/lib/o3k absent"
+sudo ip netns list | grep -E 'light-ns-|qrouter-' || echo "clean: no lightstack netns"
+ip -br link show type bridge | grep '^br-'   || echo "clean: no lightstack bridges"
+sudo iptables -S | grep 'lightstack-'               || echo "clean: no lightstack chains"
+sudo ls /var/lib/lightstack 2>/dev/null             || echo "clean: /var/lib/lightstack absent"
 ```
 > Simplest guarantee: **reboot the host** — it clears all kernel networking
 > (`bridges/taps/netns/iptables/ip_forward`) for free; then you only redo the
-> VM-undefine + `rm -rf /var/lib/o3k/*` + Postgres-container removal.
+> VM-undefine + `rm -rf /var/lib/lightstack/*` + Postgres-container removal.
 
 ---
 
@@ -79,7 +79,7 @@ sudo ls /var/lib/o3k 2>/dev/null             || echo "clean: /var/lib/o3k absent
 
 Catch anything before you spend time on k3s. From the repo root (`feature/53` worktree):
 ```bash
-cd /home/fnk/code/sap/ora/o3k/feature/53
+cd /home/fnk/code/sap/ora/lightstack/feature/53
 
 go build ./...                       # compiles
 go vet ./internal/... ./pkg/...      # vet
@@ -87,15 +87,15 @@ go test -race ./internal/teardown/ ./internal/neutron/ ./pkg/storage/   # teardo
 go test ./internal/... ./pkg/...     # full UNIT suite (everything under internal/ + pkg/)
 
 # chart gates (lint needs the required values, else the validate gate fails fast)
-helm lint charts/o3k \
-  --set image.repository=o3k --set secrets.jwtSecret=x \
+helm lint charts/lightstack \
+  --set image.repository=lightstack --set secrets.jwtSecret=x \
   --set secrets.adminPassword=x --set database.url=postgres://x
-helm unittest charts/o3k             # the tests/*.yaml (incl. teardown_test.yaml) — expect all pass
+helm unittest charts/lightstack             # the tests/*.yaml (incl. teardown_test.yaml) — expect all pass
 
 bash -n test/helm_teardown_test.sh   # scenario script parses
 ```
 > **Not `make test` here.** `make test` runs `go test -v ./...`, which includes the
-> `test/contract/*` gophercloud suite — those tests need a **running** O3K at
+> `test/contract/*` gophercloud suite — those tests need a **running** Lightstack at
 > `localhost:35357` and fail with `connection refused` until §6/§7. The unit sweep
 > above (`./internal/... ./pkg/...`) is the right pre-cluster gate; run the contract
 > suite later against the deployed server (§7).
@@ -110,7 +110,7 @@ bash -n test/helm_teardown_test.sh   # scenario script parses
 Run the installer **as your normal user** — the script self-elevates with `sudo` for
 the privileged steps. What matters is that the resulting `k3s` *service* runs as root
 (the default); that's required for privileged + `hostNetwork` pods, host netns, and
-root-owned `/var/lib/o3k`. Rootless k3s would break the real-mode test.
+root-owned `/var/lib/lightstack`. Rootless k3s would break the real-mode test.
 ```bash
 curl -sfL https://get.k3s.io | sh -
 sudo systemctl status k3s --no-pager | head -3   # active (running)
@@ -125,23 +125,23 @@ kubectl get nodes                    # Ready — no sudo needed from here for ku
 
 ---
 
-## 4. Build the O3K image and import it into k3s
+## 4. Build the Lightstack image and import it into k3s
 
 k3s has its **own** containerd — `docker`/`podman` images aren't visible to it until
 you import them. Build, save, import, then **read back the exact name**:
 ```bash
-cd /home/fnk/code/sap/ora/o3k/feature/53
+cd /home/fnk/code/sap/ora/lightstack/feature/53
 # Tag with the FULLY-QUALIFIED docker.io/library/ name so the chart's default
-# image.repository=o3k matches under BOTH podman and docker (see note).
-podman build -t docker.io/library/o3k:dev -f build/package/Dockerfile .   # docker: identical flags
-podman save  docker.io/library/o3k:dev -o /tmp/o3k-dev.tar
-sudo k3s ctr images import /tmp/o3k-dev.tar
-sudo k3s ctr images ls | grep -i o3k                    # → docker.io/library/o3k:dev
+# image.repository=lightstack matches under BOTH podman and docker (see note).
+podman build -t docker.io/library/lightstack:dev -f build/package/Dockerfile .   # docker: identical flags
+podman save  docker.io/library/lightstack:dev -o /tmp/lightstack-dev.tar
+sudo k3s ctr images import /tmp/lightstack-dev.tar
+sudo k3s ctr images ls | grep -i lightstack                    # → docker.io/library/lightstack:dev
 ```
-> ⚠️ **Why the full `docker.io/library/` name:** the chart renders `image: o3k:dev`, which
-> containerd normalizes to `docker.io/library/o3k:dev`. Tagging the build that way makes
-> §6's default `image.repository=o3k` match **as-is**. A bare `podman build -t o3k:dev`
-> becomes **`localhost/o3k:dev`** (podman prefixes local builds) → the chart can't find it
+> ⚠️ **Why the full `docker.io/library/` name:** the chart renders `image: lightstack:dev`, which
+> containerd normalizes to `docker.io/library/lightstack:dev`. Tagging the build that way makes
+> §6's default `image.repository=lightstack` match **as-is**. A bare `podman build -t lightstack:dev`
+> becomes **`localhost/lightstack:dev`** (podman prefixes local builds) → the chart can't find it
 > → `ErrImageNeverPull`. (docker already tags bare builds under `docker.io/library/`, so it
 > works either way — the full name is just safe for both.)
 
@@ -160,39 +160,39 @@ The image already carries the real-mode deps (`qemu-img`, `cdrkit`/genisoimage,
 
 ## 5. External Postgres (the chart deploys none — FR-006)
 
-Reuse SPEC-009's dev Postgres; O3K **auto-migrates the schema on pod startup**
+Reuse SPEC-009's dev Postgres; Lightstack **auto-migrates the schema on pod startup**
 (FR-012b), so a fresh empty DB is enough:
 ```bash
-make db-up                           # o3k-postgres on 0.0.0.0:5432 (o3k/secret/o3k)
-PGPASSWORD=secret psql -h 127.0.0.1 -U o3k -d o3k -c '\dt' 2>/dev/null | head   # reachable
+make db-up                           # lightstack-postgres on 0.0.0.0:5432 (lightstack/secret/lightstack)
+PGPASSWORD=secret psql -h 127.0.0.1 -U lightstack -d lightstack -c '\dt' 2>/dev/null | head   # reachable
 ```
 > The real-mode pod runs with `hostNetwork: true`, so **`127.0.0.1` inside the pod
 > is the host** — the published `:5432` is reachable as `localhost`. If your Postgres
 > binds elsewhere, use the node's LAN IP in the URL below.
-> If `make db-up` errors with *"container name o3k-postgres is already in use"*, it's
-> already running — reuse it, or reset first with `make db-down` (or `podman rm -f o3k-postgres`).
+> If `make db-up` errors with *"container name lightstack-postgres is already in use"*, it's
+> already running — reuse it, or reset first with `make db-down` (or `podman rm -f lightstack-postgres`).
 
 ---
 
 ## 6. Helm deploy — single-node REAL mode
 
-> `image.repository=o3k` matches §4's `docker.io/library/o3k:dev` under both podman and
+> `image.repository=lightstack` matches §4's `docker.io/library/lightstack:dev` under both podman and
 > docker — leave it as-is. If the pod still shows `ErrImageNeverPull`, the imported name
-> differs: check `sudo k3s ctr images ls | grep o3k` and fix the running release with
-> `helm upgrade o3k-rt charts/o3k -n o3k --reuse-values --set image.repository=<name-without-:dev>`.
+> differs: check `sudo k3s ctr images ls | grep lightstack` and fix the running release with
+> `helm upgrade lightstack-rt charts/lightstack -n lightstack --reuse-values --set image.repository=<name-without-:dev>`.
 
 **Real mode — pre-create the node-local storage subdirs on the host first.** The chart's
-`hostPath` is `DirectoryOrCreate` on `/var/lib/o3k` *only*; it does NOT create the service
+`hostPath` is `DirectoryOrCreate` on `/var/lib/lightstack` *only*; it does NOT create the service
 subdirs. If `images/` is missing when the pod starts, Glance silently falls back to
-`~/.o3k/images` inside the pod and Nova can't find the image base → VMs boot to `ERROR`
+`~/.lightstack/images` inside the pod and Nova can't find the image base → VMs boot to `ERROR`
 (see §15). Proper fix is a chart initContainer / binary `MkdirAll` — until then:
 ```bash
-sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init,dhcp}
+sudo mkdir -p /var/lib/lightstack/{images,volumes,instances,cloud-init,dhcp}
 ```
 ```bash
-helm install o3k-rt charts/o3k -n o3k --create-namespace \
-  --set image.repository=o3k --set image.tag=dev --set image.pullPolicy=Never \
-  --set database.url='postgres://o3k:secret@127.0.0.1:5432/o3k?sslmode=disable' \
+helm install lightstack-rt charts/lightstack -n lightstack --create-namespace \
+  --set image.repository=lightstack --set image.tag=dev --set image.pullPolicy=Never \
+  --set database.url='postgres://lightstack:secret@127.0.0.1:5432/lightstack?sslmode=disable' \
   --set secrets.jwtSecret="$(openssl rand -hex 16)" \
   --set secrets.adminPassword='Teardown-Admin-1' \
   --set nova.libvirtMode=real \
@@ -205,16 +205,16 @@ helm install o3k-rt charts/o3k -n o3k --create-namespace \
   --set realMode.hostNetwork=true \
   --set podSecurity.applyPrivilegedNamespaceLabel=true
 
-kubectl -n o3k rollout status deploy/o3k-rt-o3k --timeout=300s
-kubectl -n o3k get pod -l app.kubernetes.io/instance=o3k-rt -o wide   # Running, on the node, host IP
+kubectl -n lightstack rollout status deploy/lightstack-rt-lightstack --timeout=300s
+kubectl -n lightstack get pod -l app.kubernetes.io/instance=lightstack-rt -o wide   # Running, on the node, host IP
 ```
 `realMode.enabled+privileged+hostNetwork` gives the pod the host net namespace, the
 host libvirt socket (`/var/run/libvirt/libvirt-sock`), and the host storage mount
-(`/var/lib/o3k`) — the same access #503 validated for the bare process. Real mode
+(`/var/lib/lightstack`) — the same access #503 validated for the bare process. Real mode
 pins **1 replica** with a `Recreate` strategy (host ports can't overlap).
 
 > If the pod won't schedule with a PodSecurity error, the namespace label didn't
-> apply — confirm `kubectl get ns o3k -o jsonpath='{.metadata.labels}'` shows
+> apply — confirm `kubectl get ns lightstack -o jsonpath='{.metadata.labels}'` shows
 > `pod-security.kubernetes.io/enforce: privileged`.
 
 ---
@@ -222,21 +222,21 @@ pins **1 replica** with a `Recreate` strategy (host ports can't overlap).
 ## 7. Smoke test the deployment
 
 ```bash
-kubectl -n o3k rollout status deploy/o3k-rt-o3k --timeout=120s   # wait until Ready
-kubectl -n o3k get endpoints o3k-rt-o3k                          # must list <nodeIP>:35357 before testing
-helm test o3k-rt -n o3k              # runs the in-cluster identity-check pod — should PASS
+kubectl -n lightstack rollout status deploy/lightstack-rt-lightstack --timeout=120s   # wait until Ready
+kubectl -n lightstack get endpoints lightstack-rt-lightstack                          # must list <nodeIP>:35357 before testing
+helm test lightstack-rt -n lightstack              # runs the in-cluster identity-check pod — should PASS
 ```
 > **If the test fails with `Could not connect ... port 35357` right after a (re)deploy,
 > it's a startup race** — the test pod can fire before kube-proxy programs the new
 > Endpoint into iptables. Confirm the Endpoint is listed (above), then just re-run
-> `helm test`. It is not an o3k or chart fault.
+> `helm test`. It is not a Lightstack or chart fault.
 
 Then point the CLI at the host ports (hostNetwork binds them on the node). Write the
 env file fresh so the credentials match THIS release — **`OS_PASSWORD` MUST equal the
 `secrets.adminPassword` you deployed in §6** (here `Teardown-Admin-1`, NOT the SPEC-009
 bare-host `secret`; a stale password shows up as `401 "Unrecognized schema in response body"`):
 ```bash
-cat > ~/.o3k-env <<'EOF'
+cat > ~/.lightstack-env <<'EOF'
 export OS_AUTH_URL=http://127.0.0.1:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD='Teardown-Admin-1'        # ← MUST match §6 secrets.adminPassword
@@ -245,13 +245,13 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 EOF
-source ~/.o3k-env
+source ~/.lightstack-env
 openstack token issue >/dev/null && echo "auth OK"
 openstack catalog list -f value -c Name        # the six services
 ```
-> This **overwrites** the SPEC-009 `~/.o3k-env` (which used `localhost` + `secret`). If
+> This **overwrites** the SPEC-009 `~/.lightstack-env` (which used `localhost` + `secret`). If
 > you later go back to bare-host SPEC-009 testing, restore that password — or keep them
-> separate by writing this to `~/.o3k-k3s-env` and sourcing that instead.
+> separate by writing this to `~/.lightstack-k3s-env` and sourcing that instead.
 
 **Pass** = `helm test` PASS + `token issue` works against the node.
 
@@ -262,20 +262,20 @@ openstack catalog list -f value -c Name        # the six services
 The SPEC-009 §11–§13 functional flow, driven through the cluster-hosted API: a real VM
 you can SSH into that can ping the outside. The product behavior is identical (same
 binary, same host access) — only the API endpoint moved into a pod. All `openstack`
-commands run from `ora` (auth via §7's `~/.o3k-env`). End state is also the host state
+commands run from `ora` (auth via §7's `~/.lightstack-env`). End state is also the host state
 §9 must purge, so §8e snapshots it.
 
-> **Why this works on `ora`:** the o3k pod is `hostNetwork`, so the bridge `br-<netid>`,
+> **Why this works on `ora`:** the Lightstack pod is `hostNetwork`, so the bridge `br-<netid>`,
 > the VM tap, dnsmasq, and the NAT rules it creates all live in **`ora`'s** network
-> namespace — exactly as if o3k ran bare. So you SSH from `ora`'s shell straight to the
+> namespace — exactly as if Lightstack ran bare. So you SSH from `ora`'s shell straight to the
 > VM's fixed IP, and egress masquerades out `ora`'s uplink.
 
 ### 8a. Preflight — nested virtualization
-o3k boots real KVM guests via `ora`'s libvirtd; since `ora` is itself a libvirt VM, those
+Lightstack boots real KVM guests via `ora`'s libvirtd; since `ora` is itself a libvirt VM, those
 guests are **nested**. Confirm KVM is usable (else qemu falls back to slow TCG — cirros
 still boots, just sluggishly):
 ```bash
-kubectl exec -n o3k deploy/o3k-rt-o3k -- sh -c 'ls -l /dev/kvm 2>&1; grep -Ec "vmx|svm" /proc/cpuinfo'
+kubectl exec -n lightstack deploy/lightstack-rt-lightstack -- sh -c 'ls -l /dev/kvm 2>&1; grep -Ec "vmx|svm" /proc/cpuinfo'
 # /dev/kvm present + non-zero count → nested KVM. Missing /dev/kvm / count 0 → TCG (slow, still works).
 ```
 > If `/dev/kvm` is missing: on the **L0** host set `options kvm_intel nested=1` (or
@@ -323,7 +323,7 @@ ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 
 ### 8d. Give the VM internet egress, then ping out from inside it
 A VM reaches the internet once its subnet sits behind a router with an external gateway;
-o3k masquerades it out `ora`'s default-route interface (no operator `br-ex`). On this
+Lightstack masquerades it out `ora`'s default-route interface (no operator `br-ex`). On this
 nested node that double-NATs through the libvirt L0 — ICMP/TCP still get out.
 ```bash
 openstack network create ext-net
@@ -334,7 +334,7 @@ openstack router add subnet r1 sub1
 ```
 Host side — confirm the egress NAT is programmed (privileged pod = `ora`'s netns):
 ```bash
-kubectl exec -n o3k deploy/o3k-rt-o3k -- sh -c \
+kubectl exec -n lightstack deploy/lightstack-rt-lightstack -- sh -c \
   'cat /proc/sys/net/ipv4/ip_forward; iptables -t nat -S POSTROUTING | grep MASQUERADE; iptables -S FORWARD | grep 10.0.0.0/24'
 ```
 Guest side — ping the outside from inside the VM:
@@ -344,17 +344,17 @@ ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 ```
 **Pass** = `ping -c3 1.1.1.1` from inside the VM succeeds (DNS may be unset — use an IP).
 If ping fails but `POSTROUTING` shows the `MASQUERADE`, it's **host FORWARD ordering** on
-`ora` (libvirt + flannel + o3k all write `FORWARD`) — see §15.
+`ora` (libvirt + flannel + Lightstack all write `FORWARD`) — see §15.
 
 ### 8e. Snapshot the "before" state (§9d compares against this)
 ```bash
 echo "== domains =="   ; sudo virsh list --all
 echo "== bridges =="   ; ip -br link show type bridge | grep '^br-'
-echo "== iptables =="  ; sudo iptables -S | grep -E 'O3K-(SG|NSI)' ; sudo iptables -t nat -S | grep -E 'O3K|169\.254\.169\.254|MASQUERADE'
-echo "== storage =="   ; sudo ls -R /var/lib/o3k | head -40
-echo "== netns(pod) ==" ; kubectl exec -n o3k deploy/o3k-rt-o3k -- ip netns list
+echo "== iptables =="  ; sudo iptables -S | grep -E 'lightstack-(SG|NSI)' ; sudo iptables -t nat -S | grep -E 'lightstack|169\.254\.169\.254|MASQUERADE'
+echo "== storage =="   ; sudo ls -R /var/lib/lightstack | head -40
+echo "== netns(pod) ==" ; kubectl exec -n lightstack deploy/lightstack-rt-lightstack -- ip netns list
 ```
-> **Note the last line.** O3K creates *named* netns (`light-ns-*`, `qrouter-*`).
+> **Note the last line.** Lightstack creates *named* netns (`light-ns-*`, `qrouter-*`).
 > In `hostNetwork` mode **bridges + iptables are host-level** (the pod shares the
 > host net ns) — so `virsh`, `ip link`, `iptables` on the host see them. But named
 > netns are bind-mounts in the **pod's mount namespace**, so they show up under
@@ -366,15 +366,15 @@ echo "== netns(pod) ==" ; kubectl exec -n o3k deploy/o3k-rt-o3k -- ip netns list
 ## 9. Tear it down — `dataRetentionPolicy: delete`
 
 ### 9.0 Pre-flight: dry-run the purge (non-destructive, recommended)
-Preview exactly what `o3k cleanup` would remove, deleting nothing:
+Preview exactly what `lightstack cleanup` would remove, deleting nothing:
 ```bash
-kubectl exec -n o3k deploy/o3k-rt-o3k -- /app/o3k cleanup --config /app/config/o3k.yaml --dry-run
+kubectl exec -n lightstack deploy/lightstack-rt-lightstack -- /app/lightstack cleanup --config /app/config/lightstack.yaml --dry-run
 ```
 **Pass** = it logs "would purge" lines for the domains/network/storage and exits 0.
 
 ### 9a. Flip the release to delete mode
 ```bash
-helm upgrade o3k-rt charts/o3k -n o3k --reuse-values \
+helm upgrade lightstack-rt charts/lightstack -n lightstack --reuse-values \
   --set dataRetentionPolicy=delete \
   --set teardown.kubectlImage=alpine/k8s:1.31.0      # MUST ship /bin/sh — rancher/kubectl is shell-less → StartError
 ```
@@ -387,43 +387,43 @@ helm upgrade o3k-rt charts/o3k -n o3k --reuse-values \
 Run the uninstall in **T1** and watch the hook Jobs in **T2**:
 ```bash
 # T2 — watch the hook pods appear (single type — `kubectl get -w` can't watch multiple types):
-kubectl get pods -n o3k -w &
+kubectl get pods -n lightstack -w &
 # T2 — when the *-teardown-purge pod shows up above, tail its audit log (deleted on success):
-#   kubectl logs -n o3k -f job/o3k-rt-o3k-teardown-purge
+#   kubectl logs -n lightstack -f job/lightstack-rt-lightstack-teardown-purge
 
 # T1 — this returns only after the blocking purge SUCCEEDS:
-helm uninstall o3k-rt -n o3k
+helm uninstall lightstack-rt -n lightstack
 ```
-Order you should see: the `o3k-rt-o3k-teardown` SA/Role/RoleBinding appear →
+Order you should see: the `lightstack-rt-lightstack-teardown` SA/Role/RoleBinding appear →
 `…-teardown-quiesce` Job scales the Deployment to 0 and deletes PVCs → `…-teardown-purge`
-Job runs `o3k cleanup` (privileged, hostNetwork, host mounts) → only then does the
+Job runs `lightstack cleanup` (privileged, hostNetwork, host mounts) → only then does the
 release get removed.
 
 **Fail-closed check (SC-003):** if the purge exits non-zero, `helm uninstall`
 **aborts** and the failed Job is kept for inspection:
 ```bash
-kubectl logs -n o3k job/o3k-rt-o3k-teardown-purge      # the JSON audit trail + the failure
+kubectl logs -n lightstack job/lightstack-rt-lightstack-teardown-purge      # the JSON audit trail + the failure
 ```
 
 ### 9c. Verify ZERO cluster residue (SC-001)
 ```bash
-kubectl get deploy,svc,secret,pvc,job,sa,role,rolebinding -n o3k -l app.kubernetes.io/instance=o3k-rt
-helm list -n o3k
+kubectl get deploy,svc,secret,pvc,job,sa,role,rolebinding -n lightstack -l app.kubernetes.io/instance=lightstack-rt
+helm list -n lightstack
 ```
-**Pass** = the first command prints nothing, `helm list` no longer shows `o3k-rt`.
+**Pass** = the first command prints nothing, `helm list` no longer shows `lightstack-rt`.
 
 ### 9d. Verify ZERO host residue (SC-001 — the real-mode payload)
 Compare against the §8 snapshot:
 ```bash
-sudo virsh list --all                                                   # no o3k domains (destroyed+undefined)
-ip -br link show type bridge | grep '^br-'        || echo "OK: no o3k bridges"
-sudo iptables -S | grep -E 'O3K-(SG|NSI)'         || echo "OK: no o3k SG/NSI chains"
-sudo iptables -t nat -S | grep -E 'O3K|169\.254\.169\.254|MASQUERADE' || echo "OK: no o3k nat rules"
-sudo ls /var/lib/o3k/instances /var/lib/o3k/volumes /var/lib/o3k/images \
-        /var/lib/o3k/cloud-init /var/lib/o3k/dhcp 2>&1                   # all "No such file" (RemoveAll'd)
+sudo virsh list --all                                                   # no lightstack domains (destroyed+undefined)
+ip -br link show type bridge | grep '^br-'        || echo "OK: no lightstack bridges"
+sudo iptables -S | grep -E 'lightstack-(SG|NSI)'         || echo "OK: no lightstack SG/NSI chains"
+sudo iptables -t nat -S | grep -E 'lightstack|169\.254\.169\.254|MASQUERADE' || echo "OK: no lightstack nat rules"
+sudo ls /var/lib/lightstack/instances /var/lib/lightstack/volumes /var/lib/lightstack/images \
+        /var/lib/lightstack/cloud-init /var/lib/lightstack/dhcp 2>&1                   # all "No such file" (RemoveAll'd)
 ```
-**Pass** = domains gone, no `br-*`, no `O3K-*` chains, no o3k NAT rules, the
-`/var/lib/o3k` trees removed. (`o3k cleanup` `RemoveAll`s the dirs, so they're absent,
+**Pass** = domains gone, no `br-*`, no `lightstack-*` chains, no Lightstack NAT rules, the
+`/var/lib/lightstack` trees removed. (`lightstack cleanup` `RemoveAll`s the dirs, so they're absent,
 not just empty.)
 
 > **Named netns:** `ip netns list` **on the host** was already empty in §8 (they
@@ -431,13 +431,13 @@ not just empty.)
 > were reclaimed with it. So the host-level check is "still empty" — expected. The
 > open question (cloud-storage#472) is whether the *purge pod's* `ip netns del`
 > reaches anything; in this topology it's a no-op (absent=success). **If you see any
-> leftover `light-ns-*`/`qrouter-*` on the host, or any `br-*`/`O3K-*` survive,
+> leftover `light-ns-*`/`qrouter-*` on the host, or any `br-*`/`lightstack-*` survive,
 > capture §15's diagnostics and report back** — that's a chart-mount fix, not a
 > code bug.
 
 ### 9e. Verify the DATABASE is UNTOUCHED (operator-owned — NOT reset)
 ```bash
-PGPASSWORD=secret psql -h 127.0.0.1 -U o3k -d o3k -c "select count(*) from instances; select count(*) from networks;"
+PGPASSWORD=secret psql -h 127.0.0.1 -U lightstack -d lightstack -c "select count(*) from instances; select count(*) from networks;"
 ```
 **Pass** = the rows are **still there**. Teardown reads the DB read-only to enumerate
 and never resets it (FR-013, the dropped-DB-reset scope change). Getting a *resource*-
@@ -454,14 +454,14 @@ pristine redeploy is therefore the operator's DB responsibility — see §12.
 > teardown hooks, which render solely under `delete`.
 ```bash
 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-helm install o3k-ret charts/o3k -n o3k --create-namespace \
-  --set image.repository=o3k --set image.tag=dev --set image.pullPolicy=Never \
-  --set database.url="postgres://o3k:secret@${NODE_IP}:5432/o3k?sslmode=disable" \
+helm install lightstack-ret charts/lightstack -n lightstack --create-namespace \
+  --set image.repository=lightstack --set image.tag=dev --set image.pullPolicy=Never \
+  --set database.url="postgres://lightstack:secret@${NODE_IP}:5432/lightstack?sslmode=disable" \
   --set secrets.jwtSecret="$(openssl rand -hex 16)" --set secrets.adminPassword='Teardown-Admin-1'
-kubectl -n o3k rollout status deploy/o3k-ret-o3k --timeout=120s
-helm uninstall o3k-ret -n o3k
+kubectl -n lightstack rollout status deploy/lightstack-ret-lightstack --timeout=120s
+helm uninstall lightstack-ret -n lightstack
 sleep 3
-kubectl get jobs -n o3k | grep teardown && echo "FAIL: hooks ran under retain" || echo "PASS: retain ran NO teardown hooks (SC-004)"
+kubectl get jobs -n lightstack | grep teardown && echo "FAIL: hooks ran under retain" || echo "PASS: retain ran NO teardown hooks (SC-004)"
 ```
 **Pass** = no `…-teardown-*` Jobs ever appeared; host state + DB untouched (SC-006).
 
@@ -484,16 +484,16 @@ is the on-cluster confirmation that a retry after a partial run doesn't error.
 (`psa-namespace.yaml`), so it must be recreated. (Real mode → hostNetwork, so `127.0.0.1`
 in the DB URL is correct here.)
 ```bash
-helm install o3k-rt charts/o3k -n o3k --create-namespace \
-  --set image.repository=o3k --set image.tag=dev --set image.pullPolicy=Never \
-  --set database.url='postgres://o3k:secret@127.0.0.1:5432/o3k?sslmode=disable' \
+helm install lightstack-rt charts/lightstack -n lightstack --create-namespace \
+  --set image.repository=lightstack --set image.tag=dev --set image.pullPolicy=Never \
+  --set database.url='postgres://lightstack:secret@127.0.0.1:5432/lightstack?sslmode=disable' \
   --set secrets.jwtSecret="$(openssl rand -hex 16)" --set secrets.adminPassword='Teardown-Admin-1' \
   --set nova.libvirtMode=real --set neutron.networkingMode=iptables \
   --set neutron.securityGroupMode=iptables --set cinder.storageMode=local --set glance.storageMode=local \
   --set realMode.enabled=true --set realMode.privileged=true --set realMode.hostNetwork=true \
   --set podSecurity.applyPrivilegedNamespaceLabel=true
-kubectl -n o3k rollout status deploy/o3k-rt-o3k --timeout=300s
-helm test o3k-rt -n o3k && echo "PASS: immediate redeploy healthy, no collisions (SC-002)"
+kubectl -n lightstack rollout status deploy/lightstack-rt-lightstack --timeout=300s
+helm test lightstack-rt -n lightstack && echo "PASS: immediate redeploy healthy, no collisions (SC-002)"
 ```
 **Pass** = the redeploy comes up healthy with no naming/port collisions.
 
@@ -504,17 +504,17 @@ helm test o3k-rt -n o3k && echo "PASS: immediate redeploy healthy, no collisions
 > operator-owned". For a **truly pristine** redeploy, reset the DB yourself before
 > reinstalling — e.g.:
 > ```bash
-> PGPASSWORD=secret psql -h 127.0.0.1 -U o3k -d o3k -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
-> # o3k re-migrates the empty schema on the next pod start.
+> PGPASSWORD=secret psql -h 127.0.0.1 -U lightstack -d lightstack -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+> # Lightstack re-migrates the empty schema on the next pod start.
 > ```
 
 ---
 
 ## 13. Cleanup / full reset between runs
 ```bash
-helm uninstall o3k-rt o3k-ret -n o3k --no-hooks 2>/dev/null || true   # remove releases, skip purge
-kubectl delete ns o3k --ignore-not-found
-# then the SPEC-009 §1 host reset (VMs, bridges, netns, iptables, /var/lib/o3k/*, o3k-postgres)
+helm uninstall lightstack-rt lightstack-ret -n lightstack --no-hooks 2>/dev/null || true   # remove releases, skip purge
+kubectl delete ns lightstack --ignore-not-found
+# then the SPEC-009 §1 host reset (VMs, bridges, netns, iptables, /var/lib/lightstack/*, lightstack-postgres)
 # To wipe the cluster entirely:  /usr/local/bin/k3s-uninstall.sh
 ```
 
@@ -523,7 +523,7 @@ kubectl delete ns o3k --ignore-not-found
 ## 14. The `--no-hooks` escape hatch (C5)
 When the node is gone or the purge can't complete and you must remove the release anyway:
 ```bash
-helm uninstall o3k-rt -n o3k --no-hooks    # removes the release, runs NO purge
+helm uninstall lightstack-rt -n lightstack --no-hooks    # removes the release, runs NO purge
 ```
 You then own any orphaned host state. (`helm uninstall` takes no value overrides, so
 this flag — not a value — is the escape.)
@@ -534,9 +534,9 @@ this flag — not a value — is the escape.)
 
 - **`teardown.kubectlImage is required …`** → you set `dataRetentionPolicy=delete`
   without `--set teardown.kubectlImage=…`. It's required-when-delete (FR-018).
-- **Quiesce Job can't scale the Deployment** → check the `o3k-rt-o3k-teardown`
-  Role/RoleBinding rendered (weight -20) and the SA is bound; `kubectl logs job/o3k-rt-o3k-teardown-quiesce`.
-- **Purge Job `CrashLoopBackOff`/exit 2** → config error. `kubectl logs job/o3k-rt-o3k-teardown-purge`;
+- **Quiesce Job can't scale the Deployment** → check the `lightstack-rt-lightstack-teardown`
+  Role/RoleBinding rendered (weight -20) and the SA is bound; `kubectl logs job/lightstack-rt-lightstack-teardown-quiesce`.
+- **Purge Job `CrashLoopBackOff`/exit 2** → config error. `kubectl logs job/lightstack-rt-lightstack-teardown-purge`;
   the config Secret must still exist when the purge runs (it's a release object — Helm
   removes it only *after* the hooks succeed, so it's present during the purge).
 - **Purge exits 1 (fail-closed) → uninstall aborts** → read the JSON audit log; it
@@ -545,28 +545,28 @@ this flag — not a value — is the escape.)
 - **DB unreachable at teardown** → not fatal (C9): the purge ignores it and falls back
   to host-only cleanup (storage trees + a netns prefix scan). Expect a warning, exit 0
   if the host classes succeed.
-- **⚠️ Host network state survived the purge** (leftover `br-*`, `O3K-*` chains, or
+- **⚠️ Host network state survived the purge** (leftover `br-*`, `lightstack-*` chains, or
   `light-ns-*`/`qrouter-*` netns visible on the host after §9d) → this is the
   **known open risk** (cloud-storage#472 "real-mode host-purge reachability"). The
   purge pod is a *separate mount namespace* from the terminated server pod; named
   netns it created are pod-scoped, and the chart does not bind-mount `/run/netns`.
   Capture and report back:
   ```bash
-  kubectl get pod -n o3k -o yaml | grep -A3 -iE 'hostNetwork|mountPropagation|/run/netns'
-  sudo ip netns list ; ip -br link show type bridge ; sudo iptables -S | grep O3K-
+  kubectl get pod -n lightstack -o yaml | grep -A3 -iE 'hostNetwork|mountPropagation|/run/netns'
+  sudo ip netns list ; ip -br link show type bridge ; sudo iptables -S | grep lightstack-
   # plus the full purge Job log
   ```
   Likely fix is a chart change (bind-mount `/run/netns` with `mountPropagation:
   Bidirectional` on both the server pod and the purge Job, or run the purge in the
-  host mount namespace), **not** an `o3k cleanup` code change — the command already
+  host mount namespace), **not** an `lightstack cleanup` code change — the command already
   removes everything it can reach.
-- **VM boots to `ERROR`; o3k log shows `Could not open backing image '/var/lib/o3k/images/image-*.raw'`** →
-  Glance stored the base under its `~/.o3k` fallback because `/var/lib/o3k/images` didn't
-  exist when the pod started (chart `hostPath` is `DirectoryOrCreate` on `/var/lib/o3k`
-  only). Fix: `sudo mkdir -p /var/lib/o3k/{images,volumes,instances,cloud-init,dhcp}`,
-  `kubectl -n o3k rollout restart deploy/o3k-rt-o3k`, then delete + re-upload the image and
+- **VM boots to `ERROR`; Lightstack log shows `Could not open backing image '/var/lib/lightstack/images/image-*.raw'`** →
+  Glance stored the base under its `~/.lightstack` fallback because `/var/lib/lightstack/images` didn't
+  exist when the pod started (chart `hostPath` is `DirectoryOrCreate` on `/var/lib/lightstack`
+  only). Fix: `sudo mkdir -p /var/lib/lightstack/{images,volumes,instances,cloud-init,dhcp}`,
+  `kubectl -n lightstack rollout restart deploy/lightstack-rt-lightstack`, then delete + re-upload the image and
   recreate the VM. Confirm the base landed right:
-  `kubectl exec -n o3k deploy/o3k-rt-o3k -- ls /var/lib/o3k/images`. Proper fix = a chart
+  `kubectl exec -n lightstack deploy/lightstack-rt-lightstack -- ls /var/lib/lightstack/images`. Proper fix = a chart
   initContainer pre-creating the subdirs (or the binary `MkdirAll`-ing its store) — see §6.
 - **Reset everything** → §13, or reboot the host then redo the three persistent items
-  (undefine VMs, `rm -rf /var/lib/o3k/*`, recreate Postgres).
+  (undefine VMs, `rm -rf /var/lib/lightstack/*`, recreate Postgres).

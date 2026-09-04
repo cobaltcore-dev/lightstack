@@ -34,30 +34,30 @@ func TestBaseURL(t *testing.T) {
 			}
 		}
 	}
-	defer save("O3K_ENDPOINT_HOST")()
-	defer save("O3K_ENDPOINT_SCHEME")()
+	defer save("LIGHTSTACK_ENDPOINT_HOST")()
+	defer save("LIGHTSTACK_ENDPOINT_SCHEME")()
 
-	// O3K_ENDPOINT_HOST + scheme=https → https with configured host+port
-	os.Setenv("O3K_ENDPOINT_HOST", "o3k.example.com")
-	os.Setenv("O3K_ENDPOINT_SCHEME", "https")
-	if got := BaseURL(ginCtx(false, "ignored:1"), 9292); got != "https://o3k.example.com:9292" {
+	// LIGHTSTACK_ENDPOINT_HOST + scheme=https → https with configured host+port
+	os.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.example.com")
+	os.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", "https")
+	if got := BaseURL(ginCtx(false, "ignored:1"), 9292); got != "https://lightstack.example.com:9292" {
 		t.Errorf("host+https: got %q", got)
 	}
 
 	// scheme default (unset) → http
-	os.Unsetenv("O3K_ENDPOINT_SCHEME")
-	if got := BaseURL(ginCtx(false, "ignored:1"), 9292); got != "http://o3k.example.com:9292" {
+	os.Unsetenv("LIGHTSTACK_ENDPOINT_SCHEME")
+	if got := BaseURL(ginCtx(false, "ignored:1"), 9292); got != "http://lightstack.example.com:9292" {
 		t.Errorf("host+default: got %q", got)
 	}
 
-	// No O3K_ENDPOINT_HOST, scheme unset, TLS request → https (preserved auto-detect)
-	os.Unsetenv("O3K_ENDPOINT_HOST")
+	// No LIGHTSTACK_ENDPOINT_HOST, scheme unset, TLS request → https (preserved auto-detect)
+	os.Unsetenv("LIGHTSTACK_ENDPOINT_HOST")
 	if got := BaseURL(ginCtx(true, "host:443"), 0); got != "https://host:443" {
 		t.Errorf("tls autodetect: got %q", got)
 	}
 
-	// No O3K_ENDPOINT_HOST, scheme=https forces https on a non-TLS request
-	os.Setenv("O3K_ENDPOINT_SCHEME", "https")
+	// No LIGHTSTACK_ENDPOINT_HOST, scheme=https forces https on a non-TLS request
+	os.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", "https")
 	if got := BaseURL(ginCtx(false, "host:80"), 0); got != "https://host:80" {
 		t.Errorf("forced https: got %q", got)
 	}

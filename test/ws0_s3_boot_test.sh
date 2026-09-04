@@ -6,21 +6,21 @@
 #   2. integrity  — if the RGW object no longer matches the Glance checksum, the
 #      boot is refused (server -> ERROR), never booted from corrupt data.
 #
-# Run ON the libvirt host, against a running real-mode o3k (nova libvirt_mode:real,
+# Run ON the libvirt host, against a running real-mode Lightstack (nova libvirt_mode:real,
 # glance storage_mode:s3 -> the RGW below). Source your OpenStack env first, and
-# export the RGW S3 endpoint + credentials o3k's Glance uses:
+# export the RGW S3 endpoint + credentials Lightstack's Glance uses:
 #   OS_AUTH_URL=... RGW_S3_ENDPOINT=http://<rgw>:<port> \
 #   AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... ./test/ws0_s3_boot_test.sh
 set -euo pipefail
 : "${OS_AUTH_URL:?source your OpenStack env first}"
-: "${RGW_S3_ENDPOINT:?set RGW_S3_ENDPOINT (the RGW o3k Glance uses)}"
+: "${RGW_S3_ENDPOINT:?set RGW_S3_ENDPOINT (the RGW Lightstack Glance uses)}"
 : "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID for the RGW}"
 : "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY for the RGW}"
 
-IMG="${O3K_TEST_IMAGE:-cirros}"          # a BOOTABLE image uploaded while glance=s3
-NET="${O3K_TEST_NET:-net1}"
-FLAVOR="${O3K_TEST_FLAVOR:-m1.tiny}"
-BASE_DIR="${O3K_IMAGE_DIR:-/var/lib/o3k/images}"
+IMG="${LIGHTSTACK_TEST_IMAGE:-cirros}"          # a BOOTABLE image uploaded while glance=s3
+NET="${LIGHTSTACK_TEST_NET:-net1}"
+FLAVOR="${LIGHTSTACK_TEST_FLAVOR:-m1.tiny}"
+BASE_DIR="${LIGHTSTACK_IMAGE_DIR:-/var/lib/lightstack/images}"
 # Exported so the inline python (rgw_put) sees them via os.environ.
 export RGW_BUCKET="${RGW_BUCKET:-images}"
 export RGW_S3_ENDPOINT AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
