@@ -1,21 +1,21 @@
-# O3K - OpenStack Lightweight Cloud Platform
+# Lightstack - OpenStack Lightweight Cloud Platform
 
-[![CI Pipeline](https://github.com/cobaltcore-dev/o3k/actions/workflows/ci.yml/badge.svg)](https://github.com/cobaltcore-dev/o3k/actions/workflows/ci.yml)
+[![CI Pipeline](https://github.com/cobaltcore-dev/lightstack/actions/workflows/ci.yml/badge.svg)](https://github.com/cobaltcore-dev/lightstack/actions/workflows/ci.yml)
 
 **Status**: v0.6.1 - Production Ready | 104% API Coverage (342/330 endpoints) | 100% Terraform Compatible
 **Last Updated**: April 22, 2026
 
-**O3K** (OpenStack 3 Kubernetes-style) is a lightweight, high-performance implementation of OpenStack APIs in pure Go, inspired by how K3s simplified Kubernetes.
+**lightstack** (OpenStack 3 Kubernetes-style) is a lightweight, high-performance implementation of OpenStack APIs in pure Go, inspired by how K3s simplified Kubernetes.
 
 ---
 
 ## 🎉 Milestone: 104% API Coverage - Full Terraform Compatibility!
 
-With **104% API coverage (342/330 endpoints)**, O3K delivers complete OpenStack Terraform provider compatibility. Users can use existing Terraform scripts, Horizon UI, and OpenStack CLI without any modifications - zero difference between OpenStack and O3K.
+With **104% API coverage (342/330 endpoints)**, lightstack delivers complete OpenStack Terraform provider compatibility. Users can use existing Terraform scripts, Horizon UI, and OpenStack CLI without any modifications - zero difference between OpenStack and lightstack.
 
-## 🎯 What is O3K?
+## 🎯 What is lightstack?
 
-Just as **K3s** is to Kubernetes, **O3K** is to OpenStack:
+Just as **K3s** is to Kubernetes, **lightstack** is to OpenStack:
 - **Lightweight**: Single ~35MB binary vs multi-GB Python distributions
 - **Fast**: Go-based synchronous architecture (10x faster than traditional OpenStack)
 - **Simple**: One process, one database, zero message queues
@@ -56,7 +56,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ### Client Compatibility
 
-**Zero-Modification Migration**: O3K provides complete API compatibility - use your existing tools unchanged.
+**Zero-Modification Migration**: lightstack provides complete API compatibility - use your existing tools unchanged.
 
 - ✅ **Terraform Provider**: All `openstack_*` resources work identically (compute, network, storage)
 - ✅ **Horizon Dashboard**: 100% UI compatibility - same workflows, same interface
@@ -64,7 +64,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list.
 - ✅ **gophercloud SDK**: Full Go client library compatibility
 - ✅ **python-openstackclient**: Python client verified
 
-**Migration Path**: Point your Terraform provider or OpenStack client to O3K endpoints - no script changes required.
+**Migration Path**: Point your Terraform provider or OpenStack client to lightstack endpoints - no script changes required.
 
 ### Architecture
 - **Single Binary**: All services in one process (~35MB)
@@ -80,7 +80,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         O3K Binary                           │
+│                         lightstack Binary                           │
 ├─────────────────────────────────────────────────────────────┤
 │  Keystone (Identity)      :35357   [61 endpoints]          │
 │  Nova (Compute)           :8774    [72 endpoints]          │
@@ -143,17 +143,17 @@ Just as K3s removed heavyweight components from Kubernetes:
 
 ### 🚀 Automated Single-Node Deployment (Recommended for Production Demos)
 
-**Deploy O3K + KVM Hypervisor on a single Linux host with one command**:
+**Deploy lightstack + KVM Hypervisor on a single Linux host with one command**:
 
 ```bash
 # Download and run interactive deployment script
-wget https://raw.githubusercontent.com/cobaltcore-dev/o3k/main/scripts/deploy-single-node.sh
+wget https://raw.githubusercontent.com/cobaltcore-dev/lightstack/main/scripts/deploy-single-node.sh
 chmod +x deploy-single-node.sh
 sudo ./deploy-single-node.sh
 ```
 
 **What you get** (in 15-20 minutes):
-- ✅ Full O3K installation with real KVM virtualization
+- ✅ Full lightstack installation with real KVM virtualization
 - ✅ PostgreSQL database configured
 - ✅ Network bridge for external connectivity
 - ✅ Horizon dashboard + noVNC console
@@ -168,14 +168,14 @@ sudo ./deploy-single-node.sh
 
 ### ⚡ Quick Evaluation with Docker (Recommended for Testing)
 
-**Deploy O3K + Horizon Dashboard in Docker Compose**:
+**Deploy lightstack + Horizon Dashboard in Docker Compose**:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/cobaltcore-dev/o3k.git
-cd o3k/deployments
+git clone https://github.com/cobaltcore-dev/lightstack.git
+cd lightstack/deployments
 
-# 2. Start all services (O3K + Horizon + PostgreSQL + noVNC)
+# 2. Start all services (lightstack + Horizon + PostgreSQL + noVNC)
 docker compose -f docker-compose-horizon.yml up -d
 
 # 3. Access Horizon Dashboard
@@ -185,7 +185,7 @@ open http://localhost/dashboard
 
 **What's included**:
 - PostgreSQL 18 database
-- O3K services (Keystone, Nova, Neutron, Cinder, Glance)
+- lightstack services (Keystone, Nova, Neutron, Cinder, Glance)
 - Horizon Dashboard (OpenStack Flamingo 2025.2)
 - noVNC console proxy
 - Complete web UI for cloud management
@@ -200,10 +200,10 @@ For headless deployment without web UI:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/cobaltcore-dev/o3k.git
-cd o3k
+git clone https://github.com/cobaltcore-dev/lightstack.git
+cd lightstack
 
-# 2. Start O3K services only
+# 2. Start lightstack services only
 docker compose -f deployments/docker-compose.yml up -d
 
 # 3. Install OpenStack CLI
@@ -228,9 +228,9 @@ See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the complete quick start guide.
 
 ### 🖥️ Horizon Dashboard Features
 
-**IMPORTANT**: Horizon dashboard integration is **extended functionality** (not core O3K feature). Horizon requires independent setup and configuration to work with O3K. See setup guides below for detailed integration steps.
+**IMPORTANT**: Horizon dashboard integration is **extended functionality** (not core lightstack feature). Horizon requires independent setup and configuration to work with lightstack. See setup guides below for detailed integration steps.
 
-O3K provides 100% API compatibility with OpenStack Horizon dashboard (Flamingo 2025.2 and later). All Horizon features work seamlessly with O3K as the backend.
+lightstack provides 100% API compatibility with OpenStack Horizon dashboard (Flamingo 2025.2 and later). All Horizon features work seamlessly with lightstack as the backend.
 
 **Features**:
 - ✅ Instance lifecycle (launch, start, stop, delete, resize, rebuild)
@@ -243,23 +243,23 @@ O3K provides 100% API compatibility with OpenStack Horizon dashboard (Flamingo 2
 - ✅ Multi-project isolation and RBAC
 
 **Deployment Guides**:
-- **Unified Deployment** (Recommended): [docs/UNIFIED_DEPLOYMENT.md](docs/UNIFIED_DEPLOYMENT.md) - O3K + Horizon in one docker-compose file
-- **Separate Horizon**: [docs/HORIZON_DEPLOYMENT.md](docs/HORIZON_DEPLOYMENT.md) - Deploy Horizon separately to existing O3K
+- **Unified Deployment** (Recommended): [docs/UNIFIED_DEPLOYMENT.md](docs/UNIFIED_DEPLOYMENT.md) - lightstack + Horizon in one docker-compose file
+- **Separate Horizon**: [docs/HORIZON_DEPLOYMENT.md](docs/HORIZON_DEPLOYMENT.md) - Deploy Horizon separately to existing lightstack
 - **Quick Reference**: [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) - Command cheat sheet
 - **Integration Details**: [docs/HORIZON_INTEGRATION.md](docs/HORIZON_INTEGRATION.md) - Architecture and troubleshooting
 
 **Version Requirements**:
-- O3K supports OpenStack **Flamingo (2025.2) and later versions only**
+- lightstack supports OpenStack **Flamingo (2025.2) and later versions only**
 - Earlier OpenStack releases (Zed, Yoga, etc.) are **not supported**
 - Use Horizon Flamingo image: `quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble`
 
 **Configuration**:
 
-Horizon connects to O3K services using standard OpenStack configuration:
+Horizon connects to lightstack services using standard OpenStack configuration:
 
 ```python
 # local_settings.py
-OPENSTACK_HOST = "o3k"  # or your O3K server address
+OPENSTACK_HOST = "lightstack"  # or your lightstack server address
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 OPENSTACK_API_VERSIONS = {
     "identity": 3,
@@ -269,7 +269,7 @@ OPENSTACK_API_VERSIONS = {
 }
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
 OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
-SESSION_TIMEOUT = 14400  # 4 hours (matches O3K token TTL)
+SESSION_TIMEOUT = 14400  # 4 hours (matches lightstack token TTL)
 CONSOLE_TYPE = 'novnc'
 ```
 
@@ -279,7 +279,7 @@ CONSOLE_TYPE = 'novnc'
 
 **Quick Start - Docker Compose (Recommended for Development)**:
 - See [docs/QUICKSTART.md](docs/QUICKSTART.md) - Get running in 5 minutes
-- See [docs/UNIFIED_DEPLOYMENT.md](docs/UNIFIED_DEPLOYMENT.md) - O3K + Horizon in one command
+- See [docs/UNIFIED_DEPLOYMENT.md](docs/UNIFIED_DEPLOYMENT.md) - lightstack + Horizon in one command
 - Works on ARM64 (Apple Silicon) and AMD64 (Intel/AMD)
 
 **Automated Single-Node Deployment (For Demos with Real KVM)** ⭐ NEW:
@@ -296,8 +296,8 @@ CONSOLE_TYPE = 'novnc'
 - Shared storage with Ceph, VXLAN multi-node networking
 - Load balancing, monitoring, backup, disaster recovery
 
-**Upgrading O3K** ⭐ NEW:
-- Automated upgrade script: [scripts/upgrade-o3k.sh](scripts/upgrade-o3k.sh)
+**Upgrading lightstack** ⭐ NEW:
+- Automated upgrade script: [scripts/upgrade-lightstack.sh](scripts/upgrade-lightstack.sh)
 - Safe upgrade with automatic backup and rollback
 - Supports version pinning and force rebuild
 - 2-5 minute upgrade process
@@ -305,13 +305,13 @@ CONSOLE_TYPE = 'novnc'
 
 ## Configuration
 
-O3K can be configured through YAML files or environment variables.
+lightstack can be configured through YAML files or environment variables.
 
 **Quick configuration:**
 ```yaml
-# config/o3k.yaml
+# config/lightstack.yaml
 database:
-  url: "postgres://o3k:secret@localhost/o3k?sslmode=disable"
+  url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
 
 keystone:
   jwt_secret: "change-me-in-production"
@@ -337,8 +337,8 @@ glance:
 ### Project Structure
 
 ```
-o3k/
-├── cmd/o3k/                     # Main binary entry point
+lightstack/
+├── cmd/lightstack/                     # Main binary entry point
 ├── internal/                    # Private packages
 │   ├── keystone/               # Identity service (61 endpoints)
 │   ├── nova/                   # Compute service (72 endpoints)
@@ -451,7 +451,7 @@ The seed data creates:
 - Neutron DVR/Advanced (~8 endpoints) - Large cloud provider features
 - Nova Microversions (variable) - Incremental enhancements, add on-demand
 
-**Strategic Decision**: O3K exceeds the OpenStack baseline. Remaining features are enterprise-only with <5% demand, better implemented on-request based on user feedback.
+**Strategic Decision**: lightstack exceeds the OpenStack baseline. Remaining features are enterprise-only with <5% demand, better implemented on-request based on user feedback.
 
 ### Performance Characteristics
 
@@ -499,7 +499,7 @@ The seed data creates:
 - [ ] eBPF-based security groups (kernel-space filtering performance boost)
 - [ ] High availability (multi-node control plane)
 
-**Philosophy**: O3K has exceeded the OpenStack baseline. Focus is now on stability, performance, and real-world production hardening rather than speculative feature additions.
+**Philosophy**: lightstack has exceeded the OpenStack baseline. Focus is now on stability, performance, and real-world production hardening rather than speculative feature additions.
 
 ## 🤝 Contributing
 
@@ -528,7 +528,7 @@ Contributions welcome! See `docs/CONTRIBUTING.md` for guidelines.
 - **[Quick Reference](docs/QUICK_REFERENCE.md)** - Command cheat sheet
 
 ### Deployment Guides
-- **[Unified Deployment](docs/UNIFIED_DEPLOYMENT.md)** - O3K + Horizon in one command
+- **[Unified Deployment](docs/UNIFIED_DEPLOYMENT.md)** - lightstack + Horizon in one command
 - **[Single-Node Deployment](docs/SINGLE_NODE_DEPLOYMENT.md)** ⭐ NEW - Real KVM on one host (demos/POC)
 - **[Production Scaling](docs/SCALING.md)** ⭐ NEW - Multi-node HA cluster (3-node to 10+)
 - **[Docker Deployment](docs/DOCKER_DEPLOYMENT.md)** - Container-specific guide
@@ -575,10 +575,10 @@ Apache License 2.0 - See [LICENSE](LICENSE)
 
 ## 🙏 Credits
 
-**Project**: O3K - OpenStack 3 Kubernetes-style
+**Project**: lightstack - OpenStack 3 Kubernetes-style
 **Inspired by**: K3s (Lightweight Kubernetes)
 **Language**: Go 1.26+
-**Repository**: github.com/cobaltcore-dev/o3k
+**Repository**: github.com/cobaltcore-dev/lightstack
 
 ---
 
