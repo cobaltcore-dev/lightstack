@@ -85,14 +85,15 @@ explicit `security_groups=["default"]` in an API-created project would otherwise
 **Implementation** *(revised 2026-09-14, PR #76 review)*: `neutron.EnsureDefaultSecurityGroup`
 runs one transaction: `INSERT INTO security_groups … ON CONFLICT (project_id, name) DO NOTHING
 RETURNING id`. A returned row means **this call created the group**, and only then are the seed
-rules written (mirroring `002_seed_data.up.sql:54-69`: egress IPv4/IPv6 allow-all, ingress tcp/22).
+rules written (mirroring `002_seed_data.up.sql:54-68`: egress IPv4/IPv6 allow-all, no ingress —
+upstream's default group denies all inbound, cloud-storage#528).
 No row means the group already existed — a concurrent creator, an API-created `default`, or an
 operator-managed one — and it is left exactly as found, rules included. The rules insert has **no**
 `ON CONFLICT` clause and needs none: `security_group_rules` has no unique constraint on the rule
 shape (only `PRIMARY KEY (id)`), and only the creating transaction reaches that insert. Concurrent
 first use is serialized by the unique index on `(project_id, name)` — the second inserter blocks
 until the first commits, then takes the "existing" branch. Measured with 8 concurrent callers ×
-10 runs: fresh project → 3 rules every time; pre-existing empty `default` → 0 rules every time
+10 runs: fresh project → 2 rules every time; pre-existing empty `default` → 0 rules every time
 (the earlier count-then-seed version produced 15 rules in 9 of 10 runs for the latter). **No
 schema change** (runtime INSERTs into existing tables). Genuinely-unknown *non-default* names
 still 400 (D4). Read-side synthesis (D2/D3) remains the fallback for instances with no

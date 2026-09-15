@@ -1,8 +1,11 @@
 package nova
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -177,4 +180,34 @@ func ruleCountForSG(t *testing.T, sgID string) int {
 		t.Fatalf("count rules: %v", err)
 	}
 	return n
+}
+
+// sgRuleShapes returns a security group's rules as sorted
+// "direction/ethertype/protocol/portMin-portMax" strings, so a test can assert the
+// exact rule set rather than just how many rules there are.
+func sgRuleShapes(t *testing.T, sgID string) []string {
+	t.Helper()
+	rows, err := database.DB.Query(t.Context(),
+		`SELECT direction, ethertype, protocol, port_range_min, port_range_max
+		 FROM security_group_rules WHERE security_group_id = $1`, sgID)
+	if err != nil {
+		t.Fatalf("query rules: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var direction, ethertype string
+		var protocol sql.NullString
+		var portMin, portMax sql.NullInt32
+		if err := rows.Scan(&direction, &ethertype, &protocol, &portMin, &portMax); err != nil {
+			t.Fatalf("scan rule: %v", err)
+		}
+		out = append(out, fmt.Sprintf("%s/%s/%s/%d-%d",
+			direction, ethertype, protocol.String, portMin.Int32, portMax.Int32))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate rules: %v", err)
+	}
+	slices.Sort(out)
+	return out
 }

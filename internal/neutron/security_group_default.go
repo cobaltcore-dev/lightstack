@@ -21,11 +21,19 @@ import (
 // Idempotence rests on one statement: INSERT … ON CONFLICT DO NOTHING RETURNING id.
 // A returned row means this call created the group, and only then are the seed
 // rules written (mirroring migrations/002_seed_data.up.sql: egress IPv4/IPv6
-// allow-all, ingress tcp/22). No row means the group already existed — created by
-// a concurrent caller, via the API, or seeded — and it is left exactly as found:
-// an operator who removed rules from `default` keeps that decision. Concurrent
-// first use is serialized by the unique index on (project_id, name): the second
-// inserter blocks until the first commits, then takes the "existing" branch.
+// allow-all, and no ingress at all). No row means the group already existed —
+// created by a concurrent caller, via the API, or seeded — and it is left exactly
+// as found: an operator who removed rules from `default` keeps that decision.
+// Concurrent first use is serialized by the unique index on (project_id, name):
+// the second inserter blocks until the first commits, then takes the "existing"
+// branch.
+//
+// No ingress rule is seeded, deliberately: upstream's default security group denies
+// all inbound traffic, and a rule carrying neither remote_ip_prefix nor
+// remote_group_id is enforced as 0.0.0.0/0 by both dataplanes (ingressRuleSpec in
+// pkg/networking/northsouth.go, and pkg/networking/security_groups_ebpf.go), so
+// seeding one would open that port to the world for every project
+// (cloud-storage#528).
 func EnsureDefaultSecurityGroup(ctx context.Context, projectID string) (string, error) {
 	var sgID string
 	if err := database.WithTx(ctx, func(tx pgx.Tx) error {
@@ -55,8 +63,7 @@ func EnsureDefaultSecurityGroup(ctx context.Context, projectID string) (string, 
 			INSERT INTO security_group_rules (security_group_id, direction, ethertype, protocol, port_range_min, port_range_max)
 			VALUES
 				($1, 'egress', 'IPv4', NULL, NULL, NULL),
-				($1, 'egress', 'IPv6', NULL, NULL, NULL),
-				($1, 'ingress', 'IPv4', 'tcp', 22, 22)`, sgID); err != nil {
+				($1, 'egress', 'IPv6', NULL, NULL, NULL)`, sgID); err != nil {
 			return fmt.Errorf("seed default rules for %s: %w", sgID, err)
 		}
 		return nil
