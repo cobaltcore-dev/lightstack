@@ -1,0 +1,6 @@
+-- Rollback for migration 070: deliberately a no-op.
+--
+-- The rule 070 removed opened tcp/22 to 0.0.0.0/0 for every instance in the seeded
+-- `default` project (cobaltcore-dev/cloud-storage#528). Rolling the schema back must
+-- not re-open it; an operator who wants inbound SSH creates the rule through the API,
+-- with a remote_ip_prefix.

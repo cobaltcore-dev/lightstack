@@ -60,10 +60,12 @@ VALUES (
     'Default security group'
 ) ON CONFLICT (project_id, name) DO NOTHING;
 
--- Insert default security group rules (allow all egress, SSH ingress)
+-- Insert default security group rules: egress allow-all only. Upstream's default
+-- security group denies all inbound traffic; an ingress rule carrying neither
+-- remote_ip_prefix nor remote_group_id would be enforced as 0.0.0.0/0 by both
+-- dataplanes, so the default group must not seed one (cloud-storage#528).
 INSERT INTO security_group_rules (security_group_id, direction, ethertype, protocol, port_range_min, port_range_max)
 VALUES
     ('00000000-0000-0000-0000-000000000030', 'egress', 'IPv4', NULL, NULL, NULL),
-    ('00000000-0000-0000-0000-000000000030', 'egress', 'IPv6', NULL, NULL, NULL),
-    ('00000000-0000-0000-0000-000000000030', 'ingress', 'IPv4', 'tcp', 22, 22)
+    ('00000000-0000-0000-0000-000000000030', 'egress', 'IPv6', NULL, NULL, NULL)
 ON CONFLICT DO NOTHING;

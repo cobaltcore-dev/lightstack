@@ -6,6 +6,7 @@ WS-0/WS-2 are product behavior. Covers **US1 / WS-0** (disk/boot/console) and
 **US2 / WS-2** (network reconciler: stable IP across restart + dnsmasq self-heal).
 
 > Run two terminals: **T1** = the `lightstack` server, **T2** = the OpenStack CLI.
+> Every command below is run from the **repo root**, in both terminals.
 
 ## 0. Prerequisites (one-time)
 ```bash
@@ -29,8 +30,8 @@ for b in $(ip -br link show type bridge 2>/dev/null | awk '{print $1}' | grep '^
 # lightstack netns + the north-south iptables rules left by earlier runs
 for n in $(ip netns list 2>/dev/null | awk '{print $1}' | grep -E '^q(router|dhcp)-'); do sudo ip netns del "$n"; done
 sudo iptables -t nat -S 2>/dev/null | grep -E '169\.254\.169\.254|10\.0\.0\.|172\.24\.4\.' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables -t nat ${r}"; done
-sudo iptables -S FORWARD 2>/dev/null | grep -E '10\.0\.0\.|lightstack-NSI' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
-for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'lightstack-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
+sudo iptables -S FORWARD 2>/dev/null | grep -E '10\.0\.0\.|LS-NSI' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
+for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'LS-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
 # stale floating-IP /32s left on the uplink (the FIP pool range)
 UP=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
 [ -n "$UP" ] && ip -4 -o addr show dev "$UP" 2>/dev/null | awk '/172\.24\.4\./{print $4}' | while read -r a; do sudo ip addr del "$a" dev "$UP"; done
@@ -50,7 +51,6 @@ docker rm -f lightstack-postgres 2>/dev/null; podman rm -f lightstack-postgres 2
 
 ## 2. Build
 ```bash
-cd /path/to/lightstack                               # ← your local lightstack checkout (repo root)
 make build                                    # -> bin/lightstack
 go build -o bin/lightstack-migrate ./cmd/lightstack-migrate
 ```
@@ -169,15 +169,13 @@ EOF
 openstack server create --image cirros --flavor m1.small --network net1 \
   --key-name k1 --user-data /tmp/ud.sh vm-md --wait
 VMIP=$(openstack server show vm-md -f value -c addresses | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1); echo "VM IP: $VMIP"
-```
 
-### 11a. Host side — the redirect + route are programmed
-```bash
+# host side — the metadata redirect + the classless-static-route option are programmed
 sudo iptables -t nat -S PREROUTING | grep 169.254.169.254     # -i br-… -d 169.254.169.254 … DNAT --to <gw>:8775
 grep dhcp-option=121 /var/lib/lightstack/dhcp/configs/*.conf          # 169.254.169.254/32,<gw>,0.0.0.0/0,<gw>
 ```
 
-### 11b. Guest side — console login (`cirros` / `gocubsgo` — the exact password the login banner prints)
+### 11a. Guest side — console login (`cirros` / `gocubsgo` — the exact password the login banner prints)
 ```bash
 DOM=$(sudo virsh list --name | grep -i "$(openstack server show vm-md -f value -c id | cut -c1-8)" | head -1)
 sudo virsh console "$DOM"      # ENTER for prompt; Ctrl-] to exit
@@ -188,13 +186,13 @@ sudo virsh console "$DOM"      # ENTER for prompt; Ctrl-] to exit
 #   $ cat ~/.ssh/authorized_keys                                       # your key (injected)
 ```
 
-### 11c. SSH — config-drive path (works even if 169.254 is unreachable)
+### 11b. SSH — config-drive path (works even if 169.254 is unreachable)
 ```bash
 ssh -o StrictHostKeyChecking=no cirros@$VMIP      # logs in with k1 (key via the config-drive ISO)
 ```
 **Pass** = metadata returns *this* VM's data, `user_data` is served (and applied), and SSH with `k1` works.
 If `169.254.169.254` times out in the guest but SSH works, the config-drive path is fine and the
-DNAT/route is the host-iterated piece — paste §11a output + the guest's `ip route` and I'll chase it (like WS-2).
+DNAT/route is the host-iterated piece — paste the §11 host-side output + the guest's `ip route` and I'll chase it (like WS-2).
 
 ## 12. US4 / WS-3 — egress to the internet  (**rebuild + restart Lightstack first**)
 A VM reaches the internet once it's on a tenant network attached to a router with
@@ -210,15 +208,14 @@ openstack subnet show ext-sub >/dev/null 2>&1 || \
 openstack router show r1 >/dev/null 2>&1 || openstack router create r1
 openstack router set r1 --external-gateway ext-net
 openstack router add subnet r1 sub1
-```
-### 12a. Host side — egress NAT is programmed
-```bash
+
+# host side — egress NAT is programmed
 UP=$(ip route show default | awk '{print $5; exit}'); echo "uplink: $UP"
 cat /proc/sys/net/ipv4/ip_forward                                  # 1
 sudo iptables -t nat -S POSTROUTING | grep MASQUERADE              # -s 10.0.0.0/24 -o $UP -j MASQUERADE
 sudo iptables -S FORWARD | grep '10.0.0.0/24'                      # the two ACCEPT rules
 ```
-### 12b. Guest side — reach the internet (existing VM is fine; no rebuild needed)
+### 12a. Guest side — reach the internet (existing VM is fine; no rebuild needed)
 ```bash
 ssh -o StrictHostKeyChecking=no cirros@$VMIP        # or virsh console
 #  inside the VM:
@@ -236,17 +233,17 @@ hosts the FIP as a `/32` on the uplink and DNATs it to the VM's fixed IP. Rebuil
 ```bash
 FIP=$(openstack floating ip create ext-net -f value -c floating_ip_address); echo "FIP: $FIP"
 openstack server add floating ip vm-md "$FIP"          # use your VM's name
-```
-### 13a. Host side — the FIP is hosted + DNAT'd
-```bash
-ip -br addr show enp1s0 | tr ' ' '\n' | grep "$FIP"     # FIP/32 on the uplink
+
+# host side — the FIP is hosted on the uplink and DNAT'd to the fixed IP
+UP=$(ip route show default | awk '{print $5; exit}')
+ip -br addr show "$UP" | tr ' ' '\n' | grep "$FIP"     # FIP/32 on the uplink
 sudo iptables -t nat -S | grep "$FIP"                   # PREROUTING + OUTPUT DNAT -> 10.0.0.x
 ```
-### 13b. Reach the VM **at the floating IP**, from the host (host-local via the OUTPUT DNAT)
+### 13a. Reach the VM **at the floating IP**, from the host (host-local via the OUTPUT DNAT)
 ```bash
 ssh -o StrictHostKeyChecking=no cirros@"$FIP"           # logs into the VM through its FIP
 ```
-### 13c. Disassociate → access stops, rules removed
+### 13b. Disassociate → access stops, rules removed
 ```bash
 openstack server remove floating ip vm-md "$FIP"
 sudo iptables -t nat -S | grep "$FIP" || echo "FIP NAT removed"
@@ -257,49 +254,48 @@ sudo iptables -t nat -S | grep "$FIP" || echo "FIP NAT removed"
   must be your **real uplink LAN** with a free address (an operator-supplied routable pool, T036),
   not the nominal `172.24.4.0/24`. v1 single-node FIP = inbound reachability; egress stays on the
   node's shared SNAT.
-- Inbound is currently allowed on **all ports** — security-group gating (default-deny, open per
-  rule) is the next slice (**T034**).
+- Inbound is gated by the VM's security groups (**T034**, §14): the FIP's chain is default-deny
+  and the `default` group seeds no ingress, so a client on the uplink LAN needs an explicit rule.
+  SSH *from this host* bypasses that chain (`OUTPUT`, not `FORWARD`), which is why §13a works.
 
 ## 14. US4 / WS-3 — security groups on north-south  (**rebuild + restart Lightstack first**)
 A floating IP is **default-deny** inbound: external traffic to it is gated by the
-VM's per-instance ingress chain `lightstack-NSI-<fixed-ip>` (conntrack-established + one
+VM's per-instance ingress chain `LS-NSI-<fixed-ip>` (conntrack-established + one
 ACCEPT per SG ingress rule + default DROP). Needs a **fresh VM** — the default SG
 is attached at port creation. Rebuild + restart Lightstack (§6), then in T2:
 ```bash
 openstack server create --image cirros --flavor m1.small --network net1 --key-name k1 vm-sg --wait
 FIP2=$(openstack floating ip create ext-net -f value -c floating_ip_address); echo "FIP2: $FIP2"
 openstack server add floating ip vm-sg "$FIP2"
-CH="lightstack-NSI-$(openstack server show vm-sg -f value -c addresses | grep -oE '10\.0\.0\.[0-9]+' | head -1 | tr . -)"; echo "chain: $CH"
-```
-> **Why we verify the chain, not SSH-from-here:** security groups gate **forwarded**
-> traffic (external client → uplink → `FORWARD` → `lightstack-NSI`). SSH *from this host*
-> to the FIP takes the `OUTPUT`/host-local path (the host is the hypervisor — its
-> own access isn't SG-gated), so it **bypasses the chain** and is not a valid probe.
-> The chain content below is the enforcement a real external client hits.
+CH="LS-NSI-$(openstack server show vm-sg -f value -c addresses | grep -oE '10\.0\.0\.[0-9]+' | head -1 | tr . -)"; echo "chain: $CH"
 
-### 14a. Default SG already permits its seeded ingress (tcp/22)
-```bash
-sudo iptables -S "$CH"     # -p tcp --dport 22 -j ACCEPT (from the seeded default-SG rule)
-                           #   + conntrack RELATED,ESTABLISHED -j ACCEPT  then  -j DROP
-```
-The default SG seeds a `tcp/22` ingress rule (migration 002), so SSH is open by default and
-**everything else is denied** — that DROP is the default-deny.
+echo "--- (a) default SG: no ingress of its own ---"
+sudo iptables -S "$CH"     # conntrack RELATED,ESTABLISHED -j ACCEPT  then  -j DROP — nothing else
 
-### 14b. Open a *non-seeded* port (8080) → the ACCEPT appears immediately
-```bash
+echo "--- (b) open 8080: the ACCEPT appears immediately ---"
 openstack security group rule create --proto tcp --dst-port 8080 --remote-ip 0.0.0.0/0 default
 sudo iptables -S "$CH"     # now also: -p tcp --dport 8080 -j ACCEPT  (before the DROP)
-```
-### 14c. Remove the rule → the 8080 ACCEPT disappears (22 stays — it's seeded)
-```bash
+
+echo "--- (c) remove the rule: the ACCEPT disappears ---"
 RID=$(openstack security group rule list default -f value -c ID -c "Port Range" | awk '$2 ~ /8080/{print $1; exit}')
 openstack security group rule delete "$RID"
-sudo iptables -S "$CH"     # back to :22 + conntrack + DROP (no :8080)
+sudo iptables -S "$CH"     # back to conntrack + DROP (no :8080)
 ```
-**Pass** = the chain carries the seeded `:22`, gains `--dport 8080 -j ACCEPT` the instant you add the
-rule, and loses it when you remove it — with the default `DROP` throughout. (A real end-to-end probe
-would come from another machine on the uplink LAN — its SYN transits `FORWARD`/`lightstack-NSI`; SSH *from
-this host* bypasses the chain via `OUTPUT`, so it isn't a valid probe.)
+> **Why we verify the chain, not SSH-from-here:** security groups gate **forwarded**
+> traffic (external client → uplink → `FORWARD` → `LS-NSI`). SSH *from this host*
+> to the FIP takes the `OUTPUT`/host-local path (the host is the hypervisor — its
+> own access isn't SG-gated), so it **bypasses the chain** and is not a valid probe.
+> The chain content above is the enforcement a real external client hits.
+
+The `default` group seeds **egress only**, matching upstream's deny-all-inbound default group
+(cloud-storage#528), so a fresh VM is closed on every inbound port — that DROP is the default-deny.
+Reaching this VM over its FIP *from another machine* — SSH included — therefore needs an explicit
+rule, as in step (b).
+**Pass** = the chain starts as conntrack + `DROP` with no ACCEPT of its own, gains
+`--dport 8080 -j ACCEPT` the instant you add the rule, and loses it when you remove it — with the
+default `DROP` throughout. (A real end-to-end probe would come from another machine on the uplink
+LAN — its SYN transits `FORWARD`/`LS-NSI`; SSH *from this host* bypasses the chain via `OUTPUT`,
+so it isn't a valid probe.)
 
 ## 15. US5 / WS-5 — block storage  (**rebuild + restart Lightstack first**)
 Volumes are real local qcow2 files under `/var/lib/lightstack/volumes`. Needs `net1`/`sub1`
@@ -309,30 +305,34 @@ Volumes are real local qcow2 files under `/var/lib/lightstack/volumes`. Needs `n
 ```bash
 openstack server create --image cirros --flavor m1.small --network net1 --key-name k1 vm-vol --wait
 VMIP=$(openstack server show vm-vol -f value -c addresses | grep -oE '10\.0\.0\.[0-9]+' | head -1)
+# --wait returns when the domain is running, not when the guest is up (cirros needs
+# ~30-45s more); without this the next ssh gets "Connection refused".
+for i in $(seq 60); do ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 -o BatchMode=yes cirros@$VMIP true 2>/dev/null && break; sleep 2; done
 openstack volume create --size 1 datavol          # status should be 'available' immediately
 openstack server add volume vm-vol datavol         # synchronous: returns only after libvirt attached it
-ssh cirros@$VMIP 'lsblk | grep vdb; sudo mkfs.ext2 -q /dev/vdb && sudo mount /dev/vdb /mnt && echo hi | sudo tee /mnt/f && sudo umount /mnt'
+ssh -o StrictHostKeyChecking=no cirros@$VMIP 'lsblk | grep vdb; sudo mkfs.ext2 -q /dev/vdb && sudo mount /dev/vdb /mnt && echo hi | sudo tee /mnt/f && sudo umount /mnt'
 openstack server remove volume vm-vol datavol
 openstack server add volume vm-vol datavol
-ssh cirros@$VMIP 'sudo mount /dev/vdb /mnt && cat /mnt/f && sudo umount /mnt'   # → "hi" (persisted)
+ssh -o StrictHostKeyChecking=no cirros@$VMIP 'sudo mount /dev/vdb /mnt && sudo cat /mnt/f && sudo umount /mnt'   # → "hi" (persisted)
 ```
+The read is `sudo cat`: cirros runs root with `umask 0077`, so the `sudo tee` above creates
+`/mnt/f` as `0600 root:root` and an unprivileged `cat` fails with "Permission denied".
+
 **Pass** = the guest sees `/dev/vdb`, and the file survives detach/re-attach. (Attach is synchronous: a libvirt failure returns an error and reverts, never a false success.)
 
-### 15b. Volume-from-image (bootable)
+### 15b. Volume-from-image (bootable) → boot-from-volume
 ```bash
 openstack volume create --size 1 --image cirros bootvol
 openstack volume show bootvol -f value -c bootable -c status   # → True  available
-```
 
-### 15c. Boot-from-volume
-```bash
 openstack server create --flavor m1.small --volume bootvol --network net1 --key-name k1 vm-bfv --wait
 BFVIP=$(openstack server show vm-bfv -f value -c addresses | grep -oE '10\.0\.0\.[0-9]+' | head -1)
-ssh cirros@$BFVIP 'echo "booted from volume on $(hostname)"'    # logs in → booted off the volume
+for i in $(seq 60); do ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 -o BatchMode=yes cirros@$BFVIP true 2>/dev/null && break; sleep 2; done
+ssh -o StrictHostKeyChecking=no cirros@$BFVIP 'echo "booted from volume on $(hostname)"'    # logs in → booted off the volume
 ```
 **Pass** = `vm-bfv` boots off the volume (its root disk is the volume's qcow2, no image overlay).
 
-### 15d. Delete semantics — release vs. delete-on-termination (FR-023)
+### 15c. Delete semantics — release vs. delete-on-termination (FR-023)
 Deleting a server releases its attached volumes (`available`), or **deletes** them when
 the attachment is `delete_on_termination=true` (e.g. boot-from-volume created with that flag).
 ```bash
@@ -345,11 +345,12 @@ openstack server delete vm-vol
 openstack volume show datavol -f value -c status          # → available
 # (c) delete-on-termination: boot a VM whose root volume is flagged, delete it → volume gone
 openstack volume create --size 1 --image cirros bootvol2
+BV2=$(openstack volume show bootvol2 -f value -c id)      # capture the id before it is deleted
 openstack server create --flavor m1.small --network net1 --key-name k1 \
   --block-device uuid=bootvol2,source_type=volume,boot_index=0,delete_on_termination=true vm-dot --wait
 openstack server delete vm-dot
 openstack volume show bootvol2                            # → No Volume found (deleted)
-DID=$(...); ls /var/lib/lightstack/volumes/volume-<bootvol2-id>.qcow2 2>&1   # → No such file
+ls /var/lib/lightstack/volumes/volume-$BV2.qcow2 2>&1     # → No such file
 ```
 **Pass** = (a)/(b) the volume returns to `available` and its backing file survives; (c) the
 flagged volume is gone (DB 404 + backing file removed). RBD delete-on-termination cleanup of
@@ -395,8 +396,8 @@ for n in $(ip netns list | awk '{print $1}' | grep -E '^q(router|dhcp)-'); do su
 # 5. lightstack iptables rules — scoped to lightstack's own addresses (metadata 169.254.169.254,
 #    tenant 10.0.0.x, FIP 172.24.4.x) so the container runtime's 172.17.x rules stay
 sudo iptables -t nat -S | grep -E '169\.254\.169\.254|10\.0\.0\.|172\.24\.4\.' | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables -t nat ${r}"; done
-sudo iptables -S FORWARD  | grep -E '10\.0\.0\.|lightstack-NSI'          | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
-for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'lightstack-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
+sudo iptables -S FORWARD  | grep -E '10\.0\.0\.|LS-NSI'          | sed 's/^-A /-D /' | while IFS= read -r r; do eval "sudo iptables ${r}"; done
+for ch in $(sudo iptables -S 2>/dev/null | grep -oE 'LS-NSI-[0-9-]+' | sort -u); do sudo iptables -F "$ch" 2>/dev/null; sudo iptables -X "$ch" 2>/dev/null; done
 
 # 6. on-disk data + fresh DB
 sudo rm -rf /var/lib/lightstack/*
