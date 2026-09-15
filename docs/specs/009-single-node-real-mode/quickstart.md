@@ -102,10 +102,10 @@ openstack router add subnet r1 sub1
 ssh -i ~/.ssh/id_rsa cirros@<vm1-ip> 'ping -c1 1.1.1.1'         # egress, masqueraded out the uplink
 FIP=$(openstack floating ip create ext-net -f value -c floating_ip_address)
 openstack server add floating ip vm1 $FIP
-ssh -i ~/.ssh/id_rsa cirros@$FIP 'echo reachable'               # ingress via FIP (the default SG is seeded with tcp/22)
+ssh -i ~/.ssh/id_rsa cirros@$FIP 'echo reachable'               # reaches the VM via the FIP's OUTPUT DNAT — host-local, so not SG-gated
 openstack server remove floating ip vm1 $FIP                    # ingress stops
 ```
-> The default security group already allows tcp/22 (seeded). To prove SG gating on a non-22 port, add/remove a rule and watch the per-VM `lightstack-NSI-<ip>` chain (HOST-TESTING.md §14). Host-local SSH to the *fixed* IP bypasses the FORWARD-based SG; the chain content is the enforcement for forwarded/external traffic.
+> The default security group seeds egress only — no ingress at all (cloud-storage#528), so a fresh VM is closed inbound. To prove SG gating, add/remove a rule and watch the per-VM `LS-NSI-<ip>` chain (HOST-TESTING.md §14). Host-local SSH to the *fixed* IP bypasses the FORWARD-based SG; the chain content is the enforcement for forwarded/external traffic.
 
 ## 7. WS-5 — block storage + delete semantics (SC-009, FR-023)
 

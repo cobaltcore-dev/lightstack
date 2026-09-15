@@ -266,17 +266,17 @@ func TestEnsureDefaultSecurityGroup_SeedsOnlyWhenCreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure (fresh): %v", err)
 	}
-	if n := ruleCountForSG(t, id); n != 3 {
-		t.Errorf("fresh default: rules=%d; want 3 seeded", n)
+	if n := ruleCountForSG(t, id); n != 2 {
+		t.Errorf("fresh default: rules=%d; want 2 seeded", n)
 	}
 
-	// Second call on the now-existing group: still 3, and the same id.
+	// Second call on the now-existing group: still 2, and the same id.
 	id2, err := neutron.EnsureDefaultSecurityGroup(ctx, freshProjectID)
 	if err != nil || id2 != id {
 		t.Fatalf("ensure (again): id=%s err=%v; want same id %s", id2, err, id)
 	}
-	if n := ruleCountForSG(t, id); n != 3 {
-		t.Errorf("re-ensure: rules=%d; want 3 (unchanged)", n)
+	if n := ruleCountForSG(t, id); n != 2 {
+		t.Errorf("re-ensure: rules=%d; want 2 (unchanged)", n)
 	}
 
 	// Operator empties the group: ensure must NOT restore the rules.
@@ -288,5 +288,46 @@ func TestEnsureDefaultSecurityGroup_SeedsOnlyWhenCreated(t *testing.T) {
 	}
 	if n := ruleCountForSG(t, id); n != 0 {
 		t.Errorf("emptied default was re-seeded: rules=%d; want 0", n)
+	}
+}
+
+// The seeded rules of a lazily-created `default` group are egress-only. Upstream's
+// default security group denies all inbound traffic, and an ingress rule carrying
+// neither remote_ip_prefix nor remote_group_id is enforced as 0.0.0.0/0 by both
+// dataplanes — so seeding one here would open that port to the world for every
+// project that ever boots a server (cloud-storage#528).
+func TestEnsureDefaultSecurityGroup_SeedsNoIngress(t *testing.T) {
+	requireDB(t)
+	cleanupSpec017(t)
+	defer cleanupSpec017(t)
+	ctx := t.Context()
+
+	createTestProject(t, freshProjectID, "spec017-proj")
+	id, err := neutron.EnsureDefaultSecurityGroup(ctx, freshProjectID)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if got, want := sgRuleShapes(t, id), []string{"egress/IPv4//0-0", "egress/IPv6//0-0"}; !slices.Equal(got, want) {
+		t.Errorf("fresh default rules=%v; want %v (egress allow-all only, no ingress)", got, want)
+	}
+}
+
+// The seeded project's `default` group (migration 002) is egress-only for the same
+// reason. Needs a database migrated from scratch: a database that ran the earlier
+// 002 keeps the ingress rule it inserted, since migrations are not re-applied.
+func TestSeededDefaultSecurityGroup_HasNoIngress(t *testing.T) {
+	requireDB(t)
+	ctx := t.Context()
+
+	const seededDefaultSGID = "00000000-0000-0000-0000-000000000030"
+	var n int
+	if err := database.DB.QueryRow(ctx,
+		"SELECT count(*) FROM security_group_rules WHERE security_group_id = $1 AND direction = 'ingress'",
+		seededDefaultSGID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count ingress rules of the seeded default group: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("seeded default group has %d ingress rule(s); want 0 (cloud-storage#528)", n)
 	}
 }
