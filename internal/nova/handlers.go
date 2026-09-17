@@ -46,7 +46,7 @@ const (
 
 // NeutronService defines the interface for Neutron operations Nova needs
 type NeutronService interface {
-	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string) (any, error)
+	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string) (any, error)
 }
 
 // NewService creates a new Nova service
@@ -588,7 +588,9 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			if svc.neutronSvc != nil && len(req.Server.Networks) > 0 {
 				for _, network := range req.Server.Networks {
 					log.Debug().Str("network_id", network.UUID).Msg("Allocating port for network")
-					portInfoRaw, err := svc.neutronSvc.AllocatePortForInstance(ctx, network.UUID, projectID, instanceID)
+					// sgIDs: the groups resolved and validated above, so the port is
+					// filtered by the groups the server reports (cloud-storage#579).
+					portInfoRaw, err := svc.neutronSvc.AllocatePortForInstance(ctx, network.UUID, projectID, instanceID, sgIDs)
 					if err != nil {
 						log.Error().Err(err).
 							Str("instance_id", instanceID).

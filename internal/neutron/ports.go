@@ -198,8 +198,14 @@ func (svc *Service) CreatePort(c *gin.Context) {
 			}
 		}
 	}
-	// Note: For iptables mode, rules are applied when security groups are created/updated
-	// via CreateSecurityGroupChain() and AddRule() methods
+	// iptables mode: nothing to program per port here. Enforcement is the
+	// per-fixed-IP north-south ingress filter (EnsureIngressFilter, hooked from
+	// FORWARD), built from port_security_groups by portIngressRules at floating-IP
+	// association, rebuilt by refreshIngressFiltersForSG on rule changes and
+	// replayed by the reconciler — so a group is enforced by its rows, whether it
+	// was created through the API, seeded, or ensured lazily. The per-group LS-SG-*
+	// chains that CreateSecurityGroupChain/AddRule maintain are not on that path:
+	// ApplyToInterface, which would jump an interface into them, has no callers.
 
 	// Distribute FDB entry if VXLAN is enabled
 	if svc.vxlanCoordinator != nil {
@@ -1193,8 +1199,10 @@ type PortInfo struct {
 	SubnetID  string
 }
 
-// AllocatePortForInstance creates a port for a VM instance (called from Nova)
-func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string) (any, error) {
+// AllocatePortForInstance creates a port for a VM instance (called from Nova).
+// securityGroupIDs are the groups the server was created with, already resolved and
+// validated by Nova; empty means "none requested", which gets the project default.
+func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string) (any, error) {
 	portID := uuid.New().String()
 	macAddress := generateMAC()
 
@@ -1237,10 +1245,40 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	}
 	fixedIPsJSON, _ := json.Marshal(fixedIPs)
 
-	// Create TAP device in default namespace (not project namespace) for libvirt access
-	if svc.mode != "stub" {
-		tapName := "tap-" + portID[:8]
+	// The security groups the instance was created with, so rules apply to the
+	// VM's north-south traffic (SPEC-009 WS-3 / T034). port_security_groups is what
+	// enforcement reads — portIngressRules joins it for the iptables dataplane,
+	// fetchSecurityGroupRulesForPort for eBPF — so a port carrying the wrong group
+	// is filtered by the wrong rules, whatever Nova reports back (cloud-storage#579).
+	// Falls back to the project's default group when none were requested (OpenStack:
+	// an instance's port gets the default SG unless overridden). Ensured, not looked
+	// up: a fresh project has no default group until its first use. Resolved here,
+	// before any host-side work, because it is pure database access and its own
+	// transaction (EnsureDefaultSecurityGroup) cannot nest in the one below.
+	portSGs := securityGroupIDs
+	if len(portSGs) == 0 {
+		defaultSG, err := EnsureDefaultSecurityGroup(ctx, projectID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to ensure default security group: %w", err)
+		}
+		portSGs = []string{defaultSG}
+	}
 
+	// Create TAP device in default namespace (not project namespace) for libvirt access.
+	// The host-side work happens before the database transaction below, so every
+	// error return after the TAP exists must release it, or a retried boot leaves an
+	// orphan tap-<id> on the host per attempt (mirrors CreatePort's rollbackPort).
+	// Deleting the TAP detaches it from the bridge; nothing else needs undoing.
+	tapName := "tap-" + portID[:8]
+	releaseTAP := func(reason string) {
+		if svc.mode == "stub" {
+			return
+		}
+		if err := svc.tapManager.DeleteTAPDevice(tapName, false, ""); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("rollback: failed to delete TAP after " + reason)
+		}
+	}
+	if svc.mode != "stub" {
 		// Create TAP device in default namespace
 		if err := svc.tapManager.CreateTAPDevice(tapName, false, ""); err != nil {
 			return nil, fmt.Errorf("failed to create TAP device: %w", err)
@@ -1255,36 +1293,36 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 
 		// Attach TAP to bridge in default namespace
 		if err := svc.brManager.AttachToBridge(tapName, bridgeName, false, ""); err != nil {
+			releaseTAP("bridge attach failure")
 			return nil, fmt.Errorf("failed to attach TAP to bridge: %w", err)
 		}
 	}
 
-	// Insert into database
+	// Insert the port and its security-group associations atomically: a port that
+	// exists with a subset of its groups is filtered by fewer rules than Nova
+	// reports, so a failed association fails the allocation and takes the port row
+	// with it. The caller (Nova CreateServer) then boots without this network,
+	// which keeps the API and the dataplane in agreement.
 	now := time.Now()
-	_, err = database.DB.Exec(ctx, `
-		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, portID, fmt.Sprintf("port-for-%s", instanceID[:8]), networkID, projectID, instanceID,
-		"compute:nova", macAddress, true, "ACTIVE", fixedIPsJSON, now, now)
-
-	if err != nil {
+	if err := database.WithTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		`, portID, fmt.Sprintf("port-for-%s", instanceID[:8]), networkID, projectID, instanceID,
+			"compute:nova", macAddress, true, "ACTIVE", fixedIPsJSON, now, now); err != nil {
+			return fmt.Errorf("insert port: %w", err)
+		}
+		for _, sgID := range portSGs {
+			if _, err := tx.Exec(ctx,
+				"INSERT INTO port_security_groups (port_id, security_group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+				portID, sgID); err != nil {
+				return fmt.Errorf("associate security group %s: %w", sgID, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		releaseTAP("port insert failure")
 		return nil, fmt.Errorf("failed to insert port into database: %w", err)
-	}
-
-	// Associate the project's default security group (OpenStack: an instance's
-	// port gets the default SG unless overridden), so security-group rules apply
-	// to the VM's north-south traffic (SPEC-009 WS-3 / T034). Ensured, not looked
-	// up: a fresh project has no default group until its first use.
-	// Best-effort by design: the caller (Nova CreateServer) treats an allocation
-	// error as "boot without this network", which is worse than a port with no
-	// group — a group-less port is fail-closed on both dataplanes (north-south
-	// default DROP, XDP drop on miss), so it can only block traffic, never expose it.
-	if defaultSG, err := EnsureDefaultSecurityGroup(ctx, projectID); err != nil {
-		log.Warn().Err(err).Str("port_id", portID).Msg("failed to ensure default security group for port; port has no group (fail-closed)")
-	} else if _, err := database.DB.Exec(ctx,
-		"INSERT INTO port_security_groups (port_id, security_group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-		portID, defaultSG); err != nil {
-		log.Warn().Err(err).Str("port_id", portID).Msg("failed to associate default security group with port")
 	}
 
 	// Distribute FDB entry if VXLAN is enabled
