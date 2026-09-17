@@ -17,7 +17,17 @@
 --
 -- Matched on the exact shape 002 inserted, on that one seeded group: a rule an
 -- operator created with an explicit remote carries remote_ip_prefix and is left
--- alone. A no-op on a fresh database, where the rewritten 002 never inserted it.
+-- alone. A no-op on a fresh database, where the rewritten 002 never inserted it —
+-- migrations run before the API serves (cmd/lightstack/main.go:114), so no rule of
+-- any shape exists yet.
+--
+-- The seed carries no fixed id (security_group_rules.id defaults to gen_random_uuid(),
+-- migration 001), so shape is the only handle. One collision remains: a rule an
+-- operator created through the API with NO remote at all lands as the same row
+-- (internal/neutron/ports.go stores an omitted remote as NULL) and would be removed
+-- too. Accepted deliberately — it can only take away a world-open SSH rule, never
+-- grant access, and reaching it requires a pre-rewrite install that already served
+-- traffic. Preserving it would need provenance the schema does not carry.
 DELETE FROM security_group_rules
 WHERE security_group_id = '00000000-0000-0000-0000-000000000030'
   AND direction = 'ingress'
