@@ -14,7 +14,25 @@ import (
 	"github.com/stretchr/testify/require"
 
 	contract "github.com/cobaltcore-dev/lightstack/test/contract"
+	"github.com/google/uuid"
 )
+
+// newTestSecurityGroup creates a security group of the test's own and returns its name.
+//
+// Not "default": a server created without security groups is given "default", as
+// upstream Nova does, so adding it again is a duplicate rather than an add — the tests
+// below used to assume a new server had none. A unique name keeps a group left over by
+// an earlier run from making the name ambiguous. The group is deleted after the test,
+// once the server's own deferred delete has released it.
+func newTestSecurityGroup(t *testing.T) string {
+	t.Helper()
+	netClient := contract.SetupNeutronClient(t)
+	name := "contract-sg-" + uuid.NewString()[:8]
+	sg, err := groups.Create(netClient, groups.CreateOpts{Name: name}).Extract()
+	require.NoError(t, err, "creating the test security group")
+	t.Cleanup(func() { _ = groups.Delete(netClient, sg.ID).ExtractErr() })
+	return name
+}
 
 // TestNovaAddSecurityGroup_Contract tests POST /v2.1/servers/:id/action (addSecurityGroup)
 //
@@ -24,12 +42,7 @@ func TestNovaAddSecurityGroup_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
-	netClient := contract.SetupNeutronClient(t)
-
-	// Declared before the server so defer LIFO runs the server delete first.
-	sg, err := groups.Create(netClient, groups.CreateOpts{Name: "sg-action-test-sg"}).Extract()
-	require.NoError(t, err, "Failed to create sg-action-test-sg fixture")
-	defer groups.Delete(netClient, sg.ID)
+	sgName := newTestSecurityGroup(t)
 
 	// Create test server
 	server, err := servers.Create(client, servers.CreateOpts{
@@ -41,11 +54,7 @@ func TestNovaAddSecurityGroup_Contract(t *testing.T) {
 	defer servers.Delete(client, server.ID)
 
 	// Add security group
-	actionBody := `{
-		"addSecurityGroup": {
-			"name": "sg-action-test-sg"
-		}
-	}`
+	actionBody := `{"addSecurityGroup":{"name":"` + sgName + `"}}`
 
 	url := client.ServiceURL("servers", server.ID, "action")
 	req, err := http.NewRequest("POST", url, strings.NewReader(actionBody))
@@ -104,8 +113,8 @@ func TestNovaAddSecurityGroupDuplicate_Contract(t *testing.T) {
 // TestNovaRemoveSecurityGroup_Contract tests POST /v2.1/servers/:id/action (removeSecurityGroup)
 //
 // Two security groups must be attached so the documented "cannot remove last
-// security group" guard (advanced_actions.go) does not fire. The server carries
-// "default" from create; "test-sg" is created here, per the explicit guidance in
+// security group" guard (advanced_actions.go) does not fire. The server gets
+// "default" at create; the second is created here, per the explicit guidance in
 // migrations/058_seed_test_security_group.up.sql:
 //
 //	"Security group data for contract tests should be created by the test setup code."
@@ -113,14 +122,7 @@ func TestNovaRemoveSecurityGroup_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
-	netClient := contract.SetupNeutronClient(t)
-
-	// Bootstrap the second SG. Declared before the server so defer LIFO runs
-	// the server delete first — its cascade frees the port reference to this
-	// SG, and only then do we delete the SG itself.
-	sg, err := groups.Create(netClient, groups.CreateOpts{Name: "test-sg"}).Extract()
-	require.NoError(t, err, "Failed to create test-sg fixture")
-	defer groups.Delete(netClient, sg.ID)
+	sgName := newTestSecurityGroup(t)
 
 	// Create test server
 	server, err := servers.Create(client, servers.CreateOpts{
@@ -133,17 +135,17 @@ func TestNovaRemoveSecurityGroup_Contract(t *testing.T) {
 
 	url := client.ServiceURL("servers", server.ID, "action")
 
-	// Add "test-sg" next to "default" — verify success.
-	addBody := `{"addSecurityGroup":{"name":"test-sg"}}`
+	// Add the test's own group — "default" is already there from create.
+	addBody := `{"addSecurityGroup":{"name":"` + sgName + `"}}`
 	req, _ := http.NewRequest("POST", url, strings.NewReader(addBody))
 	req.Header.Set("X-Auth-Token", client.TokenID)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	resp.Body.Close()
-	require.Equal(t, http.StatusAccepted, resp.StatusCode, "addSecurityGroup test-sg should return 202")
+	require.Equal(t, http.StatusAccepted, resp.StatusCode, "addSecurityGroup %s should return 202", sgName)
 
-	// Remove "default" — test-sg remains, last-SG guard should not fire.
+	// Remove "default" — the test's group remains, last-SG guard should not fire.
 	removeBody := `{"removeSecurityGroup":{"name":"default"}}`
 	req, err = http.NewRequest("POST", url, strings.NewReader(removeBody))
 	require.NoError(t, err)
