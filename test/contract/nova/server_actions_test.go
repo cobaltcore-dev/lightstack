@@ -7,11 +7,8 @@ import (
 	"time"
 
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 )
 
 // TestChangePassword_Contract tests the changePassword server action
@@ -303,12 +300,7 @@ func TestAddSecurityGroup_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 
 	client := setupNovaClient(t)
-	netClient := contract.SetupNeutronClient(t)
-
-	// Declared before the server so defer LIFO runs the server delete first.
-	sg, err := groups.Create(netClient, groups.CreateOpts{Name: "sg-test-server-sg"}).Extract()
-	require.NoError(t, err, "Failed to create sg-test-server-sg fixture")
-	defer groups.Delete(netClient, sg.ID)
+	sgName := newTestSecurityGroup(t)
 
 	// Create test server
 	server, err := servers.Create(client, servers.CreateOpts{
@@ -329,11 +321,7 @@ func TestAddSecurityGroup_Contract(t *testing.T) {
 	}
 
 	// Add security group
-	actionBody := `{
-		"addSecurityGroup": {
-			"name": "sg-test-server-sg"
-		}
-	}`
+	actionBody := `{"addSecurityGroup":{"name":"` + sgName + `"}}`
 
 	url := client.ServiceURL("servers", server.ID, "action")
 	req, err := http.NewRequest("POST", url, strings.NewReader(actionBody))

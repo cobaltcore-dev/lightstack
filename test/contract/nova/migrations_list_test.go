@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os/exec"
 	"testing"
+	"time"
 
-	"github.com/google/uuid"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/stretchr/testify/assert"
@@ -83,7 +82,7 @@ func TestNovaGetServerMigration_Contract(t *testing.T) {
 	serverID, cleanup := getTestServerID(t, client)
 	defer cleanup()
 
-	migrationID := createTestMigration(t, serverID)
+	migrationID := createTestMigration(t, client, serverID)
 
 	url := client.ServiceURL("servers", serverID, "migrations", migrationID)
 	req, err := http.NewRequest("GET", url, nil)
@@ -106,9 +105,6 @@ func TestNovaGetServerMigration_Contract(t *testing.T) {
 
 	assert.NotEmpty(t, result.Migration["id"])
 	assert.Equal(t, serverID, result.Migration["server_uuid"])
-
-	// Cleanup
-	cleanupTestMigration(t, migrationID)
 }
 
 // TestNovaDeleteServerMigration_Contract tests DELETE /v2.1/:project_id/servers/:id/migrations/:id
@@ -120,7 +116,7 @@ func TestNovaDeleteServerMigration_Contract(t *testing.T) {
 	serverID, cleanup := getTestServerID(t, client)
 	defer cleanup()
 
-	migrationID := createTestMigration(t, serverID)
+	migrationID := createTestMigration(t, client, serverID)
 
 	// Test: Delete (cancel) migration
 	url := client.ServiceURL("servers", serverID, "migrations", migrationID)
@@ -145,7 +141,7 @@ func TestNovaForceCompleteMigration_Contract(t *testing.T) {
 	serverID, cleanup := getTestServerID(t, client)
 	defer cleanup()
 
-	migrationID := createTestMigration(t, serverID)
+	migrationID := createTestMigration(t, client, serverID)
 
 	// Test: Force complete migration
 	action := map[string]interface{}{
@@ -165,9 +161,6 @@ func TestNovaForceCompleteMigration_Contract(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-
-	// Cleanup
-	cleanupTestMigration(t, migrationID)
 }
 
 // getTestServerID creates a throwaway test server in the project and returns
@@ -192,26 +185,41 @@ func getTestServerID(t *testing.T, client *gophercloud.ServiceClient) (string, f
 	return server.ID, cleanup
 }
 
-// Helper to create test migration in database
-func createTestMigration(t *testing.T, serverID string) string {
+// createTestMigration starts a (stub) cold migration through the API and returns its id
+// from the server's migration list. It used to INSERT the row with
+// `docker exec lightstack-postgres psql …` and discard the result, so against any
+// database but that one container the row never existed and every test that needed
+// it answered 404. Rows go with the server: server_migrations cascades on delete.
+func createTestMigration(t *testing.T, client *gophercloud.ServiceClient, serverID string) string {
 	t.Helper()
 
-	migrationID := uuid.New().String()
+	// migrate refuses anything but ACTIVE or SHUTOFF, and a new server starts in BUILD.
+	for i := 0; ; i++ {
+		s, err := servers.Get(client, serverID).Extract()
+		if err == nil && s.Status == "ACTIVE" {
+			break
+		}
+		require.Less(t, i, 30, "test server never reached ACTIVE")
+		time.Sleep(time.Second)
+	}
 
-	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
-	INSERT INTO server_migrations (id, server_uuid, source_node, dest_node, status, migration_type, created_at, updated_at)
-	VALUES ('` + migrationID + `', '` + serverID + `', 'node1', 'node2', 'migrating', 'live-migration', NOW(), NOW())
-	ON CONFLICT DO NOTHING;"`
+	code, body := postServerAction(t, client, client.ServiceURL("servers", serverID, "action"),
+		map[string]any{"migrate": nil})
+	require.Equal(t, http.StatusAccepted, code, "migrate: %s", body)
 
-	exec.Command("sh", "-c", cmd).Run()
+	req, err := http.NewRequest(http.MethodGet, client.ServiceURL("servers", serverID, "migrations"), nil)
+	require.NoError(t, err)
+	req.Header.Set("X-Auth-Token", client.TokenID)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
 
-	return migrationID
-}
-
-// Helper to cleanup test migration
-func cleanupTestMigration(t *testing.T, migrationID string) {
-	t.Helper()
-
-	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "DELETE FROM server_migrations WHERE id='` + migrationID + `';"`
-	exec.Command("sh", "-c", cmd).Run()
+	var list struct {
+		Migrations []struct {
+			ID string `json:"id"`
+		} `json:"migrations"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&list))
+	require.NotEmpty(t, list.Migrations, "the migrate action recorded no migration")
+	return list.Migrations[0].ID
 }

@@ -1,9 +1,12 @@
 package cinder
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // SPEC-020 (cloud-storage#533) — B1/N3: the two cinder paths Horizon reaches
@@ -77,14 +80,28 @@ func TestGroupsIDStillResolves(t *testing.T) {
 func TestOsQuotaSetsAliasMatchesQuotaSets(t *testing.T) {
 	requireDB(t)
 	r := newCinderTestRouter()
-	hdr := cinderAuthHdr(seededProjectID, seededUserID)
+
+	// A project of its own. The usage view counts the project's volumes, and packages
+	// run in parallel against one test database: on the shared seeded project another
+	// package's test could create a volume between the two reads below and make two
+	// identical handlers look divergent.
+	projectID := uuid.NewString()
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO projects (id, name, description, enabled) VALUES ($1, $2, '', true)`,
+		projectID, "quota-alias-"+projectID); err != nil {
+		t.Fatalf("seeding project: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM projects WHERE id = $1", projectID)
+	})
+	hdr := cinderAuthHdr(projectID, seededUserID)
 
 	// The real Block Storage v3 surface: show, show-with-usage (a query parameter, not
 	// Nova's `/detail` sub-resource), and defaults.
 	for _, suffix := range []string{"", "?usage=true", "/defaults"} {
 		t.Run("suffix"+suffix, func(t *testing.T) {
-			plain := "/v3/quota-sets/" + seededProjectID + suffix
-			prefixed := "/v3/os-quota-sets/" + seededProjectID + suffix
+			plain := "/v3/quota-sets/" + projectID + suffix
+			prefixed := "/v3/os-quota-sets/" + projectID + suffix
 
 			plainCode, plainBody := doReq(r, http.MethodGet, plain, "", hdr)
 			prefixedCode, prefixedBody := doReq(r, http.MethodGet, prefixed, "", hdr)
