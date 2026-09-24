@@ -141,7 +141,9 @@ func postTokens(t *testing.T, r *gin.Engine, body string) *httptest.ResponseReco
 // tests assert on.
 type tokenResponseBody struct {
 	Token struct {
-		Project *struct {
+		ExpiresAt string `json:"expires_at"`
+		IssuedAt  string `json:"issued_at"`
+		Project   *struct {
 			ID     string `json:"id"`
 			Name   string `json:"name"`
 			Domain struct {
@@ -170,6 +172,64 @@ func decodeTokenBody(t *testing.T, w *httptest.ResponseRecorder) tokenResponseBo
 	var body tokenResponseBody
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode token response: %v (body=%s)", err, w.Body.String())
+	}
+	return body
+}
+
+// getToken issues GET /v3/auth/tokens (token validation) with X-Subject-Token
+// — the call Ceph RGW's Swift keystone engine makes for every user token.
+func getToken(t *testing.T, r *gin.Engine, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/v3/auth/tokens", nil)
+	req.Header.Set("X-Subject-Token", token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// validationResponseBody is the subset of the GET /v3/auth/tokens response
+// these tests assert on — the mandatory fields of Ceph RGW's keystone
+// TokenEnvelope parser (user.id, user.name, expires_at, roles[].name,
+// project.id, project.name) plus the neighbors that must stay canonical.
+type validationResponseBody struct {
+	Token struct {
+		ExpiresAt string   `json:"expires_at"`
+		IssuedAt  string   `json:"issued_at"`
+		Methods   []string `json:"methods"`
+		User      struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Domain *struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"domain"`
+		} `json:"user"`
+		Project *struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Domain struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"domain"`
+		} `json:"project"`
+		Roles []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"roles"`
+		Catalog []struct {
+			Type      string `json:"type"`
+			Endpoints []struct {
+				URL string `json:"url"`
+			} `json:"endpoints"`
+		} `json:"catalog"`
+	} `json:"token"`
+}
+
+func decodeValidationBody(t *testing.T, w *httptest.ResponseRecorder) validationResponseBody {
+	t.Helper()
+	var body validationResponseBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode validation response: %v (body=%s)", err, w.Body.String())
 	}
 	return body
 }
@@ -346,6 +406,164 @@ func TestTokenProjectIDRGWCompatUnscoped(t *testing.T) {
 		}
 		if body := decodeTokenBody(t, w); body.Token.Project != nil {
 			t.Errorf("flag=%v, token unscoped: response carries a project: %+v", rgwCompat, *body.Token.Project)
+		}
+	}
+}
+
+// TestTokenProjectIDRGWCompatValidation: GET /v3/auth/tokens — the endpoint
+// Ceph RGW's Swift keystone engine validates every user token through — must
+// return the standard keystone v3 token envelope (user{id,name,domain},
+// expires_at/issued_at from the JWT claims, roles as objects,
+// project{id,name,domain}, catalog), with token.project.id rendered through
+// the same flag-gated transform as the issue responses and everything else
+// canonical.
+func TestTokenProjectIDRGWCompatValidation(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+
+	cases := []struct {
+		name      string
+		rgwCompat bool
+		wantID    string
+	}{
+		{"flag off", false, rgwCompatProjectID},
+		{"flag on", true, rgwCompatProjectIDUnderscored},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRGWCompatRouter(tc.rgwCompat)
+
+			issue := postTokens(t, r, passwordAuthBody(rgwCompatProjectID))
+			if issue.Code != http.StatusCreated {
+				t.Fatalf("POST /v3/auth/tokens: code=%d body=%s", issue.Code, issue.Body.String())
+			}
+			issued := decodeTokenBody(t, issue)
+
+			w := getToken(t, r, issue.Header().Get("X-Subject-Token"))
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET /v3/auth/tokens: code=%d body=%s", w.Code, w.Body.String())
+			}
+			body := decodeValidationBody(t, w)
+
+			// Mandatory envelope fields (rgw::keystone::TokenEnvelope::decode_json):
+			// user.id/user.name, expires_at, roles[].name, project.id/project.name.
+			if body.Token.User.ID != rgwCompatSeededAdminID {
+				t.Errorf("token.user.id = %q, want canonical %q", body.Token.User.ID, rgwCompatSeededAdminID)
+			}
+			if body.Token.User.Name != "admin" {
+				t.Errorf("token.user.name = %q, want %q", body.Token.User.Name, "admin")
+			}
+			if body.Token.User.Domain == nil || body.Token.User.Domain.ID != defaultDomainID {
+				t.Errorf("token.user.domain = %+v, want domain id %q", body.Token.User.Domain, defaultDomainID)
+			}
+			if body.Token.ExpiresAt == "" {
+				t.Error("token.expires_at missing (mandatory for Ceph RGW)")
+			} else if _, err := time.Parse(time.RFC3339, body.Token.ExpiresAt); err != nil {
+				t.Errorf("token.expires_at = %q, not RFC3339: %v", body.Token.ExpiresAt, err)
+			}
+			if body.Token.ExpiresAt != issued.Token.ExpiresAt {
+				t.Errorf("token.expires_at = %q, want the issued token's %q", body.Token.ExpiresAt, issued.Token.ExpiresAt)
+			}
+			if body.Token.IssuedAt != issued.Token.IssuedAt {
+				t.Errorf("token.issued_at = %q, want the issued token's %q", body.Token.IssuedAt, issued.Token.IssuedAt)
+			}
+			if body.Token.Project == nil {
+				t.Fatal("validation response missing token.project")
+			}
+			if body.Token.Project.ID != tc.wantID {
+				t.Errorf("token.project.id = %q, want %q", body.Token.Project.ID, tc.wantID)
+			}
+			if body.Token.Project.Name != rgwCompatProjectName {
+				t.Errorf("token.project.name = %q, want %q", body.Token.Project.Name, rgwCompatProjectName)
+			}
+			if body.Token.Project.Domain.ID != defaultDomainID {
+				t.Errorf("token.project.domain.id = %q, want canonical %q", body.Token.Project.Domain.ID, defaultDomainID)
+			}
+			if len(body.Token.Roles) == 0 {
+				t.Fatal("validation response missing roles (mandatory for Ceph RGW)")
+			}
+			for _, role := range body.Token.Roles {
+				if role.Name != "member" || role.ID != "member" {
+					t.Errorf("token.roles entry = %+v, want {id: member, name: member}", role)
+				}
+			}
+
+			// The catalog keeps the CANONICAL project id (template endpoint).
+			var sawTemplate bool
+			for _, svc := range body.Token.Catalog {
+				if svc.Type != rgwCompatCatalogType {
+					continue
+				}
+				sawTemplate = true
+				for _, ep := range svc.Endpoints {
+					if !strings.Contains(ep.URL, rgwCompatProjectID) {
+						t.Errorf("catalog endpoint URL %q does not carry the canonical project id %q", ep.URL, rgwCompatProjectID)
+					}
+					if strings.Contains(ep.URL, rgwCompatProjectIDUnderscored) {
+						t.Errorf("catalog endpoint URL %q leaked the underscored project id", ep.URL)
+					}
+				}
+			}
+			if !sawTemplate {
+				t.Errorf("catalog missing the %s template service; catalog=%+v", rgwCompatCatalogType, body.Token.Catalog)
+			}
+
+			// The old flat shape must be gone: no project_id key, roles are
+			// objects (not bare strings), and methods — not carried by the
+			// JWT claims — are omitted.
+			var raw struct {
+				Token map[string]any `json:"token"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+				t.Fatalf("decode raw validation response: %v", err)
+			}
+			if _, ok := raw.Token["project_id"]; ok {
+				t.Error("validation response still carries the flat token.project_id key")
+			}
+			if _, ok := raw.Token["methods"]; ok {
+				t.Error("validation response carries token.methods; the JWT claims do not carry the identity methods")
+			}
+			if roles, ok := raw.Token["roles"].([]any); ok {
+				for _, role := range roles {
+					if _, ok := role.(string); ok {
+						t.Errorf("validation response role %v is a bare string; Ceph RGW requires objects with a name", role)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestTokenProjectIDRGWCompatValidationUnscoped: unscoped tokens carry no
+// project, so the validation response omits token.project entirely — for
+// either flag position.
+func TestTokenProjectIDRGWCompatValidationUnscoped(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+
+	for _, rgwCompat := range []bool{false, true} {
+		r := newRGWCompatRouter(rgwCompat)
+
+		issue := postTokens(t, r, passwordAuthBody(""))
+		if issue.Code != http.StatusCreated {
+			t.Fatalf("flag=%v, unscoped issue: code=%d body=%s", rgwCompat, issue.Code, issue.Body.String())
+		}
+		w := getToken(t, r, issue.Header().Get("X-Subject-Token"))
+		if w.Code != http.StatusOK {
+			t.Fatalf("flag=%v, unscoped validation: code=%d body=%s", rgwCompat, w.Code, w.Body.String())
+		}
+		if body := decodeValidationBody(t, w); body.Token.Project != nil {
+			t.Errorf("flag=%v, unscoped validation: response carries a project: %+v", rgwCompat, *body.Token.Project)
+		}
+
+		var raw struct {
+			Token map[string]any `json:"token"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("flag=%v, decode raw validation response: %v", rgwCompat, err)
+		}
+		if _, ok := raw.Token["project"]; ok {
+			t.Errorf("flag=%v, unscoped validation: response carries a project key", rgwCompat)
 		}
 	}
 }

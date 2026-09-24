@@ -73,9 +73,10 @@ func rgwCompatTenantID(id string) string { return strings.ReplaceAll(id, "-", "_
 
 // tokenProjectID renders the project id for a token payload: the canonical
 // (hyphenated) UUID, or the RGW-safe form when keystone.rgw_compat_tenant_ids
-// is enabled. Only the two token-payload builders in this file (password issue
-// and token re-scope) render through this; BuildServiceCatalog, the management
-// APIs and everything else keep the canonical id.
+// is enabled. Only the token-payload builders in this file (password issue,
+// token re-scope, and the validation envelope built by BuildTokenResponse for
+// GET /v3/auth/tokens) render through this; BuildServiceCatalog, the
+// management APIs and everything else keep the canonical id.
 func (s *AuthService) tokenProjectID(id string) string {
 	if s.rgwCompatTenantIDs {
 		return rgwCompatTenantID(id)
@@ -151,7 +152,7 @@ type AuthResponse struct {
 	Token struct {
 		ExpiresAt string           `json:"expires_at"`
 		IssuedAt  string           `json:"issued_at"`
-		Methods   []string         `json:"methods"`
+		Methods   []string         `json:"methods,omitempty"`
 		User      map[string]any   `json:"user"`
 		Catalog   []CatalogEntry   `json:"catalog,omitempty"`
 		Project   *map[string]any  `json:"project,omitempty"`
@@ -558,6 +559,117 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 	}
 
 	return resp, tokenString, nil
+}
+
+// BuildTokenResponse builds the standard Keystone v3 token envelope for an
+// already-issued token (GET /v3/auth/tokens) from validated claims, mirroring
+// the rendering of the two token-issue paths above as closely as practical.
+// Ceph RGW validates every user token through this endpoint and parses the
+// response with rgw::keystone::TokenEnvelope::decode_json
+// (src/rgw/rgw_keystone.cc), whose mandatory fields are user{id,name},
+// expires_at, roles[]{name} and, for scoped tokens, project{id,name} — the
+// old flat {"project_id": ...} shape with roles as bare strings was
+// unparseable by RGW (and by standard clients like gophercloud's tokens.Get).
+//
+// Rendering notes, mirroring the issue paths:
+//   - expires_at/issued_at come from the JWT RegisteredClaims (RFC3339).
+//   - project.id goes through tokenProjectID (keystone.rgw_compat_tenant_ids)
+//     exactly like the issue responses — this validation response is where
+//     RGW reads the tenant from.
+//   - project name/domain and the user domain are looked up in the DB; a
+//     failed lookup degrades gracefully (domain names fall back to "Default";
+//     a missing project or user row omits the project/domain key).
+//   - roles render as [{"id": name, "name": name}] objects.
+//   - the catalog is built from the CANONICAL project id, like the issue path.
+//   - methods are omitted: the JWT claims do not carry the original identity
+//     methods, and RGW does not require them.
+func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaims) *AuthResponse {
+	resp := &AuthResponse{}
+	if claims.ExpiresAt != nil {
+		resp.Token.ExpiresAt = claims.ExpiresAt.Time.Format(time.RFC3339)
+	}
+	if claims.IssuedAt != nil {
+		resp.Token.IssuedAt = claims.IssuedAt.Time.Format(time.RFC3339)
+	}
+
+	// User: id/name from the claims; domain looked up so the shape matches the
+	// issue paths (id + name, "Default" name fallback). The domain key is
+	// omitted when the user row is gone.
+	user := map[string]any{
+		"id":   claims.UserID,
+		"name": claims.UserName,
+	}
+	var userDomainID string
+	err := database.DB.QueryRow(ctx,
+		"SELECT domain_id FROM users WHERE id = $1",
+		claims.UserID,
+	).Scan(&userDomainID)
+	switch {
+	case err == nil:
+		userDomainName := "Default" // fallback, like the issue paths
+		if err := database.DB.QueryRow(ctx,
+			"SELECT name FROM domains WHERE id = $1",
+			userDomainID,
+		).Scan(&userDomainName); err != nil {
+			userDomainName = "Default"
+		}
+		user["domain"] = map[string]any{
+			"id":   userDomainID,
+			"name": userDomainName,
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		// nothing to look up — render id/name from the claims only
+	default:
+		log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Failed to query user domain")
+	}
+	resp.Token.User = user
+
+	// Project, roles and catalog only for scoped tokens, like the issue paths.
+	if claims.ProjectID != "" {
+		var projectName, projectDomainID string
+		err := database.DB.QueryRow(ctx,
+			"SELECT name, domain_id FROM projects WHERE id = $1",
+			claims.ProjectID,
+		).Scan(&projectName, &projectDomainID)
+		switch {
+		case err == nil:
+			projectDomainName := "Default" // fallback, like the issue paths
+			if err := database.DB.QueryRow(ctx,
+				"SELECT name FROM domains WHERE id = $1",
+				projectDomainID,
+			).Scan(&projectDomainName); err != nil {
+				projectDomainName = "Default"
+			}
+			resp.Token.Project = &map[string]any{
+				"id":   s.tokenProjectID(claims.ProjectID),
+				"name": projectName,
+				"domain": map[string]any{
+					"id":   projectDomainID,
+					"name": projectDomainName,
+				},
+			}
+		case errors.Is(err, pgx.ErrNoRows):
+			// The token's project no longer exists: render no project — the
+			// closest safe shape (RGW's parser rejects a scoped token without
+			// a project, which is the correct outcome for a dead scope).
+			log.Warn().Err(err).Str("operation", "validate_token").Str("project_id", claims.ProjectID).Msg("Token project not found; omitting project from validation response")
+		default:
+			log.Error().Err(err).Str("operation", "validate_token").Str("project_id", claims.ProjectID).Msg("Failed to query token project; omitting project from validation response")
+		}
+
+		// Roles, exactly like the issue paths: objects with id + name.
+		for _, roleName := range claims.Roles {
+			resp.Token.Roles = append(resp.Token.Roles, map[string]any{
+				"id":   roleName,
+				"name": roleName,
+			})
+		}
+
+		// Service catalog from the CANONICAL project id, like the issue paths.
+		resp.Token.Catalog = BuildServiceCatalog(claims.ProjectID, s.cache, s.glanceS3Endpoint)
+	}
+
+	return resp
 }
 
 // ValidateToken validates and parses a JWT token
