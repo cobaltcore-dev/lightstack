@@ -76,10 +76,11 @@ func TestRebootVMStub(t *testing.T) {
 	// Create a VM first
 	vmUUID, _ := manager.CreateVM(ctx, "<domain></domain>")
 
-	// Reboot should succeed
-	err := manager.RebootVM(ctx, vmUUID)
-	if err != nil {
-		t.Errorf("Expected no error from stub reboot, got: %v", err)
+	// Reboot should succeed, soft or hard
+	for _, hard := range []bool{false, true} {
+		if err := manager.RebootVM(ctx, vmUUID, hard); err != nil {
+			t.Errorf("Expected no error from stub reboot (hard=%v), got: %v", hard, err)
+		}
 	}
 }
 
@@ -179,7 +180,7 @@ func TestVMLifecycleStub(t *testing.T) {
 	}
 
 	// Reboot
-	_ = manager.RebootVM(ctx, vmUUID)
+	_ = manager.RebootVM(ctx, vmUUID, false)
 	state, _, _ = manager.GetVMState(ctx, vmUUID)
 	if state != "RUNNING" {
 		t.Errorf("Expected RUNNING state after reboot, got %s", state)

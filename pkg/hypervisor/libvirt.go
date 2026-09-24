@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	libvirt "github.com/digitalocean/go-libvirt"
+	"github.com/digitalocean/go-libvirt/socket"
 	"github.com/digitalocean/go-libvirt/socket/dialers"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 // VMState represents the state of a virtual machine
@@ -29,9 +32,17 @@ const (
 type VMManager struct {
 	libvirtURI string
 	mode       string // "stub" or "real"
-	conn       *libvirt.Libvirt
-	mu         sync.Mutex
-	stubVMs    map[string]*stubVM // For stub mode
+	// The current libvirt connection: replaced, never reopened in place, when it
+	// drops (see keepConnected).
+	conn    atomic.Pointer[libvirt.Libvirt]
+	mu      sync.Mutex
+	stubVMs map[string]*stubVM // For stub mode
+
+	// The reconnect loop (real mode only): closing done stops it, and stopped is
+	// closed once it has returned.
+	done      chan struct{}
+	stopped   chan struct{}
+	closeOnce sync.Once
 }
 
 // stubVM represents a simulated VM in stub mode
@@ -73,16 +84,90 @@ func (m *VMManager) connectLibvirt() error {
 		}
 	}
 
-	l := libvirt.NewWithDialer(dialers.NewLocal(
+	return m.connect(dialers.NewLocal(
 		dialers.WithSocket(socketPath),
 		dialers.WithLocalTimeout(2*time.Second),
-	))
-	if err := l.Connect(); err != nil {
-		return fmt.Errorf("failed to connect to libvirt: %w", err)
+	), reconnectBackoffMin, reconnectBackoffMax)
+}
+
+const (
+	// Reconnect backoff after a lost libvirt connection. The ceiling bounds how long
+	// libvirt calls keep failing once libvirtd is back; neither value delays a caller,
+	// since callers never wait for a reconnect.
+	reconnectBackoffMin = time.Second
+	reconnectBackoffMax = 5 * time.Second
+
+	// How long Close waits for the reconnect loop, which may be inside a Connect to an
+	// unresponsive libvirtd. Leaving it behind beats hanging shutdown.
+	closeWait = 5 * time.Second
+)
+
+// connect opens the libvirt connection through dialer and keeps it open.
+func (m *VMManager) connect(dialer socket.Dialer, minWait, maxWait time.Duration) error {
+	l, err := dial(dialer)
+	if err != nil {
+		return err
 	}
 
-	m.conn = l
+	m.conn.Store(l)
+	m.done = make(chan struct{})
+	m.stopped = make(chan struct{})
+	go m.keepConnected(dialer, minWait, maxWait)
 	return nil
+}
+
+// dial opens a new libvirt connection through dialer.
+func dial(dialer socket.Dialer) (*libvirt.Libvirt, error) {
+	l := libvirt.NewWithDialer(dialer)
+	if err := l.Connect(); err != nil {
+		return nil, fmt.Errorf("failed to connect to libvirt: %w", err)
+	}
+	return l, nil
+}
+
+// keepConnected replaces the libvirt connection whenever it drops. A libvirtd restart —
+// a package upgrade, a crash — closes it, and nothing else would ever open it again:
+// the pod stays up, /livez checks only the database, and every libvirt call fails
+// until Lightstack itself restarts.
+//
+// It runs in the background so that no caller waits on a dial: while the connection
+// is down, calls fail fast as before, and they succeed again within one backoff step
+// of libvirtd returning. A replacement is published only once it is open. Reopening
+// the dropped connection in place would race every call still holding it: go-libvirt
+// reads a socket's connection state without the lock its Connect writes it under.
+func (m *VMManager) keepConnected(dialer socket.Dialer, minWait, maxWait time.Duration) {
+	defer close(m.stopped)
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-m.conn.Load().Disconnected():
+		}
+		log.Warn().Msg("libvirt connection lost; reconnecting")
+		l, ok := m.redial(dialer, minWait, maxWait)
+		if !ok {
+			return
+		}
+		m.conn.Store(l)
+		log.Info().Msg("libvirt connection re-established")
+	}
+}
+
+// redial dials with capped exponential backoff until a connection opens. It reports
+// false when the manager is closed first.
+func (m *VMManager) redial(dialer socket.Dialer, minWait, maxWait time.Duration) (*libvirt.Libvirt, bool) {
+	for wait := minWait; ; wait = min(2*wait, maxWait) {
+		select {
+		case <-m.done:
+			return nil, false
+		case <-time.After(wait):
+		}
+		l, err := dial(dialer)
+		if err == nil {
+			return l, true
+		}
+		log.Debug().Err(err).Dur("next_attempt_in", min(2*wait, maxWait)).Msg("libvirt reconnect failed")
+	}
 }
 
 // CreateVM creates a virtual machine
@@ -112,20 +197,21 @@ func (m *VMManager) createVMStub(xml string) (string, error) {
 
 // createVMReal creates a real VM via libvirt
 func (m *VMManager) createVMReal(ctx context.Context, xml string) (string, error) {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return "", fmt.Errorf("not connected to libvirt")
 	}
 
 	// Define the domain
-	domain, err := m.conn.DomainDefineXML(xml)
+	domain, err := conn.DomainDefineXML(xml)
 	if err != nil {
 		return "", fmt.Errorf("failed to define domain: %w", err)
 	}
 
 	// Start the domain
-	if err := m.conn.DomainCreate(domain); err != nil {
+	if err := conn.DomainCreate(domain); err != nil {
 		// Try to undefine on failure
-		_ = m.conn.DomainUndefine(domain)
+		_ = conn.DomainUndefine(domain)
 		return "", fmt.Errorf("failed to start domain: %w", err)
 	}
 
@@ -159,7 +245,8 @@ func (m *VMManager) deleteVMStub(vmUUID string) error {
 
 // deleteVMReal deletes a real VM via libvirt
 func (m *VMManager) deleteVMReal(ctx context.Context, vmUUID string) error {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
 	}
 
@@ -170,36 +257,40 @@ func (m *VMManager) deleteVMReal(ctx context.Context, vmUUID string) error {
 	}
 
 	// Lookup domain
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return fmt.Errorf("domain not found: %w", err)
 	}
 
 	// Get domain state
-	state, _, err := m.conn.DomainGetState(domain, 0)
+	state, _, err := conn.DomainGetState(domain, 0)
 	if err != nil {
 		return fmt.Errorf("failed to get domain state: %w", err)
 	}
 
 	// Destroy if running
 	if state == 1 { // Running
-		if err := m.conn.DomainDestroy(domain); err != nil {
+		if err := conn.DomainDestroy(domain); err != nil {
 			return fmt.Errorf("failed to destroy domain: %w", err)
 		}
 	}
 
 	// Undefine domain
-	if err := m.conn.DomainUndefine(domain); err != nil {
+	if err := conn.DomainUndefine(domain); err != nil {
 		return fmt.Errorf("failed to undefine domain: %w", err)
 	}
 
 	return nil
 }
 
-// RebootVM reboots a virtual machine
-func (m *VMManager) RebootVM(ctx context.Context, vmUUID string) error {
+// RebootVM reboots a virtual machine. A soft reboot asks the guest to restart itself,
+// which a hung guest ignores; a hard one power-cycles the domain, which it cannot.
+func (m *VMManager) RebootVM(ctx context.Context, vmUUID string, hard bool) error {
 	if m.mode == "stub" {
 		return m.rebootVMStub(vmUUID)
+	}
+	if hard {
+		return m.hardRebootVMReal(vmUUID)
 	}
 	return m.rebootVMReal(ctx, vmUUID)
 }
@@ -222,7 +313,8 @@ func (m *VMManager) rebootVMStub(vmUUID string) error {
 
 // rebootVMReal reboots a real VM via libvirt
 func (m *VMManager) rebootVMReal(ctx context.Context, vmUUID string) error {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
 	}
 
@@ -231,13 +323,53 @@ func (m *VMManager) rebootVMReal(ctx context.Context, vmUUID string) error {
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return fmt.Errorf("domain not found: %w", err)
 	}
 
-	if err := m.conn.DomainReboot(domain, 0); err != nil {
+	if err := conn.DomainReboot(domain, 0); err != nil {
 		return fmt.Errorf("failed to reboot domain: %w", err)
+	}
+
+	return nil
+}
+
+// hardRebootVMReal power-cycles the domain: destroy it if it is active, then start it
+// from its persistent definition. That is upstream's _hard_reboot, minus regenerating
+// the XML, which Lightstack writes once at create. The guest gets a new qemu process,
+// so it cannot ignore the reboot, and a domain that is not running simply starts, as
+// upstream allows a HARD reboot of a stopped server.
+func (m *VMManager) hardRebootVMReal(vmUUID string) error {
+	conn := m.conn.Load()
+	if conn == nil {
+		return fmt.Errorf("not connected to libvirt")
+	}
+
+	uuidBytes, err := parseUUID(vmUUID)
+	if err != nil {
+		return fmt.Errorf("invalid UUID: %w", err)
+	}
+
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
+	if err != nil {
+		return fmt.Errorf("domain not found: %w", err)
+	}
+
+	// Active, not merely running: a paused or suspended guest has a qemu process too,
+	// and DomainCreate refuses a domain that is still active.
+	active, err := conn.DomainIsActive(domain)
+	if err != nil {
+		return fmt.Errorf("failed to check whether the domain is active: %w", err)
+	}
+	if active == 1 {
+		if err := conn.DomainDestroy(domain); err != nil {
+			return fmt.Errorf("failed to power off domain: %w", err)
+		}
+	}
+
+	if err := conn.DomainCreate(domain); err != nil {
+		return fmt.Errorf("domain powered off but failed to start: %w", err)
 	}
 
 	return nil
@@ -268,7 +400,8 @@ func (m *VMManager) stopVMStub(vmUUID string) error {
 
 // stopVMReal stops a real VM via libvirt
 func (m *VMManager) stopVMReal(ctx context.Context, vmUUID string) error {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
 	}
 
@@ -277,12 +410,12 @@ func (m *VMManager) stopVMReal(ctx context.Context, vmUUID string) error {
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return fmt.Errorf("domain not found: %w", err)
 	}
 
-	if err := m.conn.DomainShutdown(domain); err != nil {
+	if err := conn.DomainShutdown(domain); err != nil {
 		return fmt.Errorf("failed to shutdown domain: %w", err)
 	}
 
@@ -314,7 +447,8 @@ func (m *VMManager) startVMStub(vmUUID string) error {
 
 // startVMReal starts a real VM via libvirt
 func (m *VMManager) startVMReal(ctx context.Context, vmUUID string) error {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
 	}
 
@@ -323,12 +457,12 @@ func (m *VMManager) startVMReal(ctx context.Context, vmUUID string) error {
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return fmt.Errorf("domain not found: %w", err)
 	}
 
-	if err := m.conn.DomainCreate(domain); err != nil {
+	if err := conn.DomainCreate(domain); err != nil {
 		return fmt.Errorf("failed to start domain: %w", err)
 	}
 
@@ -358,7 +492,8 @@ func (m *VMManager) getVMStateStub(vmUUID string) (string, int, error) {
 
 // getVMStateReal returns real VM state via libvirt
 func (m *VMManager) getVMStateReal(ctx context.Context, vmUUID string) (string, int, error) {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return string(VMStateNoState), 0, fmt.Errorf("not connected to libvirt")
 	}
 
@@ -367,12 +502,12 @@ func (m *VMManager) getVMStateReal(ctx context.Context, vmUUID string) (string, 
 		return string(VMStateNoState), 0, fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return string(VMStateNoState), 0, fmt.Errorf("domain not found: %w", err)
 	}
 
-	state, _, err := m.conn.DomainGetState(domain, 0)
+	state, _, err := conn.DomainGetState(domain, 0)
 	if err != nil {
 		return string(VMStateNoState), 0, fmt.Errorf("failed to get domain state: %w", err)
 	}
@@ -405,7 +540,8 @@ func (m *VMManager) attachDeviceStub(vmUUID, deviceXML string) error {
 
 // attachDeviceReal attaches a device to a real VM via libvirt
 func (m *VMManager) attachDeviceReal(ctx context.Context, vmUUID, deviceXML string) error {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
 	}
 
@@ -414,14 +550,14 @@ func (m *VMManager) attachDeviceReal(ctx context.Context, vmUUID, deviceXML stri
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return fmt.Errorf("domain not found: %w", err)
 	}
 
 	// Attach device (libvirt flags: 0 for default, 1 for persistent, 2 for live)
 	flags := uint32(3) // Both persistent and live (1 | 2)
-	if err := m.conn.DomainAttachDeviceFlags(domain, deviceXML, flags); err != nil {
+	if err := conn.DomainAttachDeviceFlags(domain, deviceXML, flags); err != nil {
 		return fmt.Errorf("failed to attach device: %w", err)
 	}
 
@@ -451,7 +587,8 @@ func (m *VMManager) detachDeviceStub(vmUUID, deviceXML string) error {
 
 // detachDeviceReal detaches a device from a real VM via libvirt
 func (m *VMManager) detachDeviceReal(ctx context.Context, vmUUID, deviceXML string) error {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
 	}
 
@@ -460,14 +597,14 @@ func (m *VMManager) detachDeviceReal(ctx context.Context, vmUUID, deviceXML stri
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return fmt.Errorf("domain not found: %w", err)
 	}
 
 	// Detach device (libvirt flags: 0 for default, 1 for persistent, 2 for live)
 	flags := uint32(3) // Both persistent and live (1 | 2)
-	if err := m.conn.DomainDetachDeviceFlags(domain, deviceXML, flags); err != nil {
+	if err := conn.DomainDetachDeviceFlags(domain, deviceXML, flags); err != nil {
 		return fmt.Errorf("failed to detach device: %w", err)
 	}
 
@@ -499,7 +636,8 @@ func (m *VMManager) suspendVMStub(vmUUID string) error {
 
 // suspendVMReal suspends a real VM via libvirt
 func (m *VMManager) suspendVMReal(ctx context.Context, vmUUID string) error {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
 	}
 
@@ -508,13 +646,13 @@ func (m *VMManager) suspendVMReal(ctx context.Context, vmUUID string) error {
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return fmt.Errorf("domain not found: %w", err)
 	}
 
 	// Suspend domain (saves to disk)
-	if err := m.conn.DomainManagedSave(domain, 0); err != nil {
+	if err := conn.DomainManagedSave(domain, 0); err != nil {
 		return fmt.Errorf("failed to suspend domain: %w", err)
 	}
 
@@ -546,7 +684,8 @@ func (m *VMManager) resumeVMStub(vmUUID string) error {
 
 // resumeVMReal resumes a real VM via libvirt
 func (m *VMManager) resumeVMReal(ctx context.Context, vmUUID string) error {
-	if m.conn == nil {
+	conn := m.conn.Load()
+	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
 	}
 
@@ -555,24 +694,35 @@ func (m *VMManager) resumeVMReal(ctx context.Context, vmUUID string) error {
 		return fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		return fmt.Errorf("domain not found: %w", err)
 	}
 
 	// Resume domain (starts from managed save)
-	if err := m.conn.DomainCreate(domain); err != nil {
+	if err := conn.DomainCreate(domain); err != nil {
 		return fmt.Errorf("failed to resume domain: %w", err)
 	}
 
 	return nil
 }
 
-// Close closes the VM manager
+// Close stops the reconnect loop, then closes the libvirt connection. In that order: a
+// loop still running would take the deliberate disconnect for a lost connection and
+// dial again. Safe to call more than once.
 func (m *VMManager) Close() {
-	if m.conn != nil {
-		_ = m.conn.Disconnect()
-	}
+	m.closeOnce.Do(func() {
+		if m.done != nil {
+			close(m.done)
+			select {
+			case <-m.stopped:
+			case <-time.After(closeWait):
+			}
+		}
+		if conn := m.conn.Load(); conn != nil {
+			_ = conn.Disconnect()
+		}
+	})
 }
 
 // parseUUID converts a UUID string to bytes

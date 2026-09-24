@@ -1907,6 +1907,18 @@ func (svc *Service) ServerAction(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("unknown action"))
 		return
 	}
+	// A reboot's body is checked here too, for the same reason: a malformed one must not
+	// revoke the instance's console links on its way to a 400.
+	var hardReboot bool
+	if reboot {
+		hard, err := parseRebootType(req["reboot"])
+		if err != nil {
+			common.SendError(c, common.NewBadRequestError(
+				"Invalid input for field/attribute reboot: "+err.Error()))
+			return
+		}
+		hardReboot = hard
+	}
 
 	// Get libvirt domain ID for remaining actions (support lookup by ID or name).
 	// The resolved UUID is also what console-token revocation keys on, since the
@@ -1954,10 +1966,14 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	if svc.libvirtMode == "stub" || libvirtDomainStr == "" {
 		// Handle actions in stub mode by updating database only
 		if _, ok := req["reboot"]; ok {
-			// Just mark as rebooting then active
+			// Just mark as rebooting then active, under upstream's status for the type.
+			status := "REBOOT"
+			if hardReboot {
+				status = "HARD_REBOOT"
+			}
 			if _, err := svc.pool.Exec(c.Request.Context(),
 				"UPDATE instances SET status = $1, updated_at = $2 WHERE (id::text = $3 OR name = $3) AND project_id = $4",
-				"REBOOT", time.Now(), instanceID, projectID); err != nil {
+				status, time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance REBOOT")
 			}
 			svc.wg.Add(1)
@@ -1998,7 +2014,7 @@ func (svc *Service) ServerAction(c *gin.Context) {
 
 	// Handle different actions with real libvirt
 	if _, ok := req["reboot"]; ok {
-		if err := svc.vmManager.RebootVM(ctx, libvirtDomainStr); err != nil {
+		if err := svc.vmManager.RebootVM(ctx, libvirtDomainStr, hardReboot); err != nil {
 			log.Error().Err(err).Str("operation", "reboot_vm").Msg("libvirt error")
 			common.SendError(c, common.NewInternalServerError("failed to reboot server"))
 			return

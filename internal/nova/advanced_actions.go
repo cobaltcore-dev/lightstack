@@ -25,7 +25,7 @@ func (svc *Service) SuspendInstance(c *gin.Context) {
 	var libvirtDomainID, status string
 	var powerState int
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id, status, power_state FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT COALESCE(libvirt_domain_id, ''), status, power_state FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status, &powerState)
 
@@ -98,7 +98,7 @@ func (svc *Service) ResumeInstance(c *gin.Context) {
 	// Get instance and libvirt domain ID
 	var libvirtDomainID, status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id, status FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT COALESCE(libvirt_domain_id, ''), status FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
 
@@ -171,7 +171,7 @@ func (svc *Service) ShelveInstance(c *gin.Context) {
 	// Get instance
 	var libvirtDomainID, status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id, status FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT COALESCE(libvirt_domain_id, ''), status FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
 

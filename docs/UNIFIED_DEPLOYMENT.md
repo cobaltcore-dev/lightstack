@@ -279,7 +279,7 @@ services:
       - LIGHTSTACK_NEUTRON_NETWORKING_MODE=iptables
     privileged: true  # Required for networking
     volumes:
-      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /var/run/libvirt:/var/run/libvirt   # the socket's directory: survives a re-created socket
 ```
 
 **Prerequisites**:

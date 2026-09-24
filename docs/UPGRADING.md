@@ -425,11 +425,12 @@ Then, per domain, either delete and recreate the instance, or fix the definition
    `<graphics type='vnc' sharePolicy='force-shared'><listen type='socket'/></graphics>`: no
    `port`, `autoport` or `listen` attribute, and no path of your own — libvirt picks one per
    start. `sharePolicy='force-shared'` keeps a second viewer from disconnecting the first.
-2. Stop and start the server (`sudo virsh domuuid <domain>` prints its id). The edit takes effect
-   only when qemu restarts: `openstack server reboot`, soft or hard, reboots the guest inside the
-   same qemu process and does not pick it up. `openstack server stop` only asks the guest to shut
-   down, so wait for `sudo virsh domstate <domain>` to report `shut off` before
-   `openstack server start`.
+2. Restart qemu: the edit takes effect only when the domain starts again.
+   `openstack server reboot --hard <server>` does that — it power-cycles the domain
+   (`sudo virsh domuuid <domain>` prints the server's id). A soft reboot restarts the guest inside
+   the same qemu process and does not pick the edit up. Stopping and starting works too, but
+   `openstack server stop` only asks the guest to shut down, so wait for
+   `sudo virsh domstate <domain>` to report `shut off` before `openstack server start`.
 
 ## `realMode.hostStoragePath` now takes effect
 

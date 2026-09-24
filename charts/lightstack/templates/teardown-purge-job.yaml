@@ -42,8 +42,8 @@ spec:
               mountPath: /app/config
               readOnly: true
             {{- if .Values.realMode.enabled }}
-            - name: libvirt-sock
-              mountPath: {{ .Values.realMode.libvirtSocketPath }}
+            - name: libvirt-run
+              mountPath: {{ dir .Values.realMode.libvirtSocketPath }}
             - name: host-storage
               mountPath: {{ .Values.realMode.hostStoragePath }}
             {{- end }}
@@ -52,10 +52,11 @@ spec:
           secret:
             secretName: {{ include "lightstack.configSecretName" . }}
         {{- if .Values.realMode.enabled }}
-        - name: libvirt-sock
+        # The socket's directory, like the lightstack pod (see lightstack.podSpec).
+        - name: libvirt-run
           hostPath:
-            path: {{ .Values.realMode.libvirtSocketPath }}
-            type: Socket
+            path: {{ dir .Values.realMode.libvirtSocketPath }}
+            type: Directory
         - name: host-storage
           hostPath:
             path: {{ .Values.realMode.hostStoragePath }}

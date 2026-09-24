@@ -364,8 +364,8 @@ containers:
         mountPath: /app/config
         readOnly: true
       {{- if .Values.realMode.enabled }}
-      - name: libvirt-sock
-        mountPath: {{ .Values.realMode.libvirtSocketPath }}
+      - name: libvirt-run
+        mountPath: {{ dir .Values.realMode.libvirtSocketPath }}
       - name: host-storage
         mountPath: {{ .Values.realMode.hostStoragePath }}
       {{- end }}
@@ -378,10 +378,16 @@ volumes:
     secret:
       secretName: {{ include "lightstack.configSecretName" . }}
   {{- if .Values.realMode.enabled }}
-  - name: libvirt-sock
+  # The directory that holds libvirtd's socket, not the socket. A bind of the file keeps
+  # the inode the pod started with, so once libvirtd re-creates its socket — its socket
+  # units restart, or it runs without socket activation — the pod could not reach it
+  # again, and the libvirt reconnect (pkg/hypervisor keepConnected) would fail until the
+  # pod restarted. Accepted cost: the pod also sees libvirt's other sockets (read-only,
+  # admin, virtlogd); it already holds the read-write one, which is root on the host.
+  - name: libvirt-run
     hostPath:
-      path: {{ .Values.realMode.libvirtSocketPath }}
-      type: Socket
+      path: {{ dir .Values.realMode.libvirtSocketPath }}
+      type: Directory
   - name: host-storage
     hostPath:
       path: {{ .Values.realMode.hostStoragePath }}

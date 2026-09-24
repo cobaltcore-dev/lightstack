@@ -63,12 +63,17 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 	// Verify instance exists and get libvirt domain ID
 	var libvirtDomainID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT COALESCE(libvirt_domain_id, '') FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("volume attachment: instance lookup failed")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -232,12 +237,17 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 	// Verify instance exists and get libvirt domain ID
 	var libvirtDomainID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT COALESCE(libvirt_domain_id, '') FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("volume attachment: instance lookup failed")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 

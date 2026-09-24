@@ -734,7 +734,9 @@ services:
     privileged: true
     network_mode: host
     volumes:
-      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      # The socket's directory, not the socket: a bind of the file keeps its inode, so a
+      # libvirtd that re-creates its socket would stay unreachable until a restart.
+      - /var/run/libvirt:/var/run/libvirt
       # The whole state root, at the same path: it is the binary's state_path, and libvirtd
       # on the host opens the paths Lightstack writes into the domain XML (disks, cloud-init
       # ISOs, console logs). The novnc proxy below reads console-tokens from it too.

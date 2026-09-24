@@ -109,6 +109,8 @@ realMode:
   enabled: false
   privileged: false
   hostNetwork: false
+  # -- Host libvirtd socket. Pods mount the directory that holds it, not the socket
+  #    itself, so a libvirtd that re-creates its socket stays reachable.
   libvirtSocketPath: /var/run/libvirt/libvirt-sock
   # -- Node-local data root. Mounted at the same path inside the pod and passed to the
   #    binary as state_path — the two must match, because libvirtd on the host opens the

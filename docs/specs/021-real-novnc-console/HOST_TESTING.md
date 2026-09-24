@@ -234,6 +234,24 @@ click **Console**.
 is the truth, not a bug — there is no guest. The **Console Log** tab still shows
 output.
 
+### S8 — A reboot needs a valid type
+
+Upstream requires `reboot.type`, HARD or SOFT, and nothing else in the body. `$VM` and
+`$TOKEN` are still set from S1.
+
+```bash
+curl -s -o /dev/null -w 'no type -> %{http_code}\n' -X POST "http://localhost:8774/v2.1/servers/$VM/action" -H "X-Auth-Token: $TOKEN" -H 'Content-Type: application/json' -d '{"reboot":{}}'
+curl -s -o /dev/null -w 'unknown type -> %{http_code}\n' -X POST "http://localhost:8774/v2.1/servers/$VM/action" -H "X-Auth-Token: $TOKEN" -H 'Content-Type: application/json' -d '{"reboot":{"type":"FAST"}}'
+curl -s -o /dev/null -w 'hard -> %{http_code}\n' -X POST "http://localhost:8774/v2.1/servers/$VM/action" -H "X-Auth-Token: $TOKEN" -H 'Content-Type: application/json' -d '{"reboot":{"type":"HARD"}}'
+curl -s "http://localhost:8774/v2.1/servers/$VM" -H "X-Auth-Token: $TOKEN" | jq -r .server.status
+sleep 2
+curl -s "http://localhost:8774/v2.1/servers/$VM" -H "X-Auth-Token: $TOKEN" | jq -r .server.status
+```
+
+**Desired outcome**: `400`, `400`, `202`, then `HARD_REBOOT` — upstream's status for a
+hard reboot in progress — and `ACTIVE` once the stub has finished. Both refused bodies
+used to be accepted.
+
 ---
 
 ## Teardown
