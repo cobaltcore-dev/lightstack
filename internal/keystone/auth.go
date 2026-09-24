@@ -33,6 +33,10 @@ type AuthService struct {
 	tokenTTL         time.Duration
 	cache            *cache.Cache
 	glanceS3Endpoint string // resolved cfg.Glance.S3Endpoint, advertised as the `s3` catalog endpoint
+	// rgwCompatTenantIDs is the resolved keystone.rgw_compat_tenant_ids flag:
+	// render token.project.id with '-' → '_' in the token payload (Ceph RGW
+	// compatibility). See SetRGWCompatTenantIDs.
+	rgwCompatTenantIDs bool
 }
 
 // NewAuthService creates a new auth service
@@ -49,6 +53,35 @@ func NewAuthService(jwtSecret string, tokenTTL time.Duration, cacheInstance *cac
 // catalog advertises the real external RGW rather than a placeholder. Set once at
 // startup, mirroring nova.SetImageStore.
 func (s *AuthService) SetGlanceS3Endpoint(url string) { s.glanceS3Endpoint = url }
+
+// SetRGWCompatTenantIDs wires keystone.rgw_compat_tenant_ids (YAML or
+// LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS, resolved by the config layer) so
+// the token payload renders project ids in Ceph RGW's tenant-name-safe form.
+// Set once at startup, mirroring SetGlanceS3Endpoint. When false (the default),
+// token.project.id keeps the canonical hyphenated UUID.
+func (s *AuthService) SetRGWCompatTenantIDs(enabled bool) { s.rgwCompatTenantIDs = enabled }
+
+// rgwCompatTenantID renders a project id in Ceph RGW's tenant-name-safe form:
+// every '-' becomes '_'. Ceph validates tenant names with
+// rgw_validate_tenant_name (src/rgw/rgw_user.cc, identical in the squid and
+// main branches), which accepts [A-Za-z0-9_] only — hyphens are rejected with
+// ERR_INVALID_TENANT_NAME. Under rgw_keystone_implicit_tenants, RGW derives the
+// Swift tenant name and the implicit user id (<project>$<project>) from the
+// Keystone token's project id, so a hyphenated UUID project id cannot back an
+// RGW tenant. Injective per id (distinct UUIDs stay distinct).
+func rgwCompatTenantID(id string) string { return strings.ReplaceAll(id, "-", "_") }
+
+// tokenProjectID renders the project id for a token payload: the canonical
+// (hyphenated) UUID, or the RGW-safe form when keystone.rgw_compat_tenant_ids
+// is enabled. Only the two token-payload builders in this file (password issue
+// and token re-scope) render through this; BuildServiceCatalog, the management
+// APIs and everything else keep the canonical id.
+func (s *AuthService) tokenProjectID(id string) string {
+	if s.rgwCompatTenantIDs {
+		return rgwCompatTenantID(id)
+	}
+	return id
+}
 
 // AuthRequest represents an authentication request
 // ScopeField handles both string ("unscoped") and object scope formats
@@ -321,7 +354,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		}
 
 		resp.Token.Project = &map[string]any{
-			"id":   project.ID,
+			"id":   s.tokenProjectID(project.ID),
 			"name": project.Name,
 			"domain": map[string]any{
 				"id":   project.DomainID,
@@ -504,7 +537,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		}
 
 		resp.Token.Project = &map[string]any{
-			"id":   project.ID,
+			"id":   s.tokenProjectID(project.ID),
 			"name": project.Name,
 			"domain": map[string]any{
 				"id":   project.DomainID,

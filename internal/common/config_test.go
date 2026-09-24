@@ -1,6 +1,7 @@
 package common
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -126,6 +127,72 @@ logging:
 
 	if config.Logging.Format != "json" {
 		t.Errorf("Expected log format json, got %s", config.Logging.Format)
+	}
+}
+
+// keystone.rgw_compat_tenant_ids parses from YAML and defaults to false.
+func TestLoadConfigKeystoneRGWCompatTenantIDs(t *testing.T) {
+	tmp, err := os.CreateTemp("", "lightstack-rgwcompat-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString("keystone:\n  rgw_compat_tenant_ids: true\n"); err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+
+	cfg, err := LoadConfig(tmp.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.Keystone.RGWCompatTenantIDs {
+		t.Fatal("keystone.rgw_compat_tenant_ids: true not parsed")
+	}
+}
+
+// LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS overrides the file value in BOTH
+// directions (mirroring the Glance S3 boolean override); unrecognized values
+// keep the file value.
+func TestLoadConfigKeystoneRGWCompatTenantIDsEnvOverrides(t *testing.T) {
+	writeCfg := func(t *testing.T, on bool) string {
+		t.Helper()
+		tmp, err := os.CreateTemp("", "lightstack-rgwcompatenv-*.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Remove(tmp.Name()) })
+		if _, err := tmp.WriteString(fmt.Sprintf("keystone:\n  rgw_compat_tenant_ids: %t\n", on)); err != nil {
+			t.Fatal(err)
+		}
+		tmp.Close()
+		return tmp.Name()
+	}
+
+	cases := []struct {
+		name   string
+		file   bool
+		env    string
+		wantOn bool
+	}{
+		{"env enables over file off", false, "true", true},
+		{"env enables (1) over file off", false, "1", true},
+		{"env disables over file on", true, "false", false},
+		{"env disables (0) over file on", true, "0", false},
+		{"unrecognized value keeps file on", true, "yes-please", true},
+		{"empty env keeps file off", false, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS", tc.env)
+			cfg, err := LoadConfig(writeCfg(t, tc.file))
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.Keystone.RGWCompatTenantIDs != tc.wantOn {
+				t.Fatalf("rgw_compat_tenant_ids = %v, want %v (file=%v env=%q)", cfg.Keystone.RGWCompatTenantIDs, tc.wantOn, tc.file, tc.env)
+			}
+		})
 	}
 }
 
