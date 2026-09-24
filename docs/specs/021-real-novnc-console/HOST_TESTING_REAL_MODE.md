@@ -348,6 +348,34 @@ is the reboot's revoke. And a reboot keeps the guest's qemu process, and with it
 socket, so the stale-token sweep — which only drops tokens whose socket changed — had
 no reason to remove it either.
 
+A hard reboot is a power cycle, not a request to the guest:
+
+```bash
+VM=$(openstack server show vm1 -f value -c id)
+sudo virsh dumpxml $VM | grep -o "socket='[^']*'" | head -1
+openstack server reboot --hard vm1
+sudo virsh dumpxml $VM | grep -o "socket='[^']*'" | head -1
+openstack console url show vm1
+```
+
+**Desired outcome**: the two socket lines name **different** `domain-<id>-…`
+directories — the domain was destroyed and started again, so qemu is a new process,
+which a hung guest cannot ignore — and the new URL connects on the first attempt. The
+soft reboot above keeps the same directory.
+
+A reboot without a valid `type` is refused, and refused before the instance is looked up,
+so it cannot revoke a live link on its way to the 400:
+
+```bash
+openstack console url show vm1 -f value -c url
+TOKEN=$(openstack token issue -f value -c id)
+curl -s -o /dev/null -w 'no type -> %{http_code}\n' -X POST "http://$NODE_IP:8774/v2.1/servers/$VM/action" -H "X-Auth-Token: $TOKEN" -H 'Content-Type: application/json' -d '{"reboot":{}}'
+curl -s -o /dev/null -w 'unknown type -> %{http_code}\n' -X POST "http://$NODE_IP:8774/v2.1/servers/$VM/action" -H "X-Auth-Token: $TOKEN" -H 'Content-Type: application/json' -d '{"reboot":{"type":"FAST"}}'
+kubectl -n lightstack exec deploy/lightstack-lightstack -- /app/lightstack console-tokens list
+```
+
+**Desired outcome**: `400` twice, and the listing still shows the vm1 link printed first.
+
 ```bash
 VM=$(openstack server show vm1 -f value -c id)
 sudo virsh dumpxml $VM | grep -o "socket='[^']*'" | head -1
@@ -408,24 +436,39 @@ openstack console log show vm1 | tail -5
 
 **Desired outcome**: real cirros boot output.
 
-### R11 — Fail-fast when libvirt is unreachable (SC-010, FR-007)
+### R11 — Fail-fast when libvirt is unreachable, and recovery when it returns (SC-010, FR-007)
+
+The recovery below depends on how the pod mounts libvirt's socket. Check it first:
 
 ```bash
-sudo systemctl stop libvirtd
-time openstack console url show vm1
-sudo systemctl start libvirtd
-kubectl -n lightstack rollout restart deploy/lightstack-lightstack
-kubectl -n lightstack rollout status deploy/lightstack-lightstack --timeout=180s
-openstack console url show vm1
+kubectl -n lightstack get deploy lightstack-lightstack -o jsonpath='{.spec.template.spec.volumes[?(@.name=="libvirt-run")].hostPath}'; echo
 ```
 
-**Desired outcome**: an error in **under 2 seconds**, not a hang, and after the
-restart a console URL again.
+**Desired outcome**: `{"path":"/var/run/libvirt","type":"Directory"}` — the socket's
+directory. A mount of the socket file itself would keep the socket the pod started with,
+and the one libvirtd creates below would stay out of reach.
 
-The restart is not optional. Lightstack connects to libvirt once, at startup, and
-does not reconnect, so once libvirtd is back every libvirt call — consoles,
-lifecycle actions, the stale-token sweep — keeps failing until the pod restarts.
-Without it, R12 fails at its first command.
+```bash
+sudo systemctl stop libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd.service
+time openstack console url show vm1
+sudo systemctl start libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket libvirtd.service
+sleep 6
+openstack console url show vm1
+kubectl -n lightstack logs deploy/lightstack-lightstack --since=5m | grep 'libvirt connection'
+```
+
+**Desired outcome**: an error in **under 2 seconds**, not a hang. Then, with **no**
+pod restart, a console URL again, and the log shows `libvirt connection lost;
+reconnecting` followed by `libvirt connection re-established`.
+
+Stop the socket units too. Ubuntu socket-activates libvirtd, so stopping only the
+service leaves its sockets listening, and Lightstack's reconnect would start libvirtd
+again within a second — the fail-fast check would race it. Guests keep running either
+way: qemu does not depend on libvirtd.
+
+Starting the sockets again re-creates the socket file. The pod mounts
+`/var/run/libvirt` rather than the socket itself, so it sees the new one, and
+Lightstack re-dials every 1–5 seconds: `sleep 6` covers one backoff step.
 
 ### R12 — A guest that powers itself off loses its links (the stale-token sweep)
 

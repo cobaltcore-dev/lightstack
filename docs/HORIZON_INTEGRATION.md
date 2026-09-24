@@ -216,7 +216,7 @@ services:
     privileged: true  # Required for network namespaces
     network_mode: host
     volumes:
-      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /var/run/libvirt:/var/run/libvirt   # the socket's directory: survives a re-created socket
       - /var/lib/lightstack:/var/lib/lightstack   # state root (state_path), same path on both sides
       - /opt/lightstack/config:/opt/lightstack/config:ro
 

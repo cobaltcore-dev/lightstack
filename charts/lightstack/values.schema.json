@@ -209,7 +209,7 @@
         "enabled": { "type": "boolean", "description": "Gate privileged pod + host mounts." },
         "privileged": { "type": "boolean", "description": "Run the pod privileged." },
         "hostNetwork": { "type": "boolean", "description": "Use host networking." },
-        "libvirtSocketPath": { "type": "string", "description": "Host libvirtd socket (hostPath)." },
+        "libvirtSocketPath": { "type": "string", "description": "Host libvirtd socket. Pods mount the directory that holds it (hostPath), so a re-created socket stays reachable." },
         "hostStoragePath": { "type": "string", "pattern": "^/.+", "description": "Node-local data root (hostPath), mounted at the same path in the pod and passed to the binary as state_path. Absolute: libvirtd on the host opens the paths Lightstack writes into the domain XML." },
         "legacyStatePath": { "type": "string", "description": "Pre-rename node-local root to migrate into hostStoragePath once; empty disables." },
         "floatingIpPool": { "type": "string", "description": "Operator pool routed to nodes (FR-009c)." }

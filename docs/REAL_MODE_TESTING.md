@@ -194,7 +194,7 @@ virsh list --all  # Should be gone
 - **DeleteVM**: `DomainDestroy()` + `DomainUndefine()`
 - **StartVM**: `DomainCreate()`
 - **StopVM**: `DomainShutdown()`
-- **RebootVM**: `DomainReboot()`
+- **RebootVM**: `DomainReboot()` for SOFT; for HARD, `DomainDestroy()` if the domain is active, then `DomainCreate()`
 - **GetVMState**: `DomainGetState()`
 
 ## Stub vs Real Mode Comparison

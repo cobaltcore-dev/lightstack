@@ -63,7 +63,8 @@ type domainGraphics struct {
 // the domain's per-start private directory, so the path changes on every start —
 // which is exactly what makes a stale token name nothing instead of another guest.
 func (m *VMManager) GetConsoleSocket(ctx context.Context, vmUUID string) (string, error) {
-	if m.mode == "stub" || m.conn == nil {
+	conn := m.conn.Load()
+	if m.mode == "stub" || conn == nil {
 		return "", fmt.Errorf("%w: nova is running in stub mode, there is no guest to display", ErrConsoleUnavailable)
 	}
 
@@ -77,9 +78,13 @@ func (m *VMManager) GetConsoleSocket(ctx context.Context, vmUUID string) (string
 	// go-libvirt's calls are blocking and context-free, so the deadline is
 	// enforced by racing them. The goroutine may outlive this function if
 	// libvirt is wedged; the buffered channel keeps it from leaking on send.
+	// It ends with the wedge: go-libvirt closes every pending call's channel when
+	// the socket drops, and a recovered libvirtd answers them. Their number is
+	// bounded too: issuance times out as well, so no new tokens appear, and the
+	// tokens the sweep checks expire within the TTL.
 	ch := make(chan result, 1)
 	go func() {
-		socket, err := m.fetchDomainConsoleSocket(vmUUID)
+		socket, err := fetchDomainConsoleSocket(conn, vmUUID)
 		ch <- result{socket: socket, err: err}
 	}()
 
@@ -96,13 +101,13 @@ func (m *VMManager) GetConsoleSocket(ctx context.Context, vmUUID string) (string
 // reads as libvirt work. It is called only from that goroutine, and it is the only
 // part of the readback that needs a live connection — everything above it is
 // unit-testable, everything here is not.
-func (m *VMManager) fetchDomainConsoleSocket(vmUUID string) (string, error) {
+func fetchDomainConsoleSocket(conn *libvirt.Libvirt, vmUUID string) (string, error) {
 	uuidBytes, err := parseUUID(vmUUID)
 	if err != nil {
 		return "", fmt.Errorf("invalid UUID: %w", err)
 	}
 
-	domain, err := m.conn.DomainLookupByUUID(uuidBytes)
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
 	if err != nil {
 		// Two very different failures arrive through the same call, and they
 		// deserve different answers. Both were observed on the host:
@@ -126,7 +131,7 @@ func (m *VMManager) fetchDomainConsoleSocket(vmUUID string) (string, error) {
 	// Flags 0 = the RUNNING definition, the only one that carries the socket path:
 	// DomainXMLInactive returns the persistent definition, whose <listen
 	// type='socket'/> has none until libvirt starts the domain.
-	desc, err := m.conn.DomainGetXMLDesc(domain, 0)
+	desc, err := conn.DomainGetXMLDesc(domain, 0)
 	if err != nil {
 		return "", fmt.Errorf("failed to read domain XML: %w", err)
 	}

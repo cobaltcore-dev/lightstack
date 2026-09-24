@@ -640,14 +640,6 @@ func TestLifecycleActionsRevokeConsoleTokens(t *testing.T) {
 			r, store := newConsoleTestRouter(t, "stub")
 			id := seedConsoleInstance(t, seededProjectID)
 
-			// suspend and shelve scan libvirt_domain_id into a plain string, so the NULL
-			// a bare seed leaves fails them before they reach the revoke. '' is what
-			// every handler here reads as "no domain".
-			if _, err := testPool.Exec(t.Context(),
-				"UPDATE instances SET libvirt_domain_id = '' WHERE id = $1", id); err != nil {
-				t.Fatalf("clearing libvirt_domain_id: %v", err)
-			}
-
 			tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket)
 			if err != nil {
 				t.Fatalf("Issue: %v", err)
@@ -777,7 +769,7 @@ func TestLifecycleActionsFailClosedWhenRevocationFails(t *testing.T) {
 			id := seedConsoleInstance(t, seededProjectID)
 
 			if _, err := testPool.Exec(t.Context(),
-				`UPDATE instances SET status = $2, libvirt_domain_id = '',
+				`UPDATE instances SET status = $2,
 				        flavor_id = (SELECT id FROM flavors WHERE name = 'm1.small')
 				  WHERE id = $1`, id, tc.status); err != nil {
 				t.Fatalf("preparing instance: %v", err)

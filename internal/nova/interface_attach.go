@@ -39,12 +39,17 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	// Verify instance exists
 	var libvirtDomainID, status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id, status FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT COALESCE(libvirt_domain_id, ''), status FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("interface attach: instance lookup failed")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 

@@ -1,0 +1,72 @@
+# helm-unittest specs for the libvirt socket mount. Pods mount the DIRECTORY that holds
+# libvirtd's socket, not the socket: a hostPath bind of the file keeps the inode the pod
+# started with, so once libvirtd re-creates its socket — its socket units restart, or it
+# runs without socket activation — the pod could never reach it again, and Lightstack's
+# libvirt reconnect (pkg/hypervisor keepConnected) would fail until the pod restarted.
+suite: libvirt socket mount
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+  realMode.enabled: true
+tests:
+  - it: mounts the directory that holds the libvirt socket, not the socket itself
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: libvirt-run
+            hostPath:
+              path: /var/run/libvirt
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: libvirt-run
+            mountPath: /var/run/libvirt
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: libvirt-sock
+            hostPath:
+              path: /var/run/libvirt/libvirt-sock
+              type: Socket
+
+  - it: follows a custom socket path to its directory
+    template: templates/deployment.yaml
+    set:
+      realMode.libvirtSocketPath: /run/custom/libvirt-sock
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: libvirt-run
+            hostPath:
+              path: /run/custom
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: libvirt-run
+            mountPath: /run/custom
+
+  - it: mounts the same directory for the teardown purge job
+    template: templates/teardown-purge-job.yaml
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: libvirt-run
+            hostPath:
+              path: /var/run/libvirt
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: libvirt-run
+            mountPath: /var/run/libvirt

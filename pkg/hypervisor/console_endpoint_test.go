@@ -110,7 +110,7 @@ func TestParseConsoleSocket(t *testing.T) {
 // calls take no context, so the bound has to be imposed by the caller — this
 // asserts it actually is.
 func TestGetConsoleSocketHonoursDeadline(t *testing.T) {
-	m := &VMManager{mode: "real", conn: nil}
+	m := &VMManager{mode: "real"}
 
 	// A nil connection is the cheapest "hypervisor unavailable": it must return
 	// immediately rather than block, and never panic.
@@ -127,7 +127,7 @@ func TestGetConsoleSocketHonoursDeadline(t *testing.T) {
 // An already-cancelled context must be honoured, proving the deadline path is
 // wired rather than decorative.
 func TestGetConsoleSocketCancelledContext(t *testing.T) {
-	m := &VMManager{mode: "real", conn: nil}
+	m := &VMManager{mode: "real"}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
