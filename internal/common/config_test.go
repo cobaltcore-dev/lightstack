@@ -162,7 +162,7 @@ func TestLoadConfigKeystoneRGWCompatTenantIDsEnvOverrides(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { os.Remove(tmp.Name()) })
-		if _, err := tmp.WriteString(fmt.Sprintf("keystone:\n  rgw_compat_tenant_ids: %t\n", on)); err != nil {
+		if _, err := fmt.Fprintf(tmp, "keystone:\n  rgw_compat_tenant_ids: %t\n", on); err != nil {
 			t.Fatal(err)
 		}
 		tmp.Close()

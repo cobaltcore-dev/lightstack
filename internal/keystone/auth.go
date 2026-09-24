@@ -586,10 +586,10 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaims) *AuthResponse {
 	resp := &AuthResponse{}
 	if claims.ExpiresAt != nil {
-		resp.Token.ExpiresAt = claims.ExpiresAt.Time.Format(time.RFC3339)
+		resp.Token.ExpiresAt = claims.ExpiresAt.Format(time.RFC3339)
 	}
 	if claims.IssuedAt != nil {
-		resp.Token.IssuedAt = claims.IssuedAt.Time.Format(time.RFC3339)
+		resp.Token.IssuedAt = claims.IssuedAt.Format(time.RFC3339)
 	}
 
 	// User: id/name from the claims; domain looked up so the shape matches the
