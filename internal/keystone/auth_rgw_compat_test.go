@@ -747,8 +747,11 @@ func TestValidateTokenDeadScopeOmitsProject(t *testing.T) {
 	if body.Token.User.ID != rgwCompatSeededAdminID {
 		t.Errorf("dead scope: token.user.id = %q, want the claim's %q", body.Token.User.ID, rgwCompatSeededAdminID)
 	}
-	if len(body.Token.Roles) == 0 {
-		t.Error("dead scope: roles should still render from the claims")
+	if len(body.Token.Roles) != 0 {
+		t.Errorf("dead scope: roles = %v, want none — the assignments died with the scope (uniform liveness, fail closed)", body.Token.Roles)
+	}
+	if _, ok := raw.Token["roles"]; ok {
+		t.Error("dead scope: validation response carries a roles key")
 	}
 	if body.Token.ExpiresAt == "" {
 		t.Error("dead scope: token.expires_at missing (mandatory for Ceph RGW)")
@@ -924,5 +927,135 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 				t.Errorf("token.user.id = %q, want the dash-free form of the user id (unchanged in either mode)", body.Token.User.ID)
 			}
 		})
+	}
+}
+
+// TestValidateTokenDeadUserOmitsUser: a token whose user row is gone must
+// omit the user key from the validation envelope — the exact mirror of the
+// dead-scope handling. Ceph RGW's envelope parser requires a user, so the
+// token is dead for it; the rendered identity never outlives the identity
+// row. The JWT itself stays valid (signature + expiry), so the status is
+// still 200 — only the envelope fails closed.
+func TestValidateTokenDeadUserOmitsUser(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+	ctx := context.Background()
+
+	r := newRGWCompatRouter(true)
+
+	// A throwaway user (spec007- prefix: resetAdmin sweeps leftovers) with a
+	// member role on the fixture project and a validly-signed scoped token.
+	const deadUserID = "deadbeef-0000-4000-8000-00000000dead"
+	if _, err := database.DB.Exec(ctx, `
+		INSERT INTO users (id, name, password_hash, enabled, domain_id)
+		VALUES ($1, 'spec007-deaduser', 'not-a-hash', true, $2)
+		ON CONFLICT (id) DO NOTHING`, deadUserID, defaultDomainID); err != nil {
+		t.Fatalf("insert throwaway user: %v", err)
+	}
+	if _, err := database.DB.Exec(ctx, `
+		INSERT INTO role_assignments (user_id, project_id, role_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
+		deadUserID, rgwCompatProjectID, rgwCompatMemberRoleID); err != nil {
+		t.Fatalf("insert role assignment: %v", err)
+	}
+	token := mintTestToken(t, &TokenClaims{
+		UserID:    deadUserID,
+		UserName:  "spec007-deaduser",
+		ProjectID: rgwCompatProjectID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	})
+
+	// Positive control: while the user row exists, the envelope renders it.
+	live := getToken(t, r, token)
+	if live.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens (live user): code=%d body=%s", live.Code, live.Body.String())
+	}
+	if b := decodeValidationBody(t, live); b.Token.User.ID != deadUserID {
+		t.Errorf("live user: token.user.id = %q, want %q", b.Token.User.ID, deadUserID)
+	}
+
+	// Kill the user (assignments first — the FK requires it).
+	if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE user_id = $1", deadUserID); err != nil {
+		t.Fatalf("delete role assignments: %v", err)
+	}
+	if _, err := database.DB.Exec(ctx, "DELETE FROM users WHERE id = $1", deadUserID); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+
+	w := getToken(t, r, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens (dead user): code=%d body=%s", w.Code, w.Body.String())
+	}
+	var raw struct {
+		Token map[string]any `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw validation response: %v", err)
+	}
+	if _, ok := raw.Token["user"]; ok {
+		t.Error("dead user: validation response carries a user key")
+	}
+	if _, ok := raw.Token["roles"]; ok {
+		t.Error("dead user: validation response carries a roles key (the assignments died with the user)")
+	}
+	if _, ok := raw.Token["project"]; !ok {
+		t.Error("dead user: validation response should still carry the (alive) project key")
+	}
+}
+
+// TestValidateTokenRoleRevocation: revoking the role assignment takes effect
+// on the validation envelope immediately — roles are re-read live from the
+// role assignments, not replayed from the JWT claims. Ceph RGW requires a
+// non-empty roles list, so a fully revoked scoped token is dead for it, while
+// the user and project keys stay rendered.
+func TestValidateTokenRoleRevocation(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+	ctx := context.Background()
+
+	r := newRGWCompatRouter(true)
+
+	issue := postTokens(t, r, passwordAuthBody(rgwCompatProjectID))
+	if issue.Code != http.StatusCreated {
+		t.Fatalf("POST /v3/auth/tokens: code=%d body=%s", issue.Code, issue.Body.String())
+	}
+	tokenString := issue.Header().Get("X-Subject-Token")
+
+	if b := decodeTokenBody(t, issue); len(b.Token.Roles) == 0 {
+		t.Fatal("issue response should carry the member role")
+	}
+
+	// Revoke the only assignment.
+	if _, err := database.DB.Exec(ctx,
+		"DELETE FROM role_assignments WHERE user_id = $1 AND project_id = $2",
+		rgwCompatSeededAdminID, rgwCompatProjectID); err != nil {
+		t.Fatalf("revoke role assignment: %v", err)
+	}
+
+	w := getToken(t, r, tokenString)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if body := decodeValidationBody(t, w); len(body.Token.Roles) != 0 {
+		t.Errorf("revoked roles still render: %v, want none (live read, fail closed)", body.Token.Roles)
+	}
+	var raw struct {
+		Token map[string]any `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw validation response: %v", err)
+	}
+	if _, ok := raw.Token["roles"]; ok {
+		t.Error("revoked roles: validation response carries a roles key")
+	}
+	if _, ok := raw.Token["project"]; !ok {
+		t.Error("revocation: the project key should stay (only the assignment died)")
+	}
+	if _, ok := raw.Token["user"]; !ok {
+		t.Error("revocation: the user key should stay (the user is alive)")
 	}
 }

@@ -212,7 +212,7 @@ type AuthResponse struct {
 		ExpiresAt string           `json:"expires_at"`
 		IssuedAt  string           `json:"issued_at"`
 		Methods   []string         `json:"methods,omitempty"`
-		User      map[string]any   `json:"user"`
+		User      map[string]any   `json:"user,omitempty"`
 		Catalog   []CatalogEntry   `json:"catalog,omitempty"`
 		Project   *map[string]any  `json:"project,omitempty"`
 		Roles     []map[string]any `json:"roles,omitempty"`
@@ -666,13 +666,11 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 		resp.Token.IssuedAt = keystoneTimestamp(claims.IssuedAt.Time)
 	}
 
-	// User: id/name from the claims; domain looked up so the shape matches the
-	// issue paths (id + name, "Default" name fallback). The domain key is
-	// omitted when the user row is gone.
-	user := map[string]any{
-		"id":   claims.UserID,
-		"name": claims.UserName,
-	}
+	// User: id/name/domain from the live row, exactly like the issue paths.
+	// A deleted user omits the key entirely — mirroring the dead-scope
+	// handling below: RGW's envelope parser requires a user, so the token is
+	// dead for it. (Lightstack's own API middleware validates the JWT
+	// signature and expiry only; that contract is unchanged.)
 	var userDomainID string
 	err := database.DB.QueryRow(ctx,
 		"SELECT domain_id FROM users WHERE id = $1",
@@ -687,16 +685,19 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 		).Scan(&userDomainName); err != nil {
 			userDomainName = "Default"
 		}
-		user["domain"] = map[string]any{
-			"id":   userDomainID,
-			"name": userDomainName,
+		resp.Token.User = map[string]any{
+			"id":   claims.UserID,
+			"name": claims.UserName,
+			"domain": map[string]any{
+				"id":   userDomainID,
+				"name": userDomainName,
+			},
 		}
 	case errors.Is(err, pgx.ErrNoRows):
-		// nothing to look up — render id/name from the claims only
+		log.Warn().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Token user not found; omitting user from validation response")
 	default:
-		log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Failed to query user domain")
+		log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Failed to query user; omitting user from validation response")
 	}
-	resp.Token.User = user
 
 	// Project, roles and catalog only for scoped tokens, like the issue paths.
 	if claims.ProjectID != "" {
@@ -731,12 +732,31 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 			log.Error().Err(err).Str("operation", "validate_token").Str("project_id", claims.ProjectID).Msg("Failed to query token project; omitting project from validation response")
 		}
 
-		// Roles, exactly like the issue paths: objects with id + name.
-		for _, roleName := range claims.Roles {
-			resp.Token.Roles = append(resp.Token.Roles, map[string]any{
-				"id":   roleName,
-				"name": roleName,
-			})
+		// Roles, live from the role assignments — the issue paths read them
+		// at issue time; re-reading them here makes a revocation take effect
+		// for the validation endpoint too (uniform liveness with the project
+		// and user rows above). Unreadable or fully revoked roles omit the
+		// key: RGW's envelope parser requires roles, so a revoked scoped
+		// token is dead for it — fail closed.
+		rows, rolesErr := database.DB.Query(ctx, `
+			SELECT DISTINCT r.name FROM roles r
+			JOIN role_assignments ra ON ra.role_id = r.id
+			WHERE ra.user_id = $1 AND ra.project_id = $2`,
+			claims.UserID, claims.ProjectID)
+		if rolesErr != nil {
+			log.Error().Err(rolesErr).Str("operation", "validate_token").Str("user_id", claims.UserID).Str("project_id", claims.ProjectID).Msg("Failed to query token roles; omitting roles from validation response")
+		} else {
+			defer rows.Close()
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					continue
+				}
+				resp.Token.Roles = append(resp.Token.Roles, map[string]any{
+					"id":   name,
+					"name": name,
+				})
+			}
 		}
 
 		// Service catalog from the CANONICAL project id, like the issue paths.
