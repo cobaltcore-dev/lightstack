@@ -684,9 +684,11 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 //   - project.id goes through tokenProjectID (keystone.rgw_compat_tenant_ids)
 //     exactly like the issue responses — this validation response is where
 //     RGW reads the tenant from.
-//   - project name/domain and the user domain are looked up in the DB; a
-//     failed lookup degrades gracefully (domain names fall back to "Default";
-//     a missing project or user row omits the project/domain key).
+//   - project name/domain and the user domain are looked up in the DB, and
+//     the user/project rows must be live AND enabled — the issue paths
+//     reject disabled identities with 401, so validation fails closed the
+//     same way (a missing or disabled project/user row omits that key;
+//     domain names fall back to "Default" on a failed lookup).
 //   - roles render as [{"id": name, "name": name}] objects.
 //   - the catalog is built from the CANONICAL project id, like the issue path.
 //   - methods come from the claims — server-recorded at issue (["password"]
@@ -711,12 +713,13 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 	// dead for it. (Lightstack's own API middleware validates the JWT
 	// signature and expiry only; that contract is unchanged.)
 	var userDomainID string
+	var userEnabled bool
 	err := database.DB.QueryRow(ctx,
-		"SELECT domain_id FROM users WHERE id = $1",
+		"SELECT domain_id, enabled FROM users WHERE id = $1",
 		claims.UserID,
-	).Scan(&userDomainID)
+	).Scan(&userDomainID, &userEnabled)
 	switch {
-	case err == nil:
+	case err == nil && userEnabled:
 		userDomainName := "Default" // fallback, like the issue paths
 		if err := database.DB.QueryRow(ctx,
 			"SELECT name FROM domains WHERE id = $1",
@@ -732,6 +735,12 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 				"name": userDomainName,
 			},
 		}
+	case err == nil:
+		// Disabled after issue: the issue paths reject disabled users with
+		// 401, so the live validation fails closed the same way as a
+		// deleted user — render no user (RGW's envelope parser requires
+		// one, so the token is dead for it).
+		log.Warn().Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Token user disabled; omitting user from validation response")
 	case errors.Is(err, pgx.ErrNoRows):
 		log.Warn().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Token user not found; omitting user from validation response")
 	default:
@@ -741,12 +750,13 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 	// Project, roles and catalog only for scoped tokens, like the issue paths.
 	if claims.ProjectID != "" {
 		var projectName, projectDomainID string
+		var projectEnabled bool
 		err := database.DB.QueryRow(ctx,
-			"SELECT name, domain_id FROM projects WHERE id = $1",
+			"SELECT name, domain_id, enabled FROM projects WHERE id = $1",
 			claims.ProjectID,
-		).Scan(&projectName, &projectDomainID)
+		).Scan(&projectName, &projectDomainID, &projectEnabled)
 		switch {
-		case err == nil:
+		case err == nil && projectEnabled:
 			projectDomainName := "Default" // fallback, like the issue paths
 			if err := database.DB.QueryRow(ctx,
 				"SELECT name FROM domains WHERE id = $1",
@@ -762,6 +772,13 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 					"name": projectDomainName,
 				},
 			}
+		case err == nil:
+			// Disabled after issue: the issue paths reject disabled projects
+			// with 401, so the live validation fails closed the same way as
+			// a deleted project — render no project (RGW's parser rejects a
+			// scoped token without one: the correct outcome for a dead
+			// scope).
+			log.Warn().Str("operation", "validate_token").Str("project_id", claims.ProjectID).Msg("Token project disabled; omitting project from validation response")
 		case errors.Is(err, pgx.ErrNoRows):
 			// The token's project no longer exists: render no project — the
 			// closest safe shape (RGW's parser rejects a scoped token without

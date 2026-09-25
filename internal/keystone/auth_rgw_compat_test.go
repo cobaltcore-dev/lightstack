@@ -1016,6 +1016,165 @@ func TestValidateTokenDeadUserOmitsUser(t *testing.T) {
 	}
 }
 
+// TestValidateTokenDisabledUserOmitsUser: disabling a user takes effect on
+// the validation envelope immediately — the issue paths reject disabled
+// users with 401, so the live validation fails closed the same way as a
+// deleted user (omit the user key; RGW's envelope parser requires one, so
+// the token is dead for it). Unlike a deleted user, the role assignments
+// survive a disable, so roles and the (alive) project keep rendering.
+func TestValidateTokenDisabledUserOmitsUser(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+	ctx := context.Background()
+
+	r := newRGWCompatRouter(true)
+
+	// A throwaway user (spec007- prefix: resetAdmin sweeps leftovers) with a
+	// member role on the fixture project and a validly-signed scoped token.
+	const disabledUserID = "deadbeef-0000-4000-8000-0000d15ab1ed"
+	if _, err := database.DB.Exec(ctx, `
+		INSERT INTO users (id, name, password_hash, enabled, domain_id)
+		VALUES ($1, 'spec007-disableduser', 'not-a-hash', true, $2)
+		ON CONFLICT (id) DO NOTHING`, disabledUserID, defaultDomainID); err != nil {
+		t.Fatalf("insert throwaway user: %v", err)
+	}
+	if _, err := database.DB.Exec(ctx, `
+		INSERT INTO role_assignments (user_id, project_id, role_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
+		disabledUserID, rgwCompatProjectID, rgwCompatMemberRoleID); err != nil {
+		t.Fatalf("insert role assignment: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE user_id = $1", disabledUserID); err != nil {
+			t.Errorf("cleanup throwaway role assignments: %v", err)
+		}
+		if _, err := database.DB.Exec(ctx, "DELETE FROM users WHERE id = $1", disabledUserID); err != nil {
+			t.Errorf("cleanup throwaway user: %v", err)
+		}
+	})
+	token := mintTestToken(t, &TokenClaims{
+		UserID:    disabledUserID,
+		UserName:  "spec007-disableduser",
+		ProjectID: rgwCompatProjectID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	})
+
+	// Positive control: while enabled, the envelope renders the user.
+	live := getToken(t, r, token)
+	if live.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens (enabled user): code=%d body=%s", live.Code, live.Body.String())
+	}
+	if b := decodeValidationBody(t, live); b.Token.User.ID != disabledUserID {
+		t.Errorf("enabled user: token.user.id = %q, want %q", b.Token.User.ID, disabledUserID)
+	}
+
+	// Disable the user (row and assignments stay).
+	if _, err := database.DB.Exec(ctx, "UPDATE users SET enabled = false WHERE id = $1", disabledUserID); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+
+	w := getToken(t, r, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens (disabled user): code=%d body=%s", w.Code, w.Body.String())
+	}
+	var raw struct {
+		Token map[string]any `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw validation response: %v", err)
+	}
+	if _, ok := raw.Token["user"]; ok {
+		t.Error("disabled user: validation response carries a user key")
+	}
+	if _, ok := raw.Token["roles"]; !ok {
+		t.Error("disabled user: validation response should still carry roles (assignments survive a disable)")
+	}
+	if _, ok := raw.Token["project"]; !ok {
+		t.Error("disabled user: validation response should still carry the (alive) project key")
+	}
+}
+
+// TestValidateTokenDisabledProjectOmitsProject: disabling the scope project
+// takes effect on the validation envelope immediately — the issue paths
+// reject disabled projects with 401, so the live validation fails closed the
+// same way as a deleted project (omit the project key; RGW's parser rejects
+// a scoped token without one). The user and its roles keep rendering.
+func TestValidateTokenDisabledProjectOmitsProject(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+	ctx := context.Background()
+
+	r := newRGWCompatRouter(true)
+
+	const disabledProjectID = "cafebabe-0000-4000-8000-0000d15ab1ed"
+	if _, err := database.DB.Exec(ctx, `
+		INSERT INTO projects (id, name, description, enabled, domain_id)
+		VALUES ($1, 'spec007-disabled-project', 'disabled scope fixture', true, $2)
+		ON CONFLICT (id) DO NOTHING`, disabledProjectID, defaultDomainID); err != nil {
+		t.Fatalf("insert throwaway project: %v", err)
+	}
+	if _, err := database.DB.Exec(ctx, `
+		INSERT INTO role_assignments (user_id, project_id, role_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
+		rgwCompatSeededAdminID, disabledProjectID, rgwCompatMemberRoleID); err != nil {
+		t.Fatalf("insert role assignment: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE project_id = $1", disabledProjectID); err != nil {
+			t.Errorf("cleanup throwaway role assignments: %v", err)
+		}
+		if _, err := database.DB.Exec(ctx, "DELETE FROM projects WHERE id = $1", disabledProjectID); err != nil {
+			t.Errorf("cleanup throwaway project: %v", err)
+		}
+	})
+	token := mintTestToken(t, &TokenClaims{
+		UserID:    rgwCompatSeededAdminID,
+		UserName:  "admin",
+		ProjectID: disabledProjectID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	})
+
+	// Positive control: while enabled, the envelope renders the (underscored,
+	// flag on) project.
+	live := getToken(t, r, token)
+	if live.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens (enabled project): code=%d body=%s", live.Code, live.Body.String())
+	}
+	if b := decodeValidationBody(t, live); b.Token.Project == nil || b.Token.Project.ID != strings.ReplaceAll(disabledProjectID, "-", "_") {
+		t.Errorf("enabled project: token.project.id = %+v, want the underscored %q", b.Token.Project, strings.ReplaceAll(disabledProjectID, "-", "_"))
+	}
+
+	// Disable the project (row and assignments stay).
+	if _, err := database.DB.Exec(ctx, "UPDATE projects SET enabled = false WHERE id = $1", disabledProjectID); err != nil {
+		t.Fatalf("disable project: %v", err)
+	}
+
+	w := getToken(t, r, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens (disabled project): code=%d body=%s", w.Code, w.Body.String())
+	}
+	var raw struct {
+		Token map[string]any `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw validation response: %v", err)
+	}
+	if _, ok := raw.Token["project"]; ok {
+		t.Error("disabled project: validation response carries a project key")
+	}
+	if _, ok := raw.Token["user"]; !ok {
+		t.Error("disabled project: validation response should still carry the (alive) user key")
+	}
+}
+
 // TestTokenMethodsAreServerRecorded: identity.methods in the auth request is
 // caller input and is never validated against the credentials the handler
 // authenticated — it must not be signed into the JWT. The password path
