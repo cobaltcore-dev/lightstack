@@ -24,16 +24,25 @@ keystone:
   # and validates tenant names against [A-Za-z0-9_] ONLY (rgw_validate_tenant_name,
   # ceph src/rgw/rgw_user.cc) — hyphens are rejected with ERR_INVALID_TENANT_NAME,
   # so hyphenated OpenStack-style UUID project ids cannot back RGW tenants.
-  # When true, the token payload's project id (token.project.id) in the
-  # /v3/auth/tokens responses — POST password issue, POST token re-scope, and
-  # the GET validation response Ceph RGW reads the tenant from — is
-  # rendered with every '-' replaced by '_'. NOTHING else changes: management
+  # When true, the token payload's project id (token.project.id) is rendered
+  # with every '-' replaced by '_' everywhere Ceph RGW derives a tenant from
+  # it: the /v3/auth/tokens responses (POST password issue, POST token
+  # re-scope, and the GET validation response), the /v3/s3tokens response's
+  # project.id, and the tenant_id advertised by the EC2 credential
+  # endpoints. Everything else keeps canonical hyphenated UUIDs: management
   # APIs, database storage, JWT signing/verification, token.user.id,
   # token.project.name, token.project.domain, role lists, and the service
-  # catalog (nova endpoint URLs etc.) keep canonical hyphenated UUIDs.
-  # Caveat: clients that read token.project.id out of the auth response see
+  # catalog (nova endpoint URLs etc.).
+  # Caveat 1: clients that read token.project.id out of the auth response see
   # the underscored form while the flag is on — take canonical project ids
   # from the management APIs (GET /v3/projects) instead.
+  # Caveat 2: the flag re-keys RGW's implicit tenant namespace for S3. With
+  # the flag off, /v3/s3tokens renders the historical dash-free project id,
+  # so S3 data written by a deployment that ran with the flag off lives
+  # under that tenant; enabling the flag maps the same project to the
+  # underscored tenant (unified with Swift), and that pre-existing S3 data
+  # becomes invisible until the flag is disabled again or migrated. Decide
+  # the flag position before first exposing a project to RGW S3.
   # Env override: LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS (true/false).
   rgw_compat_tenant_ids: false
   # Advertised service-catalog / self-link scheme is set via the

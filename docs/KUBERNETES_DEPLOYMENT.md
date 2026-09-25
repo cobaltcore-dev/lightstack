@@ -226,10 +226,6 @@ spec:
                   key: db-password
             - name: LIGHTSTACK_DB_URL
               value: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
-            - name: LIGHTSTACK_LOG_LEVEL
-              value: "info"
-            - name: LIGHTSTACK_LOG_FORMAT
-              value: "json"
           volumeMounts:
             - name: config
               mountPath: /app/config/lightstack.yaml

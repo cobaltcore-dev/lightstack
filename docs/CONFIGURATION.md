@@ -135,7 +135,7 @@ The binary honors exactly **thirteen** environment variables:
 |----------|----------------------|------------------|
 | `LIGHTSTACK_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
-| `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` with `-`→`_` in the `/v3/auth/tokens` responses for Ceph RGW implicit tenants | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` with `-`→`_` everywhere Ceph RGW derives a tenant from it — the `/v3/auth/tokens` responses, the `/v3/s3tokens` project id, and the EC2 `tenant_id`. Note: S3 data written while the flag was off lives under the dash-free tenant and becomes invisible with the flag on (see `config/lightstack.yaml`) | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
 | `LIGHTSTACK_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
 | `LIGHTSTACK_DRAIN_SECONDS` | graceful-shutdown drain window | shutdown (`cmd/lightstack/main.go`) |
