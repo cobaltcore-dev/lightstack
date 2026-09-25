@@ -27,12 +27,15 @@ keystone:
   # When true, the token payload's project id (token.project.id) is rendered
   # with every '-' replaced by '_' everywhere Ceph RGW derives a tenant from
   # it: the /v3/auth/tokens responses (POST password issue, POST token
-  # re-scope, and the GET validation response), the /v3/s3tokens response's
-  # project.id, and the tenant_id advertised by the EC2 credential
-  # endpoints. Everything else keeps canonical hyphenated UUIDs: management
-  # APIs, database storage, JWT signing/verification, token.user.id,
-  # token.project.name, token.project.domain, role lists, and the service
-  # catalog (nova endpoint URLs etc.).
+  # re-scope, and the GET validation response) and the /v3/s3tokens
+  # response's project.id. The EC2 credential endpoints are an INPUT
+  # boundary, not a rendering site: the mint accepts the advertised
+  # (underscored) tenant_id — and any other valid UUID text encoding — and
+  # canonicalizes it before storing; the credential's tenant_id is always
+  # returned in canonical form. Everything else keeps canonical hyphenated
+  # UUIDs: management APIs, database storage, JWT signing/verification,
+  # token.user.id, token.project.name, token.project.domain, role lists, and
+  # the service catalog (nova endpoint URLs etc.).
   # Caveat 1: clients that read token.project.id out of the auth response see
   # the underscored form while the flag is on — take canonical project ids
   # from the management APIs (GET /v3/projects) instead.
