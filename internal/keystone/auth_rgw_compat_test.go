@@ -12,6 +12,7 @@ import (
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // Fixtures for the rgw_compat_tenant_ids tests: a dedicated project with a
@@ -27,6 +28,11 @@ const (
 	rgwCompatCatalogType          = "rgw-compat-test"
 	rgwCompatSeededAdminID        = "00000000-0000-0000-0000-000000000001"
 	rgwCompatMemberRoleID         = "00000000-0000-0000-0000-000000000004"
+
+	// rgwCompatTestSecret is the signing secret wired into newRGWCompatRouter;
+	// the edge-case tests below mint their own JWTs with it to reach states
+	// the HTTP issue paths never produce (missing/expired expiry).
+	rgwCompatTestSecret = "rgw-compat-test-secret"
 )
 
 // newRGWCompatRouter wires the real RegisterRoutes behind a real AuthService
@@ -36,7 +42,7 @@ const (
 func newRGWCompatRouter(rgwCompat bool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	authSvc := NewAuthService("rgw-compat-test-secret", time.Hour, nil)
+	authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
 	authSvc.SetRGWCompatTenantIDs(rgwCompat)
 	NewService(authSvc, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
@@ -566,4 +572,69 @@ func TestTokenProjectIDRGWCompatValidationUnscoped(t *testing.T) {
 			t.Errorf("flag=%v, unscoped validation: response carries a project key", rgwCompat)
 		}
 	}
+}
+
+// assertZTimestamp fails unless got is an RFC3339 string with a "Z" (UTC)
+// tail that round-trips to the want instant. Go formats time.Time in the
+// process-local zone; Ceph RGW's parse_iso8601 (extended format, the mode
+// rgw_keystone.cc parses expires_at with) only accepts empty / "Z" /
+// ".fractionZ" tails, so an offset tail breaks every RGW token validation.
+func assertZTimestamp(t *testing.T, field, got string, want time.Time) {
+	t.Helper()
+	if !strings.HasSuffix(got, "Z") {
+		t.Errorf("%s = %q, want a Z (UTC) suffix; offset tails are rejected by Ceph RGW's parse_iso8601", field, got)
+	}
+	parsed, err := time.Parse(time.RFC3339, got)
+	if err != nil {
+		t.Errorf("%s = %q, not RFC3339: %v", field, got, err)
+		return
+	}
+	if !parsed.Equal(want) {
+		t.Errorf("%s = %q parses to %s, want the claim instant %s", field, got, parsed.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+// TestTokenTimestampsAreUTC: regression for non-UTC deployments. Go renders
+// time.Time in the process-local zone, so with TZ != UTC the token responses
+// used to carry "+HH:MM" tails that Ceph RGW's keystone decoder rejects. The
+// test forces a non-UTC local zone and asserts every rendered timestamp —
+// issue and validation, expires_at and issued_at — is Z-suffixed and carries
+// the same instant as the JWT claims.
+func TestTokenTimestampsAreUTC(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+
+	origLocal := time.Local
+	time.Local = time.FixedZone("regression-utc+2", 2*60*60)
+	t.Cleanup(func() { time.Local = origLocal })
+
+	r := newRGWCompatRouter(true)
+
+	issue := postTokens(t, r, passwordAuthBody(rgwCompatProjectID))
+	if issue.Code != http.StatusCreated {
+		t.Fatalf("POST /v3/auth/tokens: code=%d body=%s", issue.Code, issue.Body.String())
+	}
+	issued := decodeTokenBody(t, issue)
+	tokenString := issue.Header().Get("X-Subject-Token")
+
+	claims := &TokenClaims{}
+	if _, err := jwt.ParseWithClaims(tokenString, claims, func(*jwt.Token) (any, error) {
+		return []byte(rgwCompatTestSecret), nil
+	}); err != nil {
+		t.Fatalf("decode issued JWT: %v", err)
+	}
+	if claims.ExpiresAt == nil || claims.IssuedAt == nil {
+		t.Fatalf("issued JWT claims missing exp/iat: %+v", claims.RegisteredClaims)
+	}
+
+	assertZTimestamp(t, "issue token.expires_at", issued.Token.ExpiresAt, claims.ExpiresAt.Time)
+	assertZTimestamp(t, "issue token.issued_at", issued.Token.IssuedAt, claims.IssuedAt.Time)
+
+	w := getToken(t, r, tokenString)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens: code=%d body=%s", w.Code, w.Body.String())
+	}
+	body := decodeValidationBody(t, w)
+	assertZTimestamp(t, "validation token.expires_at", body.Token.ExpiresAt, claims.ExpiresAt.Time)
+	assertZTimestamp(t, "validation token.issued_at", body.Token.IssuedAt, claims.IssuedAt.Time)
 }

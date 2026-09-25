@@ -84,6 +84,18 @@ func (s *AuthService) tokenProjectID(id string) string {
 	return id
 }
 
+// keystoneTimestamp renders a token timestamp (expires_at / issued_at) in the
+// exact form Ceph RGW's keystone TokenEnvelope decoder accepts: RFC3339 with
+// a "Z" (UTC) tail. Go formats time.Time in the process-local zone, so a
+// deployment with TZ != UTC would otherwise emit "+02:00"-style tails, which
+// parse_iso8601 (src/rgw/rgw_common.cc, extended format — the mode
+// rgw_keystone.cc uses for expires_at) rejects: only an empty tail, "Z" or
+// ".fractionZ" parse, so rgw_keystone.cc throws "Failed to parse ISO8601
+// expiration date from Keystone response" and every token validation fails.
+// rgw_keystone.cc interprets the parsed fields as UTC (internal_timegm), so
+// the instant must be converted, not merely re-suffixed.
+func keystoneTimestamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
 // AuthRequest represents an authentication request
 // ScopeField handles both string ("unscoped") and object scope formats
 type ScopeField struct {
@@ -319,8 +331,8 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 
 	// Build response
 	resp := &AuthResponse{}
-	resp.Token.ExpiresAt = expiresAt.Format(time.RFC3339)
-	resp.Token.IssuedAt = now.Format(time.RFC3339)
+	resp.Token.ExpiresAt = keystoneTimestamp(expiresAt)
+	resp.Token.IssuedAt = keystoneTimestamp(now)
 	resp.Token.Methods = req.Auth.Identity.Methods
 
 	// Query user's domain name
@@ -502,8 +514,8 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 
 	// Build response
 	resp := &AuthResponse{}
-	resp.Token.ExpiresAt = expiresAt.Format(time.RFC3339)
-	resp.Token.IssuedAt = now.Format(time.RFC3339)
+	resp.Token.ExpiresAt = keystoneTimestamp(expiresAt)
+	resp.Token.IssuedAt = keystoneTimestamp(now)
 	resp.Token.Methods = req.Auth.Identity.Methods
 
 	// Query user's domain name
@@ -572,7 +584,9 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 // unparseable by RGW (and by standard clients like gophercloud's tokens.Get).
 //
 // Rendering notes, mirroring the issue paths:
-//   - expires_at/issued_at come from the JWT RegisteredClaims (RFC3339).
+//   - expires_at/issued_at come from the JWT RegisteredClaims, rendered as
+//     UTC RFC3339 via keystoneTimestamp (Ceph RGW's parse_iso8601 rejects
+//     offset tails).
 //   - project.id goes through tokenProjectID (keystone.rgw_compat_tenant_ids)
 //     exactly like the issue responses — this validation response is where
 //     RGW reads the tenant from.
@@ -586,10 +600,10 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaims) *AuthResponse {
 	resp := &AuthResponse{}
 	if claims.ExpiresAt != nil {
-		resp.Token.ExpiresAt = claims.ExpiresAt.Format(time.RFC3339)
+		resp.Token.ExpiresAt = keystoneTimestamp(claims.ExpiresAt.Time)
 	}
 	if claims.IssuedAt != nil {
-		resp.Token.IssuedAt = claims.IssuedAt.Format(time.RFC3339)
+		resp.Token.IssuedAt = keystoneTimestamp(claims.IssuedAt.Time)
 	}
 
 	// User: id/name from the claims; domain looked up so the shape matches the
