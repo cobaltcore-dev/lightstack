@@ -149,14 +149,18 @@ admin_check() {
     command -v "$rt" >/dev/null 2>&1 || continue
     cid="$("$rt" ps --format '{{.Names}}' 2>/dev/null | grep -m1 -E '[-_]rgw[-_][0-9]+$')" || true
     [ -n "$cid" ] || continue
-    out="$("$rt" exec "$cid" radosgw-admin bucket list 2>/dev/null)" || true
-    if [ -n "$out" ] && printf '%s' "$out" | grep -qF "\"$PID/$CONTAINER\""; then
-      return 0
-    fi
-    if [ -n "$out" ]; then
-      echo "radosgw-admin bucket list does not carry '$PID/$CONTAINER': $out" >&2
+    # A found RGW container makes this a REAL check: an exec failure or an
+    # empty listing must fail the test, not silently skip it (an unnoticed
+    # skip would let the tenant-placement assertion pass without running).
+    if ! out="$("$rt" exec "$cid" radosgw-admin bucket list 2>&1)"; then
+      echo "radosgw-admin failed in container $cid: $out" >&2
       return 1
     fi
+    if printf '%s' "$out" | grep -qF "\"$PID/$CONTAINER\""; then
+      return 0
+    fi
+    echo "radosgw-admin bucket list does not carry '$PID/$CONTAINER': $out" >&2
+    return 1
   done
   echo "no container runtime / rgw container found; skipping the radosgw-admin check" >&2
   return 2
