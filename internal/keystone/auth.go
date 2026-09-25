@@ -76,7 +76,22 @@ func (s *AuthService) SetRGWCompatTenantIDs(enabled bool) { s.rgwCompatTenantIDs
 // Swift tenant name and the implicit user id (<project>$<project>) from the
 // Keystone token's project id, so a hyphenated UUID project id cannot back an
 // RGW tenant. Injective per id (distinct UUIDs stay distinct).
-func rgwCompatTenantID(id string) string { return strings.ReplaceAll(id, "-", "_") }
+//
+// UUID-shaped ids are canonicalized first: like Postgres, uuid.Parse accepts
+// valid UUIDs in alternate text encodings (32 hex chars without dashes,
+// uppercase hex, braced). The token paths always carry the canonical column
+// value, but the EC2 credential blob retains the tenant_id exactly as minted
+// and /v3/s3tokens derives the S3 tenant from that value — a non-canonical
+// spelling would otherwise encode to a DIFFERENT tenant than Swift's and
+// split the namespace this flag is meant to unify. Non-UUID-shaped ids pass
+// through untouched. This encoder only runs while the flag is ON (new in
+// this PR); the historical flag-off dash-free rendering is unchanged.
+func rgwCompatTenantID(id string) string {
+	if u, err := uuid.Parse(id); err == nil {
+		id = u.String()
+	}
+	return strings.ReplaceAll(id, "-", "_")
+}
 
 // rgwReverseTenantID is the inverse of rgwCompatTenantID ('_' → '-'); used
 // by fromAdvertisedProjectID to canonicalize ids clients copied out of a

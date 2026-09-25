@@ -241,14 +241,21 @@ func decodeValidationBody(t *testing.T, w *httptest.ResponseRecorder) validation
 	return body
 }
 
-// TestRGWCompatTenantID: the pure transform is exactly '-' → '_' and nothing
-// else — hyphenless ids (real Keystone's 32-hex form) pass through unchanged.
+// TestRGWCompatTenantID: UUID-shaped ids canonicalize first (uuid.Parse, like
+// Postgres, accepts 32-hex no-dash, uppercase and braced forms — the EC2 blob
+// retains the mint spelling, and a non-canonical spelling would split the S3
+// and Swift tenants), then '-' → '_'. Non-UUID strings pass through with only
+// the character replacement.
 func TestRGWCompatTenantID(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{rgwCompatProjectID, rgwCompatProjectIDUnderscored},
 		{"00000000-0000-0000-0000-000000000002", "00000000_0000_0000_0000_000000000002"},
-		{"0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"}, // no hyphens: unchanged
-		{"a-b-c", "a_b_c"},
+		// Alternate valid UUID encodings canonicalize to the SAME tenant as
+		// the hyphenated spelling.
+		{"0123456789abcdef0123456789abcdef", "01234567_89ab_cdef_0123_456789abcdef"},
+		{strings.ToUpper(rgwCompatProjectID), rgwCompatProjectIDUnderscored},
+		{"{" + rgwCompatProjectID + "}", rgwCompatProjectIDUnderscored},
+		{"a-b-c", "a_b_c"}, // not a UUID: character replacement only
 		{"", ""},
 	}
 	for _, tc := range cases {
@@ -269,8 +276,11 @@ func TestTokenProjectIDGating(t *testing.T) {
 	if got := s.tokenProjectID(rgwCompatProjectID); got != rgwCompatProjectIDUnderscored {
 		t.Errorf("flag on: tokenProjectID = %q, want %q", got, rgwCompatProjectIDUnderscored)
 	}
-	if got := s.tokenProjectID("0123456789abcdef0123456789abcdef"); got != "0123456789abcdef0123456789abcdef" {
-		t.Errorf("flag on, hyphenless id: tokenProjectID = %q, want it unchanged", got)
+	// A 32-hex alternate encoding of the same UUID maps to the SAME tenant
+	// as the hyphenated spelling (canonicalized before encoding), so a
+	// credential minted with either spelling shares Swift's tenant.
+	if got := s.tokenProjectID("0123456789abcdef0123456789abcdef"); got != "01234567_89ab_cdef_0123_456789abcdef" {
+		t.Errorf("flag on, 32-hex id: tokenProjectID = %q, want the canonical underscored form", got)
 	}
 }
 
@@ -875,6 +885,38 @@ func TestScopeByAdvertisedProjectID(t *testing.T) {
 		}
 	})
 
+	t.Run("flag on: EC2 mint with alternate UUID encodings stores canonical", func(t *testing.T) {
+		// uuid.Parse (like Postgres) accepts valid UUIDs in alternate text
+		// encodings; the blob retains the stored spelling and /v3/s3tokens
+		// derives the S3 tenant from it, so a non-canonical mint would split
+		// the S3 and Swift implicit tenants. The mint canonicalizes.
+		for _, raw := range []string{
+			strings.ReplaceAll(rgwCompatProjectID, "-", ""), // 32 hex, no dashes
+			strings.ToUpper(rgwCompatProjectID),             // uppercase, hyphenated
+			"{" + rgwCompatProjectID + "}",                  // braced
+		} {
+			r := newRGWCompatRouter(true)
+			w := postJSON(t, r, http.MethodPost,
+				"/v3/users/"+rgwCompatSeededAdminID+"/credentials/OS-EC2",
+				fmt.Sprintf(`{"tenant_id":%q}`, raw),
+				map[string]string{"X-Test-User": rgwCompatSeededAdminID, "X-Test-Roles": "admin"})
+			if w.Code != http.StatusCreated {
+				t.Fatalf("EC2 mint with alternate tenant_id %q: code=%d body=%s", raw, w.Code, w.Body.String())
+			}
+			var cred struct {
+				Credential struct {
+					TenantID string `json:"tenant_id"`
+				} `json:"credential"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &cred); err != nil {
+				t.Fatalf("decode credential: %v (body=%s)", err, w.Body.String())
+			}
+			if cred.Credential.TenantID != rgwCompatProjectID {
+				t.Errorf("alternate tenant_id %q stored as %q, want the canonical %q", raw, cred.Credential.TenantID, rgwCompatProjectID)
+			}
+		}
+	})
+
 	t.Run("flag off: advertised id is not canonicalized", func(t *testing.T) {
 		r := newRGWCompatRouter(false)
 		w := postTokens(t, r, passwordAuthBody(rgwCompatProjectIDUnderscored))
@@ -937,6 +979,46 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 			}
 		})
 	}
+
+	// Alternate valid UUID text encodings — accepted by uuid.Parse and by
+	// Postgres on the way in (32 hex chars without dashes, uppercase hex,
+	// braced) — must not split the S3 and Swift tenants: the EC2 blob
+	// retains the mint spelling, so the flag-on encoder canonicalizes
+	// UUID-shaped ids before rendering. The flag-off dash-free rendering is
+	// untouched by this.
+	t.Run("flag on: alternate UUID encodings canonicalize before encoding", func(t *testing.T) {
+		authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
+		authSvc.SetRGWCompatTenantIDs(true)
+		svc := NewService(authSvc, nil)
+
+		for _, raw := range []string{
+			strings.ReplaceAll(rgwCompatProjectID, "-", ""), // 32 hex, no dashes
+			strings.ToUpper(rgwCompatProjectID),             // uppercase, hyphenated
+			"{" + rgwCompatProjectID + "}",                  // braced
+		} {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v3/s3tokens", nil)
+			svc.renderS3Token(c, rgwCompatSeededAdminID, raw)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("renderS3Token(%q): code=%d body=%s", raw, w.Code, w.Body.String())
+			}
+			var body struct {
+				Token struct {
+					Project struct {
+						ID string `json:"id"`
+					} `json:"project"`
+				} `json:"token"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode s3tokens envelope: %v (body=%s)", err, w.Body.String())
+			}
+			if body.Token.Project.ID != rgwCompatProjectIDUnderscored {
+				t.Errorf("raw %q rendered as %q, want the canonical underscored %q (the SAME tenant as Swift)", raw, body.Token.Project.ID, rgwCompatProjectIDUnderscored)
+			}
+		}
+	})
 }
 
 // TestValidateTokenDeadUserOmitsUser: a token whose user row is gone must
