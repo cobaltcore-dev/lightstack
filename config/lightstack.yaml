@@ -31,6 +31,9 @@ keystone:
   # APIs, database storage, JWT signing/verification, token.user.id,
   # token.project.name, token.project.domain, role lists, and the service
   # catalog (nova endpoint URLs etc.) keep canonical hyphenated UUIDs.
+  # Caveat: clients that read token.project.id out of the auth response see
+  # the underscored form while the flag is on — take canonical project ids
+  # from the management APIs (GET /v3/projects) instead.
   # Env override: LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS (true/false).
   rgw_compat_tenant_ids: false
   # Advertised service-catalog / self-link scheme is set via the
