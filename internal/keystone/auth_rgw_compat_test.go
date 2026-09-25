@@ -147,8 +147,9 @@ func postTokens(t *testing.T, r *gin.Engine, body string) *httptest.ResponseReco
 // tests assert on.
 type tokenResponseBody struct {
 	Token struct {
-		ExpiresAt string `json:"expires_at"`
-		IssuedAt  string `json:"issued_at"`
+		ExpiresAt string   `json:"expires_at"`
+		IssuedAt  string   `json:"issued_at"`
+		Methods   []string `json:"methods"`
 		Project   *struct {
 			ID     string `json:"id"`
 			Name   string `json:"name"`
@@ -1012,6 +1013,71 @@ func TestValidateTokenDeadUserOmitsUser(t *testing.T) {
 	}
 	if _, ok := raw.Token["project"]; !ok {
 		t.Error("dead user: validation response should still carry the (alive) project key")
+	}
+}
+
+// TestTokenMethodsAreServerRecorded: identity.methods in the auth request is
+// caller input and is never validated against the credentials the handler
+// authenticated — it must not be signed into the JWT. The password path
+// records ["password"], and a re-scope inherits the methods of the token
+// being re-scoped (Keystone's token plugin: "we want to maintain the
+// values"), falling back to ["token"] for tokens minted before the claims
+// carried methods. A spoofed ["totp"] in the request must not survive.
+func TestTokenMethodsAreServerRecorded(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+
+	r := newRGWCompatRouter(true)
+
+	// Password path: the request claims totp, the handler authenticated a
+	// password (dispatch is on the credential objects, not the methods).
+	spoofed := `{"auth":{"identity":{"methods":["totp"],"password":{"user":{"name":"admin","domain":{"name":"Default"},"password":"secret"}}},"scope":{"project":{"id":"` + rgwCompatProjectID + `"}}}}`
+	issue := postTokens(t, r, spoofed)
+	if issue.Code != http.StatusCreated {
+		t.Fatalf("POST /v3/auth/tokens (spoofed methods): code=%d body=%s", issue.Code, issue.Body.String())
+	}
+	if b := decodeTokenBody(t, issue); len(b.Token.Methods) != 1 || b.Token.Methods[0] != "password" {
+		t.Errorf("issue token.methods = %v, want [password] (server-recorded)", b.Token.Methods)
+	}
+	tokenString := issue.Header().Get("X-Subject-Token")
+
+	// The signed claims carry the recorded methods — the validation envelope
+	// republishes those, not the request's ["totp"].
+	w := getToken(t, r, tokenString)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if b := decodeValidationBody(t, w); len(b.Token.Methods) != 1 || b.Token.Methods[0] != "password" {
+		t.Errorf("validation token.methods = %v, want [password] (from the claims)", b.Token.Methods)
+	}
+
+	// Token path: inherit the re-scoped token's methods, not the request's.
+	rescopeSpoofed := `{"auth":{"identity":{"methods":["totp"],"token":{"id":"` + tokenString + `"}},"scope":{"project":{"id":"` + rgwCompatProjectID + `"}}}}`
+	rescope := postTokens(t, r, rescopeSpoofed)
+	if rescope.Code != http.StatusCreated {
+		t.Fatalf("POST /v3/auth/tokens (re-scope, spoofed methods): code=%d body=%s", rescope.Code, rescope.Body.String())
+	}
+	if b := decodeTokenBody(t, rescope); len(b.Token.Methods) != 1 || b.Token.Methods[0] != "password" {
+		t.Errorf("re-scope token.methods = %v, want the inherited [password]", b.Token.Methods)
+	}
+
+	// Re-scope of a legacy token (claims without methods) falls back to
+	// ["token"] — the method this path actually used.
+	legacy := mintTestToken(t, &TokenClaims{
+		UserID:    rgwCompatSeededAdminID,
+		UserName:  "admin",
+		ProjectID: rgwCompatProjectID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	})
+	legacyRescope := postTokens(t, r, tokenAuthBody(legacy, rgwCompatProjectID))
+	if legacyRescope.Code != http.StatusCreated {
+		t.Fatalf("POST /v3/auth/tokens (legacy re-scope): code=%d body=%s", legacyRescope.Code, legacyRescope.Body.String())
+	}
+	if b := decodeTokenBody(t, legacyRescope); len(b.Token.Methods) != 1 || b.Token.Methods[0] != "token" {
+		t.Errorf("legacy re-scope token.methods = %v, want [token] (fallback for pre-methods tokens)", b.Token.Methods)
 	}
 }
 

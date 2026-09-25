@@ -376,10 +376,15 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 	// byte-identical to the validation response's (rendered from the claims).
 	now := time.Now().Truncate(time.Second)
 	expiresAt := now.Add(s.tokenTTL)
+	// Methods are server-recorded, never caller input: this handler
+	// authenticated a password. Signing the request's identity.methods
+	// would let a password-only request claim ["totp"] (or anything else),
+	// which the validation envelope then republishes. Real Keystone also
+	// renders the method the auth plugin actually used.
 	claims := &TokenClaims{
 		UserID:    user.ID,
 		UserName:  user.Name,
-		Methods:   req.Auth.Identity.Methods,
+		Methods:   []string{"password"},
 		ProjectID: projectID,
 		Roles:     roles,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -395,11 +400,13 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		return nil, "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// Build response
+	// Build response. methods render the server-recorded claims value, so
+	// the issue response stays byte-identical to the validation response
+	// built from the same claims.
 	resp := &AuthResponse{}
 	resp.Token.ExpiresAt = keystoneTimestamp(expiresAt)
 	resp.Token.IssuedAt = keystoneTimestamp(now)
-	resp.Token.Methods = req.Auth.Identity.Methods
+	resp.Token.Methods = claims.Methods
 
 	// Query user's domain name
 	var userDomainName string
@@ -568,10 +575,20 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 	// and validation responses must render byte-identical timestamps.
 	now := time.Now().Truncate(time.Second)
 	expiresAt := now.Add(s.tokenTTL)
+	// Like Keystone's token auth plugin, a re-scope INHERITS the methods of
+	// the token being re-scoped ("we want to maintain the values" —
+	// keystone/auth/plugins/token.py extends method_names with the original
+	// token's methods). The request's identity.methods is unvalidated
+	// caller input and is never signed; tokens minted before the claims
+	// carried methods fall back to the method this path actually used.
+	methods := claims.Methods
+	if len(methods) == 0 {
+		methods = []string{"token"}
+	}
 	tokenClaims := &TokenClaims{
 		UserID:    user.ID,
 		UserName:  user.Name,
-		Methods:   req.Auth.Identity.Methods,
+		Methods:   methods,
 		ProjectID: projectID,
 		Roles:     roles,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -587,11 +604,13 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		return nil, "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// Build response
+	// Build response. methods render the inherited claims value, so the
+	// issue response stays byte-identical to the validation response built
+	// from the same claims.
 	resp := &AuthResponse{}
 	resp.Token.ExpiresAt = keystoneTimestamp(expiresAt)
 	resp.Token.IssuedAt = keystoneTimestamp(now)
-	resp.Token.Methods = req.Auth.Identity.Methods
+	resp.Token.Methods = tokenClaims.Methods
 
 	// Query user's domain name
 	var userDomainName string
@@ -670,8 +689,9 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 //     a missing project or user row omits the project/domain key).
 //   - roles render as [{"id": name, "name": name}] objects.
 //   - the catalog is built from the CANONICAL project id, like the issue path.
-//   - methods are omitted: the JWT claims do not carry the original identity
-//     methods, and RGW does not require them.
+//   - methods come from the claims — server-recorded at issue (["password"]
+//     on the password path, inherited from the re-scoped token on the token
+//     path), omitted for tokens issued before the claims carried them.
 func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaims) *AuthResponse {
 	resp := &AuthResponse{}
 	if claims.ExpiresAt != nil {
