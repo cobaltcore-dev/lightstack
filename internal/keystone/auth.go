@@ -700,6 +700,15 @@ func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(*TokenClaims); ok && token.Valid {
+		// Keystone tokens always carry an expiry. The JWT library only
+		// enforces exp when the claim is present, so a signed token without
+		// one would otherwise pass validation and later render an empty
+		// expires_at in the validation envelope — mandatory for Ceph RGW's
+		// TokenEnvelope decoder, which rejects the whole response on it.
+		// Treat a missing expiry as an invalid token.
+		if claims.ExpiresAt == nil {
+			return nil, common.NewUnauthorizedError("token missing expiry")
+		}
 		return claims, nil
 	}
 

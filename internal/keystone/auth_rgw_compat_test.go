@@ -574,6 +574,17 @@ func TestTokenProjectIDRGWCompatValidationUnscoped(t *testing.T) {
 	}
 }
 
+// mintTestToken signs a TokenClaims JWT with the router's secret, reaching
+// states the HTTP issue paths never produce (missing or past expiry).
+func mintTestToken(t *testing.T, claims *TokenClaims) string {
+	t.Helper()
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(rgwCompatTestSecret))
+	if err != nil {
+		t.Fatalf("mint test token: %v", err)
+	}
+	return signed
+}
+
 // assertZTimestamp fails unless got is an RFC3339 string with a "Z" (UTC)
 // tail that round-trips to the want instant. Go formats time.Time in the
 // process-local zone; Ceph RGW's parse_iso8601 (extended format, the mode
@@ -637,4 +648,52 @@ func TestTokenTimestampsAreUTC(t *testing.T) {
 	body := decodeValidationBody(t, w)
 	assertZTimestamp(t, "validation token.expires_at", body.Token.ExpiresAt, claims.ExpiresAt.Time)
 	assertZTimestamp(t, "validation token.issued_at", body.Token.IssuedAt, claims.IssuedAt.Time)
+}
+
+// TestValidateTokenRejectsMissingExpiry: Keystone tokens always carry an
+// expiry; the JWT library only enforces exp when the claim is present, so a
+// signed token without one must be rejected up front (401) instead of
+// validating and rendering an empty expires_at — mandatory for Ceph RGW's
+// TokenEnvelope decoder. Covers the GET validation and the token re-scope
+// path (both route through AuthService.ValidateToken).
+func TestValidateTokenRejectsMissingExpiry(t *testing.T) {
+	r := newRGWCompatRouter(false)
+	token := mintTestToken(t, &TokenClaims{
+		UserID:   rgwCompatSeededAdminID,
+		UserName: "admin",
+	})
+
+	w := getToken(t, r, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /v3/auth/tokens with exp-less token: code=%d body=%s, want %d", w.Code, w.Body.String(), http.StatusUnauthorized)
+	}
+
+	rescope := postTokens(t, r, tokenAuthBody(token, rgwCompatProjectID))
+	if rescope.Code != http.StatusUnauthorized {
+		t.Errorf("token re-scope with exp-less token: code=%d body=%s, want %d", rescope.Code, rescope.Body.String(), http.StatusUnauthorized)
+	}
+}
+
+// TestValidateTokenRejectsExpired: expired tokens fail validation (401) on
+// the GET validation and re-scope paths — jwt/v5 enforces exp when present.
+func TestValidateTokenRejectsExpired(t *testing.T) {
+	r := newRGWCompatRouter(false)
+	token := mintTestToken(t, &TokenClaims{
+		UserID:   rgwCompatSeededAdminID,
+		UserName: "admin",
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Minute)),
+		},
+	})
+
+	w := getToken(t, r, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /v3/auth/tokens with expired token: code=%d body=%s, want %d", w.Code, w.Body.String(), http.StatusUnauthorized)
+	}
+
+	rescope := postTokens(t, r, tokenAuthBody(token, rgwCompatProjectID))
+	if rescope.Code != http.StatusUnauthorized {
+		t.Errorf("token re-scope with expired token: code=%d body=%s, want %d", rescope.Code, rescope.Body.String(), http.StatusUnauthorized)
+	}
 }
