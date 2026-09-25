@@ -373,7 +373,9 @@ glance:
   s3_endpoint: "https://s3.example.com"
 ```
 
-**Environment variables for S3 credentials:**
+**Environment variables for S3 credentials** (read implicitly by the AWS SDK's
+standard config chain — they are not `LIGHTSTACK_`-prefixed and are not part of
+the thirteen Lightstack configuration variables):
 ```bash
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
