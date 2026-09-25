@@ -1016,6 +1016,15 @@ func buildHardcodedCatalog(projectID, s3Endpoint string) []CatalogEntry {
 				{Interface: "public", Region: "RegionOne", URL: fmt.Sprintf("%s:8776/v3/%s", baseURL, projectID)},
 			},
 		},
+		// The block-storage alias migration 054 seeds, so the fallback lists the same
+		// services as the table (TestHardcodedCatalogMatchesTheDatabase).
+		{
+			Type: "volume",
+			Name: "cinder",
+			Endpoints: []Endpoint{
+				{Interface: "public", Region: "RegionOne", URL: fmt.Sprintf("%s:8776/v3/%s", baseURL, projectID)},
+			},
+		},
 		{
 			Type: "image",
 			Name: "glance",

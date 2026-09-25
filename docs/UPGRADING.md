@@ -485,3 +485,13 @@ other than loopback, such as Docker Compose with port mapping, where requests ar
 gateway, sets `metadata.trust_instance_header: true` or `LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER=true`.
 `deployments/docker-compose.yml` does, since it runs in stub mode. Never set it where real guests
 reach the metadata service.
+
+## Placement is listed in the service catalog
+
+The binary always served placement on `:8778`, but the catalog never listed it, so clients that look
+it up there, such as Horizon's Hypervisors → *Resource Provider* tab, reported it as unavailable.
+Migration 071 adds it on the next start; nothing to do. Where the catalog is cached in Redis
+(`cache.enabled`), a cached copy lives up to 24 hours, so placement appears once it expires.
+
+On a single node placement schedules nothing: Lightstack's placement is a stub that reports no
+resource providers, so Horizon's tab shows an empty table rather than an error.

@@ -2,6 +2,7 @@ package keystone
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -206,5 +207,47 @@ func TestSubstituteURLTemplatesLocalhostUnsetNoop(t *testing.T) {
 	got := substituteURLTemplates("http://localhost:8776/v3", "p")
 	if !strings.Contains(got, "localhost:8776") {
 		t.Errorf("localhost must be preserved when host unset, got %q", got)
+	}
+}
+
+// catalogServices lists a catalog's services as sorted "type/name" pairs.
+func catalogServices(cat []CatalogEntry) []string {
+	out := make([]string, 0, len(cat))
+	for _, e := range cat {
+		out = append(out, e.Type+"/"+e.Name)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Placement is served on :8778 and the chart's notes send clients to the catalog for it,
+// but no migration seeded it, so only the fallback catalog listed it. Horizon's
+// Hypervisors → Resource Provider tab looks it up there and showed "Unable to retrieve
+// providers information." without it.
+func TestBuildServiceCatalogListsPlacement(t *testing.T) {
+	requireDB(t)
+	setSchemeEnv(t, "")
+	for _, e := range BuildServiceCatalog(testPool, "proj-placement", nil, "") {
+		if e.Type != "placement" {
+			continue
+		}
+		if len(e.Endpoints) != 1 || e.Endpoints[0].URL != "http://lightstack.example.com:8778" {
+			t.Errorf("placement endpoints = %+v; want one, at http://lightstack.example.com:8778", e.Endpoints)
+		}
+		return
+	}
+	t.Error("the catalog lists no placement service")
+}
+
+// The fallback is what clients get when the catalog table cannot be read, so it must
+// advertise the same services. The two had drifted both ways: placement only in the
+// fallback, cinder's `volume` alias (migration 054) only in the table.
+func TestHardcodedCatalogMatchesTheDatabase(t *testing.T) {
+	requireDB(t)
+	setSchemeEnv(t, "")
+	db := catalogServices(BuildServiceCatalog(testPool, "proj-drift", nil, ""))
+	fallback := catalogServices(buildHardcodedCatalog("proj-drift", ""))
+	if !slices.Equal(db, fallback) {
+		t.Errorf("the database catalog lists %v, the fallback %v; they must list the same services", db, fallback)
 	}
 }
