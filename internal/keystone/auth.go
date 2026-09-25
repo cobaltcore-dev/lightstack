@@ -21,8 +21,14 @@ import (
 
 // TokenClaims represents JWT token claims
 type TokenClaims struct {
-	UserID    string   `json:"user_id"`
-	UserName  string   `json:"user_name"`
+	UserID   string `json:"user_id"`
+	UserName string `json:"user_name"`
+	// Methods records the auth methods the token was issued with
+	// (["password"], ["token"], ...) so the validation endpoint can render
+	// token.methods without guessing. Optional for backward compatibility:
+	// tokens issued before this field carry none and the validation
+	// envelope omits the key for them.
+	Methods   []string `json:"methods,omitempty"`
 	ProjectID string   `json:"project_id,omitempty"`
 	Roles     []string `json:"roles,omitempty"`
 	jwt.RegisteredClaims
@@ -140,8 +146,11 @@ func (s *AuthService) fromAdvertisedProjectID(id string) string {
 // ".fractionZ" parse, so rgw_keystone.cc throws "Failed to parse ISO8601
 // expiration date from Keystone response" and every token validation fails.
 // rgw_keystone.cc interprets the parsed fields as UTC (internal_timegm), so
-// the instant must be converted, not merely re-suffixed.
-func keystoneTimestamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+// the instant must be converted, not merely re-suffixed. The format carries
+// fixed 6-digit microseconds: real Keystone renders microsecond precision,
+// /v3/s3tokens already does (ksTime), and Ceph's parse_iso8601 accepts the
+// ".fractionZ" tail — byte-parity with both, instead of second precision.
+func keystoneTimestamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000Z") }
 
 // AuthRequest represents an authentication request
 // ScopeField handles both string ("unscoped") and object scope formats
@@ -362,12 +371,15 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 	}
 	// Otherwise: unscoped token (no project, no roles)
 
-	// Generate JWT token
-	now := time.Now()
+	// Generate JWT token. NumericDate claims carry whole seconds, so the
+	// issue instant is truncated to keep the issue response's timestamps
+	// byte-identical to the validation response's (rendered from the claims).
+	now := time.Now().Truncate(time.Second)
 	expiresAt := now.Add(s.tokenTTL)
 	claims := &TokenClaims{
 		UserID:    user.ID,
 		UserName:  user.Name,
+		Methods:   req.Auth.Identity.Methods,
 		ProjectID: projectID,
 		Roles:     roles,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -551,12 +563,15 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		}
 	}
 
-	// Generate new JWT token
-	now := time.Now()
+	// Generate new JWT token. Truncated to whole seconds like the password
+	// path: the NumericDate claims cannot carry the fraction, and the issue
+	// and validation responses must render byte-identical timestamps.
+	now := time.Now().Truncate(time.Second)
 	expiresAt := now.Add(s.tokenTTL)
 	tokenClaims := &TokenClaims{
 		UserID:    user.ID,
 		UserName:  user.Name,
+		Methods:   req.Auth.Identity.Methods,
 		ProjectID: projectID,
 		Roles:     roles,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -665,6 +680,10 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 	if claims.IssuedAt != nil {
 		resp.Token.IssuedAt = keystoneTimestamp(claims.IssuedAt.Time)
 	}
+	// Methods from the claims — present for tokens issued since the claims
+	// carried them, omitted for older tokens (no guessing; real Keystone
+	// renders the methods the token was issued with).
+	resp.Token.Methods = claims.Methods
 
 	// User: id/name/domain from the live row, exactly like the issue paths.
 	// A deleted user omits the key entirely — mirroring the dead-scope

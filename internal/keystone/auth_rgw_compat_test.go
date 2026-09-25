@@ -515,8 +515,8 @@ func TestTokenProjectIDRGWCompatValidation(t *testing.T) {
 			}
 
 			// The old flat shape must be gone: no project_id key, roles are
-			// objects (not bare strings), and methods — not carried by the
-			// JWT claims — are omitted.
+			// objects (not bare strings), and methods render from the claims
+			// (["password"] here — the methods the token was issued with).
 			var raw struct {
 				Token map[string]any `json:"token"`
 			}
@@ -526,8 +526,10 @@ func TestTokenProjectIDRGWCompatValidation(t *testing.T) {
 			if _, ok := raw.Token["project_id"]; ok {
 				t.Error("validation response still carries the flat token.project_id key")
 			}
-			if _, ok := raw.Token["methods"]; ok {
-				t.Error("validation response carries token.methods; the JWT claims do not carry the identity methods")
+			if body.Token.Methods == nil {
+				t.Error("validation response omits token.methods; the claims now carry the issue methods")
+			} else if len(body.Token.Methods) != 1 || body.Token.Methods[0] != "password" {
+				t.Errorf("token.methods = %v, want [password]", body.Token.Methods)
 			}
 			if roles, ok := raw.Token["roles"].([]any); ok {
 				for _, role := range roles {
@@ -594,6 +596,12 @@ func assertZTimestamp(t *testing.T, field, got string, want time.Time) {
 	t.Helper()
 	if !strings.HasSuffix(got, "Z") {
 		t.Errorf("%s = %q, want a Z (UTC) suffix; offset tails are rejected by Ceph RGW's parse_iso8601", field, got)
+	}
+	// Real Keystone renders microsecond precision and /v3/s3tokens already
+	// does (ksTime); Ceph's parse_iso8601 accepts the ".fractionZ" tail. Pin
+	// the exact shape — 2006-01-02T15:04:05.000000Z — for byte-parity.
+	if len(got) != 27 || got[19] != '.' || got[26] != 'Z' {
+		t.Errorf("%s = %q, want the keystone microsecond form 2006-01-02T15:04:05.000000Z", field, got)
 	}
 	parsed, err := time.Parse(time.RFC3339, got)
 	if err != nil {
