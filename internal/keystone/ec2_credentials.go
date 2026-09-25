@@ -93,6 +93,11 @@ func (svc *Service) CreateEC2Credential(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("tenant_id is required"))
 		return
 	}
+	// A client may pass the project id exactly as a token envelope advertised
+	// it (underscores instead of hyphens while keystone.rgw_compat_tenant_ids
+	// is on) — canonicalize before validating and storing, so the credential
+	// and the s3tokens resolution keep working on the canonical id.
+	projectID = svc.authService.fromAdvertisedProjectID(projectID)
 	// Match Keystone (get_project -> ProjectNotFound = 404): a non-existent or
 	// malformed tenant_id is a 404 with Keystone's exact message, not the generic
 	// 500 the credentials.project_id foreign key would otherwise produce. A

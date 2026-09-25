@@ -754,3 +754,120 @@ func TestValidateTokenDeadScopeOmitsProject(t *testing.T) {
 		t.Error("dead scope: token.expires_at missing (mandatory for Ceph RGW)")
 	}
 }
+
+// postJSON drives r with a JSON body and extra headers, returning the recorder.
+func postJSON(t *testing.T, r *gin.Engine, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestFromAdvertisedProjectID: the canonicalization helper maps exactly the
+// advertised (underscored UUID) form back to canonical, and passes everything
+// else — canonical UUIDs, non-UUID ids with underscores — through untouched.
+// Nil-safety matters because keystone.Service is built without an AuthService
+// in several test wirings.
+func TestFromAdvertisedProjectID(t *testing.T) {
+	authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
+	authSvc.SetRGWCompatTenantIDs(true)
+
+	cases := []struct{ in, want string }{
+		{rgwCompatProjectID, rgwCompatProjectID},                                 // canonical: unchanged
+		{rgwCompatProjectIDUnderscored, rgwCompatProjectID},                      // advertised: reversed
+		{"32hexnodasheshere000000000000000", "32hexnodasheshere000000000000000"}, // hyphen-less: unchanged
+		{"my_underscore_project", "my_underscore_project"},                       // not an advertised form
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := authSvc.fromAdvertisedProjectID(tc.in); got != tc.want {
+			t.Errorf("fromAdvertisedProjectID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// Flag off: never canonicalize.
+	off := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
+	if got := off.fromAdvertisedProjectID(rgwCompatProjectIDUnderscored); got != rgwCompatProjectIDUnderscored {
+		t.Errorf("flag off: fromAdvertisedProjectID(%q) = %q, want unchanged", rgwCompatProjectIDUnderscored, got)
+	}
+
+	// Nil AuthService (NewService(nil, nil) wirings): unchanged.
+	var nilSvc *AuthService
+	if got := nilSvc.fromAdvertisedProjectID(rgwCompatProjectIDUnderscored); got != rgwCompatProjectIDUnderscored {
+		t.Errorf("nil receiver: fromAdvertisedProjectID(%q) = %q, want unchanged", rgwCompatProjectIDUnderscored, got)
+	}
+}
+
+// TestScopeByAdvertisedProjectID: the project id exactly as the token
+// envelope advertises it (underscores while rgw_compat_tenant_ids is on)
+// must round-trip through every client-input site that accepts a project
+// id: the password scope, the token re-scope, and the EC2 credential
+// tenant_id. Without the canonicalization each lookup missed the canonical
+// row and failed with a confusing 401/404.
+func TestScopeByAdvertisedProjectID(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+
+	t.Run("flag on: password scope by advertised id", func(t *testing.T) {
+		r := newRGWCompatRouter(true)
+		w := postTokens(t, r, passwordAuthBody(rgwCompatProjectIDUnderscored))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("POST /v3/auth/tokens with advertised id: code=%d body=%s", w.Code, w.Body.String())
+		}
+		body := decodeTokenBody(t, w)
+		if body.Token.Project == nil || body.Token.Project.ID != rgwCompatProjectIDUnderscored {
+			t.Errorf("token.project = %+v, want the advertised underscored id %q", body.Token.Project, rgwCompatProjectIDUnderscored)
+		}
+	})
+
+	t.Run("flag on: token re-scope by advertised id", func(t *testing.T) {
+		r := newRGWCompatRouter(true)
+		unscoped := postTokens(t, r, passwordAuthBody(""))
+		if unscoped.Code != http.StatusCreated {
+			t.Fatalf("unscoped auth: code=%d body=%s", unscoped.Code, unscoped.Body.String())
+		}
+		w := postTokens(t, r, tokenAuthBody(unscoped.Header().Get("X-Subject-Token"), rgwCompatProjectIDUnderscored))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("re-scope with advertised id: code=%d body=%s", w.Code, w.Body.String())
+		}
+		body := decodeTokenBody(t, w)
+		if body.Token.Project == nil || body.Token.Project.ID != rgwCompatProjectIDUnderscored {
+			t.Errorf("token.project = %+v, want the advertised underscored id %q", body.Token.Project, rgwCompatProjectIDUnderscored)
+		}
+	})
+
+	t.Run("flag on: EC2 mint with advertised tenant_id stores canonical", func(t *testing.T) {
+		r := newRGWCompatRouter(true)
+		w := postJSON(t, r, http.MethodPost,
+			"/v3/users/"+rgwCompatSeededAdminID+"/credentials/OS-EC2",
+			fmt.Sprintf(`{"tenant_id":%q}`, rgwCompatProjectIDUnderscored),
+			map[string]string{"X-Test-User": rgwCompatSeededAdminID, "X-Test-Roles": "admin"})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("EC2 mint with advertised tenant_id: code=%d body=%s", w.Code, w.Body.String())
+		}
+		var cred struct {
+			Credential struct {
+				TenantID string `json:"tenant_id"`
+			} `json:"credential"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &cred); err != nil {
+			t.Fatalf("decode credential: %v (body=%s)", err, w.Body.String())
+		}
+		if cred.Credential.TenantID != rgwCompatProjectID {
+			t.Errorf("credential.tenant_id = %q, want the canonical %q (canonicalized before storage)", cred.Credential.TenantID, rgwCompatProjectID)
+		}
+	})
+
+	t.Run("flag off: advertised id is not canonicalized", func(t *testing.T) {
+		r := newRGWCompatRouter(false)
+		w := postTokens(t, r, passwordAuthBody(rgwCompatProjectIDUnderscored))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("flag off, scope by underscored id: code=%d body=%s, want 401 (no such canonical project)", w.Code, w.Body.String())
+		}
+	})
+}

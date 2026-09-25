@@ -13,6 +13,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
@@ -71,6 +72,11 @@ func (s *AuthService) SetRGWCompatTenantIDs(enabled bool) { s.rgwCompatTenantIDs
 // RGW tenant. Injective per id (distinct UUIDs stay distinct).
 func rgwCompatTenantID(id string) string { return strings.ReplaceAll(id, "-", "_") }
 
+// rgwReverseTenantID is the inverse of rgwCompatTenantID ('_' → '-'); used
+// by fromAdvertisedProjectID to canonicalize ids clients copied out of a
+// token envelope. See that helper for the UUID-shape guards.
+func rgwReverseTenantID(id string) string { return strings.ReplaceAll(id, "_", "-") }
+
 // tokenProjectID renders the project id for a token payload: the canonical
 // (hyphenated) UUID, or the RGW-safe form when keystone.rgw_compat_tenant_ids
 // is enabled. Only the token-payload builders in this file (password issue,
@@ -78,8 +84,35 @@ func rgwCompatTenantID(id string) string { return strings.ReplaceAll(id, "-", "_
 // GET /v3/auth/tokens) render through this; BuildServiceCatalog, the
 // management APIs and everything else keep the canonical id.
 func (s *AuthService) tokenProjectID(id string) string {
-	if s.rgwCompatTenantIDs {
-		return rgwCompatTenantID(id)
+	if s == nil || !s.rgwCompatTenantIDs {
+		return id
+	}
+	return rgwCompatTenantID(id)
+}
+
+// fromAdvertisedProjectID maps a project id that a client copied out of a
+// token envelope back to its canonical form. While rgw_compat_tenant_ids is
+// on, the envelope advertises token.project.id with every '-' rendered as
+// '_' (rgwCompatTenantID); clients that feed that value back — a token
+// re-scope with scope.project.id, or an EC2 credential minted with it as
+// tenant_id — would otherwise miss the canonical row and fail with a
+// confusing 401/404. The value is canonicalized only when the flag is on,
+// it contains an underscore, it is not itself a valid UUID (canonical ids
+// never contain underscores), and reversing '_' → '-' yields a valid UUID —
+// the exact inverse of rgwCompatTenantID over UUID-shaped ids, so a genuine
+// project id that merely contains underscores passes through untouched.
+// Nil-safe: keystone.Service is constructed without an AuthService in some
+// test wirings (NewService(nil, nil)).
+func (s *AuthService) fromAdvertisedProjectID(id string) string {
+	if s == nil || !s.rgwCompatTenantIDs || !strings.Contains(id, "_") {
+		return id
+	}
+	if _, err := uuid.Parse(id); err == nil {
+		return id
+	}
+	reversed := rgwReverseTenantID(id)
+	if _, err := uuid.Parse(reversed); err == nil {
+		return reversed
 	}
 	return id
 }
@@ -247,7 +280,14 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 	if req.Auth.Scope != nil && !req.Auth.Scope.IsUnscoped && req.Auth.Scope.Project != nil {
 		// Scoped authentication
 		projectName := req.Auth.Scope.Project.Name
-		projectIDParam := req.Auth.Scope.Project.ID
+		projectIDParam := s.fromAdvertisedProjectID(req.Auth.Scope.Project.ID)
+
+		// A non-UUID project id cannot name a project (projects.id is a UUID
+		// column): fail with the same 401 as a missing project instead of
+		// letting Postgres reject the parameter as a 500.
+		if projectIDParam != "" && uuid.Validate(projectIDParam) != nil {
+			return nil, "", common.NewUnauthorizedError("project not found")
+		}
 
 		// Fetch project (with domain filter)
 		var proj database.Project
@@ -431,7 +471,13 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 	} else if req.Auth.Scope != nil && req.Auth.Scope.Project != nil {
 		// Scoped authentication
 		projectName := req.Auth.Scope.Project.Name
-		projectIDParam := req.Auth.Scope.Project.ID
+		projectIDParam := s.fromAdvertisedProjectID(req.Auth.Scope.Project.ID)
+
+		// Same non-UUID guard as the password path: a malformed id is a 401,
+		// not a 500 from Postgres's uuid parser.
+		if projectIDParam != "" && uuid.Validate(projectIDParam) != nil {
+			return nil, "", common.NewUnauthorizedError("project not found")
+		}
 
 		// Fetch project
 		var proj database.Project
