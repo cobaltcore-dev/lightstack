@@ -697,3 +697,60 @@ func TestValidateTokenRejectsExpired(t *testing.T) {
 		t.Errorf("token re-scope with expired token: code=%d body=%s, want %d", rescope.Code, rescope.Body.String(), http.StatusUnauthorized)
 	}
 }
+
+// TestValidateTokenDeadScopeOmitsProject: when the token's project row is
+// gone, the validation envelope omits token.project but still renders the
+// user and the roles from the claims. A scoped envelope without a project is
+// rejected by Ceph RGW's parser — the correct outcome for a dead scope —
+// instead of inventing project data the database no longer backs.
+func TestValidateTokenDeadScopeOmitsProject(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+	ctx := context.Background()
+
+	r := newRGWCompatRouter(false)
+
+	issue := postTokens(t, r, passwordAuthBody(rgwCompatProjectID))
+	if issue.Code != http.StatusCreated {
+		t.Fatalf("POST /v3/auth/tokens: code=%d body=%s", issue.Code, issue.Body.String())
+	}
+	tokenString := issue.Header().Get("X-Subject-Token")
+
+	// Delete the project (role assignments first — the FK requires it),
+	// leaving a realistically dead scope. seedRGWCompatFixtures' cleanup is
+	// idempotent against the missing rows.
+	if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE project_id = $1", rgwCompatProjectID); err != nil {
+		t.Fatalf("delete role assignments: %v", err)
+	}
+	if _, err := database.DB.Exec(ctx, "DELETE FROM projects WHERE id = $1", rgwCompatProjectID); err != nil {
+		t.Fatalf("delete project: %v", err)
+	}
+
+	w := getToken(t, r, tokenString)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v3/auth/tokens: code=%d body=%s", w.Code, w.Body.String())
+	}
+	body := decodeValidationBody(t, w)
+
+	if body.Token.Project != nil {
+		t.Errorf("dead scope: token.project = %+v, want the key omitted", *body.Token.Project)
+	}
+	var raw struct {
+		Token map[string]any `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw validation response: %v", err)
+	}
+	if _, ok := raw.Token["project"]; ok {
+		t.Error("dead scope: validation response carries a project key")
+	}
+	if body.Token.User.ID != rgwCompatSeededAdminID {
+		t.Errorf("dead scope: token.user.id = %q, want the claim's %q", body.Token.User.ID, rgwCompatSeededAdminID)
+	}
+	if len(body.Token.Roles) == 0 {
+		t.Error("dead scope: roles should still render from the claims")
+	}
+	if body.Token.ExpiresAt == "" {
+		t.Error("dead scope: token.expires_at missing (mandatory for Ceph RGW)")
+	}
+}
