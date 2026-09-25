@@ -14,6 +14,12 @@ services:
       - /var/lib/lightstack/images:/var/lib/lightstack/images
       - /var/lib/lightstack/instances:/var/lib/lightstack/instances
       - /opt/lightstack/config:/opt/lightstack/config:ro
+    # metadata.trust_instance_header (LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER) stays
+    # unset here on purpose. It makes the metadata service believe an X-Instance-ID header
+    # from any caller, which only test stacks without real guests may allow: real guests
+    # reach this service, and any of them could then read any instance's metadata and
+    # user-data. With host networking, host-run tests reach it over loopback, where the
+    # header is believed anyway.
     command: [/app/lightstack, -config, /opt/lightstack/config/lightstack.yaml]
     restart: unless-stopped
     healthcheck:

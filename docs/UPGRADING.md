@@ -52,7 +52,7 @@ Two of those file defaults deserve attention, because nothing will draw it:
   environment against a config file that shipped it on. Losing that override re-enables
   skipped TLS verification.
 
-`docs/CONFIGURATION.md` lists all twelve. Anything else — service modes, admin password,
+`docs/CONFIGURATION.md` lists them all. Anything else — service modes, admin password,
 ports, logging — only ever came from the config file, so it is unaffected.
 
 ### Stale firewall chains (real mode only)
@@ -455,3 +455,33 @@ writes `state_path` and mounts the whole root at the same path — which also br
 `dhcp` onto the host, where they were missing even on the default root. `scripts/deploy-single-node.sh`
 asked for three per-service paths that went into the same unread keys; it now asks for one state
 root. Re-running either script regenerates its files.
+
+## The EC2 metadata `instance-id` is now EC2-shaped
+
+`http://169.254.169.254/<version>/meta-data/instance-id` used to answer with the bare instance
+UUID. It now answers `i-` and the UUID's first 17 hex digits (`i-755a18e9eb3940f68` for
+`755a18e9-eb39-40f6-8208-267410268522`), the shape guests expect: cirros's EC2 datasource
+retried 20 times, two seconds apart, before settling for the UUID, so every cirros boot waited
+about 40 seconds. The OpenStack tree is unchanged; `meta_data.json` still carries the full UUID
+as `uuid`.
+
+A running guest that reads the EC2 id sees it change once. On its next boot, cloud-init's EC2
+datasource compares the new id with the one it cached at first boot and treats the guest as a new
+instance: it runs first-boot setup again, which regenerates SSH host keys (clients see a
+host-key-changed warning) and runs user-data scripts a second time. Guests that use the OpenStack
+datasource are not affected. There is no switch to keep the old id, so plan the next reboot of
+such a guest accordingly.
+
+## The metadata service identifies guests by their address only
+
+A caller used to be able to choose which instance it was, in two ways: an `X-Instance-ID` header
+naming the instance, or an `X-Forwarded-For` header naming one of its fixed IPs. Guests reach the
+service through a DNAT that passes headers through untouched, so any guest, and anything else that
+could reach port 8775, could read any instance's metadata and user-data. The caller is now its TCP
+peer address: `X-Forwarded-For` is ignored, and `X-Instance-ID` is believed only from loopback.
+
+Nothing changes for guests. A test setup that names instances with `X-Instance-ID` from somewhere
+other than loopback, such as Docker Compose with port mapping, where requests arrive from the bridge
+gateway, sets `metadata.trust_instance_header: true` or `LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER=true`.
+`deployments/docker-compose.yml` does, since it runs in stub mode. Never set it where real guests
+reach the metadata service.

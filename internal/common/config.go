@@ -158,6 +158,14 @@ type MetadataConfig struct {
 	// the per-namespace 169.254.169.254 DNAT redirects to it. Zero means
 	// consumers apply a default ("0.0.0.0:8775").
 	BindAddress string `yaml:"bind_address"`
+
+	// TrustInstanceHeader lets any caller name the instance it asks about with the
+	// X-Instance-ID header, instead of being identified by its own address; loopback
+	// callers may do so regardless. It exists for test stacks whose requests arrive from
+	// elsewhere (Docker port mapping presents them from the bridge gateway) and must stay
+	// off wherever real guests reach the metadata service: with it on, any guest can read
+	// any instance's metadata and user-data.
+	TrustInstanceHeader bool `yaml:"trust_instance_header"`
 }
 
 type LoggingConfig struct {
@@ -221,6 +229,13 @@ func LoadConfig(path string) (*Config, error) {
 	// Two-way override: an operator must be able to turn skip-verify OFF from the
 	// env even if the mounted config shipped it on (matches OpenStack's symmetric
 	// `insecure` config booleans). Unrecognized/empty values keep the file value.
+	// Test stacks only; see MetadataConfig.TrustInstanceHeader.
+	switch os.Getenv("LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER") {
+	case "true", "1":
+		cfg.Metadata.TrustInstanceHeader = true
+	case "false", "0":
+		cfg.Metadata.TrustInstanceHeader = false
+	}
 	switch os.Getenv("LIGHTSTACK_GLANCE_S3_INSECURE_SKIP_VERIFY") {
 	case "true", "1":
 		cfg.Glance.S3InsecureSkipVerify = true

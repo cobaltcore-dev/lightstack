@@ -526,3 +526,34 @@ func TestLoadConfigConsoleDurations(t *testing.T) {
 		})
 	}
 }
+
+// metadata.trust_instance_header defaults off, since with it on any guest can read any
+// instance's metadata and user-data. Test stacks turn it on from the environment, and
+// the override works both ways, like every other boolean one.
+func TestLoadConfigMetadataTrustInstanceHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, env string
+		want            bool
+	}{
+		{"off by default", "metadata:\n  bind_address: \"0.0.0.0:8775\"\n", "", false},
+		{"on from the file", "metadata:\n  trust_instance_header: true\n", "", true},
+		{"on from the environment", "metadata: {}\n", "true", true},
+		{"off from the environment", "metadata:\n  trust_instance_header: true\n", "false", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "lightstack.yaml")
+			if err := os.WriteFile(path, []byte(tc.file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER", tc.env)
+
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if cfg.Metadata.TrustInstanceHeader != tc.want {
+				t.Errorf("TrustInstanceHeader = %v; want %v", cfg.Metadata.TrustInstanceHeader, tc.want)
+			}
+		})
+	}
+}

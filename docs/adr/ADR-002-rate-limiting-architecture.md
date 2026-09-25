@@ -77,6 +77,12 @@ rate_limiting:
 11. Cap: 10K+ entries triggers graceful degradation
 12. Integration: rapid POST /v3/auth/tokens returns 429
 
+**Amendment (2026-09-25).** Items 5 and 6 are superseded. Every server's gin engine now
+trusts no proxy (`newEngine` in `cmd/lightstack/main.go`), so `c.ClientIP()` is the TCP peer
+and `X-Forwarded-For` from a caller is never believed. An IP limiter keyed on a header the
+caller writes could be dodged by sending a fresh address with every request. Item 5 becomes:
+an `X-Forwarded-For` header does not change which bucket a request lands in.
+
 ## Alternatives Considered
 
 ### Custom token bucket implementation

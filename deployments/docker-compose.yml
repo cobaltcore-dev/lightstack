@@ -66,6 +66,14 @@ services:
       LIGHTSTACK_CACHE_ENABLED: "true"
       LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
       LIGHTSTACK_ENDPOINT_HOST: "localhost" # Use localhost for service catalog URLs (accessible from host)
+      # Why this exists: tests run outside any guest, so they name the instance they ask
+      # the metadata service about with the X-Instance-ID header (test/contract/ws4_*,
+      # test/metadata_test.sh). By default that header is believed only from loopback,
+      # and port mapping presents host-run requests from the Docker bridge gateway
+      # instead. This stack runs in stub mode, with no real guests to protect. Never set
+      # it where real guests reach the metadata service: any of them could then read any
+      # instance's metadata and user-data.
+      LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER: "true"
     networks:
       - lightstack-network
     restart: unless-stopped

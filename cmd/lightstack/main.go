@@ -298,7 +298,11 @@ func main() {
 		mdBind = ":8775"
 	}
 	metadataService := metadata.NewService(pool, mdBind)
+	metadataService.SetTrustInstanceHeader(cfg.Metadata.TrustInstanceHeader)
 	log.Printf("Metadata service initialized (bind %s)", mdBind)
+	if cfg.Metadata.TrustInstanceHeader {
+		log.Println("WARNING: metadata.trust_instance_header is on: any caller can read any instance's metadata and user-data. Test stacks only.")
+	}
 
 	// Initialize placement service
 	placementService := placement.NewService()
@@ -605,8 +609,22 @@ func drainDelay() time.Duration {
 	return d
 }
 
-func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService *keystone.AuthService, checker *health.Checker) *http.Server {
+// newEngine returns the gin engine every server is built on. It trusts no proxy: gin
+// otherwise believes X-Forwarded-For and X-Real-IP from any caller, so ClientIP(),
+// which the request log records as remote_addr and the s3tokens denial log as
+// client_ip, would be whatever address the caller chose. Upstream OpenStack parses
+// proxy headers only when told to (oslo.middleware's enable_proxy_headers_parsing, off
+// by default).
+func newEngine() *gin.Engine {
 	r := gin.New()
+	if err := r.SetTrustedProxies(nil); err != nil {
+		log.Fatalf("gin: %v", err)
+	}
+	return r
+}
+
+func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService *keystone.AuthService, checker *health.Checker) *http.Server {
+	r := newEngine()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
@@ -649,7 +667,7 @@ func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService
 }
 
 func createNovaServer(cfg *common.Config, svc *nova.Service, authService *keystone.AuthService) *http.Server {
-	r := gin.New()
+	r := newEngine()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
@@ -672,7 +690,7 @@ func createNovaServer(cfg *common.Config, svc *nova.Service, authService *keysto
 }
 
 func createNeutronServer(cfg *common.Config, svc *neutron.Service, authService *keystone.AuthService) *http.Server {
-	r := gin.New()
+	r := newEngine()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
@@ -695,7 +713,7 @@ func createNeutronServer(cfg *common.Config, svc *neutron.Service, authService *
 }
 
 func createCinderServer(cfg *common.Config, svc *cinder.Service, authService *keystone.AuthService) *http.Server {
-	r := gin.New()
+	r := newEngine()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
@@ -718,7 +736,7 @@ func createCinderServer(cfg *common.Config, svc *cinder.Service, authService *ke
 }
 
 func createGlanceServer(cfg *common.Config, svc *glance.Service, authService *keystone.AuthService) *http.Server {
-	r := gin.New()
+	r := newEngine()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
@@ -748,7 +766,7 @@ func createGlanceServer(cfg *common.Config, svc *glance.Service, authService *ke
 }
 
 func createPlacementServer(cfg *common.Config, svc *placement.Service, authService *keystone.AuthService) *http.Server {
-	r := gin.New()
+	r := newEngine()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
@@ -770,7 +788,9 @@ func createPlacementServer(cfg *common.Config, svc *placement.Service, authServi
 }
 
 func createMetadataServer(svc *metadata.Service) *http.Server {
-	r := gin.New()
+	// Guests are identified by their TCP peer address (see metadata.Service); the engine
+	// trusts no proxy either, so no forwarding header speaks for the caller in its logs.
+	r := newEngine()
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())

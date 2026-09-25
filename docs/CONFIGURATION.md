@@ -151,6 +151,7 @@ The binary honors exactly **thirteen** environment variables:
 | `LIGHTSTACK_GLANCE_S3_CA_BUNDLE` | `glance.s3_ca_bundle` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_GLANCE_S3_INSECURE_SKIP_VERIFY` | `glance.s3_insecure_skip_verify`. Two-way: `false`/`0` turns it **off** against a config file that shipped it on | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_GLANCE_S3_CONNECT_TIMEOUT` | `glance.s3_connect_timeout`. A Go duration; an unparseable value is ignored with a warning and the file value stands | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER` | `metadata.trust_instance_header`. Two-way, like the other booleans. **Test stacks only**: with it on, the metadata service believes `X-Instance-ID` from any caller, so any guest can read any instance's metadata and user-data | `internal/common/config.go` (`LoadConfig`) |
 
 ```bash
 export LIGHTSTACK_DB_URL="postgres://user:pass@host/db?sslmode=disable"
@@ -735,7 +736,7 @@ rate_limiting:
 
 ### How It Works
 
-1. **Unauthenticated requests** (e.g., `POST /v3/auth/tokens`): Limited by client IP address. Uses `X-Forwarded-For` header if present, falls back to `RemoteAddr`.
+1. **Unauthenticated requests** (e.g., `POST /v3/auth/tokens`): Limited by the client's address, meaning the TCP peer. Forwarding headers such as `X-Forwarded-For` are not believed: every server's engine trusts no proxy, since a caller could otherwise send a fresh address with each request and never be limited.
 2. **Authenticated requests**: Limited by `project_id` extracted from the JWT token.
 3. **When limit exceeded**: Returns HTTP 429 with `Retry-After` header and OpenStack-compatible error body.
 4. **Overflow behavior**: When 10,000+ unique IPs/projects are tracked, new entries are allowed through without limiting. A warning is logged.

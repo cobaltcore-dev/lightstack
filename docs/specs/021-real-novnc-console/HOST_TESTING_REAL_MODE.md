@@ -436,6 +436,28 @@ openstack console log show vm1 | tail -5
 
 **Desired outcome**: real cirros boot output.
 
+The same log shows cirros reading its metadata. Its EC2 datasource accepts an
+instance-id only once it starts with `i-`, and used to retry 20 times, two seconds apart,
+against the bare UUID:
+
+```bash
+openstack console log show vm1 | grep -E 'successful after|failed [0-9]+/20'
+VM=$(openstack server show vm1 -f value -c id)
+echo "i-$(echo $VM | tr -d - | cut -c1-17)"
+curl -s -w '\n' -H "X-Instance-ID: $VM" http://127.0.0.1:8775/latest/meta-data/instance-id
+```
+
+**Desired outcome**: one `successful after N/20 tries: … iid=i-…` line, and no line
+ending in `iid had '…'` — that was the old failure, the guest turning down the bare UUID on
+every try. The two ids below it match: `i-` and the first 17 hex digits of vm1's UUID, as
+the metadata service reports it over loopback.
+
+A few `failed N/20: … request failed` lines before the success are the guest's own. cirros
+0.6's DHCP client goes to the background while `eth0` waits for carrier, so the datasource
+starts before the guest has an address, and those requests never reach Lightstack: after a
+fresh boot the pod log shows only `200`s for `/2009-04-04/meta-data/instance-id`, and no
+`404`.
+
 ### R11 — Fail-fast when libvirt is unreachable, and recovery when it returns (SC-010, FR-007)
 
 The recovery below depends on how the pod mounts libvirt's socket. Check it first:
@@ -532,6 +554,61 @@ openstack console url show vm1
 ```
 
 **Desired outcome**: both rollouts complete and a console URL is issued again.
+
+### R14 — The metadata service answers every caller as itself
+
+A caller used to be able to choose which instance it was: by naming it in `X-Instance-ID`,
+or by forwarding for one of its fixed IPs in `X-Forwarded-For`. Both headers passed
+through the guest DNAT untouched, so any guest could read any instance's metadata and
+user-data. Asked from the node's own address, which is no guest and not loopback, both
+must now be ignored:
+
+```bash
+VM=$(openstack server show vm1 -f value -c id)
+VM1_IP=$(openstack server show vm1 -f json | jq -r '.addresses[][0]')
+curl -s -o /dev/null -w 'named by header -> %{http_code}\n' -H "X-Instance-ID: $VM" "http://$NODE_IP:8775/openstack/latest/meta_data.json"
+curl -s -o /dev/null -w 'forwarded for vm1 -> %{http_code}\n' -H "X-Forwarded-For: $VM1_IP" "http://$NODE_IP:8775/openstack/latest/meta_data.json"
+curl -s -o /dev/null -w 'claiming loopback -> %{http_code}\n' -H "X-Instance-ID: $VM" -H "X-Forwarded-For: 127.0.0.1" "http://$NODE_IP:8775/openstack/latest/meta_data.json"
+curl -s -H "X-Instance-ID: $VM" http://127.0.0.1:8775/openstack/latest/meta_data.json | jq -r .uuid
+echo "$VM"
+```
+
+**Desired outcome**: `404` three times; before the fix, each returned vm1's metadata.
+Then vm1's UUID over loopback, the same as the `echo` below it: tests that run on the node
+keep their way to name an instance.
+
+Then the real path, from inside a guest. Print what vm1 should see, then three commands
+for vm1's guest with vm2's id and address filled in:
+
+```bash
+echo "i-$(echo $VM | tr -d - | cut -c1-17) $VM1_IP"
+VM2=$(openstack server show vm2 -f value -c id)
+VM2_IP=$(openstack server show vm2 -f json | jq -r '.addresses[][0]')
+printf '%s\n' "curl -s -w '\n' http://169.254.169.254/latest/meta-data/instance-id" "curl -s -w '\n' -H 'X-Instance-ID: $VM2' http://169.254.169.254/latest/meta-data/instance-id" "curl -s -w '\n' -H 'X-Forwarded-For: $VM2_IP' http://169.254.169.254/latest/meta-data/local-ipv4"
+```
+
+Open **vm1's** console, log in as `cirros` / `gocubsgo`, and type the three printed
+commands. vm2 need not be running — it has been off since R12 — since only its id and
+address are used.
+
+**Desired outcome**: vm1's own `i-…` twice, then vm1's own address — the first line
+printed above, never vm2's.
+
+The values must be vm2's real ones. A believed `X-Instance-ID` shows with any value, since
+the instance-id answer is derived from it, but a forwarding header that is not an IP
+address is skipped even by a server that trusts the header — so a placeholder in the third
+command would leave it unable to fail.
+
+The same goes for what the logs record. s3tokens logs every rejection with the caller's
+address:
+
+```bash
+curl -s -o /dev/null -w 's3tokens -> %{http_code}\n' -X POST "http://$NODE_IP:35357/v3/s3tokens" -H 'X-Forwarded-For: 203.0.113.9' -H 'Content-Type: application/json' -d '{}'
+kubectl -n lightstack logs deploy/lightstack-lightstack --since=2m | grep 'signature validation denied' | tail -1
+```
+
+**Desired outcome**: `401`, and the log line's `client_ip` is the node's address, never
+`203.0.113.9`.
 
 ---
 
