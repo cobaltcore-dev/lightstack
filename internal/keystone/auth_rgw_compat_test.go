@@ -871,3 +871,58 @@ func TestScopeByAdvertisedProjectID(t *testing.T) {
 		}
 	})
 }
+
+// TestRenderS3TokenTenantEncoding: /v3/s3tokens must derive its project.id
+// (the RGW S3 implicit tenant) from the same transform as the Swift token
+// payloads whenever rgw_compat_tenant_ids is on, so S3- and Swift-written
+// objects for one project land in ONE implicit tenant. With the flag off the
+// historical dash-free keystone-canonical form is kept. token.user.id is not
+// used for tenant naming under implicit tenants and stays dash-free either way.
+func TestRenderS3TokenTenantEncoding(t *testing.T) {
+	requireDB(t)
+	seedRGWCompatFixtures(t)
+
+	dashFree := strings.ReplaceAll(rgwCompatProjectID, "-", "")
+	for _, tc := range []struct {
+		name      string
+		rgwCompat bool
+		want      string
+	}{
+		{"flag off: dash-free keystone-canonical form", false, dashFree},
+		{"flag on: underscored, matching the Swift token payload", true, rgwCompatProjectIDUnderscored},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
+			authSvc.SetRGWCompatTenantIDs(tc.rgwCompat)
+			svc := NewService(authSvc, nil)
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v3/s3tokens", nil)
+			svc.renderS3Token(c, rgwCompatSeededAdminID, rgwCompatProjectID)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("renderS3Token: code=%d body=%s", w.Code, w.Body.String())
+			}
+			var body struct {
+				Token struct {
+					Project struct {
+						ID string `json:"id"`
+					} `json:"project"`
+					User struct {
+						ID string `json:"id"`
+					} `json:"user"`
+				} `json:"token"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode s3tokens envelope: %v (body=%s)", err, w.Body.String())
+			}
+			if body.Token.Project.ID != tc.want {
+				t.Errorf("token.project.id = %q, want %q", body.Token.Project.ID, tc.want)
+			}
+			if body.Token.User.ID != strings.ReplaceAll(rgwCompatSeededAdminID, "-", "") {
+				t.Errorf("token.user.id = %q, want the dash-free form of the user id (unchanged in either mode)", body.Token.User.ID)
+			}
+		})
+	}
+}

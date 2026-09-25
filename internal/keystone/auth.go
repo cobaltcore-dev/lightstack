@@ -90,6 +90,20 @@ func (s *AuthService) tokenProjectID(id string) string {
 	return rgwCompatTenantID(id)
 }
 
+// s3TenantProjectID renders the project id for the /v3/s3tokens envelope —
+// the id RGW derives the S3 implicit tenant from. With
+// keystone.rgw_compat_tenant_ids off it keeps the historical keystone-
+// canonical dash-free 32-hex form (canonicalID); with the flag on it uses
+// the same underscored form as the Swift token payloads, so S3 and Swift
+// derive ONE implicit tenant per project and objects written through one
+// protocol stay visible to the other. Nil-safe like fromAdvertisedProjectID.
+func (s *AuthService) s3TenantProjectID(id string) string {
+	if s != nil && s.rgwCompatTenantIDs {
+		return rgwCompatTenantID(id)
+	}
+	return canonicalID(id)
+}
+
 // fromAdvertisedProjectID maps a project id that a client copied out of a
 // token envelope back to its canonical form. While rgw_compat_tenant_ids is
 // on, the envelope advertises token.project.id with every '-' rendered as

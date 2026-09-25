@@ -194,11 +194,14 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 	// uses microsecond-precision UTC timestamps. Keep the window short: RGW may
 	// cache the validation until expiry, so a small TTL bounds revocation latency.
 	//
-	// RGW derives the S3 tenant namespace from project.id and only accepts
-	// alphanumerics + underscore (no dashes). Real OpenStack keystone IDs are
-	// 32-hex without dashes; Lightstack stores dashed UUIDs, so present the
-	// keystone-canonical (dash-free) form — bijective, unique per project, and a
-	// valid RGW tenant name.
+	// RGW derives the tenant namespace from project.id and only accepts
+	// alphanumerics + underscore (no dashes). With keystone.rgw_compat_tenant_ids
+	// off, project.id keeps the historical keystone-canonical (dash-free) form;
+	// with the flag on it renders in the SAME underscored form as the Swift
+	// token payloads (tokenProjectID), so S3 and Swift derive one implicit
+	// tenant per project and objects stay visible across both protocols.
+	// token.user.id is not used for tenant naming under implicit tenants and
+	// keeps its dash-free form in either mode.
 	const ksTime = "2006-01-02T15:04:05.000000Z"
 	now := time.Now().UTC()
 	c.JSON(200, gin.H{
@@ -207,7 +210,7 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 			"issued_at":  now.Format(ksTime),
 			"expires_at": now.Add(5 * time.Minute).Format(ksTime),
 			"user":       gin.H{"id": canonicalID(userID), "name": userName, "domain": gin.H{"id": "default", "name": "Default"}},
-			"project":    gin.H{"id": canonicalID(projectID), "name": projectName, "domain": gin.H{"id": "default", "name": "Default"}},
+			"project":    gin.H{"id": svc.authService.s3TenantProjectID(projectID), "name": projectName, "domain": gin.H{"id": "default", "name": "Default"}},
 			"roles":      roles,
 		},
 	})
