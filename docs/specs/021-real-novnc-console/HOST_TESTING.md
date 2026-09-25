@@ -106,8 +106,9 @@ Every Horizon URL below uses `localhost:8080`.
 Horizon, which calls Lightstack server-side over the compose network, but unresolvable from
 the host. Only Keystone escapes it, because `OS_AUTH_URL` is explicit; everything
 else follows the catalog and fails with *"Failed to contact the endpoint at
-http://lightstack:9292"*. The compose file publishes every Lightstack port 1:1, so the alias makes
-those URLs reach the published ports.
+http://lightstack:9292"*. The compose file publishes every Lightstack port 1:1 except
+placement's `8778`, which only Horizon calls, so the alias makes those URLs reach the
+published ports.
 
 The ordering is load-bearing: Podman seeds each container's `/etc/hosts` from the
 host's, so an alias present *before* `up -d` is copied into the Horizon container,
@@ -234,6 +235,14 @@ click **Console**.
 is the truth, not a bug — there is no guest. The **Console Log** tab still shows
 output.
 
+Then open **Admin → Compute → Hypervisors** and its third tab, **Resource Provider**. The
+page opens on the **Hypervisor** tab, whose `lightstack-node-1` row is Nova's hypervisor,
+not a resource provider.
+
+**Desired outcome**: an empty table, not *"Unable to retrieve providers information."*
+Horizon finds placement in the catalog (S11), and Lightstack's placement reports no
+resource providers.
+
 ### S8 — A reboot needs a valid type
 
 Upstream requires `reboot.type`, HARD or SOFT, and nothing else in the body. `$VM` and
@@ -287,6 +296,17 @@ docker compose -f deployments/docker-compose-horizon.yml logs lightstack 2>&1 | 
 **Desired outcome**: `401`, and the log line's `client_ip` is where the request really
 came from — the bridge gateway, or under rootless Podman the lightstack container's own
 address — never `203.0.113.9`.
+
+### S11 — Placement is in the catalog
+
+```bash
+openstack catalog list -f value -c Name -c Endpoints | grep placement
+```
+
+**Desired outcome**: `placement`, with one public endpoint at `http://lightstack:8778`
+— this stack advertises the `lightstack` hostname. It used to be missing: only the
+fallback catalog listed it. Horizon reaches the port over the compose network; the stack
+does not publish it, so placement is not reachable from the host.
 
 ---
 

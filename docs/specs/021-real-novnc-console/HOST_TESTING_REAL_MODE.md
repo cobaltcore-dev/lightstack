@@ -160,6 +160,7 @@ openstack catalog list -f value -c Name -c Endpoints
 ```
 
 Every URL must carry the node IP. A `localhost` in there means the flag is missing.
+Placement must be among them, at `:8778` (R15).
 
 **`realMode.enabled=true` does not make the services real.** It only grants the pod
 privileges, host networking and host mounts; each service keeps its own mode, and
@@ -609,6 +610,22 @@ kubectl -n lightstack logs deploy/lightstack-lightstack --since=2m | grep 'signa
 
 **Desired outcome**: `401`, and the log line's `client_ip` is the node's address, never
 `203.0.113.9`.
+
+### R15 — Placement is in the catalog
+
+```bash
+openstack catalog list -f value -c Name -c Endpoints | grep placement
+```
+
+**Desired outcome**: `placement`, with one public endpoint at `http://<NODE_IP>:8778`.
+
+In Horizon, logged in as `admin`, open **Admin → Compute → Hypervisors** and its third
+tab, **Resource Provider**. The page opens on the **Hypervisor** tab, whose
+`lightstack-node-1` row is Nova's hypervisor, not a resource provider.
+
+**Desired outcome**: an empty table, not *"Unable to retrieve providers information."*
+Lightstack's placement reports no resource providers — on a single node it schedules
+nothing — so Horizon has nothing to list.
 
 ---
 
