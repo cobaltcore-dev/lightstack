@@ -78,8 +78,11 @@ func newMetadataTestRouter() *gin.Engine {
 
 // metaGet issues a metadata request identified by the X-Instance-ID test header — the
 // same hook test/contract/ws4_userdata_test.go uses, so no source-IP lookup is needed.
+// It comes from loopback, as a test run on the host does: the only callers the header
+// is believed from by default.
 func metaGet(r *gin.Engine, path, instanceID string) (int, string) {
 	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.RemoteAddr = "127.0.0.1:40000"
 	req.Header.Set("X-Instance-ID", instanceID)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

@@ -23,6 +23,10 @@ type Service struct {
 	// For testing, it runs on localhost:8775
 	bindAddr string
 	pool     *pgxpool.Pool
+
+	// trustInstanceHeader believes X-Instance-ID from any caller
+	// (metadata.trust_instance_header). Test stacks only.
+	trustInstanceHeader bool
 }
 
 // NewService creates a new metadata service
@@ -31,6 +35,14 @@ func NewService(pool *pgxpool.Pool, bindAddr string) *Service {
 		bindAddr: bindAddr,
 		pool:     pool,
 	}
+}
+
+// SetTrustInstanceHeader makes X-Instance-ID believed from any caller, not only
+// loopback. It exists for test stacks whose requests arrive from elsewhere, such as a
+// Docker bridge gateway, and must stay off wherever real guests reach this service:
+// with it on, any guest can read any instance's metadata and user-data.
+func (svc *Service) SetTrustInstanceHeader(trust bool) {
+	svc.trustInstanceHeader = trust
 }
 
 // BindAddr returns the configured listen address for the metadata server.
@@ -67,20 +79,25 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/", svc.ListVersions)
 }
 
-// instanceFromIP looks up instance by source IP address
-// In a real deployment, this would check which network namespace the request came from
-// For testing, we'll use a header: X-Instance-ID
+// instanceFromRequest identifies the calling guest by the TCP peer address of its
+// request: the fixed IP of one of its ports, which the per-bridge 169.254.169.254 DNAT
+// preserves. Nothing the caller sends can change that answer. Upstream Nova believes
+// X-Forwarded-For only behind its own metadata proxy (use_forwarded_for, off by
+// default) and X-Instance-ID only with that proxy's HMAC signature. No proxy stands in
+// front of this server, so gin's ClientIP, which believes X-Forwarded-For from anyone,
+// would let a guest answer as any address it could name.
 func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
-	// Check for test header first (only trust this in non-production contexts)
-	if instanceID := c.GetHeader("X-Instance-ID"); instanceID != "" {
+	peer := c.RemoteIP()
+
+	// X-Instance-ID names the instance directly, for callers outside any guest: the unit
+	// and contract tests. Believed from loopback, or everywhere once a test stack turned
+	// on metadata.trust_instance_header. From any other caller it is ignored, and the
+	// caller is identified by its address like every guest.
+	if instanceID := c.GetHeader("X-Instance-ID"); instanceID != "" && svc.trustsInstanceHeader(peer) {
 		return instanceID, nil
 	}
 
-	// In production, the metadata service is reachable only via the link-local
-	// address 169.254.169.254 from within a network namespace. Use the source IP
-	// to look up which port (and therefore instance) is making the request.
-	clientIP := c.ClientIP()
-	if net.ParseIP(clientIP) != nil {
+	if net.ParseIP(peer) != nil {
 		// ports stores device_id (the attached instance) and fixed_ips as a JSONB
 		// array of {subnet_id, ip_address}; match the source IP against it.
 		//
@@ -97,7 +114,7 @@ func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
 			`SELECT device_id FROM ports
 			 WHERE device_id IS NOT NULL AND fixed_ips @> $1::jsonb
 			 LIMIT 1`,
-			fmt.Sprintf(`[{"ip_address":%q}]`, clientIP),
+			fmt.Sprintf(`[{"ip_address":%q}]`, peer),
 		).Scan(&instanceID)
 		if err == nil && instanceID != "" {
 			return instanceID, nil
@@ -105,6 +122,16 @@ func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
 	}
 
 	return "", fmt.Errorf("cannot determine instance ID from request")
+}
+
+// trustsInstanceHeader reports whether a request from peer may name its instance with
+// X-Instance-ID.
+func (svc *Service) trustsInstanceHeader(peer string) bool {
+	if svc.trustInstanceHeader {
+		return true
+	}
+	ip := net.ParseIP(peer)
+	return ip != nil && ip.IsLoopback()
 }
 
 // GetMetaDataJSON returns instance metadata in JSON format (OpenStack style)
@@ -332,6 +359,20 @@ func (svc *Service) GetVendorDataJSON(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
+// ec2InstanceID is the instance-id the EC2 tree reports: "i-" and the first 17 hex
+// digits of the instance UUID, AWS's current id length. Guests check the prefix —
+// cirros's EC2 datasource retries until it sees "i-" — and 17 digits keep ids unique in
+// practice: about 62 random bits of a v4 UUID. Upstream Nova serves i-%08x from a
+// per-UUID counter table; deriving the id needs no table, and it starts with the same
+// 8 digits as the libvirt domain name. meta_data.json keeps the full UUID as uuid.
+func ec2InstanceID(instanceID string) string {
+	digits := strings.ToLower(strings.ReplaceAll(instanceID, "-", ""))
+	if len(digits) > 17 {
+		digits = digits[:17]
+	}
+	return "i-" + digits
+}
+
 // GetEC2MetaData serves the EC2-style metadata tree — the datasource cirros and
 // most cloud images use — including the public-keys subtree that injects the SSH
 // key (SPEC-009 WS-4 / T026). Dispatches on the wildcard path.
@@ -350,7 +391,7 @@ func (svc *Service) GetEC2MetaData(c *gin.Context) {
 			"hostname", "instance-id", "instance-type", "local-ipv4", "public-keys/",
 		}, "\n"))
 	case path == "instance-id":
-		c.String(http.StatusOK, instanceID)
+		c.String(http.StatusOK, ec2InstanceID(instanceID))
 	case path == "hostname":
 		var hostname string
 		if err := svc.pool.QueryRow(ctx, `SELECT name FROM instances WHERE id = $1`, instanceID).Scan(&hostname); err == nil {
@@ -368,8 +409,9 @@ func (svc *Service) GetEC2MetaData(c *gin.Context) {
 			c.String(http.StatusNotFound, "")
 		}
 	case path == "local-ipv4":
-		// The request's source IP is the instance's fixed IP.
-		c.String(http.StatusOK, c.ClientIP())
+		// The request's source IP is the instance's fixed IP: the TCP peer, like the
+		// identity above, never a forwarding header.
+		c.String(http.StatusOK, c.RemoteIP())
 	case path == "public-keys" || path == "public-keys/":
 		keys, err := svc.publicKeysForInstance(ctx, instanceID)
 		if err != nil {

@@ -121,6 +121,13 @@ metadata:
   # tenant network namespaces (the per-namespace 169.254.169.254 DNAT targets
   # it); localhost is dev/stub only.
   bind_address: "0.0.0.0:8775"
+  # Believe the X-Instance-ID header from any caller, not only loopback. Guests are
+  # identified by their address; the header lets tests name an instance instead. Test
+  # stacks only, where requests do not arrive from loopback (Docker port mapping presents
+  # them from the bridge gateway). Never enable it where real guests reach this service:
+  # any of them could then read any instance's metadata and user-data.
+  # Env: LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER.
+  trust_instance_header: false
 
 server:
   cors_allowed_origins:

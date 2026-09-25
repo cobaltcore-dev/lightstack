@@ -252,6 +252,42 @@ curl -s "http://localhost:8774/v2.1/servers/$VM" -H "X-Auth-Token: $TOKEN" | jq 
 hard reboot in progress — and `ACTIVE` once the stub has finished. Both refused bodies
 used to be accepted.
 
+### S9 — The metadata service answers every caller as itself
+
+Guests are identified by their own address. `X-Instance-ID`, which tests use to name an
+instance from outside any guest, is believed only from loopback, so ask once from inside
+the container and twice from the host:
+
+```bash
+docker compose -f deployments/docker-compose-horizon.yml exec -T lightstack curl -s -w '\n' -H "X-Instance-ID: $VM" http://127.0.0.1:8775/latest/meta-data/instance-id
+echo "i-$(echo $VM | tr -d - | cut -c1-17)"
+curl -s -o /dev/null -w 'named by header, from the host -> %{http_code}\n' -H "X-Instance-ID: $VM" http://localhost:8775/latest/meta-data/instance-id
+curl -s -o /dev/null -w 'claiming loopback, from the host -> %{http_code}\n' -H "X-Instance-ID: $VM" -H "X-Forwarded-For: 127.0.0.1" http://localhost:8775/latest/meta-data/instance-id
+```
+
+**Desired outcome**: the first two lines match — the EC2-shaped id, `i-` and the first
+17 hex digits of the server's UUID, where the bare UUID used to be. Then `404` twice: port
+mapping delivers host requests from an address that is not loopback — the bridge gateway,
+or under rootless Podman the container's own address, which its port forwarder connects
+from — so the header is ignored, and a forwarded `127.0.0.1` does not make a caller
+loopback. Before the fix, both answered for the named instance.
+
+This stack leaves `metadata.trust_instance_header` off, as every deployment with guests
+must. Only `deployments/docker-compose.yml` turns it on, for the contract tests.
+
+### S10 — Logs record the real caller
+
+s3tokens logs every rejection with the caller's address, which is how probing shows up:
+
+```bash
+curl -s -o /dev/null -w 's3tokens -> %{http_code}\n' -X POST http://localhost:35357/v3/s3tokens -H 'X-Forwarded-For: 203.0.113.9' -H 'Content-Type: application/json' -d '{}'
+docker compose -f deployments/docker-compose-horizon.yml logs lightstack 2>&1 | grep 'signature validation denied' | tail -1
+```
+
+**Desired outcome**: `401`, and the log line's `client_ip` is where the request really
+came from — the bridge gateway, or under rootless Podman the lightstack container's own
+address — never `203.0.113.9`.
+
 ---
 
 ## Teardown
