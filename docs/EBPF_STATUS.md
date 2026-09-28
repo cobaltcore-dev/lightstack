@@ -1,223 +1,103 @@
 # eBPF Security Groups - Implementation Status
 
-**Status**: ⚠️ **PARTIAL IMPLEMENTATION** (Foundation complete, integration pending)
-**Created**: 2026-03-16 (Sprint 69)
+**Status**: ⚠️ **PARTIAL IMPLEMENTATION** — wired into the port lifecycle, but the eBPF object does not load
+in a stock build, so eBPF mode currently adds no east-west filtering (see *What eBPF mode does today*)
+**Created**: 2026-03-16 (Sprint 69) · **Updated**: 2026-10-01 (cloud-storage#533)
+
+---
+
+## What eBPF mode does today
+
+`networking_mode: ebpf` currently behaves like `networking_mode: iptables`:
+
+- The **north-south** ingress filter applies in both modes. It is the per-fixed-IP iptables chain built from
+  `port_security_groups` when a floating IP is associated, and rebuilt when a group's rules change
+  (`RouterManager.EnsureIngressFilter`, `pkg/networking/northsouth.go`).
+- The **east-west** XDP filter does not exist. `neutron.NewService` creates the security-group manager with
+  an empty object path (`internal/neutron/network.go:40`), `ebpf.LoadCollectionSpec("")` fails, Neutron
+  logs `failed to initialize security group manager` and runs without a manager, and `CreatePort` skips the
+  eBPF block: no rules are programmed and no filter is attached.
+
+Everything below describes the code path that runs once the object loads.
 
 ---
 
 ## What's Implemented ✅
 
-### 1. eBPF C Program (Complete)
-**File**: `pkg/networking/ebpf/secgroup.c` (169 lines)
+### 1. eBPF C Program
+**File**: `pkg/networking/ebpf/secgroup.c`
 
-- XDP packet filter at kernel network driver level
-- BPF hash map for security group rules (10,000 ports max)
-- Per-packet filtering with O(1) lookups
-- Protocol matching: TCP, UDP, ICMP, any
-- Port range and CIDR matching
-- Statistics tracking (packets allowed/denied/processed)
+- XDP program `xdp_security_group_filter`, attached to a port's TAP device
+- BPF hash map of per-port rule sets (10,000 ports max, 100 rules per port), keyed by a hash of the port's MAC
+- Protocol matching: TCP, UDP, ICMP, any; destination port ranges; source IPv4 CIDRs
+- Statistics (packets allowed / denied / processed)
 
-**Status**: ✅ Complete and compilable
+### 2. Go Integration Layer
+**File**: `pkg/networking/ebpf/secgroup_ebpf.go`
 
----
-
-### 2. Go Integration Layer (Complete)
-**File**: `pkg/networking/ebpf/secgroup_ebpf.go` (245 lines)
-
-- `SecurityGroupManager` with cilium/ebpf library
-- XDP program attach/detach from network interfaces
-- Rule serialization and BPF map updates
-- MAC address → port ID hashing
+- `SecurityGroupManager` on cilium/ebpf: loads the object, programs the rule map, attaches and detaches XDP
 - Statistics API
 
-**Status**: ✅ Complete and tested
+### 3. Rule Translation
+**File**: `pkg/networking/security_groups_ebpf.go`
 
----
+`ApplySecurityGroupToPort()` turns a port's Neutron rules into map entries. It fails closed — a rule the
+filter cannot express is dropped, never widened:
 
-### 3. Security Group Manager Extensions (Complete)
-**File**: `pkg/networking/security_groups_ebpf.go` (70 lines)
+- **Egress rules** are skipped; the program filters ingress only.
+- **A rule whose only source is `remote_group_id`** is dropped, so it admits nothing: the filter is
+  programmed once, at port creation, and cannot follow a group's members. Before cloud-storage#533 it became
+  `0.0.0.0/0` and admitted every source.
+- **IPv6 rules** are dropped; the program parses IPv4 only. Before, one without a prefix became IPv4
+  `0.0.0.0/0`, and one with an IPv6 prefix made the port's whole rule set fail to program.
 
-- `ApplySecurityGroupToPort()` - Converts Neutron rules to eBPF format
-- `RemoveSecurityGroupFromPort()` - Cleans up eBPF rules
-- `GetStatistics()` - Retrieves packet counters
+### 4. Port Lifecycle
+**File**: `internal/neutron/ports.go`
 
-**Status**: ✅ Complete
+- **Create**: `security_groups` is accepted and stored in `port_security_groups` (migrations 006 and 053).
+  In eBPF mode, for a port with a fixed IP, the rules of its groups are fetched and programmed, and the XDP
+  filter is attached to the TAP **whether or not programming succeeded** — attaching only on success left
+  everything that port sent unchecked. If the attach itself fails, the port is **not created**: the request
+  answers `500` and the port row and TAP are rolled back, so no interface exists whose traffic skips the
+  filter.
+- **Delete**: the XDP filter is detached and the port's rule set removed.
 
----
-
-### 4. Build System (Complete)
+### 5. Build System
 **File**: `Makefile`
 
 - `make build-ebpf` - Compiles eBPF C programs with clang
 - `make build-with-ebpf` - Builds Lightstack with eBPF support
 - `make install-ebpf-tools` - Installs dependencies (clang, llvm, libbpf-dev)
 
-**Status**: ✅ Complete
-
 ---
 
-### 5. Configuration (Complete)
-**File**: `config/lightstack.yaml`
+## How the Filter Decides
 
-- `neutron.security_group_mode: ebpf` option
-- `neutron.ebpf_object_path` for compiled object file
-- Backward compatible with stub/iptables modes
+The program runs on the TAP's receive path, so it sees the frames the **VM sends**. For each IPv4 frame it
+looks up the rule set of the port the frame is **addressed to**, by destination MAC, and passes the frame
+only if one of that port's ingress rules matches its protocol, source address and destination port.
 
-**Status**: ✅ Complete
+- An IPv4 frame addressed to a MAC **without a rule set** is dropped — that includes the router's gateway
+  MAC and broadcast, so DHCP and off-host traffic from the VM do not get through.
+- Non-IPv4 frames — ARP and IPv6 among them — pass unfiltered.
+- Traffic arriving from outside the host never crosses a local VM's TAP receive path, so this filter does
+  not see it; the north-south iptables filter covers floating-IP ingress.
 
 ---
 
 ## What's Missing ❌
 
-### 1. Neutron Integration (NOT IMPLEMENTED)
-
-**Problem**: Neutron security group handlers don't actually use eBPF.
-
-**Current Behavior**:
-- `CreateSecurityGroup()` - Creates iptables chains (line 376)
-- `CreateSecurityGroupRule()` - Adds iptables rules (line 693)
-- `CreatePort()` - No security group handling at all
-- `UpdatePort()` - No security group updates
-
-**What's Needed**:
-```go
-// When port is created/updated with security groups:
-if svc.sgManager.mode == "ebpf" {
-    // 1. Get port MAC address
-    mac := getPortMAC(portID)
-
-    // 2. Fetch all security group rules for this port
-    rules := fetchSecurityGroupRules(securityGroupIDs)
-
-    // 3. Apply rules to eBPF maps
-    svc.sgManager.ApplySecurityGroupToPort(portID, mac, rules)
-}
-```
-
-**Missing Pieces**:
-- Port → Security Group association handling
-- Fetching security group rules when port is created
-- Calling `ApplySecurityGroupToPort()` in port lifecycle
-- Attaching XDP programs to TAP devices
-- Cache invalidation when rules change
-
----
-
-### 2. Port-Security Group Association (NOT IMPLEMENTED)
-
-**Problem**: Ports don't track which security groups they belong to.
-
-**Database Schema Gap**:
-```sql
--- Missing table
-CREATE TABLE port_security_groups (
-    port_id UUID REFERENCES ports(id) ON DELETE CASCADE,
-    security_group_id UUID REFERENCES security_groups(id) ON DELETE CASCADE,
-    PRIMARY KEY (port_id, security_group_id)
-);
-```
-
-**API Gap**: CreatePort/UpdatePort don't accept `security_groups` field.
-
----
-
-### 3. XDP Program Attachment (NOT IMPLEMENTED)
-
-**Problem**: XDP programs never get attached to network interfaces.
-
-**What's Needed**:
-```go
-// After TAP device is created (internal/neutron/ports.go:82):
-tapName := "tap-" + portID[:8]
-svc.tapManager.CreateTAPDevice(tapName, true, nsName)
-
-// MISSING: Attach XDP program
-if svc.sgManager.mode == "ebpf" {
-    svc.sgManager.ebpfMgr.AttachToInterface(tapName)
-}
-```
-
----
-
-### 4. Rule Synchronization (NOT IMPLEMENTED)
-
-**Problem**: When security group rules change, ports aren't updated.
-
-**What's Needed**:
-```go
-// In CreateSecurityGroupRule/DeleteSecurityGroupRule:
-func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
-    // ... create rule in database ...
-
-    // MISSING: Update all ports using this security group
-    if svc.sgManager.mode == "ebpf" {
-        ports := getPortsWithSecurityGroup(sgID)
-        for _, port := range ports {
-            rules := fetchAllRulesForPort(port.ID)
-            svc.sgManager.ApplySecurityGroupToPort(port.ID, port.MAC, rules)
-        }
-    }
-}
-```
-
----
-
-## Integration TODO
-
-### Phase 1: Database Schema (1 hour)
-- [ ] Create migration for `port_security_groups` table
-- [ ] Add indexes on foreign keys
-- [ ] Update seed data with default security group
-
-### Phase 2: Port Lifecycle Integration (2 hours)
-- [ ] Add `security_groups` field to CreatePortRequest
-- [ ] Add `security_groups` field to UpdatePortRequest
-- [ ] Store port-security group associations in database
-- [ ] Call `ApplySecurityGroupToPort()` when port is created
-- [ ] Call `ApplySecurityGroupToPort()` when port security groups change
-- [ ] Call `RemoveSecurityGroupFromPort()` when port is deleted
-
-### Phase 3: XDP Attachment (1 hour)
-- [ ] Attach XDP programs to TAP devices after creation
-- [ ] Handle XDP attachment failures gracefully
-- [ ] Detach XDP programs when TAP devices are deleted
-
-### Phase 4: Rule Synchronization (2 hours)
-- [ ] When security group rule is created → update all affected ports
-- [ ] When security group rule is deleted → update all affected ports
-- [ ] When port joins security group → apply all group rules
-- [ ] When port leaves security group → remove group rules
-
-### Phase 5: Testing (2 hours)
-- [ ] Contract tests for port security groups
-- [ ] Verify eBPF map contents with `bpftool`
-- [ ] Test packet filtering with `tcpdump`
-- [ ] Performance benchmarks (rule application, packet filtering)
-
-**Total Estimated Effort**: 8 hours (1 full day)
-
----
-
-## Current Workaround
-
-For now, Lightstack uses **iptables mode** for security groups:
-- `security_group_mode: iptables` (default)
-- Fully functional and tested
-- ~50µs packet filtering latency
-- ~10s rule application for 1000 rules
-
-eBPF mode **cannot be used** until integration is complete.
-
----
-
-## Why Partial?
-
-The eBPF code is **correct and functional** as a standalone library, but it's **not integrated into the Neutron workflow**. Think of it like this:
-
-✅ **We built a Ferrari engine** (eBPF XDP program)
-❌ **But didn't install it in the car** (Neutron integration)
-
-The car still runs (iptables mode works), but we're not getting the 10x performance benefit yet.
+1. **Loading.** The object path is hard-coded empty (`internal/neutron/network.go:40`), the
+   `security_group_mode` and `ebpf_object_path` keys in `config/lightstack.yaml` are read by nothing, and the
+   container image does not build `secgroup.o`.
+2. **Rule synchronization.** Creating or deleting a security-group rule refreshes only the north-south filter
+   (`refreshIngressFiltersForSG`); the eBPF map keeps the rules the port was created with.
+3. **Security-group changes on an existing port.** Rules are programmed once, at port creation.
+4. **Destinations that are not local ports.** Frames to the gateway, to broadcast, or to anything off-host
+   are dropped (see *How the Filter Decides*).
+5. **IPv6.** IPv6 frames pass unfiltered, and IPv6 rules are dropped.
+6. **Remote groups.** Rules whose only source is a remote group admit nothing.
+7. **Egress rules.** Not enforced.
 
 ---
 
@@ -232,26 +112,16 @@ The car still runs (iptables mode works), but we're not getting the 10x performa
 
 ---
 
-## How to Complete Integration
-
-See **Integration TODO** above. Key steps:
-
-1. Database schema for port-security group associations
-2. Extend CreatePort/UpdatePort to handle security groups
-3. Attach XDP programs to TAP devices
-4. Synchronize rule changes to affected ports
-
----
-
-## Using eBPF (When Complete)
+## Using eBPF
 
 ```yaml
 # config/lightstack.yaml
 neutron:
-  networking_mode: real
-  security_group_mode: ebpf  # Switch from iptables to ebpf
-  ebpf_object_path: "pkg/networking/ebpf/secgroup.o"
+  networking_mode: ebpf
 ```
+
+The `security_group_mode` and `ebpf_object_path` keys that `config/lightstack.yaml` also shows are **not
+read**: until the loader is wired (see *What's Missing*), eBPF mode starts without the XDP filter.
 
 ```bash
 # Prerequisites (Linux only)
@@ -262,9 +132,6 @@ make build-ebpf
 
 # Build lightstack with eBPF support
 make build-with-ebpf
-
-# Run
-./bin/lightstack --config config/lightstack.yaml
 ```
 
 ---
@@ -275,15 +142,14 @@ make build-with-ebpf
 - **Go Integration**: `pkg/networking/ebpf/secgroup_ebpf.go`
 - **Security Group Manager**: `pkg/networking/security_groups.go`
 - **Security Group Helpers**: `pkg/networking/security_groups_ebpf.go`
+- **Port lifecycle**: `internal/neutron/ports.go` (`CreatePort`, `DeletePort`)
+- **North-south filter**: `pkg/networking/northsouth.go`
 - **Makefile**: Build targets for eBPF compilation
 
 ---
 
 ## Status Summary
 
-**Foundation**: ✅ Complete (eBPF program, Go wrapper, build system)
-**Integration**: ❌ Not implemented (Neutron port lifecycle)
-**Usability**: ❌ Cannot be used yet (falls back to iptables)
-**Effort Remaining**: ~8 hours of integration work
-
-**Recommendation**: Mark as "partial implementation" and complete integration in a future sprint when higher priority features are done.
+**Foundation**: ✅ eBPF program, Go wrapper, fail-closed rule translation, build targets
+**Integration**: ⚠️ Port create and delete wired; no rule sync, no security-group changes on existing ports
+**Usability**: ❌ Does not load in a stock build — eBPF mode currently equals iptables mode

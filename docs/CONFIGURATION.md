@@ -316,7 +316,8 @@ neutron:
 **networking_mode:**
 - `stub` - Mock networking (no actual networks)
 - `iptables` - iptables-based security groups (production)
-- `ebpf` - eBPF-based filtering (future, not implemented)
+- `ebpf` - east-west XDP filtering on top of the iptables north-south filter — partial, and it does not
+  load in a stock build (see [EBPF_STATUS.md](EBPF_STATUS.md))
 
 **VXLAN configuration** (multi-node only):
 - `vxlan_enabled: true` - Enable VXLAN overlay networking

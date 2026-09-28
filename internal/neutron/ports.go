@@ -187,16 +187,31 @@ func (svc *Service) CreatePort(c *gin.Context) {
 					log.Warn().Err(err).Str("port_id", portID).Msg("failed to apply eBPF security group rules")
 				} else {
 					log.Debug().Str("port_id", portID).Int("rule_count", len(rules)).Msg("applied eBPF security group rules")
-
-					// Attach XDP program to TAP interface
-					if err := svc.sgManager.AttachToInterface(tapName); err != nil {
-						log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to attach XDP program to interface")
-					} else {
-						log.Debug().Str("tap", tapName).Msg("attached XDP security group filter to interface")
-					}
 				}
 			}
 		}
+
+		// Attached whether or not the rules above were programmed. The XDP filter runs on the
+		// TAP's receive path — the frames this port SENDS — and checks each against the rules of
+		// the port it is addressed to, dropping it when that port has none. Attaching only on
+		// success left everything a port sent unchecked whenever its own rules failed to program,
+		// so every local port's ingress rules were bypassed for traffic from it. A port whose own
+		// rules are missing is not opened by this: senders find no entry for it and drop.
+		//
+		// If the attach itself fails, the port is not created. Without the program its traffic
+		// would skip every destination's rules, so a 201 would hand back an unfiltered interface.
+		// Upstream fails closed the same way: Neutron's OVS agent keeps a port it has not set up
+		// on the dead VLAN, which drops its traffic.
+		if err := svc.sgManager.AttachToInterface(tapName); err != nil {
+			if mac, perr := net.ParseMAC(macAddress); perr == nil {
+				_ = svc.sgManager.RemoveSecurityGroupFromPort(portID, mac)
+			}
+			rollbackPort("XDP attach failure")
+			log.Error().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to attach XDP program to interface; port not created")
+			common.SendError(c, common.NewInternalServerError("failed to attach the security group filter"))
+			return
+		}
+		log.Debug().Str("tap", tapName).Msg("attached XDP security group filter to interface")
 	}
 	// iptables mode: nothing to program per port here. Enforcement is the
 	// per-fixed-IP north-south ingress filter (EnsureIngressFilter, hooked from

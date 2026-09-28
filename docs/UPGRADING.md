@@ -268,7 +268,7 @@ answers `200`.
 
 ### eBPF security groups fail closed (eBPF mode only)
 
-With `networking_mode: ebpf`, three cases admitted more than the rules said:
+With `networking_mode: ebpf`, four cases admitted more than the rules said:
 
 - A rule whose only source is `remote_group_id` was translated to `0.0.0.0/0`, admitting every
   source. It now admits nothing — the filter is programmed once, at port creation, and cannot
@@ -278,9 +278,15 @@ With `networking_mode: ebpf`, three cases admitted more than the rules said:
   IPv4 only.
 - When programming a port's rules failed, the filter was not attached and the port stayed
   unfiltered. It is now attached either way.
+- When attaching the filter failed, the port was still created, unfiltered. Port creation now
+  fails with `500` instead, and nothing is left behind.
 
 Traffic one of these cases admitted before the upgrade is dropped after it. Before upgrading an
 eBPF deployment, replace rules whose only source is a remote group with `remote_ip_prefix` CIDRs.
+
+This applies only to a build that loads the eBPF object. A stock build does not — the object path is
+not wired through configuration — so there eBPF mode adds no east-west filtering, before or after
+the upgrade; see [`EBPF_STATUS.md`](EBPF_STATUS.md).
 
 ### Horizon: `CSRF_COOKIE_HTTPONLY` must be `False`
 
