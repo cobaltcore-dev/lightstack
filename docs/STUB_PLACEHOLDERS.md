@@ -23,16 +23,17 @@
 1. **✅ Floating IP Fixed IP** - Fixed in commit cd0277d
 2. **✅ Nova-Neutron Integration** - Fixed in commit cd0277d
 3. **✅ Port Security Groups** - Fixed in commit 308cc35
-4. **✅ eBPF Security Groups** - Fixed in commit 6881e7d
+4. **⚠️ eBPF Security Groups** - Integrated in commit 6881e7d; partial, see [EBPF_STATUS.md](EBPF_STATUS.md)
 5. **✅ Ceph RBD Backend** - Fixed in commit 03f6ecc
 6. **✅ Cloud-init ISO Generation** - Fixed in commit 679a559
 7. **✅ Quotas Admin Check** - Fixed in Sprint 73
 
 ---
 
-## 1. eBPF Security Groups ✅ FIXED
+## 1. eBPF Security Groups ⚠️ PARTIAL
 
-**Status**: ✅ **INTEGRATED** - Fully functional in commit 6881e7d
+**Status**: ⚠️ **PARTIAL** - integrated into the port lifecycle in commit 6881e7d, but the eBPF object does
+not load in a stock build, so eBPF mode adds no filtering — see [EBPF_STATUS.md](EBPF_STATUS.md)
 
 ### What Was Fixed
 - ✅ Port creation now applies eBPF rules when `mode == "ebpf"`
@@ -67,9 +68,11 @@ if svc.sgManager != nil && svc.mode == "ebpf" {
 Set in `config/lightstack.yaml`:
 ```yaml
 neutron:
-  security_group_mode: ebpf  # Enable eBPF mode
-  ebpf_object_path: /path/to/secgroup.o
+  networking_mode: ebpf
 ```
+
+The `security_group_mode` and `ebpf_object_path` keys are not read, so the eBPF object does not load yet
+(see [EBPF_STATUS.md](EBPF_STATUS.md)).
 
 Build eBPF program:
 ```bash
@@ -77,8 +80,9 @@ make build-ebpf
 ```
 
 ### Impact
-- ✅ eBPF mode is fully functional
-- ✅ Kernel-level packet filtering (XDP)
+- ⚠️ eBPF mode is partial: the object does not load in a stock build, and rules are programmed only at port
+  creation (see [EBPF_STATUS.md](EBPF_STATUS.md))
+- ✅ Kernel-level packet filtering (XDP), once the object loads
 - ✅ O(1) lookup performance per packet
 - ✅ 10x performance improvement achievable
 ---
@@ -596,17 +600,17 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 | Floating IP Fixed IP | CRITICAL | External access broken | 30min | 15min | ✅ DONE | cd0277d |
 | Nova-Neutron Integration | CRITICAL | VMs have no network | 6h | 2h | ✅ DONE | cd0277d |
 | Port Security Groups | CRITICAL | Security vulnerability | 4h | 1.5h | ✅ DONE | 308cc35 |
-| eBPF Integration | HIGH | Performance target missed | 8h | 2h | ✅ DONE | 6881e7d |
+| eBPF Integration | HIGH | Performance target missed | 8h | 2h | ⚠️ PARTIAL | 6881e7d |
 | Ceph RBD Backend | MEDIUM | Storage option unavailable | 4h | 2h | ✅ DONE | 03f6ecc |
 | Cloud-init ISO | MEDIUM | UX degradation | 2h | 1h | ✅ DONE | 679a559 |
 | Quotas Admin Check | LOW | Security gap | 1h | 30min | ✅ DONE | TBD |
 
 **Summary**:
 - **Sprint 70 (P0)**: 3/3 issues resolved ✅ (11h est. → 3.5h actual)
-- **Sprint 71 (P1)**: 2/2 issues resolved ✅ (12h est. → 4h actual)
+- **Sprint 71 (P1)**: 1/2 issues resolved; eBPF partial (12h est. → 4h actual)
 - **Sprint 72 (P2)**: 1/1 issue resolved ✅ (2h est. → 1h actual)
 - **Sprint 73 (P3)**: 1/1 issue resolved ✅ (1h est. → 30min actual)
-- **Total Fixed**: 7/7 issues (100% complete, ALL stub placeholders resolved)
+- **Total Fixed**: 6/7 issues; eBPF integration is partial (see [EBPF_STATUS.md](EBPF_STATUS.md))
 
 ---
 
@@ -618,7 +622,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 3. ✅ **Port Security Groups** (1.5h) - Security compliance
 
 ### ✅ Sprint 71: Performance & Storage (Complete)
-4. ✅ **eBPF Integration** (2h) - Performance targets
+4. ⚠️ **eBPF Integration** (2h) - Performance targets — partial, see [EBPF_STATUS.md](EBPF_STATUS.md)
 5. ✅ **Ceph RBD Backend** (2h) - Storage option
 
 ### ✅ Sprint 72: UX Improvement (Complete)
@@ -638,12 +642,13 @@ After fixes, verify:
 - [X] VMs can ping gateway and external IPs ✅
 - [X] Ports have security groups applied ✅
 - [X] Security group rules enforced (iptables -L shows rules) ✅
-- [X] eBPF mode can be enabled and actually filters packets ✅
+- [ ] eBPF mode can be enabled and actually filters packets — the object does not load in a stock build
+  (see [EBPF_STATUS.md](EBPF_STATUS.md))
 - [X] Ceph RBD storage backend functional ✅
 - [X] Cloud-init data injected into VMs ✅
 - [X] Admin users can update quotas, non-admin users denied ✅
 
-**Status**: 9/9 items complete (100%)
+**Status**: 8/9 items complete
 
 ---
 
@@ -651,21 +656,21 @@ After fixes, verify:
 
 ~~lightstack has significant "implementation debt" - features that exist in code but are disconnected from actual workflows.~~
 
-**UPDATE (Sprint 70-73)**: All stub placeholders have been resolved. Lightstack now has:
+**UPDATE (Sprint 70-73)**: All stub placeholders except eBPF have been resolved. Lightstack now has:
 
 ✅ **Working VM Networking**: VMs get proper network interfaces from Neutron with port allocation
 ✅ **Functional Floating IPs**: NAT rules use actual port IP addresses, not hardcoded placeholders
 ✅ **Security Group Enforcement**: Ports have security group associations (iptables + eBPF modes)
-✅ **eBPF Packet Filtering**: Kernel-level XDP filtering fully integrated (10x performance)
+⚠️ **eBPF Packet Filtering**: XDP filtering wired into the port lifecycle, but partial and not loaded in a stock build (see [EBPF_STATUS.md](EBPF_STATUS.md))
 ✅ **Production-Grade Storage**: Ceph RBD backend with go-ceph library (snapshots, health checks)
 ✅ **Automated VM Configuration**: Cloud-init ISO generation with SSH key injection
 ✅ **RBAC Enforcement**: Admin role checks for quota management and privileged operations
 
-**Remaining Work**: None - All identified stub placeholders have been implemented
+**Remaining Work**: eBPF security groups — see [EBPF_STATUS.md](EBPF_STATUS.md)
 
 Lightstack is now **production-ready** for enterprise OpenStack deployments with:
 - Complete networking stack (VXLAN, floating IPs, security groups)
 - Multiple storage backends (local, Ceph RBD, S3)
 - VM lifecycle automation (cloud-init, SSH keys)
 - Proper security controls (RBAC, admin checks)
-- High-performance packet filtering (eBPF/XDP)
+- High-performance packet filtering (eBPF/XDP) — partial, see [EBPF_STATUS.md](EBPF_STATUS.md)
