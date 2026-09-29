@@ -113,6 +113,7 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 ### Service modes
 | Key | Default | Mode | Purpose |
 |-----|---------|------|---------|
+| `keystone.rgwCompatTenantIds` | `false` | all | render dash-free project IDs in token responses for Ceph RGW Swift compatibility; uses the existing S3 tenant form |
 | `nova.libvirtMode` | `stub` | all | `stub` / `real` |
 | `neutron.networkingMode` | `stub` | all | `stub` / `iptables` / `ebpf` |
 | `neutron.securityGroupMode` | `stub` | all | `stub` / `iptables` / `ebpf` |
