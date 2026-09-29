@@ -200,16 +200,22 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 		common.SendError(c, common.NewUnauthorizedError(authFailed))
 		return
 	}
-	var projectName string
+	var canonicalProjectID, projectName string
 	var projectEnabled bool
 	if err := database.DB.QueryRow(c.Request.Context(),
-		"SELECT name, enabled FROM projects WHERE id = $1", projectID,
-	).Scan(&projectName, &projectEnabled); err != nil || !projectEnabled {
+		"SELECT id, name, enabled FROM projects WHERE id = $1", projectID,
+	).Scan(&canonicalProjectID, &projectName, &projectEnabled); err != nil || !projectEnabled {
 		log.Warn().Err(err).Str("project_id", projectID).
 			Msg("s3tokens: project is missing or disabled")
 		common.SendError(c, common.NewUnauthorizedError(authFailed))
 		return
 	}
+	// The credential blob may predate canonicalization and contain a valid
+	// alternate UUID spelling (uppercase, 32-hex, or braced). Use the UUID
+	// returned by PostgreSQL for all downstream lookups and the RGW envelope,
+	// so those legacy credentials resolve to the same dash-free tenant as
+	// Swift and newly minted credentials.
+	projectID = canonicalProjectID
 
 	roles := []gin.H{}
 	rows, err := database.DB.Query(c.Request.Context(), `
