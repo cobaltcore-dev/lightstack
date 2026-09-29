@@ -6,14 +6,14 @@
 # claim end to end against real Ceph RGW, not an emulation:
 #   - a password-issued scoped token authenticates Swift requests (RGW
 #     validates it via GET /v3/auth/tokens — the TokenEnvelope this PR builds)
-#   - the token's project.id (underscored by the flag) is the Swift account:
+#   - the token's project.id (dash-free with the flag) is the Swift account:
 #     /swift/v1/AUTH_<project id> — a valid RGW tenant name
 #   - container + object round-trip byte-identically under that account
 #   - an unscoped token is denied (the envelope carries no project — RGW's
 #     decoder rejects it; fail closed)
 #   - a garbage token is denied
 #   - another project's token cannot read the container (tenant isolation)
-#   - radosgw-admin shows the implicit tenant named by the underscored id
+#   - radosgw-admin shows the implicit tenant named by the dash-free id
 #
 #   podman compose -p lightstack-rgwtest -f deployments/docker-compose.rgw-test.yml up -d --build
 #   ./test/swift_rgw_test.sh
@@ -58,11 +58,11 @@ PID="$(jget '["token"]["project"]["id"]' < "$tokbody")"
 DOMAIN_ID="$(jget '["token"]["project"].get("domain",{}).get("id","default")' < "$tokbody")"
 [ -n "$PID" ] || die "no project id in the token envelope"
 echo "scoped token ok; advertised project id = $PID"
-# The fixture must run with the flag on: the advertised id is underscored
+# The fixture must run with the flag on: the advertised id is dash-free
 # (RGW tenant names reject dashes) — that is the form under test.
 case "$PID" in
-  *_*) echo "project id is underscored (keystone.rgw_compat_tenant_ids on)" ;;
-  *)   die "project id '$PID' is not underscored — LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS must be true in the fixture" ;;
+  *-*) die "project id '$PID' still contains dashes — LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS must be true in the fixture" ;;
+  *)   echo "project id is dash-free (keystone.rgw_compat_tenant_ids on)" ;;
 esac
 
 # Unscoped token (same credentials, no scope) for the negative test.
@@ -141,8 +141,8 @@ rm -f "$chdr" "$cbody"
 x_code="$(curl -s -o /dev/null -w '%{http_code}' -H "X-Auth-Token: $TOKEN_C" "$ACCOUNT/$CONTAINER")"
 if [ "$x_code" = "403" ] || [ "$x_code" = "404" ]; then ok "cross-project read denied ($x_code)"; else bad "cross-project read -> $x_code (want 403/404)"; fi
 
-# --- Test 5: radosgw-admin shows the implicit tenant named by the underscored id ---
-log "T5: radosgw-admin shows the implicit tenant for the underscored id"
+# --- Test 5: radosgw-admin shows the implicit tenant named by the dash-free id ---
+log "T5: radosgw-admin shows the implicit tenant for the dash-free id"
 admin_check() {
   local rt cid out
   for rt in docker podman; do

@@ -68,88 +68,19 @@ func (s *AuthService) SetGlanceS3Endpoint(url string) { s.glanceS3Endpoint = url
 // token.project.id keeps the canonical hyphenated UUID.
 func (s *AuthService) SetRGWCompatTenantIDs(enabled bool) { s.rgwCompatTenantIDs = enabled }
 
-// rgwCompatTenantID renders a project id in Ceph RGW's tenant-name-safe form:
-// every '-' becomes '_'. Ceph validates tenant names with
-// rgw_validate_tenant_name (src/rgw/rgw_user.cc, identical in the squid and
-// main branches), which accepts [A-Za-z0-9_] only — hyphens are rejected with
-// ERR_INVALID_TENANT_NAME. Under rgw_keystone_implicit_tenants, RGW derives the
-// Swift tenant name and the implicit user id (<project>$<project>) from the
-// Keystone token's project id, so a hyphenated UUID project id cannot back an
-// RGW tenant. Injective per id (distinct UUIDs stay distinct).
-//
-// UUID-shaped ids are canonicalized first: like Postgres, uuid.Parse accepts
-// valid UUIDs in alternate text encodings (32 hex chars without dashes,
-// uppercase hex, braced). The token paths always carry the canonical column
-// value, but the EC2 credential blob retains the tenant_id exactly as minted
-// and /v3/s3tokens derives the S3 tenant from that value — a non-canonical
-// spelling would otherwise encode to a DIFFERENT tenant than Swift's and
-// split the namespace this flag is meant to unify. Non-UUID-shaped ids pass
-// through untouched. This encoder only runs while the flag is ON (new in
-// this PR); the historical flag-off dash-free rendering is unchanged.
-func rgwCompatTenantID(id string) string {
-	if u, err := uuid.Parse(id); err == nil {
-		id = u.String()
-	}
-	return strings.ReplaceAll(id, "-", "_")
-}
-
-// rgwReverseTenantID is the inverse of rgwCompatTenantID ('_' → '-'); used
-// by fromAdvertisedProjectID to canonicalize ids clients copied out of a
-// token envelope. See that helper for the UUID-shape guards.
-func rgwReverseTenantID(id string) string { return strings.ReplaceAll(id, "_", "-") }
+// IDs at the RGW boundary use Keystone's established dash-free form via
+// canonicalID. Internal storage and management APIs retain UUID dashes.
 
 // tokenProjectID renders the project id for a token payload: the canonical
-// (hyphenated) UUID, or the RGW-safe form when keystone.rgw_compat_tenant_ids
-// is enabled. Only the token-payload builders in this file (password issue,
-// token re-scope, and the validation envelope built by BuildTokenResponse for
-// GET /v3/auth/tokens) render through this; BuildServiceCatalog, the
-// management APIs and everything else keep the canonical id.
+// hyphenated UUID, or the dash-free canonical ID when
+// keystone.rgw_compat_tenant_ids is enabled. Only token payloads render
+// through this; BuildServiceCatalog, management APIs and database storage keep
+// canonical UUIDs.
 func (s *AuthService) tokenProjectID(id string) string {
 	if s == nil || !s.rgwCompatTenantIDs {
 		return id
 	}
-	return rgwCompatTenantID(id)
-}
-
-// s3TenantProjectID renders the project id for the /v3/s3tokens envelope —
-// the id RGW derives the S3 implicit tenant from. With
-// keystone.rgw_compat_tenant_ids off it keeps the historical keystone-
-// canonical dash-free 32-hex form (canonicalID); with the flag on it uses
-// the same underscored form as the Swift token payloads, so S3 and Swift
-// derive ONE implicit tenant per project and objects written through one
-// protocol stay visible to the other. Nil-safe like fromAdvertisedProjectID.
-func (s *AuthService) s3TenantProjectID(id string) string {
-	if s != nil && s.rgwCompatTenantIDs {
-		return rgwCompatTenantID(id)
-	}
 	return canonicalID(id)
-}
-
-// fromAdvertisedProjectID maps a project id that a client copied out of a
-// token envelope back to its canonical form. While rgw_compat_tenant_ids is
-// on, the envelope advertises token.project.id with every '-' rendered as
-// '_' (rgwCompatTenantID); clients that feed that value back — a token
-// re-scope with scope.project.id, or an EC2 credential minted with it as
-// tenant_id — would otherwise miss the canonical row and fail with a
-// confusing 401/404. The value is canonicalized only when the flag is on,
-// it contains an underscore, it is not itself a valid UUID (canonical ids
-// never contain underscores), and reversing '_' → '-' yields a valid UUID —
-// the exact inverse of rgwCompatTenantID over UUID-shaped ids, so a genuine
-// project id that merely contains underscores passes through untouched.
-// Nil-safe: keystone.Service is constructed without an AuthService in some
-// test wirings (NewService(nil, nil)).
-func (s *AuthService) fromAdvertisedProjectID(id string) string {
-	if s == nil || !s.rgwCompatTenantIDs || !strings.Contains(id, "_") {
-		return id
-	}
-	if _, err := uuid.Parse(id); err == nil {
-		return id
-	}
-	reversed := rgwReverseTenantID(id)
-	if _, err := uuid.Parse(reversed); err == nil {
-		return reversed
-	}
-	return id
 }
 
 // keystoneTimestamp renders a token timestamp (expires_at / issued_at) in the
@@ -318,7 +249,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 	if req.Auth.Scope != nil && !req.Auth.Scope.IsUnscoped && req.Auth.Scope.Project != nil {
 		// Scoped authentication
 		projectName := req.Auth.Scope.Project.Name
-		projectIDParam := s.fromAdvertisedProjectID(req.Auth.Scope.Project.ID)
+		projectIDParam := req.Auth.Scope.Project.ID
 
 		// A non-UUID project id cannot name a project (projects.id is a UUID
 		// column): fail with the same 401 as a missing project instead of
@@ -519,7 +450,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 	} else if req.Auth.Scope != nil && req.Auth.Scope.Project != nil {
 		// Scoped authentication
 		projectName := req.Auth.Scope.Project.Name
-		projectIDParam := s.fromAdvertisedProjectID(req.Auth.Scope.Project.ID)
+		projectIDParam := req.Auth.Scope.Project.ID
 
 		// Same non-UUID guard as the password path: a malformed id is a 401,
 		// not a 500 from Postgres's uuid parser.
@@ -818,15 +749,26 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 			log.Error().Err(rolesErr).Str("operation", "validate_token").Str("user_id", claims.UserID).Str("project_id", claims.ProjectID).Msg("Failed to query token roles; omitting roles from validation response")
 		} else {
 			defer rows.Close()
+			var roles []map[string]any
+			rolesOK := true
 			for rows.Next() {
 				var name string
 				if err := rows.Scan(&name); err != nil {
-					continue
+					rolesOK = false
+					log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Str("project_id", claims.ProjectID).Msg("Failed to scan token role; omitting roles from validation response")
+					break
 				}
-				resp.Token.Roles = append(resp.Token.Roles, map[string]any{
+				roles = append(roles, map[string]any{
 					"id":   name,
 					"name": name,
 				})
+			}
+			if err := rows.Err(); err != nil {
+				rolesOK = false
+				log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Str("project_id", claims.ProjectID).Msg("Failed while reading token roles; omitting roles from validation response")
+			}
+			if rolesOK {
+				resp.Token.Roles = roles
 			}
 		}
 

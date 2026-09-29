@@ -48,13 +48,12 @@ type KeystoneConfig struct {
 	TokenTTL      time.Duration `yaml:"token_ttl"`
 	AdminUser     string        `yaml:"admin_user"`
 	AdminPassword string        `yaml:"admin_password"`
-	// RGWCompatTenantIDs renders the project id of the token payload
-	// (token.project.id) with every '-' replaced by '_' — Ceph RGW derives the
-	// Swift tenant name and the implicit user id from that field and only
-	// accepts [A-Za-z0-9_] in tenant names. Affects the auth-token responses
-	// (/v3/auth/tokens) AND the /v3/s3tokens project id; the EC2 mint
-	// canonicalizes its tenant_id input instead. Everything else keeps
-	// canonical (hyphenated) UUIDs. See the comment in config/lightstack.yaml.
+	// RGWCompatTenantIDs renders token.project.id in OpenStack's established
+	// dash-free form — Ceph RGW derives the Swift tenant name and implicit user
+	// id from that field and only accepts [A-Za-z0-9_] in tenant names. It affects
+	// /v3/auth/tokens; /v3/s3tokens already uses the dash-free form. The EC2 mint
+	// accepts that form as input and stores the canonical database UUID. Everything
+	// else keeps canonical (hyphenated) UUIDs.
 	RGWCompatTenantIDs bool `yaml:"rgw_compat_tenant_ids"`
 }
 

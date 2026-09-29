@@ -107,6 +107,7 @@ keystone:
   token_ttl: 24h
   admin_user: {{ .Values.secrets.adminUser | default "admin" | quote }}
   admin_password: {{ .Values.secrets.adminPassword | quote }}
+  rgw_compat_tenant_ids: {{ .Values.keystone.rgwCompatTenantIds }}
 compute:
   node_id: auto
   tunnel_ip: auto

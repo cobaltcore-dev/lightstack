@@ -16,18 +16,18 @@ import (
 )
 
 // Fixtures for the rgw_compat_tenant_ids tests: a dedicated project with a
-// fixed hyphenated UUID (so the canonical and underscored forms are obvious),
+// fixed hyphenated UUID (so the canonical and dash-free forms are obvious),
 // the member role for the seeded admin (RGW's rgw_keystone_accepted_roles
 // default), and a catalog service whose endpoint URL carries a {project_id}
 // template — proving BuildServiceCatalog keeps receiving the canonical id.
 const (
-	rgwCompatProjectID            = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
-	rgwCompatProjectIDUnderscored = "1a2b3c4d_5e6f_4a7b_8c9d_0e1f2a3b4c5d"
-	rgwCompatProjectName          = "rgw-compat-test-project"
-	rgwCompatServiceID            = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
-	rgwCompatCatalogType          = "rgw-compat-test"
-	rgwCompatSeededAdminID        = "00000000-0000-0000-0000-000000000001"
-	rgwCompatMemberRoleID         = "00000000-0000-0000-0000-000000000004"
+	rgwCompatProjectID         = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+	rgwCompatProjectIDDashFree = "1a2b3c4d5e6f4a7b8c9d0e1f2a3b4c5d"
+	rgwCompatProjectName       = "rgw-compat-test-project"
+	rgwCompatServiceID         = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
+	rgwCompatCatalogType       = "rgw-compat-test"
+	rgwCompatSeededAdminID     = "00000000-0000-0000-0000-000000000001"
+	rgwCompatMemberRoleID      = "00000000-0000-0000-0000-000000000004"
 
 	// rgwCompatTestSecret is the signing secret wired into newRGWCompatRouter;
 	// the edge-case tests below mint their own JWTs with it to reach states
@@ -241,26 +241,19 @@ func decodeValidationBody(t *testing.T, w *httptest.ResponseRecorder) validation
 	return body
 }
 
-// TestRGWCompatTenantID: UUID-shaped ids canonicalize first (uuid.Parse, like
-// Postgres, accepts 32-hex no-dash, uppercase and braced forms — the EC2 blob
-// retains the mint spelling, and a non-canonical spelling would split the S3
-// and Swift tenants), then '-' → '_'. Non-UUID strings pass through with only
-// the character replacement.
-func TestRGWCompatTenantID(t *testing.T) {
+// TestDashFreeTenantID: the RGW boundary uses the existing dash-free form.
+func TestDashFreeTenantID(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{rgwCompatProjectID, rgwCompatProjectIDUnderscored},
-		{"00000000-0000-0000-0000-000000000002", "00000000_0000_0000_0000_000000000002"},
-		// Alternate valid UUID encodings canonicalize to the SAME tenant as
-		// the hyphenated spelling.
-		{"0123456789abcdef0123456789abcdef", "01234567_89ab_cdef_0123_456789abcdef"},
-		{strings.ToUpper(rgwCompatProjectID), rgwCompatProjectIDUnderscored},
-		{"{" + rgwCompatProjectID + "}", rgwCompatProjectIDUnderscored},
-		{"a-b-c", "a_b_c"}, // not a UUID: character replacement only
+		{rgwCompatProjectID, rgwCompatProjectIDDashFree},
+		{"00000000-0000-0000-0000-000000000002", "00000000000000000000000000000002"},
+		{"0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
+		{strings.ToUpper(rgwCompatProjectID), strings.ToUpper(rgwCompatProjectIDDashFree)},
+		{"a-b-c", "abc"},
 		{"", ""},
 	}
 	for _, tc := range cases {
-		if got := rgwCompatTenantID(tc.in); got != tc.want {
-			t.Errorf("rgwCompatTenantID(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := canonicalID(tc.in); got != tc.want {
+			t.Errorf("canonicalID(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -273,14 +266,12 @@ func TestTokenProjectIDGating(t *testing.T) {
 		t.Errorf("flag off (default): tokenProjectID = %q, want canonical %q", got, rgwCompatProjectID)
 	}
 	s.SetRGWCompatTenantIDs(true)
-	if got := s.tokenProjectID(rgwCompatProjectID); got != rgwCompatProjectIDUnderscored {
-		t.Errorf("flag on: tokenProjectID = %q, want %q", got, rgwCompatProjectIDUnderscored)
+	if got := s.tokenProjectID(rgwCompatProjectID); got != rgwCompatProjectIDDashFree {
+		t.Errorf("flag on: tokenProjectID = %q, want %q", got, rgwCompatProjectIDDashFree)
 	}
-	// A 32-hex alternate encoding of the same UUID maps to the SAME tenant
-	// as the hyphenated spelling (canonicalized before encoding), so a
-	// credential minted with either spelling shares Swift's tenant.
-	if got := s.tokenProjectID("0123456789abcdef0123456789abcdef"); got != "01234567_89ab_cdef_0123_456789abcdef" {
-		t.Errorf("flag on, 32-hex id: tokenProjectID = %q, want the canonical underscored form", got)
+	// A 32-hex alternate encoding is already the same dash-free tenant.
+	if got := s.tokenProjectID("0123456789abcdef0123456789abcdef"); got != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("flag on, 32-hex id: tokenProjectID = %q, want the canonical dash-free form", got)
 	}
 }
 
@@ -300,9 +291,9 @@ func TestTokenProjectIDRGWCompat(t *testing.T) {
 		wantID    string
 	}{
 		{"password issue, flag off", false, false, rgwCompatProjectID},
-		{"password issue, flag on", true, false, rgwCompatProjectIDUnderscored},
+		{"password issue, flag on", true, false, rgwCompatProjectIDDashFree},
 		{"token re-scope, flag off", false, true, rgwCompatProjectID},
-		{"token re-scope, flag on", true, true, rgwCompatProjectIDUnderscored},
+		{"token re-scope, flag on", true, true, rgwCompatProjectIDDashFree},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,8 +350,8 @@ func TestTokenProjectIDRGWCompat(t *testing.T) {
 					if !strings.Contains(ep.URL, rgwCompatProjectID) {
 						t.Errorf("catalog endpoint URL %q does not carry the canonical project id %q", ep.URL, rgwCompatProjectID)
 					}
-					if strings.Contains(ep.URL, rgwCompatProjectIDUnderscored) {
-						t.Errorf("catalog endpoint URL %q leaked the underscored project id", ep.URL)
+					if strings.Contains(ep.URL, rgwCompatProjectIDDashFree) {
+						t.Errorf("catalog endpoint URL %q leaked the dash-free project id", ep.URL)
 					}
 				}
 			}
@@ -444,7 +435,7 @@ func TestTokenProjectIDRGWCompatValidation(t *testing.T) {
 		wantID    string
 	}{
 		{"flag off", false, rgwCompatProjectID},
-		{"flag on", true, rgwCompatProjectIDUnderscored},
+		{"flag on", true, rgwCompatProjectIDDashFree},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -516,8 +507,8 @@ func TestTokenProjectIDRGWCompatValidation(t *testing.T) {
 					if !strings.Contains(ep.URL, rgwCompatProjectID) {
 						t.Errorf("catalog endpoint URL %q does not carry the canonical project id %q", ep.URL, rgwCompatProjectID)
 					}
-					if strings.Contains(ep.URL, rgwCompatProjectIDUnderscored) {
-						t.Errorf("catalog endpoint URL %q leaked the underscored project id", ep.URL)
+					if strings.Contains(ep.URL, rgwCompatProjectIDDashFree) {
+						t.Errorf("catalog endpoint URL %q leaked the dash-free project id", ep.URL)
 					}
 				}
 			}
@@ -790,60 +781,43 @@ func postJSON(t *testing.T, r *gin.Engine, method, path, body string, headers ma
 	return w
 }
 
-// TestFromAdvertisedProjectID: the canonicalization helper maps exactly the
-// advertised (underscored UUID) form back to canonical, and passes everything
-// else — canonical UUIDs, non-UUID ids with underscores — through untouched.
-// Nil-safety matters because keystone.Service is built without an AuthService
-// in several test wirings.
-func TestFromAdvertisedProjectID(t *testing.T) {
-	authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
-	authSvc.SetRGWCompatTenantIDs(true)
+// TestDashFreeProjectID: the RGW boundary uses Keystone's established
+// dash-free form while internal project IDs remain canonical UUIDs.
+func TestDashFreeProjectID(t *testing.T) {
 
 	cases := []struct{ in, want string }{
-		{rgwCompatProjectID, rgwCompatProjectID},                                 // canonical: unchanged
-		{rgwCompatProjectIDUnderscored, rgwCompatProjectID},                      // advertised: reversed
+		{rgwCompatProjectID, rgwCompatProjectIDDashFree},                         // canonical UUID becomes dash-free
+		{rgwCompatProjectIDDashFree, rgwCompatProjectIDDashFree},                  // already dash-free
 		{"32hexnodasheshere000000000000000", "32hexnodasheshere000000000000000"}, // hyphen-less: unchanged
-		{"my_underscore_project", "my_underscore_project"},                       // not an advertised form
+		{"my_underscore_project", "my_underscore_project"},                       // non-UUID: unchanged
 		{"", ""},
 	}
 	for _, tc := range cases {
-		if got := authSvc.fromAdvertisedProjectID(tc.in); got != tc.want {
-			t.Errorf("fromAdvertisedProjectID(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := canonicalID(tc.in); got != tc.want {
+			t.Errorf("canonicalID(%q) = %q, want %q", tc.in, got, tc.want)
 		}
-	}
-
-	// Flag off: never canonicalize.
-	off := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
-	if got := off.fromAdvertisedProjectID(rgwCompatProjectIDUnderscored); got != rgwCompatProjectIDUnderscored {
-		t.Errorf("flag off: fromAdvertisedProjectID(%q) = %q, want unchanged", rgwCompatProjectIDUnderscored, got)
-	}
-
-	// Nil AuthService (NewService(nil, nil) wirings): unchanged.
-	var nilSvc *AuthService
-	if got := nilSvc.fromAdvertisedProjectID(rgwCompatProjectIDUnderscored); got != rgwCompatProjectIDUnderscored {
-		t.Errorf("nil receiver: fromAdvertisedProjectID(%q) = %q, want unchanged", rgwCompatProjectIDUnderscored, got)
 	}
 }
 
 // TestScopeByAdvertisedProjectID: the project id exactly as the token
-// envelope advertises it (underscores while rgw_compat_tenant_ids is on)
+// envelope advertises it (dash-free while rgw_compat_tenant_ids is on)
 // must round-trip through every client-input site that accepts a project
 // id: the password scope, the token re-scope, and the EC2 credential
-// tenant_id. Without the canonicalization each lookup missed the canonical
-// row and failed with a confusing 401/404.
+// tenant_id. PostgreSQL accepts the dash-free UUID input; the output encoding
+// remains controlled solely by the flag.
 func TestScopeByAdvertisedProjectID(t *testing.T) {
 	requireDB(t)
 	seedRGWCompatFixtures(t)
 
 	t.Run("flag on: password scope by advertised id", func(t *testing.T) {
 		r := newRGWCompatRouter(true)
-		w := postTokens(t, r, passwordAuthBody(rgwCompatProjectIDUnderscored))
+		w := postTokens(t, r, passwordAuthBody(rgwCompatProjectIDDashFree))
 		if w.Code != http.StatusCreated {
 			t.Fatalf("POST /v3/auth/tokens with advertised id: code=%d body=%s", w.Code, w.Body.String())
 		}
 		body := decodeTokenBody(t, w)
-		if body.Token.Project == nil || body.Token.Project.ID != rgwCompatProjectIDUnderscored {
-			t.Errorf("token.project = %+v, want the advertised underscored id %q", body.Token.Project, rgwCompatProjectIDUnderscored)
+		if body.Token.Project == nil || body.Token.Project.ID != rgwCompatProjectIDDashFree {
+			t.Errorf("token.project = %+v, want the advertised dash-free id %q", body.Token.Project, rgwCompatProjectIDDashFree)
 		}
 	})
 
@@ -853,13 +827,13 @@ func TestScopeByAdvertisedProjectID(t *testing.T) {
 		if unscoped.Code != http.StatusCreated {
 			t.Fatalf("unscoped auth: code=%d body=%s", unscoped.Code, unscoped.Body.String())
 		}
-		w := postTokens(t, r, tokenAuthBody(unscoped.Header().Get("X-Subject-Token"), rgwCompatProjectIDUnderscored))
+		w := postTokens(t, r, tokenAuthBody(unscoped.Header().Get("X-Subject-Token"), rgwCompatProjectIDDashFree))
 		if w.Code != http.StatusCreated {
 			t.Fatalf("re-scope with advertised id: code=%d body=%s", w.Code, w.Body.String())
 		}
 		body := decodeTokenBody(t, w)
-		if body.Token.Project == nil || body.Token.Project.ID != rgwCompatProjectIDUnderscored {
-			t.Errorf("token.project = %+v, want the advertised underscored id %q", body.Token.Project, rgwCompatProjectIDUnderscored)
+		if body.Token.Project == nil || body.Token.Project.ID != rgwCompatProjectIDDashFree {
+			t.Errorf("token.project = %+v, want the advertised dash-free id %q", body.Token.Project, rgwCompatProjectIDDashFree)
 		}
 	})
 
@@ -867,7 +841,7 @@ func TestScopeByAdvertisedProjectID(t *testing.T) {
 		r := newRGWCompatRouter(true)
 		w := postJSON(t, r, http.MethodPost,
 			"/v3/users/"+rgwCompatSeededAdminID+"/credentials/OS-EC2",
-			fmt.Sprintf(`{"tenant_id":%q}`, rgwCompatProjectIDUnderscored),
+			fmt.Sprintf(`{"tenant_id":%q}`, rgwCompatProjectIDDashFree),
 			map[string]string{"X-Test-User": rgwCompatSeededAdminID, "X-Test-Roles": "admin"})
 		if w.Code != http.StatusCreated {
 			t.Fatalf("EC2 mint with advertised tenant_id: code=%d body=%s", w.Code, w.Body.String())
@@ -917,11 +891,15 @@ func TestScopeByAdvertisedProjectID(t *testing.T) {
 		}
 	})
 
-	t.Run("flag off: advertised id is not canonicalized", func(t *testing.T) {
+	t.Run("flag off: dash-free input remains accepted", func(t *testing.T) {
 		r := newRGWCompatRouter(false)
-		w := postTokens(t, r, passwordAuthBody(rgwCompatProjectIDUnderscored))
-		if w.Code != http.StatusUnauthorized {
-			t.Errorf("flag off, scope by underscored id: code=%d body=%s, want 401 (no such canonical project)", w.Code, w.Body.String())
+		w := postTokens(t, r, passwordAuthBody(rgwCompatProjectIDDashFree))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("flag off, scope by dash-free id: code=%d body=%s", w.Code, w.Body.String())
+		}
+		body := decodeTokenBody(t, w)
+		if body.Token.Project == nil || body.Token.Project.ID != rgwCompatProjectID {
+			t.Errorf("flag off: token.project = %+v, want canonical id %q", body.Token.Project, rgwCompatProjectID)
 		}
 	})
 }
@@ -929,8 +907,8 @@ func TestScopeByAdvertisedProjectID(t *testing.T) {
 // TestRenderS3TokenTenantEncoding: /v3/s3tokens must derive its project.id
 // (the RGW S3 implicit tenant) from the same transform as the Swift token
 // payloads whenever rgw_compat_tenant_ids is on, so S3- and Swift-written
-// objects for one project land in ONE implicit tenant. With the flag off the
-// historical dash-free keystone-canonical form is kept. token.user.id is not
+// objects for one project land in ONE implicit tenant. S3 already uses the
+// historical dash-free keystone-canonical form. token.user.id is not
 // used for tenant naming under implicit tenants and stays dash-free either way.
 func TestRenderS3TokenTenantEncoding(t *testing.T) {
 	requireDB(t)
@@ -943,7 +921,7 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 		want      string
 	}{
 		{"flag off: dash-free keystone-canonical form", false, dashFree},
-		{"flag on: underscored, matching the Swift token payload", true, rgwCompatProjectIDUnderscored},
+		{"flag on: dash-free, matching the Swift token payload", true, dashFree},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
@@ -982,10 +960,8 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 
 	// Alternate valid UUID text encodings — accepted by uuid.Parse and by
 	// Postgres on the way in (32 hex chars without dashes, uppercase hex,
-	// braced) — must not split the S3 and Swift tenants: the EC2 blob
-	// retains the mint spelling, so the flag-on encoder canonicalizes
-	// UUID-shaped ids before rendering. The flag-off dash-free rendering is
-	// untouched by this.
+	// braced) — must not split the S3 and Swift tenants. The credential mint
+	// stores the canonical database UUID and the response renders dash-free.
 	t.Run("flag on: alternate UUID encodings canonicalize before encoding", func(t *testing.T) {
 		authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
 		authSvc.SetRGWCompatTenantIDs(true)
@@ -1014,8 +990,8 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 				t.Fatalf("decode s3tokens envelope: %v (body=%s)", err, w.Body.String())
 			}
-			if body.Token.Project.ID != rgwCompatProjectIDUnderscored {
-				t.Errorf("raw %q rendered as %q, want the canonical underscored %q (the SAME tenant as Swift)", raw, body.Token.Project.ID, rgwCompatProjectIDUnderscored)
+			if body.Token.Project.ID != dashFree {
+				t.Errorf("raw %q rendered as %q, want the canonical dash-free %q (the SAME tenant as Swift)", raw, body.Token.Project.ID, dashFree)
 			}
 		}
 	})
@@ -1224,14 +1200,14 @@ func TestValidateTokenDisabledProjectOmitsProject(t *testing.T) {
 		},
 	})
 
-	// Positive control: while enabled, the envelope renders the (underscored,
+	// Positive control: while enabled, the envelope renders the (dash-free,
 	// flag on) project.
 	live := getToken(t, r, token)
 	if live.Code != http.StatusOK {
 		t.Fatalf("GET /v3/auth/tokens (enabled project): code=%d body=%s", live.Code, live.Body.String())
 	}
-	if b := decodeValidationBody(t, live); b.Token.Project == nil || b.Token.Project.ID != strings.ReplaceAll(disabledProjectID, "-", "_") {
-		t.Errorf("enabled project: token.project.id = %+v, want the underscored %q", b.Token.Project, strings.ReplaceAll(disabledProjectID, "-", "_"))
+	if b := decodeValidationBody(t, live); b.Token.Project == nil || b.Token.Project.ID != canonicalID(disabledProjectID) {
+		t.Errorf("enabled project: token.project.id = %+v, want the dash-free %q", b.Token.Project, canonicalID(disabledProjectID))
 	}
 
 	// Disable the project (row and assignments stay).

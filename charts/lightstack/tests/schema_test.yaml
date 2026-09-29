@@ -36,3 +36,13 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "replicaCount|greater than or equal|schema"
+  - it: rejects a non-boolean RGW compatibility flag
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: x
+      secrets.adminPassword: x
+      database.url: postgres://lightstack@db/lightstack
+      keystone.rgwCompatTenantIds: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "rgwCompatTenantIds|boolean|schema"

@@ -232,11 +232,10 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 	// cache the validation until expiry, so a small TTL bounds revocation latency.
 	//
 	// RGW derives the tenant namespace from project.id and only accepts
-	// alphanumerics + underscore (no dashes). With keystone.rgw_compat_tenant_ids
-	// off, project.id keeps the historical keystone-canonical (dash-free) form;
-	// with the flag on it renders in the SAME underscored form as the Swift
-	// token payloads (tokenProjectID), so S3 and Swift derive one implicit
-	// tenant per project and objects stay visible across both protocols.
+	// alphanumerics + underscore (no dashes). S3 has always used Keystone's
+	// historical dash-free canonical form; the RGW compatibility flag makes
+	// Swift token responses use that same form, so S3 and Swift derive one
+	// implicit tenant per project and objects stay visible across both.
 	// token.user.id is not used for tenant naming under implicit tenants and
 	// keeps its dash-free form in either mode.
 	const ksTime = "2006-01-02T15:04:05.000000Z"
@@ -247,7 +246,7 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 			"issued_at":  now.Format(ksTime),
 			"expires_at": now.Add(5 * time.Minute).Format(ksTime),
 			"user":       gin.H{"id": canonicalID(userID), "name": userName, "domain": gin.H{"id": "default", "name": "Default"}},
-			"project":    gin.H{"id": svc.authService.s3TenantProjectID(projectID), "name": projectName, "domain": gin.H{"id": "default", "name": "Default"}},
+			"project":    gin.H{"id": canonicalID(projectID), "name": projectName, "domain": gin.H{"id": "default", "name": "Default"}},
 			"roles":      roles,
 		},
 	})

@@ -92,6 +92,17 @@
       "type": "string",
       "description": "Advertised catalog host (LIGHTSTACK_ENDPOINT_HOST). REQUIRED for external consumers — the Keystone service catalog advertises this host; unset, it advertises localhost (unusable off-node). Empty = in-cluster only."
     },
+    "keystone": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Keystone compatibility options.",
+      "properties": {
+        "rgwCompatTenantIds": {
+          "type": "boolean",
+          "description": "Render project IDs in OpenStack's dash-free RGW-safe form in token responses."
+        }
+      }
+    },
     "service": {
       "type": "object",
       "additionalProperties": false,

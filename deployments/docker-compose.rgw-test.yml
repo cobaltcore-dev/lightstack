@@ -73,7 +73,8 @@ services:
       AWS_SECRET_ACCESS_KEY: "lightstacktestsecret"
       LIGHTSTACK_ENDPOINT_HOST: "localhost"
       # The transform under test (capability C): token payloads advertise
-      # project ids underscored so RGW derives one valid tenant per project.
+      # project ids in OpenStack's dash-free form so RGW derives one valid
+      # tenant per project.
       LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS: "true"
     ports:
       - "45357:35357" # Keystone
