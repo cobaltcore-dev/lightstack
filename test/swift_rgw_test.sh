@@ -144,11 +144,16 @@ if [ "$x_code" = "403" ] || [ "$x_code" = "404" ]; then ok "cross-project read d
 # --- Test 5: radosgw-admin shows the implicit tenant named by the dash-free id ---
 log "T5: radosgw-admin shows the implicit tenant for the dash-free id"
 admin_check() {
-  local rt cid out
+  local rt cid out found_runtime=0 found_container=0
   for rt in docker podman; do
     command -v "$rt" >/dev/null 2>&1 || continue
+    found_runtime=1
     cid="$("$rt" ps --format '{{.Names}}' 2>/dev/null | grep -m1 -E '[-_]rgw[-_][0-9]+$')" || true
-    [ -n "$cid" ] || continue
+    if [ -z "$cid" ]; then
+      echo "no RGW container found via $rt" >&2
+      continue
+    fi
+    found_container=1
     # A found RGW container makes this a REAL check: an exec failure or an
     # empty listing must fail the test, not silently skip it (an unnoticed
     # skip would let the tenant-placement assertion pass without running).
@@ -162,8 +167,15 @@ admin_check() {
     echo "radosgw-admin bucket list does not carry '$PID/$CONTAINER': $out" >&2
     return 1
   done
-  echo "no container runtime / rgw container found; skipping the radosgw-admin check" >&2
-  return 2
+  if [ "$found_runtime" = 0 ]; then
+    echo "no container runtime found; skipping the radosgw-admin check" >&2
+    return 2
+  fi
+  if [ "$found_container" = 0 ]; then
+    echo "container runtime exists but no RGW container was found" >&2
+    return 1
+  fi
+  return 1
 }
 if admin_check; then
   ok "radosgw-admin lists the bucket under the implicit tenant '$PID'"

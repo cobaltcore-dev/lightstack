@@ -41,8 +41,8 @@ type AuthService struct {
 	cache            *cache.Cache
 	glanceS3Endpoint string // resolved cfg.Glance.S3Endpoint, advertised as the `s3` catalog endpoint
 	// rgwCompatTenantIDs is the resolved keystone.rgw_compat_tenant_ids flag:
-	// render token.project.id with '-' → '_' in the token payload (Ceph RGW
-	// compatibility). See SetRGWCompatTenantIDs.
+	// render token.project.id in OpenStack's established dash-free form in the
+	// token payload (Ceph RGW compatibility). See SetRGWCompatTenantIDs.
 	rgwCompatTenantIDs bool
 }
 
