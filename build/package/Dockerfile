@@ -29,6 +29,16 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # Runtime stage - automatically uses target platform
 FROM alpine:3.24
 
+ARG VCS_REF=unknown
+ARG SOURCE_URL=https://github.com/cobaltcore-dev/lightstack
+ARG VERSION=dev
+
+LABEL org.opencontainers.image.title="Lightstack" \
+    org.opencontainers.image.description="Lightweight OpenStack-compatible API service" \
+    org.opencontainers.image.source=$SOURCE_URL \
+    org.opencontainers.image.revision=$VCS_REF \
+    org.opencontainers.image.version=$VERSION
+
 # Install runtime dependencies.
 # qemu-img: per-instance qcow2 overlay staging (WS-0); cdrkit: genisoimage for
 # config-drive cloud-init ISOs (WS-4); dnsmasq: VM DHCP; iproute2/iptables/ipset:
