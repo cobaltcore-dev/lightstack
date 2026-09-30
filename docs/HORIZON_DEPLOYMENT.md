@@ -1,12 +1,18 @@
 # Horizon Dashboard Deployment Guide
 
-**lightstack Version**: v0.5.0+
+**Lightstack Version**: v0.5.0+
 **Last Updated**: 2026-03-13
 **Status**: Production Ready
 
 ## Overview
 
-This guide provides step-by-step instructions for deploying OpenStack Horizon dashboard with Lightstack as the backend. Lightstack provides 100% API compatibility with Horizon, supporting all dashboard features including instance management, networking, volumes, images, and VNC console access.
+This guide provides step-by-step instructions for deploying OpenStack Horizon dashboard with Lightstack as the backend.
+
+> **Scope of compatibility.** Lightstack serves the OpenStack APIs Horizon consumes, and Horizon's read/list
+> panels render against it. The dashboard is **not** a drop-in for resource management: the create/write
+> flows (network, volume, launch) and the noVNC console fail UI-side, while the same operations succeed via
+> API/CLI. See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
+> (findings F1–F11) before relying on any UI workflow below.
 
 ## Prerequisites
 
@@ -34,7 +40,7 @@ cd ~/lightstack-horizon
 Create `local_settings.py`:
 
 ```python
-# lightstack Horizon Configuration
+# Lightstack Horizon Configuration
 import os
 
 # Basic Django Settings
@@ -47,7 +53,7 @@ OPENSTACK_HOST = "lightstack"  # Docker service name (or IP if not using Docker)
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
 OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
 
-# API Version Configuration (matches lightstack)
+# API Version Configuration (matches Lightstack)
 OPENSTACK_API_VERSIONS = {
     "identity": 3,      # Keystone v3
     "image": 2,         # Glance v2
@@ -59,13 +65,15 @@ OPENSTACK_API_VERSIONS = {
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
 OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
 
-# Session Configuration (matches lightstack token TTL)
+# Session Configuration (matches Lightstack token TTL)
 SESSION_TIMEOUT = 14400  # 4 hours
 SESSION_COOKIE_SECURE = False  # Set True with HTTPS in production
 CSRF_COOKIE_SECURE = False     # Set True with HTTPS in production
 
 # Console Access Configuration
-CONSOLE_TYPE = 'novnc'  # VNC console support
+# Required by Horizon, but the noVNC console does not work against Lightstack (finding F1) --
+# see "Console Access" under Configuration below. The serial log (console log show) does work.
+CONSOLE_TYPE = 'novnc'
 
 # Regional Settings
 OPENSTACK_KEYSTONE_REGION_NAME = "RegionOne"
@@ -152,15 +160,18 @@ services:
       retries: 3
       start_period: 60s
 
+  # noVNC console client on a fixed tag (replaces the unmaintained dougw/novnc). Its entrypoint runs
+  # novnc_proxy against VNC_SERVER, so a target is required -- but Lightstack exposes no reachable
+  # guest VNC (finding F1), so VNC_SERVER below is a dead placeholder and the console fails on
+  # connect. The container is kept so the deployment matches the one that was verified.
   novnc:
-    image: dougw/novnc:latest
+    image: bonigarcia/novnc:1.3.0
     container_name: lightstack-novnc
     hostname: novnc
     ports:
       - "6080:6080"
     environment:
-      - DISPLAY_WIDTH=1024
-      - DISPLAY_HEIGHT=768
+      - VNC_SERVER=127.0.0.1:5900
     networks:
       - lightstack-network
     restart: unless-stopped
@@ -173,7 +184,7 @@ services:
 networks:
   lightstack-network:
     external: true
-    name: deployments_lightstack-network  # Must match lightstack network name
+    name: deployments_lightstack-network  # Must match Lightstack network name
 
 volumes:
   horizon-static:
@@ -265,7 +276,7 @@ services:
     environment:
       - KOLLA_INSTALL_TYPE=source
       - KOLLA_CONFIG_STRATEGY=COPY_ALWAYS
-      - OPENSTACK_HOST=host.docker.internal  # For local lightstack
+      - OPENSTACK_HOST=host.docker.internal  # For local Lightstack
       - OPENSTACK_KEYSTONE_URL=http://host.docker.internal:35357/v3
     volumes:
       - ./kolla-config:/var/lib/kolla/config_files:ro
@@ -315,13 +326,18 @@ Horizon resolves Lightstack services using the `OPENSTACK_HOST` setting. Options
 
 ### Console Access
 
+> **Known gap (F1): the noVNC console does not work.** Lightstack returns a synthetic
+> `http://localhost:6080` console URL with an unpersisted token and a fabricated VNC port that is never
+> read back from libvirt, and the proxy is unwired — so the Console tab shows *"Unable to load Console"*.
+> The setting below is kept because Horizon requires it, not because the console functions.
+> Use `openstack console log show <server>` (the serial log), which does work. See
+> [F1 in the compatibility report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
+
 VNC console requires noVNC proxy. Configuration:
 
 ```python
 CONSOLE_TYPE = 'novnc'
 ```
-
-Lightstack generates console tokens that Horizon uses to establish VNC connections through the noVNC proxy (port 6080).
 
 ## Verification
 
@@ -334,7 +350,7 @@ docker compose ps
 # Verify Horizon is responding
 curl -I http://localhost/dashboard/auth/login/
 
-# Check lightstack connectivity from Horizon
+# Check Lightstack connectivity from Horizon
 docker exec lightstack-horizon curl -s http://lightstack:35357/v3 | jq
 ```
 
@@ -349,24 +365,31 @@ docker exec lightstack-horizon curl -s http://lightstack:35357/v3 | jq
 Test key Horizon features:
 
 ```bash
-# Instance Management
+# Instance Management -- the wizard is EXPECTED TO FAIL (finding F7, see the compatibility report)
 # - Navigate to Compute > Instances
 # - Click "Launch Instance"
-# - Verify wizard loads with flavors, images, networks
+# - The wizard loads with flavors and images, but its Networks step will not let you
+#   select a Lightstack network, so the instance cannot be created from the UI.
+# - The API path works -- to actually boot an instance use the CLI instead:
+#     openstack server create --flavor <f> --image <i> --network <n> --key-name <k> vm1
 
 # Network Topology
 # - Navigate to Network > Network Topology
 # - Verify topology visualization loads
 
-# VNC Console
+# VNC Console -- EXPECTED TO FAIL (finding F1, see the compatibility report)
 # - Launch or select an existing instance
 # - Click instance name > Console tab
-# - Verify noVNC console loads
+# - Expect "Unable to load Console" / "Console currently not available"
+# - For working console output use the serial log instead:
+#     openstack console log show <server>
 
-# Volume Management
+# Volume Management -- EXPECTED TO FAIL (findings F8 + F9, see the compatibility report)
 # - Navigate to Volumes > Volumes
-# - Click "Create Volume"
-# - Verify volume creation workflow
+# - The empty panel renders, but "Create Volume" opens no dialog (F8); and once a volume
+#   exists the panel itself returns a 500 (TemplateSyntaxError -- F9).
+# - The API path works -- to actually create a volume use the CLI instead:
+#     openstack volume create --size 1 vol1
 ```
 
 ## Troubleshooting
@@ -432,7 +455,7 @@ docker exec lightstack-horizon ping -c 3 lightstack
    OPENSTACK_HOST = "correct-service-name"
    ```
 
-3. **lightstack not running**: Start Lightstack services:
+3. **Lightstack not running**: Start Lightstack services:
    ```bash
    cd ~/git/lightstack
    docker compose -f deployments/docker-compose.yml up -d
@@ -468,26 +491,19 @@ docker exec lightstack-horizon ping -c 3 lightstack
 
 ### VNC Console Issues
 
-**Symptom**: Console tab shows "Unable to connect"
+**Symptom**: Console tab shows "Unable to load Console" / "Unable to connect"
 
-**Checks**:
+This is **finding F1**, a known Lightstack gap — not a misconfiguration of your deployment. The console URL
+Lightstack returns points at `localhost` with an unpersisted token and a fabricated VNC port, and the noVNC
+proxy is not wired to libvirt, so the browser never reaches a guest. Wiring a real console (token store +
+libvirt VNC-port readback + a real proxy + a configurable URL) is tracked as a follow-up in the
+[compatibility report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
 
-1. Verify noVNC container is running:
-   ```bash
-   docker ps | grep novnc
-   curl http://localhost:6080
-   ```
+**Workaround** — the serial console log works:
 
-2. Check Lightstack Nova console token generation:
-   ```bash
-   # Create instance first
-   openstack server create --flavor m1.small --image cirros test-vm
-
-   # Get console URL
-   openstack console url show test-vm
-   ```
-
-3. Verify network connectivity between Horizon, noVNC, and Lightstack
+```bash
+openstack console log show test-vm
+```
 
 ### Performance Issues
 

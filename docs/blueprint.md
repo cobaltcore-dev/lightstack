@@ -176,7 +176,7 @@ full action set (below).
 | Server tags | ✅ | list / replace / delete-all / add / delete |
 | Server diagnostics | ✅ | `GET /servers/{id}/diagnostics` |
 | Instance actions (os-instance-actions) | ✅ | list / show |
-| Remote consoles | ✅ | `POST /remote-consoles` + legacy `os-get*Console` actions (noVNC, SPICE, serial, RDP) |
+| Remote consoles | ⚠️ | `POST /remote-consoles` + legacy `os-get*Console` actions respond, but return a synthetic `localhost:6080` URL + unpersisted token + no libvirt VNC-port readback → the interactive noVNC console can't display a guest (SPEC-018 F1). Serial console log (`os-getConsoleOutput`) works in real mode. |
 | Volume attachments | ⚠️ | list / show / attach / detach — no `PUT` (swap/update) |
 | Interface attachments | ⚠️ | list / attach / detach — no show-one `GET …/os-interface/{port_id}` |
 | Server migrations | ✅ | `os-migrations` list; per-server list / show / delete (abort) / action |
@@ -206,9 +206,11 @@ code constant is **2.90**; and it lists **unrescue** as implemented — only **r
 "70/76" is a code-review estimate; the route-derived functional count is **71** (§2).
 
 **Validation verdict:** Nova covers the entire compute surface the validation path exercises — full server
-lifecycle and action set, flavors, keypairs, metadata, volume & interface attach, console, quotas, AZ,
-server groups, aggregates, migrations. The sc007 Terraform scenario (boot a server with keypair + user-data,
-attach a volume, associate a floating IP) is fully supported. Every ❌/⚠️ is admin / legacy / enterprise
+lifecycle and action set, flavors, keypairs, metadata, volume & interface attach, quotas, AZ,
+server groups, aggregates, migrations. The one functional caveat is the **interactive remote console** —
+`remote-consoles` responds but the returned noVNC URL is non-functional (⚠️ §3.2; SPEC-018 F1); the serial
+console log works. The sc007 Terraform scenario (boot a server with keypair + user-data, attach a volume,
+associate a floating IP) is fully supported. Every other ❌/⚠️ is admin / legacy / enterprise
 (see [§8.2](#82-nova--not-implemented-endpoints)); none block validation.
 
 ### 3.3 Neutron — Network v2.0 (94 functional operations)
@@ -590,7 +592,8 @@ endpoints per group are separated by a line break (`<br>`).
 
 > **Scope note.** None of the below are on the validation path. The sc007 Terraform scenario and Horizon
 > exercise the server lifecycle + action set, flavors, keypairs, metadata, volume/interface attach,
-> console, quotas and AZ — all ✅ in §3.2. The gaps are admin, legacy nova-network, or enterprise features.
+> quotas and AZ — all ✅ in §3.2 (the interactive remote console is ⚠️: endpoints respond but the noVNC URL
+> is non-functional — SPEC-018 F1). The gaps are admin, legacy nova-network, or enterprise features.
 > Multiple endpoints per group are separated by `<br>`.
 
 | Compute v2.1 group | Impl. | Not-implemented endpoint(s) | Justification |

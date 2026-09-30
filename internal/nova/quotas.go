@@ -70,6 +70,7 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 		var resource string
 		var limit int
 		if err := rows.Scan(&resource, &limit); err != nil {
+			log.Warn().Err(err).Str("operation", "GetQuotaSet").Msg("failed to scan row")
 			continue
 		}
 		quotaSet[resource] = limit

@@ -159,6 +159,8 @@ func (svc *Service) ListRouters(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if routers == nil {
@@ -646,14 +648,17 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 		for rows.Next() {
 			var internalCIDR string
 			if err := rows.Scan(&internalCIDR); err != nil {
+				log.Warn().Err(err).Str("operation", "configureExternalGateway").Msg("failed to scan row")
 				continue
 			}
 			if err := svc.routerManager.EnsureEgressSNAT(internalCIDR, uplink); err != nil {
 				log.Warn().Err(err).Str("router_id", routerID).Str("cidr", internalCIDR).Msg("WS-3: failed to enable egress SNAT")
 			}
 		}
+		// Report a partial read: some internal CIDRs may have no egress SNAT rule.
 		if err := rows.Err(); err != nil {
-			log.Error().Err(err).Msg("rows iteration error")
+			log.Error().Err(err).Str("router_id", routerID).Msg("WS-3: rows iteration error while enabling egress SNAT")
+			return fmt.Errorf("failed to read router internal subnets: %w", err)
 		}
 	}
 

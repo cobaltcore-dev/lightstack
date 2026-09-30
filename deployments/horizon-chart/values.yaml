@@ -1,0 +1,143 @@
+# Verification Horizon chart (SPEC-018).
+# Deploys unmodified kolla Horizon + memcached + noVNC against a real-mode Lightstack on the SAME
+# cluster. Lightstack itself stays ClusterIP and is called by Horizon server-side (research.md U3),
+# so only Horizon (and, for reproduction, noVNC) are exposed via NodePort.
+# See docs/specs/018-horizon-dashboard-verification/.
+#
+# LAB ONLY -- do not expose this release to an untrusted network. The bundled Django config
+# (files/local_settings, synced from deployments/horizon-config by `make horizon-chart-sync`)
+# is deliberately permissive:
+#   DEBUG          -- set from horizon.debug below (default false), so an in-cluster 500 (e.g.
+#                     finding F9) renders no traceback in the browser; the exception is still in
+#                     the pod log.
+#   ALLOWED_HOSTS  -- set from horizon.allowedHosts below (default "*"). Permissive on purpose:
+#                     the documented way in is http://<node-ip>:30080/dashboard, so pinning a
+#                     single host would make Django answer 400 to every request (DEBUG=false
+#                     makes ALLOWED_HOSTS mandatory). Narrow it before sharing.
+#   SESSION_COOKIE_SECURE / CSRF_COOKIE_SECURE = False -- nothing terminates TLS in front of
+#                     Horizon here. Set both True once something does.
+# DEBUG and ALLOWED_HOSTS are env-driven, so use the values above. For anything else, edit
+# deployments/horizon-config/local_settings, re-run `make horizon-chart-sync`, commit files/.
+
+nameOverride: ""
+fullnameOverride: ""
+
+lightstack:
+  # -- The in-cluster Lightstack API Service the Horizon pod calls server-side (Keystone at :35357).
+  #    Set this to your lightstack release's Service name — e.g. "lightstack-lightstack" (release "lightstack" + chart "lightstack"),
+  #    or the FQDN "lightstack-lightstack.<namespace>.svc". Injected into Horizon as the OPENSTACK_HOST env var;
+  #    local_settings derives OPENSTACK_KEYSTONE_URL and AVAILABLE_REGIONS from it.
+  host: "lightstack-lightstack"
+
+horizon:
+  # -- Django SECRET_KEY. Signs CSRF tokens and the messages cookie, and apache runs
+  #    processes=3, so all workers MUST share one value or a token minted by one worker is
+  #    rejected by the others. A file-based fallback cannot work in the kolla image (start-up
+  #    imports the settings as root, the WSGI daemon runs as `horizon`), so it is injected
+  #    here. Change it for anything beyond a lab.
+  secretKey: "lightstack-horizon-verification-only-change-me"
+  # -- Django DEBUG. False renders no traceback in the browser on a 500 (the exception is still
+  #    in the pod log). Only turn it on to debug this chart, never where it is reachable.
+  debug: false
+  # -- Django ALLOWED_HOSTS, comma-separated. Permissive by default because DEBUG=False makes
+  #    this mandatory and the documented entry point is http://<node-ip>:30080/dashboard, so
+  #    pinning one host would 400 every request. Narrow it for anything shared.
+  allowedHosts: "*"
+  image:
+    repository: quay.io/openstack.kolla/horizon
+    tag: "2025.2-ubuntu-noble"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: NodePort
+    port: 80
+    nodePort: 30080
+  # kolla Horizon runs apache as root and binds :80 (files/ports.conf "Listen 80"), dropping
+  # privileges internally — runAsNonRoot / dropping NET_BIND_SERVICE would break it. So the
+  # container securityContext is left empty by default; set it here if your image permits.
+  #
+  # CONSEQUENCE: install this into a namespace whose Pod Security Admission profile is
+  # `privileged` or `baseline`. Under `restricted` the pod is rejected at admission and Helm
+  # reports success while nothing runs. memcached and noVNC below ARE hardened; only Horizon
+  # needs the exemption.
+  #
+  # Non-root recipe, if your cluster requires it (three coupled edits — ports.conf is shared
+  # with the docker-compose path, so change it via horizon-config + `make horizon-chart-sync`):
+  #   1. deployments/horizon-config/apache/ports.conf: `Listen 80` -> `Listen 8080`
+  #   2. templates/horizon-deployment.yaml: containerPort + the three probe ports -> 8080
+  #   3. templates/horizon-service.yaml: targetPort -> 8080
+  # then set containerSecurityContext below to runAsNonRoot: true with the kolla uid.
+  containerSecurityContext: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+
+memcached:
+  image:
+    repository: memcached
+    tag: "1.6-alpine"
+    pullPolicy: IfNotPresent
+  # Service is release-qualified (<release>-memcached); Horizon is pointed at it via the
+  # MEMCACHED_LOCATION env the horizon Deployment injects.
+  memoryMb: 64
+  # Binds unprivileged :11211 and needs no capabilities — safe to harden.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 192Mi
+
+# noVNC console client. KNOWN GAP (research.md U1 / finding F1): Lightstack's Nova returns a
+# hardcoded http://localhost:6080 console URL with a random, unpersisted token and a
+# fabricated VNC port (never read from libvirt — see internal/nova/console.go), so no
+# proxy can resolve a guest and the Horizon Console tab stays "unavailable". Deployed only
+# to reproduce that, with a maintained image on a fixed tag; disable if not needed.
+novnc:
+  enabled: true
+  image:
+    # bonigarcia/novnc — maintained (Apache-2.0), Alpine noVNC client, serves :6080.
+    # Tag-pinned, not digest-pinned: a registry retag changes what this deploys. Accepted
+    # here because the container is a dead placeholder (see vncServer below) that cannot
+    # move a verdict, and the other two images in this file are specified the same way.
+    # Override with a digest if you need byte-level reproducibility.
+    # Not kolla nova-novncproxy:2025.2 (needs nova.conf + a console-auth callback Lightstack lacks) —
+    # see docs/specs/018-horizon-dashboard-verification/research.md U1.
+    repository: bonigarcia/novnc
+    tag: "1.3.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: NodePort
+    port: 6080
+    nodePort: 30680
+  # VNC target the client fronts. Lightstack exposes no reachable guest VNC (F1), so this is a
+  # deliberate dead placeholder: the pod boots and serves noVNC, the console fails on
+  # connect — exactly the F1 behavior. Point at a real host:port if Lightstack ever exposes one.
+  vncServer: "127.0.0.1:5900"
+  # Binds unprivileged :6080 — safe to harden (rootfs left writable; websockify may use /tmp).
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+# Left empty: see the PSA note under horizon.containerSecurityContext above.
+podSecurityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

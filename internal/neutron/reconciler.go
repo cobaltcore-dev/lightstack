@@ -85,7 +85,12 @@ func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 			var cidr string
 			if err := rows.Scan(&cidr); err == nil {
 				cidrs = append(cidrs, cidr)
+			} else {
+				log.Warn().Err(err).Str("operation", "reconcileNAT").Msg("failed to scan NAT subnet row")
 			}
+		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("reconcile: NAT subnet rows error; egress set may be incomplete this pass")
 		}
 		rows.Close()
 	} else {
@@ -101,9 +106,14 @@ func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 		WHERE port_id IS NOT NULL AND fixed_ip_address IS NOT NULL`); err == nil {
 		for rows.Next() {
 			var f fipRow
-			if err := rows.Scan(&f.floating, &f.fixed, &f.port); err == nil && f.floating != "" && f.fixed != "" {
+			if err := rows.Scan(&f.floating, &f.fixed, &f.port); err != nil {
+				log.Warn().Err(err).Str("operation", "reconcileNAT").Msg("failed to scan floating IP row")
+			} else if f.floating != "" && f.fixed != "" {
 				fips = append(fips, f)
 			}
+		}
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Msg("reconcile: floating IP rows error; NAT set may be incomplete this pass")
 		}
 		rows.Close()
 	} else {
@@ -127,7 +137,7 @@ func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 		if err := r.svc.routerManager.EnsureFloatingIP(f.floating, f.fixed, uplink); err != nil {
 			log.Debug().Err(err).Str("floating_ip", f.floating).Msg("reconcile: floating IP")
 		}
-		if err := r.svc.routerManager.EnsureIngressFilter(f.fixed, uplink, r.svc.portIngressRules(ctx, f.port)); err != nil {
+		if err := r.svc.ensureIngressFilter(ctx, f.fixed, uplink, f.port); err != nil {
 			log.Debug().Err(err).Str("fixed_ip", f.fixed).Msg("reconcile: ingress filter")
 		}
 	}
@@ -145,13 +155,17 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 	var ids []string
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err == nil {
+		if err := rows.Scan(&id); err != nil {
+			log.Warn().Err(err).Str("operation", "reconcileNetworks").Msg("failed to scan row")
+		} else {
 			ids = append(ids, id)
 		}
 	}
 	rows.Close()
+	// Don't reconcile from a known-incomplete list; the next periodic pass retries.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("reconcile: networks rows error")
+		log.Error().Err(err).Msg("reconcile: networks rows error; skipping this pass")
+		return
 	}
 
 	for _, networkID := range ids {
@@ -206,13 +220,17 @@ func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
 	var networkIDs []string
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err == nil {
+		if err := rows.Scan(&id); err != nil {
+			log.Warn().Err(err).Str("operation", "reconcileSubnets").Msg("failed to scan row")
+		} else {
 			networkIDs = append(networkIDs, id)
 		}
 	}
 	rows.Close()
+	// Don't reconcile from a known-incomplete list; the next periodic pass retries.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("reconcile: subnets rows error")
+		log.Error().Err(err).Msg("reconcile: subnets rows error; skipping this pass")
+		return
 	}
 	for _, networkID := range networkIDs {
 		r.svc.applyDHCPForNetwork(ctx, networkID, false)
@@ -304,6 +322,7 @@ func (svc *Service) dhcpReservations(ctx context.Context, networkID string) []ne
 		var mac string
 		var fixedIPsRaw []byte
 		if err := rows.Scan(&mac, &fixedIPsRaw); err != nil {
+			log.Warn().Err(err).Str("operation", "dhcpReservations").Msg("failed to scan row")
 			continue
 		}
 		var fixedIPs []struct {

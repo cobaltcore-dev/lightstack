@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightstack-horizon.fullname" . }}-memcached
+  labels:
+    {{- include "lightstack-horizon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: memcached
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "lightstack-horizon.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: memcached
+  template:
+    metadata:
+      labels:
+        {{- include "lightstack-horizon.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: memcached
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: memcached
+          image: "{{ .Values.memcached.image.repository }}:{{ .Values.memcached.image.tag }}"
+          imagePullPolicy: {{ .Values.memcached.image.pullPolicy }}
+          {{- with .Values.memcached.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["memcached", "-m", {{ .Values.memcached.memoryMb | quote }}]
+          ports:
+            - name: memcached
+              containerPort: 11211
+          {{- with .Values.memcached.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+{{/*
+  Release-qualified Service name. Horizon's CACHES LOCATION is pointed here via the
+  MEMCACHED_LOCATION env the horizon Deployment injects; local_settings falls back to the
+  docker-compose "memcached:11211" when that env is unset.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lightstack-horizon.fullname" . }}-memcached
+  labels:
+    {{- include "lightstack-horizon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: memcached
+spec:
+  selector:
+    {{- include "lightstack-horizon.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: memcached
+  ports:
+    - name: memcached
+      port: 11211
+      targetPort: 11211
+      protocol: TCP

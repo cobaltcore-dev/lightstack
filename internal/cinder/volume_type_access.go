@@ -144,7 +144,9 @@ func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 	access := []map[string]any{}
 	for rows.Next() {
 		var volumeTypeID, projectID uuid.UUID
-		if rows.Scan(&volumeTypeID, &projectID) == nil {
+		if err := rows.Scan(&volumeTypeID, &projectID); err != nil {
+			log.Warn().Err(err).Str("operation", "ListVolumeTypeAccess").Msg("failed to scan row")
+		} else {
 			access = append(access, map[string]any{
 				"volume_type_id": volumeTypeID.String(),
 				"project_id":     projectID.String(),

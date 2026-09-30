@@ -39,6 +39,7 @@ func (svc *Service) ListTenantUsage(c *gin.Context) {
 		var totalHours, totalVCPUs, totalMemoryMB, totalLocalGB float64
 
 		if err := rows.Scan(&projectID, &totalInstances, &totalHours, &totalVCPUs, &totalMemoryMB, &totalLocalGB); err != nil {
+			log.Warn().Err(err).Str("operation", "ListTenantUsage").Msg("failed to scan row")
 			continue
 		}
 

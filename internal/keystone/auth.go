@@ -302,6 +302,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		for rows.Next() {
 			var roleName string
 			if err := rows.Scan(&roleName); err != nil {
+				log.Warn().Err(err).Str("operation", "AuthenticatePassword").Msg("failed to scan row")
 				return nil, "", fmt.Errorf("failed to scan role: %w", err)
 			}
 			roles = append(roles, roleName)
@@ -502,6 +503,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		for rows.Next() {
 			var roleName string
 			if err := rows.Scan(&roleName); err != nil {
+				log.Warn().Err(err).Str("operation", "AuthenticateToken").Msg("failed to scan row")
 				return nil, "", fmt.Errorf("failed to scan role: %w", err)
 			}
 			roles = append(roles, roleName)
@@ -862,14 +864,17 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache, s3Endpoin
 		)
 
 		if err := rows.Scan(&serviceID, &svcType, &svcName, &endpointID, &iface, &url, &region); err != nil {
+			log.Warn().Err(err).Str("operation", "BuildServiceCatalog").Msg("failed to scan row")
 			continue
 		}
 
 		// The `s3` (Ceph RGW) service is an external endpoint configured out-of-band.
 		// Serve the resolved config value (cfg.Glance.S3Endpoint — YAML or env, wired
 		// via SetGlanceS3Endpoint, same source the S3 client uses), never migration
-		// 062's seeded placeholder (substituteURLTemplates rewrites only `http://lightstack:`,
-		// never `localhost`) nor the Lightstack host; omit it when RGW isn't configured.
+		// 062's seeded placeholder nor the lightstack host; omit it when RGW isn't configured.
+		// substituteURLTemplates rewrites both the `lightstack` and `localhost` hosts to the
+		// configured endpoint host, so it would turn that seed into the LIGHTSTACK host — which
+		// is still the wrong target for an external RGW, hence this special case.
 		// Matches the fallback catalog (PR #73 review r3558646680).
 		if svcType == "s3" && s3Endpoint == "" {
 			continue
@@ -902,8 +907,12 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache, s3Endpoin
 			serviceMap[serviceID].Endpoints = append(serviceMap[serviceID].Endpoints, endpoint)
 		}
 	}
+	// A partial read must not become the served catalog: it would be cached for 24h
+	// (below) and hand every token issued in that window a catalog with endpoints
+	// missing. Fall back to the complete hardcoded catalog and do NOT cache.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("rows iteration error")
+		log.Error().Err(err).Msg("service catalog rows iteration error; serving hardcoded catalog uncached")
+		return buildHardcodedCatalog(projectID, s3Endpoint)
 	}
 
 	// Convert map to slice
@@ -945,6 +954,12 @@ func substituteURLTemplates(url, projectID string) string {
 	url = strings.ReplaceAll(url, "http://lightstack:", "http://"+baseHost+":")
 	// Also handle https://lightstack: for future SSL support
 	url = strings.ReplaceAll(url, "https://lightstack:", "https://"+baseHost+":")
+	// Also rewrite localhost-seeded endpoints (e.g. the cinder `volume` alias from
+	// migration 054, which migration 052's one-shot lightstack rewrite never reached) so they
+	// aren't pinned to localhost in non-local deployments (F5, FR-006/007). No-op when
+	// the host is unset (baseHost defaults to localhost above).
+	url = strings.ReplaceAll(url, "http://localhost:", "http://"+baseHost+":")
+	url = strings.ReplaceAll(url, "https://localhost:", "https://"+baseHost+":")
 
 	// Apply the configured advertised scheme (SPEC-007 WS-3, FR-010/012/013).
 	url = common.ForceScheme(url, common.EndpointScheme())

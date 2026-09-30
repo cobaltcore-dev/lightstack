@@ -164,3 +164,47 @@ func TestHardcodedCatalogS3FromConfig(t *testing.T) {
 		t.Fatal("unconfigured: fallback must not advertise an s3 endpoint")
 	}
 }
+
+// TestSubstituteURLTemplatesRewritesLocalhost: with a configured endpoint host,
+// substitution rewrites a localhost-seeded URL (the cinder `volume` alias …015,
+// migration 054) to that host — not just the `http://lightstack:` prefix (F5, FR-006/007).
+// No DB required — substituteURLTemplates is pure.
+func TestSubstituteURLTemplatesRewritesLocalhost(t *testing.T) {
+	setSchemeEnv(t, "") // LIGHTSTACK_ENDPOINT_HOST=lightstack.example.com, scheme unset (http)
+
+	got := substituteURLTemplates("http://localhost:8776/v3", "proj1")
+	if strings.Contains(got, "localhost") {
+		t.Errorf("localhost not rewritten: %q", got)
+	}
+	if !strings.Contains(got, "lightstack.example.com:8776") {
+		t.Errorf("expected configured host, got %q", got)
+	}
+
+	// The existing http://lightstack: rewrite still works (no regression).
+	if got := substituteURLTemplates("http://lightstack:9696", "p"); !strings.Contains(got, "lightstack.example.com:9696") {
+		t.Errorf("lightstack prefix rewrite regressed: %q", got)
+	}
+}
+
+// TestSubstituteURLTemplatesLocalhostUnsetNoop: with no endpoint host configured
+// (dev/CI default), a localhost URL stays localhost — the fix must not break the
+// local case (F5, FR edge case).
+func TestSubstituteURLTemplatesLocalhostUnsetNoop(t *testing.T) {
+	for _, k := range []string{"LIGHTSTACK_ENDPOINT_HOST", "LIGHTSTACK_ENDPOINT_SCHEME"} {
+		v, had := os.LookupEnv(k)
+		k := k
+		t.Cleanup(func() {
+			if had {
+				os.Setenv(k, v)
+			} else {
+				os.Unsetenv(k)
+			}
+		})
+		os.Unsetenv(k)
+	}
+
+	got := substituteURLTemplates("http://localhost:8776/v3", "p")
+	if !strings.Contains(got, "localhost:8776") {
+		t.Errorf("localhost must be preserved when host unset, got %q", got)
+	}
+}

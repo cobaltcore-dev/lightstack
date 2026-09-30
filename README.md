@@ -11,7 +11,7 @@
 
 ## 🎉 Milestone: 104% API Coverage - Full Terraform Compatibility!
 
-With **104% API coverage (342/330 endpoints)**, lightstack delivers complete OpenStack Terraform provider compatibility. Users can use existing Terraform scripts, Horizon UI, and OpenStack CLI without any modifications - zero difference between OpenStack and lightstack.
+With **104% API coverage (342/330 endpoints)**, lightstack delivers complete OpenStack Terraform provider compatibility. Existing Terraform scripts and OpenStack CLI commands run against lightstack without any modifications. The Horizon **UI is not a drop-in for resource management** — its read/list panels render, but create/write flows fail ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md)).
 
 ## 🎯 What is lightstack?
 
@@ -19,7 +19,7 @@ Just as **K3s** is to Kubernetes, **lightstack** is to OpenStack:
 - **Lightweight**: Single ~35MB binary vs multi-GB Python distributions
 - **Fast**: Go-based synchronous architecture (10x faster than traditional OpenStack)
 - **Simple**: One process, one database, zero message queues
-- **Drop-in Compatible**: Use existing Terraform scripts, Horizon UI, and OpenStack CLI unchanged
+- **Drop-in Compatible**: Use existing Terraform scripts and OpenStack CLI unchanged (Horizon's UI is API-compatible but **not** a drop-in for resource management — see the [compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - **Production Ready**: All HIGH and MEDIUM priority features complete
 - **Modern**: Supports OpenStack Flamingo (2025.2) and later versions only
 
@@ -59,7 +59,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list.
 **Zero-Modification Migration**: lightstack provides complete API compatibility - use your existing tools unchanged.
 
 - ✅ **Terraform Provider**: All `openstack_*` resources work identically (compute, network, storage)
-- ✅ **Horizon Dashboard**: 100% UI compatibility - same workflows, same interface
+- ⚠️ **Horizon Dashboard**: API-compatible, but the **UI is not a drop-in for resource management** — read/list panels render, create/write flows fail ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ **OpenStack CLI**: All `openstack` commands function identically
 - ✅ **gophercloud SDK**: Full Go client library compatibility
 - ✅ **python-openstackclient**: Python client verified
@@ -126,7 +126,7 @@ Just as K3s removed heavyweight components from Kubernetes:
 - [Getting Started](docs/QUICKSTART.md) - 5-minute quick start
 - [Single-Node Deployment](docs/SINGLE_NODE_DEPLOYMENT.md) - Deploy with real KVM on one host
 - [Production Scaling](docs/SCALING.md) - Multi-node HA cluster (3-node to 10+)
-- [Horizon Full Compatibility Report](docs/HORIZON_FULL_COMPATIBILITY_REPORT.md) ⭐ **NEW** - Complete 100% Horizon compatibility verification
+- [Horizon Compatibility Report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md) ⭐ **NEW** - Browser-level verification: API/CLI compatible, dashboard **not** a drop-in for resource management (findings F1–F11)
 - [Horizon Integration](docs/HORIZON_INTEGRATION.md) - Web dashboard integration architecture
 - [API Coverage Report](docs/API_COVERAGE_REPORT.md) - Complete 104% coverage analysis
 
@@ -230,14 +230,15 @@ See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the complete quick start guide.
 
 **IMPORTANT**: Horizon dashboard integration is **extended functionality** (not core lightstack feature). Horizon requires independent setup and configuration to work with lightstack. See setup guides below for detailed integration steps.
 
-lightstack provides 100% API compatibility with OpenStack Horizon dashboard (Flamingo 2025.2 and later). All Horizon features work seamlessly with lightstack as the backend.
+Lightstack serves the OpenStack APIs that Horizon (Flamingo 2025.2 and later) consumes, and Horizon's read/list panels render against it. **The dashboard is not usable for resource management**: every create/write flow — network, volume, launch, console — fails UI-side, while the same operations succeed via API/CLI. See the [Horizon Compatibility Report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F11).
 
-**Features**:
-- ✅ Instance lifecycle (launch, start, stop, delete, resize, rebuild)
-- ✅ VNC console access (integrated with noVNC proxy)
-- ✅ Network topology visualization
-- ✅ Volume management (create, attach, snapshot)
-- ✅ Image management (upload, download, launch)
+**Features** — each works through the **API/CLI**; the trailing note is the *dashboard* status from the
+[compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md):
+- ✅ Instance lifecycle (launch, start, stop, delete, resize, rebuild) — ⚠️ UI launch wizard cannot select a network (F7)
+- ✅ VNC console access (integrated with noVNC proxy) — ❌ UI console shows no guest (F1); `openstack console log show` works
+- ✅ Network topology visualization — ⚠️ no Create Network button in the Project panel, and networks list twice (F3, F4)
+- ✅ Volume management (create, attach, snapshot) — ❌ UI Create Volume opens no dialog, and the list 500s once a volume exists (F8, F9)
+- ✅ Image management (upload, download, launch) — ⚠️ UI image delete is a no-op (F6)
 - ✅ Security groups and firewall rules
 - ✅ Floating IPs and port forwarding
 - ✅ Multi-project isolation and RBAC
@@ -427,7 +428,7 @@ The seed data creates:
 - ✅ **TDD Methodology**: All endpoints developed test-first (RED → GREEN → REFACTOR)
 - ✅ **20+ Integration Tests**: Bash scripts with OpenStack CLI validation
 - ✅ **Schema Validation**: OpenStack API spec compliance
-- ✅ **Horizon Testing**: Full dashboard compatibility verified
+- ⚠️ **Horizon Testing**: browser-level verification done — API/CLI compatible, UI create/write flows fail ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ **Client Compatibility**: OpenStack CLI, Terraform, gophercloud, python-openstackclient
 - 🚀 **CI/CD Strategy**: Comprehensive E2E and automation plan - [E2E_CI_TESTING_STRATEGY.md](E2E_CI_TESTING_STRATEGY.md)
 
@@ -482,7 +483,7 @@ The seed data creates:
 - ✅ Multi-backend storage (Ceph RBD, S3, hybrid failover)
 - ✅ VXLAN multi-node networking
 - ✅ L3 routing, floating IPs, and port forwarding
-- ✅ Horizon dashboard 100% compatibility
+- ⚠️ Horizon dashboard: API-compatible; UI resource management **not** a drop-in (F1–F11)
 - ✅ Comprehensive test coverage (71 contract test files, 20+ integration tests)
 - ✅ Production deployments validated
 - ✅ Performance optimization (pagination, indexes)
@@ -535,7 +536,7 @@ Contributions welcome! See `docs/CONTRIBUTING.md` for guidelines.
 - **[Multi-Architecture](docs/MULTIARCH.md)** - ARM64 and AMD64 support
 
 ### Dashboard Integration
-- **[Horizon Integration](docs/HORIZON_INTEGRATION.md)** - Integration overview (100% compatible)
+- **[Horizon Integration](docs/HORIZON_INTEGRATION.md)** - Integration overview (API-compatible; UI not a drop-in)
 - **[Horizon Deployment](docs/HORIZON_DEPLOYMENT.md)** - Deploy Horizon separately
 - **[Horizon Setup](docs/HORIZON_SETUP.md)** - Configuration and troubleshooting
 - **[Elektra Analysis](docs/ELEKTRA_INTEGRATION_ANALYSIS.md)** ⭐ NEW - SAP Elektra (not compatible)
@@ -582,7 +583,7 @@ Apache License 2.0 - See [LICENSE](LICENSE)
 
 ---
 
-**Status**: ✅ v0.6.0 Production Ready | **Coverage**: 104% (342/330 endpoints) | **Horizon**: 100% Compatible
+**Status**: ✅ v0.6.0 Production Ready | **Coverage**: 104% (342/330 endpoints) | **Horizon**: API-compatible; UI not a drop-in
 **Build**: ✅ SUCCESS (35MB) | **Tests**: ✅ 157/191 Contract Tests PASS (82%)
 **Achievement**: 🎉 Exceeds OpenStack Baseline by 12 Endpoints
 **Updated**: March 17, 2026

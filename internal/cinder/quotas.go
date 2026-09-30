@@ -54,12 +54,16 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 		for rows.Next() {
 			var resource string
 			var limit int
-			if err := rows.Scan(&resource, &limit); err == nil {
+			if err := rows.Scan(&resource, &limit); err != nil {
+				log.Warn().Err(err).Str("operation", "GetQuotaSet").Msg("failed to scan row")
+			} else {
 				quotas[resource] = limit
 			}
 		}
 		if err := rows.Err(); err != nil {
 			log.Error().Err(err).Msg("rows iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to read results"))
+			return
 		}
 	}
 
@@ -159,12 +163,16 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 		for rows.Next() {
 			var resource string
 			var limit int
-			if err := rows.Scan(&resource, &limit); err == nil {
+			if err := rows.Scan(&resource, &limit); err != nil {
+				log.Warn().Err(err).Str("operation", "UpdateQuotaSet").Msg("failed to scan row")
+			} else {
 				defaults[resource] = limit
 			}
 		}
 		if err := rows.Err(); err != nil {
 			log.Error().Err(err).Msg("rows iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to read results"))
+			return
 		}
 	}
 

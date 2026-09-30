@@ -226,9 +226,16 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 		defer rows.Close()
 		for rows.Next() {
 			var name string
-			if rows.Scan(&name) == nil {
+			if err := rows.Scan(&name); err != nil {
+				log.Warn().Err(err).Str("operation", "renderS3Token").Msg("failed to scan role row")
+			} else {
 				roles = append(roles, gin.H{"name": name})
 			}
+		}
+		// Log rather than fail the token: RGW uses the role list for tenant mapping, and
+		// refusing the token outright would deny S3 access entirely.
+		if err := rows.Err(); err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("s3token role rows iteration error; role list may be truncated")
 		}
 	}
 

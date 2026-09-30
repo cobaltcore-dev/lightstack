@@ -31,6 +31,7 @@ func (svc *Service) ListGroups(c *gin.Context) {
 		var createdAt time.Time
 
 		if err := rows.Scan(&id, &name, &domainID, &description, &createdAt); err != nil {
+			log.Warn().Err(err).Str("operation", "ListGroups").Msg("failed to scan row")
 			continue
 		}
 
@@ -46,6 +47,8 @@ func (svc *Service) ListGroups(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if groups == nil {
@@ -258,6 +261,7 @@ func (svc *Service) ListGroupUsers(c *gin.Context) {
 		var enabled bool
 
 		if err := rows.Scan(&id, &name, &domainID, &enabled); err != nil {
+			log.Warn().Err(err).Str("operation", "ListGroupUsers").Msg("failed to scan row")
 			continue
 		}
 
@@ -270,6 +274,8 @@ func (svc *Service) ListGroupUsers(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to read results"))
+		return
 	}
 
 	if users == nil {

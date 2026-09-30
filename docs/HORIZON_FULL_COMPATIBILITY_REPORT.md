@@ -2,15 +2,30 @@
 
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
-**Date**: March 17, 2026
-**Status**: ✅ **100% Compatible**
-**Coverage**: 342/330 endpoints (104%)
+> **⚠️ SUPERSEDED (2026-07-23) — see [`compatibility/HORIZON_COMPATIBILITY_REPORT.md`](compatibility/HORIZON_COMPATIBILITY_REPORT.md).**
+> This document (SPEC-002) measured **API-endpoint coverage**, not a working dashboard. The SPEC-018
+> browser-level verification (stub + real, host-run) found that while Lightstack's **API/CLI is compatible** and
+> its real backends work end-to-end (VM boots from a Ceph-RGW image, real networking, metadata/cloud-init,
+> SSH), the Horizon **dashboard is _not_ usable for resource management** — every create/write workflow is
+> broken (findings F1–F11). The sections below have been reduced to what SPEC-002 actually measured —
+> **API-endpoint coverage** — with UI verdicts deferred to the SPEC-018 report.
+
+**Date**: March 17, 2026 (original)
+**Status**: ⚠️ **API endpoints: broad coverage; Horizon UI: NOT a drop-in for resource management** — see the SPEC-018 report
+**Coverage**: 342/330 endpoints (104%) — endpoint count only; does not imply a working dashboard
 
 ## Executive Summary
 
-Lightstack achieves **100% compatibility with OpenStack Horizon dashboard** (Flamingo 2025.2 release). All critical dashboard pages function correctly with full feature parity to standard OpenStack deployments.
+**Scope of this document: API-endpoint coverage.** Lightstack serves 342/330 (104%) of the OpenStack API
+endpoints Horizon consumes, across Nova, Neutron, Cinder, Glance and Keystone, with the authentication,
+microversion, error-handling and performance behaviour documented in the sections below. That result
+stands and is cited by the superseding report.
 
-**Key Achievement**: Horizon dashboard works without any modifications, custom patches, or workarounds.
+**What this document does _not_ establish: that the dashboard works.** Endpoint coverage was measured
+from API traces, never from a browser-level check of the UI. The SPEC-018 verification that did run one
+found the Horizon UI is **not** a drop-in for resource management — every create/write workflow fails
+UI-side (findings F1–F11) while the same operations succeed via API/CLI. **For any statement about UI
+behaviour, read the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md), not this file.**
 
 ## Verification Methodology
 
@@ -26,52 +41,60 @@ Lightstack achieves **100% compatibility with OpenStack Horizon dashboard** (Fla
 3. **Contract Testing**: 17 automated tests using gophercloud
 4. **Integration Workflows**: Complete end-to-end scenarios (VM creation, network setup, volume attachment)
 
-## Dashboard Page Compatibility Matrix
+## Dashboard Page API Coverage Matrix
+
+The **APIs served** column means Lightstack answers every API call the page makes — that is what was
+measured. It is **not** a UI verdict; where SPEC-018 found the page unusable, the finding is named in the
+last column. Full detail in the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
 
 ### Project Dashboard (`/dashboard/project/`)
 
-| Page | Status | API Dependencies | Notes |
-|------|--------|------------------|-------|
-| **Overview** | ✅ 100% | Nova, Cinder, Neutron quotas | Usage charts, resource summaries |
-| **Instances** | ✅ 100% | Nova servers, flavors, images | Create, start, stop, delete, console |
-| **Volumes** | ✅ 100% | Cinder volumes, snapshots, backups | CRUD operations, attach/detach |
-| **Images** | ✅ 100% | Glance images | Upload, download, delete, visibility |
-| **Network Topology** | ✅ 100% | Neutron networks, routers, instances | Visual topology map |
-| **Networks** | ✅ 100% | Neutron networks, subnets | CRUD operations, DHCP configuration |
-| **Routers** | ✅ 100% | Neutron routers, interfaces | External gateways, static routes |
-| **Security Groups** | ✅ 100% | Neutron security groups, rules | Port-based firewall rules |
-| **Floating IPs** | ✅ 100% | Neutron floating IPs, ports | Allocate, associate, disassociate |
-| **Key Pairs** | ✅ 100% | Nova keypairs | Import public keys, SSH access |
-| **API Access** | ✅ 100% | Keystone endpoints, credentials | Service catalog, OpenStack RC file |
+| Page | APIs served | API Dependencies | Notes (UI verdict per SPEC-018) |
+|------|-------------|------------------|-------|
+| **Overview** | ✅ | Nova, Cinder, Neutron quotas | ❌ UI: limits widget errors (**F2**) |
+| **Instances** | ✅ | Nova servers, flavors, images | ❌ UI: launch wizard can't select a network (**F7**); console shows no guest (**F1**) |
+| **Volumes** | ✅ | Cinder volumes, snapshots, backups | ❌ UI: Create Volume opens no dialog (**F8**); panel 500s once a volume exists (**F9**) |
+| **Images** | ✅ | Glance images | ⚠️ UI: delete is a no-op (**F6**) |
+| **Network Topology** | ✅ | Neutron networks, routers, instances | Visual topology map |
+| **Networks** | ✅ | Neutron networks, subnets | ❌ UI: no Create Network button (**F3**); networks listed twice (**F4**) |
+| **Routers** | ✅ | Neutron routers, interfaces | External gateways, static routes |
+| **Security Groups** | ✅ | Neutron security groups, rules | Port-based firewall rules |
+| **Floating IPs** | ✅ | Neutron floating IPs, ports | Allocate, associate, disassociate |
+| **Key Pairs** | ✅ | Nova keypairs | Import public keys, SSH access |
+| **API Access** | ✅ | Keystone endpoints, credentials | Service catalog, OpenStack RC file |
 
 ### Admin Dashboard (`/dashboard/admin/`)
 
-| Page | Status | API Dependencies | Notes |
-|------|--------|------------------|-------|
-| **System Info** | ✅ 100% | Nova, Neutron, Cinder services | Service status, versions |
-| **Hypervisors** | ✅ 100% | Nova hypervisors | Compute node details |
-| **Instances** | ✅ 100% | Nova servers (all projects) | Admin view across all tenants |
-| **Volumes** | ✅ 100% | Cinder volumes (all projects) | Volume types, admin actions |
-| **Flavors** | ✅ 100% | Nova flavors | Create, edit, delete flavors |
-| **Images** | ✅ 100% | Glance images (all projects) | Image visibility, metadata |
-| **Networks** | ✅ 100% | Neutron networks (all projects) | Provider networks, VLAN setup |
-| **Routers** | ✅ 100% | Neutron routers (all projects) | Admin router operations |
-| **Defaults** | ✅ 100% | Nova, Cinder quotas | Default quota templates |
-| **Metadata Definitions** | ✅ 100% | Glance metadefs | Custom metadata schemas |
+| Page | APIs served | API Dependencies | Notes (UI verdict per SPEC-018) |
+|------|-------------|------------------|-------|
+| **System Info** | ✅ | Nova, Neutron, Cinder services | Service status, versions |
+| **Hypervisors** | ✅ | Nova hypervisors | Compute node details |
+| **Instances** | ✅ | Nova servers (all projects) | Admin view across all tenants |
+| **Volumes** | ✅ | Cinder volumes (all projects) | ⚠️ UI: see **F9** (volumes panel) |
+| **Flavors** | ✅ | Nova flavors | Create, edit, delete flavors |
+| **Images** | ✅ | Glance images (all projects) | Image visibility, metadata |
+| **Networks** | ✅ | Neutron networks (all projects) | Provider networks, VLAN setup |
+| **Routers** | ✅ | Neutron routers (all projects) | Admin router operations |
+| **Defaults** | ✅ | Nova, Cinder quotas | Default quota templates |
+| **Metadata Definitions** | ✅ | Glance metadefs | Custom metadata schemas |
 
 ### Identity Dashboard (`/dashboard/identity/`)
 
-| Page | Status | API Dependencies | Notes |
-|------|--------|------------------|-------|
-| **Projects** | ✅ 100% | Keystone projects, quotas | CRUD operations, quota management |
-| **Users** | ✅ 100% | Keystone users, role assignments | User management, password reset |
-| **Groups** | ✅ 100% | Keystone groups | Group management, role inheritance |
-| **Roles** | ✅ 100% | Keystone roles | Role definitions |
-| **Domains** | ✅ 100% | Keystone domains | Multi-domain support |
+| Page | APIs served | API Dependencies | Notes (UI verdict per SPEC-018) |
+|------|-------------|------------------|-------|
+| **Projects** | ✅ | Keystone projects, quotas | CRUD operations, quota management |
+| **Users** | ✅ | Keystone users, role assignments | User management, password reset |
+| **Groups** | ✅ | Keystone groups | Group management, role inheritance |
+| **Roles** | ✅ | Keystone roles | Role definitions |
+| **Domains** | ✅ | Keystone domains | Multi-domain support |
 
-## Critical Workflows
+## Critical Workflows (API call sequences)
 
-### 1. Instance Launch Workflow ✅
+These record the **API sequence** each workflow issues and that Lightstack answers all of them. The ✅
+markers below are API-level results from SPEC-002's traces. Several of these workflows are **not
+completable in the dashboard** — see the per-workflow notes and the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
+
+### 1. Instance Launch Workflow — APIs ✅ / **UI broken (F7, F1)**
 
 **Steps**:
 1. Navigate to Project → Instances
@@ -79,7 +102,7 @@ Lightstack achieves **100% compatibility with OpenStack Horizon dashboard** (Fla
 3. Configure: Name, source (image/snapshot), flavor, network, security groups, key pair
 4. Launch instance
 
-**API Calls** (all working):
+**API Calls** (all answered by Lightstack):
 ```
 GET /v2.1/flavors/detail                    # List available flavors
 GET /v2/images                               # List available images
@@ -91,9 +114,10 @@ GET /v2.1/servers/{id}                       # Get instance status
 GET /v2.1/servers/{id}/action (os-getVNCConsole)  # noVNC console access
 ```
 
-**Result**: ✅ Instance created successfully, console accessible
+**Result (API)**: ✅ Instance created successfully.
+**Result (UI)**: ❌ the launch wizard cannot select a network (**F7**), and the console tab shows no guest (**F1**). `openstack server create` works; `openstack console log show` works.
 
-### 2. Volume Attachment Workflow ✅
+### 2. Volume Attachment Workflow — APIs ✅ / **UI blocked upstream (F8, F9)**
 
 **Steps**:
 1. Create volume in Project → Volumes
@@ -102,7 +126,7 @@ GET /v2.1/servers/{id}/action (os-getVNCConsole)  # noVNC console access
 4. Select volume from dropdown
 5. Attach
 
-**API Calls** (all working):
+**API Calls** (all answered by Lightstack):
 ```
 POST /v3/volumes                             # Create volume
 GET /v3/volumes/detail                       # List volumes
@@ -111,9 +135,10 @@ POST /v2.1/servers/{id}/os-volume_attachments  # Attach volume
 GET /v2.1/servers/{id}/os-volume_attachments   # List attachments
 ```
 
-**Result**: ✅ Volume attached, visible in instance details and guest OS
+**Result (API)**: ✅ Volume attached, visible in instance details and guest OS.
+**Result (UI)**: ❌ a volume cannot be created in the dashboard to begin with (**F8**), and the Volumes panel 500s once one exists (**F9**).
 
-### 3. Network Creation Workflow ✅
+### 3. Network Creation Workflow — APIs ✅ / **UI broken (F3)**
 
 **Steps**:
 1. Navigate to Project → Networks
@@ -121,16 +146,17 @@ GET /v2.1/servers/{id}/os-volume_attachments   # List attachments
 3. Configure: Name, Admin State, Subnet (CIDR, gateway, DHCP)
 4. Create
 
-**API Calls** (all working):
+**API Calls** (all answered by Lightstack):
 ```
 POST /v2.0/networks                          # Create network
 POST /v2.0/subnets                           # Create subnet
 GET /v2.0/networks/{id}                      # Get network details
 ```
 
-**Result**: ✅ Network created with subnet, DHCP enabled
+**Result (API)**: ✅ Network created with subnet, DHCP enabled.
+**Result (UI)**: ❌ the Project panel offers no Create Network button (**F3**), and networks list twice (**F4**).
 
-### 4. Floating IP Association Workflow ✅
+### 4. Floating IP Association Workflow — APIs ✅ / UI not exercised
 
 **Steps**:
 1. Navigate to Project → Floating IPs
@@ -138,7 +164,7 @@ GET /v2.0/networks/{id}                      # Get network details
 3. Select instance port → Associate
 4. Verify connectivity
 
-**API Calls** (all working):
+**API Calls** (all answered by Lightstack):
 ```
 POST /v2.0/floatingips                       # Allocate floating IP
 GET /v2.0/ports                              # List instance ports
@@ -146,9 +172,15 @@ PUT /v2.0/floatingips/{id}                   # Associate with port
 GET /v2.0/floatingips/{id}                   # Get floating IP details
 ```
 
-**Result**: ✅ Floating IP associated, instance accessible from external network
+**Result (API)**: ✅ Floating IP associated, instance accessible from external network.
+**Result (UI)**: **not exercised.** Floating IPs are explicitly *out-of-matrix (opportunistic,
+non-gating)* in `docs/specs/018-horizon-dashboard-verification/contracts/workflow-matrix.md`, and neither
+host runbook covers them. The API scripts only **list** floating IPs
+(`test/horizon_dashboard_test.sh:292`, `test/horizon_critical_test.sh:128`,
+`test/horizon_full_test.sh:131`) — the allocate/associate calls above are unverified, and no UI verdict
+is claimed.
 
-### 5. Snapshot Creation Workflow ✅
+### 5. Snapshot Creation Workflow — APIs ✅ / UI not exercised
 
 **Steps**:
 1. Navigate to Project → Instances
@@ -156,14 +188,18 @@ GET /v2.0/floatingips/{id}                   # Get floating IP details
 3. Enter snapshot name
 4. Create
 
-**API Calls** (all working):
+**API Calls** (all answered by Lightstack):
 ```
 POST /v2.1/servers/{id}/action (createImage)  # Create snapshot
 GET /v2/images                                # List images (includes snapshots)
 GET /v2/images/{id}                           # Get snapshot details
 ```
 
-**Result**: ✅ Snapshot created, available as image for new instances
+**Result (API)**: ✅ Snapshot created, available as image for new instances.
+**Result (UI)**: **not exercised.** Instance snapshots are not in the SPEC-018 workflow matrix and
+appear in neither host runbook. `test/horizon_resource_lifecycle_test.sh:143` creates a **volume**
+snapshot, which is a different API from the `createImage` server action above; no UI verdict is
+claimed.
 
 ## API Endpoint Coverage Analysis
 
@@ -735,7 +771,6 @@ SESSION_COOKIE_SECURE = False  # Set to True with HTTPS
 
 # Console
 OPENSTACK_CONSOLE_TYPE = 'novnc'
-NOVNC_PROXY_URL = 'http://localhost:6080/vnc_auto.html'
 ```
 
 ## Known Limitations and Workarounds
@@ -1024,7 +1059,7 @@ docker logs lightstack | jq 'select(.status == 404) | .path'
 
 ## Conclusion
 
-Lightstack achieves **100% functional compatibility** with OpenStack Horizon dashboard through:
+Lightstack serves **the full API surface Horizon consumes**, through:
 
 1. **Complete API Coverage**: 342/330 endpoints (104%)
 2. **Correct Authentication Flow**: JWT tokens with service catalog
@@ -1035,9 +1070,15 @@ Lightstack achieves **100% functional compatibility** with OpenStack Horizon das
 7. **Multi-Tenancy**: Project isolation, RBAC enforcement
 8. **Security**: HMAC-signed tokens, bcrypt passwords, HTTPS ready
 
-**Result**: Horizon works without any modifications, custom patches, or workarounds. All critical dashboard pages function correctly.
+**Result (API)**: Horizon's API dependencies are met without modifications, custom patches or workarounds
+to Lightstack, and every page's calls are answered.
 
-**Recommendation**: Lightstack is production-ready for deployments requiring Horizon dashboard compatibility.
+**Result (UI)**: **not a drop-in.** The SPEC-018 browser-level pass found every create/write workflow
+broken in the dashboard (F1–F11) while the same operations succeed via API/CLI.
+
+**Recommendation**: Lightstack is suitable where the **OpenStack API/CLI** is the interface. For the
+**Horizon dashboard as a management UI it is not yet a drop-in** — see the [SPEC-018 report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) for the per-workflow
+verdicts and the open follow-ups.
 
 ## References
 
