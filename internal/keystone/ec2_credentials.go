@@ -93,14 +93,26 @@ func (svc *Service) CreateEC2Credential(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("tenant_id is required"))
 		return
 	}
+	// A client may pass the dash-free project id used in RGW-compatible token
+	// responses. uuid.Parse accepts both that form and the canonical UUID; the
+	// parsed value below is stored canonically for the database and credential
+	// blob, while /v3/s3tokens renders the dash-free tenant form.
 	// Match Keystone (get_project -> ProjectNotFound = 404): a non-existent or
 	// malformed tenant_id is a 404 with Keystone's exact message, not the generic
 	// 500 the credentials.project_id foreign key would otherwise produce. A
 	// malformed id can't name a real project, so treat it as not-found too.
-	if _, err := uuid.Parse(projectID); err != nil {
+	parsedTenantID, err := uuid.Parse(projectID)
+	if err != nil {
 		common.SendError(c, common.NewProjectNotFoundError(projectID))
 		return
 	}
+	// Canonicalize before storing: uuid.Parse (like Postgres) accepts valid
+	// UUIDs in alternate text encodings — 32 hex chars without dashes,
+	// uppercase hex, braced — and the blob retains the stored spelling while
+	// /v3/s3tokens derives the S3 tenant from it. Storing the canonical form
+	// keeps the credential's tenant identical to the token/Swift side for
+	// any valid input encoding.
+	projectID = parsedTenantID.String()
 	var projectExists bool
 	if err := database.DB.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)", projectID).Scan(&projectExists); err != nil {

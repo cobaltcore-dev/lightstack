@@ -13,6 +13,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
@@ -20,8 +21,14 @@ import (
 
 // TokenClaims represents JWT token claims
 type TokenClaims struct {
-	UserID    string   `json:"user_id"`
-	UserName  string   `json:"user_name"`
+	UserID   string `json:"user_id"`
+	UserName string `json:"user_name"`
+	// Methods records the auth methods the token was issued with
+	// (["password"], ["token"], ...) so the validation endpoint can render
+	// token.methods without guessing. Optional for backward compatibility:
+	// tokens issued before this field carry none and the validation
+	// envelope omits the key for them.
+	Methods   []string `json:"methods,omitempty"`
 	ProjectID string   `json:"project_id,omitempty"`
 	Roles     []string `json:"roles,omitempty"`
 	jwt.RegisteredClaims
@@ -33,6 +40,10 @@ type AuthService struct {
 	tokenTTL         time.Duration
 	cache            *cache.Cache
 	glanceS3Endpoint string // resolved cfg.Glance.S3Endpoint, advertised as the `s3` catalog endpoint
+	// rgwCompatTenantIDs is the resolved keystone.rgw_compat_tenant_ids flag:
+	// render token.project.id in OpenStack's established dash-free form in the
+	// token payload (Ceph RGW compatibility). See SetRGWCompatTenantIDs.
+	rgwCompatTenantIDs bool
 }
 
 // NewAuthService creates a new auth service
@@ -49,6 +60,43 @@ func NewAuthService(jwtSecret string, tokenTTL time.Duration, cacheInstance *cac
 // catalog advertises the real external RGW rather than a placeholder. Set once at
 // startup, mirroring nova.SetImageStore.
 func (s *AuthService) SetGlanceS3Endpoint(url string) { s.glanceS3Endpoint = url }
+
+// SetRGWCompatTenantIDs wires keystone.rgw_compat_tenant_ids (YAML or
+// LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS, resolved by the config layer) so
+// the token payload renders project ids in Ceph RGW's tenant-name-safe form.
+// Set once at startup, mirroring SetGlanceS3Endpoint. When false (the default),
+// token.project.id keeps the canonical hyphenated UUID.
+func (s *AuthService) SetRGWCompatTenantIDs(enabled bool) { s.rgwCompatTenantIDs = enabled }
+
+// IDs at the RGW boundary use Keystone's established dash-free form via
+// canonicalID. Internal storage and management APIs retain UUID dashes.
+
+// tokenProjectID renders the project id for a token payload: the canonical
+// hyphenated UUID, or the dash-free canonical ID when
+// keystone.rgw_compat_tenant_ids is enabled. Only token payloads render
+// through this; BuildServiceCatalog, management APIs and database storage keep
+// canonical UUIDs.
+func (s *AuthService) tokenProjectID(id string) string {
+	if s == nil || !s.rgwCompatTenantIDs {
+		return id
+	}
+	return canonicalID(id)
+}
+
+// keystoneTimestamp renders a token timestamp (expires_at / issued_at) in the
+// exact form Ceph RGW's keystone TokenEnvelope decoder accepts: RFC3339 with
+// a "Z" (UTC) tail. Go formats time.Time in the process-local zone, so a
+// deployment with TZ != UTC would otherwise emit "+02:00"-style tails, which
+// parse_iso8601 (src/rgw/rgw_common.cc, extended format — the mode
+// rgw_keystone.cc uses for expires_at) rejects: only an empty tail, "Z" or
+// ".fractionZ" parse, so rgw_keystone.cc throws "Failed to parse ISO8601
+// expiration date from Keystone response" and every token validation fails.
+// rgw_keystone.cc interprets the parsed fields as UTC (internal_timegm), so
+// the instant must be converted, not merely re-suffixed. The format carries
+// fixed 6-digit microseconds: real Keystone renders microsecond precision,
+// /v3/s3tokens already does (ksTime), and Ceph's parse_iso8601 accepts the
+// ".fractionZ" tail — byte-parity with both, instead of second precision.
+func keystoneTimestamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000Z") }
 
 // AuthRequest represents an authentication request
 // ScopeField handles both string ("unscoped") and object scope formats
@@ -118,8 +166,8 @@ type AuthResponse struct {
 	Token struct {
 		ExpiresAt string           `json:"expires_at"`
 		IssuedAt  string           `json:"issued_at"`
-		Methods   []string         `json:"methods"`
-		User      map[string]any   `json:"user"`
+		Methods   []string         `json:"methods,omitempty"`
+		User      map[string]any   `json:"user,omitempty"`
 		Catalog   []CatalogEntry   `json:"catalog,omitempty"`
 		Project   *map[string]any  `json:"project,omitempty"`
 		Roles     []map[string]any `json:"roles,omitempty"`
@@ -203,6 +251,13 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		projectName := req.Auth.Scope.Project.Name
 		projectIDParam := req.Auth.Scope.Project.ID
 
+		// A non-UUID project id cannot name a project (projects.id is a UUID
+		// column): fail with the same 401 as a missing project instead of
+		// letting Postgres reject the parameter as a 500.
+		if projectIDParam != "" && uuid.Validate(projectIDParam) != nil {
+			return nil, "", common.NewUnauthorizedError("project not found")
+		}
+
 		// Fetch project (with domain filter)
 		var proj database.Project
 		var query string
@@ -263,12 +318,20 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 	}
 	// Otherwise: unscoped token (no project, no roles)
 
-	// Generate JWT token
-	now := time.Now()
+	// Generate JWT token. NumericDate claims carry whole seconds, so the
+	// issue instant is truncated to keep the issue response's timestamps
+	// byte-identical to the validation response's (rendered from the claims).
+	now := time.Now().Truncate(time.Second)
 	expiresAt := now.Add(s.tokenTTL)
+	// Methods are server-recorded, never caller input: this handler
+	// authenticated a password. Signing the request's identity.methods
+	// would let a password-only request claim ["totp"] (or anything else),
+	// which the validation envelope then republishes. Real Keystone also
+	// renders the method the auth plugin actually used.
 	claims := &TokenClaims{
 		UserID:    user.ID,
 		UserName:  user.Name,
+		Methods:   []string{"password"},
 		ProjectID: projectID,
 		Roles:     roles,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -284,11 +347,13 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		return nil, "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// Build response
+	// Build response. methods render the server-recorded claims value, so
+	// the issue response stays byte-identical to the validation response
+	// built from the same claims.
 	resp := &AuthResponse{}
-	resp.Token.ExpiresAt = expiresAt.Format(time.RFC3339)
-	resp.Token.IssuedAt = now.Format(time.RFC3339)
-	resp.Token.Methods = req.Auth.Identity.Methods
+	resp.Token.ExpiresAt = keystoneTimestamp(expiresAt)
+	resp.Token.IssuedAt = keystoneTimestamp(now)
+	resp.Token.Methods = claims.Methods
 
 	// Query user's domain name
 	var userDomainName string
@@ -322,7 +387,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		}
 
 		resp.Token.Project = &map[string]any{
-			"id":   project.ID,
+			"id":   s.tokenProjectID(project.ID),
 			"name": project.Name,
 			"domain": map[string]any{
 				"id":   project.DomainID,
@@ -388,6 +453,12 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		projectName := req.Auth.Scope.Project.Name
 		projectIDParam := req.Auth.Scope.Project.ID
 
+		// Same non-UUID guard as the password path: a malformed id is a 401,
+		// not a 500 from Postgres's uuid parser.
+		if projectIDParam != "" && uuid.Validate(projectIDParam) != nil {
+			return nil, "", common.NewUnauthorizedError("project not found")
+		}
+
 		// Fetch project
 		var proj database.Project
 		var query string
@@ -447,12 +518,25 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		}
 	}
 
-	// Generate new JWT token
-	now := time.Now()
+	// Generate new JWT token. Truncated to whole seconds like the password
+	// path: the NumericDate claims cannot carry the fraction, and the issue
+	// and validation responses must render byte-identical timestamps.
+	now := time.Now().Truncate(time.Second)
 	expiresAt := now.Add(s.tokenTTL)
+	// Like Keystone's token auth plugin, a re-scope INHERITS the methods of
+	// the token being re-scoped ("we want to maintain the values" —
+	// keystone/auth/plugins/token.py extends method_names with the original
+	// token's methods). The request's identity.methods is unvalidated
+	// caller input and is never signed; tokens minted before the claims
+	// carried methods fall back to the method this path actually used.
+	methods := claims.Methods
+	if len(methods) == 0 {
+		methods = []string{"token"}
+	}
 	tokenClaims := &TokenClaims{
 		UserID:    user.ID,
 		UserName:  user.Name,
+		Methods:   methods,
 		ProjectID: projectID,
 		Roles:     roles,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -468,11 +552,13 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		return nil, "", fmt.Errorf("failed to sign token: %w", err)
 	}
 
-	// Build response
+	// Build response. methods render the inherited claims value, so the
+	// issue response stays byte-identical to the validation response built
+	// from the same claims.
 	resp := &AuthResponse{}
-	resp.Token.ExpiresAt = expiresAt.Format(time.RFC3339)
-	resp.Token.IssuedAt = now.Format(time.RFC3339)
-	resp.Token.Methods = req.Auth.Identity.Methods
+	resp.Token.ExpiresAt = keystoneTimestamp(expiresAt)
+	resp.Token.IssuedAt = keystoneTimestamp(now)
+	resp.Token.Methods = tokenClaims.Methods
 
 	// Query user's domain name
 	var userDomainName string
@@ -506,7 +592,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		}
 
 		resp.Token.Project = &map[string]any{
-			"id":   project.ID,
+			"id":   s.tokenProjectID(project.ID),
 			"name": project.Name,
 			"domain": map[string]any{
 				"id":   project.DomainID,
@@ -529,6 +615,172 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 	return resp, tokenString, nil
 }
 
+// BuildTokenResponse builds the standard Keystone v3 token envelope for an
+// already-issued token (GET /v3/auth/tokens) from validated claims, mirroring
+// the rendering of the two token-issue paths above as closely as practical.
+// Ceph RGW validates every user token through this endpoint and parses the
+// response with rgw::keystone::TokenEnvelope::decode_json
+// (src/rgw/rgw_keystone.cc), whose mandatory fields are user{id,name},
+// expires_at, roles[]{name} and, for scoped tokens, project{id,name} — the
+// old flat {"project_id": ...} shape with roles as bare strings was
+// unparseable by RGW (and by standard clients like gophercloud's tokens.Get).
+//
+// Rendering notes, mirroring the issue paths:
+//   - expires_at/issued_at come from the JWT RegisteredClaims, rendered as
+//     UTC RFC3339 via keystoneTimestamp (Ceph RGW's parse_iso8601 rejects
+//     offset tails).
+//   - project.id goes through tokenProjectID (keystone.rgw_compat_tenant_ids)
+//     exactly like the issue responses — this validation response is where
+//     RGW reads the tenant from.
+//   - project name/domain and the user domain are looked up in the DB, and
+//     the user/project rows must be live AND enabled — the issue paths
+//     reject disabled identities with 401, so validation fails closed the
+//     same way (a missing or disabled project/user row omits that key;
+//     domain names fall back to "Default" on a failed lookup).
+//   - roles render as [{"id": name, "name": name}] objects.
+//   - the catalog is built from the CANONICAL project id, like the issue path.
+//   - methods come from the claims — server-recorded at issue (["password"]
+//     on the password path, inherited from the re-scoped token on the token
+//     path), omitted for tokens issued before the claims carried them.
+func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaims) *AuthResponse {
+	resp := &AuthResponse{}
+	if claims.ExpiresAt != nil {
+		resp.Token.ExpiresAt = keystoneTimestamp(claims.ExpiresAt.Time)
+	}
+	if claims.IssuedAt != nil {
+		resp.Token.IssuedAt = keystoneTimestamp(claims.IssuedAt.Time)
+	}
+	// Methods from the claims — present for tokens issued since the claims
+	// carried them, omitted for older tokens (no guessing; real Keystone
+	// renders the methods the token was issued with).
+	resp.Token.Methods = claims.Methods
+
+	// User: id/name/domain from the live row, exactly like the issue paths.
+	// A deleted user omits the key entirely — mirroring the dead-scope
+	// handling below: RGW's envelope parser requires a user, so the token is
+	// dead for it. (Lightstack's own API middleware validates the JWT
+	// signature and expiry only; that contract is unchanged.)
+	var userDomainID string
+	var userEnabled bool
+	err := database.DB.QueryRow(ctx,
+		"SELECT domain_id, enabled FROM users WHERE id = $1",
+		claims.UserID,
+	).Scan(&userDomainID, &userEnabled)
+	switch {
+	case err == nil && userEnabled:
+		userDomainName := "Default" // fallback, like the issue paths
+		if err := database.DB.QueryRow(ctx,
+			"SELECT name FROM domains WHERE id = $1",
+			userDomainID,
+		).Scan(&userDomainName); err != nil {
+			userDomainName = "Default"
+		}
+		resp.Token.User = map[string]any{
+			"id":   claims.UserID,
+			"name": claims.UserName,
+			"domain": map[string]any{
+				"id":   userDomainID,
+				"name": userDomainName,
+			},
+		}
+	case err == nil:
+		// Disabled after issue: the issue paths reject disabled users with
+		// 401, so the live validation fails closed the same way as a
+		// deleted user — render no user (RGW's envelope parser requires
+		// one, so the token is dead for it).
+		log.Warn().Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Token user disabled; omitting user from validation response")
+	case errors.Is(err, pgx.ErrNoRows):
+		log.Warn().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Token user not found; omitting user from validation response")
+	default:
+		log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Failed to query user; omitting user from validation response")
+	}
+
+	// Project, roles and catalog only for scoped tokens, like the issue paths.
+	if claims.ProjectID != "" {
+		var projectName, projectDomainID string
+		var projectEnabled bool
+		err := database.DB.QueryRow(ctx,
+			"SELECT name, domain_id, enabled FROM projects WHERE id = $1",
+			claims.ProjectID,
+		).Scan(&projectName, &projectDomainID, &projectEnabled)
+		switch {
+		case err == nil && projectEnabled:
+			projectDomainName := "Default" // fallback, like the issue paths
+			if err := database.DB.QueryRow(ctx,
+				"SELECT name FROM domains WHERE id = $1",
+				projectDomainID,
+			).Scan(&projectDomainName); err != nil {
+				projectDomainName = "Default"
+			}
+			resp.Token.Project = &map[string]any{
+				"id":   s.tokenProjectID(claims.ProjectID),
+				"name": projectName,
+				"domain": map[string]any{
+					"id":   projectDomainID,
+					"name": projectDomainName,
+				},
+			}
+		case err == nil:
+			// Disabled after issue: the issue paths reject disabled projects
+			// with 401, so the live validation fails closed the same way as
+			// a deleted project — render no project (RGW's parser rejects a
+			// scoped token without one: the correct outcome for a dead
+			// scope).
+			log.Warn().Str("operation", "validate_token").Str("project_id", claims.ProjectID).Msg("Token project disabled; omitting project from validation response")
+		case errors.Is(err, pgx.ErrNoRows):
+			// The token's project no longer exists: render no project — the
+			// closest safe shape (RGW's parser rejects a scoped token without
+			// a project, which is the correct outcome for a dead scope).
+			log.Warn().Err(err).Str("operation", "validate_token").Str("project_id", claims.ProjectID).Msg("Token project not found; omitting project from validation response")
+		default:
+			log.Error().Err(err).Str("operation", "validate_token").Str("project_id", claims.ProjectID).Msg("Failed to query token project; omitting project from validation response")
+		}
+
+		// Roles, live from the role assignments — the issue paths read them
+		// at issue time; re-reading them here makes a revocation take effect
+		// for the validation endpoint too (uniform liveness with the project
+		// and user rows above). Unreadable or fully revoked roles omit the
+		// key: RGW's envelope parser requires roles, so a revoked scoped
+		// token is dead for it — fail closed.
+		rows, rolesErr := database.DB.Query(ctx, `
+			SELECT DISTINCT r.name FROM roles r
+			JOIN role_assignments ra ON ra.role_id = r.id
+			WHERE ra.user_id = $1 AND ra.project_id = $2`,
+			claims.UserID, claims.ProjectID)
+		if rolesErr != nil {
+			log.Error().Err(rolesErr).Str("operation", "validate_token").Str("user_id", claims.UserID).Str("project_id", claims.ProjectID).Msg("Failed to query token roles; omitting roles from validation response")
+		} else {
+			defer rows.Close()
+			var roles []map[string]any
+			rolesOK := true
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					rolesOK = false
+					log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Str("project_id", claims.ProjectID).Msg("Failed to scan token role; omitting roles from validation response")
+					break
+				}
+				roles = append(roles, map[string]any{
+					"id":   name,
+					"name": name,
+				})
+			}
+			if err := rows.Err(); err != nil {
+				rolesOK = false
+				log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Str("project_id", claims.ProjectID).Msg("Failed while reading token roles; omitting roles from validation response")
+			}
+			if rolesOK {
+				resp.Token.Roles = roles
+			}
+		}
+
+		// Service catalog from the CANONICAL project id, like the issue paths.
+		resp.Token.Catalog = BuildServiceCatalog(claims.ProjectID, s.cache, s.glanceS3Endpoint)
+	}
+
+	return resp
+}
+
 // ValidateToken validates and parses a JWT token
 func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (any, error) {
@@ -543,6 +795,15 @@ func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(*TokenClaims); ok && token.Valid {
+		// Keystone tokens always carry an expiry. The JWT library only
+		// enforces exp when the claim is present, so a signed token without
+		// one would otherwise pass validation and later render an empty
+		// expires_at in the validation envelope — mandatory for Ceph RGW's
+		// TokenEnvelope decoder, which rejects the whole response on it.
+		// Treat a missing expiry as an invalid token.
+		if claims.ExpiresAt == nil {
+			return nil, common.NewUnauthorizedError("token missing expiry")
+		}
 		return claims, nil
 	}
 

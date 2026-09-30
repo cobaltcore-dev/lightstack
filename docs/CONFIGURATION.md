@@ -129,12 +129,13 @@ logging:
 > are silently ignored. Everything else (admin password, service modes, VXLAN, cache,
 > logging, ports, …) takes effect **only from the YAML config file** passed via `--config`.
 
-The binary honors exactly **twelve** environment variables:
+The binary honors exactly **thirteen** environment variables:
 
 | Variable | Overrides / controls | Where it is read |
 |----------|----------------------|------------------|
 | `LIGHTSTACK_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` in OpenStack's dash-free form in the `/v3/auth/tokens` responses; `/v3/s3tokens` already uses that historical form. The EC2 mint accepts dash-free or alternate UUID encodings as input and stores the canonical database id. Enabling the flag therefore unifies Swift with the existing S3 tenant namespace without re-keying S3 data. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
 | `LIGHTSTACK_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
 | `LIGHTSTACK_DRAIN_SECONDS` | graceful-shutdown drain window | shutdown (`cmd/lightstack/main.go`) |
@@ -372,7 +373,9 @@ glance:
   s3_endpoint: "https://s3.example.com"
 ```
 
-**Environment variables for S3 credentials:**
+**Environment variables for S3 credentials** (read implicitly by the AWS SDK's
+standard config chain — they are not `LIGHTSTACK_`-prefixed and are not part of
+the thirteen Lightstack configuration variables):
 ```bash
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"

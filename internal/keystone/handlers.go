@@ -222,17 +222,14 @@ func (svc *Service) ValidateToken(c *gin.Context) {
 		return
 	}
 
-	// Return token info
-	c.JSON(http.StatusOK, gin.H{
-		"token": gin.H{
-			"user": gin.H{
-				"id":   claims.UserID,
-				"name": claims.UserName,
-			},
-			"project_id": claims.ProjectID,
-			"roles":      claims.Roles,
-		},
-	})
+	// Return the standard Keystone v3 token envelope — the same shape as the
+	// POST /v3/auth/tokens responses. Ceph RGW validates every user token via
+	// this endpoint and parses the response with
+	// rgw::keystone::TokenEnvelope::decode_json (src/rgw/rgw_keystone.cc),
+	// whose mandatory fields are user{id,name}, expires_at, roles[]{name} and
+	// project{id,name}; the old flat {"project_id", roles: [string]} shape was
+	// unparseable by RGW and standard clients (gophercloud tokens.Get).
+	c.JSON(http.StatusOK, svc.authService.BuildTokenResponse(c.Request.Context(), claims))
 }
 
 // RevokeToken revokes a token (DELETE /v3/auth/tokens)

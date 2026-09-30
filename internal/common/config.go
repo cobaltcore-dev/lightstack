@@ -48,6 +48,13 @@ type KeystoneConfig struct {
 	TokenTTL      time.Duration `yaml:"token_ttl"`
 	AdminUser     string        `yaml:"admin_user"`
 	AdminPassword string        `yaml:"admin_password"`
+	// RGWCompatTenantIDs renders token.project.id in OpenStack's established
+	// dash-free form — Ceph RGW derives the Swift tenant name and implicit user
+	// id from that field and only accepts [A-Za-z0-9_] in tenant names. It affects
+	// /v3/auth/tokens; /v3/s3tokens already uses the dash-free form. The EC2 mint
+	// accepts that form as input and stores the canonical database UUID. Everything
+	// else keeps canonical (hyphenated) UUIDs.
+	RGWCompatTenantIDs bool `yaml:"rgw_compat_tenant_ids"`
 }
 
 type NovaConfig struct {
@@ -141,6 +148,16 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if jwtSecret := os.Getenv("LIGHTSTACK_JWT_SECRET"); jwtSecret != "" {
 		cfg.Keystone.JWTSecret = jwtSecret
+	}
+	// Ceph RGW compatibility (keystone.rgw_compat_tenant_ids). Two-way override:
+	// an operator must be able to flip it from the env in either direction when
+	// the config file is mounted read-only, matching the Glance S3 boolean
+	// pattern below. Unrecognized/empty values keep the file value.
+	switch os.Getenv("LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS") {
+	case "true", "1":
+		cfg.Keystone.RGWCompatTenantIDs = true
+	case "false", "0":
+		cfg.Keystone.RGWCompatTenantIDs = false
 	}
 	// Glance S3/RGW overrides (handy when config is mounted read-only).
 	if v := os.Getenv("LIGHTSTACK_GLANCE_STORAGE_MODE"); v != "" {

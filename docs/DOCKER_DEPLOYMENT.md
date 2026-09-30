@@ -296,10 +296,6 @@ lightstack:
     LIGHTSTACK_NEUTRON_PORT: "9696"
     LIGHTSTACK_CINDER_PORT: "8776"
     LIGHTSTACK_GLANCE_PORT: "9292"
-
-    # Logging
-    LIGHTSTACK_LOG_LEVEL: "info"  # debug, info, warn, error
-    LIGHTSTACK_LOG_FORMAT: "json"  # json, text
 ```
 
 ### Port Mapping

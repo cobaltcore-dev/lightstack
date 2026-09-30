@@ -33,6 +33,16 @@ type s3TokenRequest struct {
 // signature from the stored secret (SPEC-014 FR-006). POST /v3/s3tokens.
 func (svc *Service) S3Tokens(c *gin.Context) { svc.validateSignedRequest(c) }
 
+// authFailed is Keystone's generic auth-failure message. Every 401 from the
+// s3tokens/ec2tokens endpoints (and renderS3Token) returns it, never the
+// specific reason — real Keystone masks Unauthorized reasons this way
+// (SecurityError with insecure_debug off) so it never confirms *why* a request
+// failed: a valid key with a bad signature returns exactly this string, not
+// "signature mismatch". RGW keys off the 401 status, not the body. (An unknown
+// key stays a 404 — see validateSignedRequest — which RGW needs to fall through
+// to its local auth engine; that 404-vs-401 split is identical in real Keystone.)
+const authFailed = "The request you have made requires authentication."
+
 // EC2Tokens is the EC2-signing sibling of S3Tokens. POST /v3/ec2tokens.
 func (svc *Service) EC2Tokens(c *gin.Context) { svc.validateSignedRequest(c) }
 
@@ -45,7 +55,8 @@ func (svc *Service) validateSignedRequest(c *gin.Context) {
 	// string, not "signature mismatch". RGW keys off the 401 status, not the body.
 	// (An unknown key stays a 404 — see below — which RGW needs to fall through to its
 	// local auth engine; that 404-vs-401 split is identical in real Keystone.)
-	const authFailed = "The request you have made requires authentication."
+	// authFailed is declared at package level so renderS3Token denies with the
+	// same masked message.
 	// The response stays masked (above), but every rejection is logged with its
 	// specific reason server-side: these endpoints are public by design, so the log
 	// is the only signal that someone is probing them (Constitution Art. V; PR #73
@@ -169,10 +180,42 @@ func hmacSHA256(key []byte, data string) []byte {
 // renderS3Token returns the resolved identity RGW consumes to authorize and
 // namespace the request (project id is the RGW tenant under implicit tenants).
 func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
+	// Fail closed for missing or disabled identities — the S3 analog of the
+	// token-validation envelope (BuildTokenResponse) and the two token-issue
+	// paths: the EC2 credential and the role assignments SURVIVE a disable, so
+	// without this check a valid signature from a disabled user (or scoped to a
+	// disabled project) would keep minting fresh, fully valid envelopes on every
+	// request — S3 access with no expiry bound. Deleted identities already fail
+	// closed via the credentials FK cascade (unknown key → 404 → RGW falls
+	// through); a missing row here can only be a stale blob tenant — deny that
+	// too. Like every other denial on these endpoints: generic 401, specific
+	// reason logged server-side only.
 	var userName string
-	_ = database.DB.QueryRow(c.Request.Context(), "SELECT name FROM users WHERE id = $1", userID).Scan(&userName)
-	var projectName string
-	_ = database.DB.QueryRow(c.Request.Context(), "SELECT name FROM projects WHERE id = $1", projectID).Scan(&projectName)
+	var userEnabled bool
+	if err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT name, enabled FROM users WHERE id = $1", userID,
+	).Scan(&userName, &userEnabled); err != nil || !userEnabled {
+		log.Warn().Err(err).Str("user_id", userID).
+			Msg("s3tokens: user is missing or disabled")
+		common.SendError(c, common.NewUnauthorizedError(authFailed))
+		return
+	}
+	var canonicalProjectID, projectName string
+	var projectEnabled bool
+	if err := database.DB.QueryRow(c.Request.Context(),
+		"SELECT id, name, enabled FROM projects WHERE id = $1", projectID,
+	).Scan(&canonicalProjectID, &projectName, &projectEnabled); err != nil || !projectEnabled {
+		log.Warn().Err(err).Str("project_id", projectID).
+			Msg("s3tokens: project is missing or disabled")
+		common.SendError(c, common.NewUnauthorizedError(authFailed))
+		return
+	}
+	// The credential blob may predate canonicalization and contain a valid
+	// alternate UUID spelling (uppercase, 32-hex, or braced). Use the UUID
+	// returned by PostgreSQL for all downstream lookups and the RGW envelope,
+	// so those legacy credentials resolve to the same dash-free tenant as
+	// Swift and newly minted credentials.
+	projectID = canonicalProjectID
 
 	roles := []gin.H{}
 	rows, err := database.DB.Query(c.Request.Context(), `
@@ -201,11 +244,13 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 	// uses microsecond-precision UTC timestamps. Keep the window short: RGW may
 	// cache the validation until expiry, so a small TTL bounds revocation latency.
 	//
-	// RGW derives the S3 tenant namespace from project.id and only accepts
-	// alphanumerics + underscore (no dashes). Real OpenStack keystone IDs are
-	// 32-hex without dashes; Lightstack stores dashed UUIDs, so present the
-	// keystone-canonical (dash-free) form — bijective, unique per project, and a
-	// valid RGW tenant name.
+	// RGW derives the tenant namespace from project.id and only accepts
+	// alphanumerics + underscore (no dashes). S3 has always used Keystone's
+	// historical dash-free canonical form; the RGW compatibility flag makes
+	// Swift token responses use that same form, so S3 and Swift derive one
+	// implicit tenant per project and objects stay visible across both.
+	// token.user.id is not used for tenant naming under implicit tenants and
+	// keeps its dash-free form in either mode.
 	const ksTime = "2006-01-02T15:04:05.000000Z"
 	now := time.Now().UTC()
 	c.JSON(200, gin.H{

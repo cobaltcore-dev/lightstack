@@ -1,10 +1,12 @@
-# SPEC-014 T003: real Ceph RGW (S3) integration fixture.
+# SPEC-014 T003: real Ceph RGW (S3 + Swift) integration fixture.
 # postgres + ceph/demo (all-in-one real RGW) + Lightstack with Glance in S3 mode.
 # Self-contained and isolated (own project name, network, and alternate host
 # ports) so it never collides with another Lightstack deployment on the host.
 #
 #   podman compose -f deployments/docker-compose.rgw-test.yml up -d --build
-#   ./test/rgw_integration_test.sh          # drives the round-trip
+#   ./test/rgw_integration_test.sh          # capability A: Glance images
+#   ./test/tenant_s3_rgw_test.sh            # capability B: tenant S3 keys
+#   ./test/swift_rgw_test.sh                # capability C: Swift via keystone tokens
 #   podman compose -f deployments/docker-compose.rgw-test.yml down -v
 #
 # Podman-compatible (docker compose works too). Use: -p lightstack-rgwtest
@@ -26,8 +28,9 @@ services:
 
   # All-in-one Ceph + RGW. Creates the demo user with the fixed keys below and
   # the `images` bucket (capability A: Glance image storage), then the wrapper
-  # entrypoint wires the RGW's S3 auth to Lightstack Keystone so tenant S3 keys minted by
-  # Lightstack validate via /v3/s3tokens (capability B). Serves S3 on :8080.
+  # entrypoint wires the RGW's keystone auth to Lightstack: tenant S3 keys minted by
+  # Lightstack validate via /v3/s3tokens (capability B) and Swift X-Auth-Token
+  # requests validate via /v3/auth/tokens (capability C). Serves S3 + Swift on :8080.
   rgw:
     image: quay.io/ceph/demo:latest-squid
     entrypoint: ["bash", "/rgw-keystone-entrypoint.sh"]
@@ -69,7 +72,10 @@ services:
       AWS_ACCESS_KEY_ID: "lightstacktestaccess"
       AWS_SECRET_ACCESS_KEY: "lightstacktestsecret"
       LIGHTSTACK_ENDPOINT_HOST: "localhost"
-      LIGHTSTACK_LOG_FORMAT: "json"
+      # The transform under test (capability C): token payloads advertise
+      # project ids in OpenStack's dash-free form so RGW derives one valid
+      # tenant per project.
+      LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS: "true"
     ports:
       - "45357:35357" # Keystone
       - "49292:9292" # Glance

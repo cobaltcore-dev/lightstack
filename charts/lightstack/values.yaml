@@ -36,6 +36,11 @@ secrets:
 # -- Advertised endpoint host for the service catalog (FR-008a). Empty = in-cluster only.
 endpointHost: ""
 
+# -- Keystone compatibility options.
+keystone:
+  # -- Render project IDs in OpenStack's dash-free RGW-safe form in token responses.
+  rgwCompatTenantIds: false
+
 # -- Front-door Service (the six API services; metadata is node-local, FR-009d).
 service:
   type: ClusterIP             # ClusterIP | NodePort | LoadBalancer

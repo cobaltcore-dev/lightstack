@@ -18,6 +18,28 @@ keystone:
   #     account is disabled. CHANGE admin_password for any exposed deployment.
   admin_user: admin
   admin_password: secret
+  # Ceph RGW (Swift) compatibility, default off. With Keystone integration and
+  # rgw_keystone_implicit_tenants, RGW derives the Swift tenant name and the
+  # implicit user id (<project>$<project>) from the Keystone token's project id,
+  # and validates tenant names against [A-Za-z0-9_] ONLY (rgw_validate_tenant_name,
+  # ceph src/rgw/rgw_user.cc) — hyphens are rejected with ERR_INVALID_TENANT_NAME,
+  # so hyphenated OpenStack-style UUID project ids cannot back RGW tenants.
+  # When true, the token payload's project id (token.project.id) is rendered
+  # in OpenStack's established dash-free form everywhere Ceph RGW derives a
+  # tenant from it: the /v3/auth/tokens responses (POST password issue, POST
+  # re-scope, and the GET validation response) and the /v3/s3tokens response's
+  # project.id. The EC2 credential endpoint accepts the dash-free tenant_id as
+  # input and stores the canonical database UUID. Everything else keeps canonical hyphenated
+  # UUIDs: management APIs, database storage, JWT signing/verification,
+  # token.user.id, token.project.name, token.project.domain, role lists, and
+  # the service catalog (nova endpoint URLs etc.).
+  # Caveat: clients that read token.project.id out of the auth response see
+  # the dash-free form while the flag is on — take canonical project ids from
+  # the management APIs (GET /v3/projects) when an internal UUID is required.
+  # S3 already uses the dash-free form, so enabling the flag does not re-key
+  # existing S3 data; it makes Swift use the same tenant namespace.
+  # Env override: LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS (true/false).
+  rgw_compat_tenant_ids: false
   # Advertised service-catalog / self-link scheme is set via the
   # LIGHTSTACK_ENDPOINT_SCHEME environment variable (http|https, default http),
   # alongside LIGHTSTACK_ENDPOINT_HOST — see .env.example.

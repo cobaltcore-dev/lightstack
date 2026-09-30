@@ -29,3 +29,18 @@ tests:
       - notMatchRegex:
           path: stringData["lightstack.yaml"]
           pattern: REPLACE_ME
+  - it: renders the RGW compatibility flag disabled by default
+    set:
+      database.url: postgres://lightstack@db/lightstack
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'rgw_compat_tenant_ids: false'
+  - it: renders the RGW compatibility flag when explicitly enabled
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      keystone.rgwCompatTenantIds: true
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: 'rgw_compat_tenant_ids: true'
