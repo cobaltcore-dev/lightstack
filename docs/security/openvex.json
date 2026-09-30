@@ -1,0 +1,30 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/cobaltcore-dev/lightstack/security/vex/GO-2026-5932",
+  "author": "Lightstack maintainers",
+  "role": "Document Creator",
+  "timestamp": "2026-09-30T11:18:48Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "GO-2026-5932",
+        "description": "golang.org/x/crypto/openpgp is unmaintained and unsafe by design"
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/cobaltcore-dev/lightstack",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org/x/crypto@v0.56.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Lightstack includes other x/crypto packages, but neither the source import graph nor the compiled binaries contain golang.org/x/crypto/openpgp or its subpackages.",
+      "action_statement": "Re-run govulncheck and review this statement whenever x/crypto or the production import graph changes."
+    }
+  ]
+}
