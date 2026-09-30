@@ -44,8 +44,7 @@ jobs:
           echo "✅ Binary size OK: ${SIZE_MB}MB"
 
       - name: Run linters
-        run: |
-          go tool golangci-lint run ./...
+        run: make lint
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
