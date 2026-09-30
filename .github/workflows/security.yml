@@ -3,6 +3,7 @@ name: Security and SBOM
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -26,10 +27,15 @@ jobs:
           go-version: '1.26.8'
           cache: true
 
-      - name: Scan reachable Go code
+      - name: Scan Go code and pinned development tool
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "$(go env GOPATH)/bin/govulncheck" ./cmd/... ./internal/... ./pkg/...
+          vulncheck="$(go env GOPATH)/bin/govulncheck"
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "${vulncheck}" ./cmd/... ./internal/... ./pkg/...
+          (
+            cd tools
+            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "${vulncheck}" github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+          )
 
       - name: Build release image
         run: |
@@ -40,7 +46,8 @@ jobs:
             --build-arg VERSION="${GITHUB_REF_NAME}" \
             --tag lightstack:sbom \
             .
-          docker image inspect lightstack:sbom --format '{{.Id}}' | tee lightstack-image-digest.txt
+          docker image inspect lightstack:sbom --format '{{.Id}}' | tee lightstack-image-id.txt
+          test "$(docker image inspect lightstack:sbom --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${GITHUB_SHA}"
 
       - name: Generate runtime SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
@@ -54,11 +61,15 @@ jobs:
         run: |
           container_id=$(docker create lightstack:sbom)
           trap 'docker rm -f "${container_id}" >/dev/null' EXIT
-          docker cp "${container_id}:/app/lightstack" /tmp/lightstack
 
-          go version -m /tmp/lightstack \
-            | awk '$1 == "dep" { print $2 "@" $3 }' \
-            | sort -u > /tmp/binary-modules.txt
+          : > /tmp/binary-modules.txt
+          for binary in lightstack lightstack-migrate; do
+            docker cp "${container_id}:/app/${binary}" "/tmp/${binary}"
+            go version -m "/tmp/${binary}" \
+              | awk '$1 == "dep" { print $2 "@" $3 }' \
+              >> /tmp/binary-modules.txt
+          done
+          sort -u -o /tmp/binary-modules.txt /tmp/binary-modules.txt
           jq -r '
             .packages[]
             | select(any(.externalRefs[]?;
@@ -92,7 +103,8 @@ jobs:
           name: lightstack-security-evidence
           path: |
             lightstack.spdx.json
-            lightstack-image-digest.txt
+            lightstack-image-id.txt
             grype-results.json
+            docs/security/openvex.json
           if-no-files-found: warn
           retention-days: 30

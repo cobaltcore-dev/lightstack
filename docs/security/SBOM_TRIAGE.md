@@ -16,7 +16,7 @@ Dependency results must be assigned to one of these scopes before they are treat
 | Development-only | `tools/go.mod`, test dependencies, linters, IDEs, and local utilities | No | Maintain and license-review, but do not report as shipped code |
 | Source repository | Documentation, examples, generated files, and all modules visible to a source scanner | No | Useful discovery input; never substitute for the runtime inventory |
 
-The release SBOM is generated from the final container image. CI compares its Go packages with `go version -m` output from the compiled binary and fails if an embedded module is absent. The image ID and OCI source, revision, and version labels bind the evidence to a build.
+The release SBOM is generated from the final container image. CI compares its Go packages with `go version -m` output from both compiled binaries and fails if an embedded module is absent. The image ID and OCI source, revision, and version labels bind the evidence to a build.
 
 ## 2026-09-30 scan assessment
 
@@ -45,6 +45,7 @@ The generated runtime SPDX artifact replaces this export as the release inventor
 | GO-2026-5932 in `x/crypto/openpgp` | Affected module present; vulnerable packages absent | `not_affected` with `vulnerable_code_not_present`; see `openvex.json` |
 | Go 1.26.2 standard-library advisories | Toolchain affects every binary | Pin Go 1.26.8 in modules, CI, builder image, and test container |
 | GPL and other linter-only dependencies in the root module | Development-only, not shipped | Move the pinned linter graph to `tools/go.mod` |
+| Vulnerable transitive modules in the pinned linter graph | Development-only but executed in CI | Upgrade the affected modules and scan the linter command with `govulncheck` |
 
 ## Triage procedure
 
@@ -66,7 +67,7 @@ A release candidate is acceptable only when all of the following hold:
 - Linux-target `govulncheck` reports no reachable vulnerability in `cmd`, `internal`, or `pkg`.
 - The final image has no fixable High or Critical finding from the configured image scanner.
 - An SPDX JSON SBOM is generated from the final image and retained with the image ID.
-- Every Go dependency reported by `go version -m` for the production binary is represented in the SBOM.
+- Every Go dependency reported by `go version -m` for both production binaries is represented in the SBOM.
 - OCI source and revision labels identify the repository and commit.
 - The root and tools module files are tidy and reproducible with the pinned Go toolchain.
 - Each `not_affected` or `fixed` exception has current evidence and an owner-review path.

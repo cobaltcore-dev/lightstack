@@ -34,15 +34,15 @@ client commands (OpenStack CLI, `curl`, Terraform). Postgres runs as a backgroun
 **A container engine — Docker or Podman — must already be installed** (this guide will not install one;
 that's the host operator's setup). The block checks for it, then installs the lightweight client tools.
 Idempotent — re-running skips anything already present. Groups: apt packages (build tools, OpenStack
-CLI, jq); Go 1.26.2 (from the official tarball, since Ubuntu's `golang` is older, symlinked to
+CLI, jq); Go 1.26.8 (from the official tarball, since Ubuntu's `golang` is older, symlinked to
 `/usr/local/bin`); Terraform (HashiCorp apt repo).
 
 ```bash
 command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1 || echo "PRECONDITION: install Docker or Podman first (this guide will not)"
 sudo apt-get update
 sudo apt-get install -y git make build-essential curl gnupg lsb-release jq python3-openstackclient
-echo "Go 1.26.x — installing only if missing"
-command -v go >/dev/null 2>&1 && go version | grep -q 'go1.26' || { curl -fsSL https://go.dev/dl/go1.26.2.linux-amd64.tar.gz -o /tmp/go.tgz && sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz; }
+echo "Go 1.26.8 — installing if missing or different"
+command -v go >/dev/null 2>&1 && go version | grep -q 'go1.26.8' || { curl -fsSL https://go.dev/dl/go1.26.8.linux-amd64.tar.gz -o /tmp/go.tgz && echo 'd0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b  /tmp/go.tgz' | sha256sum -c - && sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz; }
 sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
 echo "Terraform — installing only if missing"
 command -v terraform >/dev/null 2>&1 || { curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list && sudo apt-get update && sudo apt-get install -y terraform; }
