@@ -29,16 +29,6 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # Runtime stage - automatically uses target platform
 FROM alpine:3.24
 
-ARG VCS_REF=unknown
-ARG SOURCE_URL=https://github.com/cobaltcore-dev/lightstack
-ARG VERSION=dev
-
-LABEL org.opencontainers.image.title="Lightstack" \
-    org.opencontainers.image.description="Lightweight OpenStack-compatible API service" \
-    org.opencontainers.image.source=$SOURCE_URL \
-    org.opencontainers.image.revision=$VCS_REF \
-    org.opencontainers.image.version=$VERSION
-
 # Install runtime dependencies.
 # qemu-img: per-instance qcow2 overlay staging (WS-0); cdrkit: genisoimage for
 # config-drive cloud-init ISOs (WS-4); dnsmasq: VM DHCP; iproute2/iptables/ipset:
@@ -89,6 +79,16 @@ EXPOSE 35357 8774 9696 8776 9292 8775
 # Health check (use internal port 35357)
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:35357/v3 || exit 1
+
+ARG VCS_REF=unknown
+ARG SOURCE_URL=https://github.com/cobaltcore-dev/lightstack
+ARG VERSION=dev
+
+LABEL org.opencontainers.image.title="Lightstack" \
+    org.opencontainers.image.description="Lightweight OpenStack-compatible API service" \
+    org.opencontainers.image.source=$SOURCE_URL \
+    org.opencontainers.image.revision=$VCS_REF \
+    org.opencontainers.image.version=$VERSION
 
 # Run migrations and start Lightstack
 CMD ["/bin/sh", "-c", "/app/lightstack-migrate up && /app/lightstack --config /app/config/lightstack.yaml"]
