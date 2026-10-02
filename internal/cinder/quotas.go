@@ -9,8 +9,8 @@ import (
 	"strconv"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -34,11 +34,11 @@ var cinderQuotaDefaults = map[string]int{
 
 // resolveCinderQuotaLimits returns the effective limits for a project: the package
 // defaults overlaid with whatever cinder_quotas configures.
-func resolveCinderQuotaLimits(ctx context.Context, projectID string) (map[string]int, error) {
+func resolveCinderQuotaLimits(ctx context.Context, pool *pgxpool.Pool, projectID string) (map[string]int, error) {
 	limits := make(map[string]int, len(cinderQuotaDefaults))
 	maps.Copy(limits, cinderQuotaDefaults)
 
-	rows, err := database.DB.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		SELECT resource, "limit"
 		FROM cinder_quotas
 		WHERE project_id = $1
@@ -65,21 +65,21 @@ func resolveCinderQuotaLimits(ctx context.Context, projectID string) (map[string
 // cinderQuotaUsage counts the project's block-storage consumption, keyed by the same
 // resource names as cinderQuotaDefaults so the two can be zipped. A failed count is
 // returned, never reported as zero usage.
-func cinderQuotaUsage(ctx context.Context, projectID string) (map[string]int, error) {
+func cinderQuotaUsage(ctx context.Context, pool *pgxpool.Pool, projectID string) (map[string]int, error) {
 	var volumes, gigabytes, snapshots, backups, backupGigabytes int
-	if err := database.DB.QueryRow(ctx,
+	if err := pool.QueryRow(ctx,
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
 		projectID).Scan(&volumes, &gigabytes); err != nil {
 		return nil, fmt.Errorf("count volume usage: %w", err)
 	}
-	if err := database.DB.QueryRow(ctx,
+	if err := pool.QueryRow(ctx,
 		"SELECT COUNT(*) FROM snapshots WHERE project_id = $1 AND status != 'deleted'",
 		projectID).Scan(&snapshots); err != nil {
 		return nil, fmt.Errorf("count snapshot usage: %w", err)
 	}
 	// volume_backups (migration 022) carries no 'deleted' status — DeleteBackup removes
 	// the row — so this counts every row for the project.
-	if err := database.DB.QueryRow(ctx,
+	if err := pool.QueryRow(ctx,
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volume_backups WHERE project_id = $1",
 		projectID).Scan(&backups, &backupGigabytes); err != nil {
 		return nil, fmt.Errorf("count backup usage: %w", err)
@@ -97,7 +97,7 @@ func cinderQuotaUsage(ctx context.Context, projectID string) (map[string]int, er
 // cinder_quotas overlay and no usage), from the same source as every other quota
 // view so the values cannot drift (FR-003).
 func (svc *Service) GetQuotaSetDefaults(c *gin.Context) {
-	projectID, apiErr := common.QuotaTargetProject(c)
+	projectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -120,7 +120,7 @@ func (svc *Service) GetQuotaSetDefaults(c *gin.Context) {
 // parameter (SPEC-020 FR-002). `reserved` is always 0 — Lightstack completes operations
 // synchronously and models no reservations (Art. II).
 func (svc *Service) GetQuotaSet(c *gin.Context) {
-	targetProjectID, apiErr := common.QuotaTargetProject(c)
+	targetProjectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -128,7 +128,7 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 
 	// Resolve limits through the shared helper so this view and the absolute-limits
 	// view always agree (FR-003).
-	quotas, err := resolveCinderQuotaLimits(c.Request.Context(), targetProjectID)
+	quotas, err := resolveCinderQuotaLimits(c.Request.Context(), svc.pool, targetProjectID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_quota_set").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get quota set"))
@@ -139,7 +139,7 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 	// ParseBool accepts the "True" that python-cinderclient sends as well as "true"
 	// and "1"; anything unparseable is the documented default, false.
 	if withUsage, _ := strconv.ParseBool(c.Query("usage")); withUsage {
-		usage, usageErr := cinderQuotaUsage(c.Request.Context(), targetProjectID)
+		usage, usageErr := cinderQuotaUsage(c.Request.Context(), svc.pool, targetProjectID)
 		if usageErr != nil {
 			log.Error().Err(usageErr).Str("project_id", targetProjectID).Msg("failed to query quota usage")
 			common.SendError(c, common.NewInternalServerError("failed to get quota usage"))
@@ -172,7 +172,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 
 	// Resolved exactly as the reads resolve it, so `default` names the same project on
 	// PUT as on GET — the caller's own.
-	resolved, apiErr := common.QuotaTargetProject(c)
+	resolved, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -209,7 +209,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 			continue
 		}
 
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO cinder_quotas (project_id, resource, "limit")
 			VALUES ($1, $2, $3)
 			ON CONFLICT (project_id, resource)
@@ -223,7 +223,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 	}
 
 	// Return the resulting quotas (defaults + overrides) from the shared helper.
-	limits, err := resolveCinderQuotaLimits(c.Request.Context(), resolved)
+	limits, err := resolveCinderQuotaLimits(c.Request.Context(), svc.pool, resolved)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_quota").Msg("failed to read back quotas")
 		common.SendError(c, common.NewInternalServerError("failed to read back quotas"))
@@ -248,7 +248,7 @@ func (svc *Service) DeleteQuotaSet(c *gin.Context) {
 	}
 
 	// Same target resolution as the reads and UpdateQuotaSet.
-	targetProjectID, apiErr := common.QuotaTargetProject(c)
+	targetProjectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -257,7 +257,7 @@ func (svc *Service) DeleteQuotaSet(c *gin.Context) {
 	// A DELETE matching no rows is not an error: resetting a project that never had an
 	// override is a successful no-op, and Exec reports that as a zero row count, never
 	// as pgx.ErrNoRows (that sentinel only comes from QueryRow/Scan).
-	if _, err := database.DB.Exec(c.Request.Context(),
+	if _, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM cinder_quotas WHERE project_id = $1",
 		targetProjectID); err != nil {
 		log.Error().Err(err).Str("operation", "delete_quota_set").Msg("failed to reset quotas")

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -48,7 +48,7 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 
 	if uplink != "" {
 		// 1. Floating-IP NAT + per-VM ingress SG filter (inverse of reconcileNAT's FIP loop).
-		if rows, err := database.DB.Query(ctx, `
+		if rows, err := svc.pool.Query(ctx, `
 			SELECT floating_ip_address, fixed_ip_address
 			FROM floating_ips
 			WHERE port_id IS NOT NULL AND fixed_ip_address IS NOT NULL`); err == nil {
@@ -73,7 +73,7 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 		}
 
 		// 2. Egress SNAT per internal subnet behind an external-gateway router.
-		if cidrs, err := queryStrings(ctx, `
+		if cidrs, err := queryStrings(ctx, svc.pool, `
 			SELECT DISTINCT s.cidr
 			FROM routers rt
 			JOIN router_interfaces ri ON ri.router_id = rt.id
@@ -93,7 +93,7 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 	// referenced by a port jump is logged, NOT counted — it must not abort the
 	// teardown (issue #53 topic 3 / option b). A DB query failure IS a real error.
 	if svc.sgManager != nil {
-		if sgs, err := queryStrings(ctx, `SELECT id FROM security_groups`); err != nil {
+		if sgs, err := queryStrings(ctx, svc.pool, `SELECT id FROM security_groups`); err != nil {
 			fail(err, "enumerate security groups")
 		} else {
 			for _, id := range sgs {
@@ -105,7 +105,7 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 	}
 
 	// 3. Per network: stop dnsmasq, remove the metadata DNAT, delete the host bridge.
-	if netIDs, err := queryStrings(ctx, `SELECT id FROM networks`); err != nil {
+	if netIDs, err := queryStrings(ctx, svc.pool, `SELECT id FROM networks`); err != nil {
 		fail(err, "enumerate networks")
 	} else {
 		for _, id := range netIDs {
@@ -113,7 +113,7 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 			if len(id) >= 8 {
 				bridge := "br-" + id[:8]
 				var gw string
-				if e := database.DB.QueryRow(ctx,
+				if e := svc.pool.QueryRow(ctx,
 					`SELECT gateway_ip FROM subnets WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, id).Scan(&gw); e != nil && !errors.Is(e, pgx.ErrNoRows) {
 					fail(e, "query gateway_ip")
 				} else if gw != "" {
@@ -125,14 +125,14 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 	}
 
 	// 4. Router namespaces, then tenant/project namespaces.
-	if ids, err := queryStrings(ctx, `SELECT id FROM routers`); err != nil {
+	if ids, err := queryStrings(ctx, svc.pool, `SELECT id FROM routers`); err != nil {
 		fail(err, "enumerate routers")
 	} else {
 		for _, id := range ids {
 			fail(svc.routerManager.DeleteRouterNamespace(id), "delete router namespace")
 		}
 	}
-	if pids, err := queryStrings(ctx, `SELECT DISTINCT project_id::text FROM networks WHERE project_id IS NOT NULL`); err != nil {
+	if pids, err := queryStrings(ctx, svc.pool, `SELECT DISTINCT project_id::text FROM networks WHERE project_id IS NOT NULL`); err != nil {
 		fail(err, "enumerate project namespaces")
 	} else {
 		for _, pid := range pids {
@@ -149,8 +149,8 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 // queryStrings runs a single-column query and returns its non-empty string values.
 // A query, scan, or iteration error is returned so the caller can fail-close
 // (FR-001/016). The DB is read-only here (operator-owned, never reset by teardown).
-func queryStrings(ctx context.Context, query string) ([]string, error) {
-	rows, err := database.DB.Query(ctx, query)
+func queryStrings(ctx context.Context, pool *pgxpool.Pool, query string) ([]string, error) {
+	rows, err := pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -97,7 +96,7 @@ func (svc *Service) ListRouters(c *gin.Context) {
 
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT created_at FROM routers WHERE id = $1 AND project_id = $2",
 			marker, projectID,
 		).Scan(&markerCreatedAt)
@@ -110,7 +109,7 @@ func (svc *Service) ListRouters(c *gin.Context) {
 
 	queryArgs = append(queryArgs, limit, offset)
 
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
 		       distributed, ha, created_at, updated_at
 		FROM routers
@@ -213,7 +212,7 @@ func (svc *Service) CreateRouter(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO routers (id, name, project_id, admin_state_up, status, external_gateway_info, distributed, ha, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, routerID, req.Router.Name, projectID, adminStateUp, "ACTIVE", gatewayInfoJSON, distributed, ha, now, now)
@@ -264,7 +263,7 @@ func (svc *Service) GetRouter(c *gin.Context) {
 	// id::text comparison resolves by UUID or name without crashing on a
 	// non-UUID identifier — the CLI looks a router up by name this way
 	// (consistent with GetNetwork/GetSubnet).
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
 		       distributed, ha, created_at, updated_at
 		FROM routers
@@ -362,7 +361,7 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 	query := fmt.Sprintf("UPDATE routers SET %s WHERE id = $%d AND project_id = $%d",
 		updateString(updates), argID, argID+1)
 
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
+	_, err := svc.pool.Exec(c.Request.Context(), query, args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_router").Str("router_id", routerID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update router"))
@@ -380,7 +379,7 @@ func (svc *Service) DeleteRouter(c *gin.Context) {
 
 	// Check if router has any interfaces attached
 	var interfaceCount int
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM router_interfaces WHERE router_id = $1",
 		routerID,
 	).Scan(&interfaceCount)
@@ -404,7 +403,7 @@ func (svc *Service) DeleteRouter(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM routers WHERE id = $1 AND project_id = $2",
 		routerID, projectID,
 	)
@@ -434,7 +433,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 
 	// Verify router exists
 	var routerExists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM routers WHERE id = $1 AND project_id = $2)",
 		routerID, projectID,
 	).Scan(&routerExists)
@@ -446,7 +445,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 
 	// Get subnet information
 	var subnetID, networkID, cidr, gatewayIP string
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, network_id, cidr, gateway_ip FROM subnets WHERE id = $1",
 		req.SubnetID,
 	).Scan(&subnetID, &networkID, &cidr, &gatewayIP)
@@ -474,7 +473,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	fixedIPsJSON, _ := json.Marshal(fixedIPs)
 
 	now := time.Now()
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, portID, "router-interface-"+routerID[:8], networkID, projectID, routerID, "network:router_interface",
@@ -487,7 +486,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	}
 
 	// Create router interface record
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO router_interfaces (id, router_id, port_id, subnet_id, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, uuid.New().String(), routerID, portID, subnetID, now)
@@ -503,7 +502,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	// works whether the gateway was set before or after this interface.
 	if svc.mode != "stub" {
 		var gwRaw []byte
-		if err := database.DB.QueryRow(c.Request.Context(),
+		if err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT external_gateway_info FROM routers WHERE id = $1", routerID).Scan(&gwRaw); err == nil &&
 			len(gwRaw) > 0 && string(gwRaw) != "null" {
 			if uplink, uerr := networking.DefaultUplinkInterface(); uerr == nil {
@@ -552,7 +551,7 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 	// Get port ID from subnet if not provided
 	portID := req.PortID
 	if portID == "" && req.SubnetID != "" {
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT port_id FROM router_interfaces WHERE router_id = $1 AND subnet_id = $2",
 			routerID, req.SubnetID,
 		).Scan(&portID)
@@ -570,7 +569,7 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 	}
 
 	// Delete router interface record
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM router_interfaces WHERE router_id = $1 AND port_id = $2",
 		routerID, portID,
 	)
@@ -581,7 +580,7 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 	}
 
 	// Delete the port
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM ports WHERE id = $1 AND project_id = $2",
 		portID, projectID,
 	)
@@ -615,7 +614,7 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 
 	// Get external network details
 	var externalCIDR string
-	err := database.DB.QueryRow(ctx,
+	err := svc.pool.QueryRow(ctx,
 		"SELECT cidr FROM subnets WHERE network_id = $1 LIMIT 1",
 		networkID,
 	).Scan(&externalCIDR)
@@ -625,7 +624,7 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 	}
 
 	// Get all internal subnets connected to this router
-	rows, err := database.DB.Query(ctx, `
+	rows, err := svc.pool.Query(ctx, `
 		SELECT s.cidr
 		FROM subnets s
 		JOIN router_interfaces ri ON ri.subnet_id = s.id

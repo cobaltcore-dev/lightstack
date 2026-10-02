@@ -205,7 +205,7 @@ pkg/                        # Public/reusable packages
 - Network namespaces per project for network isolation
 - Database queries auto-filter by `project_id`
 
-**Dependency Injection Pattern**: Services receive `*pgxpool.Pool` through constructors rather than importing the global `database.DB`. This enables unit testing and makes dependencies explicit. Pattern: `svc.pool.Query(ctx, ...)` instead of `database.DB.Query(ctx, ...)`.
+**Dependency Injection Pattern**: Every database-using service receives the process's one `*pgxpool.Pool` as the first parameter of its constructor, for example `nova.NewService(pool, libvirtURI, libvirtMode, cache)` in `internal/nova/handlers.go`. Handlers query through it with `svc.pool.Query(ctx, ...)`. Package-level helpers take the pool as a parameter, e.g. `database.WithTx(ctx, pool, fn)`. There is no process-wide handle. Tests hand services a pool of their own (see `internal/keystone/pool_injection_test.go`). See ADR-001.
 
 ## Operating Modes
 
@@ -358,9 +358,9 @@ return common.HandleError(c, err)
 
 ### Database Queries
 ```go
-// Always use context and prepared statements
+// Always use context, the service's injected pool, and prepared statements
 ctx := c.Request.Context()
-err := database.DB.QueryRow(ctx,
+err := svc.pool.QueryRow(ctx,
     "SELECT id FROM instances WHERE project_id = $1",
     projectID,
 ).Scan(&instanceID)
@@ -440,8 +440,11 @@ if requestedVersion == "" {
 - External PostgreSQL. **One** new migration `064_fix_cinder_volume_alias_localhost` (reseeds the `volume` alias `…015` endpoint URL only; s3 `…016` is config-overridden by `BuildServiceCatalog` and deliberately untouched). F9 reuses the existing `volumes.volume_type` column (migration `016`); F4 and F6 add **no** columns. (019-horizon-compat-api-fixes)
 - Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL). **No new modules.** (020-horizon-create-ui-enablement)
 - External PostgreSQL. **No migration, no schema change** — reuses `quotas` (migration `007`, row-per-resource, `project_id UUID NOT NULL REFERENCES projects(id)`) and `cinder_quotas` (migration `039`). Neutron has no quota table and does not gain one (limits stay code defaults; usage is counted live). (020-horizon-create-ui-enablement)
+- Go 1.26 (module targets 1.21+) + jackc/pgx/v5 + pgxpool (already a dependency), gin-gonic/gin. **No new modules.** (027-database-pool-injection)
+- PostgreSQL. **No schema change, no migration.** The pool configuration from `lightstack.yaml` is unchanged. (027-database-pool-injection)
 
 ## Recent Changes
+- 027-database-pool-injection: plan — remove the process-wide database handle. Every database-using constructor takes the `*pgxpool.Pool` first, and the 20 package-level helpers take it as a parameter. `WithTx(ctx, pool, fn)`. One commit, no API or schema change (SPEC-027 plan)
 - 026-rename-to-lightstack: plan — staged rename (8 stages, gates green per stage); spec dir stays **untracked** (it cannot shed its own 70 occurrences); real-mode host validation mandatory (stub mode never reaches the chain namer or the state root) (SPEC-026 plan)
 - 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)
 - 011-ensure-storage-subdirs: fix real-mode storage-subdir gap (cloud-storage#510) — Glance no longer falls back to `~/.lightstack`; chart initContainer pre-creates node-local subdirs (SPEC-011 plan)

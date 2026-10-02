@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -55,8 +54,8 @@ func TestNetworkResponses_CarryProjectID(t *testing.T) {
 		t.Fatalf("create returned no id: %s", body)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, "DELETE FROM subnets WHERE network_id = $1", netID) //nolint:errcheck // best-effort cleanup
-		database.DB.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID)        //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM subnets WHERE network_id = $1", netID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID)        //nolint:errcheck // best-effort cleanup
 	})
 	assertProjectID(t, "create", created.Network)
 
@@ -145,12 +144,12 @@ func TestForeignSubnetOnOwnNetworkIsListableAndResolvable(t *testing.T) {
 	netID, subnetID := uuid.NewString(), uuid.NewString()
 
 	// Network: the caller's. Subnet on it: the other project's.
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared) VALUES ($1, $2, $3, false)`,
 		netID, "spec020-foreign-"+netID[:8], seededProjectID); err != nil {
 		t.Fatalf("insert network: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version,
 		                      enable_dhcp, dns_nameservers, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, '10.44.0.0/24', '10.44.0.1', 4, true, '{}', NOW(), NOW())`,
@@ -158,8 +157,8 @@ func TestForeignSubnetOnOwnNetworkIsListableAndResolvable(t *testing.T) {
 		t.Fatalf("insert foreign subnet: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, "DELETE FROM subnets WHERE id = $1", subnetID) //nolint:errcheck // best-effort cleanup
-		database.DB.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID)   //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM subnets WHERE id = $1", subnetID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID)   //nolint:errcheck // best-effort cleanup
 	})
 
 	r := newNeutronTestRouter()
@@ -231,14 +230,14 @@ func TestSubnetReferenceIntegrity(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	netID, subnetID := uuid.NewString(), uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared) VALUES ($1, $2, $3, false)`,
 		netID, "spec020-integrity-"+netID[:8], seededProjectID); err != nil {
 		t.Fatalf("insert network: %v", err)
 	}
 	// Populate the columns the list query scans: ListSubnets skips any row whose scan
 	// fails, so a NULL in a non-nullable-scanned column would silently drop it.
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version,
 		                      enable_dhcp, dns_nameservers, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, '10.43.0.0/24', '10.43.0.1', 4, true, '{}', NOW(), NOW())`,
@@ -246,8 +245,8 @@ func TestSubnetReferenceIntegrity(t *testing.T) {
 		t.Fatalf("insert subnet: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, "DELETE FROM subnets WHERE id = $1", subnetID) //nolint:errcheck // best-effort cleanup
-		database.DB.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID)   //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM subnets WHERE id = $1", subnetID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID)   //nolint:errcheck // best-effort cleanup
 	})
 
 	r := newNeutronTestRouter()
@@ -301,7 +300,7 @@ func TestSubnetReferenceIntegrity(t *testing.T) {
 // rows.Err check) did not hold — both were already logged — but the design point did.
 func TestNetworkSubnetIDsPropagatesFailure(t *testing.T) {
 	requireDB(t)
-	svc := NewService("stub", nil)
+	svc := NewService(testPool, "stub", nil)
 	ctx := context.Background()
 
 	// A malformed network id reaches a uuid-typed column: Postgres rejects it, which is a
@@ -317,13 +316,13 @@ func TestNetworkSubnetIDsPropagatesFailure(t *testing.T) {
 
 	// And the happy path still yields a non-nil slice, so the JSON stays a list.
 	netID := uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared) VALUES ($1, $2, $3, false)`,
 		netID, "spec020-subnetids-"+netID[:8], seededProjectID); err != nil {
 		t.Fatalf("insert network: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID) //nolint:errcheck // best-effort cleanup
 	})
 	got, err := svc.networkSubnetIDs(ctx, netID)
 	if err != nil {

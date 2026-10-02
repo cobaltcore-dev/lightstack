@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -15,7 +14,7 @@ import (
 func (svc *Service) ListMeteringLabels(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, description, project_id, shared, created_at, updated_at
 		FROM metering_labels
 		WHERE project_id = $1 OR shared = true
@@ -89,7 +88,7 @@ func (svc *Service) CreateMeteringLabel(c *gin.Context) {
 		description = &req.MeteringLabel.Description
 	}
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO metering_labels (id, name, description, project_id, shared, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, id, req.MeteringLabel.Name, description, projectID, req.MeteringLabel.Shared, time.Now(), time.Now())
@@ -126,7 +125,7 @@ func (svc *Service) GetMeteringLabel(c *gin.Context) {
 	var shared bool
 	var createdAt, updatedAt time.Time
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, project_id, shared, created_at, updated_at
 		FROM metering_labels
 		WHERE id = $1 AND (project_id = $2 OR shared = true)
@@ -157,7 +156,7 @@ func (svc *Service) DeleteMeteringLabel(c *gin.Context) {
 	projectID := c.GetString("project_id")
 	labelID := c.Param("id")
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM metering_labels WHERE id = $1 AND project_id = $2",
 		labelID, projectID,
 	)
@@ -180,7 +179,7 @@ func (svc *Service) DeleteMeteringLabel(c *gin.Context) {
 func (svc *Service) ListMeteringLabelRules(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT mlr.id, mlr.metering_label_id, mlr.remote_ip_prefix, mlr.direction, mlr.excluded, mlr.created_at
 		FROM metering_label_rules mlr
 		JOIN metering_labels ml ON mlr.metering_label_id = ml.id
@@ -247,7 +246,7 @@ func (svc *Service) CreateMeteringLabelRule(c *gin.Context) {
 
 	// Verify label belongs to project
 	var labelExists bool
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT EXISTS(SELECT 1 FROM metering_labels WHERE id = $1 AND (project_id = $2 OR shared = true))
 	`, req.MeteringLabelRule.MeteringLabelID, projectID).Scan(&labelExists)
 
@@ -264,7 +263,7 @@ func (svc *Service) CreateMeteringLabelRule(c *gin.Context) {
 
 	id := uuid.New()
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO metering_label_rules (id, metering_label_id, remote_ip_prefix, direction, excluded, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, id, req.MeteringLabelRule.MeteringLabelID, req.MeteringLabelRule.RemoteIPPrefix, direction, req.MeteringLabelRule.Excluded, time.Now())
@@ -291,7 +290,7 @@ func (svc *Service) DeleteMeteringLabelRule(c *gin.Context) {
 	projectID := c.GetString("project_id")
 	ruleID := c.Param("id")
 
-	result, err := database.DB.Exec(c.Request.Context(), `
+	result, err := svc.pool.Exec(c.Request.Context(), `
 		DELETE FROM metering_label_rules
 		WHERE id = $1 AND metering_label_id IN (
 			SELECT id FROM metering_labels WHERE project_id = $2

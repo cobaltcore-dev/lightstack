@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -15,7 +14,7 @@ import (
 
 // ListCredentials returns all credentials
 func (svc *Service) ListCredentials(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, user_id, project_id, type, blob, created_at
 		FROM credentials
 		ORDER BY created_at DESC
@@ -84,7 +83,7 @@ func (svc *Service) CreateCredential(c *gin.Context) {
 		projectID = req.Credential.ProjectID
 	}
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO credentials (id, user_id, project_id, type, blob, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, credID, req.Credential.UserID, projectID, req.Credential.Type, req.Credential.Blob, now, now)
@@ -116,7 +115,7 @@ func (svc *Service) GetCredential(c *gin.Context) {
 	var id, userID, credType, blob string
 	var projectID *string
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, user_id, project_id, type, blob
 		FROM credentials
 		WHERE id = $1
@@ -188,7 +187,7 @@ func (svc *Service) UpdateCredential(c *gin.Context) {
 	}
 	query += " WHERE id = $" + strconv.Itoa(argCount)
 
-	result, err := database.DB.Exec(c.Request.Context(), query, args...)
+	result, err := svc.pool.Exec(c.Request.Context(), query, args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_credential").Str("cred_id", credID).Msg("Failed to update credential")
 		common.SendError(c, common.NewInternalServerError("failed to update credential"))
@@ -208,7 +207,7 @@ func (svc *Service) UpdateCredential(c *gin.Context) {
 func (svc *Service) DeleteCredential(c *gin.Context) {
 	credID := c.Param("id")
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM credentials WHERE id = $1",
 		credID)
 

@@ -36,7 +36,7 @@ These items from the codebase review are now planned for v0.7.0 with concrete ap
 
 | ID | Severity | Description | v0.7.0 Approach |
 |----|----------|-------------|-----------------|
-| H-3 | High | Database dependency injection (661 sites) | `*pgxpool.Pool` through constructors, smallest-first ([ADR-001](adr/ADR-001-database-dependency-injection.md)) |
+| H-3 | High | Database dependency injection | ✅ Done ([SPEC-027](specs/027-database-pool-injection/spec.md)): every database-using service takes the `*pgxpool.Pool` in its constructor, and the process-wide handle is gone ([ADR-001](adr/ADR-001-database-dependency-injection.md)) |
 | H-4 | High | Re-enable CI linting | Staged golangci-lint config, fix 78 test errors first |
 | H-6 | High | Rate limiting middleware | `x/time/rate`, IP + project dual mode, 10K cap ([ADR-002](adr/ADR-002-rate-limiting-architecture.md)) |
 | H-8 | High | Cinder route deduplication | 301 redirect old paths, don't remove |

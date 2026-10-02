@@ -23,11 +23,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // Service handles Nova API endpoints
 type Service struct {
+	pool        *pgxpool.Pool
 	libvirtURI  string
 	libvirtMode string
 	vmManager   *hypervisor.VMManager
@@ -50,9 +52,10 @@ type NeutronService interface {
 }
 
 // NewService creates a new Nova service
-func NewService(libvirtURI, libvirtMode string, cacheInstance *cache.Cache) *Service {
+func NewService(pool *pgxpool.Pool, libvirtURI, libvirtMode string, cacheInstance *cache.Cache) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
+		pool:        pool,
 		libvirtURI:  libvirtURI,
 		libvirtMode: libvirtMode,
 		cache:       cacheInstance,
@@ -85,7 +88,7 @@ func (svc *Service) reclaimImageBaseIfUnused(imageID string) {
 		return
 	}
 	var inUse bool
-	if err := database.DB.QueryRow(svc.ctx, `
+	if err := svc.pool.QueryRow(svc.ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM instances WHERE image_id = $1
 			UNION ALL
@@ -359,7 +362,7 @@ func bootImageRefFromBDM(req *CreateServerRequest) string {
 // VM-creation goroutine's failure paths. Uses svc.ctx so it still runs even if
 // the request context was cancelled.
 func (svc *Service) markInstanceError(instanceID string) {
-	if _, err := database.DB.Exec(svc.ctx,
+	if _, err := svc.pool.Exec(svc.ctx,
 		"UPDATE instances SET status = 'ERROR', updated_at = $1 WHERE id = $2",
 		time.Now(), instanceID); err != nil {
 		log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ERROR")
@@ -409,7 +412,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	// Fetch flavor (support lookup by UUID or name)
 	var flavor database.Flavor
 	queryStart := time.Now()
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, name, vcpus, ram_mb, disk_gb FROM flavors WHERE id::text = $1 OR name = $1 LIMIT 1",
 		req.Server.FlavorRef,
 	).Scan(&flavor.ID, &flavor.Name, &flavor.VCPUs, &flavor.RAMMB, &flavor.DiskGB)
@@ -430,7 +433,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	}
 
 	// Check quotas before creating instance
-	if err := CheckQuota(c, "instances", 1); err != nil {
+	if err := CheckQuota(c, svc.pool, "instances", 1); err != nil {
 		if _, ok := err.(*QuotaExceededError); ok {
 			common.SendError(c, common.NewQuotaExceededError("instances"))
 			return
@@ -441,7 +444,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	}
 
 	// Check cores quota
-	if err := CheckQuota(c, "cores", flavor.VCPUs); err != nil {
+	if err := CheckQuota(c, svc.pool, "cores", flavor.VCPUs); err != nil {
 		if _, ok := err.(*QuotaExceededError); ok {
 			common.SendError(c, common.NewQuotaExceededError("cores"))
 			return
@@ -452,7 +455,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	}
 
 	// Check RAM quota
-	if err := CheckQuota(c, "ram", flavor.RAMMB); err != nil {
+	if err := CheckQuota(c, svc.pool, "ram", flavor.RAMMB); err != nil {
 		if _, ok := err.(*QuotaExceededError); ok {
 			common.SendError(c, common.NewQuotaExceededError("ram"))
 			return
@@ -467,7 +470,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	// Nova v2.1 strict input validation) instead of silently booting a keyless VM.
 	if req.Server.KeyName != "" {
 		var kpExists bool
-		if err := database.DB.QueryRow(c.Request.Context(),
+		if err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT EXISTS(SELECT 1 FROM keypairs WHERE user_id = $1 AND name = $2)",
 			userID, req.Server.KeyName,
 		).Scan(&kpExists); err != nil {
@@ -507,7 +510,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		// neutron's GetSecurityGroup. An id match wins, so a group perversely named
 		// after another's UUID cannot shadow it.
 		var sgID string
-		sgErr := database.DB.QueryRow(c.Request.Context(),
+		sgErr := svc.pool.QueryRow(c.Request.Context(),
 			`SELECT id FROM security_groups
 			 WHERE (id::text = $1 OR name = $1) AND project_id = $2
 			 ORDER BY (id::text = $1) DESC
@@ -516,7 +519,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		).Scan(&sgID)
 		if errors.Is(sgErr, pgx.ErrNoRows) {
 			if name == "default" {
-				if sgID, sgErr = neutron.EnsureDefaultSecurityGroup(c.Request.Context(), projectID); sgErr != nil {
+				if sgID, sgErr = neutron.EnsureDefaultSecurityGroup(c.Request.Context(), svc.pool, projectID); sgErr != nil {
 					log.Error().Err(sgErr).Str("operation", "ensure_default_sg").Msg("database error")
 					common.SendError(c, common.NewInternalServerError("failed to ensure default security group"))
 					return
@@ -538,7 +541,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	// here so the port allocated at boot can attach it and the read-back reflects a
 	// real association rather than a synthesized one (FR-006 / FR-006a).
 	if len(sgIDs) == 0 {
-		sgID, sgErr := neutron.EnsureDefaultSecurityGroup(c.Request.Context(), projectID)
+		sgID, sgErr := neutron.EnsureDefaultSecurityGroup(c.Request.Context(), svc.pool, projectID)
 		if sgErr != nil {
 			log.Error().Err(sgErr).Str("operation", "ensure_default_sg").Msg("database error")
 			common.SendError(c, common.NewInternalServerError("failed to ensure default security group"))
@@ -574,7 +577,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	// transaction as the operation"). Associations cascade on delete
 	// (server_security_groups FKs instances ON DELETE CASCADE).
 	queryStart = time.Now()
-	err = database.WithTx(c.Request.Context(), func(tx pgx.Tx) error {
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
 		if _, txErr := tx.Exec(c.Request.Context(), `
 			INSERT INTO instances (id, name, project_id, user_id, flavor_id, image_id, status, power_state, created_at, updated_at, key_name)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -606,7 +609,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	// Persist cloud-init user_data so the metadata service serves it raw to
 	// cloud-init (SPEC-009 WS-4 / T027).
 	if decodedUserData != "" {
-		if _, err := database.DB.Exec(c.Request.Context(),
+		if _, err := svc.pool.Exec(c.Request.Context(),
 			`INSERT INTO instance_userdata (instance_id, userdata) VALUES ($1, $2)
 			 ON CONFLICT (instance_id) DO UPDATE SET userdata = EXCLUDED.userdata`,
 			instanceID, decodedUserData); err != nil {
@@ -616,7 +619,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 	// Log instance action
 	requestID := uuid.New().String()
-	if _, err := database.DB.Exec(c.Request.Context(), `
+	if _, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO instance_actions (instance_id, action, request_id, user_id, project_id, start_time, message)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, instanceID, "create", requestID, userID, projectID, now, "Instance created"); err != nil {
@@ -633,7 +636,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Error().Interface("panic", r).Str("instance_id", instanceID).Msg("PANIC in VM creation goroutine")
-					if _, err := database.DB.Exec(context.Background(),
+					if _, err := svc.pool.Exec(context.Background(),
 						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
 						"ERROR", time.Now(), instanceID); err != nil {
 						log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after VM-creation panic")
@@ -682,7 +685,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			var cloudInit *hypervisor.CloudInitConfig
 			var sshKey string
 			if req.Server.KeyName != "" {
-				if err := database.DB.QueryRow(ctx,
+				if err := svc.pool.QueryRow(ctx,
 					"SELECT public_key FROM keypairs WHERE user_id = $1 AND name = $2",
 					userID, req.Server.KeyName,
 				).Scan(&sshKey); err != nil {
@@ -720,7 +723,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// unvalidated/foreign volume or a missing backing file.
 				var volStatus, volProject, volAttached, rbdPool, rbdImage string
 				var volBootable bool
-				if err := database.DB.QueryRow(ctx,
+				if err := svc.pool.QueryRow(ctx,
 					"SELECT status, COALESCE(bootable, false), project_id, COALESCE(attached_to_instance_id::text, ''), COALESCE(rbd_pool, ''), COALESCE(rbd_image, '') FROM volumes WHERE id = $1",
 					rootVol).Scan(&volStatus, &volBootable, &volProject, &volAttached, &rbdPool, &rbdImage); err != nil {
 					log.Error().Err(err).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: root volume not found")
@@ -751,7 +754,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// fails to start the domain (SPEC-009 WS-5).
 				if err := hypervisor.EnsureInstanceDir(instanceID); err != nil {
 					log.Error().Err(err).Str("instance_id", instanceID).Msg("boot-from-volume: failed to create instance dir")
-					if _, dbErr := database.DB.Exec(svc.ctx,
+					if _, dbErr := svc.pool.Exec(svc.ctx,
 						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
 						"ERROR", time.Now(), instanceID); dbErr != nil {
 						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after instance-dir failure")
@@ -763,14 +766,14 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// (no attachment row → FR-023 can't release/delete the volume on
 				// server delete), so treat any failure as fatal.
 				bvNow := time.Now()
-				if _, e := database.DB.Exec(ctx,
+				if _, e := svc.pool.Exec(ctx,
 					"INSERT INTO volume_attachments (id, volume_id, instance_id, device, delete_on_termination, attached_at) VALUES ($1, $2, $3, $4, $5, $6)",
 					uuid.New().String(), rootVol, instanceID, "/dev/vda", rootDOT, bvNow); e != nil {
 					log.Error().Err(e).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: failed to record root attachment")
 					svc.markInstanceError(instanceID)
 					return
 				}
-				if _, e := database.DB.Exec(ctx,
+				if _, e := svc.pool.Exec(ctx,
 					"UPDATE volumes SET attached_to_instance_id = $1, status = 'in-use', updated_at = $2 WHERE id = $3",
 					instanceID, bvNow, rootVol); e != nil {
 					log.Error().Err(e).Str("instance_id", instanceID).Str("volume_id", rootVol).Msg("boot-from-volume: failed to mark volume in-use")
@@ -781,7 +784,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
 				if err != nil {
 					log.Error().Err(err).Str("image_ref", req.Server.ImageRef).Str("instance_id", instanceID).Msg("Invalid imageRef — not a valid UUID")
-					if _, dbErr := database.DB.Exec(svc.ctx,
+					if _, dbErr := svc.pool.Exec(svc.ctx,
 						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
 						"ERROR", time.Now(), instanceID); dbErr != nil {
 						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after invalid imageRef")
@@ -797,11 +800,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 					// (SPEC-014 FR-013/FR-017). No-op when the base already exists.
 					if svc.imageStore != nil {
 						var checksum string
-						_ = database.DB.QueryRow(svc.ctx,
+						_ = svc.pool.QueryRow(svc.ctx,
 							"SELECT COALESCE(checksum, '') FROM images WHERE id = $1", imageUUID).Scan(&checksum)
 						if _, ferr := svc.imageStore.EnsureLocalBase(svc.ctx, imageUUID, checksum); ferr != nil {
 							log.Error().Err(ferr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to materialize image base for boot")
-							if _, dbErr := database.DB.Exec(svc.ctx,
+							if _, dbErr := svc.pool.Exec(svc.ctx,
 								"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
 								"ERROR", time.Now(), instanceID); dbErr != nil {
 								log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after image fetch failure")
@@ -812,7 +815,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 					overlay, stageErr := hypervisor.StageOverlay(instanceID, storage.LocalImagePath(imageUUID))
 					if stageErr != nil {
 						log.Error().Err(stageErr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to stage per-instance disk overlay")
-						if _, dbErr := database.DB.Exec(svc.ctx,
+						if _, dbErr := svc.pool.Exec(svc.ctx,
 							"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
 							"ERROR", time.Now(), instanceID); dbErr != nil {
 							log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after overlay staging failure")
@@ -846,7 +849,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// Update instance status to ERROR
 				dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
 				defer dbCancel()
-				if _, dbErr := database.DB.Exec(dbCtx,
+				if _, dbErr := svc.pool.Exec(dbCtx,
 					"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
 					"ERROR", time.Now(), instanceID); dbErr != nil {
 					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after libvirt create failure")
@@ -865,7 +868,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			// Update instance with libvirt UUID
 			dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
 			defer dbCancel()
-			if _, err := database.DB.Exec(dbCtx, `
+			if _, err := svc.pool.Exec(dbCtx, `
 				UPDATE instances
 				SET status = $1, power_state = $2, libvirt_domain_id = $3, launched_at = $4, updated_at = $5
 				WHERE id = $6
@@ -876,7 +879,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	} else {
 		logger.Debug().Msg("Stub mode: skipping libvirt VM creation")
 		// In stub mode, immediately set instance to ACTIVE so Terraform polling succeeds
-		if _, err := database.DB.Exec(c.Request.Context(), `
+		if _, err := svc.pool.Exec(c.Request.Context(), `
 			UPDATE instances SET status = $1, power_state = $2, launched_at = $3, updated_at = $4 WHERE id = $5
 		`, "ACTIVE", 1, time.Now(), time.Now(), instanceID); err != nil {
 			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE")
@@ -925,7 +928,7 @@ func (svc *Service) ListServers(c *gin.Context) {
 		// Scan failures (including no-rows) leave offset at zero, which
 		// returns the full page — the same fallback we used before.
 		var markerOffset int
-		if err := database.DB.QueryRow(c.Request.Context(),
+		if err := svc.pool.QueryRow(c.Request.Context(),
 			`SELECT ROW_NUMBER() OVER (ORDER BY created_at DESC) - 1
 			 FROM instances WHERE project_id = $1 AND id = $2`,
 			projectID, markerParam,
@@ -937,7 +940,7 @@ func (svc *Service) ListServers(c *gin.Context) {
 		}
 	}
 
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT id, name FROM instances WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
 		projectID, limit, offset,
 	)
@@ -1002,7 +1005,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT created_at FROM instances WHERE id = $1 AND project_id = $2",
 			marker, projectID,
 		).Scan(&markerCreatedAt)
@@ -1015,7 +1018,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 
 	queryArgs = append(queryArgs, limit, offset)
 
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT i.id, i.name, i.status, i.power_state, i.project_id, i.user_id,
 		       i.flavor_id, i.image_id, i.created_at, i.updated_at, i.launched_at,
 		       i.key_name,
@@ -1101,7 +1104,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	}
 
 	// Attach security_groups to every entry in one batched query (no N+1, FR-007).
-	sgMap, err := securityGroupNamesForServers(c.Request.Context(), ids)
+	sgMap, err := securityGroupNamesForServers(c.Request.Context(), svc.pool, ids)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_servers_detail_sgs").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list security groups"))
@@ -1124,7 +1127,7 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 	addresses := gin.H{}
 
 	// Query ports for this instance
-	rows, err := database.DB.Query(ctx, `
+	rows, err := svc.pool.Query(ctx, `
 		SELECT p.network_id, p.fixed_ips, n.name
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
@@ -1186,7 +1189,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 
 	// Try to find by ID first, then by name
 	// Use separate conditions to avoid type mismatch when id is UUID and param might be a name
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, status, power_state, project_id,
 		       user_id::text, flavor_id::text, image_id::text,
 		       created_at, updated_at, key_name
@@ -1244,7 +1247,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 	}
 
 	// security_groups: current membership by name; [{"name":"default"}] when none (FR-004/FR-006).
-	sgNames, err := securityGroupNamesForServer(c.Request.Context(), id)
+	sgNames, err := securityGroupNamesForServer(c.Request.Context(), svc.pool, id)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_server_sgs").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get security groups"))
@@ -1270,7 +1273,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	var libvirtDomainID sql.NullString
 	var instanceImageID sql.NullString
 	queryStart := time.Now()
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, libvirt_domain_id, image_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
 	).Scan(&instanceUUID, &libvirtDomainID, &instanceImageID)
@@ -1309,7 +1312,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	// can't drop them first. Filesystem cleanup (volume backing, overlay dir) is
 	// best-effort and runs only after the transaction commits.
 	ctx := c.Request.Context()
-	tx, txErr := database.DB.Begin(ctx)
+	tx, txErr := svc.pool.Begin(ctx)
 	if txErr != nil {
 		logger.Error().Err(txErr).Str("instance_id", instanceUUID).Msg("delete: begin tx failed")
 		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), txErr)
@@ -1555,7 +1558,7 @@ func (svc *Service) ServerAction(c *gin.Context) {
 
 	// Get libvirt domain ID for remaining actions (support lookup by ID or name)
 	var libvirtDomainID any
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id FROM instances WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
@@ -1588,7 +1591,7 @@ func (svc *Service) ServerAction(c *gin.Context) {
 		// Handle actions in stub mode by updating database only
 		if _, ok := req["reboot"]; ok {
 			// Just mark as rebooting then active
-			if _, err := database.DB.Exec(c.Request.Context(),
+			if _, err := svc.pool.Exec(c.Request.Context(),
 				"UPDATE instances SET status = $1, updated_at = $2 WHERE (id::text = $3 OR name = $3) AND project_id = $4",
 				"REBOOT", time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance REBOOT")
@@ -1603,20 +1606,20 @@ func (svc *Service) ServerAction(c *gin.Context) {
 				}
 				ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 				defer cancel()
-				if _, err := database.DB.Exec(ctx,
+				if _, err := svc.pool.Exec(ctx,
 					"UPDATE instances SET status = $1, updated_at = $2 WHERE (id::text = $3 OR name = $3) AND project_id = $4",
 					"ACTIVE", time.Now(), instanceID, projectID); err != nil {
 					log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE after reboot")
 				}
 			}()
 		} else if _, ok := req["os-stop"]; ok {
-			if _, err := database.DB.Exec(c.Request.Context(),
+			if _, err := svc.pool.Exec(c.Request.Context(),
 				"UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE (id::text = $4 OR name = $4) AND project_id = $5",
 				"SHUTOFF", 4, time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance SHUTOFF")
 			}
 		} else if _, ok := req["os-start"]; ok {
-			if _, err := database.DB.Exec(c.Request.Context(),
+			if _, err := svc.pool.Exec(c.Request.Context(),
 				"UPDATE instances SET status = $1, power_state = $2, updated_at = $3 WHERE (id::text = $4 OR name = $4) AND project_id = $5",
 				"ACTIVE", 1, time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark stub instance ACTIVE on start")
@@ -1661,7 +1664,7 @@ func (svc *Service) ServerAction(c *gin.Context) {
 
 // ListFlavors lists all flavors (brief)
 func (svc *Service) ListFlavors(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT id, name FROM flavors WHERE is_public = true ORDER BY ram_mb",
 	)
 	if err != nil {
@@ -1715,7 +1718,7 @@ func (svc *Service) ListFlavorsDetail(c *gin.Context) {
 	// Add marker filter using created_at cursor (avoids broken UUID lexicographic ordering)
 	if marker != "" {
 		var markerTime any
-		lookupErr := database.DB.QueryRow(ctx,
+		lookupErr := svc.pool.QueryRow(ctx,
 			"SELECT created_at FROM flavors WHERE id = $1", marker).Scan(&markerTime)
 		if lookupErr == nil {
 			query += fmt.Sprintf(" AND created_at > $%d", argIndex)
@@ -1735,7 +1738,7 @@ func (svc *Service) ListFlavorsDetail(c *gin.Context) {
 		}
 	}
 
-	rows, err := database.DB.Query(ctx, query, args...)
+	rows, err := svc.pool.Query(ctx, query, args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_flavors_detail").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list flavors"))
@@ -1808,7 +1811,7 @@ func (svc *Service) GetFlavor(c *gin.Context) {
 	var isPublic bool
 
 	// Support lookup by UUID or name
-	err := database.DB.QueryRow(ctx,
+	err := svc.pool.QueryRow(ctx,
 		"SELECT id, name, vcpus, ram_mb, disk_gb, is_public FROM flavors WHERE id::text = $1 OR name = $1 LIMIT 1",
 		flavorID,
 	).Scan(&id, &name, &vcpus, &ramMB, &diskGB, &isPublic)
@@ -1909,7 +1912,7 @@ func (svc *Service) GetHypervisorStatistics(c *gin.Context) {
 	// Count running instances. Scan failures degrade to zero (the stats
 	// response still ships) and are logged for diagnosis.
 	var runningVMs int
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM instances WHERE power_state = 1",
 	).Scan(&runningVMs); err != nil {
 		log.Warn().Err(err).Msg("failed to count running instances for hypervisor statistics")
@@ -1937,7 +1940,7 @@ func (svc *Service) GetHypervisorStatistics(c *gin.Context) {
 // ListAvailabilityZones lists availability zones
 func (svc *Service) ListAvailabilityZones(c *gin.Context) {
 	// Query distinct availability zones from host_aggregates
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT DISTINCT availability_zone FROM host_aggregates WHERE availability_zone IS NOT NULL AND availability_zone != ''")
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_availability_zones").Msg("database error")
@@ -1980,7 +1983,7 @@ func (svc *Service) ListAvailabilityZones(c *gin.Context) {
 // ListAvailabilityZonesDetail lists availability zones with host details
 func (svc *Service) ListAvailabilityZonesDetail(c *gin.Context) {
 	// Query availability zones with hosts from host_aggregates
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT availability_zone, hosts FROM host_aggregates WHERE availability_zone IS NOT NULL AND availability_zone != ''")
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_availability_zones_detail").Msg("database error")
@@ -2062,7 +2065,7 @@ func (svc *Service) GetLimits(c *gin.Context) {
 	// This handler previously carried its own default map with instances/cores/ram at
 	// 100/200/512000 — ten times the quota-set defaults it silently disagreed with.
 	// Resolved before usage, as the quota-set views do.
-	quotas, _, err := resolveQuotaLimits(ctx, projectID)
+	quotas, _, err := resolveQuotaLimits(ctx, svc.pool, projectID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_limits").Msg("failed to resolve quota limits")
 		common.SendError(c, common.NewInternalServerError("failed to get limits"))
@@ -2071,7 +2074,7 @@ func (svc *Service) GetLimits(c *gin.Context) {
 
 	// Query current usage from database
 	var instancesUsed, coresUsed, ramUsed int
-	if err := database.DB.QueryRow(ctx,
+	if err := svc.pool.QueryRow(ctx,
 		`SELECT
 			COUNT(*),
 			COALESCE(SUM(f.vcpus), 0),
@@ -2102,7 +2105,7 @@ func (svc *Service) GetLimits(c *gin.Context) {
 		{"security_groups", `SELECT COUNT(*) FROM security_groups WHERE project_id = $1`, &securityGroupsUsed},
 		{"server_groups", `SELECT COUNT(*) FROM server_groups WHERE project_id = $1`, &serverGroupsUsed},
 	} {
-		if err := database.DB.QueryRow(ctx, q.sql, projectID).Scan(q.dst); err != nil {
+		if err := svc.pool.QueryRow(ctx, q.sql, projectID).Scan(q.dst); err != nil {
 			log.Error().Err(err).Str("resource", q.label).Str("project_id", projectID).
 				Msg("failed to query limits usage")
 			common.SendError(c, common.NewInternalServerError("failed to get limits"))
@@ -2193,7 +2196,7 @@ func (svc *Service) GetServerMetadata(c *gin.Context) {
 
 	// Check if server exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1)",
 		serverID,
 	).Scan(&exists)
@@ -2204,7 +2207,7 @@ func (svc *Service) GetServerMetadata(c *gin.Context) {
 	}
 
 	// Fetch metadata
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT meta_key, meta_value FROM instance_metadata WHERE instance_id = $1",
 		serverID,
 	)
@@ -2249,7 +2252,7 @@ func (svc *Service) UpdateServerMetadata(c *gin.Context) {
 
 	// Check if server exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1)",
 		serverID,
 	).Scan(&exists)
@@ -2261,7 +2264,7 @@ func (svc *Service) UpdateServerMetadata(c *gin.Context) {
 
 	// Upsert each metadata key-value pair
 	for key, value := range req.Metadata {
-		_, err := database.DB.Exec(c.Request.Context(),
+		_, err := svc.pool.Exec(c.Request.Context(),
 			`INSERT INTO instance_metadata (instance_id, meta_key, meta_value)
 			 VALUES ($1, $2, $3)
 			 ON CONFLICT (instance_id, meta_key)
@@ -2276,7 +2279,7 @@ func (svc *Service) UpdateServerMetadata(c *gin.Context) {
 	}
 
 	// Fetch and return all metadata
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT meta_key, meta_value FROM instance_metadata WHERE instance_id = $1",
 		serverID,
 	)
@@ -2321,7 +2324,7 @@ func (svc *Service) ResetServerMetadata(c *gin.Context) {
 
 	// Check if server exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1)",
 		serverID,
 	).Scan(&exists)
@@ -2332,7 +2335,7 @@ func (svc *Service) ResetServerMetadata(c *gin.Context) {
 	}
 
 	// Delete all existing metadata then insert new metadata atomically
-	err = database.WithTx(c.Request.Context(), func(tx pgx.Tx) error {
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(c.Request.Context(),
 			"DELETE FROM instance_metadata WHERE instance_id = $1",
 			serverID,
@@ -2380,7 +2383,7 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 
 	// Update instance in database
 	now := time.Now()
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET image_id = $1, name = COALESCE(NULLIF($2, ''), name), status = $3, updated_at = $4 WHERE id = $5 AND project_id = $6",
 		imageRef, name, "REBUILD", now, instanceID, projectID,
 	)
@@ -2402,7 +2405,7 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 			}
 			ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 			defer cancel()
-			if _, err := database.DB.Exec(ctx,
+			if _, err := svc.pool.Exec(ctx,
 				"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
 				"ACTIVE", time.Now(), instanceID, projectID); err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ACTIVE after async transition")
@@ -2414,7 +2417,7 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 	var server gin.H
 	var flavorID, userID, imageID, serverName, status string
 	var createdAt, updatedAt time.Time
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, name, flavor_id, image_id, user_id, status, created_at, updated_at FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&instanceID, &serverName, &flavorID, &imageID, &userID, &status, &createdAt, &updatedAt)
@@ -2451,7 +2454,7 @@ func (svc *Service) RescueInstanceAction(c *gin.Context, rescueData any) {
 
 	// Update instance status to RESCUE
 	now := time.Now()
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
 		"RESCUE", now, instanceID, projectID,
 	)
@@ -2496,7 +2499,7 @@ func (svc *Service) CreateImageAction(c *gin.Context, createImageData any) {
 	// Create image record in database
 	imageID := uuid.New().String()
 	now := time.Now()
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO images (id, name, project_id, status, container_format, disk_format, size_bytes, visibility, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, imageID, imageName, projectID, "active", "bare", "qcow2", 0, "private", now, now)
@@ -2511,7 +2514,7 @@ func (svc *Service) CreateImageAction(c *gin.Context, createImageData any) {
 	// the image already exists and is usable; missing metadata can be
 	// re-set by the caller without recreating the image.
 	for key, value := range metadata {
-		if _, err := database.DB.Exec(c.Request.Context(), `
+		if _, err := svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO image_properties (image_id, name, value)
 			VALUES ($1, $2, $3)
 		`, imageID, key, value); err != nil {
@@ -2531,7 +2534,7 @@ func (svc *Service) PauseInstanceAction(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Update instance status to PAUSED
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
 		"PAUSED", time.Now(), instanceID, projectID,
 	)
@@ -2550,7 +2553,7 @@ func (svc *Service) UnpauseInstanceAction(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Update instance status to ACTIVE
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4",
 		"ACTIVE", time.Now(), instanceID, projectID,
 	)
@@ -2569,7 +2572,7 @@ func (svc *Service) LockInstanceAction(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Update instance locked status
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET locked = true, updated_at = $1 WHERE id = $2 AND project_id = $3",
 		time.Now(), instanceID, projectID,
 	)
@@ -2588,7 +2591,7 @@ func (svc *Service) UnlockInstanceAction(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Update instance locked status
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET locked = false, updated_at = $1 WHERE id = $2 AND project_id = $3",
 		time.Now(), instanceID, projectID,
 	)
@@ -2608,7 +2611,7 @@ func (svc *Service) ForceDeleteInstanceAction(c *gin.Context) {
 
 	// In stub mode, just delete from database
 	if svc.libvirtMode == "stub" || svc.vmManager == nil {
-		_, err := database.DB.Exec(c.Request.Context(),
+		_, err := svc.pool.Exec(c.Request.Context(),
 			"DELETE FROM instances WHERE id = $1 AND project_id = $2",
 			instanceID, projectID,
 		)
@@ -2623,7 +2626,7 @@ func (svc *Service) ForceDeleteInstanceAction(c *gin.Context) {
 
 	// In real mode, destroy VM then delete from database
 	var libvirtDomainID any
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
@@ -2641,7 +2644,7 @@ func (svc *Service) ForceDeleteInstanceAction(c *gin.Context) {
 		}
 	}
 
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	)

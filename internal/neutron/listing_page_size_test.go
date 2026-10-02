@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // TestListingsAreNotCappedByDefault: a listing without `limit` returns every visible row, as
@@ -25,14 +23,14 @@ func TestListingsAreNotCappedByDefault(t *testing.T) {
 	project := createTestProject(t, "spec020-page-size") // deleting it cascades every row below
 
 	var netID string
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		`INSERT INTO networks (name, project_id, network_type) VALUES ('page-size-base', $1, 'vxlan') RETURNING id`,
 		project).Scan(&netID); err != nil {
 		t.Fatalf("create base network: %v", err)
 	}
 	seed := func(what, sql string, args ...any) {
 		t.Helper()
-		if _, err := database.DB.Exec(ctx, sql, args...); err != nil {
+		if _, err := testPool.Exec(ctx, sql, args...); err != nil {
 			t.Fatalf("seed %d %s: %v", count, what, err)
 		}
 	}

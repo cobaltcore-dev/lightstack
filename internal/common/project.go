@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -31,19 +31,19 @@ import (
 //   - handing a non-UUID straight to a `uuid` column, which Postgres rejects with
 //     "invalid input syntax for type uuid" — surfacing as a 500.
 //
-// Callers pass c.Request.Context(); this takes a plain context so the helper stays
-// testable without a gin request.
+// Callers pass c.Request.Context() and their own service's pool; this takes a plain
+// context so the helper stays testable without a gin request.
 // A database failure is an internal error (500), never "not found": answering 404 during an
 // outage would tell the client the project does not exist. It is logged at Error; the
 // no-rows case is silent, since that one is an ordinary answer.
-func ResolveProjectRef(ctx context.Context, ref string) (string, *OpenStackError) {
+func ResolveProjectRef(ctx context.Context, pool *pgxpool.Pool, ref string) (string, *OpenStackError) {
 	query := "SELECT id FROM projects WHERE name = $1"
 	if uuid.Validate(ref) == nil {
 		query = "SELECT id FROM projects WHERE id = $1"
 	}
 
 	var resolved string
-	if err := database.DB.QueryRow(ctx, query, ref).Scan(&resolved); err != nil {
+	if err := pool.QueryRow(ctx, query, ref).Scan(&resolved); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", NewNotFoundError("project")
 		}
@@ -78,14 +78,17 @@ func ResolveProjectRef(ctx context.Context, ref string) (string, *OpenStackError
 // with no project carries no project and no roles), and the fall-back branch would then
 // hand the caller's empty project id to a `uuid`-typed column — "invalid input syntax for
 // type uuid", surfacing as a 500 on what is really a malformed request.
-func QuotaTargetProject(c *gin.Context) (string, *OpenStackError) {
+//
+// pool is the calling service's pool. Only the admin branch queries it; every other
+// branch resolves from the request alone.
+func QuotaTargetProject(c *gin.Context, pool *pgxpool.Pool) (string, *OpenStackError) {
 	requested := c.Param("id")
 	caller := c.GetString("project_id")
 	switch {
 	case requested == "" || requested == "default":
 		// the caller's own project, below
 	case HasRole(c, RoleAdmin):
-		return ResolveProjectRef(c.Request.Context(), requested)
+		return ResolveProjectRef(c.Request.Context(), pool, requested)
 	case caller != "" && !sameProjectID(requested, caller):
 		return "", NewForbiddenError("Policy doesn't allow reading another project's quota. Admin role required.")
 	}

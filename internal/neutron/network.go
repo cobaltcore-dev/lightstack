@@ -12,17 +12,18 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // Service handles Neutron API endpoints
 type Service struct {
+	pool             *pgxpool.Pool
 	mode             string
 	nsManager        *networking.NetworkNamespaceManager
 	brManager        *networking.BridgeManager
@@ -36,12 +37,13 @@ type Service struct {
 }
 
 // NewService creates a new Neutron service
-func NewService(mode string, cacheInstance *cache.Cache) *Service {
+func NewService(pool *pgxpool.Pool, mode string, cacheInstance *cache.Cache) *Service {
 	sgManager, err := networking.NewSecurityGroupManager(mode, "")
 	if err != nil {
 		log.Error().Err(err).Str("mode", mode).Msg("failed to initialize security group manager")
 	}
 	return &Service{
+		pool:          pool,
 		mode:          mode,
 		nsManager:     networking.NewNetworkNamespaceManager(mode),
 		brManager:     networking.NewBridgeManager(mode),
@@ -368,7 +370,7 @@ func neutronQuotaLimits() gin.H {
 // GetQuota returns network quotas for a project (limits only; use
 // GetQuotaDetails for limits + usage).
 func (svc *Service) GetQuota(c *gin.Context) {
-	projectID, apiErr := common.QuotaTargetProject(c)
+	projectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -383,7 +385,7 @@ func (svc *Service) GetQuota(c *gin.Context) {
 // GetQuotaDefault returns the default network quotas for a project (code defaults
 // only, no usage), served at /v2.0/quotas/{project_id}/default.
 func (svc *Service) GetQuotaDefault(c *gin.Context) {
-	projectID, apiErr := common.QuotaTargetProject(c)
+	projectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -396,7 +398,7 @@ func (svc *Service) GetQuotaDefault(c *gin.Context) {
 
 // GetQuotaDetails returns network quotas with usage details
 func (svc *Service) GetQuotaDetails(c *gin.Context) {
-	projectID, apiErr := common.QuotaTargetProject(c)
+	projectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -419,7 +421,7 @@ func (svc *Service) GetQuotaDetails(c *gin.Context) {
 		{"security_group_rules", "SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)", &securityGroupRulesUsed},
 	}
 	for _, q := range usageQueries {
-		if err := database.DB.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
+		if err := svc.pool.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
 			log.Error().Err(err).Str("resource", q.label).Str("project_id", projectID).Msg("failed to query quota usage")
 			common.SendError(c, common.NewInternalServerError("failed to get quota usage"))
 			return
@@ -504,7 +506,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 		mtu = 1450 // Account for VXLAN overhead
 	}
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, network_type, mtu, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, networkID, req.Network.Name, projectID, adminStateUp, "ACTIVE", shared, networkType, mtu, now, now)
@@ -655,7 +657,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT created_at, id FROM networks WHERE id = $1",
 			marker,
 		).Scan(&markerCreatedAt, &markerID)
@@ -668,7 +670,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	queryArgs = append(queryArgs, limit, offset)
 
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id
 		FROM networks
 		WHERE %s
@@ -784,7 +786,7 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	var mtu int
 	var createdAt, updatedAt time.Time
 
-	err := database.DB.QueryRow(ctx, `
+	err := svc.pool.QueryRow(ctx, `
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id
 		FROM networks
 		WHERE (id::text = $1 OR name = $1) AND (project_id = $2 OR shared = true)
@@ -842,7 +844,7 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 
 	// Check for active ports or subnets before deleting
 	var portCount int
-	if err := database.DB.QueryRow(ctx,
+	if err := svc.pool.QueryRow(ctx,
 		"SELECT COUNT(*) FROM ports WHERE network_id = $1", networkID,
 	).Scan(&portCount); err == nil && portCount > 0 {
 		common.SendError(c, common.NewOperationConflictError("delete network", "network has active ports"))
@@ -850,7 +852,7 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 	}
 
 	var subnetCount int
-	if err := database.DB.QueryRow(ctx,
+	if err := svc.pool.QueryRow(ctx,
 		"SELECT COUNT(*) FROM subnets WHERE network_id = $1", networkID,
 	).Scan(&subnetCount); err == nil && subnetCount > 0 {
 		common.SendError(c, common.NewOperationConflictError("delete network", "network has subnets; delete subnets first"))
@@ -868,7 +870,7 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err := database.DB.Exec(ctx,
+	_, err := svc.pool.Exec(ctx,
 		"DELETE FROM networks WHERE id = $1 AND project_id = $2",
 		networkID, projectID,
 	)
@@ -935,7 +937,7 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 	query := fmt.Sprintf("UPDATE networks SET %s WHERE id = $%d AND project_id = $%d",
 		updateString(updates), argID, argID+1)
 
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
+	_, err := svc.pool.Exec(c.Request.Context(), query, args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_network").Str("network_id", networkID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update network"))
@@ -1003,7 +1005,7 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version, enable_dhcp, dns_nameservers, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, subnetID, req.Subnet.Name, req.Subnet.NetworkID, projectID, req.Subnet.CIDR, gatewayIP, ipVersion, enableDHCP, req.Subnet.DNSNameservers, now, now)
@@ -1076,7 +1078,7 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT created_at FROM subnets WHERE id = $1",
 			marker,
 		).Scan(&markerCreatedAt)
@@ -1089,7 +1091,7 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 
 	queryArgs = append(queryArgs, limit, offset)
 
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at, s.project_id
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
@@ -1184,7 +1186,7 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	// Consequently s.project_id is selected, not assumed: this handler can return a subnet
 	// the caller does not own — one on their network, or on a shared network — so reporting
 	// the caller as tenant_id would tell them a resource is theirs when it is not.
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at, s.project_id
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
@@ -1234,7 +1236,7 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 
 	// Resolve subnet by UUID or name to its canonical ID (and network for DHCP).
 	var resolvedID, networkID string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, network_id FROM subnets WHERE (id::text = $1 OR name = $1) AND project_id = $2 LIMIT 1",
 		subnetID, projectID,
 	).Scan(&resolvedID, &networkID)
@@ -1256,7 +1258,7 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM subnets WHERE id = $1 AND project_id = $2",
 		resolvedID, projectID,
 	)
@@ -1286,7 +1288,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 
 	// Resolve subnet by UUID or name to its canonical ID.
 	var resolvedID, currentName string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, name FROM subnets WHERE (id::text = $1 OR name = $1) AND project_id = $2 LIMIT 1",
 		subnetID, projectID,
 	).Scan(&resolvedID, &currentName)
@@ -1306,7 +1308,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		currentName = *req.Subnet.Name
 	}
 
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"UPDATE subnets SET name = $1 WHERE id = $2 AND project_id = $3",
 		currentName, resolvedID, projectID,
 	)
@@ -1321,7 +1323,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	var ipVersion int
 	var enableDHCP bool
 	var dnsNameservers []string
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT network_id, cidr, gateway_ip, ip_version, enable_dhcp, dns_nameservers FROM subnets WHERE id = $1",
 		resolvedID,
 	).Scan(&networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers)
@@ -1432,7 +1434,7 @@ func broadcast(ipNet *net.IPNet) net.IP {
 // callers assemble a response and can report it.
 func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) ([]string, error) {
 	ids := []string{}
-	rows, err := database.DB.Query(ctx,
+	rows, err := svc.pool.Query(ctx,
 		"SELECT id FROM subnets WHERE network_id = $1 ORDER BY created_at DESC", networkID)
 	if err != nil {
 		return nil, fmt.Errorf("list subnets for network %s: %w", networkID, err)

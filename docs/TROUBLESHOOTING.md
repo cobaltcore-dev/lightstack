@@ -99,7 +99,7 @@ Is another process using the image [/var/lib/lightstack/images/xxx.qcow2]?
    defer func() {
        if r := recover(); r != nil {
            log.Printf("PANIC in VM creation: %v", r)
-           database.DB.Exec(ctx, "UPDATE instances SET status = 'ERROR' WHERE id = $1", instanceID)
+           svc.pool.Exec(ctx, "UPDATE instances SET status = 'ERROR' WHERE id = $1", instanceID)
        }
    }()
    ```

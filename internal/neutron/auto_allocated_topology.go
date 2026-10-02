@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,7 +18,7 @@ func (svc *Service) GetAutoAllocatedTopology(c *gin.Context) {
 
 	// Check if auto-allocated network exists for this project
 	var networkID, networkName string
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name
 		FROM networks
 		WHERE project_id = $1 AND name = 'auto-allocated-network'
@@ -56,7 +55,7 @@ func (svc *Service) CreateAutoAllocatedTopology(c *gin.Context) {
 
 	// Check if auto-allocated network already exists
 	var existingNetworkID string
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id
 		FROM networks
 		WHERE project_id = $1 AND name = 'auto-allocated-network'
@@ -78,7 +77,7 @@ func (svc *Service) CreateAutoAllocatedTopology(c *gin.Context) {
 	networkName := "auto-allocated-network"
 	now := time.Now()
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, network_type, mtu, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, networkID, networkName, projectID, true, "ACTIVE", false, "flat", 1500, now, now)
@@ -94,7 +93,7 @@ func (svc *Service) CreateAutoAllocatedTopology(c *gin.Context) {
 	subnetCIDR := "192.168.100.0/24"
 	gatewayIP := "192.168.100.1"
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version, enable_dhcp, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, subnetID, "auto-allocated-subnet", networkID, projectID, subnetCIDR, gatewayIP, 4, true, now, now)
@@ -132,7 +131,7 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 
 	// Find auto-allocated network
 	var networkID string
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id
 		FROM networks
 		WHERE project_id = $1 AND name = 'auto-allocated-network'
@@ -151,7 +150,7 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 	}
 
 	// Delete subnets first (cascade will handle ports)
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		DELETE FROM subnets WHERE network_id = $1
 	`, networkID)
 
@@ -162,7 +161,7 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 	}
 
 	// Delete network
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		DELETE FROM networks WHERE id = $1
 	`, networkID)
 

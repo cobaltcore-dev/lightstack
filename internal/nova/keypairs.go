@@ -17,7 +17,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // CreateKeypairRequest represents a keypair creation request
@@ -33,7 +32,7 @@ type CreateKeypairRequest struct {
 func (svc *Service) ListKeypairs(c *gin.Context) {
 	userID := c.GetString("user_id")
 
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, user_id, public_key, fingerprint, created_at
 		FROM keypairs
 		WHERE user_id = $1
@@ -87,7 +86,7 @@ func (svc *Service) GetKeypair(c *gin.Context) {
 	var name, publicKey, fingerprint string
 	var createdAt time.Time
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT name, public_key, fingerprint, created_at
 		FROM keypairs
 		WHERE user_id = $1 AND name = $2
@@ -153,7 +152,7 @@ func (svc *Service) CreateKeypair(c *gin.Context) {
 
 	// Check if keypair with same name already exists
 	var existingID string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id FROM keypairs WHERE user_id = $1 AND name = $2",
 		userID, req.Keypair.Name,
 	).Scan(&existingID)
@@ -166,7 +165,7 @@ func (svc *Service) CreateKeypair(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO keypairs (user_id, name, public_key, fingerprint, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, userID, req.Keypair.Name, publicKey, fingerprint, now)
@@ -197,7 +196,7 @@ func (svc *Service) DeleteKeypair(c *gin.Context) {
 	keypairName := c.Param("id") // In Nova API, it's the name, not UUID
 	userID := c.GetString("user_id")
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM keypairs WHERE user_id = $1 AND name = $2",
 		userID, keypairName,
 	)

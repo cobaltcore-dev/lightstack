@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -54,7 +55,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	// Get network and subnet info to allocate IP
 	var networkID string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id FROM networks WHERE id = $1 AND (project_id = $2 OR shared = true)",
 		req.Port.NetworkID, projectID,
 	).Scan(&networkID)
@@ -66,7 +67,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	// Get subnet to allocate IP
 	var subnetID, cidr string
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, cidr FROM subnets WHERE network_id = $1 LIMIT 1",
 		req.Port.NetworkID,
 	).Scan(&subnetID, &cidr)
@@ -104,7 +105,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, portID, req.Port.Name, req.Port.NetworkID, projectID, sql.NullString{String: req.Port.DeviceID, Valid: req.Port.DeviceID != ""},
@@ -120,7 +121,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	// From here on the port row AND the TAP exist; every failure path below must
 	// undo both, or a transient error leaks a host interface per retry.
 	rollbackPort := func(reason string) {
-		if _, err := database.DB.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID); err != nil {
+		if _, err := svc.pool.Exec(c.Request.Context(), "DELETE FROM ports WHERE id = $1", portID); err != nil {
 			log.Warn().Err(err).Str("port_id", portID).Msg("rollback: failed to delete port after " + reason)
 		}
 		if err := svc.tapManager.DeleteTAPDevice(tapName, true, nsName); err != nil {
@@ -133,7 +134,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	if len(securityGroups) == 0 {
 		// OpenStack guarantees every project has a default group (Neutron creates it
 		// lazily); ensure it rather than silently creating a port with none.
-		defaultSGID, err := EnsureDefaultSecurityGroup(c.Request.Context(), projectID)
+		defaultSGID, err := EnsureDefaultSecurityGroup(c.Request.Context(), svc.pool, projectID)
 		if err != nil {
 			// Never return a port the caller believes is in the default group when it isn't.
 			rollbackPort("default security-group failure")
@@ -148,7 +149,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	for _, sgID := range securityGroups {
 		// Verify security group exists and belongs to project
 		var exists bool
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT EXISTS(SELECT 1 FROM security_groups WHERE id = $1 AND project_id = $2)",
 			sgID, projectID,
 		).Scan(&exists)
@@ -159,7 +160,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 			return
 		}
 
-		_, err = database.DB.Exec(c.Request.Context(),
+		_, err = svc.pool.Exec(c.Request.Context(),
 			"INSERT INTO port_security_groups (port_id, security_group_id) VALUES ($1, $2)",
 			portID, sgID,
 		)
@@ -277,7 +278,7 @@ func (svc *Service) ListPorts(c *gin.Context) {
 
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT created_at FROM ports WHERE id = $1",
 			marker,
 		).Scan(&markerCreatedAt)
@@ -309,7 +310,7 @@ func (svc *Service) ListPorts(c *gin.Context) {
 
 	queryArgs = append(queryArgs, limit, offset)
 
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
@@ -346,7 +347,7 @@ func (svc *Service) ListPorts(c *gin.Context) {
 
 		// Fetch associated security groups for this port
 		securityGroups := []string{}
-		sgRows, err := database.DB.Query(c.Request.Context(),
+		sgRows, err := svc.pool.Query(c.Request.Context(),
 			"SELECT security_group_id FROM port_security_groups WHERE port_id = $1",
 			id,
 		)
@@ -404,7 +405,7 @@ func (svc *Service) GetPort(c *gin.Context) {
 	var fixedIPsJSON []byte
 	var createdAt, updatedAt time.Time
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
@@ -428,7 +429,7 @@ func (svc *Service) GetPort(c *gin.Context) {
 
 	// Fetch associated security groups
 	securityGroups := []string{}
-	sgRows, err := database.DB.Query(c.Request.Context(),
+	sgRows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT security_group_id FROM port_security_groups WHERE port_id = $1",
 		portID,
 	)
@@ -483,7 +484,7 @@ func (svc *Service) DeletePort(c *gin.Context) {
 		// safe degradation; a leftover map entry will be reconciled on
 		// the next sync.
 		var macAddress string
-		if err := database.DB.QueryRow(c.Request.Context(),
+		if err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT mac_address FROM ports WHERE id = $1",
 			portID,
 		).Scan(&macAddress); err != nil {
@@ -514,7 +515,7 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM ports WHERE id = $1 AND project_id = $2",
 		portID, projectID,
 	)
@@ -588,7 +589,7 @@ func (svc *Service) UpdatePort(c *gin.Context) {
 	query := fmt.Sprintf("UPDATE ports SET %s WHERE id = $%d AND project_id = $%d",
 		updateString(updates), argID, argID+1)
 
-	_, err := database.DB.Exec(c.Request.Context(), query, args...)
+	_, err := svc.pool.Exec(c.Request.Context(), query, args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_port").Str("port_id", portID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update port"))
@@ -656,7 +657,7 @@ func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO security_groups (id, name, project_id, description, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, sgID, req.SecurityGroup.Name, projectID, req.SecurityGroup.Description, now, now)
@@ -682,13 +683,13 @@ func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 // securityGroupRulesByGroup loads the rules of the given security groups, keyed by
 // security_group_id. Groups without rules are absent from the map; callers must
 // substitute an empty slice rather than nil — see ListSecurityGroups.
-func securityGroupRulesByGroup(ctx context.Context, sgIDs []string) (map[string][]gin.H, error) {
+func securityGroupRulesByGroup(ctx context.Context, pool *pgxpool.Pool, sgIDs []string) (map[string][]gin.H, error) {
 	byGroup := make(map[string][]gin.H, len(sgIDs))
 	if len(sgIDs) == 0 {
 		return byGroup, nil
 	}
 
-	rows, err := database.DB.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		SELECT id, security_group_id, direction, ethertype, protocol, port_range_min,
 		       port_range_max, remote_ip_prefix, remote_group_id, created_at
 		FROM security_group_rules
@@ -755,8 +756,8 @@ type securityGroupRow struct {
 // connection when it returns — before the caller issues the rules query. Scanning
 // inline in ListSecurityGroups would hold two pool connections per in-flight request,
 // which a busy endpoint can turn into pool exhaustion rather than mere slowness.
-func listSecurityGroupRows(ctx context.Context, projectID string) ([]securityGroupRow, error) {
-	rows, err := database.DB.Query(ctx, `
+func listSecurityGroupRows(ctx context.Context, pool *pgxpool.Pool, projectID string) ([]securityGroupRow, error) {
+	rows, err := pool.Query(ctx, `
 		SELECT id, name, description, created_at, updated_at
 		FROM security_groups
 		WHERE project_id = $1
@@ -793,7 +794,7 @@ func listSecurityGroupRows(ctx context.Context, projectID string) ([]securityGro
 func (svc *Service) ListSecurityGroups(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	sgRows, err := listSecurityGroupRows(c.Request.Context(), projectID)
+	sgRows, err := listSecurityGroupRows(c.Request.Context(), svc.pool, projectID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_security_groups").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list security groups"))
@@ -805,7 +806,7 @@ func (svc *Service) ListSecurityGroups(c *gin.Context) {
 		sgIDs = append(sgIDs, r.id)
 	}
 
-	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), sgIDs)
+	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), svc.pool, sgIDs)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_security_group_rules").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list security group rules"))
@@ -843,7 +844,7 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 
 	// id::text resolves by UUID or name without crashing on a non-UUID
 	// identifier — the CLI looks an SG up by name (e.g. `... rule create ... default`).
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, created_at, updated_at
 		FROM security_groups
 		WHERE (id::text = $1 OR name = $1) AND project_id = $2
@@ -862,7 +863,7 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 
 	// Fetch associated rules — keyed by the resolved UUID (id), not the
 	// possibly-by-name request param (sgID).
-	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), []string{id})
+	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), svc.pool, []string{id})
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_sg_rules").Str("sg_id", sgID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get security group rules"))
@@ -901,7 +902,7 @@ func (svc *Service) DeleteSecurityGroup(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err := database.DB.Exec(c.Request.Context(),
+	_, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM security_groups WHERE id = $1 AND project_id = $2",
 		sgID, projectID,
 	)
@@ -932,7 +933,7 @@ func (svc *Service) UpdateSecurityGroup(c *gin.Context) {
 
 	// Check security group exists
 	var currentName, currentDesc string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT name, description FROM security_groups WHERE id = $1 AND project_id = $2",
 		sgID, projectID,
 	).Scan(&currentName, &currentDesc)
@@ -955,7 +956,7 @@ func (svc *Service) UpdateSecurityGroup(c *gin.Context) {
 		currentDesc = *req.SecurityGroup.Description
 	}
 
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"UPDATE security_groups SET name = $1, description = $2 WHERE id = $3",
 		currentName, currentDesc, sgID,
 	)
@@ -999,9 +1000,9 @@ type CreateSecurityGroupRuleRequest struct {
 // compared as text so a malformed id simply fails to match instead of raising
 // "invalid input syntax for type uuid" as a 500 — that includes the empty project id an
 // unscoped token carries.
-func securityGroupOwnedByCaller(ctx context.Context, sgID, projectID string) (bool, error) {
+func securityGroupOwnedByCaller(ctx context.Context, pool *pgxpool.Pool, sgID, projectID string) (bool, error) {
 	var owned bool
-	err := database.DB.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM security_groups WHERE id::text = $1 AND project_id::text = $2)",
 		sgID, projectID).Scan(&owned)
 	return owned, err
@@ -1018,7 +1019,7 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 	// The target group must be the caller's. Checked before anything else, because the
 	// steps below write the caller's rule into another tenant's iptables chain and
 	// security_group_rules row without ever consulting project_id otherwise.
-	owned, err := securityGroupOwnedByCaller(c.Request.Context(),
+	owned, err := securityGroupOwnedByCaller(c.Request.Context(), svc.pool,
 		req.SecurityGroupRule.SecurityGroupID, c.GetString("project_id"))
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_sg_rule").
@@ -1042,7 +1043,7 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("remote_group_id is not a valid security group id"))
 			return
 		}
-		remoteOwned, err := securityGroupOwnedByCaller(c.Request.Context(), *rg, c.GetString("project_id"))
+		remoteOwned, err := securityGroupOwnedByCaller(c.Request.Context(), svc.pool, *rg, c.GetString("project_id"))
 		if err != nil {
 			log.Error().Err(err).Str("operation", "create_sg_rule").
 				Str("remote_group_id", *rg).Msg("remote group check failed")
@@ -1115,7 +1116,7 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO security_group_rules (id, security_group_id, direction, ethertype, protocol, port_range_min, port_range_max, remote_ip_prefix, remote_group_id, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`, ruleID, req.SecurityGroupRule.SecurityGroupID, req.SecurityGroupRule.Direction, etherType,
@@ -1155,7 +1156,7 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 // ListSecurityGroupRules lists all security group rules
 func (svc *Service) ListSecurityGroupRules(c *gin.Context) {
 	projectID := c.GetString("project_id")
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT sgr.id, sgr.security_group_id, sgr.direction, sgr.ethertype, sgr.protocol, sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id, sgr.created_at
 		FROM security_group_rules sgr
 		JOIN security_groups sg ON sg.id = sgr.security_group_id
@@ -1227,7 +1228,7 @@ func (svc *Service) GetSecurityGroupRule(c *gin.Context) {
 	// carries protocol, port ranges and remote CIDRs, so an unscoped lookup hands another
 	// tenant's firewall configuration to any authenticated caller. A rule outside the
 	// caller's project is indistinguishable from one that does not exist (ErrNoRows → 404).
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT sgr.id, sgr.security_group_id, sgr.direction, sgr.ethertype, sgr.protocol,
 		       sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id, sgr.created_at
 		FROM security_group_rules sgr
@@ -1274,7 +1275,7 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 	// cluster — and removed it from iptables too, so one request could open or close
 	// another tenant's firewall. A rule outside the caller's project reads as absent.
 	projectID := c.GetString("project_id")
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT sgr.security_group_id, sgr.direction, sgr.ethertype, sgr.protocol, sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id
 		FROM security_group_rules sgr
 		JOIN security_groups sg ON sg.id = sgr.security_group_id
@@ -1311,7 +1312,7 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 	// The row is already proven to be the caller's by the lookup above; the predicate is
 	// repeated so this statement is self-evidently scoped when read on its own, and so a
 	// concurrent delete surfaces as 404 rather than a misleading 204.
-	tag, err := database.DB.Exec(c.Request.Context(), `
+	tag, err := svc.pool.Exec(c.Request.Context(), `
 		DELETE FROM security_group_rules
 		WHERE id::text = $1
 		  AND security_group_id IN (SELECT id FROM security_groups WHERE project_id::text = $2)
@@ -1351,7 +1352,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 
 	// Get network and subnet info to allocate IP
 	var netID string
-	err := database.DB.QueryRow(ctx,
+	err := svc.pool.QueryRow(ctx,
 		"SELECT id FROM networks WHERE id = $1 AND (project_id = $2 OR shared = true)",
 		networkID, projectID,
 	).Scan(&netID)
@@ -1365,7 +1366,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 
 	// Get subnet to allocate IP
 	var subnetID, cidr string
-	err = database.DB.QueryRow(ctx,
+	err = svc.pool.QueryRow(ctx,
 		"SELECT id, cidr FROM subnets WHERE network_id = $1 LIMIT 1",
 		networkID,
 	).Scan(&subnetID, &cidr)
@@ -1400,7 +1401,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// transaction (EnsureDefaultSecurityGroup) cannot nest in the one below.
 	portSGs := securityGroupIDs
 	if len(portSGs) == 0 {
-		defaultSG, err := EnsureDefaultSecurityGroup(ctx, projectID)
+		defaultSG, err := EnsureDefaultSecurityGroup(ctx, svc.pool, projectID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to ensure default security group: %w", err)
 		}
@@ -1447,7 +1448,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// with it. The caller (Nova CreateServer) then boots without this network,
 	// which keeps the API and the dataplane in agreement.
 	now := time.Now()
-	if err := database.WithTx(ctx, func(tx pgx.Tx) error {
+	if err := database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -1504,7 +1505,7 @@ func (svc *Service) fetchSecurityGroupRulesForPort(ctx context.Context, security
 		WHERE security_group_id = ANY($1)
 	`
 
-	rows, err := database.DB.Query(ctx, query, securityGroupIDs)
+	rows, err := svc.pool.Query(ctx, query, securityGroupIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query security group rules: %w", err)
 	}

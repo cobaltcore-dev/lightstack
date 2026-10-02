@@ -5,7 +5,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 )
 
@@ -262,7 +261,7 @@ func TestEnsureDefaultSecurityGroup_SeedsOnlyWhenCreated(t *testing.T) {
 	ctx := t.Context()
 
 	createTestProject(t, freshProjectID, "spec017-proj")
-	id, err := neutron.EnsureDefaultSecurityGroup(ctx, freshProjectID)
+	id, err := neutron.EnsureDefaultSecurityGroup(ctx, testPool, freshProjectID)
 	if err != nil {
 		t.Fatalf("ensure (fresh): %v", err)
 	}
@@ -271,7 +270,7 @@ func TestEnsureDefaultSecurityGroup_SeedsOnlyWhenCreated(t *testing.T) {
 	}
 
 	// Second call on the now-existing group: still 2, and the same id.
-	id2, err := neutron.EnsureDefaultSecurityGroup(ctx, freshProjectID)
+	id2, err := neutron.EnsureDefaultSecurityGroup(ctx, testPool, freshProjectID)
 	if err != nil || id2 != id {
 		t.Fatalf("ensure (again): id=%s err=%v; want same id %s", id2, err, id)
 	}
@@ -280,10 +279,10 @@ func TestEnsureDefaultSecurityGroup_SeedsOnlyWhenCreated(t *testing.T) {
 	}
 
 	// Operator empties the group: ensure must NOT restore the rules.
-	if _, err := database.DB.Exec(ctx, "DELETE FROM security_group_rules WHERE security_group_id = $1", id); err != nil {
+	if _, err := testPool.Exec(ctx, "DELETE FROM security_group_rules WHERE security_group_id = $1", id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := neutron.EnsureDefaultSecurityGroup(ctx, freshProjectID); err != nil {
+	if _, err := neutron.EnsureDefaultSecurityGroup(ctx, testPool, freshProjectID); err != nil {
 		t.Fatalf("ensure (emptied): %v", err)
 	}
 	if n := ruleCountForSG(t, id); n != 0 {
@@ -303,7 +302,7 @@ func TestEnsureDefaultSecurityGroup_SeedsNoIngress(t *testing.T) {
 	ctx := t.Context()
 
 	createTestProject(t, freshProjectID, "spec017-proj")
-	id, err := neutron.EnsureDefaultSecurityGroup(ctx, freshProjectID)
+	id, err := neutron.EnsureDefaultSecurityGroup(ctx, testPool, freshProjectID)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -321,7 +320,7 @@ func TestSeededDefaultSecurityGroup_HasNoIngress(t *testing.T) {
 
 	const seededDefaultSGID = "00000000-0000-0000-0000-000000000030"
 	var n int
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		"SELECT count(*) FROM security_group_rules WHERE security_group_id = $1 AND direction = 'ingress'",
 		seededDefaultSGID,
 	).Scan(&n); err != nil {

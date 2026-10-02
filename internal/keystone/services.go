@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -16,7 +15,7 @@ import (
 
 // ListServices returns all services in the catalog
 func (svc *Service) ListServices(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, type, name, description, enabled, created_at, updated_at
 		FROM services
 		ORDER BY name
@@ -86,7 +85,7 @@ func (svc *Service) CreateService(c *gin.Context) {
 	serviceID := uuid.New()
 	now := time.Now()
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO services (id, type, name, description, enabled, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, serviceID, req.Service.Type, req.Service.Name, req.Service.Description, enabled, now, now)
@@ -119,7 +118,7 @@ func (svc *Service) GetService(c *gin.Context) {
 	var description *string
 	var enabled bool
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, type, name, description, enabled
 		FROM services
 		WHERE id = $1
@@ -153,7 +152,7 @@ func (svc *Service) GetService(c *gin.Context) {
 func (svc *Service) DeleteService(c *gin.Context) {
 	serviceID := c.Param("id")
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM services WHERE id = $1",
 		serviceID)
 
@@ -236,7 +235,7 @@ func (svc *Service) UpdateService(c *gin.Context) {
 	var enabled bool
 	var createdAt, updatedAt time.Time
 
-	err := database.DB.QueryRow(c.Request.Context(), query, params...).Scan(
+	err := svc.pool.QueryRow(c.Request.Context(), query, params...).Scan(
 		&id, &svcType, &name, &description, &enabled, &createdAt, &updatedAt,
 	)
 
@@ -270,7 +269,7 @@ func (svc *Service) UpdateService(c *gin.Context) {
 
 // ListEndpoints returns all endpoints in the catalog
 func (svc *Service) ListEndpoints(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT e.id, e.service_id, e.interface, e.url, e.region, e.enabled, s.type, s.name
 		FROM endpoints e
 		JOIN services s ON e.service_id = s.id
@@ -342,7 +341,7 @@ func (svc *Service) CreateEndpoint(c *gin.Context) {
 
 	endpointID := uuid.New()
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO endpoints (id, service_id, interface, url, region, enabled)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, endpointID, req.Endpoint.ServiceID, req.Endpoint.Interface, req.Endpoint.URL, req.Endpoint.Region, enabled)
@@ -372,7 +371,7 @@ func (svc *Service) CreateEndpoint(c *gin.Context) {
 func (svc *Service) DeleteEndpoint(c *gin.Context) {
 	endpointID := c.Param("id")
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM endpoints WHERE id = $1",
 		endpointID)
 

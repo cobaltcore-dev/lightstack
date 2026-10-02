@@ -98,16 +98,17 @@ func main() {
 		poolConfig.HealthCheckPeriod = 1 * time.Minute
 	}
 
-	if err := database.Connect(ctx, cfg.Database.URL, poolConfig); err != nil {
+	pool, err := database.Connect(ctx, cfg.Database.URL, poolConfig)
+	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer database.Close()
+	defer pool.Close()
 
 	log.Printf("Database connection established (pool: max=%d, min=%d)", poolConfig.MaxConns, poolConfig.MinConns)
 
 	// Health checker for the Kubernetes probes (SPEC-013): readiness gates on the
 	// database being reachable + all listeners bound; liveness is dependency-free.
-	healthChecker := health.New(zlog.Logger, health.DatabaseCheck())
+	healthChecker := health.New(zlog.Logger, health.DatabaseCheck(pool))
 
 	// Run migrations
 	log.Println("Running database migrations...")
@@ -117,7 +118,7 @@ func main() {
 
 	// Bootstrap the admin account from configuration (SPEC-007 WS-2). Fail-soft:
 	// the install-blocking gate is owned by the Helm chart, not the binary.
-	if err := keystone.BootstrapAdmin(ctx, cfg.Keystone); err != nil {
+	if err := keystone.BootstrapAdmin(ctx, pool, cfg.Keystone); err != nil {
 		log.Printf("WARNING: admin bootstrap failed: %v", err)
 	}
 
@@ -139,17 +140,17 @@ func main() {
 	}
 
 	// Initialize services
-	authService := keystone.NewAuthService(cfg.Keystone.JWTSecret, cfg.Keystone.TokenTTL, cacheInstance)
+	authService := keystone.NewAuthService(pool, cfg.Keystone.JWTSecret, cfg.Keystone.TokenTTL, cacheInstance)
 	authService.SetGlanceS3Endpoint(cfg.Glance.S3Endpoint)             // advertise the RGW endpoint in the s3 catalog
 	authService.SetRGWCompatTenantIDs(cfg.Keystone.RGWCompatTenantIDs) // RGW-safe project ids in token payloads
-	keystoneService := keystone.NewService(authService, cacheInstance)
+	keystoneService := keystone.NewService(pool, authService, cacheInstance)
 
 	// Set default libvirt mode if not specified
 	libvirtMode := cfg.Nova.LibvirtMode
 	if libvirtMode == "" {
 		libvirtMode = "stub"
 	}
-	novaService := nova.NewService(cfg.Nova.LibvirtURI, libvirtMode, cacheInstance)
+	novaService := nova.NewService(pool, cfg.Nova.LibvirtURI, libvirtMode, cacheInstance)
 
 	// Initialize hypervisor
 	if err := novaService.InitHypervisor(); err != nil {
@@ -164,7 +165,7 @@ func main() {
 	if networkingMode == "" {
 		networkingMode = "stub"
 	}
-	neutronService := neutron.NewService(networkingMode, cacheInstance)
+	neutronService := neutron.NewService(pool, networkingMode, cacheInstance)
 	log.Printf("Neutron initialized in %s mode", networkingMode)
 
 	// Wire up Nova-Neutron integration (so Nova can allocate ports)
@@ -177,6 +178,7 @@ func main() {
 	if cfg.Neutron.VXLANEnabled {
 		// Create node registry
 		nodeRegistry, err = compute.NewNodeRegistry(
+			pool,
 			cfg.Compute.NodeID,
 			cfg.Compute.TunnelIP,
 			cfg.Compute.HeartbeatInterval,
@@ -199,6 +201,7 @@ func main() {
 
 		// Create VXLAN coordinator
 		vxlanCoordinator = neutron.NewVXLANCoordinator(
+			pool,
 			vxlanManager,
 			nodeRegistry,
 			neutronService.GetNamespaceManager(),
@@ -231,7 +234,7 @@ func main() {
 	if cinderStorageMode == "" {
 		cinderStorageMode = "stub"
 	}
-	cinderService := cinder.NewService(cinderStorageMode, cfg.Cinder.CephPool, cfg.Cinder.CephConf)
+	cinderService := cinder.NewService(pool, cinderStorageMode, cfg.Cinder.CephPool, cfg.Cinder.CephConf)
 	log.Printf("Cinder initialized in %s mode", cinderStorageMode)
 
 	glanceStorageMode := cfg.Glance.StorageMode
@@ -239,6 +242,7 @@ func main() {
 		glanceStorageMode = "stub"
 	}
 	glanceService, err := glance.NewService(
+		pool,
 		glanceStorageMode,
 		cfg.Glance.CephPool,
 		cfg.Glance.CephConf,
@@ -268,7 +272,7 @@ func main() {
 	if mdBind == "" {
 		mdBind = ":8775"
 	}
-	metadataService := metadata.NewService(mdBind)
+	metadataService := metadata.NewService(pool, mdBind)
 	log.Printf("Metadata service initialized (bind %s)", mdBind)
 
 	// Initialize placement service

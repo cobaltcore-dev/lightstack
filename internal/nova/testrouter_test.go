@@ -16,7 +16,7 @@ import (
 //
 // Nova's RegisterRoutes(r *gin.RouterGroup) takes no auth arg (unlike keystone's),
 // so the middleware is attached to the engine with r.Use before registering routes.
-// Stub mode: NewService("", "stub", nil) leaves vmManager/cache/neutronSvc nil —
+// Stub mode: NewService(testPool, "", "stub", nil) leaves vmManager/cache/neutronSvc nil —
 // all of which are nil-guarded on the server create/get/list paths under test
 // (svc.cache only in flavor paths; svc.neutronSvc only when networks are supplied).
 func newNovaTestRouter() *gin.Engine {
@@ -33,7 +33,7 @@ func newNovaTestRouter() *gin.Engine {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	NewService("", "stub", nil).RegisterRoutes(&r.RouterGroup)
+	NewService(testPool, "", "stub", nil).RegisterRoutes(&r.RouterGroup)
 	return r
 }
 

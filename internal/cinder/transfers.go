@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,7 +32,7 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 
 	// Verify volume exists and belongs to project
 	var volumeStatus string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT status FROM volumes WHERE id = $1 AND project_id = $2",
 		req.Transfer.VolumeID, projectID,
 	).Scan(&volumeStatus)
@@ -62,7 +61,7 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 	transferID := uuid.New().String()
 	now := time.Now()
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO volume_transfers (id, volume_id, name, source_project_id, auth_key, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, transferID, req.Transfer.VolumeID, req.Transfer.Name, projectID, authKey, now, now)
@@ -88,7 +87,7 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 func (svc *Service) ListVolumeTransfers(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, volume_id, name, created_at
 		FROM volume_transfers
 		WHERE source_project_id = $1 AND accepted = false
@@ -142,7 +141,7 @@ func (svc *Service) GetVolumeTransfer(c *gin.Context) {
 	var name *string
 	var createdAt time.Time
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT volume_id, name, created_at
 		FROM volume_transfers
 		WHERE id = $1 AND source_project_id = $2 AND accepted = false
@@ -173,7 +172,7 @@ func (svc *Service) DeleteVolumeTransfer(c *gin.Context) {
 	transferID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM volume_transfers WHERE id = $1 AND source_project_id = $2 AND accepted = false",
 		transferID, projectID,
 	)
@@ -212,7 +211,7 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 	var volumeID, storedAuthKey, sourceProjectID string
 	var name *string
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT volume_id, name, auth_key, source_project_id
 		FROM volume_transfers
 		WHERE id = $1 AND accepted = false
@@ -235,7 +234,7 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 	}
 
 	// Transfer volume ownership
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"UPDATE volumes SET project_id = $1 WHERE id = $2",
 		projectID, volumeID,
 	)
@@ -247,7 +246,7 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 	}
 
 	// Mark transfer as accepted
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"UPDATE volume_transfers SET accepted = true, destination_project_id = $1 WHERE id = $2",
 		projectID, transferID,
 	)

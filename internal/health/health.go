@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -36,12 +37,12 @@ type Check struct {
 }
 
 // DatabaseCheck is the sole readiness-gating check (FR-001, Q1). It wraps the
-// existing database.HealthCheck — a pgx pool Ping, i.e. a real server
+// existing database.HealthCheck — a Ping on the given pool, i.e. a real server
 // round-trip, not a TCP-only probe (Q7).
-func DatabaseCheck() Check {
+func DatabaseCheck(pool *pgxpool.Pool) Check {
 	return Check{
 		Name:  "database",
-		Probe: func(ctx context.Context) error { return database.HealthCheck(ctx) },
+		Probe: func(ctx context.Context) error { return database.HealthCheck(ctx, pool) },
 	}
 }
 

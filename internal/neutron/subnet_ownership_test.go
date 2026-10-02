@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // Two tenants for the entitlement matrix. The seeded project stands in for tenant A
@@ -21,7 +19,7 @@ const (
 // ensureTenantB creates the second project once; the seeded one is tenant A.
 func ensureTenantB(t *testing.T) {
 	t.Helper()
-	_, err := database.DB.Exec(t.Context(),
+	_, err := testPool.Exec(t.Context(),
 		`INSERT INTO projects (id, name, description, enabled, domain_id)
 		 VALUES ($1, 'spec022-tenant-b', 'spec022 fixture', true,
 		         (SELECT id FROM domains WHERE name = 'Default'))
@@ -37,7 +35,7 @@ func makeNetwork(t *testing.T, owner string, shared bool) string {
 	t.Helper()
 	ensureTenantB(t)
 	var id string
-	err := database.DB.QueryRow(t.Context(),
+	err := testPool.QueryRow(t.Context(),
 		`INSERT INTO networks (name, project_id, admin_state_up, status, shared, network_type, mtu)
 		 VALUES ('spec022-net', $1, true, 'ACTIVE', $2, 'vxlan', 1500) RETURNING id`,
 		owner, shared,
@@ -49,10 +47,10 @@ func makeNetwork(t *testing.T, owner string, shared bool) string {
 		// context.Background(), not t.Context(): the test context is cancelled just
 		// before Cleanup-registered functions run (testing.T.Context).
 		ctx := context.Background()
-		if _, err := database.DB.Exec(ctx, `DELETE FROM subnets WHERE network_id = $1`, id); err != nil {
+		if _, err := testPool.Exec(ctx, `DELETE FROM subnets WHERE network_id = $1`, id); err != nil {
 			t.Logf("cleanup subnets of %s: %v", id, err)
 		}
-		if _, err := database.DB.Exec(ctx, `DELETE FROM networks WHERE id = $1`, id); err != nil {
+		if _, err := testPool.Exec(ctx, `DELETE FROM networks WHERE id = $1`, id); err != nil {
 			t.Logf("cleanup network %s: %v", id, err)
 		}
 	})
@@ -74,7 +72,7 @@ func hdr(project string, roles ...string) map[string]string {
 func insertSubnetOwnedBy(t *testing.T, networkID, owner, name, cidr string) string {
 	t.Helper()
 	var id string
-	err := database.DB.QueryRow(t.Context(),
+	err := testPool.QueryRow(t.Context(),
 		`INSERT INTO subnets (name, network_id, project_id, cidr, gateway_ip, ip_version,
 		                      enable_dhcp, dns_nameservers, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, '10.0.0.1', 4, false, '{}', NOW(), NOW()) RETURNING id`,

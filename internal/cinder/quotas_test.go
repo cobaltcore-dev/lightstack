@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -122,29 +121,29 @@ func TestBackupUsageIsCounted(t *testing.T) {
 	// agreeing counters look divergent. Deleting the project cascades to everything
 	// seeded below.
 	projectID := uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, description, enabled) VALUES ($1, $2, '', true)`,
 		projectID, "backup-usage-"+projectID); err != nil {
 		t.Fatalf("seeding project: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = database.DB.Exec(context.Background(), "DELETE FROM projects WHERE id = $1", projectID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM projects WHERE id = $1", projectID)
 	})
 
 	// volume_backups.volume_id is NOT NULL and references volumes(id), so the backup
 	// needs a volume. ON DELETE CASCADE takes the backup with it during cleanup.
 	var volumeID string
-	if err := database.DB.QueryRow(ctx, `
+	if err := testPool.QueryRow(ctx, `
 		INSERT INTO volumes (project_id, name, size_gb, status)
 		VALUES ($1, 'spec020-backup-src', $2, 'available') RETURNING id`,
 		projectID, sizeGB).Scan(&volumeID); err != nil {
 		t.Fatalf("seed volume: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
 			`DELETE FROM volumes WHERE id = $1`, volumeID)
 	})
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO volume_backups (project_id, volume_id, name, size_gb)
 		VALUES ($1, $2, 'spec020-backup-probe', $3)`,
 		projectID, volumeID, sizeGB); err != nil {
@@ -165,7 +164,7 @@ func TestBackupUsageIsCounted(t *testing.T) {
 
 	// A snapshot too, so every counted resource has a non-zero case below rather than
 	// only the backup pair.
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO snapshots (name, volume_id, project_id, size_gb)
 		VALUES ('spec020-usage-snap', $1, $2, $3)`, volumeID, projectID, sizeGB); err != nil {
 		t.Fatalf("seed snapshot: %v", err)
@@ -286,7 +285,7 @@ func TestDeleteQuotaSetResetsToDefaults(t *testing.T) {
 	const override = 42
 
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
 			`DELETE FROM cinder_quotas WHERE project_id = $1 AND resource = 'volumes'`, seededProjectID)
 	})
 
@@ -312,7 +311,7 @@ func TestDeleteQuotaSetResetsToDefaults(t *testing.T) {
 
 	// And the row must really be gone, not merely masked by the response.
 	var rows int
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM cinder_quotas WHERE project_id = $1 AND resource = 'volumes'`,
 		seededProjectID).Scan(&rows); err != nil {
 		t.Fatalf("count cinder_quotas rows: %v", err)
@@ -484,7 +483,7 @@ func TestQuotaWriteTargetMatchesRead(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	var caller string
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		"INSERT INTO projects (name, description) VALUES ($1, 'spec020 test fixture') RETURNING id::text",
 		"spec020-"+t.Name(),
 	).Scan(&caller); err != nil {
@@ -492,14 +491,14 @@ func TestQuotaWriteTargetMatchesRead(t *testing.T) {
 	}
 	// cinder_quotas has no foreign key to projects, so nothing cascades.
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
 			"DELETE FROM cinder_quotas WHERE project_id IN ($1, $2)", caller, seededProjectID)
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
 			"DELETE FROM projects WHERE id = $1", caller)
 	})
 	// An override the project named `default` already holds; the caller's DELETE must
 	// leave it alone.
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO cinder_quotas (project_id, resource, "limit") VALUES ($1, 'snapshots', 55)
 		 ON CONFLICT (project_id, resource) DO UPDATE SET "limit" = 55`, seededProjectID); err != nil {
 		t.Fatalf("seed the default project's override: %v", err)
@@ -524,7 +523,7 @@ func TestQuotaWriteTargetMatchesRead(t *testing.T) {
 		t.Fatalf("DELETE quota-sets/default: code=%d body=%s; want 204", code, body)
 	}
 	var snapshots int
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		`SELECT "limit" FROM cinder_quotas WHERE project_id = $1 AND resource = 'snapshots'`,
 		seededProjectID).Scan(&snapshots); err != nil {
 		t.Errorf("DELETE quota-sets/default by a caller scoped elsewhere reset the project named `default`: %v", err)
@@ -559,7 +558,7 @@ func TestUpdateQuotaSet_PersistsUnderResolvedID(t *testing.T) {
 	r := newCinderTestRouter()
 	admin := cinderAuthHdr(seededProjectID, seededUserID)
 	t.Cleanup(func() {
-		database.DB.Exec(context.Background(), //nolint:errcheck // best-effort cleanup
+		testPool.Exec(context.Background(), //nolint:errcheck // best-effort cleanup
 			"DELETE FROM cinder_quotas WHERE project_id = $1", seededProjectID)
 	})
 
@@ -573,7 +572,7 @@ func TestUpdateQuotaSet_PersistsUnderResolvedID(t *testing.T) {
 	}
 
 	var stored int
-	if err := database.DB.QueryRow(context.Background(),
+	if err := testPool.QueryRow(context.Background(),
 		`SELECT "limit" FROM cinder_quotas WHERE project_id = $1 AND resource = 'volumes'`,
 		seededProjectID).Scan(&stored); err != nil {
 		t.Fatalf("quota row was not stored under %s: %v", seededProjectID, err)

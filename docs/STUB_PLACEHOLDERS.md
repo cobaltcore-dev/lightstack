@@ -426,7 +426,7 @@ var cloudInit *hypervisor.CloudInitConfig
 if req.Server.KeyName != "" {
     // Fetch SSH public key from database
     var publicKey string
-    err := database.DB.QueryRow(ctx,
+    err := svc.pool.QueryRow(ctx,
         "SELECT public_key FROM keypairs WHERE user_id = $1 AND name = $2",
         userID, req.Server.KeyName,
     ).Scan(&publicKey)

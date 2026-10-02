@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -61,7 +60,7 @@ func (svc *Service) ListPortForwardings(c *gin.Context) {
 
 	// Verify floating IP exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM floating_ips WHERE id = $1 AND project_id = $2)",
 		floatingIPID, projectID,
 	).Scan(&exists)
@@ -72,7 +71,7 @@ func (svc *Service) ListPortForwardings(c *gin.Context) {
 	}
 
 	// List port forwardings
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, project_id, floatingip_id, internal_port_id, internal_ip_address,
 		       external_port, internal_port, protocol, status, description,
 		       created_at, updated_at
@@ -157,7 +156,7 @@ func (svc *Service) CreatePortForwarding(c *gin.Context) {
 
 	// Fetch floating IP details (for NAT configuration)
 	var floatingIP, routerID sql.NullString
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT floating_ip_address, router_id
 		FROM floating_ips
 		WHERE id = $1 AND project_id = $2
@@ -180,7 +179,7 @@ func (svc *Service) CreatePortForwarding(c *gin.Context) {
 
 	// Check for duplicate (floatingip_id, external_port, protocol)
 	var dupExists bool
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM port_forwardings WHERE floatingip_id = $1 AND external_port = $2 AND protocol = $3)",
 		floatingIPID, req.PortForwarding.ExternalPort, protocol,
 	).Scan(&dupExists)
@@ -199,7 +198,7 @@ func (svc *Service) CreatePortForwarding(c *gin.Context) {
 	pfID := uuid.New().String()
 	now := time.Now()
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO port_forwardings (id, project_id, floatingip_id, internal_port_id,
 			internal_ip_address, external_port, internal_port, protocol, status, description,
 			created_at, updated_at)
@@ -255,7 +254,7 @@ func (svc *Service) GetPortForwarding(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var pf PortForwarding
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, project_id, floatingip_id, internal_port_id, internal_ip_address,
 		       external_port, internal_port, protocol, status, description,
 		       created_at, updated_at
@@ -308,7 +307,7 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 	// Fetch current state
 	var currentPF PortForwarding
 	var floatingIP, routerID sql.NullString
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT pf.id, pf.internal_port_id, pf.internal_ip_address, pf.external_port,
 		       pf.internal_port, pf.protocol, fi.floating_ip_address, fi.router_id
 		FROM port_forwardings pf
@@ -412,7 +411,7 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 	query := fmt.Sprintf("UPDATE port_forwardings SET %s WHERE id = $%d AND floatingip_id = $%d AND project_id = $%d",
 		updateString(updates), argID, argID+1, argID+2)
 
-	_, err = database.DB.Exec(c.Request.Context(), query, args...)
+	_, err = svc.pool.Exec(c.Request.Context(), query, args...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_port_forwarding").Msg("failed to update port forwarding")
 		common.SendError(c, common.NewInternalServerError("failed to update port forwarding"))
@@ -434,7 +433,7 @@ func (svc *Service) DeletePortForwarding(c *gin.Context) {
 	var protocol, internalIP string
 	var floatingIP, routerID sql.NullString
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT pf.external_port, pf.internal_port, pf.protocol, pf.internal_ip_address,
 		       fi.floating_ip_address, fi.router_id
 		FROM port_forwardings pf
@@ -470,7 +469,7 @@ func (svc *Service) DeletePortForwarding(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM port_forwardings WHERE id = $1 AND floatingip_id = $2 AND project_id = $3",
 		pfID, floatingIPID, projectID,
 	)

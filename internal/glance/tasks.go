@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,7 +28,7 @@ func (svc *Service) CreateTask(c *gin.Context) {
 	now := time.Now()
 	owner := c.GetString("user_id")
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO image_tasks (id, type, status, input, owner, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, taskID, req.Type, "pending", req.Input, owner, now, now)
@@ -54,7 +53,7 @@ func (svc *Service) CreateTask(c *gin.Context) {
 
 // ListTasks handles GET /v2/tasks
 func (svc *Service) ListTasks(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, type, status, input, result, owner, created_at, updated_at
 		FROM image_tasks
 		ORDER BY created_at DESC
@@ -117,7 +116,7 @@ func (svc *Service) GetTask(c *gin.Context) {
 	var inputJSON, resultJSON []byte
 	var createdAt, updatedAt time.Time
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT type, status, input, result, COALESCE(owner, ''), COALESCE(message, ''), created_at, updated_at
 		FROM image_tasks
 		WHERE id = $1

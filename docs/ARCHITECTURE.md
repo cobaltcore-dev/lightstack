@@ -217,20 +217,26 @@ Services receive their database connection pool through constructors rather than
 ```
   main.go
     |
-    +-- database.Connect() -> pool *pgxpool.Pool
+    +-- database.Connect(ctx, url, cfg) -> pool *pgxpool.Pool   (defer pool.Close())
     |
+    +-- health.DatabaseCheck(pool)
+    +-- keystone.BootstrapAdmin(ctx, pool, cfg.Keystone)
     +-- keystone.NewAuthService(pool, jwtSecret, ttl, cache)
+    +-- keystone.NewService(pool, authService, cache)
     +-- nova.NewService(pool, libvirtURI, mode, cache)
     +-- neutron.NewService(pool, mode, cache)
+    +-- neutron.NewVXLANCoordinator(pool, vxlanManager, nodeRegistry, ...)
+    +-- compute.NewNodeRegistry(pool, nodeID, tunnelIP, heartbeat)
     +-- cinder.NewService(pool, mode, cephPool, cephConf)
-    +-- glance.NewService(pool, mode, ..., cache)
-    +-- metadata.NewService(pool)
+    +-- glance.NewService(pool, mode, cephPool, cephConf, s3opts, cache)
+    +-- metadata.NewService(pool, bindAddr)
 ```
 
 **Key Design Decisions:**
 - **Direct pool, not interface**: `*pgxpool.Pool` passed directly rather than through an abstract interface
 - **Same pool, all services**: DI is for testability and explicit dependencies, not service isolation
 - **WithTx()**: Transaction helper accepts pool parameter: `WithTx(ctx, pool, fn)`
+- **Helpers**: Package-level functions that query take the pool as a parameter; the cleanup job opens and closes a pool of its own
 
 ### Request Lifecycle
 

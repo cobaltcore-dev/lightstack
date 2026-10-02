@@ -8,8 +8,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var DB *pgxpool.Pool
-
 // PoolConfig contains database connection pool configuration
 type PoolConfig struct {
 	MaxConns          int32         // Maximum number of connections in the pool
@@ -30,11 +28,12 @@ func DefaultPoolConfig() *PoolConfig {
 	}
 }
 
-// Connect establishes database connection pool with optimized settings
-func Connect(ctx context.Context, connString string, poolConfig *PoolConfig) error {
+// Connect establishes the database connection pool with optimized settings and
+// returns it. The caller owns the pool and closes it.
+func Connect(ctx context.Context, connString string, poolConfig *PoolConfig) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(connString)
 	if err != nil {
-		return fmt.Errorf("failed to parse database URL: %w", err)
+		return nil, fmt.Errorf("failed to parse database URL: %w", err)
 	}
 
 	// Apply pool configuration
@@ -50,49 +49,22 @@ func Connect(ctx context.Context, connString string, poolConfig *PoolConfig) err
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return fmt.Errorf("failed to create connection pool: %w", err)
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
 	// Test connection
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return fmt.Errorf("failed to ping database: %w", err)
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	DB = pool
-	return nil
+	return pool, nil
 }
 
-// ConnectSimple establishes database connection pool with simple configuration (backwards compatible)
-func ConnectSimple(ctx context.Context, connString string, maxConns int) error {
-	return Connect(ctx, connString, &PoolConfig{
-		MaxConns:          int32(maxConns),
-		MinConns:          2,
-		MaxConnLifetime:   1 * time.Hour,
-		MaxConnIdleTime:   15 * time.Minute,
-		HealthCheckPeriod: 1 * time.Minute,
-	})
-}
-
-// Close closes the database connection pool
-func Close() {
-	if DB != nil {
-		DB.Close()
-	}
-}
-
-// Stats returns current connection pool statistics
-func Stats() *pgxpool.Stat {
-	if DB == nil {
-		return nil
-	}
-	return DB.Stat()
-}
-
-// HealthCheck verifies database connectivity
-func HealthCheck(ctx context.Context) error {
-	if DB == nil {
+// HealthCheck verifies database connectivity through pool.
+func HealthCheck(ctx context.Context, pool *pgxpool.Pool) error {
+	if pool == nil {
 		return fmt.Errorf("database connection not initialized")
 	}
-	return DB.Ping(ctx)
+	return pool.Ping(ctx)
 }

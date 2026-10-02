@@ -16,7 +16,7 @@ import (
 func newIdentityTestRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	NewService(nil, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
+	NewService(testPool, nil, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -36,6 +37,7 @@ type TokenClaims struct {
 
 // AuthService handles authentication operations
 type AuthService struct {
+	pool             *pgxpool.Pool
 	jwtSecret        []byte
 	tokenTTL         time.Duration
 	cache            *cache.Cache
@@ -47,8 +49,9 @@ type AuthService struct {
 }
 
 // NewAuthService creates a new auth service
-func NewAuthService(jwtSecret string, tokenTTL time.Duration, cacheInstance *cache.Cache) *AuthService {
+func NewAuthService(pool *pgxpool.Pool, jwtSecret string, tokenTTL time.Duration, cacheInstance *cache.Cache) *AuthService {
 	return &AuthService{
+		pool:      pool,
 		jwtSecret: []byte(jwtSecret),
 		tokenTTL:  tokenTTL,
 		cache:     cacheInstance,
@@ -205,7 +208,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 
 	// Look up domain ID
 	var domainID string
-	err := database.DB.QueryRow(ctx,
+	err := s.pool.QueryRow(ctx,
 		"SELECT id FROM domains WHERE name = $1",
 		domainName,
 	).Scan(&domainID)
@@ -219,7 +222,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 
 	// Fetch user from database (with domain filter)
 	var user database.User
-	err = database.DB.QueryRow(ctx,
+	err = s.pool.QueryRow(ctx,
 		"SELECT id, name, password_hash, enabled, domain_id FROM users WHERE name = $1 AND domain_id = $2",
 		username, domainID,
 	).Scan(&user.ID, &user.Name, &user.PasswordHash, &user.Enabled, &user.DomainID)
@@ -270,7 +273,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 			params = []any{projectName, domainID}
 		}
 
-		err := database.DB.QueryRow(ctx, query, params...).Scan(
+		err := s.pool.QueryRow(ctx, query, params...).Scan(
 			&proj.ID, &proj.Name, &proj.Description, &proj.Enabled, &proj.DomainID,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -288,7 +291,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		project = &proj
 
 		// Fetch roles
-		rows, err := database.DB.Query(ctx, `
+		rows, err := s.pool.Query(ctx, `
 			SELECT r.name
 			FROM role_assignments ra
 			JOIN roles r ON ra.role_id = r.id
@@ -357,7 +360,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 
 	// Query user's domain name
 	var userDomainName string
-	err = database.DB.QueryRow(ctx,
+	err = s.pool.QueryRow(ctx,
 		"SELECT name FROM domains WHERE id = $1",
 		user.DomainID,
 	).Scan(&userDomainName)
@@ -378,7 +381,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 	if projectID != "" {
 		// Query project's domain name
 		var projectDomainName string
-		err = database.DB.QueryRow(ctx,
+		err = s.pool.QueryRow(ctx,
 			"SELECT name FROM domains WHERE id = $1",
 			project.DomainID,
 		).Scan(&projectDomainName)
@@ -404,7 +407,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		}
 
 		// Add service catalog
-		resp.Token.Catalog = BuildServiceCatalog(projectID, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, s.cache, s.glanceS3Endpoint)
 	}
 
 	return resp, tokenString, nil
@@ -424,7 +427,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 
 	// Fetch user from database
 	var user database.User
-	err = database.DB.QueryRow(ctx,
+	err = s.pool.QueryRow(ctx,
 		"SELECT id, name, password_hash, enabled, domain_id FROM users WHERE id = $1",
 		claims.UserID,
 	).Scan(&user.ID, &user.Name, &user.PasswordHash, &user.Enabled, &user.DomainID)
@@ -471,7 +474,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 			params = []any{projectName, user.DomainID}
 		}
 
-		err := database.DB.QueryRow(ctx, query, params...).Scan(
+		err := s.pool.QueryRow(ctx, query, params...).Scan(
 			&proj.ID, &proj.Name, &proj.Description, &proj.Enabled, &proj.DomainID,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -489,7 +492,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		project = &proj
 
 		// Fetch roles
-		rows, err := database.DB.Query(ctx, `
+		rows, err := s.pool.Query(ctx, `
 			SELECT r.name
 			FROM role_assignments ra
 			JOIN roles r ON ra.role_id = r.id
@@ -562,7 +565,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 
 	// Query user's domain name
 	var userDomainName string
-	err = database.DB.QueryRow(ctx,
+	err = s.pool.QueryRow(ctx,
 		"SELECT name FROM domains WHERE id = $1",
 		user.DomainID,
 	).Scan(&userDomainName)
@@ -583,7 +586,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 	if projectID != "" {
 		// Query project's domain name
 		var projectDomainName string
-		err = database.DB.QueryRow(ctx,
+		err = s.pool.QueryRow(ctx,
 			"SELECT name FROM domains WHERE id = $1",
 			project.DomainID,
 		).Scan(&projectDomainName)
@@ -609,7 +612,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest) (
 		}
 
 		// Add service catalog
-		resp.Token.Catalog = BuildServiceCatalog(projectID, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, s.cache, s.glanceS3Endpoint)
 	}
 
 	return resp, tokenString, nil
@@ -662,14 +665,14 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 	// signature and expiry only; that contract is unchanged.)
 	var userDomainID string
 	var userEnabled bool
-	err := database.DB.QueryRow(ctx,
+	err := s.pool.QueryRow(ctx,
 		"SELECT domain_id, enabled FROM users WHERE id = $1",
 		claims.UserID,
 	).Scan(&userDomainID, &userEnabled)
 	switch {
 	case err == nil && userEnabled:
 		userDomainName := "Default" // fallback, like the issue paths
-		if err := database.DB.QueryRow(ctx,
+		if err := s.pool.QueryRow(ctx,
 			"SELECT name FROM domains WHERE id = $1",
 			userDomainID,
 		).Scan(&userDomainName); err != nil {
@@ -699,14 +702,14 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 	if claims.ProjectID != "" {
 		var projectName, projectDomainID string
 		var projectEnabled bool
-		err := database.DB.QueryRow(ctx,
+		err := s.pool.QueryRow(ctx,
 			"SELECT name, domain_id, enabled FROM projects WHERE id = $1",
 			claims.ProjectID,
 		).Scan(&projectName, &projectDomainID, &projectEnabled)
 		switch {
 		case err == nil && projectEnabled:
 			projectDomainName := "Default" // fallback, like the issue paths
-			if err := database.DB.QueryRow(ctx,
+			if err := s.pool.QueryRow(ctx,
 				"SELECT name FROM domains WHERE id = $1",
 				projectDomainID,
 			).Scan(&projectDomainName); err != nil {
@@ -742,7 +745,7 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 		// and user rows above). Unreadable or fully revoked roles omit the
 		// key: RGW's envelope parser requires roles, so a revoked scoped
 		// token is dead for it — fail closed.
-		rows, rolesErr := database.DB.Query(ctx, `
+		rows, rolesErr := s.pool.Query(ctx, `
 			SELECT DISTINCT r.name FROM roles r
 			JOIN role_assignments ra ON ra.role_id = r.id
 			WHERE ra.user_id = $1 AND ra.project_id = $2`,
@@ -775,7 +778,7 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 		}
 
 		// Service catalog from the CANONICAL project id, like the issue paths.
-		resp.Token.Catalog = BuildServiceCatalog(claims.ProjectID, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, claims.ProjectID, s.cache, s.glanceS3Endpoint)
 	}
 
 	return resp
@@ -822,7 +825,7 @@ func (s *AuthService) CheckPassword(password, hash string) bool {
 }
 
 // BuildServiceCatalog builds the OpenStack service catalog from database
-func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache, s3Endpoint string) []CatalogEntry {
+func BuildServiceCatalog(pool *pgxpool.Pool, projectID string, cacheInstance *cache.Cache, s3Endpoint string) []CatalogEntry {
 	ctx := context.Background()
 
 	// Try cache first (service catalog is immutable, 24h TTL)
@@ -837,7 +840,7 @@ func BuildServiceCatalog(projectID string, cacheInstance *cache.Cache, s3Endpoin
 	catalog := []CatalogEntry{}
 
 	// Query services and their endpoints from database
-	rows, err := database.DB.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		SELECT s.id, s.type, s.name, e.id, e.interface, e.url, e.region
 		FROM services s
 		LEFT JOIN endpoints e ON s.id = e.service_id

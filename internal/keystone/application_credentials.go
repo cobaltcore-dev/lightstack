@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,7 +18,7 @@ import (
 func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 	userID := c.Param("id")
 
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, user_id, project_id, name, description, expires_at, unrestricted, created_at
 		FROM application_credentials
 		WHERE user_id = $1
@@ -63,7 +62,7 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 		}
 
 		// Get roles
-		roleRows, err := database.DB.Query(c.Request.Context(), `
+		roleRows, err := svc.pool.Query(c.Request.Context(), `
 			SELECT r.id, r.name
 			FROM application_credential_roles acr
 			JOIN roles r ON acr.role_id = r.id
@@ -145,7 +144,7 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 		}
 	}
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO application_credentials (id, user_id, project_id, name, secret_hash, description, expires_at, unrestricted, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`, credID, userID, projectID, req.ApplicationCredential.Name, string(secretHash), req.ApplicationCredential.Description, expiresAt, req.ApplicationCredential.Unrestricted, now)
@@ -162,7 +161,7 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 	// credential they can re-grant manually.
 	for _, role := range req.ApplicationCredential.Roles {
 		roleID := role["id"].(string)
-		if _, err := database.DB.Exec(c.Request.Context(), `
+		if _, err := svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO application_credential_roles (application_credential_id, role_id)
 			VALUES ($1, $2)
 		`, credID, roleID); err != nil {
@@ -206,7 +205,7 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 	var expiresAt *time.Time
 	var unrestricted bool
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, user_id, project_id, name, description, expires_at, unrestricted
 		FROM application_credentials
 		WHERE id = $1 AND user_id = $2
@@ -240,7 +239,7 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 	}
 
 	// Get roles
-	roleRows, err := database.DB.Query(c.Request.Context(), `
+	roleRows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT r.id, r.name
 		FROM application_credential_roles acr
 		JOIN roles r ON acr.role_id = r.id
@@ -272,7 +271,7 @@ func (svc *Service) DeleteApplicationCredential(c *gin.Context) {
 	userID := c.Param("id")
 	credID := c.Param("cred_id")
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM application_credentials WHERE id = $1 AND user_id = $2",
 		credID, userID)
 
@@ -299,7 +298,7 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 	var expiresAt *time.Time
 	var unrestricted bool
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, user_id, project_id, name, description, expires_at, unrestricted
 		FROM application_credentials
 		WHERE id = $1
@@ -333,7 +332,7 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 	}
 
 	// Get roles
-	roleRows, err := database.DB.Query(c.Request.Context(), `
+	roleRows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT r.id, r.name
 		FROM application_credential_roles acr
 		JOIN roles r ON acr.role_id = r.id

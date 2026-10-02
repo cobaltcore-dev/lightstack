@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -22,12 +22,14 @@ type Service struct {
 	// In production, this would run on 169.254.169.254
 	// For testing, it runs on localhost:8775
 	bindAddr string
+	pool     *pgxpool.Pool
 }
 
 // NewService creates a new metadata service
-func NewService(bindAddr string) *Service {
+func NewService(pool *pgxpool.Pool, bindAddr string) *Service {
 	return &Service{
 		bindAddr: bindAddr,
+		pool:     pool,
 	}
 }
 
@@ -91,7 +93,7 @@ func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
 		// (#504), where per-tenant network namespaces + network-scoped metadata
 		// identity belong.
 		var instanceID string
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			`SELECT device_id FROM ports
 			 WHERE device_id IS NOT NULL AND fixed_ips @> $1::jsonb
 			 LIMIT 1`,
@@ -116,7 +118,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 	var name, hostname, projectID, userID string
 	var uuid string
 	var keyName sql.NullString
-	err = database.DB.QueryRow(c.Request.Context(), `
+	err = svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, name, project_id, user_id, key_name
 		FROM instances
 		WHERE id = $1
@@ -145,7 +147,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 	}
 
 	// Fetch custom metadata
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT key, value
 		FROM instance_metadata
 		WHERE instance_id = $1
@@ -179,7 +181,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 	// injecting every key the owner happens to have. No key_name → no query: the
 	// response keeps the empty public_keys it already defaults to.
 	if keyName.Valid && keyName.String != "" {
-		keyRows, err := database.DB.Query(c.Request.Context(), `
+		keyRows, err := svc.pool.Query(c.Request.Context(), `
 			SELECT k.name, k.public_key
 			FROM keypairs k
 			WHERE k.user_id = $1 AND k.name = $2
@@ -222,7 +224,7 @@ func (svc *Service) GetUserData(c *gin.Context) {
 	}
 
 	var userData string
-	err = database.DB.QueryRow(c.Request.Context(), `
+	err = svc.pool.QueryRow(c.Request.Context(), `
 		SELECT userdata
 		FROM instance_userdata
 		WHERE instance_id = $1
@@ -251,7 +253,7 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 	}
 
 	// Query all ports for this instance
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT p.id, p.mac_address, p.fixed_ip, p.network_id, n.name, s.cidr, s.gateway_ip, s.dns_nameservers
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
@@ -351,14 +353,14 @@ func (svc *Service) GetEC2MetaData(c *gin.Context) {
 		c.String(http.StatusOK, instanceID)
 	case path == "hostname":
 		var hostname string
-		if err := database.DB.QueryRow(ctx, `SELECT name FROM instances WHERE id = $1`, instanceID).Scan(&hostname); err == nil {
+		if err := svc.pool.QueryRow(ctx, `SELECT name FROM instances WHERE id = $1`, instanceID).Scan(&hostname); err == nil {
 			c.String(http.StatusOK, hostname)
 		} else {
 			c.String(http.StatusNotFound, "")
 		}
 	case path == "instance-type":
 		var flavorName string
-		if err := database.DB.QueryRow(ctx, `
+		if err := svc.pool.QueryRow(ctx, `
 			SELECT f.name FROM instances i JOIN flavors f ON i.flavor_id = f.id WHERE i.id = $1
 		`, instanceID).Scan(&flavorName); err == nil {
 			c.String(http.StatusOK, flavorName)
@@ -417,7 +419,7 @@ func (svc *Service) GetEC2MetaData(c *gin.Context) {
 func (svc *Service) publicKeysForInstance(ctx context.Context, instanceID string) ([]struct{ name, key string }, error) {
 	var userID string
 	var keyName sql.NullString
-	if err := database.DB.QueryRow(ctx,
+	if err := svc.pool.QueryRow(ctx,
 		`SELECT user_id, key_name FROM instances WHERE id = $1`, instanceID).Scan(&userID, &keyName); err != nil {
 		return nil, err
 	}
@@ -425,7 +427,7 @@ func (svc *Service) publicKeysForInstance(ctx context.Context, instanceID string
 	if !keyName.Valid || keyName.String == "" {
 		return nil, nil
 	}
-	rows, err := database.DB.Query(ctx, `
+	rows, err := svc.pool.Query(ctx, `
 		SELECT name, public_key
 		FROM keypairs
 		WHERE user_id = $1 AND name = $2

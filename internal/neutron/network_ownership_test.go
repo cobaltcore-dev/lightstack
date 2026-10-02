@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -23,7 +22,7 @@ const otherProjectID = "00000000-0000-0000-0000-0000000b0b0b"
 // against a freshly migrated database while proving nothing.
 func requireSecondProject(t *testing.T) {
 	t.Helper()
-	if _, err := database.DB.Exec(context.Background(), `
+	if _, err := testPool.Exec(context.Background(), `
 		INSERT INTO projects (id, name, domain_id, enabled, created_at, updated_at)
 		VALUES ($1, 'spec024-other', (SELECT id FROM domains LIMIT 1), true, now(), now())
 		ON CONFLICT (id) DO NOTHING
@@ -43,14 +42,14 @@ func TestNetworkResponsesReportTheRowsOwner(t *testing.T) {
 	r := newNeutronTestRouter()
 
 	netID := uuid.New().String()
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, network_type, mtu, created_at, updated_at)
 		VALUES ($1, 'b11-shared-foreign', $2, true, 'ACTIVE', true, 'flat', 1500, now(), now())
 	`, netID, otherProjectID); err != nil {
 		t.Fatalf("seed shared network: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID) //nolint:errcheck // best-effort cleanup
 	})
 
 	tenant := map[string]string{"X-Test-Project": seededProjectID}
@@ -104,14 +103,14 @@ func TestGetNetworkCacheIsCallerIndependent(t *testing.T) {
 	r := newNeutronTestRouter()
 
 	netID := uuid.New().String()
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, network_type, mtu, created_at, updated_at)
 		VALUES ($1, 'b11-cache', $2, true, 'ACTIVE', true, 'flat', 1500, now(), now())
 	`, netID, otherProjectID); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id = $1", netID) //nolint:errcheck // best-effort cleanup
 	})
 
 	// Warm the cache as one caller, then read as another.

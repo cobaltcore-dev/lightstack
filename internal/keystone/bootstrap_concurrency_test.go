@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -19,7 +18,7 @@ func runConcurrentBootstrap(t *testing.T, cfg common.KeystoneConfig, n int) {
 	errs := make(chan error, n)
 	var wg sync.WaitGroup
 	for range n {
-		wg.Go(func() { errs <- BootstrapAdmin(ctx, cfg) })
+		wg.Go(func() { errs <- BootstrapAdmin(ctx, testPool, cfg) })
 	}
 	wg.Wait()
 	close(errs)
@@ -42,7 +41,7 @@ func TestBootstrapAdminConcurrent(t *testing.T) {
 	runConcurrentBootstrap(t, common.KeystoneConfig{AdminPassword: pw}, 8)
 
 	var count int
-	if err := database.DB.QueryRow(ctx, "SELECT count(*) FROM users WHERE name='admin'").Scan(&count); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM users WHERE name='admin'").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -71,7 +70,7 @@ func TestBootstrapAdminConcurrentCustomUser(t *testing.T) {
 
 	// Exactly one custom-admin row, enabled, with the configured password.
 	var count int
-	if err := database.DB.QueryRow(ctx, "SELECT count(*) FROM users WHERE name=$1", user).Scan(&count); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM users WHERE name=$1", user).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -87,7 +86,7 @@ func TestBootstrapAdminConcurrentCustomUser(t *testing.T) {
 
 	// Exactly one admin-role grant on the default project (no duplicates).
 	var roles int
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		"SELECT count(*) FROM role_assignments WHERE user_id=$1 AND project_id=$2 AND role_id=$3",
 		id, defaultProjectID, adminRoleID).Scan(&roles); err != nil {
 		t.Fatal(err)

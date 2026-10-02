@@ -14,14 +14,20 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var testDBAvailable bool
 
+// testPool is this package's test pool: opened by TestMain when LIGHTSTACK_TEST_DB_URL
+// is set, and handed to the services the tests construct (SPEC-027).
+var testPool *pgxpool.Pool
+
 func TestMain(m *testing.M) {
 	if dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL"); dbURL != "" {
 		ctx := context.Background()
-		if err := database.Connect(ctx, dbURL, &database.PoolConfig{
+		var err error
+		if testPool, err = database.Connect(ctx, dbURL, &database.PoolConfig{
 			MaxConns: 5, MinConns: 1, MaxConnLifetime: time.Hour,
 			MaxConnIdleTime: 15 * time.Minute, HealthCheckPeriod: time.Minute,
 		}); err != nil {
@@ -30,14 +36,14 @@ func TestMain(m *testing.M) {
 		}
 		if err := database.MigrateUp(dbURL, "../../migrations"); err != nil {
 			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but migrations failed: %v\n", err)
-			database.Close()
+			testPool.Close()
 			os.Exit(1)
 		}
 		testDBAvailable = true
 	}
 	code := m.Run()
 	if testDBAvailable {
-		database.Close()
+		testPool.Close()
 	}
 	os.Exit(code)
 }
@@ -62,7 +68,7 @@ func newNeutronTestRouter() *gin.Engine {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	NewService("stub", nil).RegisterRoutes(&r.RouterGroup)
+	NewService(testPool, "stub", nil).RegisterRoutes(&r.RouterGroup)
 	return r
 }
 
@@ -107,13 +113,13 @@ func TestListNetworksFilters_DB(t *testing.T) {
 	ownID, shdID := uuid.NewString(), uuid.NewString()
 	ownName := "dbnet-own-" + ownID[:8]
 	shdName := "dbnet-shared-" + shdID[:8]
-	if _, err := database.DB.Exec(ctx, `INSERT INTO networks (id, name, project_id, shared) VALUES ($1,$2,$3,false)`, ownID, ownName, seededProjectID); err != nil {
+	if _, err := testPool.Exec(ctx, `INSERT INTO networks (id, name, project_id, shared) VALUES ($1,$2,$3,false)`, ownID, ownName, seededProjectID); err != nil {
 		t.Fatalf("insert own net: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `INSERT INTO networks (id, name, project_id, shared) VALUES ($1,$2,$3,true)`, shdID, shdName, seededProjectID); err != nil {
+	if _, err := testPool.Exec(ctx, `INSERT INTO networks (id, name, project_id, shared) VALUES ($1,$2,$3,true)`, shdID, shdName, seededProjectID); err != nil {
 		t.Fatalf("insert shared net: %v", err)
 	}
-	t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM networks WHERE id = ANY($1)", []string{ownID, shdID}) })
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM networks WHERE id = ANY($1)", []string{ownID, shdID}) })
 
 	r := newNeutronTestRouter()
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}

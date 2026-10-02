@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
@@ -81,7 +80,7 @@ func (svc *Service) validateSignedRequest(c *gin.Context) {
 	var userID string
 	var projectID *string
 	var blob string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		`SELECT user_id, project_id, blob FROM credentials WHERE access_key = $1 AND type = 'ec2'`,
 		req.Credentials.Access).Scan(&userID, &projectID, &blob)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -192,7 +191,7 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 	// reason logged server-side only.
 	var userName string
 	var userEnabled bool
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT name, enabled FROM users WHERE id = $1", userID,
 	).Scan(&userName, &userEnabled); err != nil || !userEnabled {
 		log.Warn().Err(err).Str("user_id", userID).
@@ -202,7 +201,7 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 	}
 	var canonicalProjectID, projectName string
 	var projectEnabled bool
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, name, enabled FROM projects WHERE id = $1", projectID,
 	).Scan(&canonicalProjectID, &projectName, &projectEnabled); err != nil || !projectEnabled {
 		log.Warn().Err(err).Str("project_id", projectID).
@@ -218,7 +217,7 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 	projectID = canonicalProjectID
 
 	roles := []gin.H{}
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT DISTINCT r.name FROM roles r
 		JOIN role_assignments ra ON ra.role_id = r.id
 		WHERE ra.user_id = $1 AND ra.project_id = $2`, userID, projectID)

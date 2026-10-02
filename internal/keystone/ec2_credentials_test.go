@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
@@ -28,7 +27,7 @@ func postEC2Cred(t *testing.T, targetUserID, callerUserID, callerProjectID strin
 	c.Set("user_id", callerUserID)
 	c.Set("project_id", callerProjectID)
 	c.Set("roles", roles)
-	(&Service{}).CreateEC2Credential(c)
+	(&Service{pool: testPool}).CreateEC2Credential(c)
 	return w
 }
 
@@ -58,10 +57,10 @@ func TestCreateEC2Credential_ProjectExistence(t *testing.T) {
 	ctx := context.Background()
 
 	var adminID, projID string
-	if err := database.DB.QueryRow(ctx, "SELECT id FROM users WHERE name = 'admin'").Scan(&adminID); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT id FROM users WHERE name = 'admin'").Scan(&adminID); err != nil {
 		t.Fatalf("seeded admin user: %v", err)
 	}
-	if err := database.DB.QueryRow(ctx, "SELECT id FROM projects LIMIT 1").Scan(&projID); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT id FROM projects LIMIT 1").Scan(&projID); err != nil {
 		t.Fatalf("seeded project: %v", err)
 	}
 	admin := []string{"admin"}
@@ -98,7 +97,7 @@ func TestCreateEC2Credential_ProjectExistence(t *testing.T) {
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err == nil && created.Credential.Access != "" {
 		t.Cleanup(func() {
-			_, _ = database.DB.Exec(context.Background(),
+			_, _ = testPool.Exec(context.Background(),
 				"DELETE FROM credentials WHERE access_key = $1", created.Credential.Access)
 		})
 	}

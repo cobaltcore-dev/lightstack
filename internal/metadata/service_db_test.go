@@ -13,6 +13,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // testDBAvailable is true when LIGHTSTACK_TEST_DB_URL is set and migrated; DB-backed
@@ -20,10 +21,15 @@ import (
 // internal/glance/images_db_test.go.
 var testDBAvailable bool
 
+// testPool is this package's test pool: opened by TestMain when LIGHTSTACK_TEST_DB_URL
+// is set, and handed to the services the tests construct (SPEC-027).
+var testPool *pgxpool.Pool
+
 func TestMain(m *testing.M) {
 	if dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL"); dbURL != "" {
 		ctx := context.Background()
-		if err := database.Connect(ctx, dbURL, &database.PoolConfig{
+		var err error
+		if testPool, err = database.Connect(ctx, dbURL, &database.PoolConfig{
 			MaxConns: 5, MinConns: 1, MaxConnLifetime: time.Hour,
 			MaxConnIdleTime: 15 * time.Minute, HealthCheckPeriod: time.Minute,
 		}); err != nil {
@@ -32,7 +38,7 @@ func TestMain(m *testing.M) {
 		}
 		if err := database.MigrateUp(dbURL, "../../migrations"); err != nil {
 			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but migrations failed: %v\n", err)
-			database.Close()
+			testPool.Close()
 			os.Exit(1)
 		}
 		testDBAvailable = true
@@ -41,11 +47,11 @@ func TestMain(m *testing.M) {
 	if testDBAvailable {
 		// pgxpool.Close blocks until every acquired connection is released, so a handler
 		// that leaks rows would hang the run here with no diagnostic. Fail loudly instead.
-		if n := database.DB.Stat().AcquiredConns(); n != 0 {
+		if n := testPool.Stat().AcquiredConns(); n != 0 {
 			fmt.Fprintf(os.Stderr, "connection leak: %d pool connection(s) still acquired after the tests — a handler did not close its rows\n", n)
 			os.Exit(1)
 		}
-		database.Close()
+		testPool.Close()
 	}
 	os.Exit(code)
 }
@@ -66,7 +72,7 @@ const (
 func newMetadataTestRouter() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	NewService(":0").RegisterRoutes(&r.RouterGroup)
+	NewService(testPool, ":0").RegisterRoutes(&r.RouterGroup)
 	return r
 }
 
@@ -88,12 +94,12 @@ func seedKeypair(t *testing.T, prefix string) (name, pubkey string) {
 	ctx := context.Background()
 	name = prefix + "-" + uuid.NewString()[:8]
 	pubkey = "ssh-ed25519 AAAA" + uuid.NewString() + " " + name
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO keypairs (name, user_id, public_key, fingerprint) VALUES ($1,$2,$3,'00:11')`,
 		name, seededUserID, pubkey); err != nil {
 		t.Fatalf("insert keypair %s: %v", name, err)
 	}
-	t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM keypairs WHERE user_id=$1 AND name=$2", seededUserID, name) })
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM keypairs WHERE user_id=$1 AND name=$2", seededUserID, name) })
 	return name, pubkey
 }
 
@@ -103,12 +109,12 @@ func seedInstance(t *testing.T, keyName *string) string {
 	t.Helper()
 	ctx := context.Background()
 	id := uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO instances (id, name, project_id, user_id, status, key_name) VALUES ($1,'md-inst',$2,$3,'ACTIVE',$4)`,
 		id, seededProjectID, seededUserID, keyName); err != nil {
 		t.Fatalf("insert instance: %v", err)
 	}
-	t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM instances WHERE id=$1", id) })
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM instances WHERE id=$1", id) })
 	return id
 }
 

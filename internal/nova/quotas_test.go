@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -154,14 +153,14 @@ func TestLimitsHonorQuotaOverride(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	const override = 77
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO quotas (project_id, resource, hard_limit) VALUES ($1, 'instances', $2)
 		ON CONFLICT (project_id, resource) DO UPDATE SET hard_limit = $2`,
 		seededProjectID, override); err != nil {
 		t.Fatalf("seed quota override: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort restore of the seeded value
+		testPool.Exec(ctx, //nolint:errcheck // best-effort restore of the seeded value
 			`UPDATE quotas SET hard_limit = 10 WHERE project_id = $1 AND resource = 'instances'`,
 			seededProjectID)
 	})
@@ -190,26 +189,26 @@ func TestQuotaSetDetail(t *testing.T) {
 	// test could create a network or a rule between the two reads and make two agreeing views
 	// look divergent. Deleting the project cascades to its quota rows.
 	projectID := uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, description, enabled) VALUES ($1, $2, '', true)`,
 		projectID, "quota-detail-"+projectID); err != nil {
 		t.Fatalf("seeding project: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = database.DB.Exec(context.Background(), "DELETE FROM projects WHERE id = $1", projectID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM projects WHERE id = $1", projectID)
 	})
 
 	// A stock database has no snapshots, so the cross-view comparison below would be a
 	// trivial 0 == 0 and would not catch the drift it exists to catch. One row makes it
 	// bite. volume_id stays NULL so nothing else's usage moves.
 	var snapshotID string
-	if err := database.DB.QueryRow(ctx, `
+	if err := testPool.QueryRow(ctx, `
 		INSERT INTO snapshots (name, project_id, size_gb) VALUES ('spec020-usage-probe', $1, 1)
 		RETURNING id`, projectID).Scan(&snapshotID); err != nil {
 		t.Fatalf("seed snapshot: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
 			`DELETE FROM snapshots WHERE id = $1`, snapshotID)
 	})
 
@@ -312,7 +311,7 @@ func TestQuotaSetDetail(t *testing.T) {
 		t.Fatalf("create keypair: code=%d body=%s; want 200/201", code, kpBody)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
 			`DELETE FROM keypairs WHERE name = 'spec020-detail-probe'`)
 	})
 	_, body = doReq(r, http.MethodGet, "/v2.1/os-quota-sets/"+projectID+"/detail", "",
@@ -365,7 +364,7 @@ func TestQuotaSetDetailCoversStoredResources(t *testing.T) {
 		t.Fatalf("PUT quota-set: code=%d body=%s; want 200", code, body)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
 			`DELETE FROM quotas WHERE project_id = $1 AND resource = $2`, seededProjectID, resource)
 	})
 
@@ -464,7 +463,7 @@ func TestQuotaSetPutRoundTrips(t *testing.T) {
 	// keypairs is a real Nova quota resource, but it lives in limitsOnlyDefaults rather
 	// than quotaDefaults — so it exercises the stored-but-undeclared path.
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup
 			`DELETE FROM quotas WHERE project_id = $1 AND resource = 'keypairs'`, seededProjectID)
 	})
 
@@ -545,18 +544,18 @@ func TestLimitsCountEveryInstanceRow(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	var project string
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		"INSERT INTO projects (name, description) VALUES ($1, 'spec020 test fixture') RETURNING id::text",
 		"spec020-"+t.Name(),
 	).Scan(&project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup; cascades to instances
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup; cascades to instances
 			"DELETE FROM projects WHERE id = $1", project)
 	})
 	for _, status := range []string{"ACTIVE", "DELETED"} {
-		if _, err := database.DB.Exec(ctx,
+		if _, err := testPool.Exec(ctx,
 			"INSERT INTO instances (name, project_id, status) VALUES ($1, $2, $3)",
 			"spec020-instance-"+status, project, status); err != nil {
 			t.Fatalf("seed %s instance: %v", status, err)

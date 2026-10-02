@@ -16,14 +16,20 @@ import (
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var testDBAvailable bool
 
+// testPool is this package's test pool: opened by TestMain when LIGHTSTACK_TEST_DB_URL
+// is set, and handed to the services the tests construct (SPEC-027).
+var testPool *pgxpool.Pool
+
 func TestMain(m *testing.M) {
 	if dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL"); dbURL != "" {
 		ctx := context.Background()
-		if err := database.Connect(ctx, dbURL, &database.PoolConfig{
+		var err error
+		if testPool, err = database.Connect(ctx, dbURL, &database.PoolConfig{
 			MaxConns: 5, MinConns: 1, MaxConnLifetime: time.Hour,
 			MaxConnIdleTime: 15 * time.Minute, HealthCheckPeriod: time.Minute,
 		}); err != nil {
@@ -32,14 +38,14 @@ func TestMain(m *testing.M) {
 		}
 		if err := database.MigrateUp(dbURL, "../../migrations"); err != nil {
 			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but migrations failed: %v\n", err)
-			database.Close()
+			testPool.Close()
 			os.Exit(1)
 		}
 		testDBAvailable = true
 	}
 	code := m.Run()
 	if testDBAvailable {
-		database.Close()
+		testPool.Close()
 	}
 	os.Exit(code)
 }
@@ -65,7 +71,7 @@ func newGlanceTestRouter(t *testing.T) *gin.Engine {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	svc, err := NewService("stub", "", "", storage.S3Options{}, nil)
+	svc, err := NewService(testPool, "stub", "", "", storage.S3Options{}, nil)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -93,7 +99,7 @@ func doReqBody(r *gin.Engine, method, path, body string, headers map[string]stri
 func imageExists(t *testing.T, id string) bool {
 	t.Helper()
 	var n int
-	if err := database.DB.QueryRow(context.Background(), "SELECT count(*) FROM images WHERE id = $1", id).Scan(&n); err != nil {
+	if err := testPool.QueryRow(context.Background(), "SELECT count(*) FROM images WHERE id = $1", id).Scan(&n); err != nil {
 		t.Fatalf("count image: %v", err)
 	}
 	return n > 0
@@ -112,12 +118,12 @@ func TestDeleteImageAuthz_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	id := uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO images (id, name, project_id, status, visibility) VALUES ($1,'dbimg',$2,'active','public')`,
 		id, seededProjectID); err != nil {
 		t.Fatalf("insert image: %v", err)
 	}
-	t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM images WHERE id=$1", id) })
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM images WHERE id=$1", id) })
 	r := newGlanceTestRouter(t)
 
 	// Non-owner, non-admin: can see the public image but may not delete it → 403, kept.
@@ -151,12 +157,12 @@ func TestDeleteImageAdminBypass_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	id := uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO images (id, name, project_id, status, visibility) VALUES ($1,'adminimg',$2,'active','public')`,
 		id, seededProjectID); err != nil {
 		t.Fatalf("insert image: %v", err)
 	}
-	t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM images WHERE id=$1", id) })
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM images WHERE id=$1", id) })
 
 	r := newGlanceTestRouter(t)
 	const otherProject = "22222222-2222-2222-2222-222222222222"
@@ -186,24 +192,24 @@ func TestDeleteImageInUse_DB(t *testing.T) {
 	newImage := func(t *testing.T) string {
 		t.Helper()
 		id := uuid.NewString()
-		if _, err := database.DB.Exec(ctx,
+		if _, err := testPool.Exec(ctx,
 			`INSERT INTO images (id, name, project_id, status, visibility) VALUES ($1,'inuse',$2,'active','private')`,
 			id, seededProjectID); err != nil {
 			t.Fatalf("insert image: %v", err)
 		}
-		t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM images WHERE id=$1", id) })
+		t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM images WHERE id=$1", id) })
 		return id
 	}
 
 	t.Run("pinned by an instance", func(t *testing.T) {
 		imgID := newImage(t)
 		instID := uuid.NewString()
-		if _, err := database.DB.Exec(ctx,
+		if _, err := testPool.Exec(ctx,
 			`INSERT INTO instances (id, name, project_id, image_id, status) VALUES ($1,'pin-inst',$2,$3,'ACTIVE')`,
 			instID, seededProjectID, imgID); err != nil {
 			t.Fatalf("insert instance: %v", err)
 		}
-		t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM instances WHERE id=$1", instID) })
+		t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM instances WHERE id=$1", instID) })
 
 		if code, body := doReq(r, http.MethodDelete, "/images/"+imgID, owner); code != http.StatusConflict {
 			t.Errorf("delete image booted by an instance: code=%d body=%s; want 409", code, body)
@@ -216,12 +222,12 @@ func TestDeleteImageInUse_DB(t *testing.T) {
 	t.Run("pinned by a volume clone", func(t *testing.T) {
 		imgID := newImage(t)
 		volID := uuid.NewString()
-		if _, err := database.DB.Exec(ctx,
+		if _, err := testPool.Exec(ctx,
 			`INSERT INTO volumes (id, name, project_id, size_gb, status, source_image_id) VALUES ($1,'pin-vol',$2,1,'available',$3)`,
 			volID, seededProjectID, imgID); err != nil {
 			t.Fatalf("insert volume: %v", err)
 		}
-		t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM volumes WHERE id=$1", volID) })
+		t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM volumes WHERE id=$1", volID) })
 
 		if code, body := doReq(r, http.MethodDelete, "/images/"+imgID, owner); code != http.StatusConflict {
 			t.Errorf("delete image cloned to a volume: code=%d body=%s; want 409", code, body)
@@ -256,13 +262,13 @@ func TestCreateImagePublicRetainsOwner_DB(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &created); err != nil {
 		t.Fatalf("decode create response: %v (body=%s)", err, body)
 	}
-	t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM images WHERE id=$1", created.ID) })
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM images WHERE id=$1", created.ID) })
 	if created.Visibility != "public" {
 		t.Fatalf("created visibility=%q; want public", created.Visibility)
 	}
 
 	var owner sql.NullString
-	if err := database.DB.QueryRow(ctx, "SELECT project_id FROM images WHERE id=$1", created.ID).Scan(&owner); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT project_id FROM images WHERE id=$1", created.ID).Scan(&owner); err != nil {
 		t.Fatalf("read back owner: %v", err)
 	}
 	if !owner.Valid || owner.String != seededProjectID {

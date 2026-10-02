@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
@@ -50,41 +49,41 @@ func seedS3DisabledIdentity(t *testing.T) (access, secret string) {
 		t.Fatalf("marshal ec2 blob: %v", err)
 	}
 
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO users (id, name, password_hash, enabled, domain_id)
 		VALUES ($1, 'spec007-s3disabled', 'not-a-hash', true, $2)
 		ON CONFLICT (id) DO NOTHING`, s3DisabledUserID, defaultDomainID); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO projects (id, name, description, enabled, domain_id)
 		VALUES ($1, 'spec007-s3disabled-project', 's3tokens disabled-identity test fixture', true, $2)
 		ON CONFLICT (id) DO NOTHING`, s3DisabledProjectID, defaultDomainID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO role_assignments (user_id, project_id, role_id)
 		VALUES ($1, $2, $3)
 		ON CONFLICT DO NOTHING`, s3DisabledUserID, s3DisabledProjectID, rgwCompatMemberRoleID); err != nil {
 		t.Fatalf("seed role assignment: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO credentials (user_id, project_id, type, blob, access_key)
 		VALUES ($1, $2, 'ec2', $3, $4)`, s3DisabledUserID, s3DisabledProjectID, string(blob), access); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
 
 	t.Cleanup(func() {
-		if _, err := database.DB.Exec(ctx, "DELETE FROM credentials WHERE user_id = $1", s3DisabledUserID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM credentials WHERE user_id = $1", s3DisabledUserID); err != nil {
 			t.Errorf("cleanup credential: %v", err)
 		}
-		if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE user_id = $1", s3DisabledUserID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM role_assignments WHERE user_id = $1", s3DisabledUserID); err != nil {
 			t.Errorf("cleanup role assignments: %v", err)
 		}
-		if _, err := database.DB.Exec(ctx, "DELETE FROM users WHERE id = $1", s3DisabledUserID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM users WHERE id = $1", s3DisabledUserID); err != nil {
 			t.Errorf("cleanup user: %v", err)
 		}
-		if _, err := database.DB.Exec(ctx, "DELETE FROM projects WHERE id = $1", s3DisabledProjectID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM projects WHERE id = $1", s3DisabledProjectID); err != nil {
 			t.Errorf("cleanup project: %v", err)
 		}
 	})
@@ -145,7 +144,7 @@ func TestS3TokensDisabledUserDenied(t *testing.T) {
 		t.Fatalf("enabled control: status = %d body=%s, want 200", w.Code, w.Body.String())
 	}
 
-	if _, err := database.DB.Exec(context.Background(),
+	if _, err := testPool.Exec(context.Background(),
 		"UPDATE users SET enabled = false WHERE id = $1", s3DisabledUserID); err != nil {
 		t.Fatalf("disable user: %v", err)
 	}
@@ -163,7 +162,7 @@ func TestS3TokensDisabledProjectDenied(t *testing.T) {
 		t.Fatalf("enabled control: status = %d body=%s, want 200", w.Code, w.Body.String())
 	}
 
-	if _, err := database.DB.Exec(context.Background(),
+	if _, err := testPool.Exec(context.Background(),
 		"UPDATE projects SET enabled = false WHERE id = $1", s3DisabledProjectID); err != nil {
 		t.Fatalf("disable project: %v", err)
 	}
@@ -185,7 +184,7 @@ func TestRenderS3TokenMissingIdentityDenied(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v3/s3tokens", nil)
-			NewService(nil, nil).renderS3Token(c, tc.user, tc.project)
+			NewService(testPool, nil, nil).renderS3Token(c, tc.user, tc.project)
 			assertMaskedS3Denial(t, w)
 		})
 	}

@@ -7,13 +7,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // NodeRegistry manages compute node registration and heartbeats
 type NodeRegistry struct {
+	pool              *pgxpool.Pool
 	nodeID            string
 	hostname          string
 	tunnelIP          string
@@ -23,7 +24,7 @@ type NodeRegistry struct {
 }
 
 // NewNodeRegistry creates a new node registry
-func NewNodeRegistry(nodeID, tunnelIP string, heartbeatInterval time.Duration) (*NodeRegistry, error) {
+func NewNodeRegistry(pool *pgxpool.Pool, nodeID, tunnelIP string, heartbeatInterval time.Duration) (*NodeRegistry, error) {
 	// Auto-generate node ID if not provided
 	if nodeID == "" || nodeID == "auto" {
 		nodeID = uuid.New().String()
@@ -49,6 +50,7 @@ func NewNodeRegistry(nodeID, tunnelIP string, heartbeatInterval time.Duration) (
 	}
 
 	return &NodeRegistry{
+		pool:              pool,
 		nodeID:            nodeID,
 		hostname:          hostname,
 		tunnelIP:          tunnelIP,
@@ -63,7 +65,7 @@ func (nr *NodeRegistry) RegisterNode(ctx context.Context) error {
 	now := time.Now()
 
 	// Upsert node registration
-	_, err := database.DB.Exec(ctx, `
+	_, err := nr.pool.Exec(ctx, `
 		INSERT INTO compute_nodes (id, hostname, tunnel_ip, status, last_heartbeat, created_at, updated_at)
 		VALUES ($1, $2, $3, 'active', $4, $5, $6)
 		ON CONFLICT (hostname)
@@ -103,7 +105,7 @@ func (nr *NodeRegistry) StartHeartbeat(ctx context.Context) {
 
 // sendHeartbeat updates the last_heartbeat timestamp
 func (nr *NodeRegistry) sendHeartbeat(ctx context.Context) error {
-	_, err := database.DB.Exec(ctx, `
+	_, err := nr.pool.Exec(ctx, `
 		UPDATE compute_nodes
 		SET last_heartbeat = $1, updated_at = $1
 		WHERE hostname = $2
@@ -122,7 +124,7 @@ func (nr *NodeRegistry) StopHeartbeat() {
 func (nr *NodeRegistry) ListActiveNodes(ctx context.Context) ([]ComputeNode, error) {
 	threshold := time.Now().Add(-2 * nr.heartbeatInterval)
 
-	rows, err := database.DB.Query(ctx, `
+	rows, err := nr.pool.Query(ctx, `
 		SELECT id, hostname, tunnel_ip, status, last_heartbeat, created_at
 		FROM compute_nodes
 		WHERE last_heartbeat > $1 AND status = 'active'

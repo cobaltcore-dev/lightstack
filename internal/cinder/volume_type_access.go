@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -36,7 +35,7 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 
 		// Verify volume type exists and is private
 		var isPublic bool
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT is_public FROM volume_types WHERE id = $1",
 			typeID,
 		).Scan(&isPublic)
@@ -52,7 +51,7 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 		}
 
 		// Add access
-		_, err = database.DB.Exec(c.Request.Context(), `
+		_, err = svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO volume_type_access (volume_type_id, project_id, created_at)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (volume_type_id, project_id) DO NOTHING
@@ -82,7 +81,7 @@ func (svc *Service) VolumeTypeAction(c *gin.Context) {
 		}
 
 		// Remove access
-		result, err := database.DB.Exec(c.Request.Context(),
+		result, err := svc.pool.Exec(c.Request.Context(),
 			"DELETE FROM volume_type_access WHERE volume_type_id = $1 AND project_id = $2",
 			typeID, projectID,
 		)
@@ -111,7 +110,7 @@ func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 
 	// Verify volume type exists and is private
 	var isPublic bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT is_public FROM volume_types WHERE id = $1",
 		typeID,
 	).Scan(&isPublic)
@@ -128,7 +127,7 @@ func (svc *Service) ListVolumeTypeAccess(c *gin.Context) {
 	}
 
 	// Get access list
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT volume_type_id, project_id
 		FROM volume_type_access
 		WHERE volume_type_id = $1

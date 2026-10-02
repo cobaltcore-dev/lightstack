@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -30,12 +29,12 @@ func foreignSecurityGroup(t *testing.T) (string, string) {
 	other := createTestProject(t, "spec020-sgrule-authz-owner")
 
 	sgID, ruleID := uuid.NewString(), uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO security_groups (id, name, project_id, description) VALUES ($1, $2, $3, '')`,
 		sgID, "foreign-sg-"+sgID[:8], other); err != nil {
 		t.Fatalf("seed foreign security group: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO security_group_rules (id, security_group_id, direction, ethertype, protocol,
 		                                   port_range_min, port_range_max, remote_ip_prefix, created_at)
 		 VALUES ($1, $2, 'ingress', 'IPv4', 'tcp', 22, 22, '10.9.0.0/16', NOW())`,
@@ -43,8 +42,8 @@ func foreignSecurityGroup(t *testing.T) (string, string) {
 		t.Fatalf("seed foreign rule: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, `DELETE FROM security_group_rules WHERE id = $1`, ruleID) //nolint:errcheck // best-effort cleanup
-		database.DB.Exec(ctx, `DELETE FROM security_groups WHERE id = $1`, sgID)        //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, `DELETE FROM security_group_rules WHERE id = $1`, ruleID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(ctx, `DELETE FROM security_groups WHERE id = $1`, sgID)        //nolint:errcheck // best-effort cleanup
 	})
 	return sgID, ruleID
 }
@@ -66,7 +65,7 @@ func TestCreateSecurityGroupRule_RejectsForeignGroup(t *testing.T) {
 
 	// And nothing may have been written to the foreign group.
 	var n int
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM security_group_rules WHERE security_group_id = $1 AND port_range_min = 80`,
 		foreignSG).Scan(&n); err != nil {
 		t.Fatalf("count foreign rules: %v", err)
@@ -96,7 +95,7 @@ func TestCreateSecurityGroupRule_AllowsOwnGroup(t *testing.T) {
 		t.Fatalf("parse created rule: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(context.Background(), //nolint:errcheck // best-effort cleanup
+		testPool.Exec(context.Background(), //nolint:errcheck // best-effort cleanup
 			`DELETE FROM security_group_rules WHERE id = $1`, created.Rule.ID)
 	})
 }
@@ -128,7 +127,7 @@ func TestDeleteSecurityGroupRule_RejectsForeignRule(t *testing.T) {
 	}
 
 	var alive bool
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM security_group_rules WHERE id = $1)`, foreignRule).Scan(&alive); err != nil {
 		t.Fatalf("check rule survival: %v", err)
 	}
@@ -196,7 +195,7 @@ func TestCreateSecurityGroupRule_RemoteGroupMustBeCallers(t *testing.T) {
 		}
 	}
 	var stored int
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM security_group_rules WHERE security_group_id = $1 AND port_range_min = 2201`,
 		ownSG).Scan(&stored); err != nil {
 		t.Fatalf("count rules: %v", err)
@@ -217,7 +216,7 @@ func TestCreateSecurityGroupRule_RemoteGroupMustBeCallers(t *testing.T) {
 		t.Fatalf("parse created rule: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(context.Background(), //nolint:errcheck // best-effort cleanup
+		testPool.Exec(context.Background(), //nolint:errcheck // best-effort cleanup
 			`DELETE FROM security_group_rules WHERE id = $1`, created.Rule.ID)
 	})
 }

@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // SPEC-020 (cloud-storage#533) — server create must resolve `security_groups[].name`
@@ -25,7 +23,7 @@ import (
 func seededSecurityGroupID(t *testing.T) string {
 	t.Helper()
 	var id string
-	if err := database.DB.QueryRow(t.Context(),
+	if err := testPool.QueryRow(t.Context(),
 		"SELECT id FROM security_groups WHERE name = 'default' AND project_id = $1",
 		seededProjectID,
 	).Scan(&id); err != nil {
@@ -71,7 +69,7 @@ func TestCreateServerResolvesSecurityGroupByIDOrName(t *testing.T) {
 			// context.Background(), not t.Context(): the test context is already
 			// cancelled by the time cleanups run, so the DELETE would never execute.
 			t.Cleanup(func() {
-				if _, err := database.DB.Exec(context.Background(), "DELETE FROM instances WHERE id = $1", id); err != nil {
+				if _, err := testPool.Exec(context.Background(), "DELETE FROM instances WHERE id = $1", id); err != nil {
 					t.Logf("cleanup instance %s: %v", id, err)
 				}
 			})
@@ -79,7 +77,7 @@ func TestCreateServerResolvesSecurityGroupByIDOrName(t *testing.T) {
 			// The association must point at the real group either way — accepting the
 			// reference is not enough if it silently attaches nothing.
 			var attached string
-			if err := database.DB.QueryRow(t.Context(),
+			if err := testPool.QueryRow(t.Context(),
 				"SELECT security_group_id::text FROM server_security_groups WHERE server_id = $1",
 				id,
 			).Scan(&attached); err != nil {

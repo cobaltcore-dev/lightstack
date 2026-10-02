@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // patchJSON issues an authenticated PATCH and returns the status and decoded body.
@@ -42,11 +40,11 @@ func TestUpdateProjectPartialPatchEchoesUntouchedFields(t *testing.T) {
 
 	const id = "00000000-0000-0000-0000-0000000b5150"
 	t.Cleanup(func() {
-		if _, err := database.DB.Exec(ctx, "DELETE FROM projects WHERE id = $1", id); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM projects WHERE id = $1", id); err != nil {
 			t.Errorf("cleanup project %s: %v", id, err)
 		}
 	})
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, description, domain_id, enabled)
 		 VALUES ($1, 'b515-readback', 'seeded description', $2, false)
 		 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description,
@@ -79,7 +77,7 @@ func TestUpdateProjectPartialPatchEchoesUntouchedFields(t *testing.T) {
 
 	// The rename must be durable, not just reflected in the response.
 	var persisted string
-	if err := database.DB.QueryRow(ctx, "SELECT name FROM projects WHERE id = $1", id).Scan(&persisted); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT name FROM projects WHERE id = $1", id).Scan(&persisted); err != nil {
 		t.Fatalf("read back project name: %v", err)
 	}
 	if persisted != "b515-renamed" {
@@ -96,11 +94,11 @@ func TestUpdateRolePatchReturnsUpdatedName(t *testing.T) {
 
 	const id = "00000000-0000-0000-0000-0000000b5151"
 	t.Cleanup(func() {
-		if _, err := database.DB.Exec(ctx, "DELETE FROM roles WHERE id = $1", id); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM roles WHERE id = $1", id); err != nil {
 			t.Errorf("cleanup role %s: %v", id, err)
 		}
 	})
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO roles (id, name) VALUES ($1, 'b515-role')
 		 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`, id); err != nil {
 		t.Fatalf("seed role: %v", err)
@@ -120,7 +118,7 @@ func TestUpdateRolePatchReturnsUpdatedName(t *testing.T) {
 	}
 
 	var persisted string
-	if err := database.DB.QueryRow(ctx, "SELECT name FROM roles WHERE id = $1", id).Scan(&persisted); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT name FROM roles WHERE id = $1", id).Scan(&persisted); err != nil {
 		t.Fatalf("read back role name: %v", err)
 	}
 	if persisted != "b515-role-renamed" {

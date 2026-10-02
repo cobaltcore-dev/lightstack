@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -114,7 +113,7 @@ func (svc *Service) CreateEC2Credential(c *gin.Context) {
 	// any valid input encoding.
 	projectID = parsedTenantID.String()
 	var projectExists bool
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)", projectID).Scan(&projectExists); err != nil {
 		log.Error().Err(err).Str("operation", "create_ec2_credential").Msg("project existence check failed")
 		common.SendError(c, common.NewInternalServerError("failed to create EC2 credential"))
@@ -138,7 +137,7 @@ func (svc *Service) CreateEC2Credential(c *gin.Context) {
 	}
 
 	blob, _ := json.Marshal(ec2Blob{Access: access, Secret: secret, UserID: userID, TenantID: projectID})
-	if _, err := database.DB.Exec(c.Request.Context(), `
+	if _, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO credentials (id, user_id, project_id, type, blob, access_key, created_at, updated_at)
 		VALUES ($1, $2, $3, 'ec2', $4, $5, $6, $6)
 	`, uuid.New(), userID, projectID, string(blob), access, time.Now()); err != nil {
@@ -157,7 +156,7 @@ func (svc *Service) ListEC2Credentials(c *gin.Context) {
 	if denyIfNotSelfOrAdmin(c, userID) {
 		return
 	}
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		`SELECT project_id, blob FROM credentials WHERE user_id = $1 AND type = 'ec2' ORDER BY created_at DESC`, userID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_ec2_credentials").Msg("failed to list EC2 credentials")
@@ -204,7 +203,7 @@ func (svc *Service) GetEC2Credential(c *gin.Context) {
 
 	var projectID *string
 	var blob string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		`SELECT project_id, blob FROM credentials WHERE user_id = $1 AND access_key = $2 AND type = 'ec2'`,
 		userID, access).Scan(&projectID, &blob)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -235,7 +234,7 @@ func (svc *Service) DeleteEC2Credential(c *gin.Context) {
 		return
 	}
 
-	res, err := database.DB.Exec(c.Request.Context(),
+	res, err := svc.pool.Exec(c.Request.Context(),
 		`DELETE FROM credentials WHERE user_id = $1 AND access_key = $2 AND type = 'ec2'`, userID, access)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_ec2_credential").Msg("failed to delete EC2 credential")

@@ -18,8 +18,9 @@ import (
 // ResolveProjectRef and is covered end-to-end per service by
 // {Nova,Neutron}QuotaTargetMustExist / QuotaTargetResolvesRealProject and cinder's
 // TestQuotaTargetMustExist. Reaching the DB here would make this a DB-gated test for
-// no extra coverage, so it deliberately asserts only the no-DB branches. Any case that
-// did reach the database would panic on the nil pool rather than pass quietly.
+// no extra coverage, so it deliberately asserts only the no-DB branches. Every case
+// passes a nil pool, so one that did reach the database would panic on the nil pool it
+// is given rather than pass quietly.
 func TestQuotaTargetProject_ScopesWithoutTouchingTheDatabase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -84,7 +85,7 @@ func TestQuotaTargetProject_ScopesWithoutTouchingTheDatabase(t *testing.T) {
 				c.Params = gin.Params{{Key: "id", Value: tc.param}}
 			}
 
-			gotID, gotErr := QuotaTargetProject(c)
+			gotID, gotErr := QuotaTargetProject(c, nil)
 			switch {
 			case tc.wantStatus == 0 && (gotErr != nil || gotID != tc.wantID):
 				t.Errorf("QuotaTargetProject() = (%q, %v), want (%q, nil) — %s", gotID, gotErr, tc.wantID, tc.wantWhy)
@@ -124,7 +125,7 @@ func TestQuotaTargetProject_RejectsUnscopedToken(t *testing.T) {
 				c.Params = gin.Params{{Key: "id", Value: tc.param}}
 			}
 
-			if gotID, gotErr := QuotaTargetProject(c); gotErr == nil || gotErr.StatusCode != http.StatusNotFound {
+			if gotID, gotErr := QuotaTargetProject(c, nil); gotErr == nil || gotErr.StatusCode != http.StatusNotFound {
 				t.Errorf("QuotaTargetProject() = (%q, %v); want a 404 for an unscoped token "+
 					"(an empty project id reaches a uuid column and 500s)", gotID, gotErr)
 			}

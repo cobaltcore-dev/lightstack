@@ -178,7 +178,7 @@ func TestReadyzHandler_VerboseNotReady(t *testing.T) {
 func TestDatabaseCheck_Name(t *testing.T) {
 	// The Probe closure needs a live DB (covered by integration), but the
 	// constructor and its name are free to assert here.
-	if got := DatabaseCheck().Name; got != "database" {
-		t.Fatalf("DatabaseCheck().Name = %q, want database", got)
+	if got := DatabaseCheck(nil).Name; got != "database" {
+		t.Fatalf("DatabaseCheck(nil).Name = %q, want database", got)
 	}
 }
