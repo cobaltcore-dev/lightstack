@@ -1,5 +1,5 @@
 # Multi-stage build for Lightstack - Multi-architecture support
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.24 AS builder
 
 # Build arguments for cross-compilation
 ARG TARGETOS
@@ -79,6 +79,16 @@ EXPOSE 35357 8774 9696 8776 9292 8775
 # Health check (use internal port 35357)
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:35357/v3 || exit 1
+
+ARG VCS_REF=unknown
+ARG SOURCE_URL=https://github.com/cobaltcore-dev/lightstack
+ARG VERSION=dev
+
+LABEL org.opencontainers.image.title="Lightstack" \
+    org.opencontainers.image.description="Lightweight OpenStack-compatible API service" \
+    org.opencontainers.image.source=$SOURCE_URL \
+    org.opencontainers.image.revision=$VCS_REF \
+    org.opencontainers.image.version=$VERSION
 
 # Run migrations and start Lightstack
 CMD ["/bin/sh", "-c", "/app/lightstack-migrate up && /app/lightstack --config /app/config/lightstack.yaml"]

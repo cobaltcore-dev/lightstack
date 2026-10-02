@@ -1,10 +1,12 @@
-.PHONY: build run test chart-test test-endpoint-migration test-compose-identity clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check
+.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check
 
 # Build variables
 BINARY_NAME=lightstack
 BUILD_DIR=bin
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
+TOOLS_BIN_DIR=$(CURDIR)/.tools/bin
+GOLANGCI_LINT=$(TOOLS_BIN_DIR)/golangci-lint
 
 # Database variables
 POSTGRES_VERSION?=18
@@ -39,6 +41,7 @@ install-deps:
 	@echo "Installing dependencies..."
 	go mod download
 	go mod tidy
+	cd tools && go mod download
 
 # Run tests
 test:
@@ -204,13 +207,17 @@ fmt:
 	@echo "Formatting code..."
 	go fmt ./...
 
-# Lint code (golangci-lint is pinned via the `tool` directive in go.mod)
-lint:
+# Lint code (golangci-lint is pinned in the isolated tools module)
+lint: $(GOLANGCI_LINT)
 	@echo "Linting code..."
-	go tool golangci-lint run ./...
+	$(GOLANGCI_LINT) run ./...
+
+$(GOLANGCI_LINT): tools/go.mod tools/go.sum
+	@mkdir -p $(TOOLS_BIN_DIR)
+	cd tools && go build -o $(GOLANGCI_LINT) github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 
 # Install development tools (Go tools + Helm + the helm-unittest plugin for chart tests)
-install-tools:
+install-tools: $(GOLANGCI_LINT)
 	@echo "Installing development tools..."
 	go install github.com/air-verse/air@latest
 	go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest

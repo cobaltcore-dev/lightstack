@@ -1,0 +1,110 @@
+name: Security and SBOM
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Runtime Vulnerabilities and SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.8'
+          cache: true
+
+      - name: Scan Go code and pinned development tool
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          vulncheck="$(go env GOPATH)/bin/govulncheck"
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "${vulncheck}" ./cmd/... ./internal/... ./pkg/...
+          (
+            cd tools
+            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 "${vulncheck}" github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+          )
+
+      - name: Build release image
+        run: |
+          docker build \
+            --file build/package/Dockerfile \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg SOURCE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --build-arg VERSION="${GITHUB_REF_NAME}" \
+            --tag lightstack:sbom \
+            .
+          docker image inspect lightstack:sbom --format '{{.Id}}' | tee lightstack-image-id.txt
+          test "$(docker image inspect lightstack:sbom --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${GITHUB_SHA}"
+
+      - name: Generate runtime SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: lightstack:sbom
+          format: spdx-json
+          output-file: lightstack.spdx.json
+          upload-artifact: false
+
+      - name: Verify SBOM covers compiled Go modules
+        run: |
+          container_id=$(docker create lightstack:sbom)
+          trap 'docker rm -f "${container_id}" >/dev/null' EXIT
+
+          : > /tmp/binary-modules.txt
+          for binary in lightstack lightstack-migrate; do
+            docker cp "${container_id}:/app/${binary}" "/tmp/${binary}"
+            go version -m "/tmp/${binary}" \
+              | awk '$1 == "dep" { print $2 "@" $3 }' \
+              >> /tmp/binary-modules.txt
+          done
+          sort -u -o /tmp/binary-modules.txt /tmp/binary-modules.txt
+          jq -r '
+            .packages[]
+            | select(any(.externalRefs[]?;
+                .referenceType == "purl" and
+                (.referenceLocator | startswith("pkg:golang/"))))
+            | select(.versionInfo != null and .versionInfo != "")
+            | .name + "@" + .versionInfo
+          ' lightstack.spdx.json | sort -u > /tmp/sbom-modules.txt
+
+          comm -23 /tmp/binary-modules.txt /tmp/sbom-modules.txt > /tmp/missing-modules.txt
+          if [ -s /tmp/missing-modules.txt ]; then
+            echo "The runtime SBOM is missing compiled Go modules:"
+            cat /tmp/missing-modules.txt
+            exit 1
+          fi
+
+      - name: Scan final image for fixable High and Critical vulnerabilities
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: lightstack:sbom
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: json
+          output-file: grype-results.json
+
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lightstack-security-evidence
+          path: |
+            lightstack.spdx.json
+            lightstack-image-id.txt
+            grype-results.json
+            docs/security/openvex.json
+          if-no-files-found: warn
+          retention-days: 30

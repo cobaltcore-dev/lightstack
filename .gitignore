@@ -18,6 +18,7 @@ coverage.txt
 
 # Dependency directories
 vendor/
+.tools/
 
 # Go workspace file
 go.work

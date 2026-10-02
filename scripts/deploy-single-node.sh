@@ -472,22 +472,32 @@ clone_lightstack() {
 build_lightstack() {
     log_info "Building Lightstack binary..."
 
-    # Install Go if not present
-    if ! command -v go &> /dev/null; then
-        log_info "Installing Go 1.26.1..."
+    # Use the same patched toolchain as CI and the release image.
+    local go_version="1.26.8"
+    local go_sha256="d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b"
+    local installed_go=""
+    if command -v go &> /dev/null; then
+        installed_go=$(go env GOVERSION 2>/dev/null || true)
+    fi
+    if [ "$installed_go" != "go${go_version}" ]; then
+        log_info "Installing Go ${go_version}..."
         log_info "Downloading Go (this may take a few minutes)..."
-        wget --progress=bar:force https://go.dev/dl/go1.26.1.linux-amd64.tar.gz -O /tmp/go.tar.gz 2>&1 | \
+        wget --progress=bar:force "https://go.dev/dl/go${go_version}.linux-amd64.tar.gz" -O /tmp/go.tar.gz 2>&1 | \
             grep --line-buffered "%" | sed -u 's/.*\([0-9]\+%\).*$/\1/' | \
-            while read line; do echo -ne "\r  Progress: $line"; done
+            while IFS= read -r line; do echo -ne "\r  Progress: $line"; done
         echo ""
+        echo "${go_sha256}  /tmp/go.tar.gz" | sha256sum --check --status || {
+            log_error "Go archive checksum verification failed"
+            exit 1
+        }
 
         log_info "Extracting Go..."
         rm -rf /usr/local/go
         tar -C /usr/local -xzf /tmp/go.tar.gz
         rm /tmp/go.tar.gz
-        export PATH=$PATH:/usr/local/go/bin
-        echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
-        log_success "Go 1.26.1 installed"
+        export PATH=/usr/local/go/bin:$PATH
+        echo 'export PATH=/usr/local/go/bin:$PATH' >> /etc/profile
+        log_success "Go ${go_version} installed"
     fi
 
     log_info "Building Lightstack binary (this may take 2-3 minutes)..."

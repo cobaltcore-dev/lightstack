@@ -76,7 +76,7 @@ The Dockerfile uses Docker's built-in multi-architecture support:
 
 ```dockerfile
 # Builder stage - runs on native architecture
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine3.24 AS builder
 
 # Build arguments automatically set by Docker
 ARG TARGETOS      # Target OS (linux)
@@ -87,7 +87,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-w -s" -o lightstack ./cmd/lightstack
 
 # Runtime stage - uses target architecture
-FROM alpine:3.19
+FROM alpine:3.24
 COPY --from=builder /build/lightstack /app/lightstack
 ```
 
