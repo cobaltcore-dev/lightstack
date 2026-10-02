@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // testDBAvailable is true when LIGHTSTACK_TEST_DB_URL is set and the schema migrated;
@@ -19,13 +20,18 @@ import (
 // (research.md D9): CI's unit-tests job must export LIGHTSTACK_TEST_DB_URL or these skip.
 var testDBAvailable bool
 
+// testPool is this package's test pool: opened by TestMain when LIGHTSTACK_TEST_DB_URL
+// is set, and handed to the services the tests construct (SPEC-027).
+var testPool *pgxpool.Pool
+
 func TestMain(m *testing.M) {
 	// Skip DB-backed tests only when no test DB is configured. When LIGHTSTACK_TEST_DB_URL
 	// IS set, a connect/migrate failure is fatal — never a silent skip — so a broken
 	// Postgres in CI fails the job instead of quietly hiding the DB-backed tests.
 	if dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL"); dbURL != "" {
 		ctx := context.Background()
-		if err := database.Connect(ctx, dbURL, &database.PoolConfig{
+		var err error
+		if testPool, err = database.Connect(ctx, dbURL, &database.PoolConfig{
 			MaxConns:          5,
 			MinConns:          1,
 			MaxConnLifetime:   time.Hour,
@@ -37,14 +43,14 @@ func TestMain(m *testing.M) {
 		}
 		if err := database.MigrateUp(dbURL, "../../migrations"); err != nil {
 			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but migrations failed: %v\n", err)
-			database.Close()
+			testPool.Close()
 			os.Exit(1)
 		}
 		testDBAvailable = true
 	}
 	code := m.Run()
 	if testDBAvailable {
-		database.Close()
+		testPool.Close()
 	}
 	os.Exit(code)
 }

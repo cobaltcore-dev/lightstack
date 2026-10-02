@@ -82,7 +82,7 @@ func TestHardcodedCatalogScheme(t *testing.T) {
 func TestBuildServiceCatalogScheme(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "https")
-	cat := BuildServiceCatalog("proj1", nil, "")
+	cat := BuildServiceCatalog(testPool, "proj1", nil, "")
 	if len(cat) == 0 {
 		t.Fatal("empty catalog")
 	}
@@ -106,7 +106,7 @@ func TestBuildServiceCatalogS3EndpointFromConfig(t *testing.T) {
 	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // Helm-style: value comes from config, not env
 
 	var got string
-	for _, e := range BuildServiceCatalog("proj-s3", nil, rgw) { // nil cache => fresh; rgw = cfg value
+	for _, e := range BuildServiceCatalog(testPool, "proj-s3", nil, rgw) { // nil cache => fresh; rgw = cfg value
 		if e.Type != "s3" {
 			continue
 		}
@@ -129,7 +129,7 @@ func TestBuildServiceCatalogOmitsS3WhenUnconfigured(t *testing.T) {
 	requireDB(t)
 	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // unconfigured deployment
 
-	cat := BuildServiceCatalog("proj-unconf", nil, "") // "" = cfg.Glance.S3Endpoint unset
+	cat := BuildServiceCatalog(testPool, "proj-unconf", nil, "") // "" = cfg.Glance.S3Endpoint unset
 	if len(cat) == 0 {
 		t.Fatal("empty catalog")
 	}

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -41,7 +40,7 @@ func (svc *Service) GetRemoteConsole(c *gin.Context) {
 	var libvirtDomainID sql.NullString
 	var vncPort int
 	var vncPassword string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id, console_vnc_port, console_vnc_password FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &vncPort, &vncPassword)
@@ -135,7 +134,7 @@ func (svc *Service) getVNCConsoleResponse(c *gin.Context, instanceID, projectID,
 	var libvirtDomainID sql.NullString
 	var vncPort int
 	var vncPassword string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id, console_vnc_port, console_vnc_password FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &vncPort, &vncPassword)
@@ -180,7 +179,7 @@ func (svc *Service) setupVNCConsole(ctx context.Context, instanceID, libvirtDoma
 	// In real mode, we could configure VNC on the libvirt domain
 
 	// Update database
-	_, err := database.DB.Exec(ctx, `
+	_, err := svc.pool.Exec(ctx, `
 		UPDATE instances
 		SET console_vnc_port = $1, console_vnc_password = $2, updated_at = $3
 		WHERE id = $4
@@ -228,7 +227,7 @@ func (svc *Service) GetConsoleOutputAction(c *gin.Context, consoleOutput any) {
 
 	// Verify instance exists
 	var id string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&id)
@@ -279,7 +278,7 @@ func (svc *Service) GetSerialConsoleAction(c *gin.Context, serialConsole any) {
 
 	// Verify instance exists
 	var id string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&id)
@@ -316,7 +315,7 @@ func (svc *Service) GetSPICEConsoleAction(c *gin.Context, spiceConsole any) {
 
 	// Verify instance exists
 	var id string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&id)
@@ -353,7 +352,7 @@ func (svc *Service) GetRDPConsoleAction(c *gin.Context, rdpConsole any) {
 
 	// Verify instance exists
 	var id string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&id)

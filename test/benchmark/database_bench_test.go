@@ -21,17 +21,17 @@ func BenchmarkDatabaseQuery(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
-	defer database.Close()
+	defer pool.Close()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			var count int
-			database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM flavors").Scan(&count)
+			pool.QueryRow(ctx, "SELECT COUNT(*) FROM flavors").Scan(&count)
 		}
 	})
 }
@@ -48,17 +48,17 @@ func BenchmarkDatabaseQueryRow(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
-	defer database.Close()
+	defer pool.Close()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			var id, name string
-			database.DB.QueryRow(ctx,
+			pool.QueryRow(ctx,
 				"SELECT id, name FROM flavors LIMIT 1",
 			).Scan(&id, &name)
 		}
@@ -77,16 +77,16 @@ func BenchmarkDatabaseJoinQuery(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
-	defer database.Close()
+	defer pool.Close()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			rows, _ := database.DB.Query(ctx, `
+			rows, _ := pool.Query(ctx, `
 				SELECT s.id, s.name, s.network_id, n.name as network_name
 				FROM subnets s
 				JOIN networks n ON s.network_id = n.id
@@ -111,18 +111,18 @@ func BenchmarkConnectionPoolUtilization(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
-	defer database.Close()
+	defer pool.Close()
 
 	b.Run("LowConcurrency", func(b *testing.B) {
 		b.SetParallelism(10) // 10 goroutines
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
 				var count int
-				database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM images").Scan(&count)
+				pool.QueryRow(ctx, "SELECT COUNT(*) FROM images").Scan(&count)
 			}
 		})
 	})
@@ -132,7 +132,7 @@ func BenchmarkConnectionPoolUtilization(b *testing.B) {
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
 				var count int
-				database.DB.QueryRow(ctx, "SELECT COUNT(*) FROM images").Scan(&count)
+				pool.QueryRow(ctx, "SELECT COUNT(*) FROM images").Scan(&count)
 			}
 		})
 	})
@@ -150,16 +150,16 @@ func BenchmarkDatabaseInsert(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
-	defer database.Close()
+	defer pool.Close()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Insert test flavor (will fail on duplicate, that's ok for benchmark)
-		database.DB.Exec(ctx, `
+		pool.Exec(ctx, `
 			INSERT INTO flavors (id, name, vcpus, ram_mb, disk_gb, is_public)
 			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (id) DO NOTHING

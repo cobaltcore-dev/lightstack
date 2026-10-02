@@ -4,6 +4,7 @@
 **Date**: 2026-04-20
 **Deciders**: Lightstack Core Team
 **Spec**: [SPEC-006](../specs/006-v070-foundation/README.md)
+**Implemented by**: [SPEC-027](../specs/027-database-pool-injection/spec.md). The process-wide handle is removed, every database-using service takes the pool first, and package-level helpers take it as a parameter.
 
 ## Context
 

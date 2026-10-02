@@ -17,11 +17,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // Service handles Cinder API endpoints
 type Service struct {
+	pool       *pgxpool.Pool
 	mode       string
 	cephPool   string
 	cephConf   string
@@ -32,9 +34,10 @@ type Service struct {
 }
 
 // NewService creates a new Cinder service
-func NewService(mode, cephPool, cephConf string) *Service {
+func NewService(pool *pgxpool.Pool, mode, cephPool, cephConf string) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
+		pool:       pool,
 		mode:       mode,
 		cephPool:   cephPool,
 		cephConf:   cephConf,
@@ -431,7 +434,7 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 	if volumeType == "" {
 		volumeType = defaultVolumeType
 	}
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO volumes (id, name, description, project_id, user_id, size_gb, status, bootable, source_image_id, rbd_pool, rbd_image, volume_type, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	`, volumeID, req.Volume.Name, req.Volume.Description, projectID, userID, req.Volume.Size, "available", bootable, sourceImageID, svc.cephPool, "volume-"+volumeID, volumeType, now, now)
@@ -482,7 +485,7 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT created_at FROM volumes WHERE id = $1 AND project_id = $2",
 			marker, projectID,
 		).Scan(&markerCreatedAt)
@@ -495,7 +498,7 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 
 	queryArgs = append(queryArgs, limit, offset)
 
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT id, name, size_gb
 		FROM volumes
 		WHERE project_id = $1%s
@@ -565,7 +568,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT created_at FROM volumes WHERE id = $1 AND project_id = $2",
 			marker, projectID,
 		).Scan(&markerCreatedAt)
@@ -578,7 +581,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 
 	queryArgs = append(queryArgs, limit, offset)
 
-	rows, err := database.DB.Query(c.Request.Context(), fmt.Sprintf(`
+	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT v.id, v.name, v.description, v.size_gb, v.status, v.bootable, v.attached_to_instance_id, v.user_id, v.volume_type, v.created_at, v.updated_at
 		FROM volumes v
 		WHERE v.project_id = $1%s
@@ -646,7 +649,7 @@ func (svc *Service) GetVolume(c *gin.Context) {
 	var createdAt, updatedAt time.Time
 
 	// Support lookup by ID or name
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, size_gb, status, bootable, attached_to_instance_id, user_id, volume_type, created_at, updated_at
 		FROM volumes
 		WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))
@@ -687,7 +690,7 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 
 	// Check if volume is attached (support lookup by ID or name)
 	var attachedTo sql.NullString
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT attached_to_instance_id FROM volumes WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))",
 		volumeID, projectID,
 	).Scan(&attachedTo)
@@ -715,7 +718,7 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 	// failed, deleting a volume that still had snapshots and orphaning their backing
 	// objects.
 	var snapshotCount int
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM snapshots WHERE volume_id = $1", volumeID,
 	).Scan(&snapshotCount); err != nil {
 		log.Error().Err(err).Str("operation", "delete_volume_snapshot_count").Str("volume_id", volumeID).Msg("failed to count volume snapshots")
@@ -735,7 +738,7 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM volumes WHERE id = $1 AND project_id = $2",
 		volumeID, projectID,
 	)
@@ -773,7 +776,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		}
 
 		// Update volume to attached status
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET attached_to_instance_id = $1, status = $2, updated_at = $3
 			WHERE id = $4 AND project_id = $5
@@ -792,7 +795,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 	// Handle detach action
 	if _, ok := req["os-detach"]; ok {
 		// Update volume to available status
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET attached_to_instance_id = NULL, status = $1, updated_at = $2
 			WHERE id = $3 AND project_id = $4
@@ -847,7 +850,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 		// Update volume size
 		var currentSize int
-		err := database.DB.QueryRow(c.Request.Context(), `
+		err := svc.pool.QueryRow(c.Request.Context(), `
 			SELECT size_gb FROM volumes WHERE id = $1 AND project_id = $2
 		`, volumeID, projectID).Scan(&currentSize)
 		if err != nil {
@@ -859,7 +862,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			return
 		}
 
-		_, err = database.DB.Exec(c.Request.Context(), `
+		_, err = svc.pool.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET size_gb = $1, updated_at = $2
 			WHERE id = $3 AND project_id = $4
@@ -890,7 +893,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 		// Get or create volume type
 		var typeID string
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT id FROM volume_types WHERE name = $1",
 			newType,
 		).Scan(&typeID)
@@ -898,7 +901,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Create new volume type if it doesn't exist
 			typeID = uuid.New().String()
-			_, err = database.DB.Exec(c.Request.Context(),
+			_, err = svc.pool.Exec(c.Request.Context(),
 				"INSERT INTO volume_types (id, name, description, is_public) VALUES ($1, $2, $3, $4)",
 				typeID, newType, "Auto-created volume type", true,
 			)
@@ -910,7 +913,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		}
 
 		// Update volume type
-		_, err = database.DB.Exec(c.Request.Context(), `
+		_, err = svc.pool.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET volume_type = $1, updated_at = $2
 			WHERE id = $3 AND project_id = $4
@@ -947,7 +950,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 		// Update volume readonly flag (stored in metadata or separate field)
 		// For now, update in volume_metadata table
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO volume_metadata (volume_id, meta_key, meta_value)
 			VALUES ($1, 'readonly', $2)
 			ON CONFLICT (volume_id, meta_key) DO UPDATE SET meta_value = EXCLUDED.meta_value
@@ -979,7 +982,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		// Store image metadata to make volume bootable
 		for key, value := range metadata {
 			valueStr := fmt.Sprintf("%v", value)
-			_, err := database.DB.Exec(c.Request.Context(), `
+			_, err := svc.pool.Exec(c.Request.Context(), `
 				INSERT INTO volume_metadata (volume_id, meta_key, meta_value)
 				VALUES ($1, $2, $3)
 				ON CONFLICT (volume_id, meta_key) DO UPDATE SET meta_value = EXCLUDED.meta_value
@@ -1011,7 +1014,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 		// Delete metadata entry with prefixed key
 		metadataKey := "volume_image_" + key
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			DELETE FROM volume_metadata
 			WHERE volume_id = $1 AND meta_key = $2
 		`, volumeID, metadataKey)
@@ -1040,7 +1043,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		}
 
 		// Update volume to bootable and store image ID
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET bootable = true, updated_at = $1
 			WHERE id = $2 AND project_id = $3
@@ -1053,7 +1056,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		}
 
 		// Store image_id as metadata
-		_, err = database.DB.Exec(c.Request.Context(), `
+		_, err = svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO volume_metadata (volume_id, meta_key, meta_value, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (volume_id, meta_key)
@@ -1075,7 +1078,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		// Force detach volume from any server
 		// In stub mode, just mark as available
 		// In real mode, would force detach from hypervisor
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET status = $1, attached_to_instance_id = NULL, updated_at = $2
 			WHERE id = $3 AND project_id = $4
@@ -1111,7 +1114,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		}
 
 		// Admin operation to manually set volume status
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET status = $1, updated_at = $2
 			WHERE id = $3 AND project_id = $4
@@ -1156,7 +1159,7 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 	// Get volume info
 	var volumeID string
 	var size int
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, size_gb FROM volumes WHERE id = $1 AND project_id = $2",
 		req.Snapshot.VolumeID, projectID,
 	).Scan(&volumeID, &size)
@@ -1175,7 +1178,7 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO snapshots (id, name, description, volume_id, project_id, size_gb, status, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, snapshotID, req.Snapshot.Name, req.Snapshot.Description, volumeID, projectID, size, "creating", now)
@@ -1201,7 +1204,7 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 		}
 		ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
 		defer cancel()
-		if _, err := database.DB.Exec(ctx,
+		if _, err := svc.pool.Exec(ctx,
 			"UPDATE snapshots SET status = $1 WHERE id = $2",
 			"available", snapshotID); err != nil {
 			log.Error().Err(err).Str("snapshot_id", snapshotID).Msg("failed to update snapshot status to available")
@@ -1225,7 +1228,7 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 func (svc *Service) ListSnapshotsDetail(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, COALESCE(description, ''), volume_id, size_gb, status, created_at
 		FROM snapshots
 		WHERE project_id = $1
@@ -1291,7 +1294,7 @@ func (svc *Service) GetDefaultVolumeType(c *gin.Context) {
 func (svc *Service) ListSnapshots(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, COALESCE(description, ''), volume_id, size_gb, status, created_at
 		FROM snapshots
 		WHERE project_id = $1
@@ -1348,7 +1351,7 @@ func (svc *Service) GetSnapshot(c *gin.Context) {
 	var size int
 	var createdAt time.Time
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, COALESCE(description, ''), volume_id, size_gb, status, created_at
 		FROM snapshots
 		WHERE id = $1 AND project_id = $2
@@ -1384,7 +1387,7 @@ func (svc *Service) DeleteSnapshot(c *gin.Context) {
 
 	// Get volume ID
 	var volumeID string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT volume_id FROM snapshots WHERE id = $1 AND project_id = $2",
 		snapshotID, projectID,
 	).Scan(&volumeID)
@@ -1402,7 +1405,7 @@ func (svc *Service) DeleteSnapshot(c *gin.Context) {
 	}
 
 	// Delete from database
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM snapshots WHERE id = $1 AND project_id = $2",
 		snapshotID, projectID,
 	)
@@ -1419,7 +1422,7 @@ func (svc *Service) DeleteSnapshot(c *gin.Context) {
 
 // ListVolumeTypes lists all volume types
 func (svc *Service) ListVolumeTypes(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, description, is_public, created_at
 		FROM volume_types
 		ORDER BY name
@@ -1470,7 +1473,7 @@ func (svc *Service) GetVolumeType(c *gin.Context) {
 	var id, name, description string
 	var isPublic bool
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, COALESCE(description, ''), is_public
 		FROM volume_types
 		WHERE id = $1
@@ -1517,7 +1520,7 @@ func (svc *Service) UpdateVolume(c *gin.Context) {
 	var sizeGB int
 	var status string
 	var createdAt, updatedAt time.Time
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT name, COALESCE(description, ''), size_gb, status, created_at, updated_at FROM volumes WHERE id = $1 AND project_id = $2",
 		volumeID, projectID,
 	).Scan(&currentName, &currentDesc, &sizeGB, &status, &createdAt, &updatedAt)
@@ -1541,7 +1544,7 @@ func (svc *Service) UpdateVolume(c *gin.Context) {
 	}
 
 	now := time.Now()
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"UPDATE volumes SET name = $1, description = $2, updated_at = $3 WHERE id = $4",
 		currentName, currentDesc, now, volumeID,
 	)
@@ -1586,7 +1589,7 @@ func (svc *Service) UpdateSnapshot(c *gin.Context) {
 	var sizeGB int
 	var status string
 	var createdAt time.Time
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT name, COALESCE(description, ''), volume_id, size_gb, status, created_at FROM snapshots WHERE id = $1 AND project_id = $2",
 		snapshotID, projectID,
 	).Scan(&currentName, &currentDesc, &volumeID, &sizeGB, &status, &createdAt)
@@ -1609,7 +1612,7 @@ func (svc *Service) UpdateSnapshot(c *gin.Context) {
 		currentDesc = *req.Snapshot.Description
 	}
 
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"UPDATE snapshots SET name = $1, description = $2 WHERE id = $3",
 		currentName, currentDesc, snapshotID,
 	)
@@ -1639,7 +1642,7 @@ func (svc *Service) GetVolumeMetadata(c *gin.Context) {
 
 	// Check volume exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM volumes WHERE id = $1 AND project_id = $2)",
 		volumeID, projectID,
 	).Scan(&exists)
@@ -1649,7 +1652,7 @@ func (svc *Service) GetVolumeMetadata(c *gin.Context) {
 		return
 	}
 
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT meta_key, meta_value FROM volume_metadata WHERE volume_id = $1",
 		volumeID,
 	)
@@ -1693,7 +1696,7 @@ func (svc *Service) SetVolumeMetadata(c *gin.Context) {
 
 	// Check volume exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM volumes WHERE id = $1 AND project_id = $2)",
 		volumeID, projectID,
 	).Scan(&exists)
@@ -1704,7 +1707,7 @@ func (svc *Service) SetVolumeMetadata(c *gin.Context) {
 	}
 
 	// Delete existing metadata then insert new metadata atomically
-	if err = database.WithTx(c.Request.Context(), func(tx pgx.Tx) error {
+	if err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(c.Request.Context(),
 			"DELETE FROM volume_metadata WHERE volume_id = $1",
 			volumeID,
@@ -1737,7 +1740,7 @@ func (svc *Service) GetVolumeMetadataKey(c *gin.Context) {
 
 	// Check volume exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM volumes WHERE id = $1 AND project_id = $2)",
 		volumeID, projectID,
 	).Scan(&exists)
@@ -1748,7 +1751,7 @@ func (svc *Service) GetVolumeMetadataKey(c *gin.Context) {
 	}
 
 	var value string
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT meta_value FROM volume_metadata WHERE volume_id = $1 AND meta_key = $2",
 		volumeID, key,
 	).Scan(&value)
@@ -1788,7 +1791,7 @@ func (svc *Service) UpdateVolumeMetadataKey(c *gin.Context) {
 
 	// Check volume exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM volumes WHERE id = $1 AND project_id = $2)",
 		volumeID, projectID,
 	).Scan(&exists)
@@ -1799,7 +1802,7 @@ func (svc *Service) UpdateVolumeMetadataKey(c *gin.Context) {
 	}
 
 	// Upsert metadata
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO volume_metadata (volume_id, meta_key, meta_value, updated_at)
 		VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
 		ON CONFLICT (volume_id, meta_key)
@@ -1823,7 +1826,7 @@ func (svc *Service) DeleteVolumeMetadataKey(c *gin.Context) {
 
 	// Check volume exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM volumes WHERE id = $1 AND project_id = $2)",
 		volumeID, projectID,
 	).Scan(&exists)
@@ -1833,7 +1836,7 @@ func (svc *Service) DeleteVolumeMetadataKey(c *gin.Context) {
 		return
 	}
 
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM volume_metadata WHERE volume_id = $1 AND meta_key = $2",
 		volumeID, key,
 	)
@@ -1853,7 +1856,7 @@ func (svc *Service) GetSnapshotMetadata(c *gin.Context) {
 
 	// Check snapshot exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM snapshots WHERE id = $1 AND project_id = $2)",
 		snapshotID, projectID,
 	).Scan(&exists)
@@ -1863,7 +1866,7 @@ func (svc *Service) GetSnapshotMetadata(c *gin.Context) {
 		return
 	}
 
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT meta_key, meta_value FROM snapshot_metadata WHERE snapshot_id = $1",
 		snapshotID,
 	)
@@ -1907,7 +1910,7 @@ func (svc *Service) SetSnapshotMetadata(c *gin.Context) {
 
 	// Check snapshot exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM snapshots WHERE id = $1 AND project_id = $2)",
 		snapshotID, projectID,
 	).Scan(&exists)
@@ -1918,7 +1921,7 @@ func (svc *Service) SetSnapshotMetadata(c *gin.Context) {
 	}
 
 	// Delete existing metadata then insert new metadata atomically
-	if err = database.WithTx(c.Request.Context(), func(tx pgx.Tx) error {
+	if err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(c.Request.Context(),
 			"DELETE FROM snapshot_metadata WHERE snapshot_id = $1",
 			snapshotID,
@@ -1951,7 +1954,7 @@ func (svc *Service) GetSnapshotMetadataKey(c *gin.Context) {
 
 	// Check snapshot exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM snapshots WHERE id = $1 AND project_id = $2)",
 		snapshotID, projectID,
 	).Scan(&exists)
@@ -1962,7 +1965,7 @@ func (svc *Service) GetSnapshotMetadataKey(c *gin.Context) {
 	}
 
 	var value string
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT meta_value FROM snapshot_metadata WHERE snapshot_id = $1 AND meta_key = $2",
 		snapshotID, key,
 	).Scan(&value)
@@ -2002,7 +2005,7 @@ func (svc *Service) UpdateSnapshotMetadataKey(c *gin.Context) {
 
 	// Check snapshot exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM snapshots WHERE id = $1 AND project_id = $2)",
 		snapshotID, projectID,
 	).Scan(&exists)
@@ -2013,7 +2016,7 @@ func (svc *Service) UpdateSnapshotMetadataKey(c *gin.Context) {
 	}
 
 	// Upsert metadata
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO snapshot_metadata (snapshot_id, meta_key, meta_value, updated_at)
 		VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
 		ON CONFLICT (snapshot_id, meta_key)
@@ -2037,7 +2040,7 @@ func (svc *Service) DeleteSnapshotMetadataKey(c *gin.Context) {
 
 	// Check snapshot exists and belongs to project
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM snapshots WHERE id = $1 AND project_id = $2)",
 		snapshotID, projectID,
 	).Scan(&exists)
@@ -2047,7 +2050,7 @@ func (svc *Service) DeleteSnapshotMetadataKey(c *gin.Context) {
 		return
 	}
 
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM snapshot_metadata WHERE snapshot_id = $1 AND meta_key = $2",
 		snapshotID, key,
 	)
@@ -2092,7 +2095,7 @@ func (svc *Service) GetLimits(c *gin.Context) {
 		return
 	}
 
-	limits, err := resolveCinderQuotaLimits(c.Request.Context(), projectID)
+	limits, err := resolveCinderQuotaLimits(c.Request.Context(), svc.pool, projectID)
 	if err != nil {
 		log.Error().Err(err).Str("project_id", projectID).Msg("failed to resolve cinder quota limits")
 		common.SendError(c, common.NewInternalServerError("failed to get limits"))
@@ -2102,7 +2105,7 @@ func (svc *Service) GetLimits(c *gin.Context) {
 	// Query current usage. A count that fails answers 500, never zero usage.
 	var volumesUsed, snapshotsUsed, gigabytesUsed, backupsUsed, backupGigabytesUsed int
 
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
 	).Scan(&volumesUsed, &gigabytesUsed); err != nil {
@@ -2111,7 +2114,7 @@ func (svc *Service) GetLimits(c *gin.Context) {
 		return
 	}
 
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*) FROM snapshots WHERE project_id = $1 AND status != 'deleted'",
 		projectID,
 	).Scan(&snapshotsUsed); err != nil {
@@ -2122,7 +2125,7 @@ func (svc *Service) GetLimits(c *gin.Context) {
 
 	// volume_backups (migration 022) carries no 'deleted' status — DeleteBackup removes
 	// the row — so this counts every row for the project.
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volume_backups WHERE project_id = $1",
 		projectID,
 	).Scan(&backupsUsed, &backupGigabytesUsed); err != nil {

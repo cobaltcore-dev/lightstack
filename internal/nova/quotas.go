@@ -14,6 +14,7 @@ import (
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // UpdateQuotaRequest represents a quota update request
@@ -23,7 +24,7 @@ type UpdateQuotaRequest struct {
 
 // GetQuotaSet returns quota limits and usage for a project
 func (svc *Service) GetQuotaSet(c *gin.Context) {
-	projectID, apiErr := common.QuotaTargetProject(c)
+	projectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -31,7 +32,7 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 
 	// Resolve limits through the shared helper so this view and the absolute-limits
 	// view always agree (FR-003).
-	limits, stored, err := resolveQuotaLimits(c.Request.Context(), projectID)
+	limits, stored, err := resolveQuotaLimits(c.Request.Context(), svc.pool, projectID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_quota_set").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get quota set"))
@@ -59,7 +60,7 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 	// Calculate usage. A count that fails is an error (500), never zero usage: reporting 0
 	// for a count that could not be made tells an operator the project consumes nothing.
 	var instanceCount, coreCount, ramCount int
-	if err := database.DB.QueryRow(c.Request.Context(), `
+	if err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT COUNT(*), COALESCE(SUM(f.vcpus), 0), COALESCE(SUM(f.ram_mb), 0)
 		FROM instances i
 		LEFT JOIN flavors f ON i.flavor_id = f.id
@@ -77,7 +78,7 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 
 	// Volume usage, under the same rule.
 	var volumeCount, gigabyteCount int
-	if err := database.DB.QueryRow(c.Request.Context(), `
+	if err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT COUNT(*), COALESCE(SUM(size_gb), 0)
 		FROM volumes
 		WHERE project_id = $1
@@ -107,7 +108,7 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 		{"security_group_rules", `SELECT COUNT(*) FROM security_group_rules WHERE security_group_id IN (SELECT id FROM security_groups WHERE project_id = $1)`, &sgRuleCount},
 	}
 	for _, q := range networkUsageQueries {
-		if err := database.DB.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
+		if err := svc.pool.QueryRow(c.Request.Context(), q.sql, projectID).Scan(q.dst); err != nil {
 			log.Error().Err(err).Str("resource", q.label).Str("project_id", projectID).Msg("failed to query network resource usage")
 			common.SendError(c, common.NewInternalServerError("failed to get quota usage"))
 			return
@@ -140,7 +141,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 	// PUT as on GET — the caller's own. Any other target must exist: quotas.project_id
 	// references projects(id), so an unknown project would surface as an FK violation
 	// (500) and a non-UUID as an invalid-uuid-syntax error (500) instead of a 404.
-	projectID, apiErr := common.QuotaTargetProject(c)
+	projectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
@@ -161,7 +162,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 			continue
 		}
 
-		_, err := database.DB.Exec(c.Request.Context(), `
+		_, err := svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO quotas (project_id, resource, hard_limit, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (project_id, resource)
@@ -183,13 +184,13 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 // detail form of the quota set (SPEC-020 FR-002). `reserved` is always 0: Lightstack
 // completes operations synchronously and models no reservations (Art. II).
 func (svc *Service) GetQuotaSetDetail(c *gin.Context) {
-	projectID, apiErr := common.QuotaTargetProject(c)
+	projectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil {
 		common.SendError(c, apiErr)
 		return
 	}
 
-	limits, stored, err := resolveQuotaLimits(c.Request.Context(), projectID)
+	limits, stored, err := resolveQuotaLimits(c.Request.Context(), svc.pool, projectID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_quota_set_detail").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get quota set"))
@@ -207,7 +208,7 @@ func (svc *Service) GetQuotaSetDetail(c *gin.Context) {
 			// quotaDefaults alone reports in_use: 0 forever, which reads as "no
 			// usage" instead of "not measured".
 			log.Error().Err(qErr).Str("resource", resource).Msg("no usage query for quota resource")
-		} else if scanErr := database.DB.QueryRow(c.Request.Context(), q, projectID).Scan(&used); scanErr != nil {
+		} else if scanErr := svc.pool.QueryRow(c.Request.Context(), q, projectID).Scan(&used); scanErr != nil {
 			log.Error().Err(scanErr).Str("resource", resource).Str("project_id", projectID).
 				Msg("failed to query quota usage")
 			common.SendError(c, common.NewInternalServerError("failed to get quota usage"))
@@ -250,7 +251,7 @@ func (svc *Service) GetQuotaSetDetail(c *gin.Context) {
 	// Names are Lightstack's internal ones, matching the rest of this response. Upstream spells
 	// several of these differently (`key_pairs`, `floating_ips`); that divergence is
 	// endpoint-wide and pre-dates this view, so it is not half-fixed here for one key.
-	serverGroups, err := countUsage(c.Request.Context(), "server_groups",
+	serverGroups, err := countUsage(c.Request.Context(), svc.pool, "server_groups",
 		`SELECT COUNT(*) FROM server_groups WHERE project_id = $1`, projectID)
 	if err != nil {
 		log.Error().Err(err).Str("project_id", projectID).Msg("failed to query quota usage")
@@ -297,9 +298,9 @@ func (svc *Service) GetQuotaSetDetail(c *gin.Context) {
 // countUsage runs a single-column COUNT. A failure is returned, never reported as zero: a
 // usage view that answers 0 when it could not count tells an operator the project consumes
 // nothing.
-func countUsage(ctx context.Context, resource, query, arg string) (int, error) {
+func countUsage(ctx context.Context, pool *pgxpool.Pool, resource, query, arg string) (int, error) {
 	var n int
-	if err := database.DB.QueryRow(ctx, query, arg).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, query, arg).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count %s usage: %w", resource, err)
 	}
 	return n, nil
@@ -309,7 +310,7 @@ func countUsage(ctx context.Context, resource, query, arg string) (int, error) {
 // quotas-table overlay and no usage), read from the same source as every other
 // quota view so the values cannot drift (FR-003).
 func (svc *Service) GetQuotaSetDefaults(c *gin.Context) {
-	projectID, apiErr := common.QuotaTargetProject(c)
+	projectID, apiErr := common.QuotaTargetProject(c, svc.pool)
 	if apiErr != nil && apiErr.StatusCode == http.StatusForbidden {
 		// Upstream's os-quota-sets:defaults is RULE_ANY: anyone may read the defaults, which
 		// are the same for every project, so a non-admin naming another project is not refused.
@@ -369,13 +370,13 @@ var limitsOnlyDefaults = map[string]int{
 // It also reports which resources have a stored row, which GetQuotaSet needs to tell a
 // project-specific override apart from a code default — the rows are already in hand
 // here, so this costs no extra query.
-func resolveQuotaLimits(ctx context.Context, projectID string) (map[string]int, map[string]struct{}, error) {
+func resolveQuotaLimits(ctx context.Context, pool *pgxpool.Pool, projectID string) (map[string]int, map[string]struct{}, error) {
 	limits := make(map[string]int, len(quotaDefaults)+len(limitsOnlyDefaults))
 	maps.Copy(limits, quotaDefaults)
 	maps.Copy(limits, limitsOnlyDefaults)
 	stored := map[string]struct{}{}
 
-	rows, err := database.DB.Query(ctx,
+	rows, err := pool.Query(ctx,
 		`SELECT resource, hard_limit FROM quotas WHERE project_id = $1`, projectID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query quotas for project %s: %w", projectID, err)
@@ -434,7 +435,7 @@ func usageQuery(resource string) (string, error) {
 // CheckQuota checks if creating a resource would exceed quota.
 // The check runs inside a transaction with a row-level lock on the quotas row
 // to prevent TOCTOU races under concurrent requests.
-func CheckQuota(c *gin.Context, resource string, requestedAmount int) error {
+func CheckQuota(c *gin.Context, pool *pgxpool.Pool, resource string, requestedAmount int) error {
 	projectID := c.GetString("project_id")
 
 	uq, err := usageQuery(resource)
@@ -442,7 +443,7 @@ func CheckQuota(c *gin.Context, resource string, requestedAmount int) error {
 		return err
 	}
 
-	return database.WithTx(c.Request.Context(), func(tx pgx.Tx) error {
+	return database.WithTx(c.Request.Context(), pool, func(tx pgx.Tx) error {
 		// Lock the quota row for this project+resource for the duration of the transaction.
 		var limit int
 		lockErr := tx.QueryRow(c.Request.Context(), `

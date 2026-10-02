@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // SPEC-020 SC-007, extended to Nova: a quota target that does not exist is a 404.
@@ -78,20 +76,20 @@ func TestNovaQuotaWriteTargetMatchesRead(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	var caller string
-	if err := database.DB.QueryRow(ctx,
+	if err := testPool.QueryRow(ctx,
 		"INSERT INTO projects (name, description) VALUES ($1, 'spec020 test fixture') RETURNING id::text",
 		"spec020-"+t.Name(),
 	).Scan(&caller); err != nil {
 		t.Fatalf("create caller project: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup; cascades to quotas
+		testPool.Exec(ctx, //nolint:errcheck // best-effort fixture cleanup; cascades to quotas
 			"DELETE FROM projects WHERE id = $1", caller)
 	})
 	namedDefaultLimit := func() int {
 		t.Helper()
 		var limit int
-		if err := database.DB.QueryRow(ctx,
+		if err := testPool.QueryRow(ctx,
 			`SELECT COALESCE((SELECT hard_limit FROM quotas WHERE project_id = $1 AND resource = 'instances'), -1)`,
 			seededProjectID).Scan(&limit); err != nil {
 			t.Fatalf("read the default project's instances quota: %v", err)
@@ -100,7 +98,7 @@ func TestNovaQuotaWriteTargetMatchesRead(t *testing.T) {
 	}
 	before := namedDefaultLimit()
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, //nolint:errcheck // best-effort restore should the write land there
+		testPool.Exec(ctx, //nolint:errcheck // best-effort restore should the write land there
 			`UPDATE quotas SET hard_limit = $2 WHERE project_id = $1 AND resource = 'instances'`,
 			seededProjectID, before)
 	})

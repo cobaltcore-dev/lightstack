@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -18,7 +17,7 @@ import (
 
 // ListAggregates lists all host aggregates
 func (svc *Service) ListAggregates(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT uuid, name, availability_zone, metadata, hosts, created_at, updated_at
 		FROM host_aggregates
 		ORDER BY created_at DESC
@@ -101,7 +100,7 @@ func (svc *Service) CreateAggregate(c *gin.Context) {
 		availabilityZone = &req.Aggregate.AvailabilityZone
 	}
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO host_aggregates (uuid, name, availability_zone, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, aggregateUUID, req.Aggregate.Name, availabilityZone, now, now)
@@ -138,7 +137,7 @@ func (svc *Service) GetAggregate(c *gin.Context) {
 		updatedAt        time.Time
 	)
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT name, availability_zone, metadata, hosts, created_at, updated_at
 		FROM host_aggregates
 		WHERE uuid = $1
@@ -156,7 +155,7 @@ func (svc *Service) GetAggregate(c *gin.Context) {
 
 	var metadataMap map[string]any
 	if len(metadata) > 0 {
-		_ = database.DB.QueryRow(c.Request.Context(), "SELECT $1::jsonb", metadata).Scan(&metadataMap)
+		_ = svc.pool.QueryRow(c.Request.Context(), "SELECT $1::jsonb", metadata).Scan(&metadataMap)
 	}
 	if metadataMap == nil {
 		metadataMap = make(map[string]any)
@@ -193,7 +192,7 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 
 	// Check if aggregate exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM host_aggregates WHERE uuid = $1)",
 		aggregateID,
 	).Scan(&exists)
@@ -229,7 +228,7 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 	query := fmt.Sprintf("UPDATE host_aggregates SET %s, updated_at = $%d WHERE uuid = $%d",
 		strings.Join(updates, ", "), argPos, argPos+1)
 
-	_, err = database.DB.Exec(c.Request.Context(), query, args...)
+	_, err = svc.pool.Exec(c.Request.Context(), query, args...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_aggregate").Msg("database error")
@@ -245,7 +244,7 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 func (svc *Service) DeleteAggregate(c *gin.Context) {
 	aggregateID := c.Param("id")
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM host_aggregates WHERE uuid = $1",
 		aggregateID,
 	)
@@ -308,7 +307,7 @@ func (svc *Service) AddHostToAggregate(c *gin.Context, aggregateID string, actio
 
 	// Check if aggregate exists and get current hosts
 	var hosts []string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT hosts FROM host_aggregates WHERE uuid = $1",
 		aggregateID,
 	).Scan(&hosts)
@@ -333,7 +332,7 @@ func (svc *Service) AddHostToAggregate(c *gin.Context, aggregateID string, actio
 
 	hosts = append(hosts, hostName)
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE host_aggregates
 		SET hosts = $1, updated_at = $2
 		WHERE uuid = $3
@@ -364,7 +363,7 @@ func (svc *Service) RemoveHostFromAggregate(c *gin.Context, aggregateID string, 
 
 	// Check if aggregate exists and get current hosts
 	var hosts []string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT hosts FROM host_aggregates WHERE uuid = $1",
 		aggregateID,
 	).Scan(&hosts)
@@ -395,7 +394,7 @@ func (svc *Service) RemoveHostFromAggregate(c *gin.Context, aggregateID string, 
 		return
 	}
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE host_aggregates
 		SET hosts = $1, updated_at = $2
 		WHERE uuid = $3
@@ -426,7 +425,7 @@ func (svc *Service) SetAggregateMetadata(c *gin.Context, aggregateID string, act
 
 	// Check if aggregate exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM host_aggregates WHERE uuid = $1)",
 		aggregateID,
 	).Scan(&exists)
@@ -437,7 +436,7 @@ func (svc *Service) SetAggregateMetadata(c *gin.Context, aggregateID string, act
 	}
 
 	// Update metadata (merge with existing)
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE host_aggregates
 		SET metadata = metadata || $1::jsonb, updated_at = $2
 		WHERE uuid = $3

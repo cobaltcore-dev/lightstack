@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,7 +18,7 @@ func TestIdentityNotFound_ReadPaths(t *testing.T) {
 	requireDB(t)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	svc := NewService(nil, nil)
+	svc := NewService(testPool, nil, nil)
 	svc.RegisterRoutes(&r.RouterGroup, func(c *gin.Context) { c.Next() })
 
 	serve := func(path string) (int, string) {
@@ -36,7 +35,7 @@ func TestIdentityNotFound_ReadPaths(t *testing.T) {
 	} {
 		t.Run(res.noun, func(t *testing.T) {
 			var existing string
-			if err := database.DB.QueryRow(context.Background(),
+			if err := testPool.QueryRow(context.Background(),
 				"SELECT id FROM "+res.table+" LIMIT 1").Scan(&existing); err != nil {
 				t.Fatalf("no seeded %s row to test the 200 case: %v", res.noun, err)
 			}

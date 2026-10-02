@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 )
@@ -16,7 +15,7 @@ func (svc *Service) ListServerTags(c *gin.Context) {
 
 	// Verify server exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID,
 	).Scan(&exists)
@@ -27,7 +26,7 @@ func (svc *Service) ListServerTags(c *gin.Context) {
 	}
 
 	// Get tags
-	rows, err := database.DB.Query(c.Request.Context(),
+	rows, err := svc.pool.Query(c.Request.Context(),
 		"SELECT tag FROM server_tags WHERE instance_id = $1 ORDER BY tag",
 		instanceID,
 	)
@@ -72,7 +71,7 @@ func (svc *Service) ReplaceServerTags(c *gin.Context) {
 
 	// Verify server exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID,
 	).Scan(&exists)
@@ -83,7 +82,7 @@ func (svc *Service) ReplaceServerTags(c *gin.Context) {
 	}
 
 	// Delete all existing tags
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM server_tags WHERE instance_id = $1",
 		instanceID,
 	)
@@ -95,7 +94,7 @@ func (svc *Service) ReplaceServerTags(c *gin.Context) {
 
 	// Insert new tags
 	for _, tag := range req.Tags {
-		_, err = database.DB.Exec(c.Request.Context(),
+		_, err = svc.pool.Exec(c.Request.Context(),
 			"INSERT INTO server_tags (instance_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING",
 			instanceID, tag,
 		)
@@ -117,7 +116,7 @@ func (svc *Service) AddServerTag(c *gin.Context) {
 
 	// Verify server exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID,
 	).Scan(&exists)
@@ -128,7 +127,7 @@ func (svc *Service) AddServerTag(c *gin.Context) {
 	}
 
 	// Insert tag
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"INSERT INTO server_tags (instance_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING",
 		instanceID, tag,
 	)
@@ -149,7 +148,7 @@ func (svc *Service) DeleteServerTag(c *gin.Context) {
 
 	// Verify server exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID,
 	).Scan(&exists)
@@ -160,7 +159,7 @@ func (svc *Service) DeleteServerTag(c *gin.Context) {
 	}
 
 	// Delete tag
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM server_tags WHERE instance_id = $1 AND tag = $2",
 		instanceID, tag,
 	)
@@ -185,7 +184,7 @@ func (svc *Service) DeleteAllServerTags(c *gin.Context) {
 
 	// Verify server exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID,
 	).Scan(&exists)
@@ -196,7 +195,7 @@ func (svc *Service) DeleteAllServerTags(c *gin.Context) {
 	}
 
 	// Delete all tags
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM server_tags WHERE instance_id = $1",
 		instanceID,
 	)

@@ -7,7 +7,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/rs/zerolog/log"
 )
@@ -74,7 +73,7 @@ func (r *NetworkReconciler) reconcile(ctx context.Context) {
 func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 	// Egress: internal subnets behind a router that has an external gateway.
 	var cidrs []string
-	if rows, err := database.DB.Query(ctx, `
+	if rows, err := r.svc.pool.Query(ctx, `
 		SELECT DISTINCT s.cidr
 		FROM routers rt
 		JOIN router_interfaces ri ON ri.router_id = rt.id
@@ -100,7 +99,7 @@ func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 	// Floating IPs currently associated to a port.
 	type fipRow struct{ floating, fixed, port string }
 	var fips []fipRow
-	if rows, err := database.DB.Query(ctx, `
+	if rows, err := r.svc.pool.Query(ctx, `
 		SELECT floating_ip_address, fixed_ip_address, port_id
 		FROM floating_ips
 		WHERE port_id IS NOT NULL AND fixed_ip_address IS NOT NULL`); err == nil {
@@ -147,7 +146,7 @@ func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 // are kernel objects that normally persist across a pod restart, so an
 // "already exists" outcome is expected and logged at debug.
 func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
-	rows, err := database.DB.Query(ctx, `SELECT id FROM networks`)
+	rows, err := r.svc.pool.Query(ctx, `SELECT id FROM networks`)
 	if err != nil {
 		log.Error().Err(err).Msg("reconcile: failed to query networks")
 		return
@@ -211,7 +210,7 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 // killed out-of-band (SC-010) and re-asserting the bridge IP + metadata DNAT
 // every pass (SPEC-009 WS-4 / T029).
 func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
-	rows, err := database.DB.Query(ctx,
+	rows, err := r.svc.pool.Query(ctx,
 		`SELECT DISTINCT network_id FROM subnets WHERE enable_dhcp = true`)
 	if err != nil {
 		log.Error().Err(err).Msg("reconcile: failed to query subnets")
@@ -252,7 +251,7 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 	}
 	var cidr, gatewayIP string
 	var dns []string
-	if err := database.DB.QueryRow(ctx, `
+	if err := svc.pool.QueryRow(ctx, `
 		SELECT cidr, gateway_ip, dns_nameservers FROM subnets
 		WHERE network_id = $1 AND enable_dhcp = true LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns); err != nil {
 		return // no DHCP-enabled subnet for this network — nothing to do
@@ -309,7 +308,7 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 // so dnsmasq hands each VM the exact fixed IP neutron allocated to its port
 // (SPEC-009 WS-2 / FR-006). The port's fixed_ip in the DB is authoritative.
 func (svc *Service) dhcpReservations(ctx context.Context, networkID string) []networking.DHCPHostReservation {
-	rows, err := database.DB.Query(ctx,
+	rows, err := svc.pool.Query(ctx,
 		`SELECT mac_address, fixed_ips FROM ports WHERE network_id = $1 AND mac_address <> ''`, networkID)
 	if err != nil {
 		log.Warn().Err(err).Str("network_id", networkID).Msg("dhcp reservations: query ports failed")

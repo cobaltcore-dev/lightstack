@@ -8,7 +8,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,7 +21,7 @@ const freshProjectID = "00000000-0000-0000-0000-0000000000f0"
 
 func createTestKeypair(t *testing.T, name string) {
 	t.Helper()
-	if _, err := database.DB.Exec(t.Context(),
+	if _, err := testPool.Exec(t.Context(),
 		`INSERT INTO keypairs (name, user_id, public_key) VALUES ($1, $2, $3)
 		 ON CONFLICT (user_id, name) DO NOTHING`,
 		name, seededUserID, "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABspec017"); err != nil {
@@ -32,7 +31,7 @@ func createTestKeypair(t *testing.T, name string) {
 
 func createTestProject(t *testing.T, id, name string) {
 	t.Helper()
-	if _, err := database.DB.Exec(t.Context(),
+	if _, err := testPool.Exec(t.Context(),
 		`INSERT INTO projects (id, name, description, enabled) VALUES ($1, $2, '', true)
 		 ON CONFLICT (id) DO NOTHING`, id, name); err != nil {
 		t.Fatalf("createTestProject(%s): %v", name, err)
@@ -44,7 +43,7 @@ func createTestProject(t *testing.T, id, name string) {
 func createTestSecurityGroup(t *testing.T, name, projectID string) string {
 	t.Helper()
 	var id string
-	if err := database.DB.QueryRow(t.Context(),
+	if err := testPool.QueryRow(t.Context(),
 		`INSERT INTO security_groups (name, project_id, description) VALUES ($1, $2, 'spec017 test')
 		 ON CONFLICT (project_id, name) DO UPDATE SET description = EXCLUDED.description
 		 RETURNING id`, name, projectID).Scan(&id); err != nil {
@@ -58,7 +57,7 @@ func createTestSecurityGroup(t *testing.T, name, projectID string) string {
 // column has no FK).
 func deleteSecurityGroupByID(t *testing.T, id string) {
 	t.Helper()
-	if _, err := database.DB.Exec(t.Context(),
+	if _, err := testPool.Exec(t.Context(),
 		"DELETE FROM security_groups WHERE id = $1", id); err != nil {
 		t.Fatalf("deleteSecurityGroupByID(%s): %v", id, err)
 	}
@@ -68,7 +67,7 @@ func deleteSecurityGroupByID(t *testing.T, id string) {
 func securityGroupExists(t *testing.T, name, projectID string) bool {
 	t.Helper()
 	var ok bool
-	if err := database.DB.QueryRow(t.Context(),
+	if err := testPool.QueryRow(t.Context(),
 		"SELECT EXISTS(SELECT 1 FROM security_groups WHERE name = $1 AND project_id = $2)",
 		name, projectID).Scan(&ok); err != nil {
 		t.Fatalf("securityGroupExists(%s): %v", name, err)
@@ -87,12 +86,12 @@ func cleanupSpec017(t *testing.T) {
 		"DELETE FROM keypairs WHERE name LIKE 'spec017-%'",
 		"DELETE FROM security_groups WHERE name LIKE 'spec017-%'",
 	} {
-		if _, err := database.DB.Exec(ctx, q); err != nil {
+		if _, err := testPool.Exec(ctx, q); err != nil {
 			t.Fatalf("cleanupSpec017 (%s): %v", q, err)
 		}
 	}
 	// Last: instances and security_groups reference projects by FK.
-	if _, err := database.DB.Exec(ctx, "DELETE FROM projects WHERE id = $1", freshProjectID); err != nil {
+	if _, err := testPool.Exec(ctx, "DELETE FROM projects WHERE id = $1", freshProjectID); err != nil {
 		t.Fatalf("cleanupSpec017 (delete project %s): %v", freshProjectID, err)
 	}
 }
@@ -131,7 +130,7 @@ func createServerAs(t *testing.T, r *gin.Engine, projectID, userID, bodyJSON str
 func instanceCount(t *testing.T, name, projectID string) int {
 	t.Helper()
 	var n int
-	if err := database.DB.QueryRow(t.Context(),
+	if err := testPool.QueryRow(t.Context(),
 		"SELECT count(*) FROM instances WHERE name = $1 AND project_id = $2", name, projectID).Scan(&n); err != nil {
 		t.Fatalf("instanceCount: %v", err)
 	}
@@ -162,7 +161,7 @@ func sgNamesFromResponse(t *testing.T, sg any) []string {
 func serverSecurityGroupCount(t *testing.T, serverID string) int {
 	t.Helper()
 	var n int
-	if err := database.DB.QueryRow(t.Context(),
+	if err := testPool.QueryRow(t.Context(),
 		"SELECT count(*) FROM server_security_groups WHERE server_id = $1", serverID,
 	).Scan(&n); err != nil {
 		t.Fatalf("count server_security_groups: %v", err)
@@ -174,7 +173,7 @@ func serverSecurityGroupCount(t *testing.T, serverID string) int {
 func ruleCountForSG(t *testing.T, sgID string) int {
 	t.Helper()
 	var n int
-	if err := database.DB.QueryRow(t.Context(),
+	if err := testPool.QueryRow(t.Context(),
 		"SELECT count(*) FROM security_group_rules WHERE security_group_id = $1", sgID,
 	).Scan(&n); err != nil {
 		t.Fatalf("count rules: %v", err)
@@ -187,7 +186,7 @@ func ruleCountForSG(t *testing.T, sgID string) int {
 // exact rule set rather than just how many rules there are.
 func sgRuleShapes(t *testing.T, sgID string) []string {
 	t.Helper()
-	rows, err := database.DB.Query(t.Context(),
+	rows, err := testPool.Query(t.Context(),
 		`SELECT direction, ethertype, protocol, port_range_min, port_range_max
 		 FROM security_group_rules WHERE security_group_id = $1`, sgID)
 	if err != nil {

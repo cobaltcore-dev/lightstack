@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -42,9 +41,9 @@ const (
 func newRGWCompatRouter(rgwCompat bool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
+	authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour, nil)
 	authSvc.SetRGWCompatTenantIDs(rgwCompat)
-	NewService(authSvc, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
+	NewService(testPool, authSvc, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))
 		}
@@ -66,28 +65,28 @@ func seedRGWCompatFixtures(t *testing.T) {
 	ctx := context.Background()
 	resetAdmin(t)
 
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO projects (id, name, description, enabled, domain_id)
 		VALUES ($1, $2, 'rgw_compat_tenant_ids test fixture', true, $3)
 		ON CONFLICT (id) DO NOTHING`,
 		rgwCompatProjectID, rgwCompatProjectName, defaultDomainID); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO role_assignments (user_id, project_id, role_id)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
 		rgwCompatSeededAdminID, rgwCompatProjectID, rgwCompatMemberRoleID); err != nil {
 		t.Fatalf("seed role assignment: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO services (id, type, name, description, enabled)
 		VALUES ($1, $2, 'rgw-compat-test', 'rgw_compat_tenant_ids test fixture', true)
 		ON CONFLICT (id) DO NOTHING`,
 		rgwCompatServiceID, rgwCompatCatalogType); err != nil {
 		t.Fatalf("seed service: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO endpoints (service_id, interface, url, region, enabled)
 		VALUES ($1, 'public', 'http://lightstack:9999/v2.1/{project_id}', 'RegionOne', true)
 		ON CONFLICT DO NOTHING`,
@@ -96,16 +95,16 @@ func seedRGWCompatFixtures(t *testing.T) {
 	}
 
 	t.Cleanup(func() {
-		if _, err := database.DB.Exec(ctx, "DELETE FROM endpoints WHERE service_id = $1", rgwCompatServiceID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM endpoints WHERE service_id = $1", rgwCompatServiceID); err != nil {
 			t.Errorf("cleanup fixture endpoints: %v", err)
 		}
-		if _, err := database.DB.Exec(ctx, "DELETE FROM services WHERE id = $1", rgwCompatServiceID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM services WHERE id = $1", rgwCompatServiceID); err != nil {
 			t.Errorf("cleanup fixture service: %v", err)
 		}
-		if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE project_id = $1", rgwCompatProjectID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM role_assignments WHERE project_id = $1", rgwCompatProjectID); err != nil {
 			t.Errorf("cleanup fixture role assignments: %v", err)
 		}
-		if _, err := database.DB.Exec(ctx, "DELETE FROM projects WHERE id = $1", rgwCompatProjectID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM projects WHERE id = $1", rgwCompatProjectID); err != nil {
 			t.Errorf("cleanup fixture project: %v", err)
 		}
 	})
@@ -261,7 +260,7 @@ func TestDashFreeTenantID(t *testing.T) {
 // TestTokenProjectIDGating: the flag gates the transform; the default is off
 // (canonical hyphenated UUIDs).
 func TestTokenProjectIDGating(t *testing.T) {
-	s := NewAuthService("k", time.Hour, nil)
+	s := NewAuthService(testPool, "k", time.Hour, nil)
 	if got := s.tokenProjectID(rgwCompatProjectID); got != rgwCompatProjectID {
 		t.Errorf("flag off (default): tokenProjectID = %q, want canonical %q", got, rgwCompatProjectID)
 	}
@@ -729,10 +728,10 @@ func TestValidateTokenDeadScopeOmitsProject(t *testing.T) {
 	// Delete the project (role assignments first — the FK requires it),
 	// leaving a realistically dead scope. seedRGWCompatFixtures' cleanup is
 	// idempotent against the missing rows.
-	if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE project_id = $1", rgwCompatProjectID); err != nil {
+	if _, err := testPool.Exec(ctx, "DELETE FROM role_assignments WHERE project_id = $1", rgwCompatProjectID); err != nil {
 		t.Fatalf("delete role assignments: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, "DELETE FROM projects WHERE id = $1", rgwCompatProjectID); err != nil {
+	if _, err := testPool.Exec(ctx, "DELETE FROM projects WHERE id = $1", rgwCompatProjectID); err != nil {
 		t.Fatalf("delete project: %v", err)
 	}
 
@@ -924,9 +923,9 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 		{"flag on: dash-free, matching the Swift token payload", true, dashFree},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
+			authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour, nil)
 			authSvc.SetRGWCompatTenantIDs(tc.rgwCompat)
-			svc := NewService(authSvc, nil)
+			svc := NewService(testPool, authSvc, nil)
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
@@ -963,9 +962,9 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 	// braced) — must not split the S3 and Swift tenants. The credential mint
 	// stores the canonical database UUID and the response renders dash-free.
 	t.Run("flag on: alternate UUID encodings canonicalize before encoding", func(t *testing.T) {
-		authSvc := NewAuthService(rgwCompatTestSecret, time.Hour, nil)
+		authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour, nil)
 		authSvc.SetRGWCompatTenantIDs(true)
-		svc := NewService(authSvc, nil)
+		svc := NewService(testPool, authSvc, nil)
 
 		for _, raw := range []string{
 			strings.ReplaceAll(rgwCompatProjectID, "-", ""), // 32 hex, no dashes
@@ -1013,13 +1012,13 @@ func TestValidateTokenDeadUserOmitsUser(t *testing.T) {
 	// A throwaway user (spec007- prefix: resetAdmin sweeps leftovers) with a
 	// member role on the fixture project and a validly-signed scoped token.
 	const deadUserID = "deadbeef-0000-4000-8000-00000000dead"
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO users (id, name, password_hash, enabled, domain_id)
 		VALUES ($1, 'spec007-deaduser', 'not-a-hash', true, $2)
 		ON CONFLICT (id) DO NOTHING`, deadUserID, defaultDomainID); err != nil {
 		t.Fatalf("insert throwaway user: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO role_assignments (user_id, project_id, role_id)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
@@ -1046,10 +1045,10 @@ func TestValidateTokenDeadUserOmitsUser(t *testing.T) {
 	}
 
 	// Kill the user (assignments first — the FK requires it).
-	if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE user_id = $1", deadUserID); err != nil {
+	if _, err := testPool.Exec(ctx, "DELETE FROM role_assignments WHERE user_id = $1", deadUserID); err != nil {
 		t.Fatalf("delete role assignments: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, "DELETE FROM users WHERE id = $1", deadUserID); err != nil {
+	if _, err := testPool.Exec(ctx, "DELETE FROM users WHERE id = $1", deadUserID); err != nil {
 		t.Fatalf("delete user: %v", err)
 	}
 
@@ -1090,13 +1089,13 @@ func TestValidateTokenDisabledUserOmitsUser(t *testing.T) {
 	// A throwaway user (spec007- prefix: resetAdmin sweeps leftovers) with a
 	// member role on the fixture project and a validly-signed scoped token.
 	const disabledUserID = "deadbeef-0000-4000-8000-0000d15ab1ed"
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO users (id, name, password_hash, enabled, domain_id)
 		VALUES ($1, 'spec007-disableduser', 'not-a-hash', true, $2)
 		ON CONFLICT (id) DO NOTHING`, disabledUserID, defaultDomainID); err != nil {
 		t.Fatalf("insert throwaway user: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO role_assignments (user_id, project_id, role_id)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
@@ -1104,10 +1103,10 @@ func TestValidateTokenDisabledUserOmitsUser(t *testing.T) {
 		t.Fatalf("insert role assignment: %v", err)
 	}
 	t.Cleanup(func() {
-		if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE user_id = $1", disabledUserID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM role_assignments WHERE user_id = $1", disabledUserID); err != nil {
 			t.Errorf("cleanup throwaway role assignments: %v", err)
 		}
-		if _, err := database.DB.Exec(ctx, "DELETE FROM users WHERE id = $1", disabledUserID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM users WHERE id = $1", disabledUserID); err != nil {
 			t.Errorf("cleanup throwaway user: %v", err)
 		}
 	})
@@ -1131,7 +1130,7 @@ func TestValidateTokenDisabledUserOmitsUser(t *testing.T) {
 	}
 
 	// Disable the user (row and assignments stay).
-	if _, err := database.DB.Exec(ctx, "UPDATE users SET enabled = false WHERE id = $1", disabledUserID); err != nil {
+	if _, err := testPool.Exec(ctx, "UPDATE users SET enabled = false WHERE id = $1", disabledUserID); err != nil {
 		t.Fatalf("disable user: %v", err)
 	}
 
@@ -1169,13 +1168,13 @@ func TestValidateTokenDisabledProjectOmitsProject(t *testing.T) {
 	r := newRGWCompatRouter(true)
 
 	const disabledProjectID = "cafebabe-0000-4000-8000-0000d15ab1ed"
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO projects (id, name, description, enabled, domain_id)
 		VALUES ($1, 'spec007-disabled-project', 'disabled scope fixture', true, $2)
 		ON CONFLICT (id) DO NOTHING`, disabledProjectID, defaultDomainID); err != nil {
 		t.Fatalf("insert throwaway project: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx, `
+	if _, err := testPool.Exec(ctx, `
 		INSERT INTO role_assignments (user_id, project_id, role_id)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
@@ -1183,10 +1182,10 @@ func TestValidateTokenDisabledProjectOmitsProject(t *testing.T) {
 		t.Fatalf("insert role assignment: %v", err)
 	}
 	t.Cleanup(func() {
-		if _, err := database.DB.Exec(ctx, "DELETE FROM role_assignments WHERE project_id = $1", disabledProjectID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM role_assignments WHERE project_id = $1", disabledProjectID); err != nil {
 			t.Errorf("cleanup throwaway role assignments: %v", err)
 		}
-		if _, err := database.DB.Exec(ctx, "DELETE FROM projects WHERE id = $1", disabledProjectID); err != nil {
+		if _, err := testPool.Exec(ctx, "DELETE FROM projects WHERE id = $1", disabledProjectID); err != nil {
 			t.Errorf("cleanup throwaway project: %v", err)
 		}
 	})
@@ -1211,7 +1210,7 @@ func TestValidateTokenDisabledProjectOmitsProject(t *testing.T) {
 	}
 
 	// Disable the project (row and assignments stay).
-	if _, err := database.DB.Exec(ctx, "UPDATE projects SET enabled = false WHERE id = $1", disabledProjectID); err != nil {
+	if _, err := testPool.Exec(ctx, "UPDATE projects SET enabled = false WHERE id = $1", disabledProjectID); err != nil {
 		t.Fatalf("disable project: %v", err)
 	}
 
@@ -1321,7 +1320,7 @@ func TestValidateTokenRoleRevocation(t *testing.T) {
 	}
 
 	// Revoke the only assignment.
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		"DELETE FROM role_assignments WHERE user_id = $1 AND project_id = $2",
 		rgwCompatSeededAdminID, rgwCompatProjectID); err != nil {
 		t.Fatalf("revoke role assignment: %v", err)

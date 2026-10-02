@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -38,7 +38,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 
 	// Verify instance exists
 	var libvirtDomainID, status string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id, status FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
@@ -60,7 +60,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		// Verify port exists and is available
 		var deviceID string
 		var fixedIPsJSON []byte
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT network_id, fixed_ips, mac_address, device_id FROM ports WHERE id = $1 AND project_id = $2",
 			portID, projectID,
 		).Scan(&networkID, &fixedIPsJSON, &macAddress, &deviceID)
@@ -84,7 +84,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 
 		// Verify network exists
 		var networkExists bool
-		err := database.DB.QueryRow(c.Request.Context(),
+		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT EXISTS(SELECT 1 FROM networks WHERE id = $1 AND project_id = $2)",
 			networkID, projectID,
 		).Scan(&networkExists)
@@ -100,7 +100,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 
 		// Get subnet info for IP allocation
 		var cidr string
-		err = database.DB.QueryRow(c.Request.Context(),
+		err = svc.pool.QueryRow(c.Request.Context(),
 			"SELECT cidr FROM subnets WHERE network_id = $1 LIMIT 1",
 			networkID,
 		).Scan(&cidr)
@@ -115,7 +115,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			fixedIP = req.InterfaceAttachment.FixedIP
 		} else {
 			// Allocate next available IP from subnet
-			fixedIP, err = allocateNextIP(c.Request.Context(), networkID, cidr)
+			fixedIP, err = allocateNextIP(c.Request.Context(), svc.pool, networkID, cidr)
 			if err != nil {
 				log.Error().Err(err).Str("operation", "allocate_ip").Msg("IP allocation error")
 				common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
@@ -125,7 +125,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 
 		// Create port
 		fixedIPsJSON := fmt.Sprintf(`[{"ip_address": "%s", "subnet_id": "%s"}]`, fixedIP, networkID)
-		_, err = database.DB.Exec(c.Request.Context(), `
+		_, err = svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
 		`, portID, networkID, projectID, fmt.Sprintf("port-%s", portID[:8]), macAddress, fixedIPsJSON, instanceID, "compute:nova", "ACTIVE", time.Now(), time.Now())
@@ -141,7 +141,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	}
 
 	// Update port to attach to instance
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE ports
 		SET device_id = $1, device_owner = $2, status = $3, updated_at = $4
 		WHERE id = $5
@@ -155,7 +155,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 
 	// Store interface attachment record
 	attachmentID := uuid.New().String()
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO interface_attachments (id, instance_id, port_id, mac_address, attached_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, attachmentID, instanceID, portID, macAddress, time.Now())
@@ -189,7 +189,7 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 
 	// Verify instance exists
 	var instanceExists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID,
 	).Scan(&instanceExists)
@@ -201,7 +201,7 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 
 	// Verify port is attached to this instance
 	var attachedInstanceID string
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT device_id FROM ports WHERE id = $1",
 		portID,
 	).Scan(&attachedInstanceID)
@@ -217,7 +217,7 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 	}
 
 	// Delete interface attachment record
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM interface_attachments WHERE instance_id = $1 AND port_id = $2",
 		instanceID, portID,
 	)
@@ -229,7 +229,7 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 	}
 
 	// Update port to detach from instance
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE ports
 		SET device_id = NULL, device_owner = NULL, status = $1, updated_at = $2
 		WHERE id = $3
@@ -254,7 +254,7 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 
 	// Verify instance exists
 	var instanceExists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID,
 	).Scan(&instanceExists)
@@ -265,7 +265,7 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 	}
 
 	// Query all interface attachments
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT ia.id, ia.port_id, p.network_id, p.fixed_ips, ia.mac_address, p.status
 		FROM interface_attachments ia
 		JOIN ports p ON ia.port_id = p.id
@@ -330,11 +330,11 @@ func generateMACAddress() string {
 }
 
 // allocateNextIP allocates the next available IP from a subnet
-func allocateNextIP(ctx context.Context, networkID, cidr string) (string, error) {
+func allocateNextIP(ctx context.Context, pool *pgxpool.Pool, networkID, cidr string) (string, error) {
 	// Simple allocation: get last used IP and increment
 	// In production, would use proper IPAM
 	var fixedIPsJSON []byte
-	err := database.DB.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		"SELECT fixed_ips FROM ports WHERE network_id = $1 ORDER BY created_at DESC LIMIT 1",
 		networkID,
 	).Scan(&fixedIPsJSON)

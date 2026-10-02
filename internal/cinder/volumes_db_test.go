@@ -15,6 +15,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // testDBAvailable is true when LIGHTSTACK_TEST_DB_URL is set and migrated; DB-backed cinder
@@ -22,10 +23,15 @@ import (
 // internal/nova/maindb_test.go so cinder handler tests run against a real Postgres.
 var testDBAvailable bool
 
+// testPool is this package's test pool: opened by TestMain when LIGHTSTACK_TEST_DB_URL
+// is set, and handed to the services the tests construct (SPEC-027).
+var testPool *pgxpool.Pool
+
 func TestMain(m *testing.M) {
 	if dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL"); dbURL != "" {
 		ctx := context.Background()
-		if err := database.Connect(ctx, dbURL, &database.PoolConfig{
+		var err error
+		if testPool, err = database.Connect(ctx, dbURL, &database.PoolConfig{
 			MaxConns: 5, MinConns: 1, MaxConnLifetime: time.Hour,
 			MaxConnIdleTime: 15 * time.Minute, HealthCheckPeriod: time.Minute,
 		}); err != nil {
@@ -36,26 +42,26 @@ func TestMain(m *testing.M) {
 		// query error. An interrupted run (SIGINT, -timeout) skips its t.Cleanup and
 		// leaves the table renamed; the test database is shared, so heal that here
 		// before anything else runs against it.
-		if _, err := database.DB.Exec(ctx, `DO $$
+		if _, err := testPool.Exec(ctx, `DO $$
 BEGIN
 	IF to_regclass('public.snapshots_faultinject') IS NOT NULL AND to_regclass('public.snapshots') IS NULL THEN
 		ALTER TABLE snapshots_faultinject RENAME TO snapshots;
 	END IF;
 END $$;`); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to heal a leftover snapshots rename: %v\n", err)
-			database.Close()
+			testPool.Close()
 			os.Exit(1)
 		}
 		if err := database.MigrateUp(dbURL, "../../migrations"); err != nil {
 			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but migrations failed: %v\n", err)
-			database.Close()
+			testPool.Close()
 			os.Exit(1)
 		}
 		testDBAvailable = true
 	}
 	code := m.Run()
 	if testDBAvailable {
-		database.Close()
+		testPool.Close()
 	}
 	os.Exit(code)
 }
@@ -89,7 +95,7 @@ func newCinderTestRouter() *gin.Engine {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	NewService("stub", "", "").RegisterRoutes(&r.RouterGroup)
+	NewService(testPool, "stub", "", "").RegisterRoutes(&r.RouterGroup)
 	return r
 }
 
@@ -137,7 +143,7 @@ func TestVolumeCreateReadback_DB(t *testing.T) {
 		t.Fatalf("create response has no id: err=%v body=%s", err, body)
 	}
 	id := created.Volume.ID
-	t.Cleanup(func() { database.DB.Exec(context.Background(), "DELETE FROM volumes WHERE id=$1", id) })
+	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM volumes WHERE id=$1", id) })
 
 	code, body = doReq(r, http.MethodGet, "/v3/volumes/"+id, "", hdr)
 	if code != http.StatusOK {
@@ -194,7 +200,7 @@ func TestSnapshotCreateReadback_DB(t *testing.T) {
 		t.Fatalf("create response has no id: err=%v body=%s", err, body)
 	}
 	id := created.Snapshot.ID
-	t.Cleanup(func() { database.DB.Exec(context.Background(), "DELETE FROM snapshots WHERE id=$1", id) })
+	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM snapshots WHERE id=$1", id) })
 	if created.Snapshot.Description != "nightly" {
 		t.Errorf("create response description = %q, want nightly", created.Snapshot.Description)
 	}
@@ -235,13 +241,13 @@ var volumeFieldsNonNull = []string{
 func seedVolume(t *testing.T, name, volumeType, description string) string {
 	t.Helper()
 	id := uuid.NewString()
-	if _, err := database.DB.Exec(context.Background(),
+	if _, err := testPool.Exec(context.Background(),
 		`INSERT INTO volumes (id, name, description, project_id, user_id, size_gb, status, bootable, volume_type)
 		 VALUES ($1,$2,$3,$4,$5,3,'available',false,$6)`,
 		id, name, description, seededProjectID, seededUserID, volumeType); err != nil {
 		t.Fatalf("insert volume: %v", err)
 	}
-	t.Cleanup(func() { database.DB.Exec(context.Background(), "DELETE FROM volumes WHERE id=$1", id) })
+	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM volumes WHERE id=$1", id) })
 	return id
 }
 
@@ -333,19 +339,19 @@ func TestDeleteVolumeWithSnapshot_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	volID, snapID := uuid.NewString(), uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO volumes (id, name, project_id, user_id, size_gb, status) VALUES ($1,'snapvol',$2,$3,1,'available')`,
 		volID, seededProjectID, seededUserID); err != nil {
 		t.Fatalf("insert volume: %v", err)
 	}
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO snapshots (id, name, volume_id, project_id, size_gb, status) VALUES ($1,'snap',$2,$3,1,'available')`,
 		snapID, volID, seededProjectID); err != nil {
 		t.Fatalf("insert snapshot: %v", err)
 	}
 	t.Cleanup(func() {
-		database.DB.Exec(ctx, "DELETE FROM snapshots WHERE id=$1", snapID)
-		database.DB.Exec(ctx, "DELETE FROM volumes WHERE id=$1", volID)
+		testPool.Exec(ctx, "DELETE FROM snapshots WHERE id=$1", snapID)
+		testPool.Exec(ctx, "DELETE FROM volumes WHERE id=$1", volID)
 	})
 
 	r := newCinderTestRouter()
@@ -354,7 +360,7 @@ func TestDeleteVolumeWithSnapshot_DB(t *testing.T) {
 		t.Errorf("delete volume with snapshot: code=%d body=%s; want 409", code, body)
 	}
 	var n int
-	if err := database.DB.QueryRow(ctx, "SELECT count(*) FROM volumes WHERE id=$1", volID).Scan(&n); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM volumes WHERE id=$1", volID).Scan(&n); err != nil {
 		t.Fatalf("count volume: %v", err)
 	}
 	if n != 1 {
@@ -376,12 +382,12 @@ func TestDeleteVolumeSnapshotCountError_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	volID := uuid.NewString()
-	if _, err := database.DB.Exec(ctx,
+	if _, err := testPool.Exec(ctx,
 		`INSERT INTO volumes (id, name, project_id, user_id, size_gb, status) VALUES ($1,'errvol',$2,$3,1,'available')`,
 		volID, seededProjectID, seededUserID); err != nil {
 		t.Fatalf("insert volume: %v", err)
 	}
-	t.Cleanup(func() { database.DB.Exec(ctx, "DELETE FROM volumes WHERE id=$1", volID) })
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM volumes WHERE id=$1", volID) })
 
 	r := newCinderTestRouter()
 	code, body := serveWithTableLocked(t, r, "snapshots", http.MethodDelete, "/v3/volumes/"+volID,
@@ -391,7 +397,7 @@ func TestDeleteVolumeSnapshotCountError_DB(t *testing.T) {
 		t.Errorf("delete with failing snapshot count: code=%d body=%s; want 500 (fail closed)", code, body)
 	}
 	var n int
-	if err := database.DB.QueryRow(ctx, "SELECT count(*) FROM volumes WHERE id=$1", volID).Scan(&n); err != nil {
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM volumes WHERE id=$1", volID).Scan(&n); err != nil {
 		t.Fatalf("count volume: %v", err)
 	}
 	if n != 1 {

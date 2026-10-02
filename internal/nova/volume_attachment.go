@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
@@ -62,7 +61,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 
 	// Verify instance exists and get libvirt domain ID
 	var libvirtDomainID string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
@@ -75,7 +74,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 	// Verify volume exists and is available
 	var volumeStatus string
 	var attachedToInstance any
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT status, attached_to_instance_id FROM volumes WHERE id = $1 AND project_id = $2",
 		req.VolumeAttachment.VolumeID, projectID,
 	).Scan(&volumeStatus, &attachedToInstance)
@@ -110,7 +109,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 	attachmentID := uuid.New().String()
 	now := time.Now()
 
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO volume_attachments (id, volume_id, instance_id, device, attached_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, attachmentID, req.VolumeAttachment.VolumeID, instanceID, device, now)
@@ -122,7 +121,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 	}
 
 	// Update volume status
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE volumes
 		SET attached_to_instance_id = $1, status = $2, updated_at = $3
 		WHERE id = $4
@@ -131,7 +130,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 	if err != nil {
 		// Rollback attachment (best-effort; the update error is the
 		// user-facing one)
-		if _, rbErr := database.DB.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID); rbErr != nil {
+		if _, rbErr := svc.pool.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID); rbErr != nil {
 			log.Warn().Err(rbErr).Str("attachment_id", attachmentID).Msg("rollback: failed to delete volume attachment after volume update failure")
 		}
 		log.Error().Err(err).Str("operation", "update_volume_status").Msg("database error")
@@ -147,16 +146,16 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancel()
 		var rbdPool, rbdImage string
-		_ = database.DB.QueryRow(ctx,
+		_ = svc.pool.QueryRow(ctx,
 			"SELECT rbd_pool, rbd_image FROM volumes WHERE id = $1",
 			req.VolumeAttachment.VolumeID).Scan(&rbdPool, &rbdImage)
 		diskXML := volumeDiskXML(req.VolumeAttachment.VolumeID, device, rbdPool, rbdImage)
 		if err := svc.vmManager.AttachDevice(ctx, libvirtDomainID, diskXML); err != nil {
 			log.Error().Err(err).Str("volume_id", req.VolumeAttachment.VolumeID).Str("libvirt_domain", libvirtDomainID).Msg("failed to attach volume to VM; reverting")
-			if _, e := database.DB.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID); e != nil {
+			if _, e := svc.pool.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID); e != nil {
 				log.Warn().Err(e).Str("attachment_id", attachmentID).Msg("revert: delete attachment")
 			}
-			if _, e := database.DB.Exec(c.Request.Context(),
+			if _, e := svc.pool.Exec(c.Request.Context(),
 				"UPDATE volumes SET attached_to_instance_id = NULL, status = 'available', updated_at = $1 WHERE id = $2",
 				time.Now(), req.VolumeAttachment.VolumeID); e != nil {
 				log.Warn().Err(e).Str("volume_id", req.VolumeAttachment.VolumeID).Msg("revert: reset volume status")
@@ -189,7 +188,7 @@ func (svc *Service) GetVolumeAttachment(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var exists bool
-	if err := database.DB.QueryRow(c.Request.Context(),
+	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID).Scan(&exists); err != nil || !exists {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -198,7 +197,7 @@ func (svc *Service) GetVolumeAttachment(c *gin.Context) {
 
 	var device string
 	var attachedAt time.Time
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT device, attached_at FROM volume_attachments WHERE volume_id = $1 AND instance_id = $2",
 		volumeID, instanceID,
 	).Scan(&device, &attachedAt)
@@ -231,7 +230,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 
 	// Verify instance exists and get libvirt domain ID
 	var libvirtDomainID string
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
@@ -243,7 +242,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 
 	// Get attachment details
 	var attachmentID, device string
-	err = database.DB.QueryRow(c.Request.Context(),
+	err = svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, device FROM volume_attachments WHERE volume_id = $1 AND instance_id = $2",
 		volumeID, instanceID,
 	).Scan(&attachmentID, &device)
@@ -260,7 +259,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 
 		// Get volume details for disk XML
 		var rbdPool, rbdImage string
-		err := database.DB.QueryRow(ctx,
+		err := svc.pool.QueryRow(ctx,
 			"SELECT rbd_pool, rbd_image FROM volumes WHERE id = $1",
 			volumeID,
 		).Scan(&rbdPool, &rbdImage)
@@ -277,7 +276,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 	}
 
 	// Delete attachment record
-	_, err = database.DB.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM volume_attachments WHERE id = $1",
 		attachmentID,
 	)
@@ -290,7 +289,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 
 	// Update volume status
 	now := time.Now()
-	_, err = database.DB.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE volumes
 		SET attached_to_instance_id = NULL, status = $1, updated_at = $2
 		WHERE id = $3
@@ -312,7 +311,7 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 
 	// Verify instance exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(),
+	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
 		instanceID, projectID,
 	).Scan(&exists)
@@ -323,7 +322,7 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 	}
 
 	// List attachments
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT volume_id, device, attached_at
 		FROM volume_attachments
 		WHERE instance_id = $1
@@ -371,7 +370,7 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 // getNextAvailableDevice finds the next available device name (vdb, vdc, etc.)
 func (svc *Service) getNextAvailableDevice(ctx context.Context, instanceID string) (string, error) {
 	// Query existing devices
-	rows, err := database.DB.Query(ctx,
+	rows, err := svc.pool.Query(ctx,
 		"SELECT device FROM volume_attachments WHERE instance_id = $1",
 		instanceID,
 	)

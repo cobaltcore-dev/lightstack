@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"testing"
-
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // SPEC-020 SC-007, extended to Neutron: a quota target that does not exist is a 404.
@@ -84,14 +82,14 @@ func createTestProject(t *testing.T, name string) string {
 	t.Helper()
 	var id string
 	unique := name + "-" + t.Name()
-	if err := database.DB.QueryRow(context.Background(),
+	if err := testPool.QueryRow(context.Background(),
 		"INSERT INTO projects (name, description) VALUES ($1, $2) RETURNING id::text",
 		unique, "spec020 test fixture",
 	).Scan(&id); err != nil {
 		t.Fatalf("create test project %q: %v", unique, err)
 	}
 	t.Cleanup(func() {
-		if _, err := database.DB.Exec(context.Background(), "DELETE FROM projects WHERE id = $1", id); err != nil {
+		if _, err := testPool.Exec(context.Background(), "DELETE FROM projects WHERE id = $1", id); err != nil {
 			t.Logf("cleanup project %s: %v", id, err)
 		}
 	})

@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -12,7 +11,7 @@ import (
 
 // ListDomains handles GET /v3/domains
 func (svc *Service) ListDomains(c *gin.Context) {
-	rows, err := database.DB.Query(c.Request.Context(), `
+	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, description, enabled
 		FROM domains
 		ORDER BY name ASC
@@ -84,7 +83,7 @@ func (svc *Service) CreateDomain(c *gin.Context) {
 		description = &req.Domain.Description
 	}
 
-	_, err := database.DB.Exec(c.Request.Context(), `
+	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO domains (id, name, description, enabled, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, domainID, req.Domain.Name, description, enabled, time.Now(), time.Now())
@@ -116,7 +115,7 @@ func (svc *Service) GetDomain(c *gin.Context) {
 	var description *string
 	var enabled bool
 
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, enabled
 		FROM domains
 		WHERE id = $1
@@ -155,7 +154,7 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 
 	// Verify domain exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT EXISTS(SELECT 1 FROM domains WHERE id = $1)
 	`, domainID).Scan(&exists)
 
@@ -202,7 +201,7 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 		}
 		query += " WHERE id = $" + string(rune('0'+argCount))
 
-		_, err = database.DB.Exec(c.Request.Context(), query, args...)
+		_, err = svc.pool.Exec(c.Request.Context(), query, args...)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "update_domain").Str("domain_id", domainID).Msg("Failed to update domain")
 			common.SendError(c, common.NewInternalServerError("failed to update domain"))
@@ -216,7 +215,7 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 	var description *string
 	var enabled bool
 
-	err = database.DB.QueryRow(c.Request.Context(), `
+	err = svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, enabled
 		FROM domains
 		WHERE id = $1
@@ -247,7 +246,7 @@ func (svc *Service) DeleteDomain(c *gin.Context) {
 
 	// Check if domain is enabled
 	var enabled bool
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT enabled FROM domains WHERE id = $1
 	`, domainID).Scan(&enabled)
 
@@ -261,7 +260,7 @@ func (svc *Service) DeleteDomain(c *gin.Context) {
 		return
 	}
 
-	result, err := database.DB.Exec(c.Request.Context(),
+	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM domains WHERE id = $1",
 		domainID,
 	)
@@ -286,7 +285,7 @@ func (svc *Service) GetDomainConfig(c *gin.Context) {
 
 	// Verify domain exists
 	var exists bool
-	err := database.DB.QueryRow(c.Request.Context(), `
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT EXISTS(SELECT 1 FROM domains WHERE id = $1)
 	`, domainID).Scan(&exists)
 

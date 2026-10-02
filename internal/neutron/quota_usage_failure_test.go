@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // serveWithTableLocked serves one request while another connection holds an exclusive lock on
@@ -18,7 +16,7 @@ import (
 func serveWithTableLocked(t *testing.T, r http.Handler, table, method, path string, headers map[string]string) (int, string) {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := database.DB.Begin(ctx)
+	tx, err := testPool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}

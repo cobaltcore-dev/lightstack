@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 )
@@ -23,7 +22,7 @@ func TestCreatePortFailsClosedWhenXDPAttachFails(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 
-	svc := NewService("stub", nil)
+	svc := NewService(testPool, "stub", nil)
 	svc.mode = "ebpf"
 	mgr, err := networking.NewSecurityGroupManager("stub", "")
 	if err != nil {
@@ -52,8 +51,8 @@ func TestCreatePortFailsClosedWhenXDPAttachFails(t *testing.T) {
 	}
 	netID := created.Network.ID
 	t.Cleanup(func() {
-		_, _ = database.DB.Exec(context.Background(), `DELETE FROM subnets WHERE network_id = $1`, netID)
-		_, _ = database.DB.Exec(context.Background(), `DELETE FROM networks WHERE id = $1`, netID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM subnets WHERE network_id = $1`, netID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM networks WHERE id = $1`, netID)
 	})
 	code, body = doReqBody(r, http.MethodPost, "/v2.0/subnets",
 		`{"subnet":{"network_id":"`+netID+`","cidr":"10.66.0.0/24","ip_version":4,"enable_dhcp":false}}`, nil)
@@ -66,7 +65,7 @@ func TestCreatePortFailsClosedWhenXDPAttachFails(t *testing.T) {
 		t.Fatalf("POST /v2.0/ports with a failing XDP attach: code=%d body=%s; want 500 (fail closed)", code, body)
 	}
 	var left int
-	if err := database.DB.QueryRow(ctx, `SELECT COUNT(*) FROM ports WHERE network_id = $1`, netID).Scan(&left); err != nil {
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*) FROM ports WHERE network_id = $1`, netID).Scan(&left); err != nil {
 		t.Fatalf("count ports: %v", err)
 	}
 	if left != 0 {

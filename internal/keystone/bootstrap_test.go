@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -16,7 +15,7 @@ import (
 
 func userRow(t *testing.T, name string) (id, hash string, enabled, ok bool) {
 	t.Helper()
-	err := database.DB.QueryRow(context.Background(),
+	err := testPool.QueryRow(context.Background(),
 		"SELECT id, password_hash, enabled FROM users WHERE name = $1", name).Scan(&id, &hash, &enabled)
 	if err == pgx.ErrNoRows {
 		return "", "", false, false
@@ -34,7 +33,7 @@ func verifies(hash, password string) bool {
 func hasAdminRole(t *testing.T, userID string) bool {
 	t.Helper()
 	var n int
-	if err := database.DB.QueryRow(context.Background(),
+	if err := testPool.QueryRow(context.Background(),
 		"SELECT count(*) FROM role_assignments WHERE user_id=$1 AND project_id=$2 AND role_id=$3",
 		userID, defaultProjectID, adminRoleID).Scan(&n); err != nil {
 		t.Fatalf("hasAdminRole: %v", err)
@@ -49,7 +48,7 @@ func TestBootstrapAdmin(t *testing.T) {
 	// (a) seeded admin still 'secret' → configured password applied, 'secret' rejected
 	t.Run("provision_from_default", func(t *testing.T) {
 		resetAdmin(t)
-		if err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: "NewPass!23"}); err != nil {
+		if err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: "NewPass!23"}); err != nil {
 			t.Fatal(err)
 		}
 		_, hash, _, ok := userRow(t, "admin")
@@ -61,8 +60,8 @@ func TestBootstrapAdmin(t *testing.T) {
 	// (b) idempotent: re-run with same config is a no-op, still works
 	t.Run("idempotent", func(t *testing.T) {
 		resetAdmin(t)
-		_ = BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: "NewPass!23"})
-		if err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: "NewPass!23"}); err != nil {
+		_ = BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: "NewPass!23"})
+		if err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: "NewPass!23"}); err != nil {
 			t.Fatal(err)
 		}
 		_, hash, _, _ := userRow(t, "admin")
@@ -75,7 +74,7 @@ func TestBootstrapAdmin(t *testing.T) {
 	t.Run("secret_configured_noop", func(t *testing.T) {
 		resetAdmin(t)
 		_, before, _, _ := userRow(t, "admin")
-		if err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: "secret"}); err != nil {
+		if err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: "secret"}); err != nil {
 			t.Fatal(err)
 		}
 		_, after, _, _ := userRow(t, "admin")
@@ -88,10 +87,10 @@ func TestBootstrapAdmin(t *testing.T) {
 	t.Run("no_clobber_rotated", func(t *testing.T) {
 		resetAdmin(t)
 		rotated, _ := bcrypt.GenerateFromPassword([]byte("Rotated@9"), bcrypt.DefaultCost)
-		if _, err := database.DB.Exec(ctx, "UPDATE users SET password_hash=$1 WHERE name='admin'", string(rotated)); err != nil {
+		if _, err := testPool.Exec(ctx, "UPDATE users SET password_hash=$1 WHERE name='admin'", string(rotated)); err != nil {
 			t.Fatal(err)
 		}
-		if err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: "Configured@1"}); err != nil {
+		if err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: "Configured@1"}); err != nil {
 			t.Fatal(err)
 		}
 		_, hash, _, _ := userRow(t, "admin")
@@ -103,7 +102,7 @@ func TestBootstrapAdmin(t *testing.T) {
 	// (e) custom admin_user → created with admin role + domain; seeded admin disabled
 	t.Run("custom_admin_user", func(t *testing.T) {
 		resetAdmin(t)
-		if err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminUser: "spec007-ops", AdminPassword: "OpsPass!1"}); err != nil {
+		if err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminUser: "spec007-ops", AdminPassword: "OpsPass!1"}); err != nil {
 			t.Fatal(err)
 		}
 		id, hash, enabled, ok := userRow(t, "spec007-ops")
@@ -114,7 +113,7 @@ func TestBootstrapAdmin(t *testing.T) {
 			t.Fatalf("custom admin missing admin role on default project")
 		}
 		var domainID string
-		if err := database.DB.QueryRow(ctx, "SELECT domain_id::text FROM users WHERE name='spec007-ops'").Scan(&domainID); err != nil {
+		if err := testPool.QueryRow(ctx, "SELECT domain_id::text FROM users WHERE name='spec007-ops'").Scan(&domainID); err != nil {
 			t.Fatal(err)
 		}
 		if domainID != defaultDomainID {
@@ -130,7 +129,7 @@ func TestBootstrapAdmin(t *testing.T) {
 	t.Run("custom_admin_user_existing", func(t *testing.T) {
 		resetAdmin(t)
 		old, _ := bcrypt.GenerateFromPassword([]byte("OldPass#1"), bcrypt.DefaultCost)
-		if _, err := database.DB.Exec(ctx,
+		if _, err := testPool.Exec(ctx,
 			"INSERT INTO users (name, password_hash, enabled, domain_id) VALUES ('spec007-existing', $1, true, $2) ON CONFLICT (name) DO NOTHING",
 			string(old), defaultDomainID); err != nil {
 			t.Fatal(err)
@@ -138,7 +137,7 @@ func TestBootstrapAdmin(t *testing.T) {
 		var buf bytes.Buffer
 		orig := log.Logger
 		log.Logger = zerolog.New(&buf)
-		err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminUser: "spec007-existing", AdminPassword: "NewPass#2"})
+		err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminUser: "spec007-existing", AdminPassword: "NewPass#2"})
 		log.Logger = orig
 		if err != nil {
 			t.Fatal(err)
@@ -158,7 +157,7 @@ func TestBootstrapAdmin(t *testing.T) {
 	// (f) no password → WARN, default retained, no error
 	t.Run("no_password_warns_and_keeps_default", func(t *testing.T) {
 		resetAdmin(t)
-		if err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: "   "}); err != nil {
+		if err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: "   "}); err != nil {
 			t.Fatal(err)
 		}
 		_, hash, enabled, _ := userRow(t, "admin")
@@ -174,7 +173,7 @@ func TestBootstrapAdmin(t *testing.T) {
 		orig := log.Logger
 		log.Logger = zerolog.New(&buf)
 		const secretPw = "Sup3r-Secret-Marker-XYZ"
-		err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: secretPw})
+		err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: secretPw})
 		log.Logger = orig
 		if err != nil {
 			t.Fatal(err)
@@ -187,7 +186,7 @@ func TestBootstrapAdmin(t *testing.T) {
 	// (h) project isolation: no identity other than the admin is created/altered (FR-007)
 	t.Run("preserves_other_identities", func(t *testing.T) {
 		resetAdmin(t)
-		if _, err := database.DB.Exec(ctx,
+		if _, err := testPool.Exec(ctx,
 			"INSERT INTO users (name, password_hash, enabled, domain_id) VALUES ('spec007-bystander', $1, true, $2) ON CONFLICT (name) DO NOTHING",
 			seededSecretHash, defaultDomainID); err != nil {
 			t.Fatal(err)
@@ -197,7 +196,7 @@ func TestBootstrapAdmin(t *testing.T) {
 		if hasAdminRole(t, bid) {
 			t.Fatalf("precondition: bystander should not have admin role")
 		}
-		if err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: "NewPass!23"}); err != nil {
+		if err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: "NewPass!23"}); err != nil {
 			t.Fatal(err)
 		}
 		_, afterHash, afterEnabled, ok := userRow(t, "spec007-bystander")
@@ -210,7 +209,7 @@ func TestBootstrapAdmin(t *testing.T) {
 	t.Run("permissive_no_validation", func(t *testing.T) {
 		resetAdmin(t)
 		const weird = "x" // 1 char; would fail any length policy
-		if err := BootstrapAdmin(ctx, common.KeystoneConfig{AdminPassword: weird}); err != nil {
+		if err := BootstrapAdmin(ctx, testPool, common.KeystoneConfig{AdminPassword: weird}); err != nil {
 			t.Fatal(err)
 		}
 		_, hash, _, _ := userRow(t, "admin")

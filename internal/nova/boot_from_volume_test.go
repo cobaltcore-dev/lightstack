@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // parseServerReq decodes a server-create body the same way gin does in real
@@ -199,13 +197,13 @@ func TestBootSourcePrecedence(t *testing.T) {
 			// context.Background(), not t.Context(): the test context is already
 			// cancelled by the time cleanups run.
 			t.Cleanup(func() {
-				if _, err := database.DB.Exec(context.Background(), "DELETE FROM instances WHERE id = $1", id); err != nil {
+				if _, err := testPool.Exec(context.Background(), "DELETE FROM instances WHERE id = $1", id); err != nil {
 					t.Logf("cleanup instance %s: %v", id, err)
 				}
 			})
 
 			var imageID *string
-			if err := database.DB.QueryRow(t.Context(),
+			if err := testPool.QueryRow(t.Context(),
 				"SELECT image_id::text FROM instances WHERE id = $1", id).Scan(&imageID); err != nil {
 				t.Fatalf("read back instance %s: %v", id, err)
 			}
