@@ -252,6 +252,12 @@ jobs:
           OS_USER_DOMAIN_NAME: Default
           OS_PROJECT_DOMAIN_NAME: Default
 
+      - name: Run Horizon create-UI probe
+        # SPEC-020: what Horizon's create flows read before enabling a control, and the
+        # create requests they then send (volume, network, instance launch, and the
+        # Overview after a project switch). Removes everything it creates.
+        run: make test-horizon-ui
+
       - name: Cleanup
         if: always()
         run: docker compose -f deployments/docker-compose.yml down -v

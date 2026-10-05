@@ -154,14 +154,16 @@ curl -s -o /dev/null -w 'session works: %{http_code}\n' -b /tmp/hz.cookies http:
 
 ### 2.1 API surface: every create-flow endpoint resolves and limits agree (SC-005)
 
-The repo ships a probe that walks exactly the endpoints Horizon's create flows load. It is the fastest
-signal that the backend half of F2/F3/F7/F8 is in place.
+The repo ships a probe that walks exactly the endpoints Horizon's create flows load, then replays the
+create requests Horizon sends for SC-001 – SC-004 and removes what it created (FR-028). It is the fastest
+signal that the backend half of F2/F3/F7/F8 is in place; CI runs the same probe.
 
 ```bash
 ./test/horizon_create_ui_test.sh
 ```
 
-**Expect:** `Passed: 54   Failed: 0`. Every quota variant returns 200 (`os-quota-sets/{id}/detail`,
+**Expect:** `Failed: 0`, of about 85 checks (the total varies a little with the networks present).
+Every quota variant returns 200 (`os-quota-sets/{id}/detail`,
 `quotas/{id}/default`, `quotas/{id}/details.json`, `quota-sets/{id}?usage=true`, `quota-sets/{id}/defaults`),
 Cinder advertises `AvailabilityZones` via `/v3/extensions`, Neutron advertises `quota_details`, the
 limits and quota-set views agree on instances/cores/ram/volumes, and every network carries `project_id`

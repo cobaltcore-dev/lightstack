@@ -233,6 +233,12 @@ a project switch.
   object from `volume_attachments`, `os-attach`/`os-detach`/`os-force_detach` keeping that table, and Nova's
   `os-extended-volumes:volumes_attached`. Docs: FR-027, both runbooks (§2.5), `docs/UPGRADING.md`.
   ✅ unit tests 2026-10-05; ⏳ the host passes.
+- [x] T062 **FR-028 — gate SC-001 – SC-004 in CI (added in review).** Extend `test/horizon_create_ui_test.sh`
+  with the create requests Horizon sends (volume, network and subnet, a launch on the wizard's defaults, the
+  Overview's reads after a project switch), removing what it creates on failure too, and run
+  `make test-horizon-ui` in CI's integration job. ✅ 2026-10-05: on a stack configured like CI's it passes all
+  85 checks three times in a row, also after `test/quick_test.sh`, and leaves nothing behind. Against the commit
+  before FR-025 it fails at the boot volume, as it should. ⏳ the first CI run and the host passes.
 
 ---
 

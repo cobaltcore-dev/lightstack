@@ -40,6 +40,7 @@ The APIs themselves work (proven in the SPEC-018 real pass): via the CLI a netwo
 - Q: The launch wizard's default sends the image as a `source_type: image`, `destination_type: volume` root mapping. Keep adopting it as an image boot, which accepts `volume_size` and `delete_on_termination` and discards them, or create the volume? → A: **Create the volume, as upstream Nova does (FR-025).** Accepting both fields and ignoring them is the silent downgrade upstream never does. A request that cannot get its volume is refused (`400`, or `503` when the volume cannot be created) and never falls back to an image boot. The volume is unnamed, as upstream's `_create_volume` leaves it (`nova/virt/block_device.py`).
 - Q: Nova and Cinder used any image id they were given, so a project that knew the id of another project's private image could boot it or copy it into a volume. Refuse only an existing image the caller cannot see, or also an id that names no image, which stub mode accepted? → A: **Both, as upstream, on every path that takes an image (FR-026)**: server create (`imageRef` and the root mapping), rebuild, volume create from an image, and `os-reimage`. Upstream asks Glance with the caller's token, so the two cases are one answer. The contract suite and five shell scripts booted from `00000000-0000-0000-0000-000000000001`, which names no image; they now create the image they boot from.
 - Q: Glance's own show, list and download ignored image sharing, and an image that was not active could still be booted or copied into a volume. Fix both here? → A: **Yes (FR-026).** Glance reads follow upstream's visibility rules, the list with its `visibility`, `member_status` and `status` filters, and every boot and volume-from-image path refuses an image that is not active, as upstream does.
+- Q: CI never ran the regression probe, and the probe only read what Horizon checks before it enables a create control, so SC-001 – SC-004 were never gated. Gate them how? → A: **The probe replays the create requests Horizon sends, and CI runs it (FR-028).** The browser pass stays the manual check in the runbooks; an automated browser suite remains out of scope.
 - Q: Volume attachments reported a device hardcoded to `/dev/vdb`, a boot volume included. Fix only the device, or the attachment reporting as a whole? → A: **As a whole (FR-027)**: upstream's attachment object, the attached volumes on server show and detail, and `os-attach` recording the mountpoint it is given.
 
 ## User Scenarios & Testing *(mandatory)*
@@ -292,6 +293,19 @@ not fix, each was reproduced live before being fixed, and each carries a regress
     An unknown volume is a `404` on all three.
 
   *Tests:* `internal/cinder/attachments_test.go`, `internal/nova/volumes_attached_test.go`.
+- **FR-028**: SC-001 – SC-004 MUST be gated in CI at the API level. `make test-horizon-ui`
+  (`test/horizon_create_ui_test.sh`) checks what Horizon reads before it enables each create control, then
+  replays the requests Horizon stable/2025.2 sends, in the shape it builds them:
+  - SC-002: a volume create with python-cinderclient's body; the volume becomes available and is listed once.
+  - SC-003: a network, then its subnet; listed once, owned by the project, the subnet resolving.
+  - SC-001: a launch on the wizard's defaults (no `imageRef`, a new boot volume that outlives the server, the
+    network by id, the security group by id); `ACTIVE`, listed, an address on the network, the boot volume
+    attached at `/dev/vda`, then deleted and the volume released.
+  - SC-004: the Overview's limit reads with a token scoped to a second project.
+
+  The probe removes everything it creates, on failure too. CI's integration job runs it on the Compose stack
+  after the quick tests. It does not drive Horizon itself: the browser pass in the runbooks remains the manual
+  check (an automated browser suite is out of scope).
 
 **Fix boundary**
 

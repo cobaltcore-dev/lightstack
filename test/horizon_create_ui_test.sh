@@ -17,15 +17,21 @@
 #     unprobed.
 #   - SC-007a - a quota target that does not exist is a 404 on nova, neutron AND
 #     cinder, for an unknown UUID, the nil UUID and a non-UUID alike.
+#   - SC-001 - SC-004 - the create flows themselves: the requests Horizon sends to
+#     create a volume, create a network with a subnet and launch an instance on the
+#     wizard's defaults, and the Overview's limit reads after a project switch. Each
+#     request is replayed in the shape Horizon builds it, and everything created is
+#     removed again, on failure too.
 #
 # It began as a trace tool (T003/T005) for finding which endpoints 404'd; that phase
-# is over and it is now purely a regression guard.
+# is over and it is now a regression guard, run by CI on the Compose stack. It does
+# not drive Horizon itself: the browser pass stays the runbook's manual check.
 #
 # Usage:  ./test/horizon_create_ui_test.sh
 # Requires: a running Lightstack. The SPEC-020 runbooks use
 #   deployments/docker-compose-horizon.yml (stub) or the k3s real-mode deployment;
-#   deployments/docker-compose.yml is enough if you only want the API checks.
-#   Override KEYSTONE_URL / NOVA_URL / NEUTRON_URL / CINDER_URL to retarget.
+#   deployments/docker-compose.yml is enough: these are API checks.
+#   Override KEYSTONE_URL / NOVA_URL / NEUTRON_URL / CINDER_URL / GLANCE_URL to retarget.
 
 set -u
 
@@ -42,6 +48,7 @@ KEYSTONE_URL="${KEYSTONE_URL:-http://localhost:35357}"
 NOVA_URL="${NOVA_URL:-http://localhost:8774}"
 NEUTRON_URL="${NEUTRON_URL:-http://localhost:9696}"
 CINDER_URL="${CINDER_URL:-http://localhost:8776}"
+GLANCE_URL="${GLANCE_URL:-http://localhost:9292}"
 ADMIN_USER="${OS_USERNAME:-admin}"
 ADMIN_PASSWORD="${OS_PASSWORD:-secret}"
 PROJECT_NAME="${OS_PROJECT_NAME:-default}"
@@ -56,6 +63,7 @@ print_head() { echo -e "\n${BLUE}=== $1 ===${NC}"; }
 
 TOKEN=""
 PROJECT_ID=""
+USER_ID=""
 
 authenticate() {
     print_test "Authenticate as ${ADMIN_USER} (scoped to ${PROJECT_NAME})"
@@ -85,6 +93,7 @@ authenticate() {
 
     TOKEN=$(echo "$response" | grep -i "^X-Subject-Token:" | awk '{print $2}' | tr -d '\r')
     PROJECT_ID=$(echo "$response" | sed -n '/^{/,$p' | jq -r '.token.project.id // empty')
+    USER_ID=$(echo "$response" | sed -n '/^{/,$p' | jq -r '.token.user.id // empty')
 
     if [ -n "$TOKEN" ] && [ -n "$PROJECT_ID" ]; then
         print_pass "Token acquired (project_id=${PROJECT_ID})"
@@ -415,6 +424,244 @@ test_quota_target_authz() {
     expect_code "cinder quota-sets/default" 200 "${CINDER_URL}/v3/quota-sets/default"
 }
 
+# ------------------------------------------- SC-001 - SC-004: the create flows
+#
+# The checks above cover what Horizon reads before it enables a create control. These
+# replay what it then sends, as Horizon stable/2025.2 builds each request, so the flows
+# are gated and not only their prerequisites:
+#   - Create Volume: python-cinderclient's body, unset fields null;
+#   - Create Network: the network, then its subnet;
+#   - Launch Instance on the wizard's defaults (launch-instance-model.service.js):
+#     no imageRef, a new boot volume of the default type that outlives the server, the
+#     network by id, and the security group by id under "name";
+#   - the Overview's limit reads with a token scoped to a second project.
+
+GATE_TAG="spec020-gate-$$"
+GATE_VOLUME=""
+GATE_NET=""
+GATE_SUBNET=""
+GATE_IMAGE=""
+GATE_SERVER=""
+GATE_BOOT_VOLUME=""
+GATE_PROJECT=""
+
+# send <method> <url> [json-body] -> sets HTTP_CODE and BODY
+send() {
+    local method="$1" url="$2" data="${3:-}" raw
+    if [ -n "$data" ]; then
+        raw=$(curl -s -w '\n%{http_code}' -X "$method" -H "X-Auth-Token: ${TOKEN}" \
+            -H "Content-Type: application/json" -d "$data" "$url")
+    else
+        raw=$(curl -s -w '\n%{http_code}' -X "$method" -H "X-Auth-Token: ${TOKEN}" "$url")
+    fi
+    HTTP_CODE=$(echo "$raw" | tail -1)
+    BODY=$(echo "$raw" | sed '$d')
+}
+
+# expect_send <label> <want> <method> <url> [json-body] - a write; want is a status
+# code, or 2xx for a delete, whose exact success code differs between services.
+expect_send() {
+    local label="$1" want="$2" ok=false
+    shift 2
+    send "$@"
+    case "$want" in
+        2xx) case "$HTTP_CODE" in 2[0-9][0-9]) ok=true ;; esac ;;
+        *) [ "$HTTP_CODE" = "$want" ] && ok=true ;;
+    esac
+    if $ok; then
+        print_pass "${label} -> ${HTTP_CODE}"
+        return 0
+    fi
+    print_fail "${label} -> ${HTTP_CODE} (expected ${want})"
+    print_info "$(echo "$BODY" | head -c 200)"
+    return 1
+}
+
+# wait_for <url> <jq-filter> <want> - polls for up to a minute
+wait_for() {
+    local url="$1" filter="$2" want="$3" got="" i
+    for i in $(seq 1 30); do
+        got=$(jqval "$url" "$filter")
+        [ "$got" = "$want" ] && return 0
+        sleep 2
+    done
+    print_info "last ${filter} = ${got:-<none>}"
+    return 1
+}
+
+# check <label> <condition-result> - records a pass when the result is 0
+check() {
+    if [ "$2" = "0" ]; then print_pass "$1"; else print_fail "$1"; fi
+}
+
+# cleanup_gate removes, best effort and in dependency order, whatever a failed run left.
+cleanup_gate() {
+    local v
+    [ -n "$GATE_SERVER" ] && curl -s -o /dev/null -X DELETE -H "X-Auth-Token: ${TOKEN}" "${NOVA_URL}/v2.1/servers/${GATE_SERVER}"
+    for v in $GATE_BOOT_VOLUME $GATE_VOLUME; do
+        curl -s -o /dev/null -X DELETE -H "X-Auth-Token: ${TOKEN}" "${CINDER_URL}/v3/volumes/${v}"
+    done
+    [ -n "$GATE_SUBNET" ] && curl -s -o /dev/null -X DELETE -H "X-Auth-Token: ${TOKEN}" "${NEUTRON_URL}/v2.0/subnets/${GATE_SUBNET}"
+    [ -n "$GATE_NET" ] && curl -s -o /dev/null -X DELETE -H "X-Auth-Token: ${TOKEN}" "${NEUTRON_URL}/v2.0/networks/${GATE_NET}"
+    [ -n "$GATE_IMAGE" ] && curl -s -o /dev/null -X DELETE -H "X-Auth-Token: ${TOKEN}" "${GLANCE_URL}/v2/images/${GATE_IMAGE}"
+    [ -n "$GATE_PROJECT" ] && curl -s -o /dev/null -X DELETE -H "X-Auth-Token: ${TOKEN}" "${KEYSTONE_URL}/v3/projects/${GATE_PROJECT}"
+    return 0
+}
+trap cleanup_gate EXIT
+
+test_create_volume() {
+    print_head "SC-002 - Create Volume, as the dialog submits it"
+
+    print_test "POST /v3/volumes with python-cinderclient's body"
+    if expect_send "create volume" 202 POST "${CINDER_URL}/v3/volumes" '{"volume": {
+            "size": 1, "consistencygroup_id": null, "snapshot_id": null,
+            "name": "'"${GATE_TAG}"'-vol", "description": "", "volume_type": "__DEFAULT__",
+            "availability_zone": null, "metadata": {}, "imageRef": null,
+            "source_volid": null, "backup_id": null}}'; then
+        GATE_VOLUME=$(echo "$BODY" | jq -r '.volume.id // empty')
+    fi
+    [ -n "$GATE_VOLUME" ] || { print_fail "no volume id in the create response"; return; }
+
+    print_test "it becomes available and is listed once"
+    wait_for "${CINDER_URL}/v3/volumes/${GATE_VOLUME}" '.volume.status' available
+    check "volume is available" $?
+    [ "$(jqval "${CINDER_URL}/v3/volumes/detail" "[.volumes[] | select(.id == \"${GATE_VOLUME}\")] | length")" = "1" ]
+    check "listed once in GET /v3/volumes/detail" $?
+
+    print_test "delete it"
+    expect_send "delete volume" 2xx DELETE "${CINDER_URL}/v3/volumes/${GATE_VOLUME}" && GATE_VOLUME=""
+}
+
+test_create_network() {
+    print_head "SC-003 - Create Network with a subnet, as the Project panel's workflow submits it"
+
+    print_test "POST /v2.0/networks, then POST /v2.0/subnets"
+    if expect_send "create network" 201 POST "${NEUTRON_URL}/v2.0/networks" \
+        '{"network": {"name": "'"${GATE_TAG}"'-net", "admin_state_up": true}}'; then
+        GATE_NET=$(echo "$BODY" | jq -r '.network.id // empty')
+    fi
+    [ -n "$GATE_NET" ] || { print_fail "no network id in the create response"; return; }
+    if expect_send "create subnet" 201 POST "${NEUTRON_URL}/v2.0/subnets" \
+        '{"subnet": {"network_id": "'"${GATE_NET}"'", "name": "'"${GATE_TAG}"'-sub",
+                     "cidr": "10.250.0.0/24", "ip_version": 4, "enable_dhcp": true}}'; then
+        GATE_SUBNET=$(echo "$BODY" | jq -r '.subnet.id // empty')
+    fi
+    [ -n "$GATE_SUBNET" ] || { print_fail "no subnet id in the create response"; return; }
+
+    print_test "listed once, owned by the project, with a subnet that resolves (wizard-selectable)"
+    local entry
+    entry=$(jqval "${NEUTRON_URL}/v2.0/networks" "[.networks[] | select(.id == \"${GATE_NET}\")]")
+    [ "$(echo "$entry" | jq 'length')" = "1" ]
+    check "listed once in GET /v2.0/networks" $?
+    [ "$(echo "$entry" | jq -r '.[0].project_id // empty')" = "$PROJECT_ID" ]
+    check "project_id is the caller's project" $?
+    echo "$entry" | jq -e --arg s "$GATE_SUBNET" 'any(.[0].subnets[]?; . == $s)' > /dev/null
+    check "the network lists the subnet" $?
+    expect_code "GET /v2.0/subnets/{subnet}" 200 "${NEUTRON_URL}/v2.0/subnets/${GATE_SUBNET}"
+}
+
+test_launch_instance() {
+    print_head "SC-001 - Launch Instance on the wizard's defaults"
+    [ -n "$GATE_NET" ] && [ -n "$GATE_SUBNET" ] || { print_fail "no network from SC-003 to launch on"; return; }
+
+    print_test "an image to boot, uploaded so it is active"
+    if expect_send "create image" 201 POST "${GLANCE_URL}/v2/images" \
+        '{"name": "'"${GATE_TAG}"'-img", "disk_format": "raw", "container_format": "bare"}'; then
+        GATE_IMAGE=$(echo "$BODY" | jq -r '.id // empty')
+    fi
+    [ -n "$GATE_IMAGE" ] || { print_fail "no image id in the create response"; return; }
+    [ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "X-Auth-Token: ${TOKEN}" \
+        -H "Content-Type: application/octet-stream" --data-binary "lightstack spec020 gate image" \
+        "${GLANCE_URL}/v2/images/${GATE_IMAGE}/file")" = "204" ]
+    check "upload image data" $?
+
+    local flavor sg
+    flavor=$(jqval "${NOVA_URL}/v2.1/flavors" '[.flavors[] | select(.name == "m1.tiny")][0].id // empty')
+    sg=$(jqval "${NEUTRON_URL}/v2.0/security-groups" "[.security_groups[] | select(.name == \"default\" and .project_id == \"${PROJECT_ID}\")][0].id // empty")
+    [ -n "$flavor" ] && [ -n "$sg" ]
+    check "the wizard's choices exist: flavor m1.tiny and the project's default security group" $?
+
+    print_test "POST /v2.1/servers with the wizard's body"
+    if expect_send "launch" 202 POST "${NOVA_URL}/v2.1/servers" '{"server": {
+            "name": "'"${GATE_TAG}"'-vm", "imageRef": "", "flavorRef": "'"${flavor}"'",
+            "min_count": 1, "max_count": 1, "OS-DCF:diskConfig": "AUTO",
+            "security_groups": [{"name": "'"${sg}"'"}],
+            "networks": [{"uuid": "'"${GATE_NET}"'"}],
+            "block_device_mapping_v2": [{"source_type": "image", "destination_type": "volume",
+                "delete_on_termination": false, "uuid": "'"${GATE_IMAGE}"'", "boot_index": "0",
+                "volume_type": "__DEFAULT__", "volume_size": 1}]}}'; then
+        GATE_SERVER=$(echo "$BODY" | jq -r '.server.id // empty')
+    fi
+    [ -n "$GATE_SERVER" ] || { print_fail "no server id in the launch response"; return; }
+
+    print_test "ACTIVE, listed in the Instances panel's list, with an address on the network"
+    wait_for "${NOVA_URL}/v2.1/servers/${GATE_SERVER}" '.server.status' ACTIVE
+    check "server reaches ACTIVE" $?
+    local listed
+    listed=$(jqval "${NOVA_URL}/v2.1/servers/detail" "[.servers[] | select(.id == \"${GATE_SERVER}\")]")
+    [ "$(echo "$listed" | jq 'length')" = "1" ]
+    check "listed once in GET /v2.1/servers/detail" $?
+    echo "$listed" | jq -e --arg n "${GATE_TAG}-net" '.[0].addresses[$n] | length > 0' > /dev/null
+    check "an address on ${GATE_TAG}-net" $?
+
+    print_test "it boots from the volume made for it, attached at /dev/vda"
+    GATE_BOOT_VOLUME=$(jqval "${NOVA_URL}/v2.1/servers/${GATE_SERVER}" '.server["os-extended-volumes:volumes_attached"][0].id // empty')
+    [ -n "$GATE_BOOT_VOLUME" ]
+    check "volumes_attached lists the boot volume" $?
+    if [ -n "$GATE_BOOT_VOLUME" ]; then
+        get "${CINDER_URL}/v3/volumes/${GATE_BOOT_VOLUME}"
+        [ "$(echo "$BODY" | jq -r '[.volume.status, .volume.attachments[0].device, .volume.attachments[0].server_id] | join(" ")')" = "in-use /dev/vda ${GATE_SERVER}" ]
+        check "the boot volume is in-use, attached to the server at /dev/vda" $?
+    fi
+
+    print_test "delete it; the boot volume outlives it, released, and is deleted after"
+    expect_send "delete server" 2xx DELETE "${NOVA_URL}/v2.1/servers/${GATE_SERVER}" && GATE_SERVER=""
+    if [ -n "$GATE_BOOT_VOLUME" ]; then
+        wait_for "${CINDER_URL}/v3/volumes/${GATE_BOOT_VOLUME}" '.volume.status' available
+        check "the boot volume is released" $?
+        expect_send "delete the boot volume" 2xx DELETE "${CINDER_URL}/v3/volumes/${GATE_BOOT_VOLUME}" && GATE_BOOT_VOLUME=""
+    fi
+    expect_send "delete subnet" 2xx DELETE "${NEUTRON_URL}/v2.0/subnets/${GATE_SUBNET}" && GATE_SUBNET=""
+    expect_send "delete network" 2xx DELETE "${NEUTRON_URL}/v2.0/networks/${GATE_NET}" && GATE_NET=""
+    expect_send "delete image" 2xx DELETE "${GLANCE_URL}/v2/images/${GATE_IMAGE}" && GATE_IMAGE=""
+}
+
+test_overview_after_project_switch() {
+    print_head "SC-004 - Overview limits after a project switch"
+
+    print_test "a second project the user holds a role in"
+    local domain role
+    domain=$(jqval "${KEYSTONE_URL}/v3/domains" '[.domains[] | select(.name == "Default")][0].id // empty')
+    if expect_send "create project" 201 POST "${KEYSTONE_URL}/v3/projects" \
+        '{"project": {"name": "'"${GATE_TAG}"'", "domain_id": "'"${domain}"'", "enabled": true}}'; then
+        GATE_PROJECT=$(echo "$BODY" | jq -r '.project.id // empty')
+    fi
+    [ -n "$GATE_PROJECT" ] || { print_fail "no project id in the create response"; return; }
+    role=$(jqval "${KEYSTONE_URL}/v3/roles" '[.roles[] | select(.name == "member")][0].id // empty')
+    expect_send "assign the member role" 204 PUT "${KEYSTONE_URL}/v3/projects/${GATE_PROJECT}/users/${USER_ID}/roles/${role}"
+
+    print_test "switch: a token scoped to it reads the Overview's limits"
+    local switched
+    switched=$(curl -s -i -X POST "${KEYSTONE_URL}/v3/auth/tokens" -H "Content-Type: application/json" \
+        -d '{"auth": {"identity": {"methods": ["password"], "password": {"user": {
+                "name": "'"$ADMIN_USER"'", "domain": {"name": "Default"}, "password": "'"$ADMIN_PASSWORD"'"}}},
+              "scope": {"project": {"id": "'"${GATE_PROJECT}"'"}}}}' |
+        grep -i "^X-Subject-Token:" | awk '{print $2}' | tr -d '\r')
+    [ -n "$switched" ]
+    check "token scoped to ${GATE_TAG}" $?
+    [ -n "$switched" ] || return
+
+    local own="$TOKEN"
+    TOKEN="$switched"
+    expect_key "GET /v2.1/limits" "${NOVA_URL}/v2.1/limits" '.limits.absolute.maxTotalInstances'
+    expect_key "GET /v3/limits" "${CINDER_URL}/v3/limits" '.limits.absolute.maxTotalVolumes'
+    [ "$(jqval "${NEUTRON_URL}/v2.0/quotas/${GATE_PROJECT}" '.quota.project_id // empty')" = "$GATE_PROJECT" ]
+    check "GET /v2.0/quotas/{project} answers for the switched-to project" $?
+    TOKEN="$own"
+
+    expect_send "delete project" 2xx DELETE "${KEYSTONE_URL}/v3/projects/${GATE_PROJECT}" && GATE_PROJECT=""
+}
+
 # ---------------------------------------------------------------- main
 
 echo "=========================================="
@@ -431,6 +678,10 @@ test_volume_create_metadata
 test_network_selectability
 test_client_paths
 test_quota_target_authz
+test_create_volume
+test_create_network
+test_launch_instance
+test_overview_after_project_switch
 
 echo ""
 echo "=========================================="

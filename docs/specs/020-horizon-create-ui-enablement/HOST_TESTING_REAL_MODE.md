@@ -279,15 +279,17 @@ at the NodePort URL from 1.5 — sign in as `admin` / `secret`, domain `Default`
 
 ### 2.1 T2 — API surface: every create-flow endpoint resolves (SC-005)
 
-The probe walks exactly the endpoints Horizon's create flows load. The pod is `hostNetwork`, so `127.0.0.1`
-reaches the real-mode deployment directly.
+The probe walks exactly the endpoints Horizon's create flows load, then replays the create requests
+Horizon sends for SC-001 – SC-004 and removes what it created (FR-028). In real mode its launch boots a real
+guest from a placeholder image, so the guest boots no OS; ACTIVE is all the check needs. The pod is
+`hostNetwork`, so `127.0.0.1` reaches the real-mode deployment directly.
 
 **T2 — OpenStack CLI:**
 ```bash
-KEYSTONE_URL=http://127.0.0.1:35357 NOVA_URL=http://127.0.0.1:8774 NEUTRON_URL=http://127.0.0.1:9696 CINDER_URL=http://127.0.0.1:8776 ./test/horizon_create_ui_test.sh
+KEYSTONE_URL=http://127.0.0.1:35357 NOVA_URL=http://127.0.0.1:8774 NEUTRON_URL=http://127.0.0.1:9696 CINDER_URL=http://127.0.0.1:8776 GLANCE_URL=http://127.0.0.1:9292 ./test/horizon_create_ui_test.sh
 ```
 
-**Expect:** `Passed: 54   Failed: 0` — same as the stub pass, now against real backends. Before this
+**Expect:** `Failed: 0`, of about 85 checks — the same as the stub pass, now against real backends. Before this
 feature the same script reported `Passed: 15  Failed: 11`. If the total differs, check whether probe checks
 were added or removed before treating it as a failure — `Failed: 0` is the criterion that matters.
 
