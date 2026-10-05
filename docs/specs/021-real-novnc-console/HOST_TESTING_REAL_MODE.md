@@ -88,10 +88,10 @@ export KUBECONFIG=~/.kube/k3s.yaml
 export NODE_IP=$(hostname -I | awk '{print $1}')
 
 echo "--- node-local storage ---"
-sudo mkdir -p /var/lib/lightstack/images /var/lib/lightstack/volumes /var/lib/lightstack/instances /var/lib/lightstack/cloud-init /var/lib/lightstack/dhcp /var/lib/lightstack/console-tokens
+sudo mkdir -p /var/lib/lightstack/images /var/lib/lightstack/volumes /var/lib/lightstack/instances /var/lib/lightstack/cloud-init /var/lib/lightstack/dhcp /var/lib/lightstack/console-tokens /var/lib/lightstack/console-sockets
 
-echo "--- database (recreated if it predates the socket console) ---"
-docker exec lightstack-postgres psql -U lightstack -d lightstack -Atc "SELECT 1 FROM information_schema.columns WHERE table_name='console_auth_tokens' AND column_name='port'" 2>/dev/null | grep -q 1 && make db-down
+echo "--- database (recreated if its console table predates the domain ID) ---"
+docker exec lightstack-postgres psql -U lightstack -d lightstack -Atc "SELECT 1 FROM information_schema.tables WHERE table_name='console_auth_tokens' AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='console_auth_tokens' AND column_name='domain_id')" 2>/dev/null | grep -q 1 && make db-down
 docker inspect lightstack-postgres >/dev/null 2>&1 || make db-up
 
 echo "--- lightstack (real mode, all services) ---"
@@ -130,7 +130,7 @@ openstack server show vm1 -f value -c status -c addresses
 
 **Desired outcome**, reading down the output:
 
-- all six storage subdirectories created (silent on success)
+- all seven storage subdirectories created (silent on success)
 - both lightstack rollouts complete
 - the mode read-back shows **every** service real:
   `libvirt_mode: "real"`, `networking_mode: "iptables"`,
@@ -174,22 +174,26 @@ bridge. The mode read-back exists so this cannot pass unnoticed.
 `DirectoryOrCreate`, which materialises only `/var/lib/lightstack`, and its initContainer
 creates the subdirectories inside the **lightstack** pod's startup. The console proxy is a
 separate Deployment with no ordering guarantee and may start first — which is harmless: it
-mounts the whole storage root rather than the subdirectory, `TokenFile` re-reads it on every
-lookup, and no token can exist before `console-tokens` does, because issuing one fails closed
-without it. The list mirrors `pkg/paths`.
+mounts `console-tokens` itself as a `DirectoryOrCreate` hostPath, so whichever pod starts
+first creates it, `TokenFile` re-reads it on every lookup, and no token can exist before
+`console-tokens` does, because issuing one fails closed without it. `console-sockets` works
+the same way, and Lightstack makes it QEMU's at startup without replacing it, so a proxy
+that mounted it first keeps seeing the same directory. The proxy mounts nothing else of the
+storage root (R1). The list mirrors `pkg/paths`.
 
 What the proxy's probe cannot tell you is whether it can **read** the tokens. It GETs
 `/vnc_lite.html`, which answers whether or not the token directory is readable, so a UID or
 mode mismatch leaves the pod Ready while every lookup fails. R2 and R3 are the checks that
 catch that.
 
-**The database is recreated when it predates the socket console.** Migration `065`
-was changed in place on this branch — tokens now name a socket path instead of a
-host and port — so a database that ran the earlier `065` keeps the old columns, and
-every console request fails on the insert. Nothing migrates it, by design: no build
-with the old table was ever released. If you ran this runbook before on an earlier
-build of this branch, run **Teardown** first instead: guests created then still
-have a TCP console, which the new build refuses (R1).
+**The database is recreated when its console table predates the domain ID.** Migration
+`065` was changed in place on this branch, twice: tokens first named a socket path instead
+of a host and port, and now also record the libvirt domain ID of the run they were issued
+for. A database that ran an earlier `065` keeps the old columns, and every console request
+fails on the insert. Nothing migrates it, by design: no build with the old table was ever
+released. If you ran this runbook before on an earlier build of this branch, run
+**Teardown** first instead: guests created then have their console on a TCP port or in
+libvirt's per-domain directory, both of which the new build refuses (R1).
 
 **The database is addressed by IP, not Service name.** The lightstack pod runs with
 `hostNetwork: true` and `dnsPolicy: ClusterFirst`, which Kubernetes silently
@@ -222,36 +226,82 @@ kubectl -n lightstack logs -l app.kubernetes.io/name=lightstack --tail=20
 
 ## Test steps
 
-### R1 — The guest console is a per-start unix socket, with no TCP port (FR-017)
+### R1 — The guest console is a unix socket in `console-sockets`, with no TCP port (FR-017)
 
 ```bash
 VM=$(openstack server show vm1 -f value -c id)
+echo $VM
 sudo virsh dumpxml $VM | grep -A2 "<graphics"
 ```
 
-**Desired outcome**: `socket='/var/lib/libvirt/qemu/domain-<id>-instance-<8 hex>/vnc.sock'`
-on the `<graphics>` element, a `<listen type='socket' socket='…'/>` child with the
-same path, and `sharePolicy='force-shared'` — and **no** `port=` and no
-`listen='…'` address anywhere in the element. A `<listen type='socket'/>` without a
-path means the readback would be reading the inactive definition.
+**Desired outcome**: `socket='/var/lib/lightstack/console-sockets/<vm1's id>.sock'` on
+the `<graphics>` element, with the id printed above, a `<listen type='socket' socket='…'/>`
+child with the same path, and `sharePolicy='force-shared'` — and **no** `port=` and no
+`listen='…'` address anywhere in the element. The path is the instance's own and does not
+change when the guest restarts (R7).
 
 ```bash
 sudo ss -ltnp | grep -c qemu
-sudo ss -xlp | grep vnc.sock
+sudo ss -xlp | grep console-sockets
 ```
 
 **Desired outcome**: `0` TCP listeners owned by qemu, then one listening unix socket
-at the path above. If qemu holds a TCP port, the guest was defined by an older
-build — delete and recreate it (`docs/UPGRADING.md` explains the in-place fix).
+at the path above, held by qemu. That socket also proves AppArmor let QEMU create it:
+libvirt adds an explicit socket path to that guest's profile, and only that guest's.
+
+If qemu holds a TCP port, or its socket is under `/var/lib/libvirt/qemu/`, the guest was
+defined by an older build, and its console request answers 500 `console misconfigured on
+this host`. Delete and recreate it (`docs/UPGRADING.md` explains the in-place fix).
+
+If the guest did not start at all, Lightstack may be refusing starts: it does so while it
+cannot make the directory QEMU's, and logs why at startup:
 
 ```bash
-sudo ls -la "$(dirname "$(sudo virsh dumpxml $VM | grep -o "socket='[^']*'" | head -1 | cut -d"'" -f2)")"
+kubectl -n lightstack logs deploy/lightstack-lightstack | grep 'console socket directory'
 ```
 
-**Desired outcome**: the directory belongs to `libvirt-qemu` (group `kvm`) and is
-not world-accessible, and `vnc.sock` is a socket (`s` in the mode). That is why
-the console proxy keeps `DAC_OVERRIDE`: root with every capability dropped is just
-"other" there, and `connect()` needs write permission on the socket.
+**Desired outcome**: nothing. A line means every guest start is refused until the cause
+it names is fixed and Lightstack restarted.
+
+```bash
+sudo stat -c '%U:%G %a %F' /var/lib/lightstack/console-sockets /var/lib/lightstack/console-sockets/$VM.sock
+```
+
+**Desired outcome**: `libvirt-qemu:kvm 750 directory`, then `libvirt-qemu:kvm 775
+socket`. Lightstack set the directory's owner at startup to the user libvirt reports for
+QEMU (`sudo virsh capabilities | grep -A3 '<model>dac'`). QEMU created the socket. That
+is why the console proxy keeps `DAC_OVERRIDE`: root with every capability dropped is
+just "other" there, and `connect()` needs write permission on the socket.
+
+The proxy reaches that directory and the tokens, and nothing else:
+
+```bash
+kubectl -n lightstack get deploy lightstack-lightstack-console-proxy -o jsonpath='{range .spec.template.spec.volumes[*]}{.hostPath.path}{"\n"}{end}'
+kubectl -n lightstack exec deploy/lightstack-lightstack-console-proxy -- ls /var/lib/lightstack
+kubectl -n lightstack exec deploy/lightstack-lightstack-console-proxy -- ls /var/lib/libvirt/qemu
+```
+
+**Desired outcome**: exactly two volumes, `/var/lib/lightstack/console-tokens` and
+`/var/lib/lightstack/console-sockets`. Inside the proxy, `/var/lib/lightstack` holds only
+those two, and `/var/lib/libvirt/qemu` does not exist (`No such file or directory`). That
+is the point of the move: libvirt's per-domain directories hold every guest's QMP monitor
+socket and key material, and the storage root holds every tenant's disks. With
+`DAC_OVERRIDE`, anything mounted is readable.
+
+A real-mode `state_path` must leave room for the socket path. The longest one allowed is
+50 characters, because `<state_path>/console-sockets/<uuid>.sock` must fit QEMU's 108-byte
+limit. Check the refusal against the image under test, which needs nothing running:
+
+```bash
+printf 'state_path: /var/lib/lightstack/a-state-root-of-fifty-one-chars\nnova:\n  libvirt_mode: real\n' > /tmp/spec021-state-path.yaml
+docker run --rm -v /tmp/spec021-state-path.yaml:/tmp/c.yaml:ro docker.io/library/lightstack:spec021 /app/lightstack --config /tmp/c.yaml
+rm -f /tmp/spec021-state-path.yaml
+```
+
+**Desired outcome**: `Failed to load config: state_path "…" is 51 characters; real mode
+allows at most 50, …`, before any connection is attempted. The chart passes
+`realMode.hostStoragePath` as `state_path`, so a longer one leaves the Lightstack pod
+failing at startup with the same message.
 
 ### R2 — A console URL is issued, and it is real (SC-001, SC-003)
 
@@ -270,7 +320,8 @@ The binary is at `/app/lightstack` in the image and is not on `$PATH`:
 kubectl -n lightstack exec deploy/lightstack-lightstack -- /app/lightstack console-tokens list
 ```
 
-**Desired outcome**: one row, showing the instance, the socket path from R1 and a
+**Desired outcome**: one row, showing the instance, the socket path from R1, the domain
+ID of the guest's current run (`sudo virsh domid $VM` prints the same number) and a
 remaining lifetime. The token itself is redacted.
 
 ### R3 — The framebuffer renders and takes input (SC-001, SC-002) ⭐
@@ -290,15 +341,18 @@ If it fails, the probes in `quickstart.md` isolate which side is at fault:
 kubectl -n lightstack logs deploy/lightstack-lightstack-console-proxy | tail -20
 ```
 
-`connecting to unix socket: /var/lib/libvirt/qemu/domain-…/vnc.sock` means the proxy
-resolved the token. `Token '…' not found` means the projection entry is missing,
+`connecting to unix socket: /var/lib/lightstack/console-sockets/<id>.sock` means the
+proxy resolved the token. `Token '…' not found` means the projection entry is missing,
 stale, or unreadable. After a `connecting to` line:
 
 - `Failed to connect … Permission denied` — the proxy lost `DAC_OVERRIDE`; check
   `consoleProxy.containerSecurityContext`.
-- `Failed to connect … No such file or directory` — the guest restarted since the
-  link was issued (open the console again), or libvirt keeps domain state somewhere
-  other than `consoleProxy.libvirtDomainDir`.
+- `Failed to connect … No such file or directory` — the guest is not running (QEMU
+  removes its socket on shutdown), or the proxy's `console-sockets` is not the host
+  directory QEMU writes to (the mount check in R1).
+- `Failed to connect … Connection refused` — a socket left behind by a QEMU that
+  crashed. The stale-token sweep revokes the link within one interval, and the next
+  start replaces the socket.
 
 ### R4 — Both API surfaces agree (FR-005)
 
@@ -328,7 +382,7 @@ Open both consoles side by side for two minutes.
 
 **Desired outcome**: each shows its own guest. No cross-talk.
 
-### R7 — A reboot revokes the link; a stop/start moves the socket (SC-006, FR-004)
+### R7 — A reboot revokes the link; a restart keeps the path and changes the domain ID (SC-006, FR-004, FR-014a)
 
 ```bash
 openstack console url show vm1 -f value -c url
@@ -345,24 +399,27 @@ and the new URL connects on the first attempt.
 
 The link must be issued here, not reused from R2 or R4: those have expired by now, so
 their absence proves nothing. A fresh one is minutes inside its TTL, so a missing row
-is the reboot's revoke. And a reboot keeps the guest's qemu process, and with it the
-socket, so the stale-token sweep — which only drops tokens whose socket changed — had
-no reason to remove it either.
+is the reboot's revoke. A soft reboot keeps the guest's QEMU process, and with it the
+domain ID and the socket, so the stale-token sweep — which drops a token only when its
+guest serves another socket, runs under another domain ID, or is not running — had no
+reason to remove it either.
 
 A hard reboot is a power cycle, not a request to the guest:
 
 ```bash
 VM=$(openstack server show vm1 -f value -c id)
-sudo virsh dumpxml $VM | grep -o "socket='[^']*'" | head -1
+sudo virsh domid $VM
 openstack server reboot --hard vm1
+sudo virsh domid $VM
 sudo virsh dumpxml $VM | grep -o "socket='[^']*'" | head -1
 openstack console url show vm1
+kubectl -n lightstack exec deploy/lightstack-lightstack -- /app/lightstack console-tokens list
 ```
 
-**Desired outcome**: the two socket lines name **different** `domain-<id>-…`
-directories — the domain was destroyed and started again, so qemu is a new process,
-which a hung guest cannot ignore — and the new URL connects on the first attempt. The
-soft reboot above keeps the same directory.
+**Desired outcome**: two **different** domain IDs — the domain was destroyed and started
+again, so QEMU is a new process, which a hung guest cannot ignore — while the socket stays
+at `/var/lib/lightstack/console-sockets/<vm1's id>.sock`. The new URL connects on the
+first attempt, and the listing shows its row with the second ID. A soft reboot keeps the ID.
 
 A reboot without a valid `type` is refused, and refused before the instance is looked up,
 so it cannot revoke a live link on its way to the 400:
@@ -377,21 +434,50 @@ kubectl -n lightstack exec deploy/lightstack-lightstack -- /app/lightstack conso
 
 **Desired outcome**: `400` twice, and the listing still shows the vm1 link printed first.
 
+A stop, a console request while stopped, and a start:
+
 ```bash
 VM=$(openstack server show vm1 -f value -c id)
-sudo virsh dumpxml $VM | grep -o "socket='[^']*'" | head -1
+sudo virsh domid $VM
 openstack server stop vm1
 for i in $(seq 1 60); do sudo virsh domstate $VM | grep -q 'shut off' && break; sleep 1; done
+kubectl -n lightstack exec deploy/lightstack-lightstack -- /app/lightstack console-tokens list
+openstack console url show vm1
 openstack server start vm1
 for i in $(seq 1 60); do sudo virsh domstate $VM | grep -q running && break; sleep 1; done
+sudo virsh domid $VM
 sudo virsh dumpxml $VM | grep -o "socket='[^']*'" | head -1
 openstack console url show vm1
 ```
 
-**Desired outcome**: the two socket lines name **different** `domain-<id>-…`
-directories — libvirt gives every start a new one, so a link issued before the stop
-names a path that no longer exists — and the new URL connects on the first attempt.
-Nothing may be cached.
+**Desired outcome**: after the stop, no vm1 row, and the console request is refused with
+`console not available: the instance is not running` (HTTP 409). The stopped domain's
+definition still names the socket, because the path is fixed, so that refusal shows the
+readback asks libvirt whether the guest runs instead of trusting the XML. After the start, a
+**different** domain ID, the same socket path, and a new URL that connects on the first
+attempt. Nothing may be cached.
+
+The same restart behind Lightstack's back reaches no API, so only the domain ID can give
+it away:
+
+```bash
+openstack console url show vm1 -f value -c url
+sudo virsh destroy $VM
+sudo virsh start $VM
+kubectl -n lightstack exec deploy/lightstack-lightstack -- /app/lightstack console-tokens list
+sudo virsh domid $VM
+sleep 40
+kubectl -n lightstack exec deploy/lightstack-lightstack -- /app/lightstack console-tokens list
+kubectl -n lightstack logs deploy/lightstack-lightstack --since=2m | grep 'no longer serves'
+```
+
+**Desired outcome**: the first listing, taken with the guest already running again, still
+shows the new link, under the domain ID it was issued for, and `virsh domid` prints another
+one. After one reconcile interval (30s by default, plus slack) the row is gone, the log
+shows `console tokens revoked: their guest no longer serves that console`, and opening the
+link fails. The guest was running and the socket path never changed, so the ID is what the
+sweep went by. If the first listing already has no vm1 row, a sweep fell in the second
+between the destroy and the start and revoked the link for the stop; run the block again.
 
 ### R8 — The security probe (SC-005)
 
@@ -400,9 +486,9 @@ LIGHTSTACK_MODE=real ./test/console_access_test.sh
 ```
 
 **Desired outcome**: `failed: 0`. Covers reuse-within-window, invented tokens,
-cross-instance tokens, revocation on stop and delete, and — step 8, which needs
-`sudo virsh` — a guest stopped behind Lightstack's back losing its links within one
-reconcile interval.
+cross-instance tokens, revocation on stop and delete, and — steps 8 and 9, which need
+`sudo virsh` — a guest stopped, or restarted, behind Lightstack's back losing its links
+within one reconcile interval. Step 9 is R7's last check, automated.
 
 Add restart survival (SC-007) explicitly:
 
@@ -497,8 +583,8 @@ Lightstack re-dials every 1–5 seconds: `sleep 6` covers one backoff step.
 
 The lifecycle revoke only sees the API. A guest that shuts itself down frees its
 console without any call to Lightstack, so the reconciler compares every token with
-the socket its guest serves now. R8's step 8 checks this with `virsh destroy`; this is
-the real thing.
+the socket and domain ID its guest has now. R8's step 8 checks this with `virsh destroy`;
+this is the real thing.
 
 ```bash
 openstack console url show vm2
@@ -656,8 +742,11 @@ Check that *before* removing the node-local state, then drop it:
 sudo rm -rf /var/lib/lightstack
 ```
 
-Uninstalling the lightstack release runs the chart's pre-delete purge hooks, so do that
-**before** removing k3s. Then remove k3s itself:
+Uninstall the lightstack release **before** removing k3s. Under
+`dataRetentionPolicy: delete` its pre-delete hooks purge the node, including
+`console-tokens` and `console-sockets`, and they need the cluster. This runbook keeps the
+default, `retain`, so uninstalling purges nothing and the `rm -rf` above does it. Then
+remove k3s itself:
 
 ```bash
 sudo /usr/local/bin/k3s-uninstall.sh

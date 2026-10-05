@@ -15,6 +15,9 @@ func TestLayout(t *testing.T) {
 		{CloudInitDir(), "/var/lib/lightstack/cloud-init"},
 		{DHCPDir(), "/var/lib/lightstack/dhcp"},
 		{ConsoleTokenDir(), "/var/lib/lightstack/console-tokens"},
+		{ConsoleSocketDir(), "/var/lib/lightstack/console-sockets"},
+		{ConsoleSocketPath("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
+			"/var/lib/lightstack/console-sockets/1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d.sock"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -38,6 +41,8 @@ func TestSetBaseMovesEveryDir(t *testing.T) {
 		{CloudInitDir(), "/data/lightstack/cloud-init"},
 		{DHCPDir(), "/data/lightstack/dhcp"},
 		{ConsoleTokenDir(), "/data/lightstack/console-tokens"},
+		{ConsoleSocketDir(), "/data/lightstack/console-sockets"},
+		{ConsoleSocketPath("x"), "/data/lightstack/console-sockets/x.sock"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

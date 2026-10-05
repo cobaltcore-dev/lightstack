@@ -23,7 +23,7 @@ func TestRebootRequiresAValidType(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r, store := newConsoleTestRouter(t, "stub")
 			id := seedConsoleInstance(t, seededProjectID)
-			tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket)
+			tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket, testDomainID)
 			if err != nil {
 				t.Fatalf("Issue: %v", err)
 			}

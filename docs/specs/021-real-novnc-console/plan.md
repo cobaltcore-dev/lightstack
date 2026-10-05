@@ -1,87 +1,93 @@
 # Implementation Plan: a real console / noVNC (F1)
 
-**Branch**: `feature/534` (feature id `021-real-novnc-console`) | **Date**: 2026-07-30 | **Spec**: [spec.md](./spec.md)
-**Input**: `docs/specs/021-real-novnc-console/spec.md` — 30 functional requirements, 12 clarification decisions, no open forks.
+**Branch**: `feature/534` (feature id `021-real-novnc-console`) | **Date**: 2026-07-30, amended 2026-10-01 | **Spec**: [spec.md](./spec.md)
+**Input**: `docs/specs/021-real-novnc-console/spec.md`. Planned 2026-07-30. Redesigned in the PR #80 review (2026-09-24: per-start unix-socket consoles, a libvirt-checked token sweep, `state_path`). Amended 2026-10-01 (seven clarifications): guest console sockets move out of libvirt's per-domain directories.
 
 ## Summary
 
-Make Horizon's Console tab show a running instance's real framebuffer, closing **F1** — the last open finding from the #482 verification pass.
+Make Horizon's Console tab show a running instance's real framebuffer, closing **F1**, the last open finding from the #482 verification pass.
 
-The approach inverts the ticket's assumption. The ticket asks for "a real proxy that validates the token and connects to the guest VNC"; the clarification session established that **we do not write one**. The noVNC image already pinned in the verification stacks bundles websockify and its token plugins, and a command override turns it into exactly that proxy — verified end to end (research.md R5: a good token yields `101 Switching Protocols` and `connecting to: 127.0.0.1:5999`; a bad one is closed with no response and no guest contacted). So Lightstack's work reduces to four things:
+We do not write a proxy. The pinned noVNC image bundles websockify and its token plugins, and a command override turns it into exactly the token-validating relay the ticket asks for (research R5). Lightstack's part:
 
-1. **Read the real console port** back from libvirt per request (`DomainGetXMLDesc`, flags `0` so `autoport` is resolved), replacing `5900 + hash(id) % 1000`.
-2. **Own a token lifecycle** — a database table as the store of record, projected into `/var/lib/lightstack/console-tokens/` as the `token: host:port` entries the proxy reads, revoked on every endpoint-moving operation and reaped on expiry.
+1. **Read the guest's console back from libvirt per request**: its unix socket path plus the domain ID of the run (`DomainLookupByUUID` + `DomainGetXMLDesc`, flags `0`), bounded at 1s.
+2. **Own a token lifecycle.** A database table is the store of record. It is projected into `<state_path>/console-tokens/` as the `token: unix_socket:<path>` entries the proxy reads. Tokens are revoked on every endpoint-moving operation, swept against libvirt (a different socket or domain ID means revoke), and reaped on expiry.
 3. **Return a working URL** at an operator-configured origin, in upstream's shape, and refuse honestly everywhere it cannot.
-4. **Ship the proxy** in `charts/lightstack`, and relocate the dashboard chart out of its verification-only home.
+4. **Ship the proxy** in `charts/lightstack` and both deploy scripts, mounting only what it needs.
 
-The security posture is the part worth stating plainly: the guest console moves from listening on `0.0.0.0` to loopback only, so the token stops being decorative and becomes the sole path in.
+**Amendment, 2026-10-01** (review comment r3987379050). The proxy mounted libvirt's per-domain directories, which also hold every guest's QMP `monitor.sock` and `master-key.aes`, and the proxy keeps `DAC_OVERRIDE`. The changes:
+
+- Guest sockets move to `<state_path>/console-sockets/<instance-uuid>.sock`. The directory is owned by QEMU's uid:gid, read from libvirt's capabilities, mode 0750.
+- The proxy mounts only `console-tokens` and `console-sockets`, both read-only.
+- With the path now fixed per instance, a restart is detected by the libvirt domain ID stored on each token.
+- When the directory is not ready, guest starts are refused before libvirt is called. Domains defined before this change are refused as misconfigured.
+- Uninstall purges both console directories.
 
 ## Technical Context
 
 **Language/Version**: Go 1.26 (module targets 1.21+)
-**Primary Dependencies**: gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL), digitalocean/go-libvirt (`DomainGetXMLDesc` — confirmed present in the pinned revision), `encoding/xml` (stdlib) for the graphics element. **No new Go modules** — the relay is not ours.
-**External component**: `bonigarcia/novnc:1.3.0`, **unmodified**, command overridden to `python3 -m websockify --web /root/noVNC --token-plugin TokenFile --token-source <dir> 6080`. Ships noVNC **1.6.0** and websockify with its token plugins (the tag is the image's version, not noVNC's).
-**Storage**: PostgreSQL — one new migration `065`: console-token table; drops the dead `instances.console_vnc_port` / `console_vnc_password`. Node-local: one new subdirectory `/var/lib/lightstack/console-tokens` under the existing `realMode.hostStoragePath` contract.
-**Testing**: `go test` unit tests (XML parse, token lifecycle, authz, refusals); rewritten `test/console_test.sh` + `test/console_access_test.sh`; helm-unittest for chart wiring; host runbook for stub + real. **Not** `test/contract/nova` — stub-only (F15).
-**Target Platform**: Linux for real mode (libvirt/KVM); stub mode everywhere including macOS.
-**Project Type**: single Go binary + Helm charts (existing layout, no new project).
-**Performance Goals**: console request within the API budget; the added libvirt XML read is one round trip on an already-open connection. Framebuffer visible within 10s of opening the tab (SC-001).
-**Constraints**: fail-fast ≤1s on the libvirt read (Constitution III); synchronous issuance, no queues (II); stub mode must work with no libvirt (IV); project-scoped with an `admin` override (V).
-**Scale/Scope**: single-node real mode only — multi-node console is out of scope for this feature and v1. Concurrent sessions: a handful; token rows are short-lived and reaped.
+**Primary Dependencies**: gin-gonic/gin, jackc/pgx/v5 + pgxpool, digitalocean/go-libvirt (`DomainGetXMLDesc`, `DomainLookupByUUID` → `Domain.ID`, `ConnectGetCapabilities`, all present in the pinned revision `v0.0.0-20260609165003-6254771e63a8`), `encoding/xml`. **No new Go modules.**
+**External component**: `bonigarcia/novnc:1.3.0`, **unmodified**, pulled by digest (`sha256:a5be468d…`), with the command overridden to `python3 -m websockify --web /root/noVNC --token-plugin TokenFile --token-source <state_path>/console-tokens --idle-timeout <n> <port>`.
+**Storage**: PostgreSQL, migration `065_console_auth_tokens`. It is edited in place: nothing is deployed, and test databases are recreated. This amendment adds `domain_id`. Node-local: `<state_path>/console-tokens/` (the projection) and `<state_path>/console-sockets/` (QEMU-owned, 0750, sockets only).
+**Testing**:
+- `go test` against a real throwaway PostgreSQL for the store.
+- libvirt XML and capabilities parsing tests, and a start-guard test.
+- helm-unittest for chart wiring.
+- `test/console_test.sh` (stub) and `test/console_access_test.sh` (real).
+- The real-mode host runbook (R1, R7 and the mount check re-run).
+**Target Platform**: Linux with libvirt ≥ 2.0 and AppArmor for real mode (Ubuntu 22.04 ships libvirt 8.0, 24.04 ships 10.0). SELinux hosts are unverified. Stub mode runs everywhere, macOS included.
+**Project Type**: single Go binary + Helm charts (existing layout).
+**Performance Goals**: one extra libvirt round trip per console request (the lookup the readback already makes now also yields the domain ID); one capabilities read at startup. Framebuffer visible within 10s (SC-001).
+**Constraints**:
+- Fail-fast: ≤1s on every libvirt call made inside a request, and on the startup capabilities read (III).
+- Synchronous issuance (II).
+- Stub mode needs no libvirt (IV).
+- Project-scoped, with an `admin` override (V).
+- QEMU's 108-byte socket-path limit means `state_path` ≤ 50 characters in real mode.
+**Scale/Scope**: single-node real mode; the multi-node chart deploys no proxy and still prepares `console-sockets` on every node (FR-017a).
 
 ## Constitution Check
 
-*GATE: evaluated before Phase 0 and re-evaluated after Phase 1 design. Both passes recorded.*
-
-> ⚠️ **This repository contains two different constitutions, and both are checked below.**
-> `.specify/memory/constitution.md` (139 lines, six Lightstack-specific principles) is what the planning tooling loads.
-> `.claude/memory/constitution.md` (82 lines, the **Nine Articles**) is what `CLAUDE.md` designates as authoritative
-> ("Immutable principles in `memory/constitution.md`"). An initial version of this plan checked only the first and
-> missed the second — caught by the analysis pass. Both are evaluated here, and where they **conflict** the conflict
-> is named rather than resolved silently. **Reconciling the two documents is a project-level task outside this
-> feature**; a feature plan is the wrong place to pick a winner.
+*GATE: evaluated before Phase 0 and re-evaluated after Phase 1. Both constitutions are checked, because this repository has two (`.specify/memory/constitution.md`, which the tooling loads, and `.claude/memory/constitution.md`, which `CLAUDE.md` designates). Reconciling them remains a project-level task.*
 
 ### A. Lightstack principles (`.specify/memory/constitution.md`)
 
-| # | Principle | Verdict | Evidence / note |
+| # | Principle | Verdict | Evidence |
 |---|---|---|---|
-| I | **Flamingo API compatibility** (non-negotiable) | ✅ PASS | Three surfaces implemented to the api-ref shapes captured in `contracts/nova-console-api.md`: `remote-consoles` (2.6+), the legacy `os-getVNCConsole` action, `os-console-auth-tokens/{token}` (2.31+). Upstream's `path=%3Ftoken%3D…` URL encoding is reproduced exactly and **verified** to work against our proxy. Two deliberate, documented choices where upstream offers no answer: the client page is `vnc_lite.html` (upstream's `vnc_auto.html` 404s on noVNC 1.6.0 — the URL is opaque to clients, so this is not a contract break), and stub mode returns 501 (no upstream analogue). |
-| II | **Synchronous operations** | ✅ PASS | Issuance is one synchronous path: read the port from libvirt, insert the row, write the projection file, respond. No queue, no state machine. |
-| III | **Fail-fast** | ✅ PASS | The XML readback is bounded at **1s** by an explicit deadline (T007a) — necessary because go-libvirt's generated calls take no `context`, so the bound has to be imposed by the caller. The dialer's 2s `WithLocalTimeout` applies **only at connect**, not per call, so it does not sit inside a console request; the connection is established once at startup. No retry loop. |
-| IV | **Multi-mode architecture** | ✅ PASS | Stub mode refuses at request time (501) with no libvirt involvement; every new unit test runs without Linux. |
-| V | **Project isolation** | ✅ PASS | Tokens are issued only for the caller's project, with an explicit `admin` override via the shared `common.HasRole` — precisely the "explicit admin role check" the principle allows. |
-| VI | **Single binary deployment** | ⚠️ **DEVIATION** | The console proxy is a separate container. Justified in Complexity Tracking. |
-| — | **Forbidden Patterns**: no async workers | ⚠️ **DEVIATION** | A periodic token reconciler is required for expiry to be enforceable at all. Justified in Complexity Tracking. |
-| — | **Reversible migrations** | ✅ PASS | `065` up creates the table and drops two dead columns; down drops the table and restores both columns. |
-| — | **Test-first** | ✅ PASS with a caveat | Unit tests and rewritten scripts precede implementation. The caveat is real: `test/contract/nova` is stub-only (F15), so no existing contract harness can gate real-mode console behaviour — the host runbook is the gate. |
-| — | **No hardcoded credentials** | ✅ PASS | The feature *removes* a generated-and-stored VNC password rather than adding a secret. Token values are never logged in reusable form (FR-028). |
+| I | Flamingo API compatibility | ✅ PASS | The three console surfaces keep upstream's shapes (contracts/nova-console-api.md). Protocol is validated, since upstream dispatches on it. The amendment adds no API shape: a refused start reuses today's answers for a hypervisor failure (202→ERROR, 500), and a pre-move domain gets the existing "console misconfigured" 500. |
+| II | Synchronous operations | ✅ PASS | Issuance stays one synchronous path. The directory is prepared synchronously at startup. No queue. |
+| III | Fail-fast | ✅ PASS | The readback keeps its 1s goroutine+select bound (go-libvirt calls take no context), and the startup capabilities read uses the same bound. Starts are refused immediately when the directory is not ready, rather than failing inside libvirt. |
+| IV | Multi-mode | ✅ PASS | Stub mode creates no sockets and no directory; the `state_path` length check applies only in real mode. |
+| V | Project isolation | ✅ PASS, strengthened | The proxy no longer reaches any guest's QMP monitor or key material (SC-013). The path is per instance, so no token names another guest's socket. |
+| VI | Single binary | ⚠️ DEVIATION (unchanged) | The proxy is a separate container (Complexity Tracking). |
+| — | No async workers | ⚠️ DEVIATION (unchanged) | The periodic token reconciler. The amendment only adds a domain-ID comparison to its existing sweep. |
+| — | Reversible migrations | ✅ PASS | `065` down drops the table (with `domain_id`) and restores the two dropped instance columns. |
+| — | Test-first | ✅ PASS | Every amendment task starts from a failing test (tasks.md). |
+| — | No hardcoded credentials | ✅ PASS | Nothing added. |
 
-### B. The Nine Articles (`.claude/memory/constitution.md`, designated by CLAUDE.md)
+### B. The Nine Articles (`.claude/memory/constitution.md`)
 
-| Art. | Principle | Verdict | Evidence / note |
-|---|---|---|---|
-| I | **Library-First** — every feature begins as a standalone library | ✅ PASS **after remediation** | An earlier draft claimed this Article conflicts with Lightstack Principle VI. **It does not** — libraries compile *into* the single binary, which is exactly what `pkg/hypervisor`, `pkg/networking`, `pkg/storage`, `internal/health` and `internal/teardown` already are. The token store therefore ships as a self-contained, independently testable package, **`internal/console`**, following the `internal/teardown` precedent; `internal/nova` keeps only thin handlers that call it. `pkg/paths.ConsoleTokenDir` and `pkg/hypervisor.GetConsoleEndpoint` are libraries already. |
-| II | **CLI Interface** — every library exposes functionality via CLI | ✅ PASS **after remediation** | Also not in conflict with a single binary: `cmd/lightstack/main.go` already dispatches `cleanup` (`:48`) and `healthcheck` (`:55`) subcommands, each a thin wrapper over a library package, with text to stdout, errors to stderr and documented exit codes. `internal/console` gains the same treatment — **`lightstack console-tokens list|purge`** (T012/T013), with `--json` for structured output. This replaces hand-inspecting the token directory with `ls`/`cat`, so it improves the operator story rather than merely satisfying the Article. |
-| III | **Test-First (NON-NEGOTIABLE)** | ✅ PASS | Every implementation task is preceded by a failing-test task in the same phase: T006→T007, T008→T009, T010→T011, T012→T013, T020/T021→T022, T036→T037. |
-| IV | **Integration Testing** — real databases over mocks, contract tests mandatory | ✅ PASS | Token-store tests run against a **real throwaway PostgreSQL**, not mocks (the pattern established by #533), stated explicitly in the task descriptions. Contract tests exist as T012 and T036. |
-| V | **Observability** — structured logging, clear errors | ✅ PASS | T041; every refusal names its reason (contracts/nova-console-api.md status matrix). |
-| VI | **Versioning** — semantic versioning | ✅ PASS **after remediation** | Originally uncovered. Now T033 bumps `charts/lightstack`'s chart version and T034 sets `charts/horizon`'s version and appVersion deliberately. |
-| VII | **Simplicity** — ≤3 projects, YAGNI, no future-proofing | ✅ PASS **after remediation** | The `console_type` column was future-proofing for a second console type that FR-025 explicitly refuses; **dropped**. No new project: charts are not projects and `charts/horizon` is a relocation, not a new codebase. |
-| VIII | **Anti-Abstraction** — single model representation | ✅ PASS | No abstraction layer or interface is introduced; go-libvirt and gin are used directly. The token existing both as a row and as a projection file is not a second model — it is the literal wire format an external component requires, with the database declared the single source of truth (contracts/console-token-projection.md, invariant 1). |
-| IX | **Integration-First** — contract tests before implementation | ✅ PASS with a caveat | T012 and T036 encode contracts/nova-console-api.md before the handlers exist. The caveat is honest: `test/contract/nova` is stub-only (F15), so the rewritten shell integration tests (T019, T028, T042) plus the host runbook carry real-mode verification. |
+| Art. | Verdict | Evidence |
+|---|---|---|
+| I Library-First | ✅ PASS | Socket placement, capabilities parsing, directory preparation and the start guard live in `pkg/hypervisor` and `pkg/paths`; the domain-ID sweep lives in `internal/console`. Nova keeps thin handlers. |
+| II CLI | ✅ PASS | `lightstack console-tokens list` gains the domain-ID column (text and `--json`), so the new state is inspectable. |
+| III Test-First | ✅ PASS | RED before GREEN for each amendment task. |
+| IV Integration Testing | ✅ PASS | Store tests on real PostgreSQL; the host runbook re-runs R1/R7 and the mount check. |
+| V Observability | ✅ PASS | The not-ready directory, a refused start and a pre-move domain are each logged with the directory or the path named. |
+| VI Versioning | ✅ PASS | `charts/lightstack` 0.3.0 is introduced by this unreleased branch, so the removed `consoleProxy.libvirtDomainDir` value needs no further bump. It is recorded in `docs/UPGRADING.md`. |
+| VII Simplicity | ✅ PASS | No new package, setting or dependency. Owner taken from libvirt, not a new knob. |
+| VIII Anti-Abstraction | ✅ PASS | go-libvirt used directly; no interface introduced. |
+| IX Integration-First | ✅ PASS with the known caveat | `test/contract/nova` is stub-only (F15); real-mode behaviour is gated by the host runbook. |
 
-**Post-Phase-1 re-evaluation**: no new violations from the design artifacts. **Two** deviations total, both introduced by this feature and both argued in Complexity Tracking (Lightstack Principle VI, and the background-worker ban). Articles I and II were initially recorded as deviations on the grounds that they conflict with the single-binary principle; that was wrong — a library is compiled *into* the binary and a subcommand is *part of* it — so both are now satisfied rather than excused.
+**Post-Phase-1 re-evaluation**: no new violations. The amendment removes exposure rather than adding mechanism; the two existing deviations stand as argued below.
 
 ## Complexity Tracking
 
 | Violation | Why needed | Simpler alternative rejected because |
 |-----------|------------|--------------------------------------|
-| **Principle VI** — a separate proxy container alongside the binary | The browser↔guest relay is a WebSocket-to-TCP proxy. The pinned noVNC image already contains a hardened, maintained one (websockify) plus the client assets; using it means **zero relay code and no new Go dependency**. The proxy is third-party infrastructure in the same class as PostgreSQL, memcached and Horizon — all already external — not a seventh Lightstack service. Lightstack's binary gains nothing and stays as it is. | Writing an in-process relay was evaluated in clarification and rejected: it means a new WebSocket dependency plus vendoring third-party client assets (MPL-2.0) into the binary, to reimplement a component we already ship. Principle VI forbids splitting *Lightstack's services* into microservices; it does not forbid depending on external infrastructure, which the deployment already does five times over. |
-| **Forbidden Patterns** — a periodic token reconciler | websockify's token file format has **no expiry field** (verified, research.md R4), so an expired token stays live for exactly as long as its file exists. Deleting the file *is* the expiry mechanism. Lazy reaping at next-request would leave a token valid for hours after expiry, making FR-010 false. | Lazy-only reaping breaks the requirement (shown in R7). Pushing expiry into the proxy is impossible with any file-based plugin, and the HTTP-callback plugin that could do it needs a Python dependency absent from the image. A reconciler is not a job processor: no queue, no work items, only Lightstack reconciling its own projection to its own database — with in-repo precedent in the SPEC-009 real-mode network reconciler. |
+| **Principle VI**: a separate proxy container | The pinned noVNC image already contains a maintained relay (websockify) plus the client. Using it means zero relay code and no new Go dependency. It is third-party infrastructure like PostgreSQL and Horizon, not a seventh Lightstack service. | An in-process relay needs a new WebSocket dependency and vendored client assets (MPL-2.0) to reimplement a component we already ship. |
+| **Forbidden Patterns**: a periodic token reconciler | websockify's token file has no expiry field, so deleting the file is the expiry mechanism. Lazy reaping would leave a token valid for hours past expiry. | Lazy-only reaping breaks FR-010. The reconciler holds no queue: it only reconciles Lightstack's projection with its own table and with libvirt (socket path and, from 2026-10-01, domain ID). |
 
-**Honest consequence of the second deviation**: effective maximum token validity is `TTL + reconcile interval` (10m30s at the proposed defaults), not exactly 10m. Measurable and testable; recorded here rather than buried.
-
-**Recommendation beyond this feature**: two authoritative constitutions is a defect in its own right — it made a CRITICAL gate finding possible, and it will do so again. Reconciling them (or designating one and deleting the other) deserves its own ticket.
+**Consequence**: effective maximum token validity is `TTL + reconcile interval` (10m30s at defaults). After a host reboot, a token can coincide with its guest's new domain ID and survive until its TTL. It can only ever reach that same guest (spec, edge cases).
 
 ## Project Structure
 
@@ -89,115 +95,105 @@ The security posture is the part worth stating plainly: the guest console moves 
 
 ```text
 docs/specs/021-real-novnc-console/
-├── spec.md                        # complete, 12 clarifications recorded
-├── plan.md                        # this file
-├── research.md                    # Phase 0 — R1..R10, all verified
-├── data-model.md                  # Phase 1
-├── quickstart.md                  # Phase 1
-├── contracts/                     # Phase 1
-│   ├── nova-console-api.md        # the three HTTP surfaces + status codes
-│   ├── console-token-projection.md# the token-file directory contract
-│   └── proxy-deployment.md        # the websockify invocation + placement contract
-├── checklists/requirements.md     # spec quality — all items pass
-└── tasks.md                       # Phase 2 — NOT created by this command
+├── spec.md                         # 3 clarification sessions (19 answers in total)
+├── plan.md                         # this file
+├── research.md                     # R1–R11, plus R12–R18 for the 2026-10-01 amendment
+├── data-model.md                   # console_auth_tokens incl. domain_id; console-sockets
+├── quickstart.md                   # bring-up and probes, incl. the socket directory
+├── contracts/
+│   ├── nova-console-api.md         # HTTP surfaces + status matrix (pre-move domain row)
+│   ├── console-token-projection.md # projection format; sockets under console-sockets
+│   └── proxy-deployment.md         # invocation; mounts = console-tokens + console-sockets
+├── HOST_TESTING.md, HOST_TESTING_REAL_MODE.md
+└── tasks.md                        # updated by /cl.tasks
 ```
 
-### Source code (repository root)
+### Source code (amendment touch points marked ✱)
 
 ```text
-internal/console/                  # NEW library (Article I) — the token store, self-contained
-├── store.go                       #   Issue / Resolve / RevokeByInstance / RevokeExpired
-├── projection.go                  #   the token-file writer + reaper
-├── reconciler.go                  #   periodic + startup sweep
-├── store_test.go                  #   lifecycle, expiry, fail-closed (real throwaway Postgres)
-└── cli.go                         #   `lightstack console-tokens list|purge` (Article II)
-
-internal/nova/
-├── console.go                     # REWRITE: thin handlers — real URLs, honest refusals;
-│                                  #   delete setupVNCConsole/generateConsoleToken/
-│                                  #   generateVNCPassword/hashString
-├── console_test.go                # NEW: refusals, authz, URL shape
-├── handlers.go                    # route os-console-auth-tokens; revoke on
-│                                  #   reboot/os-stop/os-start (:1548-1610) and DeleteServer (:1221)
-└── advanced_actions.go            # revoke on suspend/resume (:20, :88)
-
+pkg/paths/paths.go                  ✱ ConsoleSocketDir(), ConsoleSocketPath(id); TestLayout extended
 pkg/hypervisor/
-├── libvirt.go                     # NEW: GetConsoleEndpoint (DomainGetXMLDesc, flags 0) + stub branch
-├── xml_template.go                # graphics: listen 127.0.0.1, sharePolicy='force-shared' (:163-168)
-├── libvirt_test.go                # NEW: graphics XML parse cases
-└── xml_template_test.go           # assert loopback + force-shared
-
-pkg/paths/
-├── paths.go                       # NEW: ConsoleTokenDir() beside ImagesDir/VolumesDir/…
-└── paths_test.go                  # extend TestLayout — the node-local layout contract
-
-internal/common/config.go          # NovaConfig: console_proxy_base_url, token TTL, reconcile interval
-cmd/lightstack/main.go                    # wire the reconciler into bootstrap; dispatch the
-                                   #   `console-tokens` subcommand beside cleanup (:48) / healthcheck (:55)
-config/lightstack.yaml                    # nova console block
-
-migrations/
-├── 065_console_auth_tokens.up.sql # table + indexes; drop 2 dead instance columns
-└── 065_console_auth_tokens.down.sql
+├── xml_template.go                 ✱ <listen type='socket' socket='<ConsoleSocketPath>'/> (was path-less)
+├── console_endpoint.go             ✱ GetConsoleSocket → (socket, domainID); socket outside
+│                                   #   console-sockets → ErrConsoleLegacySocket
+├── console_dir.go                  ✱ NEW: capabilities → DAC baselabel (kvm, else qemu) → MkdirAll,
+│                                   #   Chown, Chmod 0750; readiness recorded on the VMManager
+└── libvirt.go                      ✱ start guard before every DomainCreate (CreateVM, hard
+                                    #   RebootVM, StartVM, ResumeVM) → ErrConsoleSocketDirNotReady
+internal/console/
+├── store.go                        ✱ Issue(…, socket, domainID); RevokeStale compares both
+├── cli.go                          ✱ list shows domain_id
+└── reconciler.go                   #   (unchanged; CurrentSocket now returns the domain ID too)
+internal/nova/
+├── console.go                      ✱ pass domainID to Issue; map ErrConsoleLegacySocket → 500 misconfigured
+└── handlers.go, advanced_actions.go ✱ start/reboot/resume error paths name the directory
+internal/common/config.go           ✱ real mode: state_path ≤ 50 characters
+internal/teardown/teardown.go       ✱ purge console-tokens + console-sockets
+cmd/lightstack/main.go              ✱ prepare console-sockets right after InitHypervisor (real mode)
+migrations/065_console_auth_tokens.{up,down}.sql  ✱ domain_id INTEGER NOT NULL (edited in place)
 
 charts/lightstack/
-├── templates/console-proxy.yaml   # NEW: Deployment + Service (real mode, hostNetwork, node-pinned)
-├── templates/_helpers.tpl         # console-tokens subdir (:177-193); config render (:115-118)
-├── values.yaml                    # consoleProxy.* + nova console settings
-├── values.schema.json             # MUST extend — additionalProperties: false
-└── tests/                         # init_host_storage_test.yaml + console-proxy specs
-
-charts/horizon/                    # RELOCATED from deployments/horizon-chart (novnc.yaml deleted)
-
-deployments/docker-compose-horizon.yml  # retire the dead-placeholder novnc service
-Makefile                           # chart paths (:105-107, :116-122)
-
-test/
-├── console_test.sh                # REWRITE — currently passes against the broken impl
-├── console_access_test.sh         # REWRITE
-└── ws0_console_test.sh            # must stay green (serial log)
-
-docs/                              # 4 guides: make console_proxy_base_url real, drop /vnc_auto.html
-docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md  # F1 → fixed, + headline lines
+├── templates/console-proxy.yaml    ✱ mount console-sockets (RO) instead of libvirt's domain dir;
+│                                   #   console-tokens only (done, comment 4); comments per FR-017b
+├── templates/_helpers.tpl          ✱ initContainer subdirs + console-sockets
+├── values.yaml / values.schema.json ✱ drop consoleProxy.libvirtDomainDir
+└── tests/                          ✱ mounts (2 volumes, both RO), initContainer list, schema
+scripts/deploy-turnkey.sh, scripts/deploy-single-node.sh  ✱ novnc mounts console-tokens +
+                                    #   console-sockets only (were all of $STORAGE_DIR + /var/lib/libvirt/qemu)
+deployments/docker-compose-kvm.yml  ✱ mount /var/lib/lightstack/console-sockets (FR-017a)
+deployments/README-KVM.md, docs/SINGLE_NODE_DEPLOYMENT.md  ✱ mirror the above
+docs/UPGRADING.md                   ✱ pre-move domains; 065 changed; value removed; state_path ≤ 50
+docs/specs/021-real-novnc-console/HOST_TESTING_REAL_MODE.md  ✱ R1, R7, mount check, virsh-start check
 ```
 
-**Structure decision**: one new library package, `internal/console`, holding the token lifecycle — self-contained, independently testable, and exposed via an `lightstack console-tokens` subcommand, matching the `internal/teardown`+`cleanup` and `internal/health`+`healthcheck` pairs already in the tree (Articles I and II). Everything else extends existing packages (`internal/nova` for thin handlers, `pkg/hypervisor`, `pkg/paths`), plus one migration, one chart template and the chart relocation. No new project: Article VII's ≤3 limit is untouched, since `internal/console` is a package inside the existing binary, not a separate build.
+**Structure decision**: no new package. The amendment extends `pkg/paths` and `pkg/hypervisor` (placement, capabilities, start guard) and `internal/console` (the domain-ID sweep). Everything else is wiring: config, teardown, chart, scripts and docs.
 
 ## Phases
 
-### Phase 0 — Outline & Research ✅ complete
+### Phase 0: Research ✅
 
-Output: [research.md](./research.md). Ten items (R1–R10), each Decision / Rationale / Alternatives. Nothing marked NEEDS CLARIFICATION remains.
+[research.md](./research.md) R12–R18 hold the amendment's facts, each checked against source:
+- explicit socket support (libvirt ≥ 2.0);
+- `virt-aa-helper` adds the explicit path `rw`;
+- QEMU unlinks before bind and removes the socket on an orderly close;
+- the 108-byte limit;
+- libvirt never prepares a socket directory the domain names;
+- the DAC base label format;
+- domain IDs are new on every start and continue from the highest after a libvirtd restart;
+- the `DomainCreate` sites in the code.
 
-Three findings changed the design rather than merely confirming it:
+Nothing remains NEEDS CLARIFICATION.
 
-- **R5** proved the whole mechanism works against the pinned image, including fail-closed behaviour on a bad token — so FR-011 is satisfied by the component, not by our code.
-- **R7** found that websockify's token file has no expiry field, which turns reaping from hygiene into the actual expiry mechanism and forces the reconciler deviation.
-- **R10** found that 14 of the 16 references to the chart's old path live in other features' spec directories, which we must not edit — narrowing FR-023e.
+### Phase 1: Design & contracts ✅
 
-### Phase 1 — Design & Contracts ✅ complete
+[data-model.md](./data-model.md) (domain_id, console-sockets), [contracts/](./contracts/) (mounts, projection paths, the pre-move refusal), [quickstart.md](./quickstart.md) (socket-directory probes).
 
-Outputs: [data-model.md](./data-model.md), [contracts/](./contracts/), [quickstart.md](./quickstart.md).
+### Phase 2: Tasks
 
-- **data-model.md** — the console-token entity (fields, indexes, state transitions, the projection's derived nature), and the two columns being dropped.
-- **contracts/nova-console-api.md** — request/response bodies and the full status-code matrix for the three surfaces.
-- **contracts/console-token-projection.md** — the file format, naming, permissions, and the invariant that the directory is derived and fail-closed.
-- **contracts/proxy-deployment.md** — the exact websockify invocation, placement requirements, and what must be asserted by chart tests.
-- **quickstart.md** — bring-up and verification for stub and real.
+`/cl.tasks` appends the amendment's tasks. Suggested order:
+1. `pkg/paths`
+2. XML template
+3. capabilities and directory preparation
+4. start guard
+5. readback with domain ID and the pre-move check
+6. migration and store
+7. config limit
+8. teardown
+9. chart
+10. scripts and KVM compose
+11. docs and UPGRADING
+12. host pass
 
-### Phase 2 — Tasks
-
-Not produced by this command. `/cl.tasks` will derive a dependency-ordered `tasks.md`.
-
-Suggested sequencing, so the ordering rationale isn't lost: **libvirt readback → token store + projection → API behaviour → config → charts → relocation → tests → docs/report**. The readback comes first because everything downstream needs a real endpoint to carry; the relocation comes late because it touches files other tasks also edit.
+Each step is test-first.
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| **Proxy cannot read the token files** (UID/mode mismatch — the pod drops ALL caps and may run non-root). Failure mode is "every token refused", indistinguishable from a token bug. | Decide mode/UID explicitly and assert it in a chart test; the quickstart includes a direct `?token=` probe that isolates proxy-side failure from Lightstack-side. |
-| **`DomainGetXMLDesc` called with the wrong flags** returns the inactive definition, where the port is still `-1` — reproducing the original bug in a new form. | Flags `0` is called out in research.md R3 and in the unit tests, including an explicit "autoport not yet resolved" case. |
-| **Proxy scheduled away from the Lightstack node** sees an empty directory and refuses everything. | Node pinning is a requirement (FR-023c), not a coincidence of single-node k3s; asserted in a chart test. |
-| **`values.schema.json` has `additionalProperties: false`** — new values fail validation until the schema is extended. | Schema change lands in the same commit as the values; `make chart-test` catches it. |
-| **The chart relocation breaks the SPEC-018 runbooks**, which we may not edit. | Deliberate and documented (R10): a pointer in this feature's runbook and a note in the compatibility report. |
-| **No contract-test gate for real-mode console** (F15). | Host runbook is the gate; stated as a known limitation rather than papered over. |
+| **Every VM start fails** if `console-sockets` is missing, unmounted or wrongly owned. libvirt does not prepare it (R16). | Prepare it right after the libvirt connection; refuse starts with a clear error until it is ready (FR-017a). Every real-mode artifact mounts it, the KVM compose included. Covered by unit tests and the host pass. |
+| The capabilities report no DAC base label (an unusual libvirt configuration). | Directory stays not-ready; starts refused, naming the cause. Fall back from `type='kvm'` to `type='qemu'`. |
+| A path over 108 bytes from a long `state_path`. | Refused at startup in real mode (≤ 50 characters). |
+| SELinux hosts. | Out of the supported set; recorded in the spec's assumptions. |
+| Domains defined before the move on test hosts. | Refused as misconfigured; `docs/UPGRADING.md` gives the fix. |
+| The proxy cannot read tokens (UID/mode). | Unchanged from the original plan: asserted by chart tests; the quickstart's direct `?token=` probe isolates it. |
+| No real-mode contract gate (F15). | The host runbook is the gate. |

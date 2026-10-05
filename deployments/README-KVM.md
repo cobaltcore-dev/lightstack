@@ -118,6 +118,7 @@ This deployment uses:
 - **Privileged mode**: Required for network namespace operations
 - **Libvirt socket mount**: the directory `/var/run/libvirt`, not the socket file — a bind of the file keeps its inode, so a libvirtd that re-creates its socket would stay unreachable until the container restarts
 - **Storage directories**: Mounted from host for persistence
+- **Console socket directory** (`/var/lib/lightstack/console-sockets`): mounted from the host even though no console proxy runs here. Every guest's domain names its VNC socket there and the host's QEMU creates it, so without the mount no guest could start. Lightstack makes the directory QEMU's at startup.
 - **Config mount**: `/opt/lightstack/config` (read-only)
 - **No graphical console**: no console proxy runs here, so the config sets `nova.console_enabled: false` and console requests are answered `400 Unavailable console type novnc` instead of with a link that leads nowhere. The serial log (`openstack console log show`) still works. For noVNC, deploy with the Helm chart (`charts/lightstack`) or `scripts/deploy-turnkey.sh` / `scripts/deploy-single-node.sh`, which run the proxy.
 

@@ -6,27 +6,28 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
-// The guest console is a per-start UNIX socket that libvirt creates in the domain's
-// private directory, so the token names a path that dies with the guest instead of a
-// TCP port the next guest may be handed. These cases pin the readback, including the
-// one that would reintroduce a stale target: the INACTIVE definition carries no socket
-// path at all, and only a running domain's does.
+// The guest console is a UNIX socket, so a token names a path instead of a TCP port the
+// next guest may be handed. These cases pin what the readback takes from the domain
+// XML. Whether the domain is running (its ID) and whether the socket is in the console
+// socket directory are checked around the parse, in GetConsoleSocket.
 func TestParseConsoleSocket(t *testing.T) {
 	const running = `<domain type='kvm'><name>vm1</name><devices>
-    <graphics type='vnc' socket='/var/lib/libvirt/qemu/domain-7-instance-1111/vnc.sock' sharePolicy='force-shared'>
-      <listen type='socket' socket='/var/lib/libvirt/qemu/domain-7-instance-1111/vnc.sock'/>
+    <graphics type='vnc' socket='/var/lib/lightstack/console-sockets/1111.sock' sharePolicy='force-shared'>
+      <listen type='socket' socket='/var/lib/lightstack/console-sockets/1111.sock'/>
     </graphics>
   </devices></domain>`
 
 	const listenOnly = `<domain type='kvm'><devices>
     <graphics type='vnc'>
-      <listen type='socket' socket='/var/lib/libvirt/qemu/domain-8-instance-2222/vnc.sock'/>
+      <listen type='socket' socket='/var/lib/lightstack/console-sockets/2222.sock'/>
     </graphics>
   </devices></domain>`
 
-	const inactive = `<domain type='kvm'><devices>
+	const noPath = `<domain type='kvm'><devices>
     <graphics type='vnc' sharePolicy='force-shared'>
       <listen type='socket'/>
     </graphics>
@@ -64,7 +65,7 @@ func TestParseConsoleSocket(t *testing.T) {
 
 	const multi = `<domain type='kvm'><devices>
     <graphics type='spice' port='5905' listen='127.0.0.1'/>
-    <graphics type='vnc' socket='/var/lib/libvirt/qemu/domain-9-instance-3333/vnc.sock'/>
+    <graphics type='vnc' socket='/var/lib/lightstack/console-sockets/3333.sock'/>
   </devices></domain>`
 
 	tests := []struct {
@@ -73,10 +74,10 @@ func TestParseConsoleSocket(t *testing.T) {
 		want    string
 		wantErr error
 	}{
-		{name: "running socket", xml: running, want: "/var/lib/libvirt/qemu/domain-7-instance-1111/vnc.sock"},
-		{name: "socket on the listen element only", xml: listenOnly, want: "/var/lib/libvirt/qemu/domain-8-instance-2222/vnc.sock"},
-		{name: "picks vnc among several", xml: multi, want: "/var/lib/libvirt/qemu/domain-9-instance-3333/vnc.sock"},
-		{name: "inactive definition has no path", xml: inactive, wantErr: ErrConsoleNotReady},
+		{name: "running socket", xml: running, want: "/var/lib/lightstack/console-sockets/1111.sock"},
+		{name: "socket on the listen element only", xml: listenOnly, want: "/var/lib/lightstack/console-sockets/2222.sock"},
+		{name: "picks vnc among several", xml: multi, want: "/var/lib/lightstack/console-sockets/3333.sock"},
+		{name: "socket listener without a path", xml: noPath, wantErr: ErrConsoleNotReady},
 		{name: "legacy tcp listener, running", xml: tcpLoopback, wantErr: ErrConsoleNotSocket},
 		{name: "legacy tcp wildcard, running", xml: tcpWildcard, wantErr: ErrConsoleNotSocket},
 		{name: "legacy tcp listener with no address, running", xml: tcpNoAddress, wantErr: ErrConsoleNotSocket},
@@ -115,7 +116,7 @@ func TestGetConsoleSocketHonoursDeadline(t *testing.T) {
 	// A nil connection is the cheapest "hypervisor unavailable": it must return
 	// immediately rather than block, and never panic.
 	start := time.Now()
-	_, err := m.GetConsoleSocket(context.Background(), "11111111-2222-3333-4444-555555555555")
+	_, _, err := m.GetConsoleSocket(context.Background(), "11111111-2222-3333-4444-555555555555")
 	if err == nil {
 		t.Fatal("expected an error with no libvirt connection")
 	}
@@ -131,7 +132,7 @@ func TestGetConsoleSocketCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := m.GetConsoleSocket(ctx, "11111111-2222-3333-4444-555555555555"); err == nil {
+	if _, _, err := m.GetConsoleSocket(ctx, "11111111-2222-3333-4444-555555555555"); err == nil {
 		t.Fatal("expected an error for a cancelled context")
 	}
 }
@@ -143,7 +144,7 @@ func TestGetConsoleSocketStubMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVMManager: %v", err)
 	}
-	_, err = m.GetConsoleSocket(context.Background(), "11111111-2222-3333-4444-555555555555")
+	_, _, err = m.GetConsoleSocket(context.Background(), "11111111-2222-3333-4444-555555555555")
 	if !errors.Is(err, ErrConsoleUnavailable) {
 		t.Fatalf("err = %v; want ErrConsoleUnavailable", err)
 	}
@@ -152,9 +153,90 @@ func TestGetConsoleSocketStubMode(t *testing.T) {
 	}
 }
 
+// A real-mode manager without a libvirt connection is an outage, not stub mode, so it
+// must not answer ErrConsoleUnavailable (501, "there is no guest"). NewVMManager never
+// returns one, so this keeps the guard honest rather than covering a live path.
+func TestGetConsoleSocketWithoutConnection(t *testing.T) {
+	m := &VMManager{mode: "real"}
+	_, _, err := m.GetConsoleSocket(context.Background(), "11111111-2222-3333-4444-555555555555")
+	if err == nil {
+		t.Fatal("expected an error with no libvirt connection")
+	}
+	if errors.Is(err, ErrConsoleUnavailable) || strings.Contains(err.Error(), "stub") {
+		t.Errorf("err = %v; a real-mode manager without a connection is not stub mode", err)
+	}
+}
+
 // consoleReadTimeout is the fail-fast budget for the readback (Constitution III).
 func TestConsoleReadTimeoutIsFailFast(t *testing.T) {
 	if consoleReadTimeout > time.Second {
 		t.Errorf("consoleReadTimeout = %v; Constitution III caps external calls at 1s", consoleReadTimeout)
 	}
+}
+
+// The console socket must be in the console socket directory, the only place the proxy
+// can reach. A socket anywhere else, in practice libvirt's per-domain directory, belongs
+// to a domain defined before the move and is refused, never proxied (SPEC-021 FR-017).
+func TestCheckConsoleSocketDir(t *testing.T) {
+	for _, tc := range []struct {
+		socket string
+		ok     bool
+	}{
+		{paths.ConsoleSocketPath("11111111-2222-3333-4444-555555555555"), true},
+		{"/var/lib/libvirt/qemu/domain-7-instance-1111/vnc.sock", false},
+		{paths.ConsoleSocketDir() + "/nested/x.sock", false},
+		{paths.ConsoleSocketDir() + "/../x.sock", false},
+	} {
+		err := checkConsoleSocketDir(tc.socket)
+		if tc.ok && err != nil {
+			t.Errorf("checkConsoleSocketDir(%q) = %v; want nil", tc.socket, err)
+		}
+		if !tc.ok && !errors.Is(err, ErrConsoleLegacySocket) {
+			t.Errorf("checkConsoleSocketDir(%q) = %v; want ErrConsoleLegacySocket", tc.socket, err)
+		}
+	}
+}
+
+// The readback returns the socket together with the libvirt domain ID of the current
+// run, which is what tells a restarted guest from the one a token was issued for now
+// that the socket path is fixed per instance (FR-014a).
+func TestGetConsoleSocketReturnsTheDomainID(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	runningAt := func(socket string) string {
+		return "<domain type='kvm'><devices><graphics type='vnc' socket='" + socket +
+			"' sharePolicy='force-shared'><listen type='socket' socket='" + socket +
+			"'/></graphics></devices></domain>"
+	}
+
+	t.Run("in the console socket directory", func(t *testing.T) {
+		m := newConnectedManagerWith(t, &fakeLibvirtd{xml: runningAt(paths.ConsoleSocketPath(id))})
+		socket, domainID, err := m.GetConsoleSocket(t.Context(), id)
+		if err != nil {
+			t.Fatalf("GetConsoleSocket: %v", err)
+		}
+		if socket != paths.ConsoleSocketPath(id) {
+			t.Errorf("socket = %q; want %q", socket, paths.ConsoleSocketPath(id))
+		}
+		if domainID != 1 { // the fake domain's id
+			t.Errorf("domain ID = %d; want 1", domainID)
+		}
+	})
+
+	t.Run("in libvirt's per-domain directory", func(t *testing.T) {
+		m := newConnectedManagerWith(t, &fakeLibvirtd{xml: runningAt("/var/lib/libvirt/qemu/domain-1-instance-fake/vnc.sock")})
+		if _, _, err := m.GetConsoleSocket(t.Context(), id); !errors.Is(err, ErrConsoleLegacySocket) {
+			t.Errorf("err = %v; want ErrConsoleLegacySocket", err)
+		}
+	})
+
+	// For a domain that is not running, libvirt returns its persistent definition, and
+	// with a fixed path that names the socket too. Only the domain ID (-1) says that no
+	// QEMU serves it; without the check a stopped guest would get a token for a run
+	// that does not exist.
+	t.Run("stopped, its definition still naming the socket", func(t *testing.T) {
+		m := newConnectedManagerWith(t, &fakeLibvirtd{stopped: true, xml: runningAt(paths.ConsoleSocketPath(id))})
+		if _, _, err := m.GetConsoleSocket(t.Context(), id); !errors.Is(err, ErrConsoleNotReady) {
+			t.Errorf("err = %v; want ErrConsoleNotReady", err)
+		}
+	})
 }

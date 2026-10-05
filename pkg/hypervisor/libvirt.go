@@ -43,6 +43,10 @@ type VMManager struct {
 	done      chan struct{}
 	stopped   chan struct{}
 	closeOnce sync.Once
+
+	// consoleDir is whether the console socket directory is QEMU's yet (SPEC-021
+	// FR-017a); nil until PrepareConsoleSocketDir has run. Every real start needs it.
+	consoleDir atomic.Pointer[consoleDirState]
 }
 
 // stubVM represents a simulated VM in stub mode
@@ -197,6 +201,11 @@ func (m *VMManager) createVMStub(xml string) (string, error) {
 
 // createVMReal creates a real VM via libvirt
 func (m *VMManager) createVMReal(ctx context.Context, xml string) (string, error) {
+	// The domain names its console socket in a directory libvirt does not prepare;
+	// refuse here rather than fail inside libvirt (SPEC-021 FR-017a).
+	if err := m.consoleDirReady(); err != nil {
+		return "", err
+	}
 	conn := m.conn.Load()
 	if conn == nil {
 		return "", fmt.Errorf("not connected to libvirt")
@@ -341,6 +350,11 @@ func (m *VMManager) rebootVMReal(ctx context.Context, vmUUID string) error {
 // so it cannot ignore the reboot, and a domain that is not running simply starts, as
 // upstream allows a HARD reboot of a stopped server.
 func (m *VMManager) hardRebootVMReal(vmUUID string) error {
+	// The domain names its console socket in a directory libvirt does not prepare;
+	// refuse here rather than fail inside libvirt (SPEC-021 FR-017a).
+	if err := m.consoleDirReady(); err != nil {
+		return err
+	}
 	conn := m.conn.Load()
 	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
@@ -447,6 +461,11 @@ func (m *VMManager) startVMStub(vmUUID string) error {
 
 // startVMReal starts a real VM via libvirt
 func (m *VMManager) startVMReal(ctx context.Context, vmUUID string) error {
+	// The domain names its console socket in a directory libvirt does not prepare;
+	// refuse here rather than fail inside libvirt (SPEC-021 FR-017a).
+	if err := m.consoleDirReady(); err != nil {
+		return err
+	}
 	conn := m.conn.Load()
 	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")
@@ -684,6 +703,11 @@ func (m *VMManager) resumeVMStub(vmUUID string) error {
 
 // resumeVMReal resumes a real VM via libvirt
 func (m *VMManager) resumeVMReal(ctx context.Context, vmUUID string) error {
+	// The domain names its console socket in a directory libvirt does not prepare;
+	// refuse here rather than fail inside libvirt (SPEC-021 FR-017a).
+	if err := m.consoleDirReady(); err != nil {
+		return err
+	}
 	conn := m.conn.Load()
 	if conn == nil {
 		return fmt.Errorf("not connected to libvirt")

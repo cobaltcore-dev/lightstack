@@ -599,7 +599,7 @@ create_storage() {
 
     # The subdirs the chart's init-host-storage initContainer creates: not every service
     # creates its own, and one that finds its subdir missing fails.
-    mkdir -p "$STORAGE_DIR"/{images,volumes,instances,cloud-init,dhcp,console-tokens}
+    mkdir -p "$STORAGE_DIR"/{images,volumes,instances,cloud-init,dhcp,console-tokens,console-sockets}
     chmod 755 "$STORAGE_DIR"/{images,volumes,instances,cloud-init,dhcp,console-tokens}
 
     log_success "Storage directories created at $STORAGE_DIR"
@@ -778,14 +778,14 @@ services:
         --idle-timeout 300
         6080
     volumes:
-      # Read-only, and the parent rather than console-tokens itself: a bind of the subdirectory
-      # pins one inode, so a token directory recreated on the host would leave the proxy
-      # reading the orphaned one.
-      - $STORAGE_DIR:$STORAGE_DIR:ro
-      # Where libvirt creates each running guest's VNC unix socket
-      # (domain-<id>-<name>/vnc.sock): every token names that exact path, so the
-      # proxy sees it at the same place. Read-only is enough to connect().
-      - /var/lib/libvirt/qemu:/var/lib/libvirt/qemu:ro
+      # Read-only, and only what the proxy needs: the token projection, and the guests'
+      # console sockets ($STORAGE_DIR/console-sockets/<uuid>.sock, which every token
+      # names, so the proxy sees them at the same place; read-only is enough to
+      # connect()). Never all of $STORAGE_DIR, which holds every tenant's disks, volumes,
+      # images and cloud-init data, nor libvirt's per-domain directories, which hold each
+      # guest's QMP monitor socket: this container keeps DAC_OVERRIDE (SPEC-021 FR-023c).
+      - $STORAGE_DIR/console-tokens:$STORAGE_DIR/console-tokens:ro
+      - $STORAGE_DIR/console-sockets:$STORAGE_DIR/console-sockets:ro
     restart: unless-stopped
     healthcheck:
       # The client page, not a TCP connect: the kernel accepts from the listen backlog even

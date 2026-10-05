@@ -270,6 +270,11 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.StatePath = statePath
+	if cfg.Nova.LibvirtMode == "real" && len(statePath) > maxRealModeStatePath {
+		return nil, fmt.Errorf("state_path %q is %d characters; real mode allows at most %d, because "+
+			"every guest's console socket (<state_path>/console-sockets/<instance-uuid>.sock) must fit "+
+			"QEMU's 108-byte socket-path limit", statePath, len(statePath), maxRealModeStatePath)
+	}
 
 	// Warn if using default JWT secret
 	if cfg.Keystone.JWTSecret == "change-me-in-production" {
@@ -278,6 +283,11 @@ func LoadConfig(path string) (*Config, error) {
 
 	return &cfg, nil
 }
+
+// maxRealModeStatePath keeps a guest's console socket path within QEMU's 108-byte
+// sun_path: 108 - len("/console-sockets/") - 36 (uuid) - len(".sock") = 50 (SPEC-021
+// FR-017). Stub mode creates no sockets, so it is not limited.
+const maxRealModeStatePath = 50
 
 // resolveStatePath defaults and validates the node-local root (pkg/paths). It must be
 // absolute: libvirtd on the host opens the paths Lightstack writes into the domain XML,

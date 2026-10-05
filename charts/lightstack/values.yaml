@@ -159,11 +159,6 @@ consoleProxy:
   #    this to 0 (disabled), which would let an abandoned browser tab hold a
   #    guest console open indefinitely.
   idleTimeoutSeconds: 300
-  # -- Where libvirt creates each running guest's VNC socket
-  #    (<dir>/domain-<id>-<name>/vnc.sock). The proxy mounts it read-only at the same
-  #    path, because each token names that exact path. libvirt's qemu state dir on
-  #    Debian/Ubuntu and RHEL alike; change it only if qemu.conf moves it.
-  libvirtDomainDir: /var/lib/libvirt/qemu
   # Binds an unprivileged port and only reads the token projection.
   containerSecurityContext:
     allowPrivilegeEscalation: false

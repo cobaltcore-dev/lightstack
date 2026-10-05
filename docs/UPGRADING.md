@@ -400,37 +400,66 @@ then derived from the request.
 
 ## Guests created before this release still expose their console
 
-A guest's VNC console is now a UNIX socket that libvirt creates per start in the domain's private
-directory, with no TCP listener, so the token-checking console proxy is the one way in and a freed
-console can never be handed to another guest (SPEC-021). That holds for guests **defined** after
-the upgrade. The console is part of the libvirt domain definition, written once when the instance
+A guest's VNC console is now a UNIX socket at the instance's own path,
+`<state_path>/console-sockets/<server-id>.sock`, with no TCP listener. The token-checking console
+proxy is the one way in, and a console can never be handed to another guest (SPEC-021). The
+socket directory holds nothing else, so the proxy never sees libvirt's per-domain directories,
+which also hold each guest's QMP monitor socket. That holds for guests **defined** after the
+upgrade. The console is part of the libvirt domain definition, written once when the instance
 is created, and nothing Lightstack does afterwards — reboot, stop/start, an upgrade — rewrites it.
 Real mode only: stub mode defines no domains.
 
-A guest created before this release therefore still has a TCP console on `0.0.0.0`: anything that
-can reach the node reaches it, with no token and no password, as it always could. Lightstack does
-not paper over it — a console request for such a guest fails with
-`500 console misconfigured on this host`, and the log says
-`guest console is not a unix socket; refusing to proxy`.
+A guest created before this release therefore has one of two consoles:
 
-List the affected domains on each node:
+- **A TCP console on `0.0.0.0`.** Anything that can reach the node reaches it, with no token and
+  no password, as it always could. The log says `guest console is not a unix socket; refusing to
+  proxy`.
+- **A path-less `<listen type='socket'/>`** (test builds of this release). Its socket is in
+  libvirt's per-domain directory, where the proxy cannot see it. The log says
+  `guest console socket is outside the console socket directory; refusing to proxy`.
+
+Lightstack does not paper over either. A console request for such a guest fails with
+`500 console misconfigured on this host`.
+
+List the affected domains on each node, meaning every domain whose definition does not name the
+console socket directory (adjust the path if `state_path` is not the default):
 
 ```sh
-for d in $(sudo virsh list --all --name); do sudo virsh dumpxml --inactive "$d" | grep -q "<listen type='address'" && echo "$d"; done
+for d in $(sudo virsh list --all --name); do sudo virsh dumpxml --inactive "$d" | grep -q "socket='/var/lib/lightstack/console-sockets/" || echo "$d"; done
 ```
 
 Then, per domain, either delete and recreate the instance, or fix the definition in place:
 
 1. `sudo virsh edit <domain>` — replace the whole `<graphics type='vnc' …>` element with
-   `<graphics type='vnc' sharePolicy='force-shared'><listen type='socket'/></graphics>`: no
-   `port`, `autoport` or `listen` attribute, and no path of your own — libvirt picks one per
-   start. `sharePolicy='force-shared'` keeps a second viewer from disconnecting the first.
+   `<graphics type='vnc' sharePolicy='force-shared'><listen type='socket' socket='/var/lib/lightstack/console-sockets/<server-id>.sock'/></graphics>`,
+   where `<server-id>` is `sudo virsh domuuid <domain>` and the root is your `state_path`. Leave
+   out any `port`, `autoport` or `listen` attribute. `sharePolicy='force-shared'` keeps a second
+   viewer from disconnecting the first.
 2. Restart qemu: the edit takes effect only when the domain starts again.
    `openstack server reboot --hard <server>` does that — it power-cycles the domain
    (`sudo virsh domuuid <domain>` prints the server's id). A soft reboot restarts the guest inside
    the same qemu process and does not pick the edit up. Stopping and starting works too, but
    `openstack server stop` only asks the guest to shut down, so wait for
    `sudo virsh domstate <domain>` to report `shut off` before `openstack server start`.
+
+## Console sockets moved out of libvirt's directories
+
+The guest console socket now lives in `<state_path>/console-sockets/`, owned by QEMU's user with
+mode 0750. Lightstack prepares the directory at startup in real mode, before any guest can start.
+Four consequences:
+
+- **`state_path` is at most 50 characters in real mode.** A longer root would push a guest's
+  socket path past QEMU's 108-byte limit, so no guest could start. Startup refuses it instead, and
+  the error names the limit. Stub mode is not limited.
+- **`consoleProxy.libvirtDomainDir` is gone from the chart.** The proxy no longer mounts libvirt's
+  per-domain directories. A values file that still sets it fails `helm install` / `helm upgrade`.
+  Delete the key.
+- **Every real-mode deployment mounts `console-sockets` into Lightstack**, the KVM compose stack
+  included, even though it runs no proxy. Without the mount the host's QEMU cannot create the
+  socket and no guest starts. If Lightstack cannot make the directory QEMU's, it keeps serving and
+  refuses guest starts with an error naming the directory.
+- **Migration `065` changed in place** (`console_auth_tokens.domain_id`). Recreate a test database
+  that ran an earlier `065`. Nothing outside test hosts ran it.
 
 ## `realMode.hostStoragePath` now takes effect
 

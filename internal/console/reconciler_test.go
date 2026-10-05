@@ -28,7 +28,7 @@ func TestReconcilerSweepsOnStartupBeforeTheFirstTick(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestReconcilerSweepReapsOrphanedProjections(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -102,15 +102,15 @@ func TestReconcilerSweepRevokesStaleTokens(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	current := func(_ context.Context, instanceID string) (string, error) {
+	current := func(_ context.Context, instanceID string) (string, int32, error) {
 		if instanceID == inst {
-			return "", nil // the guest powered off: it serves no console
+			return "", 0, nil // the guest powered off: it serves no console
 		}
-		return "", errors.New("not this test's instance")
+		return "", 0, errors.New("not this test's instance")
 	}
 
 	NewReconciler(s, time.Hour, current).sweep(ctx)

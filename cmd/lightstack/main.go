@@ -148,6 +148,14 @@ func main() {
 		log.Printf("Nova will run in %s mode", libvirtMode)
 	} else {
 		log.Printf("Hypervisor initialized successfully in %s mode", libvirtMode)
+		if libvirtMode == "real" {
+			// Before any guest can start: every domain names its console socket in this
+			// directory, which libvirt does not prepare (SPEC-021 FR-017a). On failure the
+			// hypervisor refuses guest starts and says why; every other service keeps running.
+			if err := novaService.PrepareConsoleSocketDir(ctx, paths.ConsoleSocketDir()); err != nil {
+				log.Printf("ERROR: console socket directory not ready, guest starts are refused until it is: %v", err)
+			}
+		}
 	}
 
 	// Set default networking mode if not specified

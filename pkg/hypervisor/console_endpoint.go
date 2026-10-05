@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/digitalocean/go-libvirt"
 )
 
@@ -34,6 +35,10 @@ var (
 	// before consoles moved to UNIX sockets. A port can be handed to another guest
 	// while a token still names it, so refuse rather than proxy to it.
 	ErrConsoleNotSocket = errors.New("console is not a unix socket")
+	// ErrConsoleLegacySocket: the console socket is outside the console socket
+	// directory — a domain defined before consoles moved there, whose socket sits in
+	// libvirt's per-domain directory where the proxy cannot reach it. Maps to 500.
+	ErrConsoleLegacySocket = errors.New("console socket outside the console socket directory")
 )
 
 // domainGraphics is a deliberately narrow view of the domain XML — only the
@@ -56,55 +61,56 @@ type domainGraphics struct {
 	} `xml:"devices"`
 }
 
-// GetConsoleSocket returns the UNIX socket libvirt created for the instance's
-// running VNC console.
+// GetConsoleSocket returns the UNIX socket of the instance's running VNC console and
+// the libvirt domain ID of the run it belongs to.
 //
-// It is read fresh on every call and never cached: libvirt creates the socket in
-// the domain's per-start private directory, so the path changes on every start —
-// which is exactly what makes a stale token name nothing instead of another guest.
-func (m *VMManager) GetConsoleSocket(ctx context.Context, vmUUID string) (string, error) {
+// Both are read fresh on every call and never cached. The socket path is fixed per
+// instance (<state_path>/console-sockets/<uuid>.sock, SPEC-021 FR-017), so it is never
+// another guest's; libvirt assigns a new domain ID on every start, which is how a token
+// that outlived a restart is recognised (FR-014a). A socket anywhere else belongs to a
+// domain defined before the move and is refused with ErrConsoleLegacySocket.
+func (m *VMManager) GetConsoleSocket(ctx context.Context, vmUUID string) (string, int32, error) {
+	if m.mode == "stub" {
+		return "", 0, fmt.Errorf("%w: nova is running in stub mode, there is no guest to display", ErrConsoleUnavailable)
+	}
 	conn := m.conn.Load()
-	if m.mode == "stub" || conn == nil {
-		return "", fmt.Errorf("%w: nova is running in stub mode, there is no guest to display", ErrConsoleUnavailable)
+	if conn == nil {
+		return "", 0, errors.New("not connected to libvirt")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, consoleReadTimeout)
-	defer cancel()
-
-	type result struct {
-		socket string
-		err    error
+	console, err := withDeadline(ctx, func() (domainConsole, error) { return fetchDomainConsole(conn, vmUUID) })
+	if err != nil {
+		return "", 0, err
 	}
-	// go-libvirt's calls are blocking and context-free, so the deadline is
-	// enforced by racing them. The goroutine may outlive this function if
-	// libvirt is wedged; the buffered channel keeps it from leaking on send.
-	// It ends with the wedge: go-libvirt closes every pending call's channel when
-	// the socket drops, and a recovered libvirtd answers them. Their number is
-	// bounded too: issuance times out as well, so no new tokens appear, and the
-	// tokens the sweep checks expire within the TTL.
-	ch := make(chan result, 1)
-	go func() {
-		socket, err := fetchDomainConsoleSocket(conn, vmUUID)
-		ch <- result{socket: socket, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return "", fmt.Errorf("console readback timed out after %s: %w", consoleReadTimeout, ctx.Err())
-	case r := <-ch:
-		return r.socket, r.err
+	if err := checkConsoleSocketDir(console.socket); err != nil {
+		return "", 0, err
 	}
+	return console.socket, console.domainID, nil
 }
 
-// fetchDomainConsoleSocket is the blocking libvirt half of GetConsoleSocket, split
-// out so that the deadline machinery above reads as deadline machinery and this
-// reads as libvirt work. It is called only from that goroutine, and it is the only
-// part of the readback that needs a live connection — everything above it is
-// unit-testable, everything here is not.
-func fetchDomainConsoleSocket(conn *libvirt.Libvirt, vmUUID string) (string, error) {
+// checkConsoleSocketDir refuses a socket outside the console socket directory, the only
+// one the proxy mounts (FR-017, FR-023c).
+func checkConsoleSocketDir(socket string) error {
+	if filepath.Dir(filepath.Clean(socket)) != paths.ConsoleSocketDir() {
+		return fmt.Errorf("%w: %s is not in %s (a domain defined before console sockets moved there; see docs/UPGRADING.md)",
+			ErrConsoleLegacySocket, socket, paths.ConsoleSocketDir())
+	}
+	return nil
+}
+
+// domainConsole is what one readback learns about a guest's console.
+type domainConsole struct {
+	socket   string
+	domainID int32
+}
+
+// fetchDomainConsole is the blocking libvirt half of GetConsoleSocket, split out so
+// that the deadline machinery reads as deadline machinery and this reads as libvirt
+// work. It is the only part of the readback that needs a live connection.
+func fetchDomainConsole(conn *libvirt.Libvirt, vmUUID string) (domainConsole, error) {
 	uuidBytes, err := parseUUID(vmUUID)
 	if err != nil {
-		return "", fmt.Errorf("invalid UUID: %w", err)
+		return domainConsole{}, fmt.Errorf("invalid UUID: %w", err)
 	}
 
 	domain, err := conn.DomainLookupByUUID(uuidBytes)
@@ -123,20 +129,30 @@ func fetchDomainConsoleSocket(conn *libvirt.Libvirt, vmUUID string) (string, err
 		// that their instance is not running, which is both wrong and
 		// misdirecting.
 		if libvirt.IsNotFound(err) {
-			return "", fmt.Errorf("%w: no libvirt domain for this instance", ErrConsoleNotReady)
+			return domainConsole{}, fmt.Errorf("%w: no libvirt domain for this instance", ErrConsoleNotReady)
 		}
-		return "", fmt.Errorf("looking up domain (is libvirtd running?): %w", err)
+		return domainConsole{}, fmt.Errorf("looking up domain (is libvirtd running?): %w", err)
 	}
 
-	// Flags 0 = the RUNNING definition, the only one that carries the socket path:
-	// DomainXMLInactive returns the persistent definition, whose <listen
-	// type='socket'/> has none until libvirt starts the domain.
+	// The definition cannot tell a stopped guest from a running one: the socket path is
+	// fixed per instance, so even the persistent definition names it, and that is what
+	// libvirt returns for a domain that is not running. libvirt reports such a domain
+	// with ID -1, and no QEMU serves its console.
+	if domain.ID <= 0 {
+		return domainConsole{}, fmt.Errorf("%w: the domain is not running", ErrConsoleNotReady)
+	}
+
+	// Flags 0 = the running definition, the one libvirt hands QEMU.
 	desc, err := conn.DomainGetXMLDesc(domain, 0)
 	if err != nil {
-		return "", fmt.Errorf("failed to read domain XML: %w", err)
+		return domainConsole{}, fmt.Errorf("failed to read domain XML: %w", err)
 	}
 
-	return parseConsoleSocket(desc)
+	socket, err := parseConsoleSocket(desc)
+	if err != nil {
+		return domainConsole{}, err
+	}
+	return domainConsole{socket: socket, domainID: domain.ID}, nil
 }
 
 // parseConsoleSocket extracts the VNC console's UNIX socket from a running domain's
@@ -177,8 +193,9 @@ func parseConsoleSocket(desc string) (string, error) {
 			// it to next (FR-014, FR-017).
 			return "", fmt.Errorf("%w: guest console listens on TCP port %d (a domain defined before consoles moved to unix sockets)", ErrConsoleNotSocket, g.Port)
 		default:
-			// A socket listener before the domain starts, or a legacy TCP one whose
-			// autoport is unresolved: either way nothing is serving a console now.
+			// A socket listener with no path (defined before the sockets moved, and not
+			// started), or a legacy TCP one whose autoport is unresolved: either way
+			// nothing is serving a console now.
 			return "", fmt.Errorf("%w: libvirt has not created a console for this domain (instance not running?)", ErrConsoleNotReady)
 		}
 	}

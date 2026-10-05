@@ -133,8 +133,9 @@ B_INST=$(curl -s "$NOVA_URL/v2.1/os-console-auth-tokens/$TOK_B" -H "X-Auth-Token
 echo ""
 echo "4. stopping an instance revokes its links"
 # The lifecycle revoke: a link must not outlive the console it was issued for. (The
-# console is a per-start unix socket, so a surviving link would name a dead path
-# rather than another guest — step 8 covers the stops that never reach the API.)
+# socket path is the instance's own, so a surviving link could reach only this guest's
+# next run, never another guest — steps 8 and 9 cover the stops and restarts that never
+# reach the API.)
 curl -s -X POST "$NOVA_URL/v2.1/servers/$VM_A/action" -H "X-Auth-Token: $TOKEN" \
   -H "Content-Type: application/json" -d '{"os-stop":{}}' >/dev/null
 sleep 1
@@ -221,6 +222,36 @@ if $VIRSH version >/dev/null 2>&1; then
       || bad "a token outlived its guest stopping outside the API — the stale-token sweep is not running"
   fi
   curl -s -X DELETE "$NOVA_URL/v2.1/servers/$VM_E" -H "X-Auth-Token: $TOKEN" >/dev/null || true
+else
+  echo "  ⊘ skipped: needs virsh on this host (set VIRSH, e.g. 'virsh -c qemu:///system')"
+fi
+
+echo "9. a link dies when its guest is restarted outside the API (a new domain ID)"
+# The console socket path is fixed per instance, so a restart behind Lightstack's back
+# leaves the path as it was: only libvirt's domain ID changes. The sweep compares it
+# with the one the token was issued for, so the old link must die within one interval
+# while a fresh one works (FR-014a).
+if $VIRSH version >/dev/null 2>&1; then
+  VM_F=$(new_instance spec021-sec-f)
+  sleep 1
+  TOK_F=$(token_of "$(console_url "$VM_F")")
+  if [ -z "$TOK_F" ]; then
+    bad "no console issued for the restart test instance"
+  else
+    $VIRSH destroy "$VM_F" >/dev/null 2>&1
+    $VIRSH start "$VM_F" >/dev/null 2>&1
+    gone=0
+    for _ in $(seq 1 "${LIGHTSTACK_SWEEP_WAIT:-60}"); do
+      resolves "$TOK_F" || { gone=1; break; }
+      sleep 1
+    done
+    [ "$gone" = 1 ] && ok "a guest restarted outside the API loses its old links within one sweep" \
+      || bad "a token outlived its guest's restart outside the API — the sweep ignores the domain ID"
+    NEW_F=$(console_url "$VM_F")
+    [ -n "$NEW_F" ] && proxy_resolves "$NEW_F" && ok "a link issued after the restart works" \
+      || bad "no working console after the restart"
+  fi
+  curl -s -X DELETE "$NOVA_URL/v2.1/servers/$VM_F" -H "X-Auth-Token: $TOKEN" >/dev/null || true
 else
   echo "  ⊘ skipped: needs virsh on this host (set VIRSH, e.g. 'virsh -c qemu:///system')"
 fi

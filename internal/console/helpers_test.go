@@ -11,9 +11,12 @@ const (
 	seededUserID    = "00000000-0000-0000-0000-000000000001"
 )
 
-// testSocket has the shape libvirt gives a running domain's VNC socket: a
-// per-start private directory, domain-<id>-<name>.
-const testSocket = "/var/lib/libvirt/qemu/domain-1-instance-test/vnc.sock"
+// testSocket has the shape of a guest's VNC socket: the instance's own path in the
+// console socket directory.
+const testSocket = "/var/lib/lightstack/console-sockets/11111111-2222-3333-4444-555555555555.sock"
+
+// testDomainID stands in for the libvirt domain ID of the run a token is issued for.
+const testDomainID int32 = 7
 
 // seedInstance creates a throwaway instance row and returns (instanceID,
 // projectID). console_auth_tokens has an FK onto instances, so tokens cannot be

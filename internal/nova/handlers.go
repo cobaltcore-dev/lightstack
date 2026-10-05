@@ -169,6 +169,26 @@ func (svc *Service) InitHypervisor() error {
 	return nil
 }
 
+// PrepareConsoleSocketDir makes the console socket directory QEMU's (SPEC-021
+// FR-017a). Until it has, the hypervisor refuses every guest start, because each domain
+// names its console socket in that directory and libvirt does not prepare it.
+func (svc *Service) PrepareConsoleSocketDir(ctx context.Context, dir string) error {
+	if svc.vmManager == nil {
+		return errNoHypervisor
+	}
+	return svc.vmManager.PrepareConsoleSocketDir(ctx, dir)
+}
+
+// startRefusal is the 500 for a guest start the hypervisor refused. A console socket
+// directory that is not ready is named, since the operator has to fix it on the host
+// (FR-017a); any other failure keeps the generic message.
+func startRefusal(err error, generic string) *common.OpenStackError {
+	if errors.Is(err, hypervisor.ErrConsoleSocketDirNotReady) {
+		return common.NewInternalServerError(err.Error())
+	}
+	return common.NewInternalServerError(generic)
+}
+
 // RegisterRoutes registers Nova routes
 func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	// Version discovery
@@ -2016,7 +2036,7 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	if _, ok := req["reboot"]; ok {
 		if err := svc.vmManager.RebootVM(ctx, libvirtDomainStr, hardReboot); err != nil {
 			log.Error().Err(err).Str("operation", "reboot_vm").Msg("libvirt error")
-			common.SendError(c, common.NewInternalServerError("failed to reboot server"))
+			common.SendError(c, startRefusal(err, "failed to reboot server"))
 			return
 		}
 	} else if _, ok := req["os-stop"]; ok {
@@ -2028,7 +2048,7 @@ func (svc *Service) ServerAction(c *gin.Context) {
 	} else if _, ok := req["os-start"]; ok {
 		if err := svc.vmManager.StartVM(ctx, libvirtDomainStr); err != nil {
 			log.Error().Err(err).Str("operation", "start_vm").Msg("libvirt error")
-			common.SendError(c, common.NewInternalServerError("failed to start server"))
+			common.SendError(c, startRefusal(err, "failed to start server"))
 			return
 		}
 	}

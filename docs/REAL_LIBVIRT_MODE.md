@@ -455,8 +455,10 @@ Lightstack generates a cloud-init ISO and attaches it as a CD-ROM:
 openstack console url show test-vm
 ```
 
-Guest consoles are per-start unix sockets with no TCP port, reached only through the
-console proxy with a token (SPEC-021). To see where a guest's socket is, on its node:
+Guest consoles are unix sockets with no TCP port, at
+`<state_path>/console-sockets/<uuid>.sock` on the guest's node (`/var/lib/lightstack`
+by default), reached only through the console proxy with a token (SPEC-021). To check a
+guest's, on its node:
 
 ```bash
 sudo virsh dumpxml <uuid> | grep -A2 "<graphics"

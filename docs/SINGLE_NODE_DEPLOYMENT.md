@@ -437,14 +437,12 @@ services:
     restart: unless-stopped
     network_mode: host   # answer on the host's own address at port 6080
     volumes:
-      # Lightstack's state root (state_path), read-only and at the same path: the proxy
-      # resolves tokens, Lightstack mints and revokes them. The root rather than
-      # console-tokens itself, since a bind of the subdirectory pins one inode and a
-      # token directory recreated on the host would leave the proxy reading the old one.
-      - /var/lib/lightstack:/var/lib/lightstack:ro
-      # Where libvirt creates each running guest's VNC unix socket
-      # (domain-<id>-<name>/vnc.sock). Tokens name that exact path.
-      - /var/lib/libvirt/qemu:/var/lib/libvirt/qemu:ro
+      # Read-only and at the same paths, and only these two: the token projection, and
+      # the guests' console sockets (<uuid>.sock, the exact paths the tokens name). Never
+      # the whole state root, which holds every tenant's disks and volumes, nor libvirt's
+      # per-domain directories, which hold each guest's QMP monitor socket.
+      - /var/lib/lightstack/console-tokens:/var/lib/lightstack/console-tokens:ro
+      - /var/lib/lightstack/console-sockets:/var/lib/lightstack/console-sockets:ro
     # entrypoint, not command: the image's entrypoint runs novnc_proxy against one
     # fixed target, and compose's command would only become its arguments.
     entrypoint:

@@ -14,13 +14,16 @@ import (
 // Remote-protocol procedures (libvirt's remote_protocol.x) the fake libvirtd answers
 // with a payload, or that tests look for among the calls it received.
 const (
-	procDomainCreate         = 9
-	procDomainDestroy        = 12
-	procDomainLookupByUUID   = 24
-	procDomainReboot         = 27
-	procAuthList             = 66
-	procDomainIsActive       = 150
-	procConnectGetLibVersion = 157
+	procConnectGetCapabilities = 7
+	procDomainCreate           = 9
+	procDomainDefineXML        = 11
+	procDomainGetXMLDesc       = 14
+	procDomainDestroy          = 12
+	procDomainLookupByUUID     = 24
+	procDomainReboot           = 27
+	procAuthList               = 66
+	procDomainIsActive         = 150
+	procConnectGetLibVersion   = 157
 )
 
 // fakeLibvirtd serves libvirt's remote protocol for a single domain. Each reply carries
@@ -32,7 +35,10 @@ const (
 // actually asked libvirt to do. A call it has no payload for gets an empty successful
 // reply.
 type fakeLibvirtd struct {
-	active bool // what DomainIsActive reports; set before serving
+	active  bool   // what DomainIsActive reports; set before serving
+	stopped bool   // DomainLookupByUUID reports ID -1, as libvirt does for a domain not running
+	caps    string // what ConnectGetCapabilities reports; set before serving
+	xml     string // what DomainGetXMLDesc reports; set before serving
 
 	mu    sync.Mutex
 	calls []uint32
@@ -75,7 +81,14 @@ func (f *fakeLibvirtd) payload(proc uint32) []byte {
 	case procConnectGetLibVersion:
 		return make([]byte, 8)
 	case procDomainLookupByUUID:
-		return fakeDomain
+		if f.stopped {
+			return fakeDomain(-1)
+		}
+		return fakeDomain(1)
+	case procConnectGetCapabilities:
+		return xdrString(f.caps)
+	case procDomainGetXMLDesc:
+		return xdrString(f.xml)
 	case procDomainIsActive:
 		active := make([]byte, 4)
 		if f.active {
@@ -86,16 +99,23 @@ func (f *fakeLibvirtd) payload(proc uint32) []byte {
 	return nil
 }
 
+// xdrString is s as an XDR string: its length, the bytes, then padding to four.
+func xdrString(s string) []byte {
+	b := binary.BigEndian.AppendUint32(nil, uint32(len(s)))
+	b = append(b, s...)
+	return append(b, make([]byte, (4-len(s)%4)%4)...)
+}
+
 // fakeDomain is the XDR encoding of the one domain the fake knows: its name as an XDR
-// string, padded to four bytes, then a 16-byte UUID and an id.
-var fakeDomain = func() []byte {
+// string, padded to four bytes, then a 16-byte UUID and the given id.
+func fakeDomain(id int32) []byte {
 	name := "instance-fake"
 	b := binary.BigEndian.AppendUint32(nil, uint32(len(name)))
 	b = append(b, name...)
 	b = append(b, make([]byte, (4-len(name)%4)%4)...)
 	b = append(b, make([]byte, 16)...)
-	return binary.BigEndian.AppendUint32(b, 1)
-}()
+	return binary.BigEndian.AppendUint32(b, uint32(id))
+}
 
 func (f *fakeLibvirtd) record(proc uint32) {
 	f.mu.Lock()
@@ -111,7 +131,7 @@ func (f *fakeLibvirtd) domainCalls() []uint32 {
 	var out []uint32
 	for _, p := range f.calls {
 		switch p {
-		case procDomainCreate, procDomainDestroy, procDomainLookupByUUID, procDomainReboot, procDomainIsActive:
+		case procDomainCreate, procDomainDefineXML, procDomainDestroy, procDomainLookupByUUID, procDomainReboot, procDomainIsActive:
 			out = append(out, p)
 		}
 	}
@@ -173,5 +193,14 @@ func newConnectedManager(t *testing.T, d *pipeDialer) *VMManager {
 	if err := m.connect(d, time.Millisecond, 5*time.Millisecond); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	// As main would have at startup: starts are refused until the console socket
+	// directory is QEMU's (FR-017a), which these tests are not about.
+	m.consoleDir.Store(&consoleDirState{dir: t.TempDir()})
 	return m
+}
+
+// newConnectedManagerWith is newConnectedManager against one given fake libvirtd.
+func newConnectedManagerWith(t *testing.T, f *fakeLibvirtd) *VMManager {
+	t.Helper()
+	return newConnectedManager(t, &pipeDialer{fake: f})
 }

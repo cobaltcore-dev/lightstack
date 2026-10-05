@@ -26,7 +26,7 @@ import (
 // id. Every part of that was fiction. Now:
 //
 //   - the console socket is read back from libvirt on every request (never
-//     cached: libvirt creates it per start, in the domain's private directory);
+//     cached: the guest run that serves it changes on every start);
 //   - the token is persisted and projected for the proxy, so it can be resolved
 //     and revoked;
 //   - the URL points at an operator-configured origin;
@@ -183,13 +183,13 @@ func (svc *Service) issueConsoleURL(c *gin.Context) (string, bool) {
 		return "", false
 	}
 
-	socket, err := svc.consoleSocket(c, instanceID)
+	socket, domainID, err := svc.consoleSocket(c, instanceID)
 	if err != nil {
 		sendConsoleEndpointError(c, instanceID, err)
 		return "", false
 	}
 
-	token, err := svc.consoleStore.Issue(ctx, instanceID, ownerProject, socket)
+	token, err := svc.consoleStore.Issue(ctx, instanceID, ownerProject, socket, domainID)
 	if err != nil {
 		log.Error().Err(err).Str("instance_id", instanceID).Msg("console: issuing token failed")
 		common.SendError(c, common.NewInternalServerError("failed to issue console token"))
@@ -228,11 +228,11 @@ func lookupConsoleInstance(c *gin.Context, pool *pgxpool.Pool, instanceID, proje
 // operation that can move or free its console endpoint (SPEC-021 FR-014).
 //
 // It fails closed: on error it sends a 500 and returns false, and the caller must
-// return without acting. A per-start socket path already names nothing once its
-// guest stops, so a surviving token can no longer reach another guest; this keeps
-// an action from reporting success while a link it should have ended still
-// resolves (a reboot keeps the same socket). Every caller revokes before touching
-// libvirt or the database, so refusing leaves the instance as it was.
+// return without acting. The socket path is the instance's own, so a surviving token
+// can never reach another guest; this keeps an action from reporting success while a
+// link it should have ended still resolves (the path survives every restart). Every
+// caller revokes before touching libvirt or the database, so refusing leaves the
+// instance as it was.
 func (svc *Service) revokeConsoleTokens(c *gin.Context, instanceID, reason string) bool {
 	if svc.consoleStore == nil || instanceID == "" {
 		return true
@@ -253,41 +253,44 @@ func (svc *Service) revokeConsoleTokens(c *gin.Context, instanceID, reason strin
 // (libvirt unreachable) and Lightstack carried on. An outage, not stub mode.
 var errNoHypervisor = errors.New("hypervisor not initialized: libvirt was unreachable when Lightstack started")
 
-// consoleSocket reads the guest's live console socket from the hypervisor.
-func (svc *Service) consoleSocket(c *gin.Context, instanceID string) (string, error) {
+// consoleSocket reads the guest's live console socket from the hypervisor, with the
+// domain ID of the run it serves.
+func (svc *Service) consoleSocket(c *gin.Context, instanceID string) (string, int32, error) {
 	if svc.libvirtMode == "stub" {
-		return "", hypervisor.ErrConsoleUnavailable
+		return "", 0, hypervisor.ErrConsoleUnavailable
 	}
 	if svc.vmManager == nil {
-		return "", errNoHypervisor
+		return "", 0, errNoHypervisor
 	}
 	return svc.vmManager.GetConsoleSocket(c.Request.Context(), instanceID)
 }
 
 // CurrentConsoleSocket reports the console socket an instance's guest serves right
-// now, for the console-token reconciler (console.CurrentSocket): "" when it serves
-// none, an error when libvirt cannot say.
-func (svc *Service) CurrentConsoleSocket(ctx context.Context, instanceID string) (string, error) {
+// now and the domain ID of its run, for the console-token reconciler
+// (console.CurrentSocket): "" when it serves none, an error when libvirt cannot say.
+func (svc *Service) CurrentConsoleSocket(ctx context.Context, instanceID string) (string, int32, error) {
 	if svc.vmManager == nil {
-		return "", errNoHypervisor
+		return "", 0, errNoHypervisor
 	}
 	return socketForSweep(svc.vmManager.GetConsoleSocket(ctx, instanceID))
 }
 
 // socketForSweep sorts a readback failure into the two answers the sweep acts on. A
-// guest that is not running, has no console, or is a legacy TCP listener serves no
-// socket, so its tokens name nothing and are revoked. Anything else — libvirtd down,
-// a timeout — is not an answer, and the tokens stay for the next sweep.
-func socketForSweep(socket string, err error) (string, error) {
+// guest that is not running, has no console, or whose console the proxy cannot reach
+// (a TCP listener, or a socket outside the console socket directory) serves no
+// socket, so its tokens are revoked. Anything else — libvirtd down, a timeout — is
+// not an answer, and the tokens stay for the next sweep.
+func socketForSweep(socket string, domainID int32, err error) (string, int32, error) {
 	switch {
 	case err == nil:
-		return socket, nil
+		return socket, domainID, nil
 	case errors.Is(err, hypervisor.ErrConsoleNotReady),
 		errors.Is(err, hypervisor.ErrNoGraphicalConsole),
-		errors.Is(err, hypervisor.ErrConsoleNotSocket):
-		return "", nil
+		errors.Is(err, hypervisor.ErrConsoleNotSocket),
+		errors.Is(err, hypervisor.ErrConsoleLegacySocket):
+		return "", 0, nil
 	default:
-		return "", err
+		return "", 0, err
 	}
 }
 
@@ -318,6 +321,13 @@ func sendConsoleEndpointError(c *gin.Context, instanceID string, err error) {
 		// direction; docs/UPGRADING.md says how to fix the domain.
 		log.Error().Err(err).Str("instance_id", instanceID).
 			Msg("console: guest console is not a unix socket; refusing to proxy")
+		common.SendError(c, common.NewInternalServerError("console misconfigured on this host"))
+	case errors.Is(err, hypervisor.ErrConsoleLegacySocket):
+		// A domain defined before the console sockets moved: its socket is in libvirt's
+		// per-domain directory, which the proxy deliberately cannot see (FR-017).
+		// docs/UPGRADING.md says how to fix the domain.
+		log.Error().Err(err).Str("instance_id", instanceID).
+			Msg("console: guest console socket is outside the console socket directory; refusing to proxy")
 		common.SendError(c, common.NewInternalServerError("console misconfigured on this host"))
 	default:
 		log.Error().Err(err).Str("instance_id", instanceID).Msg("console: endpoint readback failed")

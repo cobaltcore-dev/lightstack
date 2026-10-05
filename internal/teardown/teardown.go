@@ -196,13 +196,17 @@ func isAbsent(err error) bool {
 
 // purgeLocalStorage removes every node-local storage tree under /var/lib/lightstack — VM
 // disk overlays (instances/), config-drive ISOs (cloud-init/), local Glance images
-// (images/), local Cinder volumes (volumes/), and dnsmasq state (dhcp/). It removes
+// (images/), local Cinder volumes (volumes/), dnsmasq state (dhcp/), and the console's
+// token projection and guest sockets (console-tokens/, console-sockets/; SPEC-021
+// FR-017b — the proxy goes in the same uninstall, and the next start recreates both
+// with the right owner). It removes
 // ONLY local hostPath data — never networked RBD/S3 backends (operator-owned,
 // C4/FR-015). Covers DB-tracked and orphaned files (FR-006) and needs no database
 // (C9); the trees are single-release per node (FR-003b). Removing an absent dir is nil.
 func purgeLocalStorage() error {
 	for _, dir := range []string{
 		paths.ImagesDir(), paths.VolumesDir(), paths.InstancesDir(), paths.CloudInitDir(), paths.DHCPDir(),
+		paths.ConsoleTokenDir(), paths.ConsoleSocketDir(),
 	} {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove %s: %w", dir, err)

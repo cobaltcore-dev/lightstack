@@ -146,6 +146,10 @@ func (svc *Service) ResumeInstance(c *gin.Context) {
 			defer cancel()
 
 			if err := svc.vmManager.ResumeVM(ctx, libvirtDomainID); err != nil {
+				// The cause has to reach the log: this runs after the 202, so it is the
+				// only place it can name, e.g., a console socket directory that is not
+				// ready (FR-017a).
+				log.Error().Err(err).Str("instance_id", instanceID).Msg("resume failed in libvirt")
 				// On failure, revert to ERROR state. If the rollback
 				// itself fails, log it — the instance row will then
 				// disagree with libvirt and require operator attention.
