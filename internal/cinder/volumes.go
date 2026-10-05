@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
@@ -687,7 +688,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
-		SELECT v.id, v.name, v.description, v.size_gb, v.status, v.bootable, v.attached_to_instance_id, v.user_id, v.volume_type, v.created_at, v.updated_at
+		SELECT v.id, v.name, v.description, v.size_gb, v.status, v.bootable, v.user_id, v.volume_type, v.created_at, v.updated_at
 		FROM volumes v
 		WHERE v.project_id = $1%s
 		ORDER BY v.created_at DESC
@@ -702,37 +703,44 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 	defer rows.Close()
 
 	var volumes []gin.H
+	var ids []string
 	for rows.Next() {
 		var id, name, status string
 		var size int
 		var bootable bool
-		var attachedTo, userID, volumeType, description sql.NullString
+		var userID, volumeType, description sql.NullString
 		var createdAt, updatedAt time.Time
 
-		if err := rows.Scan(&id, &name, &description, &size, &status, &bootable, &attachedTo, &userID, &volumeType, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &description, &size, &status, &bootable, &userID, &volumeType, &createdAt, &updatedAt); err != nil {
 			log.Warn().Err(err).Msg("failed to scan volume detail row")
 			continue
-		}
-
-		attachments := []any{}
-		if attachedTo.Valid {
-			attachments = append(attachments, gin.H{
-				"server_id": attachedTo.String,
-				"device":    "/dev/vdb",
-			})
 		}
 
 		volumes = append(volumes, serializeVolume(volumeRow{
 			ID: id, Name: name, Description: description.String,
 			TenantID: projectID, UserID: userID.String, VolumeType: volumeType.String,
-			Status: status, Size: size, Bootable: bootable, Attachments: attachments,
+			Status: status, Size: size, Bootable: bootable,
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
 		}))
+		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
 		common.SendError(c, common.NewInternalServerError("failed to read results"))
 		return
+	}
+
+	// Attachments for every listed volume in one query (FR-027).
+	attachments, err := volumeAttachments(c.Request.Context(), svc.pool, ids)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_volumes_detail_attachments").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list volumes"))
+		return
+	}
+	for i, id := range ids {
+		if a, ok := attachments[id]; ok {
+			volumes[i]["attachments"] = a
+		}
 	}
 
 	if volumes == nil {
@@ -750,15 +758,15 @@ func (svc *Service) GetVolume(c *gin.Context) {
 	var id, name, status string
 	var size int
 	var bootable bool
-	var attachedTo, userID, volumeType, description sql.NullString
+	var userID, volumeType, description sql.NullString
 	var createdAt, updatedAt time.Time
 
 	// Support lookup by ID or name
 	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT id, name, description, size_gb, status, bootable, attached_to_instance_id, user_id, volume_type, created_at, updated_at
+		SELECT id, name, description, size_gb, status, bootable, user_id, volume_type, created_at, updated_at
 		FROM volumes
 		WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))
-	`, volumeID, projectID).Scan(&id, &name, &description, &size, &status, &bootable, &attachedTo, &userID, &volumeType, &createdAt, &updatedAt)
+	`, volumeID, projectID).Scan(&id, &name, &description, &size, &status, &bootable, &userID, &volumeType, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
@@ -770,19 +778,18 @@ func (svc *Service) GetVolume(c *gin.Context) {
 		return
 	}
 
-	attachments := []any{}
-	if attachedTo.Valid {
-		attachments = append(attachments, gin.H{
-			"server_id": attachedTo.String,
-			"device":    "/dev/vdb",
-		})
+	attachments, err := volumeAttachments(c.Request.Context(), svc.pool, []string{id})
+	if err != nil {
+		log.Error().Err(err).Str("operation", "get_volume_attachments").Str("volume_id", volumeID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to get volume"))
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"volume": serializeVolume(volumeRow{
 			ID: id, Name: name, Description: description.String,
 			TenantID: projectID, UserID: userID.String, VolumeType: volumeType.String,
-			Status: status, Size: size, Bootable: bootable, Attachments: attachments,
+			Status: status, Size: size, Bootable: bootable, Attachments: attachments[id],
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
 		}),
 	})
@@ -792,6 +799,161 @@ func (svc *Service) GetVolume(c *gin.Context) {
 // (cinder/volume/volume_utils.py check_image_metadata, raised as InvalidInput).
 func imageNotActive(imageID string) string {
 	return fmt.Sprintf("Invalid input received: Image %s is not active.", imageID)
+}
+
+// errVolumeNotFound: the volume an action names is not in the caller's project.
+var errVolumeNotFound = errors.New("volume not found")
+
+// attachRefusal is an os-attach the API answers with status and msg rather than a 500.
+type attachRefusal struct {
+	status int
+	msg    string
+}
+
+func (e *attachRefusal) Error() string { return e.msg }
+
+// attachVolume records an os-attach: a row in volume_attachments holding the mountpoint, in
+// the table the compute service's attach also writes, so the attachment reads back like
+// any other (SPEC-020 FR-027). The volume must be available, and the server one of the
+// caller's, or any server for an administrator: the row is what the compute service lists
+// for that server.
+func (svc *Service) attachVolume(c *gin.Context, volumeID, projectID, instanceID, mountpoint string) {
+	ctx := c.Request.Context()
+	admin := common.HasRole(c, common.RoleAdmin)
+	err := database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
+		var id, status string
+		if err := tx.QueryRow(ctx,
+			`SELECT id::text, status FROM volumes WHERE id::text = $1 AND project_id = $2 FOR UPDATE`,
+			volumeID, projectID).Scan(&id, &status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errVolumeNotFound
+			}
+			return err
+		}
+		if status != "available" {
+			return &attachRefusal{http.StatusBadRequest,
+				fmt.Sprintf("Invalid volume: volume status must be available to attach, but the status is %s.", status)}
+		}
+		var serverOK bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND (project_id = $2 OR $3))`,
+			instanceID, projectID, admin).Scan(&serverOK); err != nil {
+			return err
+		}
+		if !serverOK {
+			return &attachRefusal{http.StatusBadRequest, "os-attach.instance_uuid does not name a server in this project"}
+		}
+		now := time.Now()
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO volume_attachments (volume_id, instance_id, device, attached_at) VALUES ($1, $2, $3, $4)`,
+			id, instanceID, mountpoint, now); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+				return &attachRefusal{http.StatusConflict,
+					fmt.Sprintf("mountpoint %s is already in use on server %s", mountpoint, instanceID)}
+			}
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`UPDATE volumes SET attached_to_instance_id = $1, status = 'in-use', updated_at = $2 WHERE id = $3`,
+			instanceID, now, id)
+		return err
+	})
+
+	var refusal *attachRefusal
+	switch {
+	case err == nil:
+		c.Status(http.StatusAccepted)
+	case errors.Is(err, errVolumeNotFound):
+		common.SendError(c, common.NewNotFoundError("volume"))
+	case errors.As(err, &refusal) && refusal.status == http.StatusConflict:
+		common.SendError(c, common.NewConflictError(refusal.msg))
+	case errors.As(err, &refusal):
+		common.SendError(c, common.NewBadRequestError(refusal.msg))
+	default:
+		log.Error().Err(err).Str("operation", "attach_volume").Str("volume_id", volumeID).Msg("failed to attach volume")
+		common.SendError(c, common.NewInternalServerError("failed to attach volume"))
+	}
+}
+
+// detachVolume clears a volume's attachment for os-detach and os-force_detach: its row in
+// volume_attachments and the volume's in-use status together, so the volume and the
+// compute service's attachment list agree (SPEC-020 FR-027).
+func (svc *Service) detachVolume(c *gin.Context, volumeID, projectID, operation, failure string) {
+	ctx := c.Request.Context()
+	err := database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
+		var id string
+		if err := tx.QueryRow(ctx,
+			`SELECT id::text FROM volumes WHERE id::text = $1 AND project_id = $2 FOR UPDATE`,
+			volumeID, projectID).Scan(&id); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errVolumeNotFound
+			}
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM volume_attachments WHERE volume_id = $1`, id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`UPDATE volumes SET attached_to_instance_id = NULL, status = 'available', updated_at = $1 WHERE id = $2`,
+			time.Now(), id)
+		return err
+	})
+	switch {
+	case err == nil:
+		c.Status(http.StatusAccepted)
+	case errors.Is(err, errVolumeNotFound):
+		common.SendError(c, common.NewNotFoundError("volume"))
+	default:
+		log.Error().Err(err).Str("operation", operation).Str("volume_id", volumeID).Msg(failure)
+		common.SendError(c, common.NewInternalServerError(failure))
+	}
+}
+
+// volumeAttachments reads the attachments of the given volumes, keyed by volume id, in the
+// shape upstream Cinder reports them (cinder/api/v2/views/volumes.py _get_attachments,
+// SPEC-020 FR-027). Every attachment is a row in volume_attachments, whichever API made it,
+// and the row holds the device: the boot volume's /dev/vda, a data volume's first free
+// device, or the mountpoint os-attach was given.
+//
+// Upstream's "id" is the volume's id; the attachment's own id is "attachment_id".
+// host_name stays null: upstream shows it to administrators and services only, and
+// Lightstack does not record the host.
+func volumeAttachments(ctx context.Context, pool *pgxpool.Pool, volumeIDs []string) (map[string][]any, error) {
+	result := make(map[string][]any, len(volumeIDs))
+	if len(volumeIDs) == 0 {
+		return result, nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT id::text, volume_id::text, instance_id::text, device, attached_at
+		FROM volume_attachments
+		WHERE volume_id = ANY($1::uuid[])
+		ORDER BY attached_at, device
+	`, volumeIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query volume attachments: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, volumeID, serverID, device string
+		var attachedAt time.Time
+		if err := rows.Scan(&id, &volumeID, &serverID, &device, &attachedAt); err != nil {
+			return nil, fmt.Errorf("scan volume attachment: %w", err)
+		}
+		result[volumeID] = append(result[volumeID], gin.H{
+			"id":            volumeID,
+			"attachment_id": id,
+			"volume_id":     volumeID,
+			"server_id":     serverID,
+			"host_name":     nil,
+			"device":        device,
+			"attached_at":   attachedAt.Format(volumeTSLayout),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate volume attachments: %w", err)
+	}
+	return result, nil
 }
 
 // DeleteVolume deletes a volume
@@ -873,7 +1035,8 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		return
 	}
 
-	// Handle attach action
+	// Handle attach action. Upstream requires a mountpoint and a server or a host;
+	// Lightstack attaches to servers only.
 	if attachData, ok := req["os-attach"]; ok {
 		attachMap, ok := attachData.(map[string]any)
 		if !ok {
@@ -885,40 +1048,27 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("os-attach.instance_uuid must be a string"))
 			return
 		}
-
-		// Update volume to attached status
-		_, err := svc.pool.Exec(c.Request.Context(), `
-			UPDATE volumes
-			SET attached_to_instance_id = $1, status = $2, updated_at = $3
-			WHERE id = $4 AND project_id = $5
-		`, instanceID, "in-use", time.Now(), volumeID, projectID)
-
-		if err != nil {
-			log.Error().Err(err).Str("operation", "attach_volume").Str("volume_id", volumeID).Msg("failed to attach volume")
-			common.SendError(c, common.NewInternalServerError("failed to attach volume"))
+		if _, err := uuid.Parse(instanceID); err != nil {
+			common.SendError(c, common.NewBadRequestError("os-attach.instance_uuid must be a UUID"))
 			return
 		}
-
-		c.Status(http.StatusAccepted)
+		mountpoint, _ := attachMap["mountpoint"].(string)
+		if mountpoint == "" {
+			common.SendError(c, common.NewBadRequestError("os-attach.mountpoint is required"))
+			return
+		}
+		// volume_attachments.device holds 50 characters; upstream allows 255.
+		if len(mountpoint) > 50 {
+			common.SendError(c, common.NewBadRequestError("os-attach.mountpoint must be at most 50 characters"))
+			return
+		}
+		svc.attachVolume(c, volumeID, projectID, instanceID, mountpoint)
 		return
 	}
 
 	// Handle detach action
 	if _, ok := req["os-detach"]; ok {
-		// Update volume to available status
-		_, err := svc.pool.Exec(c.Request.Context(), `
-			UPDATE volumes
-			SET attached_to_instance_id = NULL, status = $1, updated_at = $2
-			WHERE id = $3 AND project_id = $4
-		`, "available", time.Now(), volumeID, projectID)
-
-		if err != nil {
-			log.Error().Err(err).Str("operation", "detach_volume").Str("volume_id", volumeID).Msg("failed to detach volume")
-			common.SendError(c, common.NewInternalServerError("failed to detach volume"))
-			return
-		}
-
-		c.Status(http.StatusAccepted)
+		svc.detachVolume(c, volumeID, projectID, "detach_volume", "failed to detach volume")
 		return
 	}
 
@@ -1200,24 +1350,10 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		return
 	}
 
-	// Handle force detach action
+	// Handle force detach action. Like os-detach it only clears the record; it does not
+	// detach anything from the hypervisor.
 	if _, ok := req["os-force_detach"]; ok {
-		// Force detach volume from any server
-		// In stub mode, just mark as available
-		// In real mode, would force detach from hypervisor
-		_, err := svc.pool.Exec(c.Request.Context(), `
-			UPDATE volumes
-			SET status = $1, attached_to_instance_id = NULL, updated_at = $2
-			WHERE id = $3 AND project_id = $4
-		`, "available", time.Now(), volumeID, projectID)
-
-		if err != nil {
-			log.Error().Err(err).Str("operation", "force_detach_volume").Str("volume_id", volumeID).Msg("failed to force detach volume")
-			common.SendError(c, common.NewInternalServerError("failed to force detach volume"))
-			return
-		}
-
-		c.Status(http.StatusAccepted)
+		svc.detachVolume(c, volumeID, projectID, "force_detach_volume", "failed to force detach volume")
 		return
 	}
 

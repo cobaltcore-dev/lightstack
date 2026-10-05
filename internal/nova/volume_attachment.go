@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -365,6 +366,50 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"volumeAttachments": attachments})
+}
+
+// volumesAttachedForServers reads the volumes attached to each server, keyed by server id,
+// for os-extended-volumes:volumes_attached on server show and detail (SPEC-020 FR-027).
+// Every attachment is a row in volume_attachments, the boot volume's included, so the list
+// is what upstream reports: {id, delete_on_termination} per volume, in the order they were
+// attached. delete_on_termination is part of the entry from microversion 2.3; Lightstack
+// answers every request with its current microversion.
+func volumesAttachedForServers(ctx context.Context, pool *pgxpool.Pool, serverIDs []string) (map[string][]gin.H, error) {
+	result := make(map[string][]gin.H, len(serverIDs))
+	if len(serverIDs) == 0 {
+		return result, nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT instance_id::text, volume_id::text, delete_on_termination
+		FROM volume_attachments
+		WHERE instance_id = ANY($1::uuid[])
+		ORDER BY attached_at, device
+	`, serverIDs)
+	if err != nil {
+		return nil, fmt.Errorf("query attached volumes: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var serverID, volumeID string
+		var dot bool
+		if err := rows.Scan(&serverID, &volumeID, &dot); err != nil {
+			return nil, fmt.Errorf("scan attached volume: %w", err)
+		}
+		result[serverID] = append(result[serverID], gin.H{"id": volumeID, "delete_on_termination": dot})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate attached volumes: %w", err)
+	}
+	return result, nil
+}
+
+// attachedVolumes renders a server's attached volumes, an empty list rather than null when
+// it has none, as upstream does.
+func attachedVolumes(vols []gin.H) []gin.H {
+	if vols == nil {
+		return []gin.H{}
+	}
+	return vols
 }
 
 // getNextAvailableDevice finds the next available device name (vdb, vdc, etc.)

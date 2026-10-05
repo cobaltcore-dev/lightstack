@@ -1395,6 +1395,18 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		s["security_groups"] = formatSecurityGroups(sgMap[sid])
 	}
 
+	// And their attached volumes, in one query (FR-027).
+	volMap, err := volumesAttachedForServers(c.Request.Context(), svc.pool, ids)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_servers_detail_volumes").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list servers"))
+		return
+	}
+	for _, s := range servers {
+		sid, _ := s["id"].(string)
+		s["os-extended-volumes:volumes_attached"] = attachedVolumes(volMap[sid])
+	}
+
 	if servers == nil {
 		servers = []gin.H{}
 	}
@@ -1534,6 +1546,14 @@ func (svc *Service) GetServer(c *gin.Context) {
 		return
 	}
 	response["security_groups"] = formatSecurityGroups(sgNames)
+
+	volMap, err := volumesAttachedForServers(c.Request.Context(), svc.pool, []string{id})
+	if err != nil {
+		log.Error().Err(err).Str("operation", "get_server_volumes").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to get server"))
+		return
+	}
+	response["os-extended-volumes:volumes_attached"] = attachedVolumes(volMap[id])
 
 	c.JSON(http.StatusOK, gin.H{"server": response})
 }

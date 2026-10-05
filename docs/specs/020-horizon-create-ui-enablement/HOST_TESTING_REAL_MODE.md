@@ -348,6 +348,7 @@ any flavor, and on the **Networks** step select `spec020-net`. Leave *Create New
 ```bash
 openstack server list -f value -c Name -c Status -c Networks
 openstack volume list -f value -c ID -c Size -c Status -c "Attached to"
+openstack server show ui-vm -f value -c volumes_attached
 openstack console log show ui-vm 2>/dev/null | tail -20
 ```
 
@@ -361,8 +362,8 @@ for d in $(sudo virsh list --name | grep '^instance-'); do sudo virsh domblklist
 `spec020-net` as a selectable row** (before this feature the table was empty and Launch stayed disabled);
 `ui-vm` reaches `ACTIVE` with an address on `spec020-net`; a **real libvirt domain** exists; and the
 console log shows a genuine cirros boot. With *Create New Volume* on, the wizard asks for a boot volume
-(FR-025). Expect one unnamed volume of the wizard's *Volume Size*, `in-use` and attached to `ui-vm`. The
-domain's `vda` is `/var/lib/lightstack/volumes/volume-<id>.qcow2`, not a per-instance overlay under
+(FR-025). Expect one unnamed volume of the wizard's *Volume Size*, `in-use` and attached to `ui-vm` on
+`/dev/vda`, and `server show` listing it under `volumes_attached` (FR-027). The domain's `vda` is `/var/lib/lightstack/volumes/volume-<id>.qcow2`, not a per-instance overlay under
 `instances/`. That proves the instance booted from a volume Cinder copied out of the RGW-backed image,
 after fetching the image's base onto the node. A `503 could not create the boot volume` is that copy
 failing; the lightstack log names the cause.
@@ -667,12 +668,13 @@ ssh -i ~/.ssh/id_rsa_lightstack_spec020 -o StrictHostKeyChecking=no cirros@"$VMI
 Removes the fixtures, both releases, the namespace, the Rook stack, and the temp files.
 
 The dashboard-launched servers boot from volumes that outlive them (*Delete Volume on Instance Delete*
-defaults to **No**). Each volume's id is read while it is still attached. A volume made from `cirros` keeps
+defaults to **No**). Each volume's id is read from the server's `volumes_attached` (FR-027) before the server
+is deleted; the boot volume is the first one attached. A volume made from `cirros` keeps
 the image from being deleted, so the image goes last, after both servers' volumes.
 
 **T2 — OpenStack CLI:**
 ```bash
-UIVOL=$(openstack volume list -f value -c ID -c "Attached to" | awk '/Attached to ui-vm /{print $1}')
+UIVOL=$(openstack server show ui-vm -f json -c volumes_attached 2>/dev/null | jq -r '.volumes_attached[0].id // empty')
 openstack server delete ui-vm 2>/dev/null || true
 openstack volume delete "$UIVOL" 2>/dev/null || true
 openstack volume delete ui-vol 2>/dev/null || true
@@ -687,7 +689,7 @@ holds its subnet.
 
 **T2 — OpenStack CLI (only if §2.8–§2.10 were run):**
 ```bash
-SSHVOL=$(openstack volume list -f value -c ID -c "Attached to" | awk '/Attached to ssh-vm /{print $1}')
+SSHVOL=$(openstack server show ssh-vm -f json -c volumes_attached 2>/dev/null | jq -r '.volumes_attached[0].id // empty')
 openstack server delete ssh-vm 2>/dev/null || true
 openstack volume delete "$SSHVOL" 2>/dev/null || true
 openstack keypair delete ui-key 2>/dev/null || true

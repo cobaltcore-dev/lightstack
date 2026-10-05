@@ -259,14 +259,15 @@ Adjust the prefix if `cache.key_prefix` is not the default.
 ## Quota, limits, security-group, image and volume API changes
 
 Several quota, limits and security-group answers changed, and so did server create and rebuild,
-volume create from an image, and which images Glance shows and lists, most of them to match
-upstream OpenStack. A client that relied on an old answer now gets a different status code or
-value. Nothing is migrated, and there is no switch to restore the old behaviour. Three changes can
-need action on your side — eBPF mode, a self-maintained Horizon configuration, and scripts that
-boot from an image id that names no image, or from an image with no data, which used to be
-accepted — and the rest is listed per service below. Two rows deliberately differ from upstream:
-`default` is Lightstack's own alias for the caller's project, and an unscoped token gets `404` on
-`/limits` where upstream answers `200`.
+volume create from an image, how volume attachments read back, and which images Glance shows and
+lists, most of them to match upstream OpenStack. A client that relied on an old answer now gets a
+different status code or value. Nothing is migrated, and there is no switch to restore the old
+behaviour. Three changes can need action on your side — eBPF mode, a self-maintained Horizon
+configuration, and scripts that boot from an image id that names no image, or from an image with
+no data, which used to be accepted — and the rest is listed per service below. Three rows
+deliberately differ from upstream: `default` is Lightstack's own alias for the caller's project, an
+unscoped token gets `404` on `/limits` where upstream answers `200`, and `os-attach` takes a
+`mountpoint` of at most 50 characters where upstream takes 255.
 
 ### eBPF security groups fail closed (eBPF mode only)
 
@@ -345,6 +346,7 @@ Neutron `/v2.0/quotas/{id}`.
 | server create with an image the caller cannot read (another project's private image), or an id that names no image | accepted: the image booted, or the server went to `ERROR` (stub mode: a server that never booted anything) | `400 Can not find requested image`, before anything is created. Scripts that booted from a made-up image id must create a real image first |
 | rebuild with such an image | accepted | `400 Cannot find image for rebuild` |
 | server create or rebuild with an image that is not active (no data uploaded yet, or deactivated) | accepted | `400 Image <id> is not active.` |
+| server show and detail | no `os-extended-volumes:volumes_attached` | `[{id, delete_on_termination}]` for every attached volume, the boot volume included; `[]` when there is none |
 
 ### Cinder
 
@@ -354,6 +356,10 @@ Neutron `/v2.0/quotas/{id}`.
 | `volume create --image` with an image the caller cannot read, or an id that names no image | accepted (stub mode); `503` (local backends) | `400 Invalid image identifier or unable to access requested image.` |
 | `os-reimage` with such an image | `202` | `404 Image <id> could not be found.` |
 | `volume create --image` or `os-reimage` with an image that is not active | accepted | `400 Invalid input received: Image <id> is not active.` |
+| a volume's `attachments` | `{server_id, device}`, the device always `/dev/vdb` | upstream's `{id, attachment_id, volume_id, server_id, host_name, device, attached_at}` with the recorded device (`/dev/vda` for a boot volume); `id` is the volume's id, as upstream |
+| `os-attach` without `mountpoint`, or naming a server that is not one of the caller's | accepted | `400`. A `mountpoint` longer than 50 characters is also a `400` (upstream allows 255) |
+| `os-attach` on a volume that is not `available` | accepted | `400`; a `mountpoint` the server already uses is a `409` |
+| `os-attach`, `os-detach`, `os-force_detach` on a volume that does not exist | `202` | `404` |
 
 ### Glance
 
