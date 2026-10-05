@@ -236,6 +236,7 @@ launch. Then confirm from the terminal.
 
 ```bash
 openstack server list -f value -c Name -c Status -c Networks
+openstack volume list -f value -c ID -c Size -c Status -c "Attached to"
 ```
 
 **Expect:** a **Launch Instance** button is present on the Instances panel; the **Networks step renders
@@ -244,11 +245,12 @@ after launching, `ui-vm` reaches `ACTIVE` and shows an address on `spec020-net`.
 
 Leave the Source step's **Create New Volume** toggle at Horizon's default (**Yes**) — that is the path that
 used to fail. With it on, Horizon sends no `imageRef` and puts the image in `block_device_mapping_v2` as
-`source_type: image`; Lightstack now adopts that as the boot image. **Known limitation:** Lightstack boots the image
-directly and does **not** materialize a Cinder volume, so `volume_size` and *Delete Volume on Instance
-Delete* are ignored and no new volume appears under Project → Volumes. `ACTIVE` is still the pass
-condition. An instance in `ERROR` with an empty `image` field is the old failure — check the lightstack log for
-`Invalid imageRef`.
+`source_type: image`, `destination_type: volume`. Lightstack creates a volume of the wizard's *Volume Size*
+from the image and boots `ui-vm` from it (FR-025). **Expect** one unnamed volume of that size, `in-use`, attached
+to `ui-vm`. It also shows under Project → Volumes. *Delete Volume on Instance Delete* defaults to **No**,
+so the volume outlives the server, and §2.6 deletes it. An instance in `ERROR` with an empty `image` field is
+the old failure — check the lightstack log for `Invalid imageRef`. A `400` or `503` naming the boot volume
+is this path refusing; the lightstack log says why.
 
 Distinguish the two failure modes before concluding. If the **wizard never finishes loading**, one of its
 data sources rejected — every promise in `launch-instance-model.service.js` is guarded by `noop` except
@@ -296,7 +298,9 @@ first, or `TEST 5` fails because `ui-vm` already consumes part of the quota it s
 
 ```bash
 make test-contract
+UIVOL=$(openstack volume list -f value -c ID -c "Attached to" | awk '/Attached to ui-vm /{print $1}')
 openstack server delete ui-vm 2>/dev/null || true
+openstack volume delete "$UIVOL" 2>/dev/null || true
 ./test/quota_test.sh
 ./test/quota_admin_test.sh
 ```

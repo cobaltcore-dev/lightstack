@@ -256,10 +256,10 @@ redis-cli --scan --pattern 'lightstack:image:*'   | xargs -r redis-cli del
 
 Adjust the prefix if `cache.key_prefix` is not the default.
 
-## Quota, limits and security-group API changes
+## Quota, limits, security-group and boot-volume API changes
 
-Several quota, limits and security-group answers changed, most of them to match upstream
-OpenStack. A client that relied on an old answer now gets a different status code or value.
+Several quota, limits and security-group answers changed, and so did a server create that asks for
+a new boot volume, most of them to match upstream OpenStack. A client that relied on an old answer now gets a different status code or value.
 Nothing is migrated, and there is no switch to restore the old behaviour. Two changes can need
 action on your side — eBPF mode and a self-maintained Horizon configuration — and the rest is
 listed per service below. Two rows deliberately differ from upstream: `default` is Lightstack's
@@ -337,3 +337,12 @@ Neutron `/v2.0/quotas/{id}`.
 |---|---|---|
 | `addSecurityGroup` with a group the server already has | `409` | `400`, as upstream, where Neutron rejects the duplicate id |
 | server create, `security_groups[].name` | a group name | a group name or id |
+| server create with a root `source_type: image`, `destination_type: volume` mapping — the dashboard's *Create New Volume* | boots the image directly; `volume_size` and `delete_on_termination` ignored, no volume created | creates an unnamed volume from the image and boots from it, as upstream; `delete_on_termination` decides whether it is deleted with the server |
+| … where no volume can be created | the image boot above | `400` when there is no block-storage service, `503` when creating the volume fails |
+| … with an unknown image, a malformed `volume_size`, or one below the image's floor | the image boot above | `400` |
+
+### Cinder
+
+| | before | after |
+|---|---|---|
+| `volume create --image` on a `local` or `local,rbd` backend, for an image whose base is not on the node yet (an RGW/S3-backed image no server has booted there) | `503 failed to create volume from image` | the base is fetched and checked against the image checksum first, as an image boot does |

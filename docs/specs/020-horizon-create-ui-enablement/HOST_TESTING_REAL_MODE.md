@@ -341,25 +341,31 @@ name, tracked separately.
 ### 2.5 F7 — Launch an instance from the dashboard, real VM (SC-001)
 
 In the browser, open **Project → Compute → Instances** and use **Launch Instance**: source image `cirros`,
-any flavor, and on the **Networks** step select `spec020-net`. Name it `ui-vm` and launch. Then confirm in
-T2 and on the hypervisor.
+any flavor, and on the **Networks** step select `spec020-net`. Leave *Create New Volume* at its default
+(**Yes**). Name it `ui-vm` and launch. Then confirm in T2 and on the hypervisor.
 
 **T2 — OpenStack CLI:**
 ```bash
 openstack server list -f value -c Name -c Status -c Networks
+openstack volume list -f value -c ID -c Size -c Status -c "Attached to"
 openstack console log show ui-vm 2>/dev/null | tail -20
 ```
 
 **T1 — host + k3s:**
 ```bash
 sudo virsh list --name | grep '^instance-' || echo "no lightstack libvirt domain"
+for d in $(sudo virsh list --name | grep '^instance-'); do sudo virsh domblklist "$d"; done
 ```
 
 **Expect:** a **Launch Instance** button on the Instances panel; the **Networks step renders
 `spec020-net` as a selectable row** (before this feature the table was empty and Launch stayed disabled);
 `ui-vm` reaches `ACTIVE` with an address on `spec020-net`; a **real libvirt domain** exists; and the
-console log shows a genuine cirros boot — proving the dashboard-launched instance actually booted from the
-RGW-backed image.
+console log shows a genuine cirros boot. With *Create New Volume* on, the wizard asks for a boot volume
+(FR-025). Expect one unnamed volume of the wizard's *Volume Size*, `in-use` and attached to `ui-vm`. The
+domain's `vda` is `/var/lib/lightstack/volumes/volume-<id>.qcow2`, not a per-instance overlay under
+`instances/`. That proves the instance booted from a volume Cinder copied out of the RGW-backed image,
+after fetching the image's base onto the node. A `503 could not create the boot volume` is that copy
+failing; the lightstack log names the cause.
 
 Do **not** grep libvirt for the server name: Lightstack names domains `instance-<hex>` from the domain UUID, not
 after the Nova server, and it does not populate `OS-EXT-SRV-ATTR:instance_name`. A `rook` domain in the same
@@ -507,7 +513,7 @@ In the browser, open **Project → Compute → Key Pairs**:
 
 Now launch a second instance the same way as §2.5 — **Project → Compute → Instances → Launch Instance** —
 source image `cirros`, any flavor, network `spec020-net`, and on the **Key Pair** step select **`ui-key`**.
-Name it `ssh-vm`. Leave *Create New Volume* at its default.
+Name it `ssh-vm`. Leave *Create New Volume* at its default, so it boots from a new volume as `ui-vm` does.
 
 **T2 — OpenStack CLI:**
 ```bash
@@ -660,12 +666,17 @@ ssh -i ~/.ssh/id_rsa_lightstack_spec020 -o StrictHostKeyChecking=no cirros@"$VMI
 
 Removes the fixtures, both releases, the namespace, the Rook stack, and the temp files.
 
+The dashboard-launched servers boot from volumes that outlive them (*Delete Volume on Instance Delete*
+defaults to **No**). Each volume's id is read while it is still attached. A volume made from `cirros` keeps
+the image from being deleted, so the image goes last, after both servers' volumes.
+
 **T2 — OpenStack CLI:**
 ```bash
+UIVOL=$(openstack volume list -f value -c ID -c "Attached to" | awk '/Attached to ui-vm /{print $1}')
 openstack server delete ui-vm 2>/dev/null || true
+openstack volume delete "$UIVOL" 2>/dev/null || true
 openstack volume delete ui-vol 2>/dev/null || true
 openstack network delete ui-net 2>/dev/null || true
-openstack image delete cirros 2>/dev/null || true
 rm -f /tmp/cirros.img
 sudo sed -i "/spec020-hosttest/d" /etc/hosts
 ```
@@ -676,7 +687,9 @@ holds its subnet.
 
 **T2 — OpenStack CLI (only if §2.8–§2.10 were run):**
 ```bash
+SSHVOL=$(openstack volume list -f value -c ID -c "Attached to" | awk '/Attached to ssh-vm /{print $1}')
 openstack server delete ssh-vm 2>/dev/null || true
+openstack volume delete "$SSHVOL" 2>/dev/null || true
 openstack keypair delete ui-key 2>/dev/null || true
 openstack keypair delete ui-gen 2>/dev/null || true
 openstack router unset r1 --external-gateway 2>/dev/null || true
@@ -697,6 +710,7 @@ guest's host key, which would otherwise collide the next time the same fixed IP 
 **T2 — OpenStack CLI:**
 ```bash
 openstack network delete spec020-net 2>/dev/null || true
+openstack image delete cirros 2>/dev/null || true
 ```
 
 **T1 — host + k3s:**
