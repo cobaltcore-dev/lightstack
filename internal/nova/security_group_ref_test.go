@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,7 @@ func TestCreateServerResolvesSecurityGroupByIDOrName(t *testing.T) {
 	r := newNovaTestRouter()
 	hdr := testAuthHdr(seededProjectID, seededUserID)
 	sgID := seededSecurityGroupID(t)
+	image := seededImageID(t)
 
 	for _, tc := range []struct{ name, ref string }{
 		{"by name (CLI and Terraform)", "default"},
@@ -58,8 +60,8 @@ func TestCreateServerResolvesSecurityGroupByIDOrName(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := fmt.Sprintf(
-				`{"server":{"name":"sgref-%s","flavorRef":"00000000-0000-0000-0000-000000000011","imageRef":"11111111-1111-1111-1111-111111111111","security_groups":[{"name":%q}]}}`,
-				tc.name[:6], tc.ref)
+				`{"server":{"name":"sgref-%s","flavorRef":"00000000-0000-0000-0000-000000000011","imageRef":%q,"security_groups":[{"name":%q}]}}`,
+				tc.name[:6], image, tc.ref)
 
 			code, resp := doReq(r, http.MethodPost, "/v2.1/servers", body, hdr)
 			if code != http.StatusAccepted {
@@ -97,16 +99,17 @@ func TestCreateServerRejectsUnknownSecurityGroup(t *testing.T) {
 	requireDB(t)
 	r := newNovaTestRouter()
 	hdr := testAuthHdr(seededProjectID, seededUserID)
+	image := seededImageID(t)
 
 	for _, ref := range []string{
 		"11111111-1111-1111-1111-111111111111",
 		"no-such-group",
 	} {
 		code, resp := doReq(r, http.MethodPost, "/v2.1/servers", fmt.Sprintf(
-			`{"server":{"name":"sgref-bad","flavorRef":"00000000-0000-0000-0000-000000000011","imageRef":"11111111-1111-1111-1111-111111111111","security_groups":[{"name":%q}]}}`,
-			ref), hdr)
-		if code != http.StatusBadRequest {
-			t.Errorf("create with unknown security group %q: code=%d body=%s; want 400", ref, code, resp)
+			`{"server":{"name":"sgref-bad","flavorRef":"00000000-0000-0000-0000-000000000011","imageRef":%q,"security_groups":[{"name":%q}]}}`,
+			image, ref), hdr)
+		if code != http.StatusBadRequest || !strings.Contains(resp, "Security group") {
+			t.Errorf("create with unknown security group %q: code=%d body=%s; want 400 naming the security group", ref, code, resp)
 		}
 	}
 }

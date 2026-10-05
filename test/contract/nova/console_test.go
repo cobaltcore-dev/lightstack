@@ -22,7 +22,7 @@ func TestNovaGetConsoleOutput_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-console-output",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestNovaGetVNCConsole_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-vnc-console",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -118,7 +118,7 @@ func TestNovaCreateRemoteConsole_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-remote-console",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -173,7 +173,7 @@ func TestNovaGetSerialConsole_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-serial-console",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestNovaGetSPICEConsole_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-spice-console",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -276,7 +276,7 @@ func TestNovaGetRDPConsole_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-rdp-console",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)

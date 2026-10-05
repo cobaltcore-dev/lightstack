@@ -22,7 +22,7 @@ func TestNovaServerCreate_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-basic",
 		FlavorRef: "00000000-0000-0000-0000-000000000010", // m1.small
-		ImageRef:  "00000000-0000-0000-0000-000000000001", // cirros
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -73,7 +73,7 @@ func TestNovaServerGet_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-get",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -103,7 +103,7 @@ func TestNovaServerDelete_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-delete",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -134,7 +134,7 @@ func TestNovaServerReboot_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-reboot",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -186,7 +186,7 @@ func TestNovaServerUpdate_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-original",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -222,7 +222,7 @@ func TestNovaServerLifecycle_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-lifecycle",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()

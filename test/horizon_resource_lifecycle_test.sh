@@ -87,11 +87,18 @@ for i in {1..30}; do
     sleep 1
 done
 
-# 4. Create Instance
+# 4. Create Instance, from an image the test creates and uploads a few bytes to: server
+# create refuses an image that does not exist or is not active.
 echo -e "${YELLOW}[STEP 4]${NC} Create instance"
+BOOT_IMAGE_FILE=$(mktemp)
+printf 'lightstack test image' > "$BOOT_IMAGE_FILE"
+BOOT_IMAGE_ID=$(openstack image create lifecycle-test-image \
+    --disk-format raw --container-format bare --file "$BOOT_IMAGE_FILE" \
+    -f value -c id 2>/dev/null)
+rm -f "$BOOT_IMAGE_FILE"
 INSTANCE_ID=$(openstack server create lifecycle-test-vm \
     --flavor m1.small \
-    --image 00000000-0000-0000-0000-000000000001 \
+    --image "$BOOT_IMAGE_ID" \
     --network lifecycle-test-net \
     -f value -c id 2>/dev/null)
 if [ -z "$INSTANCE_ID" ]; then
@@ -234,6 +241,7 @@ fi
 
 # 14. Delete Backup Image
 echo -e "${YELLOW}[STEP 14]${NC} Delete backup image"
+openstack image delete "$BOOT_IMAGE_ID" 2>/dev/null
 openstack image delete $BACKUP_ID 2>/dev/null
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}[PASS]${NC} Backup image deleted"

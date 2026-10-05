@@ -35,6 +35,17 @@ TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
 
 log_pass "Got authentication token"
 
+# Server create refuses an image that does not exist or is not active, so the test boots
+# from one it creates and uploads a few bytes to.
+IMAGE_ID=$(curl -s -X POST "http://localhost:9292/v2/images" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "quota-test-image", "disk_format": "raw", "container_format": "bare"}' | jq -r '.id')
+curl -s -o /dev/null -X PUT "http://localhost:9292/v2/images/$IMAGE_ID/file" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "lightstack test image"
+
 PROJECT_ID="00000000-0000-0000-0000-000000000002"
 
 # Test 1: Get quota set
@@ -110,7 +121,7 @@ for i in {1..3}; do
             \"server\": {
                 \"name\": \"quota-test-vm-$i\",
                 \"flavorRef\": \"00000000-0000-0000-0000-000000000010\",
-                \"imageRef\": \"00000000-0000-0000-0000-000000000001\"
+                \"imageRef\": \"$IMAGE_ID\"
             }
         }")
 
@@ -136,7 +147,7 @@ EXCEEDED_RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "http://localh
         "server": {
             "name": "quota-test-vm-exceed",
             "flavorRef": "00000000-0000-0000-0000-000000000010",
-            "imageRef": "00000000-0000-0000-0000-000000000001"
+            "imageRef": "'"$IMAGE_ID"'"
         }
     }')
 
@@ -184,7 +195,7 @@ NEW_INSTANCE_RESPONSE=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
         "server": {
             "name": "quota-test-vm-after-delete",
             "flavorRef": "00000000-0000-0000-0000-000000000010",
-            "imageRef": "00000000-0000-0000-0000-000000000001"
+            "imageRef": "'"$IMAGE_ID"'"
         }
     }')
 
@@ -217,6 +228,7 @@ echo "Cleaning up test resources..."
 for instance_id in "${CREATED_INSTANCES[@]}"; do
     curl -s -X DELETE "http://localhost:8774/v2.1/servers/$instance_id" -H "X-Auth-Token: $TOKEN" > /dev/null
 done
+curl -s -X DELETE "http://localhost:9292/v2/images/$IMAGE_ID" -H "X-Auth-Token: $TOKEN" > /dev/null
 
 # Reset quotas to defaults
 curl -s -X PUT "http://localhost:8774/v2.1/os-quota-sets/$PROJECT_ID" \

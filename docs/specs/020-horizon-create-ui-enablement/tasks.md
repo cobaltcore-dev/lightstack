@@ -219,6 +219,15 @@ a project switch.
   `cmd/lightstack/main.go`. Docs: FR-025, both runbooks (§2.5, §2.8 and teardown), F16 in the compatibility
   report, `docs/UPGRADING.md`. ✅ unit tests and a stub end-to-end run with local volumes 2026-10-05;
   ⏳ the real-mode host pass, `HOST_TESTING_REAL_MODE.md` §2.5.
+- [x] T060 **FR-026 — images by upstream's visibility rules, active only (added in review).** RED first:
+  `internal/common/image_test.go` (the rule and the status), `internal/nova/image_visibility_test.go` (create,
+  rebuild), `internal/cinder/image_visibility_test.go` (volume create, `os-reimage`),
+  `internal/glance/visibility_test.go` (show, list with its filters, download). Then
+  `common.ImageVisibleSQL`/`VisibleImage`, their callers, Glance's show, list and download, the admin-aware cache
+  key and the eviction on member changes. The contract suite and six shell scripts booted from an image id that
+  names no image, or from an image with no data; they now create an active image (`contract.CreateTestImage`).
+  Docs: FR-026, `docs/UPGRADING.md`. ✅ unit tests, the contract suite and the scripts against a stub stack
+  2026-10-05; ⏳ the host passes.
 
 ---
 

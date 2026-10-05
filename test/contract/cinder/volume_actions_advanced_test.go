@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -303,7 +304,7 @@ func TestCinderReimageVolume_Contract(t *testing.T) {
 	defer ensureVolumeDeleted(client, volumeID)
 
 	// Reimage volume
-	imageID := "00000000-0000-0000-0000-000000000001" // cirros test image
+	imageID := contract.CreateTestImage(t) // re-imaging refuses an image that does not exist
 	reimageBody := fmt.Sprintf(`{"os-reimage": {"image_id": "%s"}}`, imageID)
 	url := client.ServiceURL("volumes", volumeID, "action")
 	req, _ := http.NewRequest("POST", url, strings.NewReader(reimageBody))

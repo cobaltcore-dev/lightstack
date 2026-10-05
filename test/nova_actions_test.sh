@@ -12,6 +12,7 @@ NC='\033[0m' # No Color
 # Base URLs
 AUTH_URL="${OS_AUTH_URL:-http://localhost:5001/v3}"
 NOVA_URL="${OS_COMPUTE_URL:-http://localhost:8774}"
+GLANCE_URL="${OS_IMAGE_URL:-http://localhost:9292}"
 PROJECT_ID="00000000-0000-0000-0000-000000000002"
 
 echo "=== Nova Server Actions Test ==="
@@ -47,6 +48,17 @@ if [ -z "$TOKEN" ]; then
 fi
 echo -e "${GREEN}OK${NC}: Authenticated"
 
+# Server create refuses an image that does not exist or is not active, so the test boots
+# from one it creates and uploads a few bytes to.
+IMAGE_ID=$(curl -s -X POST "$GLANCE_URL/v2/images" \
+  -H "X-Auth-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "nova-actions-test-image", "disk_format": "raw", "container_format": "bare"}' | jq -r '.id')
+curl -s -o /dev/null -X PUT "$GLANCE_URL/v2/images/$IMAGE_ID/file" \
+  -H "X-Auth-Token: $TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary "lightstack test image"
+
 # Create test server
 echo "Creating test server..."
 SERVER_ID=$(curl -s -X POST "$NOVA_URL/v2.1/servers" \
@@ -56,7 +68,7 @@ SERVER_ID=$(curl -s -X POST "$NOVA_URL/v2.1/servers" \
     "server": {
       "name": "test-server-actions",
       "flavorRef": "00000000-0000-0000-0000-000000000010",
-      "imageRef": "00000000-0000-0000-0000-000000000001"
+      "imageRef": "'"$IMAGE_ID"'"
     }
   }' | jq -r '.server.id')
 
@@ -73,7 +85,7 @@ RESPONSE=$(curl -s -X POST "$NOVA_URL/v2.1/servers/$SERVER_ID/action" \
   -H "Content-Type: application/json" \
   -d '{
     "rebuild": {
-      "imageRef": "00000000-0000-0000-0000-000000000001",
+      "imageRef": "'"$IMAGE_ID"'",
       "name": "rebuilt-server"
     }
   }')
@@ -90,7 +102,7 @@ echo "Test 2: Rescue server"
 curl -s -X POST "$NOVA_URL/v2.1/servers/$SERVER_ID/action" \
   -H "X-Auth-Token: $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"rescue": {"rescue_image_ref": "00000000-0000-0000-0000-000000000001"}}' \
+  -d '{"rescue": {"rescue_image_ref": "'"$IMAGE_ID"'"}}' \
   -w "%{http_code}" | grep -q "200"
 if [ $? -eq 0 ]; then
   echo -e "${GREEN}PASS${NC}: Rescue server"
@@ -123,6 +135,8 @@ echo "Cleaning up..."
 curl -s -X DELETE "$NOVA_URL/v2.1/servers/$SERVER_ID" \
   -H "X-Auth-Token: $TOKEN" > /dev/null
 echo -e "${GREEN}OK${NC}: Cleanup complete"
+
+curl -s -X DELETE "$GLANCE_URL/v2/images/$IMAGE_ID" -H "X-Auth-Token: $TOKEN" > /dev/null
 
 echo "=== Test Summary ==="
 echo "All Nova server action tests completed"

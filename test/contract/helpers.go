@@ -5,10 +5,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
+	"github.com/gophercloud/gophercloud/openstack/imageservice/v2/images"
 	"github.com/stretchr/testify/require"
 )
 
@@ -117,6 +119,43 @@ func SetupImageV2Client(t *testing.T) *gophercloud.ServiceClient {
 	require.NoError(t, err, "Failed to create Glance v2 client")
 
 	return client
+}
+
+// CreateTestImage creates an active private image in the test client's project and deletes
+// it when the test ends. Server create and rebuild, volume create from an image and
+// os-reimage refuse an image that does not exist, that the caller cannot see, or that is
+// not active, as upstream does, so a test that needs an image uses a real one.
+//
+// Its data is a few bytes, not a bootable disk: none of those checks reads it. A test that
+// boots a real guest uploads its own.
+func CreateTestImage(t *testing.T) string {
+	t.Helper()
+	client := SetupImageV2Client(t)
+	img, err := images.Create(client, images.CreateOpts{
+		Name:            "contract-test-image",
+		ContainerFormat: "bare",
+		DiskFormat:      "raw",
+	}).Extract()
+	require.NoError(t, err, "Failed to create the test image")
+	// Runs after the test's own deferred server and volume deletes, so the image is no
+	// longer in use by then.
+	t.Cleanup(func() { _ = images.Delete(client, img.ID).ExtractErr() })
+	UploadTestImageData(t, client, img.ID)
+	return img.ID
+}
+
+// UploadTestImageData uploads a few bytes to an image, which makes it active.
+func UploadTestImageData(t *testing.T, client *gophercloud.ServiceClient, imageID string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, client.ServiceURL("images", imageID, "file"),
+		strings.NewReader("lightstack contract test image"))
+	require.NoError(t, err)
+	req.Header.Set("X-Auth-Token", client.TokenID)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "Failed to upload the test image's data")
+	resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode, "uploading the test image's data")
 }
 
 // getEnvOrDefault returns environment variable value or default if not set.

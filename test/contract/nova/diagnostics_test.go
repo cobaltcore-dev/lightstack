@@ -20,7 +20,7 @@ func TestNovaServerDiagnostics_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-diagnostics",
 		FlavorRef: "00000000-0000-0000-0000-000000000010", // m1.tiny
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()

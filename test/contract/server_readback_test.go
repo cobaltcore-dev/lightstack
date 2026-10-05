@@ -39,6 +39,7 @@ func TestNovaServerReadBack_KeyName_Contract(t *testing.T) {
 	}).Extract()
 	require.NoError(t, err)
 	defer func() { _ = images.Delete(glance, img.ID).ExtractErr() }()
+	UploadTestImageData(t, glance, img.ID) // server create refuses an image that is not active
 
 	base := servers.CreateOpts{Name: "spec017-kn", FlavorRef: flavorM1Small, ImageRef: img.ID}
 	srv, err := servers.Create(nova, keypairs.CreateOptsExt{CreateOptsBuilder: base, KeyName: kp.Name}).Extract()
@@ -60,6 +61,7 @@ func TestNovaServerReadBack_SecurityGroups_Contract(t *testing.T) {
 	}).Extract()
 	require.NoError(t, err)
 	defer func() { _ = images.Delete(glance, img.ID).ExtractErr() }()
+	UploadTestImageData(t, glance, img.ID) // server create refuses an image that is not active
 
 	srv, err := servers.Create(nova, servers.CreateOpts{
 		Name: "spec017-sg", FlavorRef: flavorM1Small, ImageRef: img.ID,
