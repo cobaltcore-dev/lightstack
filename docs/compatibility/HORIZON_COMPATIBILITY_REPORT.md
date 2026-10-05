@@ -66,8 +66,8 @@ where several were first filed, was closed as superseded); the 2026-09-22 re-tes
 > first failure. Details under each finding.
 >
 > The pass also produced **seven new findings, F10–F16**, none of them regressions — **four** pre-existing
-> defects (F10, F11, F13, F15), one gap by design (F12), one config-drift bug introduced and fixed within the pass (F14), and one documented
-> limitation of the F7 fix (F16). See *Findings from the #533 pass*.
+> defects (F10, F11, F13, F15), one gap by design (F12), one config-drift bug introduced and fixed within the pass (F14), and one
+> limitation of the F7 fix, since fixed (F16). See *Findings from the #533 pass*.
 
 ## Environment
 
@@ -298,8 +298,8 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 >
 > A fifth defect sat behind the Launch button itself: Horizon defaults **Create New Volume = Yes**, which
 > sends the image inside `block_device_mapping_v2` (`source_type: image`) with an empty `imageRef`. Lightstack
-> ignored that entry and errored the instance to **ERROR** with `invalid UUID length: 0`. It now adopts the
-> entry as the boot image — see **F16** for the limitation.
+> ignored that entry and errored the instance to **ERROR** with `invalid UUID length: 0`. It now creates the
+> volume that entry asks for and boots from it — see **F16**.
 
 - **Cause**: in the Launch-Instance wizard the **Networks step won't let you select a network**, so the
   required step never validates and Launch stays disabled — no instance can be launched through the UI.
@@ -429,7 +429,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 Surfaced while fixing F2/F3/F7/F8, in stub and real mode. **None is a regression from #532 or #533** —
 **F10–F13 and F15** are pre-existing and reproduce on the base commit; **F14** was introduced *and* fixed
 inside the pass (on `0a4dde0` both `local_settings` copies carried `CSRF_COOKIE_HTTPONLY = True`, so there
-was no drift to inherit); **F16** is a documented limitation of the F7 fix.
+was no drift to inherit); **F16** was a limitation of the F7 fix and is fixed.
 
 ### F10 — `POST /v2.0/ports` 500s: bridge in the root namespace, TAP attached in a project namespace (major) — _real_ — ❌ **open**
 - **Cause**: `CreateNetwork` creates the Linux bridge in the **root** netns, deliberately, "for libvirt access"
@@ -489,12 +489,18 @@ was no drift to inherit); **F16** is a documented limitation of the F7 fix.
   waits exceed the suite's own `-timeout 5m` (panic in `TestRemoveSecurityGroup_Contract`). Green in stub mode
   the same day. `make test-contract` is therefore excluded from the real-mode runbook.
 
-### F16 — Boot-from-new-volume is adopted, not implemented (low) — _stub + real_ — ⚠️ **documented limitation**
+### F16 — Boot-from-new-volume was adopted, not implemented (low) — _stub + real_ — ✅ **fixed**
 - Horizon's launch wizard defaults **Create New Volume = Yes** and sends the image via
-  `block_device_mapping_v2` (`source_type: image`, `destination_type: volume`) with an empty `imageRef`. Lightstack now
-  **adopts that entry as the boot image** so the wizard's default path reaches ACTIVE — but it does **not**
-  materialize a Cinder volume, so `volume_size` and `delete_on_termination` on that entry are ignored and no
-  volume appears under Project → Volumes. Real boot-from-new-volume is tracked in #547.
+  `block_device_mapping_v2` (`source_type: image`, `destination_type: volume`) with an empty `imageRef`. The F7
+  fix **adopted that entry as the boot image** so the wizard's default path reached ACTIVE, but it did **not**
+  materialize a Cinder volume: `volume_size` and `delete_on_termination` on that entry were ignored and no
+  volume appeared under Project → Volumes.
+- **Fixed (SPEC-020 FR-025):** the entry now creates a volume from the image, sized by `volume_size` (or the
+  flavor's disk) and never below the image's floor, and the server boots from it. `delete_on_termination`
+  decides whether the volume goes with the server. A request that cannot get its volume is refused (`400`, or
+  `503` when the volume cannot be created) and never falls back to an image boot. A node-local volume made
+  from an RGW-backed image first fetches the image's base onto the node, which also fixed `volume create
+  --image` for such images.
 
 ### Cosmetic observations (not findings)
 - The seeded Cinder volume type is named **`ceph-rbd`** ("Ceph RBD backed volumes") even when
@@ -622,10 +628,10 @@ are tracked under [cloud-storage#531](https://github.com/cobaltcore-dev/cloud-st
 scopes itself to F1–F9, split into #532 / #533 / #534, with F17 (filed as `F10` on the #482 branch) folded into
 #533 on 2026-09-22. **F18** is tracked under
 [cloud-storage#549](https://github.com/cobaltcore-dev/cloud-storage/issues/549), which sits **outside** the #531
-umbrella; the #533 pass's open F10, F11, F13, F15 and F16 are tracked in the sub-issues of
+umbrella; the #533 pass's open F10, F11, F13 and F15 are tracked in the sub-issues of
 [cloud-storage#536](https://github.com/cobaltcore-dev/cloud-storage/issues/536) — F10/F11 in #546, F13 in #545,
-F15 in #548, F16 in #547 ([#537](https://github.com/cobaltcore-dev/cloud-storage/issues/537), where several
-were first filed, was closed as superseded).
+F15 in #548 ([#537](https://github.com/cobaltcore-dev/cloud-storage/issues/537), where several
+were first filed, was closed as superseded). F16, filed there for #547, is fixed by #533 (FR-025).
 - ✅ **F4, F5, F6, F9 — DONE (SPEC-019 / cloud-storage#532, 2026-07-24):** networks list once (F4); the `volume`
   catalog alias advertises the configured host (F5); the Cinder volume response carries the full non-null
   upstream field set (F9); Glance image delete removes the image with owner-or-admin authorization (F6).
@@ -646,7 +652,8 @@ were first filed, was closed as superseded).
 - **F18 (open — [cloud-storage#549](https://github.com/cobaltcore-dev/cloud-storage/issues/549))** — refuse
   domain-scoped token requests instead of silently returning an unscoped token (already implemented on
   `feature/549`).
-- **F16** — boot-from-new-volume is adopted rather than implemented; tracked in #547.
+- ✅ **F16 — DONE (SPEC-020 FR-025 / cloud-storage#533):** the launch wizard's default *Create New Volume*
+  creates the volume it asks for and boots from it, instead of booting the image directly.
 
 **Reproducibility (SC-005 — self-reproduced 2026-09-22).** Both passes are fully scripted in the two
 `HOST_TESTING*.md` runbooks (the documented procedure of FR-014); the real pass reuses the SPEC-014

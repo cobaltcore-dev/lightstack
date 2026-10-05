@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +38,7 @@ type Service struct {
 	cache       *cache.Cache
 	imageStore  *storage.ImageStore // lazy fetch-on-boot of S3/RGW-backed image bases (SPEC-014)
 	neutronSvc  NeutronService      // For port allocation
+	cinderSvc   CinderService       // For boot-from-new-volume (SPEC-020 FR-025)
 	wg          sync.WaitGroup
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -110,6 +113,23 @@ func (svc *Service) reclaimImageBaseIfUnused(imageID string) {
 // SetNeutronService sets the Neutron service reference (called after both services are created)
 func (svc *Service) SetNeutronService(neutron NeutronService) {
 	svc.neutronSvc = neutron
+}
+
+// CinderService is the narrow block-storage surface compute needs.
+//
+// One method, mirroring NeutronService: compute names an image and a size and gets a
+// volume id back, with no knowledge of backing stores or volume types. The alternative —
+// compute writing its own volume rows — would duplicate the decision about what makes a
+// volume bootable, which is how the create-from-image and boot-from-volume paths would
+// drift apart.
+type CinderService interface {
+	CreateBootVolumeFromImage(ctx context.Context, name, projectID, userID, imageID string, sizeGB int) (string, error)
+}
+
+// SetCinderService wires the block-storage service in. Nil in stub-only tests and in any
+// deployment without block storage; the boot-from-new-volume path checks before using it.
+func (svc *Service) SetCinderService(cinder CinderService) {
+	svc.cinderSvc = cinder
 }
 
 // InitHypervisor initializes the hypervisor connection
@@ -289,15 +309,25 @@ type CreateServerRequest struct {
 		SecurityGroups []struct {
 			Name *string `json:"name"` // pointer: {} (absent) is ignored like upstream; "" is rejected
 		} `json:"security_groups"`
-		UserData             string `json:"user_data"`
-		BlockDeviceMappingV2 []struct {
-			BootIndex           any    `json:"boot_index"`
-			UUID                string `json:"uuid"`
-			SourceType          string `json:"source_type"`
-			DestinationType     string `json:"destination_type"`
-			DeleteOnTermination bool   `json:"delete_on_termination"`
-		} `json:"block_device_mapping_v2"`
+		UserData             string               `json:"user_data"`
+		BlockDeviceMappingV2 []BlockDeviceMapping `json:"block_device_mapping_v2"`
 	} `json:"server"`
+}
+
+// BlockDeviceMapping is one block_device_mapping_v2 entry.
+//
+// A named type rather than an anonymous struct because the boot-from-new-volume path
+// appends to the list after creating the volume, and an anonymous struct would have to be
+// repeated field for field at that call site.
+type BlockDeviceMapping struct {
+	BootIndex       any    `json:"boot_index"`
+	UUID            string `json:"uuid"`
+	SourceType      string `json:"source_type"`
+	DestinationType string `json:"destination_type"`
+	// VolumeSize is typed `any` because upstream accepts a number or a string of digits;
+	// bdmVolumeSize reads it.
+	VolumeSize          any  `json:"volume_size"`
+	DeleteOnTermination bool `json:"delete_on_termination"`
 }
 
 // isRootBootIndex reports whether a block_device_mapping_v2 boot_index marks the root
@@ -340,12 +370,10 @@ func bootVolumeID(req *CreateServerRequest) (string, bool) {
 // reject the empty imageRef, leaving the instance in ERROR — so a dashboard launch
 // failed on the wizard's default setting.
 //
-// LIMITATION: Lightstack boots the image directly rather than first materializing a volume
-// from it, so volume_size and delete_on_termination on this entry are ignored and no
-// volume appears in Cinder. That is enough for the instance to reach ACTIVE, which is
-// what the wizard's default path needs; true boot-from-new-volume is tracked
-// separately. An explicit imageRef and a real boot volume both take precedence — see
-// the caller in CreateServer.
+// An explicit imageRef and a real boot volume both take precedence — see the caller in
+// CreateServer. When the entry also asks for destination_type=volume, the image is
+// materialized into a volume first (rootImageToVolumeBDM); this function only reports
+// which image the root disk comes from.
 func bootImageRefFromBDM(req *CreateServerRequest) string {
 	for _, bdm := range req.Server.BlockDeviceMappingV2 {
 		if bdm.SourceType != "image" || bdm.UUID == "" {
@@ -356,6 +384,155 @@ func bootImageRefFromBDM(req *CreateServerRequest) string {
 		}
 	}
 	return ""
+}
+
+// rootImageToVolumeBDM reports the root block-device mapping that asks for a NEW volume
+// created from an image, if the request has one.
+//
+// This is the dashboard wizard's default: "Create New Volume = Yes" sends the image as a
+// source_type=image / destination_type=volume mapping rather than as imageRef. Upstream
+// creates a volume from the image and boots from it, honouring volume_size and
+// delete_on_termination (SPEC-020 FR-025).
+func rootImageToVolumeBDM(req *CreateServerRequest) (imageID string, rawSize any, deleteOnTermination bool, found bool) {
+	for _, bdm := range req.Server.BlockDeviceMappingV2 {
+		if bdm.SourceType != "image" || bdm.UUID == "" || bdm.DestinationType != "volume" {
+			continue
+		}
+		if !isRootBootIndex(bdm.BootIndex) {
+			continue
+		}
+		return bdm.UUID, bdm.VolumeSize, bdm.DeleteOnTermination, true
+	}
+	return "", nil, false, false
+}
+
+// bdmVolumeSize reads a volume_size as upstream's request schema accepts it: an integer
+// from 1 to 2^31-1, as a number or as a string of digits. ok is false for anything else.
+//
+// gin sets EnableDecoderUseNumber, so a JSON number arrives as json.Number rather than
+// float64. An absent size is 0 and ok, which is what makes the default in
+// resolveBootVolumeSize apply. Upstream's schema lets "0" through and then fails the
+// build, since no volume can have size 0; it is refused here at once.
+func bdmVolumeSize(raw any) (size int, ok bool) {
+	var n int64
+	switch v := raw.(type) {
+	case nil:
+		return 0, true
+	case int:
+		n = int64(v)
+	case float64:
+		if v != math.Trunc(v) || v < 1 || v > math.MaxInt32 {
+			return 0, false
+		}
+		n = int64(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		n = parsed
+	case string:
+		if v == "" || strings.Trim(v, "0123456789") != "" {
+			return 0, false
+		}
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		n = parsed
+	default:
+		return 0, false
+	}
+	if n < 1 || n > math.MaxInt32 {
+		return 0, false
+	}
+	return int(n), true
+}
+
+// errBootImageNotFound: the image a new boot volume is to be made from does not exist.
+var errBootImageNotFound = errors.New("boot image not found")
+
+// bootVolumeSizeError: no boot volume of a workable size can be made for the request.
+type bootVolumeSizeError struct{ msg string }
+
+func (e *bootVolumeSizeError) Error() string { return e.msg }
+
+// resolveBootVolumeSize decides how large a new boot volume must be, or reports why the
+// request cannot be satisfied.
+//
+// The floor is max(image.min_disk_gb, ceil(image.size_bytes)) — both, not either:
+//
+//   - min_disk_gb alone is not enough. It defaults to 0, so an image that states no
+//     minimum would accept a 1 GiB volume however large its contents are, and the result
+//     would be an unbootable volume rather than a refusal.
+//   - The actual size alone is not enough either: an image may need more room than its
+//     compressed contents occupy, which is what min_disk exists to express.
+//
+// When no size is requested the flavor's disk governs, floored the same way: the volume IS
+// the server's root disk, so the flavor is the size the user already chose by picking it.
+//
+// An image that does not exist is errBootImageNotFound and a size that cannot work is a
+// *bootVolumeSizeError; both are the caller's to fix. Any other error is the database's.
+func resolveBootVolumeSize(ctx context.Context, pool *pgxpool.Pool, imageID string, requested, flavorDiskGB int) (int, error) {
+	parsed, err := uuid.Parse(imageID)
+	if err != nil {
+		return 0, errBootImageNotFound
+	}
+	var minDiskGB int
+	var sizeBytes sql.NullInt64
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(min_disk_gb, 0), size_bytes FROM images WHERE id = $1`, parsed.String(),
+	).Scan(&minDiskGB, &sizeBytes); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, errBootImageNotFound
+		}
+		return 0, fmt.Errorf("reading image %s: %w", imageID, err)
+	}
+
+	const bytesPerGiB = 1 << 30
+	contentGB := 0
+	if sizeBytes.Valid && sizeBytes.Int64 > 0 {
+		// Round up: a 1.2 GiB image does not fit in 1 GiB.
+		contentGB = int((sizeBytes.Int64 + bytesPerGiB - 1) / bytesPerGiB)
+	}
+
+	floor := minDiskGB
+	if contentGB > floor {
+		floor = contentGB
+	}
+
+	size := requested
+	if size <= 0 {
+		size = flavorDiskGB
+		if size < floor {
+			size = floor
+		}
+		if size <= 0 {
+			// Neither the flavor nor the image gives a usable size. Refuse rather than
+			// create a zero-size volume.
+			return 0, &bootVolumeSizeError{fmt.Sprintf("cannot determine a boot volume size for image %s", imageID)}
+		}
+		return size, nil
+	}
+
+	if size < floor {
+		return 0, &bootVolumeSizeError{fmt.Sprintf("volume_size %d GiB is too small for image %s, which needs at least %d GiB",
+			size, imageID, floor)}
+	}
+	return size, nil
+}
+
+// removeBootVolume deletes a boot volume made for a server create that then failed, the
+// way DeleteServer removes a delete-on-termination volume: the row, then the local backing.
+// Best-effort; svc.ctx so it runs even if the request context was cancelled.
+func (svc *Service) removeBootVolume(volumeID string) {
+	if _, err := svc.pool.Exec(svc.ctx, "DELETE FROM volumes WHERE id = $1", volumeID); err != nil {
+		log.Error().Err(err).Str("volume_id", volumeID).Msg("failed create: could not remove its boot volume")
+		return
+	}
+	if err := storage.RemoveLocalVolume(volumeID); err != nil {
+		log.Warn().Err(err).Str("volume_id", volumeID).Msg("failed create: could not remove its boot volume's backing")
+	}
 }
 
 // markInstanceError flags an instance ERROR (best-effort), used from the
@@ -392,6 +569,17 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				req.Server.ImageRef = imageRef
 			}
 		}
+	}
+
+	// Does the root disk ask for a NEW volume created from an image? That is the dashboard
+	// wizard's default. Detected here, acted on once the flavor is known: the flavor's disk
+	// is what governs a size the caller left unspecified.
+	bootVolImage, bootVolRawSize, bootVolDOT, wantsNewBootVolume := rootImageToVolumeBDM(&req)
+	bootVolSize, sizeOK := bdmVolumeSize(bootVolRawSize)
+	if wantsNewBootVolume && !sizeOK {
+		common.SendError(c, common.NewBadRequestError(
+			fmt.Sprintf("Invalid input for field/attribute volume_size. Value: %v.", bootVolRawSize)))
+		return
 	}
 
 	projectID := c.GetString("project_id")
@@ -550,6 +738,66 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		sgIDs = append(sgIDs, sgID)
 	}
 
+	// Create the boot volume BEFORE the instance row exists (SPEC-020 FR-025).
+	//
+	// Done here, synchronously, after every check that can refuse the request, rather than
+	// in the boot goroutine: a request asking for a volume it cannot have must be refused
+	// while it still can be, and a size the image does not fit in is knowable now. Once
+	// created, the volume is handed to the existing boot-from-volume path as if the caller
+	// had named it, so there is one code path that boots from a root volume, not two.
+	var newBootVolumeID string
+	if wantsNewBootVolume {
+		if svc.cinderSvc == nil {
+			common.SendError(c, common.NewBadRequestError(
+				"this deployment cannot create a boot volume: no block-storage service is configured"))
+			return
+		}
+
+		size, sizeErr := resolveBootVolumeSize(c.Request.Context(), svc.pool, bootVolImage, bootVolSize, flavor.DiskGB)
+		var badSize *bootVolumeSizeError
+		switch {
+		case sizeErr == nil:
+		case errors.Is(sizeErr, errBootImageNotFound):
+			// Upstream's answer for a server create naming an unknown image.
+			common.SendError(c, common.NewBadRequestError("Can not find requested image"))
+			return
+		case errors.As(sizeErr, &badSize):
+			logger.Warn().Err(sizeErr).Str("image_id", bootVolImage).Int("requested_gb", bootVolSize).
+				Msg("refusing server create: boot volume size")
+			common.SendError(c, common.NewBadRequestError(badSize.msg))
+			return
+		default:
+			log.Error().Err(sizeErr).Str("operation", "resolve_boot_volume_size").Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to read the boot image"))
+			return
+		}
+
+		// Unnamed, as upstream creates it.
+		volumeID, volErr := svc.cinderSvc.CreateBootVolumeFromImage(c.Request.Context(),
+			"", projectID, userID, bootVolImage, size)
+		if volErr != nil {
+			// Never fall back to booting the image directly: the caller asked for a volume
+			// and would be told it worked.
+			logger.Error().Err(volErr).Str("image_id", bootVolImage).Int("size_gb", size).
+				Msg("boot volume could not be created; refusing the boot")
+			common.SendError(c, common.NewServiceUnavailableError("could not create the boot volume"))
+			return
+		}
+
+		logger.Info().Str("volume_id", volumeID).Str("image_id", bootVolImage).
+			Int("size_gb", size).Bool("delete_on_termination", bootVolDOT).
+			Msg("created boot volume from image")
+		newBootVolumeID = volumeID
+
+		// Hand it to the existing root-volume path. The image reference is cleared so nothing
+		// downstream also treats this as a direct image boot.
+		req.Server.BlockDeviceMappingV2 = append(req.Server.BlockDeviceMappingV2, BlockDeviceMapping{
+			BootIndex: 0, UUID: volumeID, SourceType: "volume",
+			DestinationType: "volume", DeleteOnTermination: bootVolDOT,
+		})
+		req.Server.ImageRef = ""
+	}
+
 	// Generate instance ID
 	instanceID := uuid.New().String()
 
@@ -600,6 +848,9 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		logger.Error().Err(err).Str("instance_id", instanceID).Msg("Failed to create instance in database")
 		middleware.LogOperationEnd(c, "create", "server", instanceID, time.Since(start), err)
 		log.Error().Err(err).Str("operation", "insert_instance").Msg("database error")
+		if newBootVolumeID != "" {
+			svc.removeBootVolume(newBootVolumeID)
+		}
 		common.SendError(c, common.NewInternalServerError("failed to create instance"))
 		return
 	}

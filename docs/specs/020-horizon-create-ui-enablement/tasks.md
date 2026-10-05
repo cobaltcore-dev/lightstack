@@ -212,6 +212,13 @@ a project switch.
 - [x] T058 Run a branch review over the full diff (all of `internal/`, `test/horizon_create_ui_test.sh`, and `docs/`) for correctness, idiom and stale documentation; address findings before opening the PR stacked on the #532 branch. **Two rounds:**
   - **Round 1 ✅ 2026-07-29** — 0 Critical, 4 Major, 4 Minor, 2 Nit; all 10 addressed. Gates green; coverage gap on the two security-group-rule endpoints closed.
   - **Round 2 ✅ 2026-07-29**, run after committing round 1 — **1 Critical, 8 Major, 11 Minor, 4 Nit**. The Critical was this task's own blind spot: `go test` without `LIGHTSTACK_TEST_DB_URL` segfaulted (see T049). Round 1's "0 Critical" was therefore not a clean bill of health, and is recorded here rather than left to imply one. All Criticals/Majors and every Minor/Nit except commit hygiene, the duplicate-body read in `test/contract/nova/migration_test.go`, and the project-scoped route duplicates were fixed, each with a RED-before-GREEN demonstration. Notable outcomes: Cinder's four invented `/detail` routes **deleted** in favour of the `?usage=true` the API actually documents (FR-002 amended); the quota-set `PUT` round-trip restored (FR-016); Nova `/detail` snapshot usage and Cinder backup usage made real (FR-004); the null-`security_group_rules` and BDM-adoption paths given tests that actually execute them (FR-015); FR-013 amended and made testable; and §2.7 of both runbooks rewritten to assert deployment state instead of a `git diff` that decayed on commit *and* on rebase.
+- [x] T059 **FR-025 — boot from a new volume (added in review).** RED first: `internal/nova/boot_volume_test.go`,
+  `internal/cinder/boot_volume_test.go`, and the `TestBootSourcePrecedence` case that asserted the downgrade. Then
+  `internal/nova/handlers.go` (create the volume through Cinder, the size rules, the refusals),
+  `internal/cinder/volumes.go` (`CreateBootVolumeFromImage`, the image-base fetch) and the wiring in
+  `cmd/lightstack/main.go`. Docs: FR-025, both runbooks (§2.5, §2.8 and teardown), F16 in the compatibility
+  report, `docs/UPGRADING.md`. ✅ unit tests and a stub end-to-end run with local volumes 2026-10-05;
+  ⏳ the real-mode host pass, `HOST_TESTING_REAL_MODE.md` §2.5.
 
 ---
 

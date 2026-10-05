@@ -166,6 +166,8 @@ func TestBootSourcePrecedence(t *testing.T) {
 		// bdmAndImage is spliced into the server object: the imageRef plus the BDM list.
 		bdmAndImage string
 		wantImageID string // what must land in instances.image_id
+		// wantRefused marks a request this router must refuse rather than accept.
+		wantRefused bool
 	}{
 		{
 			name:        "explicit imageRef wins over an image BDM",
@@ -180,8 +182,21 @@ func TestBootSourcePrecedence(t *testing.T) {
 		{
 			// Horizon's launch wizard, verbatim: "Create New Volume" is on by default,
 			// so it sends the image inside the BDM and leaves imageRef empty.
-			name:        "image BDM only: adopted as the image source",
+			//
+			// destination_type=volume asks for a new boot volume (FR-025). This router
+			// has no block-storage service (newNovaTestRouter builds a stub-only
+			// service), so the answer is a refusal, never an image boot that quietly
+			// drops volume_size and delete_on_termination. The volume-creating path is
+			// covered in boot_volume_test.go, which injects a block-storage service.
+			name:        "image BDM with destination_type=volume: refused, not downgraded to an image boot",
 			bdmAndImage: `"imageRef":"","block_device_mapping_v2":[{"boot_index":"0","uuid":"` + bdmImg + `","source_type":"image","destination_type":"volume","volume_size":1,"delete_on_termination":true}]`,
+			wantRefused: true,
+		},
+		{
+			// The same mapping without destination_type=volume asks for no volume, so
+			// the image is adopted as the boot source.
+			name:        "image BDM with no destination_type: adopted as the image source",
+			bdmAndImage: `"imageRef":"","block_device_mapping_v2":[{"boot_index":"0","uuid":"` + bdmImg + `","source_type":"image"}]`,
 			wantImageID: bdmImg,
 		},
 	}
@@ -190,6 +205,12 @@ func TestBootSourcePrecedence(t *testing.T) {
 			body := fmt.Sprintf(`{"server":{"name":"bootsrc","flavorRef":%q,%s}}`, flavor, tt.bdmAndImage)
 
 			code, resp := doReq(r, http.MethodPost, "/v2.1/servers", body, hdr)
+			if tt.wantRefused {
+				if code != http.StatusBadRequest {
+					t.Fatalf("create: code=%d body=%s; want 400 — a boot-volume request must be refused, not downgraded", code, resp)
+				}
+				return
+			}
 			if code != http.StatusAccepted {
 				t.Fatalf("create: code=%d body=%s; want 202", code, resp)
 			}

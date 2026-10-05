@@ -237,6 +237,9 @@ func main() {
 	cinderService := cinder.NewService(pool, cinderStorageMode, cfg.Cinder.CephPool, cfg.Cinder.CephConf)
 	log.Printf("Cinder initialized in %s mode", cinderStorageMode)
 
+	// Nova creates boot volumes through Cinder (boot-from-new-volume, SPEC-020 FR-025).
+	novaService.SetCinderService(cinderService)
+
 	glanceStorageMode := cfg.Glance.StorageMode
 	if glanceStorageMode == "" {
 		glanceStorageMode = "stub"
@@ -264,6 +267,8 @@ func main() {
 	// Share Glance's image store with Nova so real-mode boots can lazily fetch
 	// an S3/RGW-backed image base on this node before staging the overlay (SPEC-014).
 	novaService.SetImageStore(glanceService.ImageStore())
+	// Cinder fetches the same base before a local create-from-image of an RGW-backed image.
+	cinderService.SetImageStore(glanceService.ImageStore())
 
 	// Initialize metadata service. It must bind a VM-reachable address (all
 	// interfaces by default) so the per-bridge 169.254.169.254 DNAT can reach it

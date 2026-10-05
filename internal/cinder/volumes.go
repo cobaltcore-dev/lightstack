@@ -28,9 +28,12 @@ type Service struct {
 	cephPool   string
 	cephConf   string
 	cephClient *storage.CephClient
-	wg         sync.WaitGroup
-	ctx        context.Context
-	cancel     context.CancelFunc
+	// fetchImageBase puts an image's raw base on this node before a local create-from-image
+	// reads it; the image store's EnsureLocalBase once SetImageStore has run, nil before.
+	fetchImageBase func(ctx context.Context, imageID, expectedChecksum string) (string, error)
+	wg             sync.WaitGroup
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // NewService creates a new Cinder service
@@ -384,6 +387,112 @@ func serializeVolume(v volumeRow) gin.H {
 	}
 }
 
+// volumeSpec is what provisionVolume needs to create one volume.
+type volumeSpec struct {
+	ID          string
+	Name        string
+	Description string
+	ProjectID   string
+	UserID      string
+	SizeGB      int
+	ImageRef    string // empty for an empty volume
+	VolumeType  string
+	CreatedAt   time.Time
+}
+
+// volumeBackingError marks a failure to provision the backing store, as distinct from a
+// failure to record the volume. The first is an external-dependency problem the API answers
+// as unavailable, with msg; the second is internal.
+type volumeBackingError struct {
+	msg string
+	err error
+}
+
+func (e *volumeBackingError) Error() string { return e.msg + ": " + e.err.Error() }
+func (e *volumeBackingError) Unwrap() error { return e.err }
+
+// SetImageStore wires the Glance image store in, so a local-backed create-from-image can
+// fetch an RGW/S3-backed image's base first, as Nova's image boot does (SPEC-014).
+func (svc *Service) SetImageStore(s *storage.ImageStore) {
+	if s == nil {
+		svc.fetchImageBase = nil
+		return
+	}
+	svc.fetchImageBase = s.EnsureLocalBase
+}
+
+// provisionVolume creates a volume's backing store and records it, reporting whether the
+// result is bootable.
+//
+// CreateVolume and the compute service's boot-from-new-volume path (SPEC-020 FR-025) both
+// use it, so there is one place that decides what makes a volume bootable. Synchronous
+// (Constitution II): the volume is usable as soon as this returns, which boot-from-volume
+// requires. With an ImageRef the volume is a bootable copy of the image's raw base;
+// otherwise it is empty (SPEC-009 WS-5 / T040).
+func (svc *Service) provisionVolume(ctx context.Context, spec volumeSpec) (bootable bool, err error) {
+	var sourceImageID any
+	if spec.ImageRef != "" {
+		if berr := svc.ensureLocalImageBase(ctx, spec.ImageRef); berr != nil {
+			log.Error().Err(berr).Str("operation", "fetch_image_base").Str("image", spec.ImageRef).Msg("failed to fetch the image base for a volume")
+			return false, &volumeBackingError{"failed to create volume from image", berr}
+		}
+		if berr := svc.cephClient.CreateVolumeFromImage(ctx, spec.ID, storage.LocalImagePath(spec.ImageRef), spec.SizeGB); berr != nil {
+			log.Error().Err(berr).Str("operation", "create_volume_from_image").Str("image", spec.ImageRef).Msg("failed to create volume from image")
+			return false, &volumeBackingError{"failed to create volume from image", berr}
+		}
+		sourceImageID = spec.ImageRef
+		bootable = true
+	} else if berr := svc.cephClient.CreateVolume(ctx, spec.ID, spec.SizeGB); berr != nil {
+		log.Error().Err(berr).Str("operation", "create_volume_backing").Msg("failed to create volume backing")
+		return false, &volumeBackingError{"failed to create volume backing", berr}
+	}
+
+	// Status available — the backing is already provisioned. volume_type and description
+	// are persisted so they read back verbatim (F9, FR-003); both columns exist (migrations
+	// 016 and 012) but were once parsed and discarded.
+	if _, derr := svc.pool.Exec(ctx, `
+		INSERT INTO volumes (id, name, description, project_id, user_id, size_gb, status, bootable, source_image_id, rbd_pool, rbd_image, volume_type, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	`, spec.ID, spec.Name, spec.Description, spec.ProjectID, spec.UserID, spec.SizeGB, "available", bootable,
+		sourceImageID, svc.cephPool, "volume-"+spec.ID, spec.VolumeType, spec.CreatedAt, spec.CreatedAt); derr != nil {
+		// Roll the backing back (best-effort; the DB error is what the caller sees).
+		if cephErr := svc.cephClient.DeleteVolume(ctx, spec.ID); cephErr != nil {
+			log.Warn().Err(cephErr).Str("volume_id", spec.ID).Msg("rollback: failed to delete volume backing after DB insert failure")
+		}
+		log.Error().Err(derr).Str("operation", "create_volume_db").Msg("failed to insert volume into database")
+		return false, fmt.Errorf("recording volume %s: %w", spec.ID, derr)
+	}
+	return bootable, nil
+}
+
+// ensureLocalImageBase makes sure the raw base of imageID is on this node before a
+// local-backed create-from-image reads it. An RGW/S3-backed image may never have been
+// fetched here: Nova's image boot fetches it lazily (SPEC-014), and a volume made from the
+// same image needs the same fetch. The other storage modes read no local base.
+func (svc *Service) ensureLocalImageBase(ctx context.Context, imageID string) error {
+	if svc.fetchImageBase == nil || (svc.mode != "local" && svc.mode != "local,rbd") {
+		return nil
+	}
+	var checksum string
+	_ = svc.pool.QueryRow(ctx, "SELECT COALESCE(checksum, '') FROM images WHERE id = $1", imageID).Scan(&checksum)
+	_, err := svc.fetchImageBase(ctx, imageID, checksum)
+	return err
+}
+
+// CreateBootVolumeFromImage provisions a bootable volume from an image for the compute
+// service's boot-from-new-volume path (SPEC-020 FR-025). Compute names an image and a size
+// and gets a volume id back, with no knowledge of backing stores or volume types.
+func (svc *Service) CreateBootVolumeFromImage(ctx context.Context, name, projectID, userID, imageID string, sizeGB int) (string, error) {
+	volumeID := uuid.New().String()
+	if _, err := svc.provisionVolume(ctx, volumeSpec{
+		ID: volumeID, Name: name, ProjectID: projectID, UserID: userID,
+		SizeGB: sizeGB, ImageRef: imageID, VolumeType: defaultVolumeType, CreatedAt: time.Now(),
+	}); err != nil {
+		return "", err
+	}
+	return volumeID, nil
+}
+
 // CreateVolume creates a new volume
 func (svc *Service) CreateVolume(c *gin.Context) {
 	var req CreateVolumeRequest
@@ -401,32 +510,6 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 		return
 	}
 
-	// Provision the backing store synchronously (Constitution II) so the volume
-	// is usable as soon as the API returns — required for boot-from-volume. With
-	// an imageRef, create a bootable volume from the (raw) base image; otherwise
-	// an empty volume (SPEC-009 WS-5 / T040).
-	var sourceImageID any
-	bootable := false
-	if req.Volume.ImageRef != "" {
-		if err := svc.cephClient.CreateVolumeFromImage(c.Request.Context(), volumeID, storage.LocalImagePath(req.Volume.ImageRef), req.Volume.Size); err != nil {
-			log.Error().Err(err).Str("operation", "create_volume_from_image").Str("image", req.Volume.ImageRef).Msg("failed to create volume from image")
-			common.SendError(c, common.NewServiceUnavailableError("failed to create volume from image"))
-			return
-		}
-		sourceImageID = req.Volume.ImageRef
-		bootable = true
-	} else if err := svc.cephClient.CreateVolume(c.Request.Context(), volumeID, req.Volume.Size); err != nil {
-		log.Error().Err(err).Str("operation", "create_volume_backing").Msg("failed to create volume backing")
-		common.SendError(c, common.NewServiceUnavailableError("failed to create volume backing"))
-		return
-	}
-
-	// Insert into database (status available — backing is already provisioned).
-	// Persist the requested volume_type so it can be read back (F9, FR-003); the
-	// column exists (migration 016) but was previously parsed and discarded. The
-	// same held for description (column from migration 012): the create response
-	// echoed the request while the row kept NULL, so the next show/list reported an
-	// empty description for the volume just created.
 	now := time.Now()
 	// Persist the concrete default so volume_type reads back verbatim; serializeVolume
 	// repeats this check defensively for legacy NULL rows (intentional duplication).
@@ -434,17 +517,19 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 	if volumeType == "" {
 		volumeType = defaultVolumeType
 	}
-	_, err := svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO volumes (id, name, description, project_id, user_id, size_gb, status, bootable, source_image_id, rbd_pool, rbd_image, volume_type, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-	`, volumeID, req.Volume.Name, req.Volume.Description, projectID, userID, req.Volume.Size, "available", bootable, sourceImageID, svc.cephPool, "volume-"+volumeID, volumeType, now, now)
 
+	bootable, err := svc.provisionVolume(c.Request.Context(), volumeSpec{
+		ID: volumeID, Name: req.Volume.Name, Description: req.Volume.Description,
+		ProjectID: projectID, UserID: userID,
+		SizeGB: req.Volume.Size, ImageRef: req.Volume.ImageRef, VolumeType: volumeType,
+		CreatedAt: now,
+	})
 	if err != nil {
-		// Rollback: delete the backing (best-effort; the DB error is user-facing)
-		if cephErr := svc.cephClient.DeleteVolume(c.Request.Context(), volumeID); cephErr != nil {
-			log.Warn().Err(cephErr).Str("volume_id", volumeID).Msg("rollback: failed to delete volume backing after DB insert failure")
+		var unavailable *volumeBackingError
+		if errors.As(err, &unavailable) {
+			common.SendError(c, common.NewServiceUnavailableError(unavailable.msg))
+			return
 		}
-		log.Error().Err(err).Str("operation", "create_volume_db").Msg("failed to insert volume into database")
 		common.SendError(c, common.NewInternalServerError("failed to create volume"))
 		return
 	}
