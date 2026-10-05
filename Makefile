@@ -83,9 +83,11 @@ test-performance:
 	@bash test/performance_test.sh
 
 # Run the Horizon create/write UI regression probe (SPEC-020, cloud-storage#533)
-# Checks the API surface Horizon's create flows load before enabling a control. Retarget
-# with KEYSTONE_URL / NOVA_URL / NEUTRON_URL / CINDER_URL; the plain compose stack is
-# enough since these are API checks, no browser needed.
+# Checks the API surface Horizon's create flows load before enabling a control, then
+# replays the create requests they send (SC-001 - SC-004) and removes what it made. CI's
+# integration job runs it. Retarget with KEYSTONE_URL / NOVA_URL / NEUTRON_URL /
+# CINDER_URL / GLANCE_URL; the plain compose stack is enough since these are API checks,
+# no browser needed.
 test-horizon-ui:
 	@echo "Running Horizon create-UI regression probe..."
 	@echo "Checking Lightstack is running..."
