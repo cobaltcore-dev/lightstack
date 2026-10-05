@@ -19,18 +19,23 @@ func TestImageCacheKeyIsScopedToTheCaller(t *testing.T) {
 	const projectA = "00000000-0000-0000-0000-000000000002"
 	const projectB = "00000000-0000-0000-0000-0000000b0b0b"
 
-	keyA := imageCacheKey(projectA, imageID)
-	keyB := imageCacheKey(projectB, imageID)
+	keyA := imageCacheKey(projectA, false, imageID)
+	keyB := imageCacheKey(projectB, false, imageID)
 
 	if keyA == keyB {
 		t.Fatalf("imageCacheKey is the same for two projects (%q); one tenant's cached private image "+
 			"would be served to another, because the cache is read before any visibility check", keyA)
 	}
-	if keyA != imageCacheKey(projectA, imageID) {
+	if keyA != imageCacheKey(projectA, false, imageID) {
 		t.Errorf("imageCacheKey is not stable for one caller; the entry could never be hit")
 	}
-	if imageCacheKey(projectA, imageID) == imageCacheKey(projectA, "7c0e1d2b-0000-4000-8000-000000000002") {
+	if imageCacheKey(projectA, false, imageID) == imageCacheKey(projectA, false, "7c0e1d2b-0000-4000-8000-000000000002") {
 		t.Errorf("imageCacheKey collides across image ids")
+	}
+	// An administrator reads every image (SPEC-020 FR-026), so its entry for another
+	// project's private image must not reach a member of the administrator's project.
+	if imageCacheKey(projectA, true, imageID) == keyA {
+		t.Errorf("imageCacheKey is the same for an administrator and a member of one project (%q)", keyA)
 	}
 	if !strings.Contains(keyA, projectA) {
 		t.Errorf("imageCacheKey(%q, …) = %q, which does not contain the caller's project", projectA, keyA)
@@ -47,11 +52,13 @@ func TestImageCacheInvalidationPatternCoversEveryCaller(t *testing.T) {
 		"00000000-0000-0000-0000-000000000002",
 		"00000000-0000-0000-0000-0000000b0b0b",
 	} {
-		key := imageCacheKey(project, imageID)
-		if !matchesRedisGlob(pattern, key) {
-			t.Errorf("DeleteImage evicts %q, which does not match %q written for project %s — "+
-				"that project keeps serving the deleted image until the TTL expires",
-				pattern, key, project)
+		for _, admin := range []bool{false, true} {
+			key := imageCacheKey(project, admin, imageID)
+			if !matchesRedisGlob(pattern, key) {
+				t.Errorf("DeleteImage evicts %q, which does not match %q written for project %s — "+
+					"that project keeps serving the deleted image until the TTL expires",
+					pattern, key, project)
+			}
 		}
 	}
 }

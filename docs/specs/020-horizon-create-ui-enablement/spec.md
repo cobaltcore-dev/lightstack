@@ -38,6 +38,8 @@ The APIs themselves work (proven in the SPEC-018 real pass): via the CLI a netwo
 ### Session 2026-10-05
 
 - Q: The launch wizard's default sends the image as a `source_type: image`, `destination_type: volume` root mapping. Keep adopting it as an image boot, which accepts `volume_size` and `delete_on_termination` and discards them, or create the volume? → A: **Create the volume, as upstream Nova does (FR-025).** Accepting both fields and ignoring them is the silent downgrade upstream never does. A request that cannot get its volume is refused (`400`, or `503` when the volume cannot be created) and never falls back to an image boot. The volume is unnamed, as upstream's `_create_volume` leaves it (`nova/virt/block_device.py`).
+- Q: Nova and Cinder used any image id they were given, so a project that knew the id of another project's private image could boot it or copy it into a volume. Refuse only an existing image the caller cannot see, or also an id that names no image, which stub mode accepted? → A: **Both, as upstream, on every path that takes an image (FR-026)**: server create (`imageRef` and the root mapping), rebuild, volume create from an image, and `os-reimage`. Upstream asks Glance with the caller's token, so the two cases are one answer. The contract suite and five shell scripts booted from `00000000-0000-0000-0000-000000000001`, which names no image; they now create the image they boot from.
+- Q: Glance's own show, list and download ignored image sharing, and an image that was not active could still be booted or copied into a volume. Fix both here? → A: **Yes (FR-026).** Glance reads follow upstream's visibility rules, the list with its `visibility`, `member_status` and `status` filters, and every boot and volume-from-image path refuses an image that is not active, as upstream does.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -171,7 +173,7 @@ A user opens Project → Overview. Today the usage/limits widget shows **"Unable
 **Cross-cutting**
 
 - **FR-015**: Each re-enabled workflow MUST be covered by an automated test that fails before the fix and passes after, runnable in the existing CI test job, so the defect cannot silently regress.
-- **FR-016**: All other existing API behavior and response fields for the affected services (Nova, Neutron, Cinder) MUST remain unchanged; the existing unit and integration suites MUST continue to pass (no regression, including the API/CLI paths that already work). *Documented exceptions, each deliberate and tested:* the reconciled compute limit values (FR-003) — with Nova's `maxSecurityGroups` following the same defaults (50 → 10) and Cinder's `/limits` now read from `cinder_quotas` (`maxTotalVolumes` and `maxTotalSnapshots` 1000 → 100, `maxTotalBackupGigabytes` 5000 → 10000) — a failed usage count answering `500` rather than reporting zero usage, every instance row counted in Nova's usage (`DELETED` included), Neutron listings without `limit` returning every row instead of stopping at 1000, `remote_group_id` validated (`400` when malformed, `404` when not the caller's group) instead of stored unchecked, security-group rules scoped to their group's project (`404` for another project's group or rule, and for an unknown rule id on delete), network and image cache keys scoped to the caller, the eBPF rule translation failing closed, Nova's `addSecurityGroup` answering `400` instead of `409` for a group the server already has (as upstream), the quota-write authorization and Nova check-ordering fix (FR-020), the one unreachable role-claim edge case in FR-019, an unscoped token on Nova's and Cinder's `GET /limits` — it names no project, so it is now answered `404` as the quota routes answer it, rather than `200` with code defaults (raised in PR #79 review) — a root image-to-volume block-device mapping creating a volume instead of booting the image directly, with `400`/`503` where it was accepted before (FR-025), and a network's `tenant_id`/`project_id` and a subnet's `tenant_id` in list and show, which now name the owning project rather than the caller, who was reported as the owner of every foreign network or subnet they could see (moved from cloud-storage#546 B11 and cloud-storage#545 on PR #79 review). The client-facing list, with before → after values, is in `docs/UPGRADING.md`.
+- **FR-016**: All other existing API behavior and response fields for the affected services (Nova, Neutron, Cinder) MUST remain unchanged; the existing unit and integration suites MUST continue to pass (no regression, including the API/CLI paths that already work). *Documented exceptions, each deliberate and tested:* the reconciled compute limit values (FR-003) — with Nova's `maxSecurityGroups` following the same defaults (50 → 10) and Cinder's `/limits` now read from `cinder_quotas` (`maxTotalVolumes` and `maxTotalSnapshots` 1000 → 100, `maxTotalBackupGigabytes` 5000 → 10000) — a failed usage count answering `500` rather than reporting zero usage, every instance row counted in Nova's usage (`DELETED` included), Neutron listings without `limit` returning every row instead of stopping at 1000, `remote_group_id` validated (`400` when malformed, `404` when not the caller's group) instead of stored unchecked, security-group rules scoped to their group's project (`404` for another project's group or rule, and for an unknown rule id on delete), network and image cache keys scoped to the caller, the eBPF rule translation failing closed, Nova's `addSecurityGroup` answering `400` instead of `409` for a group the server already has (as upstream), the quota-write authorization and Nova check-ordering fix (FR-020), the one unreachable role-claim edge case in FR-019, an unscoped token on Nova's and Cinder's `GET /limits` — it names no project, so it is now answered `404` as the quota routes answer it, rather than `200` with code defaults (raised in PR #79 review) — a root image-to-volume block-device mapping creating a volume instead of booting the image directly, with `400`/`503` where it was accepted before (FR-025), an image the caller cannot read, that does not exist, or that is not active, refused on server create, rebuild, volume create and `os-reimage`, and Glance's show, list and download following upstream's sharing rules (FR-026), and a network's `tenant_id`/`project_id` and a subnet's `tenant_id` in list and show, which now name the owning project rather than the caller, who was reported as the owner of every foreign network or subnet they could see (moved from cloud-storage#546 B11 and cloud-storage#545 on PR #79 review). The client-facing list, with before → after values, is in `docs/UPGRADING.md`.
 - **FR-017**: Each of the four workflows MUST be tested/verified in **both** operating modes, reusing the existing setup scripts and charts (no new harness); each corresponding finding's panel/behavior MUST be observed fixed in both:
   - **Stub mode** — Horizon + Lightstack (stub) via `deployments/docker-compose-horizon.yml`, following the SPEC-018 stub runbook (`docs/specs/018-horizon-dashboard-verification/HOST_TESTING.md`).
   - **Real mode** — **Lightstack on k3s** via the `charts/lightstack` Helm chart (real mode), **Horizon installed with Helm** via `deployments/horizon-chart/`, and **Ceph + RGW (S3) provided by Rook on minikube** via `deployments/rook/setup-rook-rgw.sh`, following the SPEC-018 real runbook (`docs/specs/018-horizon-dashboard-verification/HOST_TESTING_REAL_MODE.md`).
@@ -231,7 +233,7 @@ not fix, each was reproduced live before being fixed, and each carries a regress
   `400 Security group <uuid> not found.` once the security-group list stopped failing.
   *Test:* `internal/nova/security_group_ref_test.go`.
 
-**Boot from a new volume (added in review)**
+**Added in review**
 
 - **FR-025** *(F7, F16)*: A root `block_device_mapping_v2` entry with `source_type: image` and
   `destination_type: volume`, which is what the launch wizard sends with *Create New Volume* on (its
@@ -250,9 +252,34 @@ not fix, each was reproduced live before being fixed, and each carries a regress
   - **Image base.** A volume created from an image on a node-local backend (`local`, `local,rbd`) MUST first
     fetch the image's raw base onto the node, verified against the image checksum, as an image boot does. An
     RGW/S3-backed image's base is otherwise absent there, which also failed `volume create --image`.
+
   *Tests:* `internal/nova/boot_volume_test.go`, `TestBootSourcePrecedence` in
   `internal/nova/boot_from_volume_test.go`, `internal/cinder/boot_volume_test.go`.
+- **FR-026**: Every API that makes a server or a volume from an image MUST refuse an image the caller cannot
+  read, by Glance's rule for reading one image (`glance/db/utils.py` `is_image_visible`): an administrator reads
+  every image; anyone reads a public or community image, or one with no owner; the owner reads its own; a project
+  a shared image was shared with reads it, whatever the membership's status. An id that names no image, or is
+  not a UUID, is refused the same way, so a refusal does not tell which. An image the caller can read but
+  that is not active (its data not uploaded yet, or deactivated) MUST be refused too. The checks run before
+  anything is reserved or created. Upstream's answers, which these use:
+  - server create (`imageRef`, an adopted root image mapping, a new boot volume's image): `400 Can not find
+    requested image`, or `400 Image <id> is not active.`;
+  - rebuild: `400 Cannot find image for rebuild`, or `400 Image <id> is not active.`;
+  - volume create from an image: `400 Invalid image identifier or unable to access requested image.`, or
+    `400 Invalid input received: Image <id> is not active.`;
+  - `os-reimage`: `404 Image <id> could not be found.`, or `400 Invalid input received: Image <id> is not active.`
 
+  Glance applies the same rule to image show and download. Its list follows upstream's narrower rule
+  (`glance/db/sqlalchemy/api.py` `_select_images_query`, `_image_get_all`): an administrator's list starts from
+  every image; anyone else's from public and community images, their own, and shared images whose membership
+  has the requested `member_status` (`accepted` unless asked). `?visibility=` keeps one visibility, or `all`
+  keeps everything; without it, community images are left out unless they are the caller's own. `?status=`
+  keeps one status, which is how the launch wizard asks for active images only. An invalid `visibility` or
+  `member_status` is a `400`, with upstream's message. A change to an image's members evicts its cached reads.
+
+  *Tests:* `internal/common/image_test.go`, `internal/nova/image_visibility_test.go`,
+  `internal/cinder/image_visibility_test.go`, `internal/glance/visibility_test.go`,
+  `internal/glance/images_cache_test.go`.
 **Fix boundary**
 
 - **FR-018**: All fixes MUST be **Lightstack-side** (changes to Lightstack's API responses/handlers); the SPEC-018 Horizon deployment MUST remain **stock/unpatched** — default policies and config, no overrides added to force a control to appear. A workflow that cannot be enabled without modifying Horizon's own config/policy MUST be recorded as a documented finding rather than worked around; passing against **stock Horizon** is the drop-in compatibility bar.

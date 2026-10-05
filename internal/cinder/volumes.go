@@ -510,6 +510,26 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 		return
 	}
 
+	// The image must be one the caller can read, and active (SPEC-020 FR-026). Upstream asks
+	// Glance with the caller's token, so another project's private image and an id that names
+	// no image get the same answer.
+	if req.Volume.ImageRef != "" {
+		status, found, err := common.VisibleImage(c.Request.Context(), svc.pool, req.Volume.ImageRef, projectID, common.HasRole(c, common.RoleAdmin))
+		if err != nil {
+			log.Error().Err(err).Str("operation", "create_volume_check_image").Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to create volume"))
+			return
+		}
+		if !found {
+			common.SendError(c, common.NewBadRequestError("Invalid image identifier or unable to access requested image."))
+			return
+		}
+		if status != "active" {
+			common.SendError(c, common.NewBadRequestError(imageNotActive(req.Volume.ImageRef)))
+			return
+		}
+	}
+
 	now := time.Now()
 	// Persist the concrete default so volume_type reads back verbatim; serializeVolume
 	// repeats this check defensively for legacy NULL rows (intentional duplication).
@@ -766,6 +786,12 @@ func (svc *Service) GetVolume(c *gin.Context) {
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
 		}),
 	})
+}
+
+// imageNotActive is upstream's refusal of an image that is not active yet
+// (cinder/volume/volume_utils.py check_image_metadata, raised as InvalidInput).
+func imageNotActive(imageID string) string {
+	return fmt.Sprintf("Invalid input received: Image %s is not active.", imageID)
 }
 
 // DeleteVolume deletes a volume
@@ -1126,9 +1152,25 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("os-reimage.image_id must be a string"))
 			return
 		}
+		// The image must be one the caller can read, and active (SPEC-020 FR-026); upstream's
+		// answer otherwise is Glance's not-found.
+		status, found, err := common.VisibleImage(c.Request.Context(), svc.pool, imageID, projectID, common.HasRole(c, common.RoleAdmin))
+		if err != nil {
+			log.Error().Err(err).Str("operation", "reimage_check_image").Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to reimage volume"))
+			return
+		}
+		if !found {
+			common.SendError(c, common.NewNotFoundError("Image "+imageID))
+			return
+		}
+		if status != "active" {
+			common.SendError(c, common.NewBadRequestError(imageNotActive(imageID)))
+			return
+		}
 
 		// Update volume to bootable and store image ID
-		_, err := svc.pool.Exec(c.Request.Context(), `
+		_, err = svc.pool.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET bootable = true, updated_at = $1
 			WHERE id = $2 AND project_id = $3

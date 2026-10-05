@@ -182,7 +182,7 @@ func getTestServerID(t *testing.T, client *gophercloud.ServiceClient) (string, f
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "migration-test-fixture",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err, "Failed to create test server fixture")
 

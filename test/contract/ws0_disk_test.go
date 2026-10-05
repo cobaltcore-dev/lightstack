@@ -49,6 +49,7 @@ func TestWS0_ImageInUseGuard(t *testing.T) {
 			_ = images.Delete(imgClient, img.ID).ExtractErr()
 		}
 	}()
+	UploadTestImageData(t, imgClient, img.ID) // server create refuses an image that is not active
 
 	srv, err := servers.Create(novaClient, servers.CreateOpts{
 		Name:      "ws0-inuse-vm",

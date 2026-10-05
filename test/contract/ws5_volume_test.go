@@ -45,6 +45,7 @@ func TestWS5_VolumeAttachLifecycle(t *testing.T) {
 	}).Extract()
 	require.NoError(t, err)
 	defer func() { _ = images.Delete(glance, img.ID).ExtractErr() }()
+	UploadTestImageData(t, glance, img.ID) // server create refuses an image that is not active
 
 	srv, err := servers.Create(nova, servers.CreateOpts{
 		Name: "ws5-vm", FlavorRef: flavorM1Small, ImageRef: img.ID,

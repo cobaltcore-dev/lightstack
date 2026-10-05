@@ -161,6 +161,18 @@ func TestBootSourcePrecedence(t *testing.T) {
 		flavor      = "00000000-0000-0000-0000-000000000011"
 	)
 
+	// Both images exist: server create refuses an image that does not (FR-026).
+	for _, id := range []string{explicitImg, bdmImg} {
+		if _, err := testPool.Exec(t.Context(),
+			`INSERT INTO images (id, name, project_id, status, visibility) VALUES ($1, 'bootsrc', $2, 'active', 'private')
+			 ON CONFLICT (id) DO NOTHING`, id, seededProjectID); err != nil {
+			t.Fatalf("seeding image %s: %v", id, err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM images WHERE id IN ($1, $2)`, explicitImg, bdmImg)
+	})
+
 	tests := []struct {
 		name string
 		// bdmAndImage is spliced into the server object: the imageRef plus the BDM list.
@@ -206,8 +218,8 @@ func TestBootSourcePrecedence(t *testing.T) {
 
 			code, resp := doReq(r, http.MethodPost, "/v2.1/servers", body, hdr)
 			if tt.wantRefused {
-				if code != http.StatusBadRequest {
-					t.Fatalf("create: code=%d body=%s; want 400 — a boot-volume request must be refused, not downgraded", code, resp)
+				if code != http.StatusBadRequest || !strings.Contains(resp, "block-storage") {
+					t.Fatalf("create: code=%d body=%s; want 400 for the missing block-storage service — a boot-volume request must be refused, not downgraded", code, resp)
 				}
 				return
 			}

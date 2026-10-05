@@ -21,7 +21,7 @@ func TestNovaListInstanceActions_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "test-server-actions",
 		FlavorRef: "00000000-0000-0000-0000-000000000010", // m1.tiny
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -76,7 +76,7 @@ func TestNovaGetInstanceAction_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "test-server-action-detail",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)

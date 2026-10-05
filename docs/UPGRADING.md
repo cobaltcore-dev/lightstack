@@ -256,15 +256,17 @@ redis-cli --scan --pattern 'lightstack:image:*'   | xargs -r redis-cli del
 
 Adjust the prefix if `cache.key_prefix` is not the default.
 
-## Quota, limits, security-group and boot-volume API changes
+## Quota, limits, security-group, image and volume API changes
 
-Several quota, limits and security-group answers changed, and so did a server create that asks for
-a new boot volume, most of them to match upstream OpenStack. A client that relied on an old answer now gets a different status code or value.
-Nothing is migrated, and there is no switch to restore the old behaviour. Two changes can need
-action on your side — eBPF mode and a self-maintained Horizon configuration — and the rest is
-listed per service below. Two rows deliberately differ from upstream: `default` is Lightstack's
-own alias for the caller's project, and an unscoped token gets `404` on `/limits` where upstream
-answers `200`.
+Several quota, limits and security-group answers changed, and so did server create and rebuild,
+volume create from an image, and which images Glance shows and lists, most of them to match
+upstream OpenStack. A client that relied on an old answer now gets a different status code or
+value. Nothing is migrated, and there is no switch to restore the old behaviour. Three changes can
+need action on your side — eBPF mode, a self-maintained Horizon configuration, and scripts that
+boot from an image id that names no image, or from an image with no data, which used to be
+accepted — and the rest is listed per service below. Two rows deliberately differ from upstream:
+`default` is Lightstack's own alias for the caller's project, and an unscoped token gets `404` on
+`/limits` where upstream answers `200`.
 
 ### eBPF security groups fail closed (eBPF mode only)
 
@@ -340,9 +342,25 @@ Neutron `/v2.0/quotas/{id}`.
 | server create with a root `source_type: image`, `destination_type: volume` mapping — the dashboard's *Create New Volume* | boots the image directly; `volume_size` and `delete_on_termination` ignored, no volume created | creates an unnamed volume from the image and boots from it, as upstream; `delete_on_termination` decides whether it is deleted with the server |
 | … where no volume can be created | the image boot above | `400` when there is no block-storage service, `503` when creating the volume fails |
 | … with an unknown image, a malformed `volume_size`, or one below the image's floor | the image boot above | `400` |
+| server create with an image the caller cannot read (another project's private image), or an id that names no image | accepted: the image booted, or the server went to `ERROR` (stub mode: a server that never booted anything) | `400 Can not find requested image`, before anything is created. Scripts that booted from a made-up image id must create a real image first |
+| rebuild with such an image | accepted | `400 Cannot find image for rebuild` |
+| server create or rebuild with an image that is not active (no data uploaded yet, or deactivated) | accepted | `400 Image <id> is not active.` |
 
 ### Cinder
 
 | | before | after |
 |---|---|---|
 | `volume create --image` on a `local` or `local,rbd` backend, for an image whose base is not on the node yet (an RGW/S3-backed image no server has booted there) | `503 failed to create volume from image` | the base is fetched and checked against the image checksum first, as an image boot does |
+| `volume create --image` with an image the caller cannot read, or an id that names no image | accepted (stub mode); `503` (local backends) | `400 Invalid image identifier or unable to access requested image.` |
+| `os-reimage` with such an image | `202` | `404 Image <id> could not be found.` |
+| `volume create --image` or `os-reimage` with an image that is not active | accepted | `400 Invalid input received: Image <id> is not active.` |
+
+### Glance
+
+Reads follow upstream's visibility rules, so sharing an image now has an effect.
+
+| | before | after |
+|---|---|---|
+| image show and download | public images and the caller's own | also community images, images with no owner, images shared with the caller (any membership status), and every image for an administrator |
+| image list, default | public images and the caller's own | the caller's own, public ones, and shared ones whose membership is accepted; an administrator lists every image. Either way other projects' community images are left out unless `?visibility=community` or `all` asks for them |
+| `?visibility=`, `?member_status=`, `?status=` on the list | ignored | honoured as upstream; an invalid `visibility` or `member_status` is a `400` |

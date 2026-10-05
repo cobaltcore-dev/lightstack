@@ -21,7 +21,7 @@ func TestNovaMigrateServer_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "migrate-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -75,7 +75,7 @@ func TestNovaRestoreInstance_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "restore-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 
@@ -115,7 +115,7 @@ func TestNovaCreateBackup_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "backup-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -159,7 +159,7 @@ func TestNovaResetState_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "reset-state-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -195,7 +195,7 @@ func TestNovaResetNetwork_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "reset-network-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)

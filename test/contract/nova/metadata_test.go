@@ -63,7 +63,7 @@ func TestNovaServerMetadataList_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-metadata-list",
 		FlavorRef: "00000000-0000-0000-0000-000000000010", // m1.tiny
-		ImageRef:  "00000000-0000-0000-0000-000000000001", // Dummy image for stub mode
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -93,7 +93,7 @@ func TestNovaServerMetadataCreate_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-metadata-create",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -126,7 +126,7 @@ func TestNovaServerMetadataUpdate_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-metadata-update",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 		Metadata: map[string]string{
 			"initial": "value",
 		},
@@ -162,7 +162,7 @@ func TestNovaServerMetadataDeleteKeyNotFound_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-server-metadata-404",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()

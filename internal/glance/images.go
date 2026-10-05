@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -251,6 +252,22 @@ func (svc *Service) CreateImage(c *gin.Context) {
 func (svc *Service) ListImages(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
+	// The filters upstream's own visibility rules take (glance/api/v2/images.py).
+	visibility := c.Query("visibility")
+	switch visibility {
+	case "", "public", "private", "shared", "community", "all":
+	default:
+		common.SendError(c, common.NewBadRequestError("Invalid visibility value: "+visibility))
+		return
+	}
+	memberStatus := c.DefaultQuery("member_status", "accepted")
+	switch memberStatus {
+	case "pending", "accepted", "rejected", "all":
+	default:
+		common.SendError(c, common.NewBadRequestError("Invalid status: "+memberStatus))
+		return
+	}
+
 	// Parse pagination parameters
 	limit := 1000
 	offset := 0
@@ -265,20 +282,48 @@ func (svc *Service) ListImages(c *gin.Context) {
 		}
 	}
 
-	// Marker-based pagination
-	var markerCondition string
-	var queryArgs []any
-	queryArgs = append(queryArgs, projectID)
-	argIdx := 2
+	// Which images the list holds follows upstream (glance/db/sqlalchemy/api.py
+	// _select_images_query and _image_get_all, SPEC-020 FR-026): an administrator's list
+	// starts from every image; anyone else's from public and community images, their own,
+	// and shared images whose membership has member_status (accepted unless asked).
+	// ?visibility= keeps one visibility, or "all" keeps everything; without it, community
+	// images are left out unless they are the caller's own. Narrower than reading one image
+	// (common.ImageVisibleSQL): a pending share can be shown but is not listed by default.
+	caller := common.CallerProjectID(projectID)
+	queryArgs := []any{caller, common.HasRole(c, common.RoleAdmin), memberStatus}
+	conditions := []string{`($2
+		OR i.visibility IN ('public', 'community')
+		OR i.project_id::text = $1
+		OR (i.visibility = 'shared' AND $1 <> '' AND EXISTS (
+			SELECT 1 FROM image_members m
+			WHERE m.image_id = i.id
+			  AND replace(lower(m.member_id), '-', '') = replace($1, '-', '')
+			  AND ($3 = 'all' OR m.status = $3))))`}
+	argIdx := 4
+	switch visibility {
+	case "":
+		conditions = append(conditions, "(i.visibility <> 'community' OR i.project_id::text = $1)")
+	case "all":
+	default:
+		conditions = append(conditions, fmt.Sprintf("i.visibility = $%d", argIdx))
+		queryArgs = append(queryArgs, visibility)
+		argIdx++
+	}
+	if status := c.Query("status"); status != "" {
+		conditions = append(conditions, fmt.Sprintf("i.status = $%d", argIdx))
+		queryArgs = append(queryArgs, status)
+		argIdx++
+	}
 
+	// Marker-based pagination
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at FROM images WHERE id = $1",
+			"SELECT created_at FROM images WHERE id::text = $1",
 			marker,
 		).Scan(&markerCreatedAt)
 		if err == nil {
-			markerCondition = fmt.Sprintf(" AND created_at < $%d", argIdx)
+			conditions = append(conditions, fmt.Sprintf("i.created_at < $%d", argIdx))
 			queryArgs = append(queryArgs, markerCreatedAt)
 			argIdx++
 		}
@@ -287,12 +332,12 @@ func (svc *Service) ListImages(c *gin.Context) {
 	queryArgs = append(queryArgs, limit, offset)
 
 	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
-		SELECT id, name, status, visibility, size_bytes, disk_format, container_format, min_disk_gb, min_ram_mb, created_at, updated_at
-		FROM images
-		WHERE (visibility = 'public' OR project_id = $1)%s
-		ORDER BY created_at DESC
+		SELECT i.id, i.name, i.status, i.visibility, i.size_bytes, i.disk_format, i.container_format, i.min_disk_gb, i.min_ram_mb, i.created_at, i.updated_at
+		FROM images i
+		WHERE %s
+		ORDER BY i.created_at DESC
 		LIMIT $%d OFFSET $%d
-	`, markerCondition, argIdx, argIdx+1), queryArgs...)
+	`, strings.Join(conditions, " AND "), argIdx, argIdx+1), queryArgs...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_images").Msg("failed to query images")
@@ -352,21 +397,28 @@ func (svc *Service) ListImages(c *gin.Context) {
 	})
 }
 
-// imageCacheKey names a cached image entry, scoped to the caller.
+// imageCacheKey names a cached image entry, scoped to the caller: its project, and whether
+// it reads as an administrator.
 //
 // The caller is part of the key because GetImage reads the cache BEFORE applying its
-// visibility predicate (`visibility = 'public' OR project_id = $2`). Keyed on the image
-// alone, the first fetch by an owner populated an entry that any authenticated caller
-// knowing the id could then read for the whole TTL, where the uncached answer is 404.
-// Same shape as networkCacheKey in internal/neutron, raised on PR #79.
-func imageCacheKey(projectID, imageID string) string {
-	return "image:" + projectID + ":" + imageID
+// visibility predicate (common.ImageVisibleSQL). Keyed on the image alone, the first fetch
+// by an owner populated an entry that any authenticated caller knowing the id could then
+// read for the whole TTL, where the uncached answer is 404. An administrator reads every
+// image, so its entries must not reach a member of the same project. Same shape as
+// networkCacheKey in internal/neutron, raised on PR #79.
+func imageCacheKey(projectID string, admin bool, imageID string) string {
+	scope := "member"
+	if admin {
+		scope = "admin"
+	}
+	return "image:" + projectID + ":" + scope + ":" + imageID
 }
 
 // GetImage returns a single image
 func (svc *Service) GetImage(c *gin.Context) {
 	imageID := c.Param("id")
 	projectID := c.GetString("project_id")
+	admin := common.HasRole(c, common.RoleAdmin)
 	ctx := c.Request.Context()
 
 	// Try cache first. The key is scoped to the caller (see imageCacheKey): this lookup
@@ -374,7 +426,7 @@ func (svc *Service) GetImage(c *gin.Context) {
 	// tenant's private image to another.
 	if svc.cache != nil {
 		var cached gin.H
-		if err := svc.cache.Get(ctx, imageCacheKey(projectID, imageID), &cached); err == nil {
+		if err := svc.cache.Get(ctx, imageCacheKey(projectID, admin, imageID), &cached); err == nil {
 			c.JSON(http.StatusOK, cached)
 			return
 		}
@@ -387,14 +439,14 @@ func (svc *Service) GetImage(c *gin.Context) {
 	var minDisk, minRAM int
 	var createdAt, updatedAt time.Time
 
-	// Try by UUID first, then by name if UUID parsing fails
-	// Use CAST to handle non-UUID strings gracefully
+	// By id or by name (a Lightstack extension), and only an image the caller may read, by
+	// upstream's rule for reading one image (SPEC-020 FR-026).
 	err := svc.pool.QueryRow(ctx, `
-		SELECT id, name, status, visibility, size_bytes, disk_format, container_format, min_disk_gb, min_ram_mb, checksum, created_at, updated_at
-		FROM images
-		WHERE (id::text = $1 OR name = $1) AND (visibility = 'public' OR project_id = $2)
+		SELECT i.id, i.name, i.status, i.visibility, i.size_bytes, i.disk_format, i.container_format, i.min_disk_gb, i.min_ram_mb, i.checksum, i.created_at, i.updated_at
+		FROM images i
+		WHERE (i.id::text = $1 OR i.name = $1) AND `+common.ImageVisibleSQL("i", 2, 3)+`
 		LIMIT 1
-	`, imageID, projectID).Scan(&id, &name, &status, &visibility, &sizeBytes, &diskFormat, &containerFormat, &minDisk, &minRAM, &checksum, &createdAt, &updatedAt)
+	`, imageID, common.CallerProjectID(projectID), admin).Scan(&id, &name, &status, &visibility, &sizeBytes, &diskFormat, &containerFormat, &minDisk, &minRAM, &checksum, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
@@ -459,7 +511,7 @@ func (svc *Service) GetImage(c *gin.Context) {
 
 	// Store in cache (1h TTL per config)
 	if svc.cache != nil {
-		svc.cache.TrySet(ctx, imageCacheKey(projectID, id), image, 1*time.Hour)
+		svc.cache.TrySet(ctx, imageCacheKey(projectID, admin, id), image, 1*time.Hour)
 	}
 
 	c.JSON(http.StatusOK, image)
@@ -706,13 +758,19 @@ func (svc *Service) DownloadImageData(c *gin.Context) {
 	// Check if image exists and is active
 	var status string
 	var sizeBytes sql.NullInt64
+	// Downloadable by whoever may read the image (SPEC-020 FR-026).
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT status, size_bytes FROM images WHERE id = $1 AND (visibility = 'public' OR project_id = $2)",
-		imageID, projectID,
+		"SELECT i.status, i.size_bytes FROM images i WHERE i.id::text = $1 AND "+common.ImageVisibleSQL("i", 2, 3),
+		imageID, common.CallerProjectID(projectID), common.HasRole(c, common.RoleAdmin),
 	).Scan(&status, &sizeBytes)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "download_image").Str("image_id", imageID).Msg("failed to query image")
+		common.SendError(c, common.NewInternalServerError("failed to download image"))
 		return
 	}
 
@@ -820,6 +878,7 @@ func (svc *Service) CreateImageMember(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to create image member"))
 		return
 	}
+	svc.evictImage(c.Request.Context(), imageID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"member_id":  req.Member,
@@ -1046,6 +1105,7 @@ func (svc *Service) UpdateImageMember(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to fetch updated image member"))
 		return
 	}
+	svc.evictImage(c.Request.Context(), imageID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"member_id":  memberID,
@@ -1096,8 +1156,18 @@ func (svc *Service) DeleteImageMember(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to delete image member"))
 		return
 	}
+	svc.evictImage(c.Request.Context(), imageID)
 
 	c.Status(http.StatusNoContent)
+}
+
+// evictImage drops every caller's cached view of an image. A membership change decides who
+// may read a shared image, so a cached read must not outlive it: a project the image is no
+// longer shared with would keep reading it until the TTL expired.
+func (svc *Service) evictImage(ctx context.Context, imageID string) {
+	if svc.cache != nil {
+		svc.cache.TryDeletePattern(ctx, "image:*:"+imageID)
+	}
 }
 
 // AddImageTag adds a tag to an image

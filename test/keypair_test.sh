@@ -35,6 +35,17 @@ TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
 
 log_pass "Got authentication token"
 
+# Server create refuses an image that does not exist or is not active, so the test boots
+# from one it creates and uploads a few bytes to.
+IMAGE_ID=$(curl -s -X POST "http://localhost:9292/v2/images" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "keypair-test-image", "disk_format": "raw", "container_format": "bare"}' | jq -r '.id')
+curl -s -o /dev/null -X PUT "http://localhost:9292/v2/images/$IMAGE_ID/file" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "lightstack test image"
+
 # Test 1: List keypairs (should be empty initially)
 log_test "List keypairs (initial)"
 KEYPAIRS=$(curl -s -X GET "http://localhost:8774/v2.1/os-keypairs" \
@@ -178,7 +189,7 @@ INSTANCE_RESPONSE=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
         "server": {
             "name": "keypair-test-vm",
             "flavorRef": "00000000-0000-0000-0000-000000000010",
-            "imageRef": "00000000-0000-0000-0000-000000000001"
+            "imageRef": "'"$IMAGE_ID"'"
         }
     }')
 
@@ -260,6 +271,7 @@ fi
 echo ""
 echo "Cleaning up test resources..."
 curl -s -X DELETE "http://localhost:8774/v2.1/servers/$INSTANCE_ID" -H "X-Auth-Token: $TOKEN" > /dev/null
+curl -s -X DELETE "http://localhost:9292/v2/images/$IMAGE_ID" -H "X-Auth-Token: $TOKEN" > /dev/null
 curl -s -X DELETE "http://localhost:8774/v2.1/os-keypairs/test-key-generated" -H "X-Auth-Token: $TOKEN" > /dev/null
 
 # Print summary

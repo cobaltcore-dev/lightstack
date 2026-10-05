@@ -24,7 +24,7 @@ func TestChangePassword_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "password-test-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -71,7 +71,7 @@ func TestChangePasswordInvalidLength_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "password-validation-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -115,7 +115,7 @@ func TestCreateBackup_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "backup-test-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -167,7 +167,7 @@ func TestMigrateServer_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "migrate-test-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -210,7 +210,7 @@ func TestResetStateAdmin_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "reset-state-admin-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -261,7 +261,7 @@ func TestEvacuateAdmin_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "evacuate-test-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -314,7 +314,7 @@ func TestAddSecurityGroup_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "sg-test-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -363,7 +363,7 @@ func TestRemoveSecurityGroup_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "sg-remove-test-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)

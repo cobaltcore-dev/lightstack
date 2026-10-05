@@ -22,7 +22,7 @@ func TestNovaServerEvacuate_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-evacuate-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -55,7 +55,7 @@ func TestNovaServerMigrate_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-migrate-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()
@@ -94,7 +94,7 @@ func TestNovaServerLiveMigrate_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-live-migrate-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 
 	server, err := servers.Create(client, createOpts).Extract()

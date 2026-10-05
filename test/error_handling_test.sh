@@ -38,6 +38,17 @@ if [ -z "$TOKEN" ]; then
 fi
 
 echo "Got authentication token"
+
+# Server create refuses an image that does not exist or is not active, so the test boots
+# from one it creates and uploads a few bytes to.
+IMAGE_ID=$(curl -s -X POST "http://localhost:9292/v2/images" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "error-handling-test-image", "disk_format": "raw", "container_format": "bare"}' | jq -r '.id')
+curl -s -o /dev/null -X PUT "http://localhost:9292/v2/images/$IMAGE_ID/file" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "lightstack test image"
 echo ""
 
 # Test 1: 404 Not Found - itemNotFound format
@@ -93,7 +104,7 @@ RESPONSE=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
         "server": {
             "name": "quota-test-vm",
             "flavorRef": "00000000-0000-0000-0000-000000000010",
-            "imageRef": "00000000-0000-0000-0000-000000000001"
+            "imageRef": "'"$IMAGE_ID"'"
         }
     }')
 
@@ -206,6 +217,8 @@ if grep -q "computeFault" internal/common/errors.go 2>/dev/null; then
 else
     log_fail "computeFault error type not found"
 fi
+
+curl -s -X DELETE "http://localhost:9292/v2/images/$IMAGE_ID" -H "X-Auth-Token: $TOKEN" > /dev/null
 
 # Print summary
 echo ""

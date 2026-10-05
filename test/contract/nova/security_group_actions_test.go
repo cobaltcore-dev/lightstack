@@ -35,7 +35,7 @@ func TestNovaAddSecurityGroup_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "sg-action-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -76,7 +76,7 @@ func TestNovaAddSecurityGroupDuplicate_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "sg-duplicate-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -126,7 +126,7 @@ func TestNovaRemoveSecurityGroup_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "sg-remove-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)
@@ -166,7 +166,7 @@ func TestNovaChangePassword_Contract(t *testing.T) {
 	server, err := servers.Create(client, servers.CreateOpts{
 		Name:      "password-test",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(client, server.ID)

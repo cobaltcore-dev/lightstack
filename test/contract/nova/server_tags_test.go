@@ -22,7 +22,7 @@ func TestNovaListServerTags_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-tags-list",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -60,7 +60,7 @@ func TestNovaReplaceServerTags_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-tags-replace",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -105,7 +105,7 @@ func TestNovaAddServerTag_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-tags-add",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -150,7 +150,7 @@ func TestNovaDeleteServerTag_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-tags-delete",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)
@@ -185,7 +185,7 @@ func TestNovaDeleteAllServerTags_Contract(t *testing.T) {
 	createOpts := servers.CreateOpts{
 		Name:      "test-tags-delete-all",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  "00000000-0000-0000-0000-000000000001",
+		ImageRef:  testImageID(t),
 	}
 	server, err := servers.Create(client, createOpts).Extract()
 	require.NoError(t, err)

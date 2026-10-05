@@ -620,6 +620,35 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		return
 	}
 
+	// Every image the server is made from must be one the caller can read, and active
+	// (SPEC-020 FR-026), checked before anything is reserved or created. Upstream asks Glance
+	// with the caller's token, so another project's private image and an id that names no
+	// image get the same answer. ImageRef holds the root image whichever way it arrived, an
+	// adopted mapping included; a new boot volume's image is checked too.
+	isAdmin := common.HasRole(c, common.RoleAdmin)
+	for _, img := range []string{req.Server.ImageRef, bootVolImage} {
+		if img == "" {
+			continue
+		}
+		status, found, verr := common.VisibleImage(c.Request.Context(), svc.pool, img, projectID, isAdmin)
+		if verr != nil {
+			log.Error().Err(verr).Str("operation", "check_image").Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to check the image"))
+			return
+		}
+		if !found {
+			logger.Warn().Str("image_ref", img).Msg("refusing server create: image not found or not visible")
+			middleware.LogOperationEnd(c, "create", "server", req.Server.Name, time.Since(start), nil)
+			common.SendError(c, common.NewBadRequestError("Can not find requested image"))
+			return
+		}
+		if status != "active" {
+			middleware.LogOperationEnd(c, "create", "server", req.Server.Name, time.Since(start), nil)
+			common.SendError(c, common.NewBadRequestError(fmt.Sprintf("Image %s is not active.", img)))
+			return
+		}
+	}
+
 	// Check quotas before creating instance
 	if err := CheckQuota(c, svc.pool, "instances", 1); err != nil {
 		if _, ok := err.(*QuotaExceededError); ok {
@@ -2632,9 +2661,26 @@ func (svc *Service) RebuildInstanceAction(c *gin.Context, rebuildData any) {
 		return
 	}
 
+	// The new image must be one the caller can read, and active, as for a create
+	// (SPEC-020 FR-026).
+	imageStatus, found, err := common.VisibleImage(c.Request.Context(), svc.pool, imageRef, projectID, common.HasRole(c, common.RoleAdmin))
+	if err != nil {
+		log.Error().Err(err).Str("operation", "rebuild_check_image").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to rebuild instance"))
+		return
+	}
+	if !found {
+		common.SendError(c, common.NewBadRequestError("Cannot find image for rebuild"))
+		return
+	}
+	if imageStatus != "active" {
+		common.SendError(c, common.NewBadRequestError(fmt.Sprintf("Image %s is not active.", imageRef)))
+		return
+	}
+
 	// Update instance in database
 	now := time.Now()
-	_, err := svc.pool.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		"UPDATE instances SET image_id = $1, name = COALESCE(NULLIF($2, ''), name), status = $3, updated_at = $4 WHERE id = $5 AND project_id = $6",
 		imageRef, name, "REBUILD", now, instanceID, projectID,
 	)
