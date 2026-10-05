@@ -228,6 +228,11 @@ a project switch.
   names no image, or from an image with no data; they now create an active image (`contract.CreateTestImage`).
   Docs: FR-026, `docs/UPGRADING.md`. ✅ unit tests, the contract suite and the scripts against a stub stack
   2026-10-05; ⏳ the host passes.
+- [x] T061 **FR-027 — attachments as upstream reports them (added in review).** RED first:
+  `internal/cinder/attachments_test.go`, `internal/nova/volumes_attached_test.go`. Then the Cinder attachment
+  object from `volume_attachments`, `os-attach`/`os-detach`/`os-force_detach` keeping that table, and Nova's
+  `os-extended-volumes:volumes_attached`. Docs: FR-027, both runbooks (§2.5), `docs/UPGRADING.md`.
+  ✅ unit tests 2026-10-05; ⏳ the host passes.
 
 ---
 
