@@ -186,7 +186,7 @@ full action set (below).
 | Server tags | ✅ | list / replace / delete-all / add / delete |
 | Server diagnostics | ✅ | `GET /servers/{id}/diagnostics` |
 | Instance actions (os-instance-actions) | ✅ | list / show |
-| Remote consoles | ✅ | `POST /remote-consoles` and the legacy `os-getVNCConsole` action return a working noVNC URL at a configurable origin (`nova.console_proxy_base_url`), carrying a persisted, revocable token; the guest's VNC socket is read from the running libvirt domain per request. The console is a per-start unix socket with no TCP listener, so the token-validating proxy is the only route in and a stale link names a path that no longer exists; every endpoint-moving operation (stop/start/reboot/suspend/resume/shelve/delete/forceDelete) revokes, and a sweep revokes links whose guest stopped outside the API. `GET /os-console-auth-tokens/{token}` is served for compatibility. Other types (`xvpvnc`, SPICE, RDP, interactive serial) are **refused** with a clear error rather than a fabricated URL, and stub mode refuses with 501. Serial console log (`os-getConsoleOutput`) works in real mode. Multi-node console is not supported in v1 (SPEC-021 / SPEC-018 F1, fixed). |
+| Remote consoles | ✅ | `POST /remote-consoles` and the legacy `os-getVNCConsole` action return a working noVNC URL at a configurable origin (`nova.console_proxy_base_url`), carrying a persisted, revocable token; the guest's VNC socket is read from the running libvirt domain per request. The console is a unix socket at the instance's own path, with no TCP listener, so the token-validating proxy is the only route in and a stale link can reach no other guest; every endpoint-moving operation (stop/start/reboot/suspend/resume/shelve/delete/forceDelete) revokes, and a sweep revokes links whose guest stopped or restarted outside the API. `GET /os-console-auth-tokens/{token}` is served for compatibility. Other types (`xvpvnc`, SPICE, RDP, interactive serial) are **refused** with a clear error rather than a fabricated URL, and stub mode refuses with 501. Serial console log (`os-getConsoleOutput`) works in real mode. Multi-node console is not supported in v1 (SPEC-021 / SPEC-018 F1, fixed). |
 | Volume attachments | ⚠️ | list / show / attach / detach — no `PUT` (swap/update) |
 | Interface attachments | ⚠️ | list / attach / detach — no show-one `GET …/os-interface/{port_id}` |
 | Server migrations | ✅ | `os-migrations` list; per-server list / show / delete (abort) / action |
@@ -218,7 +218,7 @@ code constant is **2.90**; and it lists **unrescue** as implemented — only **r
 **Validation verdict:** Nova covers the entire compute surface the validation path exercises — full server
 lifecycle and action set, flavors, keypairs, metadata, volume & interface attach, quotas, AZ,
 server groups, aggregates, migrations. The **interactive remote console** works too as of SPEC-021: the
-returned noVNC URL resolves a persisted, revocable token to the guest's per-start unix socket, verified in a
+returned noVNC URL resolves a persisted, revocable token to the guest's own unix socket, verified in a
 browser against a live framebuffer (✅ §3.2; SPEC-018 F1 fixed). Its one limit is that the token projection
 is node-local, so multi-node console is unsupported in v1. The sc007 Terraform scenario (boot a server with keypair + user-data, attach a volume,
 associate a floating IP) is fully supported. Every other ❌/⚠️ is admin / legacy / enterprise

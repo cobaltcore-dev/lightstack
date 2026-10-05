@@ -254,7 +254,6 @@
           "minimum": 1,
           "description": "Drop idle console sessions. Must be non-zero: websockify disables the idle timeout at 0, letting an abandoned tab hold a guest console open indefinitely."
         },
-        "libvirtDomainDir": { "type": "string", "pattern": "^/.+", "description": "Where libvirt creates each running guest's VNC unix socket (domain-<id>-<name>/vnc.sock). Mounted read-only at the same path, because each console token names that exact path." },
         "containerSecurityContext": { "type": "object", "description": "Container securityContext for the proxy. Keeps DAC_OVERRIDE by default: connect() on a guest's console socket needs write permission on a libvirt-qemu-owned socket." },
         "probes": {
           "type": "object",

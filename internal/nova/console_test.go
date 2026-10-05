@@ -57,8 +57,12 @@ func newConsoleTestRouter(t *testing.T, mode string, opts ...func(*Service)) (*g
 	return r, store
 }
 
-// testConsoleSocket has the shape libvirt gives a running domain's VNC socket.
-const testConsoleSocket = "/var/lib/libvirt/qemu/domain-1-instance-test/vnc.sock"
+// testConsoleSocket has the shape of a guest's VNC socket in the console socket
+// directory (SPEC-021 FR-017), and testDomainID that of the run it serves.
+const (
+	testConsoleSocket       = "/var/lib/lightstack/console-sockets/11111111-2222-3333-4444-555555555555.sock"
+	testDomainID      int32 = 7
+)
 
 // seedConsoleInstance inserts an instance owned by the given project.
 func seedConsoleInstance(t *testing.T, projectID string) string {
@@ -172,7 +176,7 @@ func TestConsoleWithoutAHypervisorIsAnOutage(t *testing.T) {
 	}
 
 	svc := NewService(testPool, "", "real", nil)
-	if _, err := svc.CurrentConsoleSocket(t.Context(), id); !errors.Is(err, errNoHypervisor) {
+	if _, _, err := svc.CurrentConsoleSocket(t.Context(), id); !errors.Is(err, errNoHypervisor) {
 		t.Errorf("CurrentConsoleSocket error = %v; want errNoHypervisor", err)
 	}
 }
@@ -287,15 +291,19 @@ func TestConsoleAdminCrossProjectPassesAuthz(t *testing.T) {
 // "computeFault 500: failed to read the instance console endpoint".
 func TestConsoleEndpointErrorMapping(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
-		want int
+		name   string
+		err    error
+		want   int
+		inBody string
 	}{
-		{"stub mode", hypervisor.ErrConsoleUnavailable, http.StatusNotImplemented},
-		{"no libvirt domain / not running", hypervisor.ErrConsoleNotReady, http.StatusConflict},
-		{"no graphical console", hypervisor.ErrNoGraphicalConsole, http.StatusConflict},
-		{"guest console is a tcp listener", hypervisor.ErrConsoleNotSocket, http.StatusInternalServerError},
-		{"unreadable xml", hypervisor.ErrConsoleParse, http.StatusInternalServerError},
+		{"stub mode", hypervisor.ErrConsoleUnavailable, http.StatusNotImplemented, "stub mode"},
+		{"no libvirt domain / not running", hypervisor.ErrConsoleNotReady, http.StatusConflict, "not running"},
+		{"no graphical console", hypervisor.ErrNoGraphicalConsole, http.StatusConflict, "no graphical console"},
+		{"guest console is a tcp listener", hypervisor.ErrConsoleNotSocket, http.StatusInternalServerError, "console misconfigured"},
+		// A domain defined before the console sockets moved: its socket is in libvirt's
+		// per-domain directory, which the proxy cannot see (FR-017).
+		{"socket outside the console socket directory", hypervisor.ErrConsoleLegacySocket, http.StatusInternalServerError, "console misconfigured"},
+		{"unreadable xml", hypervisor.ErrConsoleParse, http.StatusInternalServerError, "failed to read"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -307,6 +315,9 @@ func TestConsoleEndpointErrorMapping(t *testing.T) {
 
 			if w.Code != tc.want {
 				t.Errorf("status = %d; want %d (body: %s)", w.Code, tc.want, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.inBody) {
+				t.Errorf("body %s does not say %q", w.Body.String(), tc.inBody)
 			}
 			if strings.Contains(w.Body.String(), "http://") {
 				t.Errorf("refusal must not contain a URL: %s", w.Body.String())
@@ -324,21 +335,26 @@ func TestSocketForSweep(t *testing.T) {
 	cases := []struct {
 		name       string
 		socket     string
+		domainID   int32
 		err        error
 		wantSocket string
+		wantID     int32
 		wantErr    bool
 	}{
-		{"serving", testConsoleSocket, nil, testConsoleSocket, false},
-		{"not running", "", hypervisor.ErrConsoleNotReady, "", false},
-		{"no console device", "", hypervisor.ErrNoGraphicalConsole, "", false},
-		{"legacy tcp listener", "", hypervisor.ErrConsoleNotSocket, "", false},
-		{"libvirt unreachable", "", blip, "", true},
+		// The domain ID passes through: it is what tells this run from a restart (FR-014a).
+		{"serving", testConsoleSocket, testDomainID, nil, testConsoleSocket, testDomainID, false},
+		{"not running", "", 0, hypervisor.ErrConsoleNotReady, "", 0, false},
+		{"no console device", "", 0, hypervisor.ErrNoGraphicalConsole, "", 0, false},
+		{"legacy tcp listener", "", 0, hypervisor.ErrConsoleNotSocket, "", 0, false},
+		{"socket outside the console socket directory", "", 0, hypervisor.ErrConsoleLegacySocket, "", 0, false},
+		{"libvirt unreachable", "", 0, blip, "", 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := socketForSweep(tc.socket, tc.err)
-			if (err != nil) != tc.wantErr || got != tc.wantSocket {
-				t.Errorf("socketForSweep = (%q, %v); want (%q, error=%v)", got, err, tc.wantSocket, tc.wantErr)
+			got, id, err := socketForSweep(tc.socket, tc.domainID, tc.err)
+			if (err != nil) != tc.wantErr || got != tc.wantSocket || id != tc.wantID {
+				t.Errorf("socketForSweep = (%q, %d, %v); want (%q, %d, error=%v)",
+					got, id, err, tc.wantSocket, tc.wantID, tc.wantErr)
 			}
 		})
 	}
@@ -391,7 +407,7 @@ func TestConsoleAuthTokenShape(t *testing.T) {
 	r, store := newConsoleTestRouter(t, "stub")
 	id := seedConsoleInstance(t, seededProjectID)
 
-	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket)
+	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -535,7 +551,7 @@ func TestIssuedURLEmbedsAResolvableToken(t *testing.T) {
 	_, store := newConsoleTestRouter(t, "stub")
 	id := seedConsoleInstance(t, seededProjectID)
 
-	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket)
+	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -640,7 +656,7 @@ func TestLifecycleActionsRevokeConsoleTokens(t *testing.T) {
 			r, store := newConsoleTestRouter(t, "stub")
 			id := seedConsoleInstance(t, seededProjectID)
 
-			tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket)
+			tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket, testDomainID)
 			if err != nil {
 				t.Fatalf("Issue: %v", err)
 			}
@@ -676,7 +692,7 @@ func TestLifecycleRevokeWorksWhenAddressedByName(t *testing.T) {
 	name := "spec021-by-name"
 	id := seedConsoleInstanceNamed(t, seededProjectID, name)
 
-	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket)
+	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -698,7 +714,7 @@ func TestForceDeleteKeepsForeignProjectsTokens(t *testing.T) {
 	r, store := newConsoleTestRouter(t, "stub")
 	id := seedConsoleInstance(t, seededProjectID)
 
-	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket)
+	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -724,7 +740,7 @@ func TestUnknownActionKeepsConsoleTokens(t *testing.T) {
 	r, store := newConsoleTestRouter(t, "stub")
 	id := seedConsoleInstance(t, seededProjectID)
 
-	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket)
+	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -775,9 +791,9 @@ func TestLifecycleActionsFailClosedWhenRevocationFails(t *testing.T) {
 				t.Fatalf("preparing instance: %v", err)
 			}
 			if _, err := testPool.Exec(t.Context(),
-				`INSERT INTO console_auth_tokens (token, instance_id, project_id, socket, expires_at)
-				 VALUES ($1, $2, $3, $4, now() + interval '10 minutes')`,
-				"bad/"+tc.name, id, seededProjectID, testConsoleSocket); err != nil {
+				`INSERT INTO console_auth_tokens (token, instance_id, project_id, socket, domain_id, expires_at)
+				 VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')`,
+				"bad/"+tc.name, id, seededProjectID, testConsoleSocket, testDomainID); err != nil {
 				t.Fatalf("seeding the unrevocable token: %v", err)
 			}
 

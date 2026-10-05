@@ -85,3 +85,15 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "/consoleProxy/image/digest.*does not match pattern"
+  - it: rejects consoleProxy.libvirtDomainDir, removed when the console sockets moved (additionalProperties)
+    # The proxy no longer mounts libvirt's per-domain directories (SPEC-021 FR-023c), so
+    # a value still naming one is a leftover the operator should drop, not ignore.
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: x
+      secrets.adminPassword: x
+      database.url: postgres://lightstack@db/lightstack
+      consoleProxy.libvirtDomainDir: /var/lib/libvirt/qemu
+    asserts:
+      - failedTemplate:
+          errorPattern: "libvirtDomainDir"

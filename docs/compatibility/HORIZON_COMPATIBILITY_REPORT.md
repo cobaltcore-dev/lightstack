@@ -173,9 +173,9 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
     token was bypassable by anything that could reach the node. And a token that froze a TCP port could,
     after that port was freed and handed to the next guest, reach a **different tenant's** guest — which
     revoking on stop/start alone cannot prevent, because a guest can power itself off without any API call.
-    The console is now a per-start unix socket with no TCP listener: the proxy is the only route in, and a
-    stale link names a path that no longer exists. Lifecycle operations still revoke, and a reconciler sweep
-    revokes links whose guest stopped outside the API. `sharePolicy='force-shared'` additionally stops a
+    The console is now a unix socket at the instance's own path, with no TCP listener: the proxy is the only
+    route in, and a stale link can reach no other guest. Lifecycle operations still revoke, and a reconciler
+    sweep revokes links whose guest stopped or restarted outside the API. `sharePolicy='force-shared'` additionally stops a
     second viewer evicting the first.
   - **A second, independent blocker, found only by fixing the first.** Lightstack's own Horizon config set
     `CONSOLE_TYPE = 'novnc'`. Horizon dispatches on that through `CONSOLES` in
@@ -687,7 +687,7 @@ were first filed, was closed as superseded). F16, filed there for #547, is fixed
   readback per request, a token-resolving proxy built by configuring the already-pinned noVNC image rather than
   writing a relay, and a configurable origin. Also closed two things the ticket did not name — the guest VNC
   listened on `0.0.0.0` (token bypassable) and console-port reuse could point a stale token at another tenant's
-  guest; both are gone with the move to per-start unix sockets.
+  guest; both are gone with the move to per-instance unix sockets.
 - **F10, F11, F12, F13, F15 (open)** — pre-existing, surfaced by the #533 pass; see *Findings from the #533
   pass*. **F13** (`POST /v3/projects` 500 on a non-UUID `domain_id`) is the highest value: it is the Identity
   panel's own create-project path.

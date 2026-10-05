@@ -19,13 +19,13 @@ One file per live token. Exactly one line:
 Example:
 
 ```text
-9f8c1a2b3d4e5f60718293a4b5c6d7e8: unix_socket:/var/lib/libvirt/qemu/domain-7-instance-1a2b3c4d/vnc.sock
+9f8c1a2b3d4e5f60718293a4b5c6d7e8: unix_socket:/var/lib/lightstack/console-sockets/1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d.sock
 ```
 
-`<path>` is the guest's VNC socket, which libvirt creates per start in the domain's
-private directory (`domain-<id>-<name>`). A token therefore names a path that dies
-with its guest — never a TCP port, which libvirt would hand to the next guest that
-starts.
+`<path>` is the guest's VNC socket at its fixed per-instance path in
+`<state_path>/console-sockets/` (FR-017), never a TCP port, which libvirt would hand to
+the next guest that starts. The path survives restarts. The run is tracked by the row's
+`domain_id`, which the sweep compares with the guest's current one (FR-014a).
 
 **The format is dictated by websockify's parser**, read out of the pinned image (`token_plugins.py`, verified):
 
@@ -58,7 +58,7 @@ The permission decision is deliberately left to implementation with one constrai
 | Authorized console request | Write the file, insert the row. Also unlink this instance's already-expired entries. |
 | `expires_at` passed | Reconciler unlinks the file, then deletes the row. |
 | `os-stop`, `os-start`, `reboot`, suspend, resume, shelve | Unlink every entry for that instance, then delete the rows, so a link never outlives the console it was issued for. |
-| Reconciler sweep (real mode) | Compare every live token with the socket its guest serves now; unlink and delete those whose guest serves another socket or none — a guest that powered itself off, crashed or restarted outside the API. On a readback *error* the tokens stay for the next sweep. |
+| Reconciler sweep (real mode) | Compare every live token with the socket and domain ID its guest has now. Unlink and delete those whose guest serves another socket, runs under another domain ID, or is not running: a guest that powered itself off, crashed, or was restarted outside the API. On a readback *error* the tokens stay for the next sweep. |
 | Instance deleted (incl. `forceDelete`) | Same; rows also cascade via the foreign key. |
 | Service start | One sweep for orphans left by an unclean shutdown. |
 
@@ -69,7 +69,7 @@ Against the pinned image with this contract in place (research.md R5; the unix-s
 | Probe | Result |
 |---|---|
 | `WS /?token=<known>` | `101 Switching Protocols`, the guest's `RFB 003.008` greeting, log `connecting to unix socket: <path>` |
-| `WS /?token=<known>` after the guest restarted | `101`, then close with `Failed to connect to downstream server` — the path no longer exists |
+| `WS /?token=<known>` after the guest restarted | Since 2026-10-01 the path is fixed, so until the sweep revokes the token (≤ one interval: the domain ID changed) it still reaches **the same** guest's new run, never another guest. Re-verify on the host (runbook R7). Before the amendment: `101`, then `Failed to connect to downstream server`, because the per-start path was gone |
 | `WS /?token=<unknown>` | Connection closed, **no response**, log `Token '<x>' not found` — no guest contacted |
 | `WS /websockify?token=<known>` | `101 Switching Protocols` (either path shape works) |
 

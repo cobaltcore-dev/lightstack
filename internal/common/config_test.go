@@ -462,6 +462,43 @@ func TestLoadConfigStatePath(t *testing.T) {
 	}
 }
 
+// In real mode every guest's console socket is <state_path>/console-sockets/<uuid>.sock,
+// and QEMU refuses a socket path longer than 108 bytes, so a longer root would stop every
+// guest from starting. Stub mode creates no sockets and is not limited (SPEC-021 FR-017).
+func TestLoadConfigStatePathLengthInRealMode(t *testing.T) {
+	root50 := "/" + strings.Repeat("a", 49)
+	root51 := "/" + strings.Repeat("a", 50)
+	for _, tc := range []struct {
+		name, mode, root string
+		wantErr          bool
+	}{
+		{"real, 50 characters", "real", root50, false},
+		{"real, 51 characters", "real", root51, true},
+		{"stub, 51 characters", "stub", root51, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "lightstack.yaml")
+			yaml := "state_path: " + tc.root + "\nnova:\n  libvirt_mode: " + tc.mode + "\n"
+			if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("LoadConfig: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("LoadConfig accepted a state_path too long for a console socket path")
+			}
+			if !strings.Contains(err.Error(), "state_path") || !strings.Contains(err.Error(), "50") {
+				t.Errorf("error does not name the key and its limit: %v", err)
+			}
+		})
+	}
+}
+
 // console_enabled says whether a console proxy is deployed at all (SPEC-021). Omitted
 // means yes — the deploy scripts run one and never set the key — and only an explicit
 // false turns consoles off, which is what the chart renders wherever it deploys no

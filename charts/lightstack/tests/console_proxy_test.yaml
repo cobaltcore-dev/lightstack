@@ -151,6 +151,8 @@ tests:
           path: spec.template.spec.affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution
 
   - it: mounts the token projection read-only — the proxy resolves, never mints
+    # Only console-tokens, never the storage root: the root also holds every tenant's
+    # disks, volumes, images and cloud-init data, and the proxy keeps DAC_OVERRIDE.
     template: templates/console-proxy.yaml
     documentIndex: 0
     set:
@@ -158,19 +160,28 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[0].mountPath
-          value: /var/lib/lightstack
+          value: /var/lib/lightstack/console-tokens
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[0].readOnly
           value: true
       - equal:
           path: spec.template.spec.volumes[0].hostPath.path
-          value: /var/lib/lightstack
+          value: /var/lib/lightstack/console-tokens
+      # Whichever pod starts first creates it; the proxy has no ordering guarantee.
+      - equal:
+          path: spec.template.spec.volumes[0].hostPath.type
+          value: DirectoryOrCreate
+      # The tokens and libvirt's domain directories, nothing else.
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 2
 
-  - it: mounts libvirt's domain directories read-only at the path libvirt reports
-    # The guest console is a unix socket libvirt creates per start under
-    # <libvirtDomainDir>/domain-<id>-<name>/vnc.sock, and the token names that exact
-    # path, so the proxy must see it at the same place. Directory, not
-    # DirectoryOrCreate: a real-mode node without libvirt should fail loudly here.
+  - it: mounts the console socket directory read-only, and nothing of libvirt's
+    # Each guest's console is a unix socket at <root>/console-sockets/<uuid>.sock, and
+    # the token names that exact path, so the proxy sees it at the same place. Never
+    # libvirt's per-domain directories: they also hold every guest's QMP monitor
+    # socket and key material, and the proxy keeps DAC_OVERRIDE (SPEC-021 FR-017,
+    # FR-023c, SC-013).
     template: templates/console-proxy.yaml
     documentIndex: 0
     set:
@@ -179,10 +190,17 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].volumeMounts
           content:
-            name: libvirt-domains
-            mountPath: /var/lib/libvirt/qemu
+            name: console-sockets
+            mountPath: /var/lib/lightstack/console-sockets
             readOnly: true
       - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: console-sockets
+            hostPath:
+              path: /var/lib/lightstack/console-sockets
+              type: DirectoryOrCreate
+      - notContains:
           path: spec.template.spec.volumes
           content:
             name: libvirt-domains
@@ -264,7 +282,7 @@ tests:
           path: spec.ports[0].nodePort
           value: 30680
 
-  - it: pre-creates the console-tokens subdirectory before lightstack starts
+  - it: pre-creates the console-tokens and console-sockets subdirectories before lightstack starts
     template: templates/deployment.yaml
     set:
       realMode.enabled: true
@@ -272,6 +290,9 @@ tests:
       - matchRegex:
           path: spec.template.spec.initContainers[0].command[2]
           pattern: "/var/lib/lightstack/console-tokens"
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: "/var/lib/lightstack/console-sockets"
 
   - it: renders the console settings into lightstack.yaml
     template: templates/secret.yaml

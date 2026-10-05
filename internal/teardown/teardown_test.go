@@ -3,9 +3,13 @@ package teardown
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
 func okDeps() deps {
@@ -104,5 +108,41 @@ func TestParseNetnsList(t *testing.T) {
 	want := []string{"light-ns-x", "qrouter-y"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseNetnsList = %v, want %v", got, want)
+	}
+}
+
+// The uninstall purge removes every node-local tree Lightstack writes, the console's
+// two included: token files are credential-shaped, and both directories are recreated
+// with the right owner at the next start (SPEC-021 FR-017b). Anything else under the
+// root is not Lightstack's to remove.
+func TestPurgeLocalStorage(t *testing.T) {
+	root := t.TempDir()
+	paths.SetBase(root)
+	t.Cleanup(func() { paths.SetBase(paths.DefaultBase) })
+
+	ours := []string{
+		paths.ImagesDir(), paths.VolumesDir(), paths.InstancesDir(), paths.CloudInitDir(),
+		paths.DHCPDir(), paths.ConsoleTokenDir(), paths.ConsoleSocketDir(),
+	}
+	keep := filepath.Join(root, "not-lightstacks")
+	for _, dir := range append(ours, keep) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := purgeLocalStorage(); err != nil {
+		t.Fatalf("purgeLocalStorage: %v", err)
+	}
+	for _, dir := range ours {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s survived the purge", dir)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("the purge removed %s, which is not Lightstack's: %v", keep, err)
 	}
 }

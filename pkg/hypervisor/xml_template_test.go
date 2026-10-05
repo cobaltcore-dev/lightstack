@@ -3,6 +3,8 @@ package hypervisor
 import (
 	"strings"
 	"testing"
+
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
 func TestGenerateVMXML(t *testing.T) {
@@ -182,20 +184,19 @@ func TestDomainXMLConsoleIsUnixSocketAndShared(t *testing.T) {
 	}
 	graphics := xml[start:end]
 
-	// A per-start UNIX socket, and no TCP listener at all: nothing on the network can
-	// reach the guest, and no port exists for a later guest to inherit.
-	if !strings.Contains(graphics, "<listen type='socket'/>") {
-		t.Errorf("graphics must listen on a libvirt-generated unix socket; got:\n%s", graphics)
+	// A UNIX socket at the instance's own path in the console socket directory, and no
+	// TCP listener at all: nothing on the network can reach the guest, and no port
+	// exists for a later guest to inherit. Not libvirt's generated path either: that
+	// lives in the domain's private directory, next to its QMP monitor socket, which
+	// the proxy must not be able to reach (FR-017).
+	want := "<listen type='socket' socket='" + paths.ConsoleSocketPath(spec.UUID) + "'/>"
+	if !strings.Contains(graphics, want) {
+		t.Errorf("graphics must listen on %s; got:\n%s", want, graphics)
 	}
 	for _, tcp := range []string{"port=", "autoport", "listen='", "type='address'", "0.0.0.0", "127.0.0.1"} {
 		if strings.Contains(graphics, tcp) {
 			t.Errorf("graphics must not configure a TCP listener (found %q); got:\n%s", tcp, graphics)
 		}
-	}
-	// No fixed path either: libvirt puts the socket in the domain's per-start private
-	// directory, so the path changes on every start and a stale token names nothing.
-	if strings.Contains(graphics, "socket='") {
-		t.Errorf("graphics must leave the socket path to libvirt; got:\n%s", graphics)
 	}
 	if !strings.Contains(graphics, "sharePolicy='force-shared'") {
 		t.Errorf("graphics must set sharePolicy='force-shared' so a second viewer does not evict the first; got:\n%s", graphics)

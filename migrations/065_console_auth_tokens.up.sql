@@ -9,6 +9,10 @@
 --   * instance_id -> FR-014, revoke every token of an instance whose console
 --                    may have moved (stop/start/reboot/suspend/resume/...), and
 --                    compare each token with the socket its guest serves now;
+--   * domain_id   -> FR-014a, the libvirt domain ID of the run the token was
+--                    issued for: libvirt assigns a new one on every start, so a
+--                    restart outside the API is caught although the socket path
+--                    is fixed per instance;
 --   * project_id  -> FR-013, project-scoped issuance with an admin override.
 --
 -- Deliberately NO console_type column: FR-025 refuses every type but novnc, so
@@ -18,10 +22,11 @@ CREATE TABLE IF NOT EXISTS console_auth_tokens (
     token       TEXT PRIMARY KEY,
     instance_id UUID        NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
     project_id  UUID        NOT NULL,
-    -- The guest's VNC socket. libvirt creates it per start in the domain's
-    -- private directory, so a token names a path that dies with its guest rather
-    -- than a TCP port the next guest may be given.
+    -- The guest's VNC socket, <state_path>/console-sockets/<instance-uuid>.sock:
+    -- fixed per instance, so never another guest's, and never a TCP port the next
+    -- guest may be given (FR-017).
     socket      TEXT        NOT NULL CHECK (socket LIKE '/%'),
+    domain_id   INTEGER     NOT NULL CHECK (domain_id > 0),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at  TIMESTAMPTZ NOT NULL
 );

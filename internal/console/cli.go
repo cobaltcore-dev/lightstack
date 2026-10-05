@@ -103,6 +103,7 @@ type listRow struct {
 	InstanceID string    `json:"instance_id"`
 	ProjectID  string    `json:"project_id"`
 	Socket     string    `json:"socket"`
+	DomainID   int32     `json:"domain_id"` // the libvirt run the token was issued for
 	CreatedAt  time.Time `json:"created_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
 }
@@ -116,6 +117,7 @@ func outputListJSON(records []Record, stdout, stderr io.Writer) int {
 			InstanceID: r.InstanceID,
 			ProjectID:  r.ProjectID,
 			Socket:     r.Socket,
+			DomainID:   r.DomainID,
 			CreatedAt:  r.CreatedAt,
 			ExpiresAt:  r.ExpiresAt,
 		})
@@ -138,10 +140,10 @@ func outputListTable(records []Record, stdout, stderr io.Writer) int {
 	}
 
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TOKEN\tINSTANCE\tTARGET\tEXPIRES IN")
+	fmt.Fprintln(tw, "TOKEN\tINSTANCE\tTARGET\tDOMAIN\tEXPIRES IN")
 	for _, r := range records {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-			redact(r.Token), r.InstanceID, r.Socket,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n",
+			redact(r.Token), r.InstanceID, r.Socket, r.DomainID,
 			time.Until(r.ExpiresAt).Round(time.Second))
 	}
 	return flushOrFail(tw, stderr)

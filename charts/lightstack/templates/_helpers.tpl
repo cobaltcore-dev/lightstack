@@ -222,7 +222,7 @@ initContainers:
   # store of record (SPEC-021 FR-023b): Lightstack writes an entry when it issues a token
   # and afterwards only removes entries. A pre-rename node's entries predate the unix-socket
   # console and map tokens to TCP host:port targets, which libvirt may since have handed to
-  # another guest — the stale-token-to-another-tenant's-guest case the per-start socket
+  # another guest — the stale-token-to-another-tenant's-guest case the unix-socket console
   # exists to prevent. Losing the projection only stops tokens resolving.
   #
   # Merges file by file. The two roots are separate volumes, so rename() returns EXDEV and
@@ -280,6 +280,7 @@ initContainers:
         "{{ .Values.realMode.hostStoragePath }}/cloud-init"
         "{{ .Values.realMode.hostStoragePath }}/dhcp"
         "{{ .Values.realMode.hostStoragePath }}/console-tokens"
+        "{{ .Values.realMode.hostStoragePath }}/console-sockets"
     volumeMounts:
       - name: host-storage
         mountPath: {{ .Values.realMode.hostStoragePath }}

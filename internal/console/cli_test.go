@@ -3,6 +3,7 @@ package console
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -69,7 +70,7 @@ func TestCLIListText(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -86,6 +87,10 @@ func TestCLIListText(t *testing.T) {
 	if !strings.Contains(got, testSocket) {
 		t.Errorf("list output missing the target socket:\n%s", got)
 	}
+	// The run the token was issued for: what tells a restarted guest from this one.
+	if !strings.Contains(got, "DOMAIN") || !strings.Contains(got, fmt.Sprint(testDomainID)) {
+		t.Errorf("list output missing the domain ID column:\n%s", got)
+	}
 	// The whole point of redaction is that a shoulder-surfed listing is not a
 	// usable credential (FR-028).
 	if strings.Contains(got, tok) {
@@ -99,7 +104,7 @@ func TestCLIListJSON(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	if _, err := s.Issue(ctx, inst, proj, testSocket); err != nil {
+	if _, err := s.Issue(ctx, inst, proj, testSocket, testDomainID); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 
@@ -112,6 +117,7 @@ func TestCLIListJSON(t *testing.T) {
 		Token      string    `json:"token"`
 		InstanceID string    `json:"instance_id"`
 		Socket     string    `json:"socket"`
+		DomainID   int32     `json:"domain_id"`
 		ExpiresAt  time.Time `json:"expires_at"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
@@ -121,6 +127,9 @@ func TestCLIListJSON(t *testing.T) {
 	for _, r := range got {
 		if r.InstanceID == inst && r.Socket == testSocket {
 			found = true
+			if r.DomainID != testDomainID {
+				t.Errorf("json domain_id = %d; want %d", r.DomainID, testDomainID)
+			}
 			if strings.Contains(r.Token, " ") || len(r.Token) > 12 {
 				t.Errorf("json token %q should be redacted too", r.Token)
 			}
@@ -137,7 +146,7 @@ func TestCLIPurgeRemovesExpired(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -162,7 +171,7 @@ func TestCLIPurgeByInstance(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}

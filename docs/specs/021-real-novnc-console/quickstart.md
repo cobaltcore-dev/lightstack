@@ -73,7 +73,15 @@ Console failures are ambiguous by nature — "Unable to load Console" is what F1
 sudo virsh dumpxml <domain> | grep -A2 "<graphics"
 ```
 
-Must show `socket='/var/lib/libvirt/qemu/domain-<id>-<name>/vnc.sock'`, a matching `<listen type='socket' socket='…'/>`, and `sharePolicy='force-shared'` — and no `port=` at all. A `<listen type='socket'/>` without a path means `DomainGetXMLDesc` was called with the wrong flags: flag `0` returns the running definition, `DomainXMLInactive` the one whose socket libvirt has not created yet. A `port=` means the domain was defined by an older build (see `docs/UPGRADING.md`).
+Must show `socket='/var/lib/lightstack/console-sockets/<instance-uuid>.sock'`, a matching `<listen type='socket' socket='…'/>`, and `sharePolicy='force-shared'`, with no `port=` at all. Two other results mean the domain was defined by an older build (see `docs/UPGRADING.md`), and the console is refused as misconfigured:
+- a socket under `/var/lib/libvirt/qemu/domain-<id>-<name>/` (defined before 2026-10-01);
+- a `port=` (defined before the socket console).
+
+```bash
+sudo stat -c '%U:%G %a' /var/lib/lightstack/console-sockets   # expect libvirt-qemu:kvm 750 (QEMU's user)
+```
+
+A root-owned directory means Lightstack could not set the owner at startup. Its log names the cause, and guest starts are refused until it is fixed (FR-017a).
 
 ### Did Lightstack write a projection entry?
 
@@ -100,10 +108,11 @@ Each file holds one line, `<token>: unix_socket:<path>`.
 
 ```bash
 kubectl exec deploy/lightstack-lightstack-console-proxy -- ls -l /var/lib/lightstack/console-tokens/
-kubectl exec deploy/lightstack-lightstack-console-proxy -- ls -l /var/lib/libvirt/qemu/
+kubectl exec deploy/lightstack-lightstack-console-proxy -- ls -l /var/lib/lightstack/console-sockets/
+kubectl get deploy lightstack-lightstack-console-proxy -o jsonpath='{.spec.template.spec.volumes[*].hostPath.path}'; echo
 ```
 
-A permission denial on the first refuses **every** token, which looks exactly like a token bug: mode/UID must line up. The second must list the running guests' `domain-<id>-<name>` directories; the proxy keeps `DAC_OVERRIDE` because they belong to `libvirt-qemu` and are not world-accessible.
+A permission denial on the first refuses **every** token, which looks exactly like a token bug: mode/UID must line up. The second must list one `<instance-uuid>.sock` per running guest; the proxy keeps `DAC_OVERRIDE` because the directory belongs to QEMU's user with mode 0750. The third must print exactly the two directories, `console-tokens` and `console-sockets`, and nothing under `/var/lib/libvirt` (SC-013).
 
 ### Does the proxy resolve the token?
 
@@ -115,10 +124,10 @@ Success looks like:
 
 ```text
 Path: '/?token=9f8c…'
-connecting to unix socket: /var/lib/libvirt/qemu/domain-7-instance-1a2b3c4d/vnc.sock
+connecting to unix socket: /var/lib/lightstack/console-sockets/1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d.sock
 ```
 
-A refusal looks like `Token '…' not found` — meaning the entry is absent, stale, or unreadable. No guest is contacted in that case, which is the intended fail-closed behaviour. `Failed to connect … No such file or directory` after a `connecting to` line means the guest restarted since the link was issued; `Permission denied` means the proxy lost `DAC_OVERRIDE`.
+A refusal looks like `Token '…' not found` — meaning the entry is absent, stale, or unreadable. No guest is contacted in that case, which is the intended fail-closed behaviour. `Failed to connect … No such file or directory` after a `connecting to` line means the guest is not running, because QEMU removes its socket on shutdown. `Permission denied` means the proxy lost `DAC_OVERRIDE`.
 
 ### Is the client page there?
 
@@ -138,10 +147,13 @@ The second returning 404 is correct, and is why the documented example URLs chan
 # 4. a cross-project request without the admin role  → 404
 # 5. reuse after the instance was stopped (or powered itself off) and restarted
 openstack server stop vm1 && openstack server start vm1
-# the pre-stop token for vm1 must be refused: its socket path no longer exists
+# the pre-stop token for vm1 must be refused: the API stop/start revoked it
+# 5b. the same, outside the API: within one reconcile interval the token must be gone,
+#     because the domain ID changed (lightstack console-tokens list shows it)
+sudo virsh destroy <domain> && sudo virsh start <domain>
 ```
 
-Check 5 is the one worth running deliberately. The console is a per-start unix socket, so a stale link names a path that no longer exists rather than a port another guest now holds; the lifecycle revoke removes it at once, and the reconciler catches the stops that never reach the API within one sweep.
+Checks 5 and 5b are the ones worth running deliberately. The console socket is per instance, so a stale link can never reach another guest. The lifecycle revoke removes it at once, and for restarts outside the API the reconciler removes it within one sweep, because the domain ID changed.
 
 ## Guest console is not directly reachable (FR-017)
 

@@ -162,24 +162,28 @@ func GenerateVMXML(spec VMSpec) string {
 
 	// VNC graphics (SPEC-021).
 	//
-	// A UNIX socket, not a TCP port, and no path of our own. libvirt creates the
-	// socket in the domain's per-start private directory (domain-<id>-<name>), so
-	// the path changes on every start. That is load-bearing: a console token names
-	// its target, and a TCP port outlives the guest that held it — libvirt hands
-	// the lowest free port to the next guest that starts, so a surviving token
-	// reached another tenant's framebuffer. A socket path dies with its guest. And
-	// with no TCP listener at all, nothing on the network can reach a guest
-	// without going through the token-checking proxy.
+	// A UNIX socket, not a TCP port: a console token names its target, and a TCP
+	// port outlives the guest that held it — libvirt hands the lowest free port to
+	// the next guest that starts, so a surviving token reached another tenant's
+	// framebuffer. With no TCP listener at all, nothing on the network can reach a
+	// guest without going through the token-checking proxy.
+	//
+	// At this instance's own path in the console socket directory, not libvirt's
+	// generated one: that lives in the domain's private directory next to its QMP
+	// monitor socket and key material, which the proxy must not be able to reach
+	// (FR-017). The path is never another guest's; which run of the guest it serves
+	// is tracked by libvirt's domain ID (FR-014a). QEMU creates the socket itself,
+	// in a directory Lightstack makes QEMU's at startup (FR-017a).
 	//
 	// sharePolicy='force-shared' lets several viewers watch one guest at once.
 	// libvirt's default (allow-exclusive) silently disconnects the previous
 	// viewer when a second one connects, which reads as a bug during exactly the
 	// support scenario a console exists for.
-	sb.WriteString(`
+	fmt.Fprintf(&sb, `
     <graphics type='vnc' sharePolicy='force-shared'>
-      <listen type='socket'/>
+      <listen type='socket' socket='%s'/>
     </graphics>
-`)
+`, paths.ConsoleSocketPath(spec.UUID))
 
 	// Cloud-init (if provided)
 	if spec.CloudInit != nil {

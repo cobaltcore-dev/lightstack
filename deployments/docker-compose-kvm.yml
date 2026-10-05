@@ -13,6 +13,10 @@ services:
       - /var/lib/lightstack/volumes:/var/lib/lightstack/volumes
       - /var/lib/lightstack/images:/var/lib/lightstack/images
       - /var/lib/lightstack/instances:/var/lib/lightstack/instances
+      # Every guest's domain names its VNC socket here, and the host's QEMU creates it, so
+      # it must be the host's directory, even with no console proxy running: without it
+      # no guest could start (SPEC-021 FR-017a). Lightstack makes it QEMU's at startup.
+      - /var/lib/lightstack/console-sockets:/var/lib/lightstack/console-sockets
       - /opt/lightstack/config:/opt/lightstack/config:ro
     # metadata.trust_instance_header (LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER) stays
     # unset here on purpose. It makes the metadata service believe an X-Instance-ID header

@@ -53,7 +53,7 @@ Microversion **2.31+**. Compatibility surface only (FR-015) — our proxy resolv
   "instance_uuid": "b48316c5-71e8-45e4-9884-6c78055b9b13",
   "host": null,
   "port": null,
-  "internal_access_path": "/var/lib/libvirt/qemu/domain-7-instance-b48316c5/vnc.sock"
+  "internal_access_path": "/var/lib/lightstack/console-sockets/b48316c5-71e8-45e4-9884-6c78055b9b13.sock"
 }}
 ```
 
@@ -74,8 +74,9 @@ The console is a unix socket, which has neither host nor port. Both keys stay, a
 | Instance absent, or in another project and caller lacks `admin` | `404` | `itemNotFound` | Never reveals existence (Constitution V) |
 | **Stub mode** | `501` | `notImplemented`, naming stub mode | No upstream analogue — a deliberate, documented choice (research.md R2) |
 | No console proxy deployed (multi-node, or `consoleProxy.enabled=false`) | `400` | `badRequest`, "Unavailable console type novnc" | Upstream's answer when `[vnc] enabled = false` (`ConsoleTypeUnavailable`); stub mode keeps its 501 (FR-027a) |
-| Hypervisor unreachable or the console socket cannot be read | `500` | `computeFault` | Fail-fast; never a fabricated endpoint (FR-003) |
+| Hypervisor unreachable or the console socket cannot be read | `500` | `computeFault` | Fail-fast; never a fabricated endpoint (FR-003). A real-mode service whose hypervisor never connected answers here too, not with stub mode's 501 |
 | Guest console is a TCP listener (a domain defined before the socket console) | `500` | `computeFault` | Refused, never proxied (FR-017); `docs/UPGRADING.md` has the fix |
+| Guest console is a socket outside `console-sockets` (a domain defined before 2026-10-01) | `500` | `computeFault`, "console misconfigured on this host" | The proxy cannot reach it, so it is refused, never proxied (FR-017); `docs/UPGRADING.md` has the fix |
 | Token unknown / expired (surface 3) | `404` | `itemNotFound` | |
 | Token lookup fails — database unreachable (surface 3) | `500` | `computeFault` | Upstream says 404 because of cells; Lightstack has one database |
 

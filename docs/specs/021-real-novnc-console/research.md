@@ -119,6 +119,8 @@ Three conclusions:
 
 ## R6 — Guest console binding and multi-viewer policy
 
+> **Superseded for the binding** (review, 2026-09-24): the console is a unix socket, not loopback TCP. Since 2026-10-01 that socket sits at an explicit per-instance path (R12). `sharePolicy='force-shared'` still holds.
+
 **Decision**: `<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1' sharePolicy='force-shared'>` with a matching `<listen type='address' address='127.0.0.1'/>`.
 
 **Verified**: the locally installed libvirt RELAX-NG schema (`/usr/share/libvirt/schemas/domaincommon.rng`) constrains `sharePolicy` to exactly `allow-exclusive` | `force-shared` | `ignore`. `force-shared` is the value that satisfies FR-018a; the default `allow-exclusive` is what would evict the first viewer.
@@ -146,6 +148,8 @@ Lazy reaping (delete expired entries whenever a console is next requested) is **
 ---
 
 ## R8 — Proxy placement, permissions and chart wiring
+
+> **Superseded for the mounts** (2026-10-01, R17): the proxy mounts only `console-tokens` and `console-sockets`, read-only, instead of the storage root and libvirt's domain directory. Node pinning and the schema notes below still hold.
 
 **Decision**: a Deployment + Service in `charts/lightstack`, gated on real mode, with `hostNetwork: true`, pinned to the Lightstack node, mounting `realMode.hostStoragePath` (hostPath) to read the token directory. The `console-tokens` subdirectory joins the five the SPEC-011 initContainer already creates (`_helpers.tpl:177-193`), asserted in `charts/lightstack/tests/init_host_storage_test.yaml`.
 
@@ -220,6 +224,80 @@ Both use `flag.NewFlagSet`, print to stdout, write errors to stderr and document
 **Secondary benefit**: it replaces hand-inspection of the token directory. The quickstart previously told operators to `ls` and `cat` files to diagnose a console; `lightstack console-tokens list` (with `--json`) is inspectable, scriptable and testable, which also serves Article V.
 
 **Alternatives considered**: keeping the store in `internal/nova/console_token.go` → rejected, it buries independently testable logic inside HTTP handlers and satisfies neither Article. A `pkg/console` package → rejected, the store is Lightstack-specific and depends on the database, matching `internal/teardown`'s placement rather than the reusable `pkg/*` helpers. Exposing the store through the existing `lightstack cleanup` subcommand → rejected, cleanup is destructive teardown; console tokens need routine read access.
+
+---
+
+## Amendment 2026-10-01: guest sockets out of libvirt's per-domain directories
+
+Context: review comment r3987379050. The proxy's mount of `/var/lib/libvirt/qemu`, combined with `DAC_OVERRIDE`, reached every guest's QMP `monitor.sock` and `master-key.aes`, which sit next to `vnc.sock` in `domain-<id>-<name>/`. Decisions are recorded in spec.md, Session 2026-10-01. Each fact below was read from source, not assumed.
+
+## R12 — An explicit socket path in the domain XML
+
+**Decision**: `<graphics type='vnc' …><listen type='socket' socket='<state_path>/console-sockets/<instance-uuid>.sock'/></graphics>`.
+
+**Verified**:
+- libvirt documents `listen type='socket'` with a `socket` attribute "since 2.0.0 (QEMU only)". Without the attribute, libvirt generates `<libDir>/vnc.sock` (`src/qemu/qemu_process.c:5575-5576`). That generated path is why the proxy needed libvirt's tree.
+- `src/security/virt-aa-helper.c:1074-1081` adds every explicit listen socket to the guest's AppArmor profile with `rw`, so AppArmor allows the path for that guest only.
+
+**Alternatives considered**: `listen type='none'` with `virDomainOpenGraphicsFD` (needs Lightstack to relay the FD, which contradicts the no-relay decision); keeping libvirt's path (the exposure this amendment removes).
+
+## R13 — Socket path length
+
+**Fact**: QEMU refuses a unix socket path longer than `sizeof(sun_path)` = 108 bytes, with the error "Path must be less than …" (`util/qemu-sockets.c`, `unix_listen_saddr`). The path is `state_path` + `/console-sockets/` (17) + uuid (36) + `.sock` (5).
+
+**Decision**: in real mode, startup refuses a `state_path` longer than **50** characters. The default `/var/lib/lightstack` gives a 77-byte path. Stub mode is exempt, because it creates no sockets.
+
+## R14 — Run identity: the libvirt domain ID
+
+**Decision**: each token stores the domain ID read alongside the socket. The sweep revokes a token whose guest now runs under a different ID, or not at all.
+
+**Verified**:
+- go-libvirt's `Domain` carries `ID int32` (`remote_protocol.gen.go:77-81`), and `DomainLookupByUUID` returns it. The readback already makes that call.
+- libvirt assigns a new ID on every start. At daemon start it continues from the highest ID among running domains (`qemuDomainFindMaxID`, `src/qemu/qemu_driver.c:509-517,913`), so a libvirtd restart neither reuses nor renumbers IDs.
+- A host reboot restarts numbering at 1. A pre-reboot token can then coincide with its guest's new ID and survive until its TTL, reaching only that same guest. Accepted and recorded as an edge case.
+- The ID is also what says a guest is not running. For a stopped domain libvirt returns the persistent definition, and an explicit socket is written into every definition except the migratable one (`src/conf/domain_conf.c:27963-27967`, libvirt master `f5ad405`). So the XML names the socket whether or not QEMU serves it. A stopped domain has ID −1 (`qemuProcessStop` sets it, `src/qemu/qemu_process.c:9461`; `qemuDomainLookupByUUID` returns it, `src/qemu/qemu_driver.c:1454`). The readback therefore refuses an ID ≤ 0 as not running (409, FR-006), and the sweep revokes. Without that check, a stopped guest got a token for a run that does not exist, and the `domain_id > 0` constraint turned the 409 into a 500.
+
+**Alternatives considered**: no run identity (a token survives `virsh start` until its TTL); a per-start nonce in the path (covers only API starts, which are revoked anyway).
+
+## R15 — Who owns `console-sockets`
+
+**Decision**: Lightstack reads QEMU's uid:gid from libvirt's capabilities, `<host><secmodel><model>dac</model>…<baselabel type='kvm'>+UID:+GID</baselabel>`, falling back to `type='qemu'`. It then runs `MkdirAll`, `Chown` and `Chmod 0750` at real-mode startup, right after connecting.
+
+**Verified**:
+- libvirt's own example is `<baselabel type='kvm'>+77:+77</baselabel>` (`docs/formatcaps.rst:333-337`), and go-libvirt exposes `ConnectGetCapabilities() (string, error)` (`remote_protocol.gen.go:4585`).
+- QEMU creates the socket itself, as that user, and unlinks a stale path before binding (`util/qemu-sockets.c`: `if (!abstract && unlink(path) < 0 && errno != ENOENT)`). So a fixed path survives restarts.
+- On an orderly close QEMU removes the socket (`io/channel-socket.c` → `socket_listen_cleanup`). Leftovers only follow a crash.
+
+**Works with**: the chart and both deploy scripts. Lightstack runs as root in the host user namespace (privileged pods cannot use user namespaces), and the state root is mounted at the same path.
+
+**Alternatives considered**: 1777 + sticky (a squatted path blocks that guest's start); 0770 root:kvm (every `kvm` member could create files); an operator-set owner (no case needs it).
+
+## R16 — libvirt does not prepare a socket directory the domain names
+
+**Fact**: libvirt creates and labels only its own private directories (`qemuProcessMakeDir`, `src/qemu/qemu_process.c:5790-5804`, libvirt master), never the parent of a socket the domain XML names. A missing, unmounted or wrongly owned `console-sockets` therefore fails **every guest start**, not just the console.
+
+**Decision**: the hypervisor manager records whether the directory is ready, and refuses before each `DomainCreate`: `CreateVM` (`pkg/hypervisor/libvirt.go:212`), hard `RebootVM` (`:371`), `StartVM` (`:465`) and `ResumeVM` (`:703`). The error is a typed `ErrConsoleSocketDirNotReady` that names the directory.
+
+The answers are the ones the API already gives for a hypervisor failure:
+- create returns 202, and its background boot marks the instance ERROR (`internal/nova/handlers.go:874-886`);
+- `os-start` answers 500 (`:1726-1729`);
+- hard reboot answers through the same 500 path, naming the directory;
+- resume, like create, runs after its 202 and leaves the instance in ERROR, now with the cause logged;
+- unshelve never starts a domain in this codebase.
+
+Lightstack keeps running, since it also serves Keystone, Neutron, Cinder and Glance.
+
+## R17 — Proxy mounts and privilege
+
+**Decision**: the proxy mounts `<state_path>/console-tokens` and `<state_path>/console-sockets` only, both read-only and `DirectoryOrCreate` (whichever pod starts first creates them; Lightstack fixes the socket directory's owner at startup without changing its inode). `DAC_OVERRIDE` stays as its only capability. QEMU's socket is `srwxrwxr-x libvirt-qemu:kvm` in a 0750 directory, so root without it is "other" and can neither traverse nor connect. A read-only mount still allows `connect()` (verified in review).
+
+**Finding**: both deploy scripts give their `novnc` container all of `$STORAGE_DIR` and `/var/lib/libvirt/qemu`, read-only (`scripts/deploy-turnkey.sh:784,788`, `scripts/deploy-single-node.sh:695,699`). That is the chart's comment-4 exposure plus this one. Both are narrowed the same way. `consoleProxy.libvirtDomainDir` is removed from the chart's values and schema.
+
+## R18 — Domains defined earlier, teardown, and the KVM compose
+
+- **Pre-move domains**: the readback sees a socket outside `console-sockets` and refuses it as misconfigured (500, the existing TCP-console answer). `docs/UPGRADING.md` explains recreating or redefining the domain. There is no automatic rewrite, because nothing is deployed beyond test hosts.
+- **Teardown**: `purgeLocalStorage` (`internal/teardown/teardown.go:202-211`) adds `console-tokens` and `console-sockets`. The proxy is removed in the same uninstall, and Lightstack recreates both at its next start.
+- **KVM compose**: `deployments/docker-compose-kvm.yml` mounts only `volumes`, `images` and `instances`. It gains `/var/lib/lightstack/console-sockets`, or the host's QEMU could not create the socket and no guest would start. It runs no proxy (`console_enabled: false`). Its missing `cloud-init`/`dhcp` mounts are pre-existing and out of scope.
 
 ---
 

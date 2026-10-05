@@ -11,7 +11,7 @@
 // one-line files (<state_path>/console-tokens/<token> containing
 // "<token>: unix_socket:<path>") is a PROJECTION of it, because that is the only
 // interface websockify's TokenFile plugin offers. The path is the guest's VNC
-// socket, which libvirt creates per start in the domain's private directory.
+// socket, the instance's own in <state_path>/console-sockets.
 //
 // The projection cannot carry an expiry, an instance or a project, which is why
 // the table exists. It also means websockify performs NO expiry check of its
@@ -50,6 +50,7 @@ type Record struct {
 	InstanceID string
 	ProjectID  string
 	Socket     string
+	DomainID   int32 // the libvirt domain ID of the run it was issued for (FR-014a)
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 }
@@ -102,7 +103,7 @@ func newToken() (string, error) {
 // and no token is returned. A token that exists only in the database can be
 // neither used nor revoked through the directory the proxy actually reads, so
 // handing one out would be worse than refusing.
-func (s *Store) Issue(ctx context.Context, instanceID, projectID, socket string) (string, error) {
+func (s *Store) Issue(ctx context.Context, instanceID, projectID, socket string, domainID int32) (string, error) {
 	token, err := newToken()
 	if err != nil {
 		return "", err
@@ -118,10 +119,10 @@ func (s *Store) Issue(ctx context.Context, instanceID, projectID, socket string)
 	// actually stored.
 	var expiresAt time.Time
 	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO console_auth_tokens (token, instance_id, project_id, socket, expires_at)
-		 VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))
+		`INSERT INTO console_auth_tokens (token, instance_id, project_id, socket, domain_id, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))
 		 RETURNING expires_at`,
-		token, instanceID, projectID, socket, s.ttl.Seconds(),
+		token, instanceID, projectID, socket, domainID, s.ttl.Seconds(),
 	).Scan(&expiresAt); err != nil {
 		return "", fmt.Errorf("recording console token: %w", err)
 	}
@@ -155,11 +156,11 @@ func (s *Store) Issue(ctx context.Context, instanceID, projectID, socket string)
 func (s *Store) Resolve(ctx context.Context, token string) (*Record, error) {
 	var r Record
 	err := s.pool.QueryRow(ctx,
-		`SELECT token, instance_id, project_id, socket, created_at, expires_at
+		`SELECT token, instance_id, project_id, socket, domain_id, created_at, expires_at
 		   FROM console_auth_tokens
 		  WHERE token = $1 AND expires_at > now()`,
 		token,
-	).Scan(&r.Token, &r.InstanceID, &r.ProjectID, &r.Socket, &r.CreatedAt, &r.ExpiresAt)
+	).Scan(&r.Token, &r.InstanceID, &r.ProjectID, &r.Socket, &r.DomainID, &r.CreatedAt, &r.ExpiresAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrTokenNotFound
@@ -174,9 +175,9 @@ func (s *Store) Resolve(ctx context.Context, token string) (*Record, error) {
 //
 // Called on every operation that can move or free a console endpoint — stop,
 // start, reboot, suspend, resume, shelve, delete, forceDelete — so a link never
-// outlives the console it was issued for. A per-start socket path already names
-// nothing once its guest stops, so this keeps the links honest; RevokeStale
-// catches the moves that never go through the API.
+// outlives the run of the guest it was issued for. The socket path is the
+// instance's own, so a link can never reach another guest; this keeps the links
+// honest, and RevokeStale catches the restarts that never go through the API.
 //
 // Not serialized with Issue: a token whose row lands before this SELECT but whose
 // file is written after the unlink survives as a file with no row. It names the
@@ -204,13 +205,14 @@ func (s *Store) RevokeExpired(ctx context.Context) (int, error) {
 	return s.revokeWhere(ctx, "expires_at <= now()")
 }
 
-// CurrentSocket reports the console socket an instance's guest serves right now: ""
-// when it serves none (not running, no console, a TCP listener), an error when that
-// cannot be determined.
-type CurrentSocket func(ctx context.Context, instanceID string) (string, error)
+// CurrentSocket reports the console socket an instance's guest serves right now and
+// the libvirt domain ID of its current run: "" when it serves none (not running, no
+// console, a TCP listener), an error when that cannot be determined.
+type CurrentSocket func(ctx context.Context, instanceID string) (socket string, domainID int32, err error)
 
 // RevokeStale revokes every live token whose guest no longer serves the socket the
-// token names, and reports how many went.
+// token names, or serves it from another run, and reports how many went. The socket
+// path is fixed per instance, so a restart shows only as a new domain ID (FR-014a).
 //
 // Lifecycle revocation only sees the API. A guest that powers itself off, crashes
 // or restarts outside Lightstack moves its console without a call to revoke on, so
@@ -218,20 +220,23 @@ type CurrentSocket func(ctx context.Context, instanceID string) (string, error)
 // upstream Nova's validate_console_port, which websockify cannot do at connect time.
 //
 // An error keeps that instance's tokens for the next sweep. A socket path is never
-// handed to another guest, so a stale token names nothing; revoking every console
-// whenever libvirt is briefly unreachable would be the worse failure.
+// another guest's, so a stale token reaches at most its own guest; revoking every
+// console whenever libvirt is briefly unreachable would be the worse failure.
 func (s *Store) RevokeStale(ctx context.Context, current CurrentSocket) (int, error) {
 	rows, err := s.pool.Query(ctx,
-		"SELECT token, instance_id, socket FROM console_auth_tokens WHERE expires_at > now()")
+		"SELECT token, instance_id, socket, domain_id FROM console_auth_tokens WHERE expires_at > now()")
 	if err != nil {
 		return 0, fmt.Errorf("listing console tokens: %w", err)
 	}
-	type target struct{ token, socket string }
+	type target struct {
+		token, socket string
+		domainID      int32
+	}
 	byInstance := make(map[string][]target)
 	for rows.Next() {
 		var t target
 		var instanceID string
-		if err := rows.Scan(&t.token, &instanceID, &t.socket); err != nil {
+		if err := rows.Scan(&t.token, &instanceID, &t.socket, &t.domainID); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scanning console token: %w", err)
 		}
@@ -244,14 +249,14 @@ func (s *Store) RevokeStale(ctx context.Context, current CurrentSocket) (int, er
 
 	var stale []string
 	for instanceID, targets := range byInstance {
-		socket, err := current(ctx, instanceID)
+		socket, domainID, err := current(ctx, instanceID)
 		if err != nil {
 			log.Warn().Err(err).Str("instance_id", instanceID).
 				Msg("console: cannot read the guest's console socket; keeping its tokens until the next sweep")
 			continue
 		}
 		for _, t := range targets {
-			if t.socket != socket {
+			if t.socket != socket || t.domainID != domainID {
 				stale = append(stale, t.token)
 			}
 		}
@@ -416,7 +421,7 @@ func (s *Store) liveTokens(ctx context.Context) (map[string]struct{}, error) {
 // List returns every live token, newest first. Backs `lightstack console-tokens list`.
 func (s *Store) List(ctx context.Context) ([]Record, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT token, instance_id, project_id, socket, created_at, expires_at
+		`SELECT token, instance_id, project_id, socket, domain_id, created_at, expires_at
 		   FROM console_auth_tokens
 		  WHERE expires_at > now()
 		  ORDER BY created_at DESC`)
@@ -428,7 +433,7 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 	var out []Record
 	for rows.Next() {
 		var r Record
-		if err := rows.Scan(&r.Token, &r.InstanceID, &r.ProjectID, &r.Socket, &r.CreatedAt, &r.ExpiresAt); err != nil {
+		if err := rows.Scan(&r.Token, &r.InstanceID, &r.ProjectID, &r.Socket, &r.DomainID, &r.CreatedAt, &r.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("scanning console token: %w", err)
 		}
 		out = append(out, r)
@@ -463,8 +468,9 @@ const maxSocketPath = 107
 // validSocketPath keeps the target usable by websockify. Its parser splits the line
 // on ": " and then on the LAST ":", so either in the path would corrupt the target,
 // and a path the kernel cannot put in a sockaddr_un would fail only when a browser
-// connects. libvirt's own paths (…/domain-<id>-<name>/vnc.sock) trip none of these;
-// this exists so that if that ever changes, issuance fails instead of the console.
+// connects. The paths guests are given (<state_path>/console-sockets/<uuid>.sock, with
+// state_path at most 50 bytes) trip none of these; this exists so that if that ever
+// changes, issuance fails instead of the console.
 func validSocketPath(p string) error {
 	switch {
 	case p == "" || !filepath.IsAbs(p) || filepath.Clean(p) != p:

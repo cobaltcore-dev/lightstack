@@ -152,7 +152,7 @@ func TestIssueAndResolve(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -163,8 +163,8 @@ func TestIssueAndResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if rec.InstanceID != inst || rec.Socket != testSocket {
-		t.Errorf("resolved %+v; want instance=%s socket=%s", rec, inst, testSocket)
+	if rec.InstanceID != inst || rec.Socket != testSocket || rec.DomainID != testDomainID {
+		t.Errorf("resolved %+v; want instance=%s socket=%s domain=%d", rec, inst, testSocket, testDomainID)
 	}
 	if got := readProjection(t, s.dir, tok); got != tok+": unix_socket:"+testSocket+"\n" {
 		t.Errorf("projection = %q", got)
@@ -179,7 +179,7 @@ func TestResolveIsReusableWithinWindow(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestResolveRejectsExpired(t *testing.T) {
 	s := NewStore(testPool, t.TempDir(), -time.Minute)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -217,16 +217,17 @@ func TestResolveRejectsUnknown(t *testing.T) {
 }
 
 // Lifecycle revocation: every token of an instance goes when its console may have
-// moved, and the projection goes with it. A per-start socket path already dies with
-// its guest, so this is what keeps the links honest rather than what keeps them
-// safe — but a row whose file outlived it would still be a live console.
+// moved, and the projection goes with it. The socket path is the instance's own, so a
+// surviving token could reach only the same guest's next run; this is what ends the
+// links an action should end — and a row whose file outlived it would still be a live
+// console.
 func TestRevokeByInstanceRemovesBothHalves(t *testing.T) {
 	requireDB(t)
 	ctx := t.Context()
 	s := newTestStore(t)
 	instA, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, instA, proj, testSocket)
+	tok, err := s.Issue(ctx, instA, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestRevokeExpiredReapsBothHalves(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -277,7 +278,7 @@ func TestDeletedInstanceCascadesAndSweeps(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	tok, err := s.Issue(ctx, inst, proj, testSocket)
+	tok, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -311,7 +312,7 @@ func TestRevokeExpiredMakesProgressAroundAnUnremovableProjection(t *testing.T) {
 	s := newTestStore(t)
 	inst, proj := seedInstance(t, ctx)
 
-	good, err := s.Issue(ctx, inst, proj, testSocket)
+	good, err := s.Issue(ctx, inst, proj, testSocket, testDomainID)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -319,9 +320,9 @@ func TestRevokeExpiredMakesProgressAroundAnUnremovableProjection(t *testing.T) {
 
 	const poisoned = "bad/token"
 	if _, err := testPool.Exec(ctx,
-		`INSERT INTO console_auth_tokens (token, instance_id, project_id, socket, expires_at)
-		 VALUES ($1, $2, $3, $4, now() - interval '1 minute')`,
-		poisoned, inst, proj, testSocket,
+		`INSERT INTO console_auth_tokens (token, instance_id, project_id, socket, domain_id, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute')`,
+		poisoned, inst, proj, testSocket, testDomainID,
 	); err != nil {
 		t.Fatalf("seeding the poisoned row: %v", err)
 	}
@@ -355,41 +356,46 @@ func TestRevokeExpiredMakesProgressAroundAnUnremovableProjection(t *testing.T) {
 }
 
 // RevokeStale is the sweep that catches every way a console moves without an API
-// call: a guest powering itself off, a crash, a restart. It compares each live
-// token's socket with the one the guest serves now, and revokes on a definitive
-// "different" or "none" — but never on an error, since a libvirt blip must not
-// take every console down, and a socket path cannot be reused by another guest.
+// call: a guest powering itself off, a crash, a restart. The socket path is fixed per
+// instance, so a restart shows as a new libvirt domain ID on the same path (FR-014a).
+// It revokes on a definitive "different socket", "different run" or "none", and never
+// on an error, since a libvirt blip must not take every console down, and a socket
+// path is never another guest's.
 func TestRevokeStale(t *testing.T) {
 	requireDB(t)
 	ctx := t.Context()
 	s := newTestStore(t)
 
-	issue := func(sock string) (string, string) {
+	issue := func(sock string, domainID int32) (string, string) {
 		inst, proj := seedInstance(t, ctx)
-		tok, err := s.Issue(ctx, inst, proj, sock)
+		tok, err := s.Issue(ctx, inst, proj, sock, domainID)
 		if err != nil {
 			t.Fatalf("Issue: %v", err)
 		}
 		return inst, tok
 	}
-	instSame, tokSame := issue("/var/lib/libvirt/qemu/domain-1-instance-same/vnc.sock")
-	instMoved, tokMoved := issue("/var/lib/libvirt/qemu/domain-2-instance-moved/vnc.sock")
-	instGone, tokGone := issue("/var/lib/libvirt/qemu/domain-3-instance-gone/vnc.sock")
-	instUnknown, tokUnknown := issue("/var/lib/libvirt/qemu/domain-4-instance-unknown/vnc.sock")
+	const dir = "/var/lib/lightstack/console-sockets/"
+	instSame, tokSame := issue(dir+"same.sock", 5)
+	instRestarted, tokRestarted := issue(dir+"restarted.sock", 6)
+	instMoved, tokMoved := issue("/var/lib/libvirt/qemu/domain-2-instance-moved/vnc.sock", 8)
+	instGone, tokGone := issue(dir+"gone.sock", 9)
+	instUnknown, tokUnknown := issue(dir+"unknown.sock", 10)
 
-	current := func(_ context.Context, instanceID string) (string, error) {
+	current := func(_ context.Context, instanceID string) (string, int32, error) {
 		switch instanceID {
 		case instSame:
-			return "/var/lib/libvirt/qemu/domain-1-instance-same/vnc.sock", nil
+			return dir + "same.sock", 5, nil
+		case instRestarted:
+			return dir + "restarted.sock", 11, nil // same path, a new run (e.g. virsh start)
 		case instMoved:
-			return "/var/lib/libvirt/qemu/domain-9-instance-moved/vnc.sock", nil // restarted
+			return dir + "moved.sock", 12, nil // redefined into the console socket directory
 		case instGone:
-			return "", nil // not running
+			return "", 0, nil // not running
 		case instUnknown:
-			return "", errors.New("libvirt unreachable")
+			return "", 0, errors.New("libvirt unreachable")
 		default:
 			// Tokens other packages' tests hold in the same database: not ours.
-			return "", errors.New("not this test's instance")
+			return "", 0, errors.New("not this test's instance")
 		}
 	}
 
@@ -397,15 +403,15 @@ func TestRevokeStale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RevokeStale: %v", err)
 	}
-	if n != 2 {
-		t.Errorf("revoked = %d; want 2 (the restarted and the stopped guest)", n)
+	if n != 3 {
+		t.Errorf("revoked = %d; want 3 (the restarted, the moved and the stopped guest)", n)
 	}
 	for _, tok := range []string{tokSame, tokUnknown} {
 		if _, err := s.Resolve(ctx, tok); err != nil {
 			t.Errorf("token %s revoked; it must survive: %v", redact(tok), err)
 		}
 	}
-	for _, tok := range []string{tokMoved, tokGone} {
+	for _, tok := range []string{tokRestarted, tokMoved, tokGone} {
 		if _, err := s.Resolve(ctx, tok); !errors.Is(err, ErrTokenNotFound) {
 			t.Errorf("token %s still resolves; want ErrTokenNotFound, got %v", redact(tok), err)
 		}

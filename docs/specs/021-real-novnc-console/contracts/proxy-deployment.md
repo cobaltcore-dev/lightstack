@@ -62,11 +62,12 @@ WebSocket server settings:
 
 | Requirement | Why | Source |
 |---|---|---|
-| **hostPath mount of `consoleProxy.libvirtDomainDir`** (default `/var/lib/libvirt/qemu`), read-only, at the same path | The guest console is a unix socket libvirt creates per start at `<dir>/domain-<id>-<name>/vnc.sock`, and each token names that exact path. Read-only suffices: `connect()` on a socket is not a filesystem write. `type: Directory`, so a node without libvirt fails at scheduling rather than at the first console | FR-017, FR-023c |
-| **`DAC_OVERRIDE` kept, every other capability dropped** | `connect()` needs write permission on the socket, which belongs to `libvirt-qemu` in a `0750` directory. Root with nothing kept is "other" there. The kvm group would also grant it, but its gid differs between distributions | FR-023c |
+| **hostPath mount of `<state_path>/console-sockets`**, read-only, at the same path, `DirectoryOrCreate` | Each guest's console is a unix socket at `<state_path>/console-sockets/<instance-uuid>.sock` (since 2026-10-01; previously libvirt's per-domain directory, which also holds every guest's QMP `monitor.sock` and `master-key.aes`). Read-only suffices: `connect()` on a socket is not a filesystem write. Lightstack fixes the directory's owner at startup without changing its inode | FR-017, FR-017a, FR-023c |
+| **`DAC_OVERRIDE` kept, every other capability dropped** | `connect()` needs write permission on the socket, which belongs to QEMU's user in the `0750` `console-sockets`. Root with nothing kept is "other" there. With only the two read-only mounts, the capability reaches VNC sockets and tokens and nothing else. The kvm group would also grant access, but its gid differs between hosts | FR-023c |
 | **`hostNetwork: true`** | No longer needed to reach the guest (no TCP listener exists). Kept so the proxy answers on the node's own address at the console port — the origin Lightstack derives when none is configured | FR-021 |
 | **Pinned to the Lightstack node via required `podAffinity`** (`topologyKey: kubernetes.io/hostname`, matching the Lightstack pod's selector labels) | The token directory is node-local; a proxy elsewhere sees an empty directory and refuses every token. Affinity to the **pod** rather than a `nodeSelector`/`nodeName` is deliberate — it follows Lightstack if it is rescheduled, where a node-pinned proxy would silently read the wrong host's empty directory. Required, not preferred: a preferred rule schedules anyway and fails every token | FR-023c |
-| **hostPath mount of `realMode.hostStoragePath`** | Read access to the projection | FR-023b |
+| **hostPath mount of `<state_path>/console-tokens` only**, read-only, `DirectoryOrCreate` | Read access to the projection. Never the storage root, which holds every tenant's disks, volumes, images and cloud-init data (review comment r3987379050) | FR-023b, FR-023c |
+| **Nothing else mounted** | No other path under the storage root, nothing under `/var/lib/libvirt` | SC-013 |
 | **Single-node real mode only** | Stub mode refuses consoles at request time, so no proxy is needed. Multi-node renders none either: one proxy would serve one node and silently fail every other, since the projection and the guest sockets are node-local. The chart renders `nova.console_enabled: false` wherever it deploys no proxy, and Lightstack then answers `400` instead of issuing a URL | FR-027, FR-027a |
 | **Ships in `charts/lightstack`** | Every requirement above is a property of the Lightstack node; putting it in the dashboard chart would pin Horizon to the hypervisor node | FR-023d |
 
@@ -75,9 +76,9 @@ WebSocket server settings:
 | Item | Note |
 |---|---|
 | `templates/console-proxy.yaml` | Deployment + Service, gated on real mode |
-| `values.yaml` | `consoleProxy.{enabled,image.{repository,tag,pullPolicy},service.{type,port,nodePort},libvirtDomainDir,containerSecurityContext,resources}` |
+| `values.yaml` | `consoleProxy.{enabled,image.{repository,tag,digest,pullPolicy},service.{type,port,nodePort},containerSecurityContext,resources}`. `libvirtDomainDir` was removed 2026-10-01 |
 | `values.schema.json` | **MUST be extended** — it uses `additionalProperties: false`, so new values fail validation until it is |
-| `_helpers.tpl:177-193` | Add `console-tokens` to the initContainer's subdirectory list |
+| `_helpers.tpl` initContainer | Add `console-tokens` and `console-sockets` to the subdirectory list |
 | `tests/` | helm-unittest specs, below |
 
 ## What chart tests must assert
@@ -85,14 +86,19 @@ WebSocket server settings:
 Each of these has a failure mode that is silent or misleading in a live cluster, which is why they are pinned in tests rather than left to the host pass:
 
 1. The container command is the websockify invocation above — **not** the image's default entrypoint (whose fixed `--vnc` target is the F1 bug).
-2. `consoleProxy.libvirtDomainDir` is mounted read-only at the same path, and `DAC_OVERRIDE` is the one capability kept. Without either, every token names a socket the proxy cannot open, and the symptom is "console connects, then closes".
+2. `console-sockets` is mounted read-only at the same path, and `DAC_OVERRIDE` is the one capability kept. Without either, every token names a socket the proxy cannot open, and the symptom is "console connects, then closes".
 3. Required `podAffinity` to the Lightstack pod with `topologyKey: kubernetes.io/hostname`. Without it, scheduling is correct only by luck on a single-node cluster.
-4. The token directory is mounted, and the file mode/UID arrangement lets the proxy read it. Failure here refuses **every** token — indistinguishable from a token bug.
-5. `console-tokens` is in the initContainer's list, alongside the existing five.
+4. Only `console-tokens` is mounted from the storage root (never the root itself), and the file mode/UID arrangement lets the proxy read it. Failure here refuses **every** token, which is indistinguishable from a token bug.
+5. `console-tokens` and `console-sockets` are in the initContainer's list, alongside the existing five.
 6. The plugin is `TokenFile`, not `ReadOnlyTokenFile`.
 7. `--idle-timeout` is present with a non-zero value (FR-019 — the default of `0` disables it).
 8. **`--host-token` is absent** (FR-012 — a requirement satisfied by an absent flag, so only a test can protect it).
 9. The chart's own version was bumped (Article VI) — asserted against the previous release's value so the bump cannot be forgotten.
+10. The proxy has exactly two volumes, both read-only, and none under `/var/lib/libvirt` (SC-013).
+
+## Deploy scripts
+
+`scripts/deploy-turnkey.sh` and `scripts/deploy-single-node.sh` run the same recipe in compose. Their `novnc` service mounts `$STORAGE_DIR/console-tokens` and `$STORAGE_DIR/console-sockets` read-only and keeps `DAC_OVERRIDE`. Until 2026-10-01 it mounted all of `$STORAGE_DIR` and `/var/lib/libvirt/qemu`.
 
 ## Retired artifacts
 

@@ -10,8 +10,10 @@
   connection.
 
   Lightstack's only job is keeping <hostStoragePath>/console-tokens truthful. Each
-  entry names the guest's VNC unix socket, which libvirt creates per start under
-  consoleProxy.libvirtDomainDir.
+  entry names the guest's VNC unix socket, <hostStoragePath>/console-sockets/<uuid>.sock,
+  which QEMU creates in a directory Lightstack makes QEMU's at startup. The proxy
+  mounts those two directories and nothing else: not the storage root, and not
+  libvirt's per-domain directories, which hold every guest's QMP monitor socket.
 */}}
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +36,7 @@ spec:
         app.kubernetes.io/component: console-proxy
     spec:
       # Not needed to reach the guest any more: its console is a unix socket, reached
-      # through the libvirt-domains mount below. Kept so the proxy answers on the
+      # through the console-sockets mount below. Kept so the proxy answers on the
       # node's own address at the console port — the origin Lightstack derives when
       # nova.consoleProxyBaseUrl is empty (deriveConsoleOrigin).
       hostNetwork: true
@@ -90,27 +92,21 @@ spec:
             # Read-only: the proxy resolves tokens, it never mints or revokes
             # them. Anything that writes here is a bug.
             #
-            # Deliberately the whole storage root, not `subPath: console-tokens`.
-            # A subPath bind resolves to one inode when the container starts, so a
-            # token directory deleted and recreated on the host — which node-local
-            # teardown does — would leave the proxy reading the orphaned inode
-            # until the pod restarts, and nothing would report it: TokenFile
-            # re-reads per lookup rather than failing at startup, and the page probe
-            # stays green. Mounting the parent keeps a live view.
-            #
-            # Accepted cost: the proxy can read the node's other Lightstack state
-            # (instances/, volumes/, images/, cloud-init/) read-only. Bounded by
-            # readOnly and by the fact that it is pinned to the node whose Lightstack pod
-            # already has all of it read-write and privileged.
-            - name: host-storage
-              mountPath: {{ .Values.realMode.hostStoragePath }}
+            # console-tokens alone, never the storage root: the root also holds every
+            # tenant's disks, volumes, images and cloud-init data, and this third-party,
+            # network-facing container keeps DAC_OVERRIDE. A bind of the directory
+            # follows its inode, so a console-tokens deleted and recreated on the host
+            # would need a proxy restart. Only the uninstall purge deletes it (SPEC-021
+            # FR-017b), and the proxy goes in the same uninstall.
+            - name: console-tokens
+              mountPath: {{ .Values.realMode.hostStoragePath }}/console-tokens
               readOnly: true
-            # Where libvirt creates each running guest's VNC socket
-            # (domain-<id>-<name>/vnc.sock). The token names that exact path, so it
-            # is mounted at the same place. Read-only is enough: connect() on a
-            # socket is not a write to the filesystem.
-            - name: libvirt-domains
-              mountPath: {{ .Values.consoleProxy.libvirtDomainDir }}
+            # Where each running guest's VNC socket lives (<uuid>.sock), and nothing
+            # else. The token names that exact path, so it is mounted at the same
+            # place. Read-only is enough: connect() on a socket is not a write to the
+            # filesystem.
+            - name: console-sockets
+              mountPath: {{ .Values.realMode.hostStoragePath }}/console-sockets
               readOnly: true
           # Honest probes, same principle as the lightstack container's /readyz and /livez
           # (SPEC-013): hit something only a working process can answer.
@@ -149,16 +145,18 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
-        - name: host-storage
+        # DirectoryOrCreate: the proxy may start before the Lightstack pod's
+        # initContainer creates the directory, and whichever comes first creates it.
+        - name: console-tokens
           hostPath:
-            path: {{ .Values.realMode.hostStoragePath }}
+            path: {{ .Values.realMode.hostStoragePath }}/console-tokens
             type: DirectoryOrCreate
-        # Directory, not DirectoryOrCreate: a real-mode node without libvirt's state
-        # directory has no guests to show, and should fail here rather than later.
-        - name: libvirt-domains
+        # DirectoryOrCreate like console-tokens; Lightstack makes it QEMU's (0750) at
+        # startup without replacing it, so this mount keeps seeing the same directory.
+        - name: console-sockets
           hostPath:
-            path: {{ .Values.consoleProxy.libvirtDomainDir }}
-            type: Directory
+            path: {{ .Values.realMode.hostStoragePath }}/console-sockets
+            type: DirectoryOrCreate
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}

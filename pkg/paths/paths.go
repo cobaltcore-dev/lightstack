@@ -38,7 +38,20 @@ func CloudInitDir() string { return filepath.Join(base, "cloud-init") }
 func DHCPDir() string { return filepath.Join(base, "dhcp") }
 
 // ConsoleTokenDir holds the console-token projection the noVNC proxy reads: one
-// file per live token, "<token>: <host>:<port>". It is a projection of the
+// file per live token, "<token>: unix_socket:<path>". It is a projection of the
 // console_auth_tokens table, never the store of record — losing it stops tokens
 // from resolving, which is the safe direction (SPEC-021 FR-023b).
 func ConsoleTokenDir() string { return filepath.Join(base, "console-tokens") }
+
+// ConsoleSocketDir holds the guests' VNC sockets and nothing else, so the console
+// proxy can mount it without seeing libvirt's per-domain directories, which also hold
+// each guest's QMP monitor socket and key material (SPEC-021 FR-017). QEMU creates the
+// sockets as its own user; Lightstack makes the directory QEMU's at startup (FR-017a).
+func ConsoleSocketDir() string { return filepath.Join(base, "console-sockets") }
+
+// ConsoleSocketPath is the VNC socket of one instance. It is fixed per instance, so it
+// is never another guest's; which run of the guest it serves is tracked by the
+// hypervisor's domain ID (FR-014a).
+func ConsoleSocketPath(instanceID string) string {
+	return filepath.Join(ConsoleSocketDir(), instanceID+".sock")
+}
