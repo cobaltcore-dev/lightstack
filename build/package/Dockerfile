@@ -33,7 +33,12 @@ FROM alpine:3.24
 # qemu-img: per-instance qcow2 overlay staging (WS-0); cdrkit: genisoimage for
 # config-drive cloud-init ISOs (WS-4); dnsmasq: VM DHCP; iproute2/iptables/ipset:
 # real-mode networking.
-RUN apk add --no-cache \
+#
+# The base image's own packages are upgraded first: `apk add` leaves anything
+# already installed at the version the base tag was cut with, so a security fix
+# released since (zlib, OpenSSL) would never reach the image.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache \
     ca-certificates \
     curl \
     tzdata \
