@@ -470,8 +470,8 @@ build_lightstack() {
     log_info "Building Lightstack binary..."
 
     # Use the same patched toolchain as CI and the release image.
-    local go_version="1.26.8"
-    local go_sha256="d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b"
+    local go_version="1.27.2"
+    local go_sha256="ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
     local installed_go=""
     if command -v go &> /dev/null; then
         installed_go=$(go env GOVERSION 2>/dev/null || true)

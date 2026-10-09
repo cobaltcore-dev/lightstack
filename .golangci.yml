@@ -14,6 +14,13 @@ linters:
       - linters:
           - errcheck
         path: test/
+      # The RBD calls reach stubs that always fail: ceph_rbd_stub.go without -tags ceph,
+      # and image_store.go until go-ceph is wired in. Their error checks are right for
+      # the real implementations, which staticcheck cannot see.
+      - linters:
+          - staticcheck
+        path: pkg/storage/(ceph|image_store)\.go
+        text: SA4023
     paths:
       - third_party$
       - builtin$
