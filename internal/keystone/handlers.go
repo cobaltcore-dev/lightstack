@@ -338,7 +338,7 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 		SELECT DISTINCT p.id, p.name, p.description, p.enabled, p.domain_id, d.name as domain_name
 		FROM projects p
 		JOIN role_assignments ra ON ra.project_id = p.id
-		JOIN domains d ON p.domain_id = d.id
+		LEFT JOIN domains d ON p.domain_id = d.id
 		WHERE ra.user_id = $1 AND p.enabled = true
 		ORDER BY p.name
 	`, claims.UserID)
@@ -352,7 +352,10 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 
 	var projects []gin.H
 	for rows.Next() {
-		var id, name, description, domainID, domainName string
+		var id, name string
+		// Nullable columns, read as nullable for the reason ListProjects gives; the domain is
+		// LEFT JOINed, so a project without one is listed rather than silently dropped.
+		var description, domainID, domainName sql.NullString
 		var enabled bool
 		if err := rows.Scan(&id, &name, &description, &enabled, &domainID, &domainName); err != nil {
 			log.Warn().Err(err).Str("operation", "ListAuthProjects").Msg("failed to scan row")
@@ -362,13 +365,13 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description,
+			"description": description.String,
 			"enabled":     enabled,
-			"domain_id":   domainID,
+			"domain_id":   domainID.String,
 			"links":       identityLink(c, "projects", id),
 			"domain": gin.H{
-				"id":   domainID,
-				"name": domainName,
+				"id":   domainID.String,
+				"name": domainName.String,
 			},
 		})
 	}
@@ -528,7 +531,8 @@ func identityLink(c *gin.Context, collection, id string) gin.H {
 func (svc *Service) GetProject(c *gin.Context) {
 	projectID := c.Param("id")
 
-	var id, name, description, domainID string
+	var id, name string
+	var description, domainID sql.NullString // nullable, as in ListProjects
 	var enabled bool
 	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, name, description, enabled, domain_id FROM projects WHERE id = $1",
@@ -543,9 +547,9 @@ func (svc *Service) GetProject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"project": gin.H{
 		"id":          id,
 		"name":        name,
-		"description": description,
+		"description": description.String,
 		"enabled":     enabled,
-		"domain_id":   domainID,
+		"domain_id":   domainID.String,
 		"links":       identityLink(c, "projects", id),
 	}})
 }
@@ -669,7 +673,8 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 		" WHERE id = " + u.Arg(projectID) +
 		" RETURNING name, description, domain_id, enabled"
 
-	var name, description, domainID string
+	var name string
+	var description, domainID sql.NullString // nullable, as in ListProjects
 	var enabled bool
 	err := svc.pool.QueryRow(c.Request.Context(), query, u.Args()...).
 		Scan(&name, &description, &domainID, &enabled)
@@ -681,8 +686,8 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"project": gin.H{
 		"id":          projectID,
 		"name":        name,
-		"description": description,
-		"domain_id":   domainID,
+		"description": description.String,
+		"domain_id":   domainID.String,
 		"enabled":     enabled,
 		"links":       identityLink(c, "projects", projectID),
 	}})
@@ -1409,7 +1414,8 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 
 	var projects []gin.H
 	for rows.Next() {
-		var id, name, description, domainID string
+		var id, name string
+		var description, domainID sql.NullString // nullable, as in ListProjects
 		var enabled bool
 		if err := rows.Scan(&id, &name, &description, &enabled, &domainID); err != nil {
 			log.Error().Err(err).Str("operation", "get_user_projects_scan").Msg("Failed to scan project row")
@@ -1419,9 +1425,9 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description,
+			"description": description.String,
 			"enabled":     enabled,
-			"domain_id":   domainID,
+			"domain_id":   domainID.String,
 			"links":       identityLink(c, "projects", id),
 		})
 	}
