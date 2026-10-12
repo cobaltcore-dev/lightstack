@@ -38,6 +38,7 @@ Deploy Lightstack and Horizon together using `docker-compose-horizon.yml`:
 
 ```bash
 cd lightstack/deployments
+export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)   # required — no default
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
@@ -45,8 +46,9 @@ docker compose -f docker-compose-horizon.yml up -d
 - PostgreSQL 18 database
 - Lightstack services (Keystone, Nova, Neutron, Cinder, Glance)
 - Horizon Flamingo 2025.2
-- noVNC console proxy
 - Memcached (for Django sessions)
+
+(No console proxy in this stub stack — the noVNC proxy is chart/real-mode only.)
 
 **Access**: http://localhost/dashboard
 
@@ -60,6 +62,7 @@ Deploy Horizon separately to existing Lightstack installation:
 
 ```bash
 cd lightstack/deployments
+export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)   # required — no default
 docker compose -f docker-compose-horizon.yml up -d horizon
 ```
 
@@ -292,8 +295,12 @@ docker exec lightstack date
 
 **Symptoms**: VNC console button doesn't work or shows blank screen
 
-**Causes**:
-- noVNC proxy not running
+**Expected on the stub compose stack**: it ships no console proxy at all. The noVNC
+proxy is deployed by the Helm chart in real mode; its tokens are managed with
+`lightstack console-tokens list|purge`. `openstack console log show <server>` still
+works.
+
+**On a real-mode deployment**, check:
 - Incorrect `nova.console_proxy_base_url` in `lightstack.yaml` — it must be an origin the
   BROWSER can reach (Horizon has no proxy setting of its own; Lightstack returns the full URL)
 - No console token issued — check with `lightstack console-tokens list`
@@ -301,11 +308,8 @@ docker exec lightstack date
 
 **Fix**:
 ```bash
-# Verify noVNC proxy is running
-docker ps | grep novnc
-
-# Test noVNC endpoint
-curl http://localhost:6080
+# List issued console tokens (real mode)
+lightstack console-tokens list
 
 # Check Nova console configuration (an ORIGIN — scheme://host:port, no path)
 grep console_proxy_base_url config/lightstack.yaml

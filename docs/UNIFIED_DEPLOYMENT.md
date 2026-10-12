@@ -108,7 +108,10 @@ cat horizon-config/local_settings
 
 ### Step 3: Start All Services
 
+The compose file **requires** a JWT secret — it refuses to start without one:
+
 ```bash
+export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
@@ -117,6 +120,7 @@ docker compose -f docker-compose-horizon.yml up -d
 [+] Running 5/5
  ✔ Network lightstack-horizon-network    Created
  ✔ Container lightstack-postgres         Started
+ ✔ Container lightstack-memcached        Started
  ✔ Container lightstack                  Started
  ✔ Container lightstack-horizon          Started
 ```

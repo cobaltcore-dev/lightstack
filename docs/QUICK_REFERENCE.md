@@ -6,8 +6,9 @@
 ## Quick Start
 
 ```bash
-# Start everything
+# Start everything (requires LIGHTSTACK_JWT_SECRET to be set)
 cd lightstack/deployments
+export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)
 docker compose -f docker-compose-horizon.yml up -d
 
 # Access Horizon

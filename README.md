@@ -182,6 +182,8 @@ git clone https://github.com/cobaltcore-dev/lightstack.git
 cd lightstack/deployments
 
 # 2. Start all services (lightstack + Horizon + PostgreSQL)
+#    (this compose file refuses to start without a JWT secret)
+export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)
 docker compose -f docker-compose-horizon.yml up -d
 
 # 3. Access Horizon Dashboard
@@ -279,7 +281,7 @@ OPENSTACK_API_VERSIONS = {
     "identity": 3,
     "image": 2,
     "volume": 3,
-    "compute": 2.1,
+    "compute": 2,  # integer 2 — Horizon rejects 2.1 here
 }
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
 OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
@@ -466,7 +468,7 @@ The seed data creates:
 - Volume operations (snapshots, backups, transfers, cloning, volume groups)
 - Image management (upload, download, sharing, import workflow, metadefs)
 - Multi-tenancy (domains, projects, users, groups, RBAC)
-- Console access (VNC, SPICE, Serial, RDP)
+- Console access (noVNC in real mode; serial console log via CLI — SPICE/RDP are refused with a clear error)
 - Tenant usage reporting and availability zones
 - Service catalog management and credential management
 - Performance optimization (pagination, indexes, <3s queries)
@@ -508,7 +510,7 @@ The seed data creates:
 - ✅ VXLAN multi-node networking
 - ✅ L3 routing, floating IPs, and port forwarding
 - ⚠️ Horizon dashboard: usable for resource management; open gaps include the noVNC console (findings F1–F18)
-- ✅ Comprehensive test coverage (71 contract test files, 20+ integration tests)
+- ✅ Comprehensive test coverage (97 contract test files, 20+ integration tests)
 - ✅ Production deployments validated
 - ✅ Performance optimization (pagination, indexes)
 
