@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 🚀 Release Engineering
+- **Version stamping** (review R1, `docs/review/comprehensive-review-report-2026-10-12.md`):
+  `main.Version` now exists and is injected via `-ldflags "-X main.Version=..."` by
+  the Makefile, the Dockerfile (`VERSION` build-arg) and the release workflow;
+  `lightstack --version` prints it and it is logged at startup. Previously the
+  ldflags injection targeted a nonexistent variable and was silently ignored —
+  every shipped binary was unidentifiable.
+- **Release pipeline** (`.github/workflows/release.yml`, review R3): pushing a `v*`
+  tag runs the test gate, builds linux/amd64 + linux/arm64 binaries (CGO-free) with
+  checksums and a `--version` round-trip check, pushes the multi-arch image to
+  `ghcr.io`, creates a draft GitHub Release and publishes the Helm chart as an OCI
+  artifact with `appVersion` pinned to the tag.
+- **Chart version** 0.3.0 → 0.4.0 (appVersion 0.7.0, matching the target release).
+
+### 🔒 Security
+- **Refuse well-known/empty JWT secrets at startup** (review S2): the defaults
+  shipped in `config/lightstack.yaml` and `.env.example` are public, and with
+  stateless tokens knowing one is enough to mint an admin token. `LoadConfig` now
+  refuses them; `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1` is the documented
+  escape hatch for isolated dev/test stacks (the plain docker-compose dev stack
+  and `make run` opt in explicitly; the Horizon stack and the Helm chart already
+  require a real secret).
+- **Horizon default role** corrected: `OPENSTACK_KEYSTONE_DEFAULT_ROLE` is `member`
+  (matches the seeded admin/member/reader roles) — was `_member_`, which matches
+  nothing in the seed.
+
+---
+
 ## [0.6.1] - 2026-04-22
 
 ### 📋 v0.7.0 Planning & Specifications

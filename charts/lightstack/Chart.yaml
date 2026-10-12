@@ -4,7 +4,8 @@ description: Deploy lightstack (lightweight OpenStack-compatible cloud) on Kuber
 type: application
 # Chart version (SemVer). Bumped independently of the product.
 # 0.3.0: adds the noVNC console proxy + console-token settings (SPEC-021).
-version: 0.3.0
+# 0.4.0: release-engineering alignment — appVersion 0.7.0 target, OCI publish via the tag-triggered release workflow.
+version: 0.4.0
 # Default product image tag when image.tag is unset (image.repository is REQUIRED, no default — FR-018).
 appVersion: "0.7.0"
 kubeVersion: ">=1.25.0-0"

@@ -34,7 +34,12 @@ build-with-ebpf: build-ebpf build
 # Run the application
 run: build
 	@echo "Starting lightstack..."
-	./$(BUILD_DIR)/$(BINARY_NAME) --config config/lightstack.yaml --migrations migrations
+	# The dev escape hatch: the shipped config carries the well-known default
+	# JWT secret, which the binary refuses without this (review S2). `make run`
+	# is a local-development target only — production deployments set a real
+	# keystone.jwt_secret (or LIGHTSTACK_JWT_SECRET) and never set this.
+	LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 \
+		./$(BUILD_DIR)/$(BINARY_NAME) --config config/lightstack.yaml --migrations migrations
 
 # Install dependencies
 install-deps:

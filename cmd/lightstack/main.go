@@ -42,7 +42,16 @@ import (
 var (
 	configPath     = flag.String("config", "config/lightstack.yaml", "Path to configuration file")
 	migrationsPath = flag.String("migrations", "migrations", "Path to migrations directory")
+	printVersion   = flag.Bool("version", false, "Print the build version and exit")
 )
+
+// Version identifies the running build in the field: it is stamped at build
+// time by the Makefile, the Dockerfile and the release workflow via
+// `-ldflags "-X main.Version=<version>"`, and defaults to "dev" otherwise.
+// R1 of docs/review/comprehensive-review-report-2026-10-12.md: without this
+// variable the ldflags injection silently did nothing, making every shipped
+// binary unidentifiable.
+var Version = "dev"
 
 func main() {
 	// Subcommand dispatch: `lightstack cleanup` runs the SPEC-010 teardown and exits,
@@ -67,6 +76,15 @@ func main() {
 	}
 
 	flag.Parse()
+
+	// `lightstack --version` reports the stamped build version and exits, so a
+	// node in the field can be identified without its deployment metadata.
+	if *printVersion {
+		fmt.Println(Version)
+		return
+	}
+
+	log.Printf("lightstack %s starting", Version)
 
 	// Load configuration
 	cfg, err := loadConfig(*configPath)
