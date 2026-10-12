@@ -372,7 +372,7 @@ Both probes hit the same endpoint:
 - **Liveness**: `GET /v3` on port 35357 (Keystone version endpoint)
 - **Readiness**: `GET /v3` on port 35357
 
-If Keystone responds, the process is up and all six services are running — they share the same binary and start together. A non-200 response or connection failure signals that the pod should be restarted (liveness) or removed from load balancing (readiness).
+If Keystone responds, the process is up and all seven listeners are running — they share the same binary and start together. A non-200 response or connection failure signals that the pod should be restarted (liveness) or removed from load balancing (readiness).
 
 ---
 
