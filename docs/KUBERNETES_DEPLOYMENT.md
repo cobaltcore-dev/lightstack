@@ -12,7 +12,7 @@ Lightstack runs as a single binary serving all OpenStack services, making it str
 
 ## Architecture
 
-Lightstack deploys as a single pod running 6 HTTP servers on different ports:
+Lightstack deploys as a single pod running 7 HTTP listeners on different ports:
 
 | Service | Port | Purpose |
 |---------|------|---------|
@@ -21,6 +21,7 @@ Lightstack deploys as a single pod running 6 HTTP servers on different ports:
 | Neutron | 9696 | Networking |
 | Cinder | 8776 | Block storage |
 | Glance | 9292 | Images |
+| Placement | 8778 | Allocation (stub) |
 | Metadata | 8775 | EC2-compatible metadata |
 
 All state lives in PostgreSQL. The pod itself is stateless, which makes horizontal scaling and rolling updates straightforward.
@@ -210,6 +211,9 @@ spec:
             - name: glance
               containerPort: 9292
               protocol: TCP
+            - name: placement
+              containerPort: 8778
+              protocol: TCP
             - name: metadata
               containerPort: 8775
               protocol: TCP
@@ -331,6 +335,10 @@ spec:
     - name: glance
       port: 9292
       targetPort: glance
+      protocol: TCP
+    - name: placement
+      port: 8778
+      targetPort: placement
       protocol: TCP
     - name: metadata
       port: 8775

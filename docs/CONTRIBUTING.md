@@ -72,7 +72,7 @@ docker run -d --name lightstack-postgres \
   -e POSTGRES_DB=lightstack \
   -e POSTGRES_USER=lightstack \
   -e POSTGRES_PASSWORD=secret \
-  -p 5432:5432 postgres:18.3
+  -p 5432:5432 postgres:18.4-alpine
 
 # Or use your local PostgreSQL instance
 ```
