@@ -74,7 +74,7 @@ management** — networks, volumes and instances can be created from the UI in s
 
 - **[Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)** ⭐ **NEW** - Browser-level verification: dashboard **usable** for resource management after #532/#533 (F1–F18)
 - **[HORIZON_FULL_COMPATIBILITY_REPORT](HORIZON_FULL_COMPATIBILITY_REPORT.md)** - SUPERSEDED (API-endpoint coverage only; see the report above for UI verdicts)
-  - API endpoint coverage (342/330), microversions, auth flow
+  - API endpoint coverage (functional operations; see [blueprint.md](blueprint.md) for the reconciled count), microversions, auth flow
   - Per-page API dependency matrix
   - Performance benchmarks and optimization
   - Troubleshooting guide
@@ -156,6 +156,7 @@ Test reports, strategies, and code quality reviews.
 
 #### Code Reviews
 - **[review/full-repo-review-report](review/full-repo-review-report.md)** - Full codebase review (42 findings, April 2026)
+- **[review/comprehensive-review-report-2026-10-12](review/comprehensive-review-report-2026-10-12.md)** ⭐ **NEW** - Full review at HEAD e909227: security (JWT/revocation), concurrency (shutdown races), release readiness (version stamping, tag/chart drift), top-10 action list
 
 #### Compatibility
 - **[compatibility/OPENSTACK_COMPATIBILITY_REPORT](compatibility/OPENSTACK_COMPATIBILITY_REPORT.md)** - OpenStack 2025.2 compatibility analysis
@@ -302,8 +303,8 @@ Analysis of dashboard compatibility and integration options.
 **lightstack Project**:
 - GitHub: https://github.com/cobaltcore-dev/lightstack
 - License: Apache 2.0
-- Current Version: v0.6.0 (Production Ready)
-- API Coverage: ~329 functional operations across 5 core services (see [BLUEPRINT](blueprint.md))
+- Current Version: Unreleased (post-v0.6.1; see [CHANGELOG.md](../CHANGELOG.md))
+- API Coverage: ~335 functional operations across 5 core services (see [BLUEPRINT](blueprint.md))
 
 ---
 

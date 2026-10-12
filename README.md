@@ -2,16 +2,16 @@
 
 [![CI Pipeline](https://github.com/cobaltcore-dev/lightstack/actions/workflows/ci.yml/badge.svg)](https://github.com/cobaltcore-dev/lightstack/actions/workflows/ci.yml)
 
-**Status**: v0.6.1 - Production Ready | 104% API Coverage (342/330 endpoints) | 100% Terraform Compatible
-**Last Updated**: April 22, 2026
+**Status**: Unreleased (post-v0.6.1) | ~335 functional operations vs the 330-endpoint baseline | 100% Terraform Compatible
+**Last Updated**: October 12, 2026
 
 **lightstack** (OpenStack 3 Kubernetes-style) is a lightweight, high-performance implementation of OpenStack APIs in pure Go, inspired by how K3s simplified Kubernetes.
 
 ---
 
-## 🎉 Milestone: 104% API Coverage - Full Terraform Compatibility!
+## 🎯 Coverage & Terraform Compatibility
 
-With **104% API coverage (342/330 endpoints)**, lightstack delivers complete OpenStack Terraform provider compatibility. Existing Terraform scripts and OpenStack CLI commands run against lightstack without any modifications. The Horizon **dashboard is usable for resource management** — networks, volumes and instances can be created from it, while the noVNC console is still open ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md)).
+lightstack implements **~335 functional operations** across the five core OpenStack services against the 330-endpoint baseline — coverage is substantial and Terraform-compatible, though not literally "104%"; the earlier "342/330 (104%)" figure counted raw routes (URL aliases + version discovery), see [docs/blueprint.md](docs/blueprint.md) for the reconciled analysis. Existing Terraform scripts and OpenStack CLI commands run against lightstack without any modifications. The Horizon **dashboard is usable for resource management** — networks, volumes and instances can be created from it, while the noVNC console is still open ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md)).
 
 ## 🎯 What is lightstack?
 
@@ -23,36 +23,40 @@ Just as **K3s** is to Kubernetes, **lightstack** is to OpenStack:
 - **Production Ready**: All HIGH and MEDIUM priority features complete
 - **Modern**: Supports OpenStack Flamingo (2025.2) and later versions only
 
-## 🆕 What's New in v0.6.0
+## 🆕 What's New since v0.6.1
 
-**Code Quality Overhaul** — 39 commits fixing 32 of 42 findings from a comprehensive codebase review:
+**Real mode, tenancy, and hardening** — see [CHANGELOG.md](CHANGELOG.md) (Unreleased) for the full list:
 
-- **Security**: Cryptographic random for MAC addresses and passwords, configurable CORS, SQL injection hardening
-- **Error Handling**: 1,200 inline errors migrated to structured OpenStack-compatible framework — zero internal error leakage
-- **Reliability**: Database transactions for multi-statement ops, goroutine lifecycle with graceful shutdown
-- **Observability**: Unified structured logging with zerolog, scan error logging, swallowed error fixes
-
-See [CHANGELOG.md](CHANGELOG.md) for the full list.
+- **SPEC-009**: single-node real mode — qcow2 overlays, network reconciler, cloud-init metadata, boot-from-volume
+- **SPEC-021**: real noVNC console with revocable one-time tokens + `console-tokens` subcommand
+- **SPEC-023**: tenant scoping & authorization model (`admin_or_owner`, `all_tenants` opt-in, domain-scope refusal)
+- **SPEC-024**: Neutron API fidelity & real-mode networking (root-namespace bridges, external networks)
+- **SPEC-025**: Nova client-discovery fixes + block-storage quota enforcement on all call sites
+- **SPEC-026**: rename to lightstack | **SPEC-027**: database pool injection (ADR-001)
+- **SPEC-014**: Ceph RGW/S3 Glance backend + tenant object storage (EC2 credentials, `/v3/s3tokens`)
+- **Placement** service (`:8778`, stub) and `cleanup` / `healthcheck` subcommands
 
 ## 📦 What's Included
 
-### OpenStack Services (342 Endpoints)
-- **Keystone v3** (Identity) - 61 endpoints - JWT authentication, domains, service catalog, credentials
-- **Nova v2.1** (Compute) - 72 endpoints - VM lifecycle, migrations, console access, availability zones
-- **Neutron v2.0** (Network) - 98 endpoints - L3 routing, security groups, port forwarding, QoS
-- **Cinder v3** (Block Storage) - 73 endpoints - Multi-backend volumes, snapshots, backups, volume groups
-- **Glance v2** (Image Service) - 38 endpoints - Multi-backend images, sharing, import workflow, metadefs
+### OpenStack Services (~335 functional operations)
+- **Keystone v3** (Identity) - JWT authentication, domains, service catalog, credentials, EC2 credentials, `/v3/s3tokens`
+- **Nova v2.1** (Compute) - VM lifecycle, migrations, console access, availability zones
+- **Neutron v2.0** (Network) - L3 routing, security groups, port forwarding, QoS
+- **Cinder v3** (Block Storage) - Multi-backend volumes, snapshots, backups, volume groups
+- **Glance v2** (Image Service) - Multi-backend images, sharing, import workflow, metadefs
+- **Placement** (stub) - version discovery + empty resource-provider listings, for Horizon compatibility
 
-**Total: 342 implemented endpoints** across all five core services (+12 beyond baseline).
+Plus an EC2-compatible **metadata service** (`:8775`, no auth, guest-only trust model).
+
+Coverage is measured in *functional operations*, not raw routes — see [docs/blueprint.md](docs/blueprint.md) for the per-resource detail and the reconciliation of the earlier "342 endpoints / 104%" count.
 
 ### Development Velocity
 - **69+ Sprints Completed** (Sprint 1-70, excluding 43)
-- **+241 Endpoints Added** (from 101 to 342)
-- **+71% Coverage Gain** (from 33% to 104%)
+- **Coverage**: substantial against the 330-endpoint baseline (see [docs/blueprint.md](docs/blueprint.md))
 - **Recent Achievements**:
   - Sprint 66-68: Horizon integration + performance optimization
   - Sprint 56-57: Nova server actions complete
-  - Final Audit: Verified 104% coverage
+  - SPEC-009 → SPEC-027: real-mode single node, noVNC console, tenant scoping, Neutron fidelity, quota enforcement
 
 ### Client Compatibility
 
@@ -68,7 +72,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ### Architecture
 - **Single Binary**: All services in one process (~35MB)
-- **PostgreSQL 18+**: Unified state management (55 migrations, 35+ tables)
+- **PostgreSQL 18+**: Unified state management (73 migrations, 35+ tables)
 - **Synchronous Architecture**: No RabbitMQ/message queues (10x faster)
 - **libvirt/KVM**: Real compute virtualization (stub mode for development)
 - **Storage Backends**: Ceph RBD, AWS S3, MinIO, local filesystem (hybrid failover support)
@@ -82,11 +86,13 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list.
 ┌─────────────────────────────────────────────────────────────┐
 │                         lightstack Binary                           │
 ├─────────────────────────────────────────────────────────────┤
-│  Keystone (Identity)      :35357   [61 endpoints]          │
-│  Nova (Compute)           :8774    [72 endpoints]          │
-│  Neutron (Network)        :9696    [98 endpoints]          │
-│  Cinder (Block Storage)   :8776    [73 endpoints]          │
-│  Glance (Image)           :9292    [38 endpoints]          │
+│  Keystone (Identity)      :35357                      │
+│  Nova (Compute)           :8774                       │
+│  Neutron (Network)        :9696                       │
+│  Cinder (Block Storage)   :8776                       │
+│  Glance (Image)           :9292                       │
+│  Placement (stub)         :8778                       │
+│  Metadata (EC2-style)     :8775                       │
 └─────────────────────────────────────────────────────────────┘
                          ↓
         ┌────────────────┼────────────────┐
@@ -128,7 +134,7 @@ Just as K3s removed heavyweight components from Kubernetes:
 - [Production Scaling](docs/SCALING.md) - Multi-node HA cluster (3-node to 10+)
 - [Horizon Compatibility Report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md) ⭐ **NEW** - Browser-level verification: dashboard **usable** for resource management after #532/#533 (findings F1–F18)
 - [Horizon Integration](docs/HORIZON_INTEGRATION.md) - Web dashboard integration architecture
-- [API Coverage Report](docs/API_COVERAGE_REPORT.md) - Complete 104% coverage analysis
+- [API Coverage Report](docs/API_COVERAGE_REPORT.md) - Superseded by [docs/blueprint.md](docs/blueprint.md)
 
 **Learning Paths**:
 | Goal | Guide | Time |
@@ -325,10 +331,10 @@ neutron:
   networking_mode: stub  # "stub", "iptables", or "ebpf"
 
 cinder:
-  storage_mode: local  # "local", "rbd", "s3", or hybrid like "local,rbd"
+  storage_mode: local  # "stub", "local", "rbd", or hybrid like "local,rbd"
 
 glance:
-  storage_mode: local  # "local", "rbd", "s3", or hybrid like "local,s3"
+  storage_mode: local  # "stub", "local", "s3", or hybrid like "local,s3" (Ceph RGW supported)
 ```
 
 **For complete configuration guide, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
@@ -346,14 +352,14 @@ lightstack/
 │   ├── neutron/                # Network service (98 endpoints)
 │   ├── cinder/                 # Block storage (73 endpoints)
 │   ├── glance/                 # Image service (38 endpoints)
-│   ├── database/               # DB models and migrations (55 migrations)
+│   ├── database/               # DB models and migrations (73 migrations)
 │   ├── middleware/             # Auth, logging, CORS, recovery
 │   └── common/                 # Shared utilities
 ├── pkg/                         # Public/reusable packages
 │   ├── hypervisor/             # libvirt abstraction (real + stub modes)
 │   ├── networking/             # netlink, VXLAN, security groups
 │   └── storage/                # Storage backends (RBD, S3, local)
-├── migrations/                  # SQL migrations (110 files - 55 up/down pairs)
+├── migrations/                  # SQL migrations (146 files - 73 up/down pairs)
 ├── test/contract/              # Contract tests (71 test files, TDD-first)
 ├── test/*.sh                   # Integration tests (20+ bash scripts)
 ├── config/                     # Configuration files (YAML)
@@ -387,6 +393,20 @@ make fmt
 make lint
 ```
 
+### CLI Subcommands
+
+The binary ships operational subcommands alongside the API servers:
+
+```bash
+lightstack cleanup [--dry-run]          # Reclaim all host state: bridges, TAPs, dnsmasq,
+                                         # iptables rules, legacy namespaces (SPEC-010)
+lightstack healthcheck [--ready|--live] # Probe this node's health endpoints, exit 0/1 (SPEC-013)
+lightstack console-tokens list          # Inspect issued noVNC console tokens (SPEC-021)
+lightstack console-tokens purge         # Revoke console tokens
+```
+
+See `docs/OPERATIONS.md` and `docs/UPGRADING.md` for day-to-day management.
+
 ## Default Credentials
 
 The seed data creates:
@@ -399,42 +419,39 @@ The seed data creates:
 
 ## 📊 Project Status
 
-### API Coverage: 104% (342/330 endpoints) ✅ EXCEEDS BASELINE
+### API Coverage: substantial (~335 functional operations vs the 330-endpoint baseline)
 
-| Service | Endpoints | Coverage | Status |
-|---------|-----------|----------|--------|
-| Keystone (Identity) | 61 | 100%+ | ✅ Production Ready |
-| Nova (Compute) | 72 | 100%+ | ✅ Production Ready |
-| Neutron (Network) | 98 | 100%+ | ✅ Production Ready |
-| Cinder (Block Storage) | 73 | 100%+ | ✅ Production Ready |
-| Glance (Image) | 38 | 100%+ | ✅ Production Ready |
-| **TOTAL** | **342** | **104%** | ✅ **Production Ready** |
+| Service | Status |
+|---------|--------|
+| Keystone (Identity) | ✅ Production Ready |
+| Nova (Compute) | ✅ Production Ready |
+| Neutron (Network) | ✅ Production Ready |
+| Cinder (Block Storage) | ✅ Production Ready |
+| Glance (Image) | ✅ Production Ready |
+| Placement | ⚠️ Stub (version discovery + empty listings, for Horizon) |
+
+**See [docs/blueprint.md](docs/blueprint.md) for the reconciled, per-resource coverage analysis.** (The earlier "104% (342/330)" figure counted raw routes — URL aliases and version discovery — and is superseded.)
 
 **Priority Status**:
 - ✅ **HIGH Priority**: 100% complete (all critical production features)
 - ✅ **MEDIUM Priority**: 100% complete (all important management features)
 - ⏳ **LOW Priority**: Optional only (enterprise SSO, DVR - <5% demand)
 
-**See [docs/API_COVERAGE_REPORT.md](docs/API_COVERAGE_REPORT.md) for detailed coverage analysis.**
-
 ### Testing & Validation
 
-- ✅ **Contract Tests**: **157/191 passing (82%)** - Using gophercloud SDK (OpenStack Go client)
-  - Nova: 77/82 (94%) - Core compute operations validated
-  - Neutron: 49/58 (84%) - Networking highly compatible
-  - Glance: 27/29 (93%) - Image service fully functional
-  - Cinder: 4/22 (18%) - Basic volumes work, groups need implementation
-  - Full report: [CONTRACT_TESTS_FINAL_REPORT.md](CONTRACT_TESTS_FINAL_REPORT.md)
+- ✅ **Contract Tests**: **223/233 passing (95.7%)** - Using gophercloud SDK (OpenStack Go client), as of 2026-03-30
+  - Keystone: 55/55 (100%)
+  - Full report: [CONTRACT_TESTS_FINAL.md](docs/testing/CONTRACT_TESTS_FINAL.md)
 - ✅ **TDD Methodology**: All endpoints developed test-first (RED → GREEN → REFACTOR)
 - ✅ **20+ Integration Tests**: Bash scripts with OpenStack CLI validation
 - ✅ **Schema Validation**: OpenStack API spec compliance
 - ✅ **Horizon Testing**: browser-level verification done — create/write flows work in stub and real mode; the noVNC console is still open (F1) ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ **Client Compatibility**: OpenStack CLI, Terraform, gophercloud, python-openstackclient
-- 🚀 **CI/CD Strategy**: Comprehensive E2E and automation plan - [E2E_CI_TESTING_STRATEGY.md](E2E_CI_TESTING_STRATEGY.md)
+- 🚀 **CI/CD Strategy**: Comprehensive E2E and automation plan - [E2E_CI_TESTING_STRATEGY.md](docs/testing/E2E_CI_TESTING_STRATEGY.md)
 
 ### Current Capabilities
 
-**✅ Fully Implemented (342 endpoints):**
+**✅ Fully Implemented (~335 functional operations):**
 - Complete server lifecycle management (create, start, stop, reboot, delete, resize, rebuild)
 - All server actions (migrate, evacuate, rescue, snapshot, backup, password reset)
 - Full networking (L3 routing, floating IPs, port forwarding, security groups, QoS)
@@ -475,9 +492,9 @@ The seed data creates:
 
 ### Roadmap
 
-**Completed (v0.1-v0.6.0):**
-- ✅ All 5 core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance)
-- ✅ 104% API coverage (342/330 endpoints) - EXCEEDS BASELINE
+**Completed (v0.1-v0.6.1 + unreleased):**
+- ✅ All 5 core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) + Placement stub
+- ✅ Substantial coverage vs the 330-endpoint baseline (see [docs/blueprint.md](docs/blueprint.md))
 - ✅ All HIGH and MEDIUM priority features
 - ✅ Real libvirt/KVM integration with stub mode fallback
 - ✅ Multi-backend storage (Ceph RBD, S3, hybrid failover)
@@ -488,11 +505,10 @@ The seed data creates:
 - ✅ Production deployments validated
 - ✅ Performance optimization (pagination, indexes)
 
-**Current Focus (v0.6.x - Stability & Polish):**
+**Current Focus (stability, real-mode polish & release process):**
 - 🔧 Bug fixes and error handling improvements
 - 🔧 Performance monitoring and optimization
-- 🔧 Documentation enhancements
-- 🔧 Community feedback integration
+- 🔧 Release engineering: version stamping, tagged releases, published images (see the review notes in `docs/review/`)
 
 **Future Considerations (on-demand):**
 - [ ] Additional services (Barbican, Designate, Octavia) - based on user requests
@@ -506,10 +522,11 @@ The seed data creates:
 
 Contributions welcome! See `docs/CONTRIBUTING.md` for guidelines.
 
-**Current focus areas (v0.6.x stability phase):**
+**Current focus areas (stability phase):**
 - Bug fixes and error handling improvements
 - Performance monitoring and optimization
 - Documentation and tutorials
+- Release engineering (tagged releases, published container images, chart alignment)
 - Real-world deployment validation
 - Community feedback integration
 
@@ -551,7 +568,7 @@ Contributions welcome! See `docs/CONTRIBUTING.md` for guidelines.
 
 ### Development & API
 - **[Architecture](docs/ARCHITECTURE.md)** - System design and components
-- **[API Coverage Report](docs/API_COVERAGE_REPORT.md)** - Complete 104% coverage analysis
+- **[API Coverage Report](docs/API_COVERAGE_REPORT.md)** - Superseded by [docs/blueprint.md](docs/blueprint.md)
 - **[What's Left?](docs/WHATS_LEFT.md)** - Optional enterprise features overview
 - **[API Reference](docs/API.md)** - OpenStack API compatibility details
 - **[Contributing](docs/CONTRIBUTING.md)** - Development guidelines
@@ -563,10 +580,10 @@ Contributions welcome! See `docs/CONTRIBUTING.md` for guidelines.
 - **[eBPF Status](docs/EBPF_STATUS.md)** - eBPF security groups (experimental)
 
 ### Testing & Validation
-- **[Contract Tests](test/contract/README.md)** - 157/191 passing (82%) using gophercloud SDK
-  - Full results: [CONTRACT_TESTS_FINAL_REPORT.md](CONTRACT_TESTS_FINAL_REPORT.md)
+- **[Contract Tests](test/contract/README.md)** - 223/233 passing (95.7%) using gophercloud SDK
+  - Full results: [CONTRACT_TESTS_FINAL.md](docs/testing/CONTRACT_TESTS_FINAL.md)
 - **[Integration Tests](test/)** - 20+ bash scripts for workflow validation
-- **[E2E & CI Strategy](E2E_CI_TESTING_STRATEGY.md)** - Comprehensive testing and automation plan
+- **[E2E & CI Strategy](docs/testing/E2E_CI_TESTING_STRATEGY.md)** - Comprehensive testing and automation plan
 
 **For complete documentation index with learning paths, see [docs/INDEX.md](docs/INDEX.md)**
 
@@ -578,12 +595,11 @@ Apache License 2.0 - See [LICENSE](LICENSE)
 
 **Project**: lightstack - OpenStack 3 Kubernetes-style
 **Inspired by**: K3s (Lightweight Kubernetes)
-**Language**: Go 1.26+
+**Language**: Go 1.27+
 **Repository**: github.com/cobaltcore-dev/lightstack
 
 ---
 
-**Status**: ✅ v0.6.0 Production Ready | **Coverage**: 104% (342/330 endpoints) | **Horizon**: usable for resource management
-**Build**: ✅ SUCCESS (35MB) | **Tests**: ✅ 157/191 Contract Tests PASS (82%)
-**Achievement**: 🎉 Exceeds OpenStack Baseline by 12 Endpoints
-**Updated**: March 17, 2026
+**Status**: Unreleased (post-v0.6.1) | **Coverage**: ~335 functional operations vs 330-endpoint baseline | **Horizon**: usable for resource management
+**Tests**: ✅ 223/233 Contract Tests PASS (95.7%, 2026-03-30)
+**Updated**: October 12, 2026

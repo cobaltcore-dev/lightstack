@@ -1,8 +1,12 @@
 # Lightstack Development Roadmap
 
+> **⚠️ Superseded (kept for history).** This roadmap's Phase 1 direction — splitting into
+> "8+ independent services" — contradicts the single-binary strategy the project settled
+> on (see [README.md](README.md) and [STATUS.md](STATUS.md)). Do not plan from this file.
+
 **Version**: 1.2
 **Last Updated**: 2026-04-07
-**Status**: Active
+**Status**: Superseded
 
 ## Executive Summary
 

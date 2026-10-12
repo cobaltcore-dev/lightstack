@@ -7,19 +7,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANT**: This project uses the Ultimate Project System (Beastmode × Spec-Kit synthesis).
 
 ### Workflow & Knowledge Hierarchy
-- **L0 (Autoload)**: Read `.beastmode/BEASTMODE.md` at the start of every session
-- **L1 (Phase Context)**: `.beastmode/context/{PHASE}.md` - Load at phase start
-- **L2 (Domain Details)**: `.beastmode/context/{phase}/{domain}.md` - On-demand
-- **L3 (Specs & Artifacts)**: `docs/specs/NNN-*/` - Feature specifications
+- **L1 (Phase Context)**: `.specify/` and `docs/specs/NNN-*/` - feature specifications and plans
+- **L2 (Domain Details)**: `docs/` guides and ADRs - on-demand
+- **L3 (Specs & Artifacts)**: `docs/specs/NNN-*/` - feature specifications
 
 ### Development Workflow
 ```
 specify → plan → tasks → implement → validate → release
 ```
-Each phase: **prime → execute → validate → checkpoint → retro**
 
 ### The Nine Articles (Constitution)
-Immutable principles in `memory/constitution.md`:
+Working principles (kept here; no separate constitution file exists):
 1. **Library-First** - Features begin as standalone libraries
 2. **CLI Interface** - All libraries expose CLI functionality
 3. **Test-First** - TDD mandatory (NON-NEGOTIABLE: tests → fail → implement)
@@ -116,7 +114,7 @@ go test ./internal/nova/...   # Test specific package
 
 ```bash
 # Start PostgreSQL (Docker)
-make db-up                    # Starts postgres:18.3 container
+make db-up                    # Starts postgres:18 container (POSTGRES_VERSION variable)
 
 # Run migrations
 make migrate                  # Applies all pending migrations
@@ -142,12 +140,13 @@ make install-tools            # Installs air, golangci-lint, migrate
 
 ### Service Structure
 
-Lightstack runs as a single process (`cmd/lightstack/main.go`) that starts six HTTP servers on different ports:
+Lightstack runs as a single process (`cmd/lightstack/main.go`) that starts seven HTTP servers on different ports:
 - **Keystone** (35357): Identity service, JWT-based authentication
 - **Nova** (8774): Compute service, VM lifecycle via libvirt
 - **Neutron** (9696): Network service, namespace isolation via netlink
-- **Cinder** (8776): Block storage, multi-backend support (local/RBD/S3)
+- **Cinder** (8776): Block storage, multi-backend support (local/RBD)
 - **Glance** (9292): Image service, multi-backend with hybrid failover
+- **Placement** (8778): stub — version discovery + empty resource-provider listings (Horizon compatibility)
 - **Metadata** (8775): EC2-compatible metadata service (no auth)
 
 Each service is initialized in `main.go` with its configuration and shares:
@@ -164,11 +163,15 @@ internal/                    # Private packages
 ├── neutron/                # Network - networks, subnets, ports, security groups
 ├── cinder/                 # Block storage - volumes, snapshots
 ├── glance/                 # Images - metadata, multi-backend storage
+├── placement/              # Placement stub - version discovery (Horizon)
 ├── database/               # DB models, migrations (models.go, migrate.go)
 ├── middleware/             # Auth, logging, CORS, recovery
 ├── common/                 # Config loading, error handling
 ├── compute/                # Node registry for multi-node coordination
-└── metadata/               # EC2 metadata service
+├── console/                # noVNC console tokens + reconciler (SPEC-021)
+├── health/                 # Readiness/liveness checks (SPEC-013)
+├── metadata/               # EC2 metadata service
+└── teardown/               # `lightstack cleanup` host-state reclamation (SPEC-010)
 
 pkg/                        # Public/reusable packages
 ├── hypervisor/             # libvirt abstraction (stub + real modes)
@@ -267,7 +270,7 @@ Requires Linux with appropriate dependencies.
 
 ## Database Schema
 
-PostgreSQL with 15 tables. Key tables:
+PostgreSQL with 35+ tables (see `internal/database/models.go` and `migrations/`, currently 73 up/down pairs). Key tables:
 
 - **users**: User credentials (bcrypt hashed passwords)
 - **projects**: Projects/tenants
@@ -440,41 +443,41 @@ if requestedVersion == "" {
 **"Token validation failed"**: Ensure `jwt_secret` matches between Keystone and other services
 
 ## Active Technologies
-- Go 1.26 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking) (002-horizon-full-compatibility)
+- Go 1.27 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking) (002-horizon-full-compatibility)
 - PostgreSQL 18 (primary database) (002-horizon-full-compatibility)
 - 007-helm-prereqs-bootstrap-catalog: admin-password bootstrap (bcrypt, `internal/keystone`) + `LIGHTSTACK_ENDPOINT_SCHEME` catalog scheme — no new dependencies, no schema change
 - 009-single-node-real-mode: real-mode single node — per-instance qcow2 overlay over a raw base, startup+periodic network reconciler, metadata/cloud-init reachability + `user_data`, north-south (reuse router NAT), block storage (sync attach + boot-from-volume). No new Go deps; image adds `qemu-img`+`genisoimage`; migration 060 (`volumes.source_image_id`); node-local data under `/var/lib/lightstack`.
 - 011-ensure-storage-subdirs: real-mode node-local storage subdirs guaranteed to exist — Glance creates its canonical `/var/lib/lightstack/images` (drops the `~/.lightstack` fallback; matches `ceph.go`) + chart initContainer pre-creates all subdirs on the `host-storage` hostPath. No new Go/chart deps, no schema change.
 - Helm 3.12+ chart (Go `text/template`); JSON Schema **draft-07**; Markdown docs. No Go code changes. + Helm's built-in `values.schema.json` validation + release-status/pod-readiness reporting; the **helm-unittest** plugin (existing harness). No new Go modules, no chart dependencies. (012-integration-contract)
 - N/A — the external PostgreSQL is the product's and is untouched; this feature adds no schema or migration. (012-integration-contract)
-- Go 1.26 + Gin (HTTP), pgx/pgxpool (existing `database.HealthCheck`). **No new Go modules.** Chart: Helm 3.12+, JSON Schema draft-07, helm-unittest (existing harness) — no new chart deps. (013-readiness-liveness-probes)
+- Go 1.27 + Gin (HTTP), pgx/pgxpool (existing `database.HealthCheck`). **No new Go modules.** Chart: Helm 3.12+, JSON Schema draft-07, helm-unittest (existing harness) — no new chart deps. (013-readiness-liveness-probes)
 - External PostgreSQL — **no schema, no migration, no persisted data** (readiness is a live `Ping`). (013-readiness-liveness-probes)
 - 014-ceph-rgw-s3-backend: Ceph RGW (S3) as Glance backend (validate + implement) + tenant object storage. Existing aws-sdk-go-v2 with a custom `http.Client` (CA pool + connect/first-byte transport timeouts; body streams, no total cap); stdlib `crypto/hmac`+`sha256` for server-side S3 SigV4/SigV2 verification; OpenStack EC2-credentials API reusing the `credentials` table (+ `access_key` col); Nova lazy fetch-on-boot via `storage.EnsureLocalBase` (+ checksum-on-upload, node-local base reclaim). Migration 062 (`credentials.access_key` + `s3` catalog seed); RGW `implicit tenants=s3`. No new Go modules.
-- Go 1.26 (module targets 1.21+) + gin-gonic/gin v1.12.0 (HTTP), google/uuid v1.6.0 (`uuid.Validate` — already imported), jackc/pgx/v5 v5.10.0 (`pgx.ErrNoRows`). No new modules. (015-identity-uuid-404)
+- Go 1.27 (module targets 1.21+) + gin-gonic/gin v1.12.0 (HTTP), google/uuid v1.6.0 (`uuid.Validate` — already imported), jackc/pgx/v5 v5.10.0 (`pgx.ErrNoRows`). No new modules. (015-identity-uuid-404)
 - PostgreSQL — **no schema change, no migration** (identity id columns stay `uuid`). (015-identity-uuid-404)
-- 026-rename-to-lightstack: product rename to `lightstack` across 6,749 occurrences / 482 files / 51 paths. Go 1.26.2, **no dependency change**. Module path becomes `github.com/cobaltcore-dev/lightstack`, matching the repository. Case by role: `Lightstack` prose, `lightstack` identifiers/paths, `LIGHTSTACK_` for the 77 env vars. Three hand-written exceptions: iptables chain prefixes → `LS-SG-`/`LS-NSI-` (the full name overflows the 28-char budget), the catalog host token (migration `052` + `auth.go:684,686` must move together), and the acceptance check written as a character class so it does not match itself. No new tests — verification is the acceptance check plus manual checks.
+- 026-rename-to-lightstack: product rename to `lightstack` across 6,749 occurrences / 482 files / 51 paths. Go 1.27.2, **no dependency change**. Module path becomes `github.com/cobaltcore-dev/lightstack`, matching the repository. Case by role: `Lightstack` prose, `lightstack` identifiers/paths, `LIGHTSTACK_` for the 77 env vars. Three hand-written exceptions: iptables chain prefixes → `LS-SG-`/`LS-NSI-` (the full name overflows the 28-char budget), the catalog host token (migration `052` + `auth.go:684,686` must move together), and the acceptance check written as a character class so it does not match itself. No new tests — verification is the acceptance check plus manual checks.
 - PostgreSQL — **no schema change, no new migration**; migration `052` edited in place (five `endpoints.url` rows). Nothing is deployed. (026-rename-to-lightstack)
-- Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); **no new modules** (017-nova-server-detail-readback)
+- Go 1.27 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); **no new modules** (017-nova-server-detail-readback)
 - PostgreSQL — new migration `063` adds `instances.key_name` (nullable `VARCHAR(255)`); reuses `server_security_groups` (migration 049) and the Neutron `security_groups` table for name→id resolution (017-nova-server-detail-readback)
 - No product code. Verification tooling only — Helm 3.12+ (new verification chart; existing `charts/lightstack`), Bash + `python-openstackclient` + `curl` (existing `test/horizon_*.sh`), and the unmodified upstream kolla Horizon image (Flamingo 2025.2, Python/Django — config-only, never patched). + docker-compose (stub pass); k3s (root/privileged) + `charts/lightstack` in real mode; minikube + Rook/Ceph exposing an RGW (S3) endpoint; a new verification Horizon chart (kolla image + `horizon-config` ConfigMap + memcached + `bonigarcia/novnc`). (018-horizon-dashboard-verification)
 - No schema change, no migration. Real-mode backends: node-local `/var/lib/lightstack` (VM disks, volumes), Ceph **RGW/S3** for Glance images. External PostgreSQL unchanged. **RBD not used.** (018-horizon-dashboard-verification)
-- Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); `google/uuid`. **No new modules.** (019-horizon-compat-api-fixes)
+- Go 1.27 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL); `google/uuid`. **No new modules.** (019-horizon-compat-api-fixes)
 - External PostgreSQL. **One** new migration `064_fix_cinder_volume_alias_localhost` (reseeds the `volume` alias `…015` endpoint URL only; s3 `…016` is config-overridden by `BuildServiceCatalog` and deliberately untouched). F9 reuses the existing `volumes.volume_type` column (migration `016`); F4 and F6 add **no** columns. (019-horizon-compat-api-fixes)
-- Go 1.26 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL). **No new modules.** (020-horizon-create-ui-enablement)
+- Go 1.27 (module targets 1.21+) + gin-gonic/gin (HTTP), jackc/pgx/v5 + pgxpool (PostgreSQL). **No new modules.** (020-horizon-create-ui-enablement)
 - External PostgreSQL. **No migration, no schema change** — reuses `quotas` (migration `007`, row-per-resource, `project_id UUID NOT NULL REFERENCES projects(id)`) and `cinder_quotas` (migration `039`). Neutron has no quota table and does not gain one (limits stay code defaults; usage is counted live). (020-horizon-create-ui-enablement)
-- Go 1.26 (module targets 1.21+) + jackc/pgx/v5 + pgxpool (already a dependency), gin-gonic/gin. **No new modules.** (027-database-pool-injection)
+- Go 1.27 (module targets 1.21+) + jackc/pgx/v5 + pgxpool (already a dependency), gin-gonic/gin. **No new modules.** (027-database-pool-injection)
 - PostgreSQL. **No schema change, no migration.** The pool configuration from `lightstack.yaml` is unchanged. (027-database-pool-injection)
-- Go 1.26 (module targets 1.21+) + gin-gonic/gin, jackc/pgx/v5 + pgxpool, digitalocean/go-libvirt (`DomainGetXMLDesc`, `DomainLookupByUUID` → `Domain.ID`, `ConnectGetCapabilities`, all present in the pinned revision `v0.0.0-20260609165003-6254771e63a8`), `encoding/xml`. **No new Go modules.** (021-real-novnc-console)
+- Go 1.27 (module targets 1.21+) + gin-gonic/gin, jackc/pgx/v5 + pgxpool, digitalocean/go-libvirt (`DomainGetXMLDesc`, `DomainLookupByUUID` → `Domain.ID`, `ConnectGetCapabilities`, all present in the pinned revision `v0.0.0-20260609165003-6254771e63a8`), `encoding/xml`. **No new Go modules.** (021-real-novnc-console)
 - PostgreSQL, migration `065_console_auth_tokens`. It is edited in place: nothing is deployed, and test databases are recreated. This amendment adds `domain_id`. Node-local: `<state_path>/console-tokens/` (the projection) and `<state_path>/console-sockets/` (QEMU-owned, 0750, sockets only). (021-real-novnc-console)
-- Go 1.26 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL). **No new modules.** (022-project-tenant-isolation)
+- Go 1.27 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL). **No new modules.** (022-project-tenant-isolation)
 - External PostgreSQL. **One migration**, `072_groups_domain_id_uuid`: `groups.domain_id` (a `VARCHAR` with no foreign key since `010`) becomes `UUID NOT NULL REFERENCES domains(id)`, alias rows normalised, anything ambiguous stops the migration. Every other fix is behavioural. (022-project-tenant-isolation)
-- Go 1.26 (repo pins `go 1.26`; Constitution requires 1.21+) + Gin (HTTP), pgx/pgxpool (PostgreSQL), golang-jwt/v5. **No new modules.** Contract tests use the already-pinned `gophercloud v1.14.1`. (023-tenant-scoping-authz)
+- Go 1.27 (repo pins `go 1.26`; Constitution requires 1.21+) + Gin (HTTP), pgx/pgxpool (PostgreSQL), golang-jwt/v5. **No new modules.** Contract tests use the already-pinned `gophercloud v1.14.1`. (023-tenant-scoping-authz)
 - PostgreSQL — **no schema change, no migration**. `instance_actions.project_id` is already `UUID NOT NULL`; the change is which value is written to it. (023-tenant-scoping-authz)
-- Go 1.26 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL), `vishvananda/netlink` (real-mode bridge/TAP), `google/uuid`. **No new modules.** (024-neutron-api-fidelity-realmode)
+- Go 1.27 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL), `vishvananda/netlink` (real-mode bridge/TAP), `google/uuid`. **No new modules.** (024-neutron-api-fidelity-realmode)
 - External PostgreSQL. **One** migration `066_neutron_external_networks` adds `networks.external BOOLEAN NOT NULL DEFAULT false` (reversible). The other five defects need no schema change — `subnets.gateway_ip` and `security_group_rules.port_range_min/max` are already nullable; the API just refuses to produce those states. (024-neutron-api-fidelity-realmode)
-- Go 1.26 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL), `digitalocean/go-libvirt`, `google/uuid`. **No new modules.** (025-nova-gaps-client-discovery)
+- Go 1.27 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL), `digitalocean/go-libvirt`, `google/uuid`. **No new modules.** (025-nova-gaps-client-discovery)
 - External PostgreSQL. **Two** reversible migrations: `067_instance_fault` (`instances.fault_code`/`fault_message`/`fault_created`, nullable — makes a failed boot readable as upstream's `fault` object) and `068_instance_actions_time_index` (index on `instance_actions(start_time)` for the retention sweep). Two new `NovaConfig` settings: `state_reconcile_interval` (30s) and `instance_action_retention` (90d). (025-nova-gaps-client-discovery)
-- Go 1.26 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL), `google/uuid`. **No new modules.** One new shared helper: a `406 Not Acceptable` constructor in `internal/common/errors.go` (the product has none). (025-followup)
+- Go 1.27 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL), `google/uuid`. **No new modules.** One new shared helper: a `406 Not Acceptable` constructor in `internal/common/errors.go` (the product has none). (025-followup)
 - External PostgreSQL. **No schema change, no migration** — every fix is behavioural. One existing column gains a reader: `snapshots.size_gb`, so the `gigabytes` quota counts volume **and** snapshot size as upstream does. (025-followup)
 
 ## Recent Changes
@@ -487,5 +490,5 @@ if requestedVersion == "" {
 - 014-ceph-rgw-s3-backend: plan — RGW/S3 Glance backend (validate + boot lazy-fetch / timeout rework / TLS-CA) + tenant object storage (EC2-creds API + public self-validating `/v3/s3tokens` + `implicit tenants=s3`); migration 062 (`credentials.access_key` + `s3` catalog) (SPEC-014 plan)
 - 011-ensure-storage-subdirs: fix real-mode storage-subdir gap (cloud-storage#510) — Glance no longer falls back to `~/.lightstack`; chart initContainer pre-creates node-local subdirs (SPEC-011 plan)
 - v0.7.0 planning: Database DI (ADR-001), rate limiting (ADR-002), Terraform conformance, CI linting, Cinder route redirect, pagination standardization (SPEC-006)
-- 002-horizon-full-compatibility: Added Go 1.26 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking)
+- 002-horizon-full-compatibility: Added Go 1.27 + Gin (HTTP framework), pgx (PostgreSQL driver), gophercloud (contract testing), go-libvirt (hypervisor), netlink (networking)
 - 009-single-node-real-mode: real-mode VM disk/network/metadata/north-south + block storage on a single node (SPEC-009 plan)

@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+All changes since v0.6.1 (63 commits, SPEC-009 through SPEC-027). Migrations now run
+to **073** (from 055).
+
+### ⚡ Real-Mode Single Node (SPEC-009)
+- **Per-instance qcow2 overlay** over a raw base image, node-local data under `/var/lib/lightstack`
+- **Startup + periodic network reconciler**: re-spawns DHCP (dnsmasq) and re-creates bridges from the DB so VM networking survives control-plane restarts
+- **Metadata / cloud-init reachability**: `user_data` delivery via the EC2 metadata service
+- **North-south networking**: reuse of router NAT for external connectivity
+- **Block storage**: synchronous attach, volume-from-image, boot-from-volume (migration `060`: `volumes.source_image_id`)
+
+### 🖥️ Real noVNC Console (SPEC-021)
+- Real-mode VNC console proxy with **revocable one-time tokens** (`console_auth_tokens` table, migration `065`)
+- `lightstack console-tokens list|purge` subcommand for inspecting and revoking tokens
+- Console sockets kept out of libvirt's domain directories; token retention reconciler
+
+### 🧹 Teardown & Cleanup (SPEC-010)
+- `lightstack cleanup [--dry-run]` subcommand: reclaim all host state (bridges, TAPs, dnsmasq, iptables, legacy namespaces)
+
+### 🩺 Health Probes (SPEC-013)
+- Kubernetes readiness (gates on DB reachability + all listeners bound) and dependency-free liveness endpoints
+- `lightstack healthcheck [--ready|--live]` subcommand for local diagnosis / exec probes
+
+### 🗄️ Ceph RGW / S3 Backend (SPEC-014)
+- **Glance backend via Ceph RGW (S3)**: custom `http.Client` with CA-pool and connect/first-byte timeouts; image data streams, no total cap
+- **Tenant object storage**: OpenStack EC2-credentials API (reuses `credentials` table, migration `062` adds `access_key`) and public self-validating `POST /v3/s3tokens` (server-side SigV4/SigV2 verification)
+- Nova lazy fetch-on-boot via `storage.EnsureLocalBase` (+ checksum-on-upload, node-local base reclaim)
+
+### 🆕 Placement Service
+- Seventh listener on `:8778` (stub: version discovery + empty resource-provider listings), listed in the service catalog (migration `071`). Required for Horizon compatibility.
+
+### 🔐 Tenant Scoping & Authorization (SPEC-023, cloud-storage#549)
+- Admin override (`admin_or_owner` semantics, creation excluded) applied across compute server operations; `?all_tenants` is admin-only opt-in, silently ignored otherwise
+- Domain-scoped auth requests refused with `400` (project-scoped and unscoped are the only supported scopes)
+- `os-simple-tenant-usage` cross-tenant leak closed; query filters honoured on six identity collections
+
+### 🌐 Neutron API Fidelity & Real-Mode Networking (SPEC-024, cloud-storage#546)
+- L2 isolation moved to **one Linux bridge per network in the root namespace** (no per-project namespaces; libvirt must reach the devices)
+- External networks as a third visibility disjunct (migration `066`: `networks.external`), pre-existing gateways grandfathered
+- TAP devices attached in the root namespace; stub attach no longer trusts a process-local map; Neutron error envelope made OpenStack-compatible on every route
+
+### 🖥️ Nova Client-Discovery & Compute-Answer Defects (SPEC-025 + follow-ups)
+- Discovery self-links unified through `common.BaseURL` (five services had bypassed it)
+- `fault` object on failed boots (migration `067`), `instance_actions` time index (migration `068`), `state_reconcile_interval` and `instance_action_retention` settings
+- Self-heal of a missing libvirt guest from stored state
+- **Block-storage quota enforcement** on all eight call sites (three `INSERT INTO volumes` outside the shared provisioning routine, plus snapshots/backups/extend); `gigabytes` now counts volume **and** snapshot size
+
+### 🔁 Project Lifecycle & Isolation (SPEC-022, cloud-storage#545)
+- `groups.domain_id` normalised to `UUID NOT NULL REFERENCES domains(id)` (migration `072`, stops on ambiguity)
+
+### 📦 Rename to lightstack (SPEC-026)
+- Product renamed across ~6,749 occurrences / 482 files; module path `github.com/cobaltcore-dev/lightstack`; iptables chain prefixes `LS-SG-`/`LS-NSI-`; 77 `LIGHTSTACK_` env vars
+
+### 🏗️ Database Pool Injection (SPEC-027, ADR-001)
+- Process-wide database handle removed: every database-using constructor takes the `*pgxpool.Pool` first; `database.WithTx(ctx, pool, fn)`; tests inject their own pool
+
+### 🔧 Maintenance
+- **One SQL placeholder helper** (`common.SQLArgs`) and marker paging fixed on six listings
+- **Volume transfer awaiting-transfer state** (migration `073`)
+- **Keystone**: nullable project columns read as nullable; placement listed in the service catalog
+- **Security**: Go 1.27.2 and `x/net` 0.60.0 for the 2026-10-08 advisories; libvirt reconnect and reboot-type fixes; instances without a domain handled
+
+---
+
 ## [0.6.1] - 2026-04-22
 
 ### 📋 v0.7.0 Planning & Specifications

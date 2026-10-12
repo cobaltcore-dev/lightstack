@@ -1,8 +1,8 @@
 # What's Left? - Lightstack Status Overview
 
-**Date**: April 2026
-**Version**: v0.6.0
-**Current Coverage**: 104% (342/330 endpoints) ✅
+**Date**: October 2026
+**Version**: Unreleased (post-v0.6.1)
+**Current Coverage**: ~335 functional operations vs the 330-endpoint baseline (see [blueprint.md](blueprint.md)); the old "104% (342/330)" figure counted raw routes and is superseded
 
 > **SPEC-009 (2026-06-22): single-node real mode implemented + host-validated.** The
 > real-mode workstreams of lightstack#52 Part A — VM disk (WS-0), startup network
