@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   require a real secret). `lightstack-migrate` is exempt — it never signs or
   validates a token, and the image entrypoint and the documented Kubernetes init
   container run it against the canned config before any secret is wired in.
+  Consequently a bare `docker run` of the image now requires `LIGHTSTACK_JWT_SECRET`
+  (fail-closed by design; see the comment above the Dockerfile `CMD`).
 - **Horizon default role** corrected: `OPENSTACK_KEYSTONE_DEFAULT_ROLE` is `member`
   (matches the seeded admin/member/reader roles) — was `_member_`, which matches
   nothing in the seed.

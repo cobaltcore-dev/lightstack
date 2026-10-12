@@ -100,5 +100,11 @@ LABEL org.opencontainers.image.title="Lightstack" \
     org.opencontainers.image.revision=$VCS_REF \
     org.opencontainers.image.version=$VERSION
 
-# Run migrations and start Lightstack
+# Run migrations and start Lightstack.
+#
+# Note on the JWT-secret guard (S2): the server refuses the canned config's
+# well-known default secret, so a bare `docker run` of this image needs
+# LIGHTSTACK_JWT_SECRET set (or LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1
+# for an isolated dev container). lightstack-migrate above is exempt — it
+# never signs or validates a token.
 CMD ["/bin/sh", "-c", "/app/lightstack-migrate up && /app/lightstack --config /app/config/lightstack.yaml"]

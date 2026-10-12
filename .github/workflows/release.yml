@@ -117,9 +117,12 @@ jobs:
           generate_release_notes: true
           # Version-scoped globs only: a bare `dist/lightstack-*` would also
           # absorb the chart tarball if the publish step ever moved above
-          # this one.
+          # this one. The migrate tool needs its own pattern — its files are
+          # prefixed lightstack-migrate-<tag>-, which the main pattern does
+          # not match.
           files: |
             dist/lightstack-${{ github.ref_name }}-*-*
+            dist/lightstack-migrate-${{ github.ref_name }}-*-*
             dist/checksums-*
 
       - name: Publish Helm chart
