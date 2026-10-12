@@ -5,7 +5,8 @@
 #      sits behind the `ceph` build tag, so cross-compilation needs no cgo)
 #   2. a multi-arch container image pushed to ghcr.io
 #   3. a GitHub Release with the binaries and their checksums
-#   4. the Helm chart published as an OCI artifact (appVersion = the tag)
+#   4. the Helm chart published as an OCI artifact (appVersion = the bare
+#      release version, no leading "v" — same as the image tag)
 #
 # Version stamping contract (review R1): the tag is injected with
 # `-ldflags "-X main.Version=<tag>"` and round-tripped through
@@ -173,3 +174,7 @@ jobs:
             -u "${{ github.actor }}" --password-stdin
           helm push "dist/lightstack-${CHART_VERSION}.tgz" \
             "oci://ghcr.io/${{ github.repository_owner }}/charts"
+          # Note: the chart lands in the org-level `charts` OCI namespace
+          # (ghcr.io/<owner>/charts/lightstack), not the repo-scoped image
+          # namespace — the GITHUB_TOKEN's packages:write covers it as long
+          # as the org allows this repo to write org packages.
