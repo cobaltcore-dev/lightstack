@@ -29,8 +29,8 @@ jobs:
     name: Test gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: Run unit tests
@@ -41,11 +41,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
+
+      - name: Compute image tag
+        # Container tags and the chart's appVersion carry the bare version
+        # (0.7.0) — matching Chart.yaml's appVersion and therefore the
+        # image.tag the in-repo chart defaults to. The binary itself reports
+        # the full tag (v0.7.0), consistent with `git describe` stamps.
+        run: echo "IMAGE_TAG=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Build binaries
         run: |
@@ -59,7 +66,7 @@ jobs:
               -ldflags "-s -w -X main.Version=${VERSION}" \
               -o "dist/lightstack-${VERSION}-${GOOS}-${GOARCH}" ./cmd/lightstack
             CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-              go build -trimpath -s -w \
+              go build -trimpath -ldflags "-s -w" \
               -o "dist/lightstack-migrate-${VERSION}-${GOOS}-${GOARCH}" ./cmd/lightstack-migrate
           done
 
@@ -94,8 +101,11 @@ jobs:
           file: build/package/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          # IMAGE_TAG is the bare version (no leading "v") — the same value
+          # the in-repo chart's appVersion defaults image.tag to, so a
+          # repo-direct `helm install` pulls an image that actually exists.
           tags: |
-            ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME}
+            ghcr.io/${{ github.repository }}:${{ env.IMAGE_TAG }}
           build-args: |
             VERSION=${{ github.ref_name }}
             VCS_REF=${{ github.sha }}
@@ -105,8 +115,11 @@ jobs:
         with:
           draft: true
           generate_release_notes: true
+          # Version-scoped globs only: a bare `dist/lightstack-*` would also
+          # absorb the chart tarball if the publish step ever moved above
+          # this one.
           files: |
-            dist/lightstack-*
+            dist/lightstack-${{ github.ref_name }}-*-*
             dist/checksums-*
 
       - name: Publish Helm chart
@@ -114,10 +127,11 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # The chart's own version (Chart.yaml `version`) is bumped per chart
-          # change in the repo; the app version is pinned to this release tag
-          # (and the image tag matches it, including the leading "v").
+          # change in the repo; the app version is the bare release version
+          # (no leading "v"), matching Chart.yaml's appVersion and the image
+          # tag pushed above.
           CHART_VERSION="$(awk '/^version:/ {print $2}' charts/lightstack/Chart.yaml)"
-          helm package charts/lightstack --app-version "${GITHUB_REF_NAME}" -d dist/
+          helm package charts/lightstack --app-version "${IMAGE_TAG}" -d dist/
           echo "${GHCR_TOKEN}" | helm registry login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
           helm push "dist/lightstack-${CHART_VERSION}.tgz" \

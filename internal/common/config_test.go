@@ -859,3 +859,17 @@ func TestLoadConfigAcceptsARandomSecret(t *testing.T) {
 		t.Errorf("JWTSecret = %q; want it preserved", cfg.Keystone.JWTSecret)
 	}
 }
+
+// TestLoadConfigForMigrationSkipsSecretGuard pins the migration tool's
+// exemption: it never signs or validates a token, and shipped deployment
+// paths (image entrypoint, Kubernetes init container) run it against the
+// canned config before any secret is wired in.
+func TestLoadConfigForMigrationSkipsSecretGuard(t *testing.T) {
+	cfg, err := LoadConfigForMigration(writeTestConfig(t, "database:\n  url: postgres://u:p@h/l\n"))
+	if err != nil {
+		t.Fatalf("LoadConfigForMigration: %v", err)
+	}
+	if cfg.Database.URL != "postgres://u:p@h/l" {
+		t.Errorf("Database.URL = %q; want it preserved", cfg.Database.URL)
+	}
+}

@@ -4,6 +4,11 @@ FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24 AS builder
 # Build arguments for cross-compilation
 ARG TARGETOS
 ARG TARGETARCH
+# Version stamp for the binary. Declared HERE, in the builder stage: an ARG
+# only visible in a later stage is invisible to this stage's RUN, and Docker
+# silently expands it to empty — the image would then carry an unidentifiable
+# binary (-X main.Version= with an empty value), the exact failure R1 fixed.
+ARG VERSION=dev
 
 # Install build dependencies
 RUN apk add --no-cache git make

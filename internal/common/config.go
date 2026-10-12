@@ -253,8 +253,27 @@ type CacheConfig struct {
 	TTL        map[string]time.Duration `yaml:"ttl"` // Per-resource TTL overrides
 }
 
-// LoadConfig loads configuration from file and applies environment variable overrides
+// LoadConfig loads configuration from file, applies environment variable
+// overrides, and enforces the JWT-secret guard (S2): the caller runs in the
+// server's trust domain — it signs or validates tokens — so a well-known or
+// empty secret must be refused rather than warned about.
 func LoadConfig(path string) (*Config, error) {
+	return loadConfig(path, true)
+}
+
+// LoadConfigForMigration loads configuration for the migration tool, which
+// never signs or validates a token — it reads database.url and logging only.
+// The secret guard protects against token forgery, not database access, so it
+// must not gate `lightstack-migrate`: shipped deployment paths (the image
+// entrypoint and the documented Kubernetes init container) run
+// `lightstack-migrate up` against the canned config before any secret is
+// wired into the environment.
+func LoadConfigForMigration(path string) (*Config, error) {
+	return loadConfig(path, false)
+}
+
+// loadConfig is the shared loader; enforceSecretGuard selects the S2 check.
+func loadConfig(path string, enforceSecretGuard bool) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -381,7 +400,9 @@ func LoadConfig(path string) (*Config, error) {
 	// enough to mint an admin token for every service (review finding S2,
 	// docs/review/comprehensive-review-report-2026-10-12.md). The chart already
 	// fails fast on an empty secret; this gives the binary the same stance.
-	if isInsecureDefaultJWTSecret(cfg.Keystone.JWTSecret) && !allowInsecureDefaultJWTSecret() {
+	// Skipped by LoadConfigForMigration (the migration tool is outside the
+	// token trust domain).
+	if enforceSecretGuard && isInsecureDefaultJWTSecret(cfg.Keystone.JWTSecret) && !allowInsecureDefaultJWTSecret() {
 		return nil, fmt.Errorf(
 			"keystone.jwt_secret is empty or a well-known default — refusing to start. " +
 				"Set keystone.jwt_secret in the config file (or the LIGHTSTACK_JWT_SECRET " +

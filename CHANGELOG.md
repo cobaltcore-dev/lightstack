@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Release pipeline** (`.github/workflows/release.yml`, review R3): pushing a `v*`
   tag runs the test gate, builds linux/amd64 + linux/arm64 binaries (CGO-free) with
   checksums and a `--version` round-trip check, pushes the multi-arch image to
-  `ghcr.io`, creates a draft GitHub Release and publishes the Helm chart as an OCI
-  artifact with `appVersion` pinned to the tag.
+  `ghcr.io` (tagged with the bare version — `0.7.0` — matching the chart's
+  `appVersion` and the `image.tag` default), creates a draft GitHub Release and
+  publishes the Helm chart as an OCI artifact with `appVersion` pinned to the
+  release version.
 - **Chart version** 0.3.0 → 0.4.0 (appVersion 0.7.0, matching the target release).
 
 ### 🔒 Security
@@ -28,9 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shipped in `config/lightstack.yaml` and `.env.example` are public, and with
   stateless tokens knowing one is enough to mint an admin token. `LoadConfig` now
   refuses them; `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1` is the documented
-  escape hatch for isolated dev/test stacks (the plain docker-compose dev stack
+  escape hatch for isolated dev/test stacks (the plain docker-compose dev stacks
   and `make run` opt in explicitly; the Horizon stack and the Helm chart already
-  require a real secret).
+  require a real secret). `lightstack-migrate` is exempt — it never signs or
+  validates a token, and the image entrypoint and the documented Kubernetes init
+  container run it against the canned config before any secret is wired in.
 - **Horizon default role** corrected: `OPENSTACK_KEYSTONE_DEFAULT_ROLE` is `member`
   (matches the seeded admin/member/reader roles) — was `_member_`, which matches
   nothing in the seed.
