@@ -73,12 +73,12 @@ cd lightstack
 
 ### Step 2: Review Configuration
 
-**File:** `docker-compose.yml`
+**File:** `deployments/docker-compose.yml`
 
 ```yaml
 services:
   postgres:
-    image: postgres:18.3-alpine
+    image: postgres:18.4-alpine
     container_name: lightstack-postgres
     environment:
       POSTGRES_DB: lightstack
@@ -94,46 +94,67 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: lightstack-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   lightstack:
     build:
-      context: .
-      dockerfile: deployments/docker/Dockerfile
+      context: ..
+      dockerfile: build/package/Dockerfile
     container_name: lightstack
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "5001:35357"   # Keystone (identity)
-      - "8774:8774"    # Nova (compute)
-      - "9696:9696"    # Neutron (network)
-      - "8776:8776"    # Cinder (volumes)
-      - "9292:9292"    # Glance (images)
-      - "8775:8775"    # Metadata service
+      - "35357:35357"   # Keystone (identity)
+      - "8774:8774"     # Nova (compute)
+      - "9696:9696"     # Neutron (network)
+      - "8776:8776"     # Cinder (volumes)
+      - "9292:9292"     # Glance (images)
+      - "8775:8775"     # Metadata service
     environment:
       LIGHTSTACK_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
+      LIGHTSTACK_JWT_SECRET: "change-me-in-production"
+      LIGHTSTACK_ENDPOINT_HOST: "localhost"
+      LIGHTSTACK_REDIS_URL: "redis://redis:6379/0"
+      LIGHTSTACK_CACHE_ENABLED: "true"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:35357/v3"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 30s
     restart: unless-stopped
 
 volumes:
   postgres_data:
+  redis_data:
 ```
 
 ### Step 3: Start Services
 
 ```bash
-docker compose up -d
+docker compose -f deployments/docker-compose.yml up -d
 ```
 
 **Expected output:**
 ```
-[+] Running 3/3
- ✔ Network lightstack_default   Created
+[+] Running 4/4
+ ✔ Network lightstack_lightstack-network   Created
  ✔ Container lightstack-postgres       Started (healthy)
+ ✔ Container lightstack-redis          Started (healthy)
  ✔ Container lightstack                Started (healthy)
 ```
 
@@ -141,38 +162,40 @@ docker compose up -d
 
 ```bash
 # Check service status
-docker compose ps
+docker compose -f deployments/docker-compose.yml ps
 ```
 
 **Expected output:**
 ```
 NAME           IMAGE                COMMAND                  SERVICE    STATUS
 lightstack            lightstack       "/bin/sh -c '/app/o3…"   lightstack        Up (healthy)
-lightstack-postgres   postgres:18.3-alpine   "docker-entrypoint.s…"   postgres   Up (healthy)
+lightstack-redis      redis:7-alpine   "docker-entrypoint.s…"   redis       Up (healthy)
+lightstack-postgres   postgres:18.4-alpine   "docker-entrypoint.s…"   postgres   Up (healthy)
 ```
 
 ```bash
 # Check logs
-docker compose logs lightstack --tail=20
+docker compose -f deployments/docker-compose.yml logs lightstack --tail=20
 ```
 
-**Expected healthy logs:**
+**Expected healthy logs** (zerolog JSON, one object per line):
 ```
-lightstack | 2026-03-07T21:45:12Z [INFO] Running migrations...
-lightstack | 2026-03-07T21:45:13Z [INFO] Migrations complete
-lightstack | 2026-03-07T21:45:13Z [INFO] Starting lightstack services...
-lightstack | 2026-03-07T21:45:13Z [INFO] Keystone listening on :35357
-lightstack | 2026-03-07T21:45:13Z [INFO] Nova listening on :8774
-lightstack | 2026-03-07T21:45:13Z [INFO] Neutron listening on :9696
-lightstack | 2026-03-07T21:45:13Z [INFO] Cinder listening on :8776
-lightstack | 2026-03-07T21:45:13Z [INFO] Glance listening on :9292
+lightstack | {"level":"info","time":"2026-03-07T21:45:12Z","message":"Running migrations"}
+lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Migrations complete"}
+lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Starting lightstack services"}
+lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Keystone listening on :35357"}
+lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Nova listening on :8774"}
+lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Neutron listening on :9696"}
+lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Cinder listening on :8776"}
+lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Glance listening on :9292"}
+lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Placement listening on :8778"}
 ```
 
 ### Step 5: Test APIs
 
 ```bash
 # Test Keystone
-curl http://localhost:5001/v3
+curl http://localhost:35357/v3
 
 # Test Nova
 curl http://localhost:8774/v2.1
@@ -198,7 +221,7 @@ All should return JSON with version information.
 │  │  lightstack Container                         │     │
 │  │  ┌──────────────────────────────────┐ │     │
 │  │  │  lightstack Binary (ARM64 or AMD64)     │ │     │
-│  │  │  - Keystone :35357 → :5001       │ │     │
+│  │  │  - Keystone :35357                │ │     │
 │  │  │  - Nova :8774                    │ │     │
 │  │  │  - Neutron :9696                 │ │     │
 │  │  │  - Cinder :8776                  │ │     │
@@ -210,7 +233,7 @@ All should return JSON with version information.
 │  ┌───────────────┴───────────────────────┐     │
 │  │  lightstack-postgres Container                │     │
 │  │  ┌──────────────────────────────────┐ │     │
-│  │  │  PostgreSQL 16                   │ │     │
+│  │  │  PostgreSQL 18.4                  │ │     │
 │  │  │  Database: lightstack            │ │     │
 │  │  │  Volume: postgres_data           │ │     │
 │  │  └──────────────────────────────────┘ │     │
@@ -224,9 +247,9 @@ All should return JSON with version information.
 ```
 Client (OpenStack CLI)
     ↓
-http://localhost:5001/v3 (Keystone)
+http://localhost:35357/v3 (Keystone)
     ↓
-lightstack Container :35357 (internal)
+lightstack Container :35357
     ↓
 Authentication & Token Generation
     ↓
@@ -254,7 +277,7 @@ Contains:
 > `/var/lib/postgresql` (Postgres 18+ stores its data in a versioned
 > subdirectory such as `18/docker/`, so the volume must be mounted one level
 > up). A pre-existing named volume that was mounted at the old `/data` path
-> will appear **empty** after `docker compose down && up` — the data is still
+> will appear **empty** after `docker compose -f deployments/docker-compose.yml down && ... up` — the data is still
 > in the volume, but Postgres no longer reads it, so the apparent data loss is
 > silent.
 
@@ -276,27 +299,30 @@ docker exec -i lightstack-postgres psql -U lightstack lightstack < lightstack-ba
 
 ### Environment Variables
 
-Override defaults by editing `docker-compose.yml`:
+Override defaults by editing `deployments/docker-compose.yml`. The binary reads these environment variables:
 
 ```yaml
 lightstack:
   environment:
-    # Database
+    # Database (connection string — the binary does not read separate
+    # DB_USER/DB_PASSWORD/DB_NAME variables)
     LIGHTSTACK_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
 
     # JWT Secret (CHANGE IN PRODUCTION!)
     LIGHTSTACK_JWT_SECRET: "your-secret-key-here"
 
-    # Token TTL
-    LIGHTSTACK_TOKEN_TTL: "24h"
+    # Host/scheme used in advertised service-catalog endpoint URLs
+    LIGHTSTACK_ENDPOINT_HOST: "localhost"
+    LIGHTSTACK_ENDPOINT_SCHEME: "http"
 
-    # Service Ports (internal)
-    LIGHTSTACK_KEYSTONE_PORT: "35357"
-    LIGHTSTACK_NOVA_PORT: "8774"
-    LIGHTSTACK_NEUTRON_PORT: "9696"
-    LIGHTSTACK_CINDER_PORT: "8776"
-    LIGHTSTACK_GLANCE_PORT: "9292"
+    # Redis cache
+    LIGHTSTACK_REDIS_URL: "redis://redis:6379/0"
+    LIGHTSTACK_CACHE_ENABLED: "true"
 ```
+
+Other supported variables include `LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER` (test stacks only), `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS`, and the `LIGHTSTACK_GLANCE_S3_*` family for Glance S3 storage.
+
+Settings without an environment equivalent — such as the Keystone token TTL (`keystone.token_ttl`) and the service listen ports (`keystone.port`, `nova.port`, etc.) — are configured in `lightstack.yaml`.
 
 ### Port Mapping
 
@@ -305,13 +331,11 @@ Change external ports without modifying Lightstack code:
 ```yaml
 lightstack:
   ports:
-    - "5001:35357"   # External:Internal
+    - "35357:35357"   # External:Internal
     - "8774:8774"
 ```
 
-**Why 5001 instead of 5000?**
-- macOS uses port 5000 for AirPlay/AirTunes
-- Solution: Map external 5001 to internal 35357
+To expose Keystone on a different host port, change only the left side, e.g. `"35358:35357"`.
 
 ### Custom Configuration File
 
@@ -346,34 +370,34 @@ postgres:
 
 ```bash
 # Start all services
-docker compose up -d
+docker compose -f deployments/docker-compose.yml up -d
 
 # Stop all services (keeps data)
-docker compose down
+docker compose -f deployments/docker-compose.yml down
 
 # Stop and remove volumes (DELETES ALL DATA!)
-docker compose down -v
+docker compose -f deployments/docker-compose.yml down -v
 
 # Restart single service
-docker compose restart lightstack
-docker compose restart postgres
+docker compose -f deployments/docker-compose.yml restart lightstack
+docker compose -f deployments/docker-compose.yml restart postgres
 ```
 
 ### View Logs
 
 ```bash
 # All services
-docker compose logs -f
+docker compose -f deployments/docker-compose.yml logs -f
 
 # Specific service
-docker compose logs -f lightstack
-docker compose logs -f postgres
+docker compose -f deployments/docker-compose.yml logs -f lightstack
+docker compose -f deployments/docker-compose.yml logs -f postgres
 
 # Last N lines
-docker compose logs lightstack --tail=50
+docker compose -f deployments/docker-compose.yml logs lightstack --tail=50
 
 # Since timestamp
-docker compose logs --since="2026-03-07T20:00:00"
+docker compose -f deployments/docker-compose.yml logs --since="2026-03-07T20:00:00"
 ```
 
 ### Execute Commands in Containers
@@ -419,10 +443,10 @@ cat backup.sql | docker exec -i lightstack-postgres psql -U lightstack lightstac
 git pull
 
 # Rebuild image
-docker compose build lightstack
+docker compose -f deployments/docker-compose.yml build lightstack
 
 # Restart with new image
-docker compose up -d
+docker compose -f deployments/docker-compose.yml up -d
 ```
 
 ---
@@ -436,30 +460,30 @@ docker compose up -d
 **Debug:**
 ```bash
 # Check exit reason
-docker compose logs lightstack
+docker compose -f deployments/docker-compose.yml logs lightstack
 
 # Common issues:
 # - Database not ready: wait 10 seconds
-# - Port conflict: change port in docker-compose.yml
+# - Port conflict: change port in deployments/docker-compose.yml
 # - Migration failure: check postgres logs
 ```
 
 ### Port Already in Use
 
-**Symptom:** `Bind for 0.0.0.0:5001 failed: port is already allocated`
+**Symptom:** `Bind for 0.0.0.0:35357 failed: port is already allocated`
 
 **Solution:**
 ```bash
 # Find what's using the port
-lsof -i:5001
+lsof -i:35357
 
 # Option 1: Kill the process
 kill -9 <PID>
 
 # Option 2: Change lightstack port
-# Edit docker-compose.yml:
+# Edit deployments/docker-compose.yml:
 ports:
-  - "5002:35357"   # Use different port
+  - "35358:35357"   # Use different port
 ```
 
 ### Database Connection Failed
@@ -469,10 +493,10 @@ ports:
 **Debug:**
 ```bash
 # Check postgres is running
-docker compose ps postgres
+docker compose -f deployments/docker-compose.yml ps postgres
 
 # Check postgres logs
-docker compose logs postgres
+docker compose -f deployments/docker-compose.yml logs postgres
 
 # Test connection from lightstack container
 docker exec lightstack nc -zv postgres 5432
@@ -481,10 +505,10 @@ docker exec lightstack nc -zv postgres 5432
 **Solution:**
 ```bash
 # Restart postgres
-docker compose restart postgres
+docker compose -f deployments/docker-compose.yml restart postgres
 
 # Wait for healthy status
-docker compose ps
+docker compose -f deployments/docker-compose.yml ps
 ```
 
 ### Health Check Failing
@@ -503,13 +527,13 @@ docker exec lightstack curl -f http://localhost:35357/v3
 **Common fixes:**
 ```bash
 # Wait longer (first start takes 30s for migrations)
-docker compose ps
+docker compose -f deployments/docker-compose.yml ps
 
 # Check lightstack is actually listening
 docker exec lightstack netstat -tlnp
 
 # Restart service
-docker compose restart lightstack
+docker compose -f deployments/docker-compose.yml restart lightstack
 ```
 
 ### Migrations Failed
@@ -526,8 +550,8 @@ docker exec lightstack /app/lightstack-migrate reset
 docker exec lightstack /app/lightstack-migrate up
 
 # Or: Fresh start
-docker compose down -v
-docker compose up -d
+docker compose -f deployments/docker-compose.yml down -v
+docker compose -f deployments/docker-compose.yml up -d
 ```
 
 ### Container Out of Memory
@@ -558,7 +582,7 @@ Lightstack Docker images support both ARM64 and AMD64 architectures.
 
 **Build for current platform:**
 ```bash
-docker compose build lightstack
+docker compose -f deployments/docker-compose.yml build lightstack
 ```
 
 **Build for specific platform:**
@@ -566,7 +590,7 @@ docker compose build lightstack
 docker buildx build \
   --platform linux/amd64 \
   -t lightstack:amd64 \
-  -f deployments/docker/Dockerfile \
+  -f build/package/Dockerfile \
   .
 ```
 
@@ -575,7 +599,7 @@ docker buildx build \
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -t lightstack:latest \
-  -f deployments/docker/Dockerfile \
+  -f build/package/Dockerfile \
   .
 ```
 
@@ -648,7 +672,7 @@ See [MULTIARCH.md](MULTIARCH.md) for detailed multi-architecture guide.
 
 **Health check endpoint:**
 ```bash
-curl http://localhost:5001/v3
+curl http://localhost:35357/v3
 ```
 
 **Prometheus metrics** (if enabled):
@@ -699,23 +723,28 @@ postgres:
 
 ### Lightstack Connection Pool
 
+Connection pool settings are configured in `lightstack.yaml` (not via environment variables):
+
 ```yaml
-lightstack:
-  environment:
-    LIGHTSTACK_DB_MAX_CONNECTIONS: "20"
-    LIGHTSTACK_DB_MAX_IDLE: "5"
-    LIGHTSTACK_DB_CONN_MAX_LIFETIME: "1h"
+database:
+  max_connections: 50
+  min_connections: 2
+  max_conn_lifetime: 1h
+  max_conn_idle_time: 10m
+  health_check_period: 30s
 ```
+
+Mount the adjusted file as shown in [Custom Configuration File](#custom-configuration-file).
 
 ---
 
 ## Summary
 
 **Docker Compose deployment provides:**
-- ✅ One-command deployment (`docker compose up -d`)
+- ✅ One-command deployment (`docker compose -f deployments/docker-compose.yml up -d`)
 - ✅ Automatic health checks
 - ✅ Data persistence
-- ✅ Easy updates (`docker compose pull && docker compose up -d`)
+- ✅ Easy updates (`docker compose -f deployments/docker-compose.yml build && docker compose -f deployments/docker-compose.yml up -d`)
 - ✅ Multi-architecture support (ARM64 + AMD64)
 - ✅ Production-ready configuration
 

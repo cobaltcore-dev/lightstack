@@ -40,6 +40,11 @@ docker compose -f docker-compose-horizon.yml logs --tail 100 # Last 100 lines
 docker exec -it lightstack /bin/sh                    # lightstack container
 docker exec -it lightstack-horizon /bin/bash          # Horizon container
 docker exec -it lightstack-postgres psql -U lightstack       # Database
+
+# Lightstack CLI subcommands (binary on the host, or /app/lightstack in the container)
+lightstack healthcheck --ready                        # Health probe (--live for liveness)
+lightstack cleanup --dry-run                          # Preview cleanup of orphaned state
+lightstack console-tokens list                        # noVNC console tokens (also: purge)
 ```
 
 ## Service Ports
@@ -52,6 +57,7 @@ docker exec -it lightstack-postgres psql -U lightstack       # Database
 | Neutron | 9696 | http://localhost:9696/ |
 | Cinder | 8776 | http://localhost:8776/ |
 | Glance | 9292 | http://localhost:9292/ |
+| Placement (stub) | 8778 | http://localhost:8778/ |
 | Metadata | 8775 | http://localhost:8775/ |
 | noVNC | 6080 | http://localhost:6080/ |
 | PostgreSQL | 5432 | localhost:5432 |

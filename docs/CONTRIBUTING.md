@@ -32,7 +32,7 @@ This project follows a standard code of conduct:
 ### Prerequisites
 
 **Required:**
-- Go 1.26 or higher
+- Go 1.27 or higher
 - PostgreSQL 18 or higher
 - Git
 
@@ -104,8 +104,8 @@ export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
-export OS_USER_DOMAIN_NAME=default
-export OS_PROJECT_DOMAIN_NAME=default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
 
 openstack token issue
 ```

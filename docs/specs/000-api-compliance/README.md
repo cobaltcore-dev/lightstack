@@ -228,8 +228,8 @@ export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
-export OS_USER_DOMAIN_NAME=default
-export OS_PROJECT_DOMAIN_NAME=default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
 
 # Test Keystone
 openstack token issue

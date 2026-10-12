@@ -76,7 +76,7 @@ vmstat 1
 
 ```bash
 # Keystone
-curl http://localhost:5001/v3
+curl http://localhost:35357/v3
 # Should return: {"version": {...}}
 
 # Nova
@@ -87,8 +87,9 @@ curl http://localhost:8774/v2.1
 curl http://localhost:9696/v2.0
 # Should return: {"versions": [...]}
 
-# All services
-for port in 5001 8774 9696 8776 9292; do
+# All services (Metadata :8775 included; Placement :8778 is a stub whose
+# version discovery answers too, if you run it reachable)
+for port in 35357 8774 9696 8776 9292 8775 8778; do
   echo "Port $port: $(curl -s http://localhost:$port | jq -r '.version.status // .versions[0].status // "ERROR"')"
 done
 ```
@@ -156,7 +157,7 @@ openstack server list --all-projects -f json | jq 'group_by(.Project) | map({pro
 
 ```bash
 # Keystone health
-curl http://localhost:5001/v3
+curl http://localhost:35357/v3
 
 # Nova health
 curl http://localhost:8774/v2.1
@@ -272,11 +273,11 @@ docker compose start lightstack
 
 ```bash
 # Backup configuration
-cp docker-compose.yml docker-compose.yml.backup-$(date +%Y%m%d)
+cp deployments/docker-compose.yml deployments/docker-compose.yml.backup-$(date +%Y%m%d)
 cp config/lightstack.yaml config/lightstack.yaml.backup-$(date +%Y%m%d)
 
 # Or tar everything:
-tar -czf lightstack-config-$(date +%Y%m%d).tar.gz docker-compose.yml config/ deployments/
+tar -czf lightstack-config-$(date +%Y%m%d).tar.gz deployments/ config/
 ```
 
 ### Disaster Recovery Plan
@@ -302,7 +303,7 @@ cd /opt/lightstack
 docker compose down -v
 
 # 2. Restore config (from backup location)
-cp /backups/config/docker-compose.yml .
+cp /backups/config/docker-compose.yml deployments/
 cp /backups/config/lightstack.yaml config/
 
 # 3. Start database only
@@ -317,7 +318,7 @@ docker compose up -d lightstack
 
 # 6. Verify
 sleep 10
-curl http://localhost:5001/v3 || echo "ERROR: Keystone not responding"
+curl http://localhost:35357/v3 || echo "ERROR: Keystone not responding"
 openstack token issue || echo "ERROR: Authentication failed"
 
 echo "Recovery complete!"
@@ -361,6 +362,13 @@ docker exec lightstack /app/lightstack-migrate up
 # Rollback last migration (if needed)
 docker exec lightstack /app/lightstack-migrate down 1
 ```
+
+> ⚠️ **Rolling back requires care.** Some migrations were edited in place after shipping
+> (e.g. `065`, the console-token columns, and `071`, the placement catalog rows), so a
+> database that already ran the original version keeps it. Migrate the schema down
+> **before** reverting the binary — and note that down-migrations may lose data added by
+> the up side (the console columns and catalog rows above are dropped with it). See
+> [UPGRADING.md](UPGRADING.md).
 
 ### Database Maintenance
 
@@ -412,10 +420,11 @@ docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
     AND deleted_at < NOW() - INTERVAL '30 days';
 "
 
-# Delete old tokens (if storing in DB)
-docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
-  DELETE FROM tokens WHERE expires_at < NOW();
-"
+# Tokens: nothing to clean up in the database — tokens are stateless JWTs and
+# there is no `tokens` table. They expire on their own per `keystone.token_ttl`.
+# noVNC console tokens can be inspected and revoked with:
+#   lightstack console-tokens list
+#   lightstack console-tokens purge
 ```
 
 ---
@@ -432,7 +441,7 @@ docker compose logs postgres
 
 **Common issues:**
 - Database not ready → Wait and retry
-- Port conflict → Check `lsof -i:5001`
+- Port conflict → Check `lsof -i:35357`
 - Migration failure → Check database state
 - Config error → Validate YAML syntax
 
@@ -534,7 +543,7 @@ NEW_SECRET=$(openssl rand -hex 32)
 
 # 2. Update config
 # Edit docker-compose.yml:
-# LIGHTSTACK_KEYSTONE_JWT_SECRET: "$NEW_SECRET"
+# LIGHTSTACK_JWT_SECRET: "$NEW_SECRET"
 
 # 3. Restart lightstack
 docker compose restart lightstack
@@ -545,16 +554,15 @@ docker compose restart lightstack
 ### Change Admin Password
 
 ```bash
-# Using SQL
-docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
-  UPDATE users
-  SET password_hash = crypt('new-secure-password', gen_salt('bf'))
-  WHERE name = 'admin';
-"
-
-# Or via OpenStack CLI
+# Via OpenStack CLI (recommended)
+openstack user set --password <new-secure-password> admin
+# or, to change the credentials you authenticate with:
 openstack user password set
 ```
+
+> Do not reset passwords with SQL: password hashing is bcrypt in the application
+> (Go), not pgcrypto in the database, so a `crypt(..., gen_salt('bf'))` `UPDATE`
+> produces a hash Lightstack cannot verify. Rotate via the Identity API.
 
 ### Audit Logs
 
@@ -573,12 +581,12 @@ docker compose logs lightstack | grep "authentication failed"
 
 ```bash
 # Allow only necessary ports
-ufw allow 5001/tcp   # Keystone (if external)
+ufw allow 35357/tcp  # Keystone (if external)
 ufw allow 8774/tcp   # Nova (if external)
 ufw allow 9696/tcp   # Neutron (if external)
 
 # Or allow only from specific IPs
-ufw allow from 192.168.1.0/24 to any port 5001
+ufw allow from 192.168.1.0/24 to any port 35357
 ```
 
 ---
@@ -591,8 +599,9 @@ ufw allow from 192.168.1.0/24 to any port 5001
 ```yaml
 database:
   max_connections: 50          # Increase for high concurrency
-  max_idle: 10
-  conn_max_lifetime: 30m
+  min_connections: 2
+  max_conn_lifetime: 30m
+  max_conn_idle_time: 10m
 ```
 
 **PostgreSQL tuning:**
@@ -656,16 +665,15 @@ docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
 # Primary-Replica setup
 services:
   postgres-primary:
-    image: postgres:18.3-alpine
-    environment:
-      POSTGRES_REPLICATION_MODE: master
+    image: postgres:18.4-alpine
 
   postgres-replica:
-    image: postgres:18.3-alpine
-    environment:
-      POSTGRES_REPLICATION_MODE: slave
-      POSTGRES_MASTER_HOST: postgres-primary
+    image: postgres:18.4-alpine
 ```
+
+> The `POSTGRES_REPLICATION_MODE` / `POSTGRES_MASTER_HOST` variables shown in earlier
+> versions of this guide are not features of the stock `postgres` image — replication
+> must be configured manually (or via Patroni; see [SCALING.md](SCALING.md)).
 
 **Option 2: Managed Database**
 - AWS RDS PostgreSQL
@@ -698,23 +706,41 @@ services:
 **HAProxy config:**
 ```
 frontend lightstack_keystone
-    bind *:5001
+    bind *:35357
     default_backend lightstack_keystone_backend
 
 backend lightstack_keystone_backend
     balance roundrobin
     option httpchk GET /v3
-    server lightstack1 10.0.0.1:5001 check
-    server lightstack2 10.0.0.2:5001 check
-    server lightstack3 10.0.0.3:5001 check
+    server lightstack1 10.0.0.1:35357 check
+    server lightstack2 10.0.0.2:35357 check
+    server lightstack3 10.0.0.3:35357 check
 ```
 
-### Health Checks
+### CLI Subcommands
+
+The `lightstack` binary ships operational subcommands (its only flags are `--config`
+and `--migrations`):
+
+```bash
+# Reclaim host state for deleted instances
+# (--dry-run reports what would be reclaimed without doing it)
+lightstack cleanup [--dry-run]
+
+# Liveness/readiness probe for wrappers, orchestrators and health scripts
+lightstack healthcheck [--ready|--live]
+
+# Inspect or revoke noVNC console tokens
+lightstack console-tokens list
+lightstack console-tokens purge
+```
+
+For the health script, prefer the built-in probe over a hand-rolled curl:
 
 ```bash
 # Script: /usr/local/bin/lightstack-healthcheck.sh
 #!/bin/bash
-curl -f http://localhost:5001/v3 && exit 0 || exit 1
+lightstack healthcheck --ready && exit 0 || exit 1
 ```
 
 ---

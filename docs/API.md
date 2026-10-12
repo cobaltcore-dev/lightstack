@@ -2,14 +2,14 @@
 
 ## Keystone Identity Service (v3)
 
-Base URL: `http://localhost:5000`
+Base URL: `http://localhost:35357`
 
 ### Version Discovery
 
 ```bash
 # Get API version
-curl http://localhost:5000/
-curl http://localhost:5000/v3
+curl http://localhost:35357/
+curl http://localhost:35357/v3
 ```
 
 ### Authentication
@@ -19,7 +19,7 @@ curl http://localhost:5000/v3
 Get a token without project scope:
 
 ```bash
-curl -X POST http://localhost:5000/v3/auth/tokens \
+curl -X POST http://localhost:35357/v3/auth/tokens \
   -H "Content-Type: application/json" \
   -d '{
     "auth": {
@@ -43,7 +43,7 @@ The token will be in the `X-Subject-Token` response header.
 Get a project-scoped token with service catalog:
 
 ```bash
-curl -X POST http://localhost:5000/v3/auth/tokens \
+curl -X POST http://localhost:35357/v3/auth/tokens \
   -H "Content-Type: application/json" \
   -d '{
     "auth": {
@@ -69,7 +69,7 @@ curl -X POST http://localhost:5000/v3/auth/tokens \
 
 ```bash
 # Validate a token
-curl -X GET http://localhost:5000/v3/auth/tokens \
+curl -X GET http://localhost:35357/v3/auth/tokens \
   -H "X-Auth-Token: YOUR_TOKEN" \
   -H "X-Subject-Token: TOKEN_TO_VALIDATE"
 ```
@@ -78,7 +78,7 @@ curl -X GET http://localhost:5000/v3/auth/tokens \
 
 ```bash
 # Revoke a token (JWT tokens expire naturally, this is a no-op)
-curl -X DELETE http://localhost:5000/v3/auth/tokens \
+curl -X DELETE http://localhost:35357/v3/auth/tokens \
   -H "X-Auth-Token: YOUR_TOKEN" \
   -H "X-Subject-Token: TOKEN_TO_REVOKE"
 ```
@@ -87,11 +87,11 @@ curl -X DELETE http://localhost:5000/v3/auth/tokens \
 
 ```bash
 # List users
-curl http://localhost:5000/v3/users \
+curl http://localhost:35357/v3/users \
   -H "X-Auth-Token: YOUR_TOKEN"
 
 # Get user details
-curl http://localhost:5000/v3/users/USER_ID \
+curl http://localhost:35357/v3/users/USER_ID \
   -H "X-Auth-Token: YOUR_TOKEN"
 ```
 
@@ -99,11 +99,11 @@ curl http://localhost:5000/v3/users/USER_ID \
 
 ```bash
 # List projects
-curl http://localhost:5000/v3/projects \
+curl http://localhost:35357/v3/projects \
   -H "X-Auth-Token: YOUR_TOKEN"
 
 # Get project details
-curl http://localhost:5000/v3/projects/PROJECT_ID \
+curl http://localhost:35357/v3/projects/PROJECT_ID \
   -H "X-Auth-Token: YOUR_TOKEN"
 ```
 
@@ -111,7 +111,7 @@ curl http://localhost:5000/v3/projects/PROJECT_ID \
 
 ```bash
 # List roles
-curl http://localhost:5000/v3/roles \
+curl http://localhost:35357/v3/roles \
   -H "X-Auth-Token: YOUR_TOKEN"
 ```
 
@@ -124,12 +124,12 @@ curl http://localhost:5000/v3/roles \
 pip install python-openstackclient
 
 # Set environment variables
-export OS_AUTH_URL=http://localhost:5000/v3
+export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
-export OS_USER_DOMAIN_NAME=default
-export OS_PROJECT_DOMAIN_NAME=default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 ```
 
@@ -151,16 +151,16 @@ openstack role list
 # List endpoints (service catalog)
 openstack catalog list
 
-# List servers (when Nova is implemented)
+# List servers
 openstack server list
 
-# List networks (when Neutron is implemented)
+# List networks
 openstack network list
 
-# List volumes (when Cinder is implemented)
+# List volumes
 openstack volume list
 
-# List images (when Glance is implemented)
+# List images
 openstack image list
 ```
 
@@ -179,7 +179,7 @@ After project-scoped authentication, the token response includes a service catal
           {
             "interface": "public",
             "region": "RegionOne",
-            "url": "http://localhost:5000/v3"
+            "url": "http://localhost:35357/v3"
           }
         ]
       },
@@ -224,6 +224,17 @@ After project-scoped authentication, the token response includes a service catal
             "interface": "public",
             "region": "RegionOne",
             "url": "http://localhost:9292"
+          }
+        ]
+      },
+      {
+        "type": "placement",
+        "name": "placement",
+        "endpoints": [
+          {
+            "interface": "public",
+            "region": "RegionOne",
+            "url": "http://localhost:8778"
           }
         ]
       }

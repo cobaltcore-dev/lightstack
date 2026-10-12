@@ -44,7 +44,7 @@ Complete installation guide for Lightstack (OpenStack-compatible cloud platform)
 
 **For Binary Installation:**
 - PostgreSQL 18+ ([install guide](https://www.postgresql.org/download/))
-- Go 1.26+ (for building from source)
+- Go 1.27+ (for building from source)
 
 ---
 
@@ -64,21 +64,23 @@ cd lightstack
 #### Step 2: Start Services
 
 ```bash
-docker compose up -d
+docker compose -f deployments/docker-compose.yml up -d
 ```
 
 This starts:
 - **PostgreSQL** on port 5432
-- **lightstack APIs** on ports 5001, 8774, 9696, 8776, 9292, 8775
+- **Redis** on port 6379
+- **lightstack APIs** on ports 35357, 8774, 9696, 8776, 9292, 8775
+  (Placement also listens on 8778, but it is not published by compose)
 
 #### Step 3: Wait for Services
 
 ```bash
 # Check status
-docker compose ps
+docker compose -f deployments/docker-compose.yml ps
 
 # Wait for healthy status
-docker compose logs -f lightstack
+docker compose -f deployments/docker-compose.yml logs -f lightstack
 ```
 
 First startup takes 30-60 seconds as migrations run automatically.
@@ -88,7 +90,7 @@ First startup takes 30-60 seconds as migrations run automatically.
 ```bash
 # Create environment file
 cat > ~/.lightstack-env << 'EOF'
-export OS_AUTH_URL=http://localhost:5001/v3
+export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_USERNAME=admin
@@ -124,15 +126,15 @@ For advanced users who want to run Lightstack directly without Docker.
 **Ubuntu/Debian:**
 ```bash
 sudo apt update
-sudo apt install postgresql-14 postgresql-client-14
+sudo apt install postgresql-18 postgresql-client-18
 sudo systemctl start postgresql
 sudo systemctl enable postgresql
 ```
 
 **macOS:**
 ```bash
-brew install postgresql@14
-brew services start postgresql@14
+brew install postgresql@18
+brew services start postgresql@18
 ```
 
 #### Step 2: Create Database
@@ -216,7 +218,7 @@ Project:  default
 All OpenStack CLI commands need these environment variables:
 
 ```bash
-export OS_AUTH_URL=http://localhost:5001/v3  # or :35357 for binary
+export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_USERNAME=admin
@@ -238,10 +240,11 @@ source ~/.lightstack-env
 
 **Docker Compose:**
 ```bash
-docker compose ps
+docker compose -f deployments/docker-compose.yml ps
 
 # Should show:
 # lightstack            Up (healthy)
+# lightstack-redis      Up (healthy)
 # lightstack-postgres   Up (healthy)
 ```
 
@@ -315,7 +318,7 @@ invalid credentials (HTTP 401)
 
 **Solutions:**
 1. Check credentials match defaults (Domain: "Default" with capital D)
-2. Verify Lightstack is running: `docker compose ps` or `curl http://localhost:35357/v3`
+2. Verify Lightstack is running: `docker compose -f deployments/docker-compose.yml ps` or `curl http://localhost:35357/v3`
 3. Check database has domain:
    ```bash
    docker exec lightstack-postgres psql -U lightstack -d lightstack \
@@ -326,15 +329,15 @@ invalid credentials (HTTP 401)
 
 **Symptoms:**
 ```
-Bind for 0.0.0.0:5001 failed: port is already allocated
+Bind for 0.0.0.0:35357 failed: port is already allocated
 ```
 
 **Solutions:**
 ```bash
 # Find what's using the port
-lsof -i:5001
+lsof -i:35357
 
-# Kill the process or change port in docker-compose.yml
+# Kill the process or change port in deployments/docker-compose.yml
 ```
 
 ### Issue: Database Connection Failed
@@ -347,7 +350,7 @@ failed to connect to postgres
 **Solutions:**
 1. Verify PostgreSQL is running:
    ```bash
-   docker compose ps postgres
+   docker compose -f deployments/docker-compose.yml ps postgres
    # or: sudo systemctl status postgresql
    ```
 
@@ -391,7 +394,7 @@ lightstack   Up 2 minutes (unhealthy)
 **Solutions:**
 ```bash
 # Check logs
-docker compose logs lightstack --tail=50
+docker compose -f deployments/docker-compose.yml logs lightstack --tail=50
 
 # Common issues:
 # - Database not ready: wait 10 more seconds
@@ -422,7 +425,7 @@ openstack --version
 
 1. **Check logs:**
    ```bash
-   docker compose logs lightstack
+   docker compose -f deployments/docker-compose.yml logs lightstack
    ```
 
 2. **Check database:**
@@ -432,7 +435,7 @@ openstack --version
 
 3. **Test APIs directly:**
    ```bash
-   curl http://localhost:5001/v3
+   curl http://localhost:35357/v3
    curl http://localhost:8774/v2.1/
    ```
 
@@ -471,10 +474,10 @@ See `docs/OPERATIONS.md` for:
 
 ```bash
 # Docker Compose
-docker compose up -d          # Start services
-docker compose down           # Stop services
-docker compose ps             # Check status
-docker compose logs -f lightstack    # View logs
+docker compose -f deployments/docker-compose.yml up -d          # Start services
+docker compose -f deployments/docker-compose.yml down           # Stop services
+docker compose -f deployments/docker-compose.yml ps             # Check status
+docker compose -f deployments/docker-compose.yml logs -f lightstack    # View logs
 
 # OpenStack CLI
 source ~/.lightstack-env             # Load environment
@@ -492,14 +495,15 @@ docker exec lightstack /app/lightstack-migrate status                    # Migra
 
 | Service | Port | Description |
 |---------|------|-------------|
-| Keystone | 5001 | Identity/Auth (Docker) |
-| Keystone | 35357 | Identity/Auth (Binary) |
+| Keystone | 35357 | Identity/Auth |
 | Nova | 8774 | Compute |
 | Neutron | 9696 | Network |
 | Cinder | 8776 | Block Storage |
 | Glance | 9292 | Images |
+| Placement | 8778 | Placement API (stub; not published by compose) |
 | Metadata | 8775 | VM Metadata |
 | PostgreSQL | 5432 | Database |
+| Redis | 6379 | Cache |
 
 ---
 

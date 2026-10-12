@@ -537,3 +537,20 @@ Migration 071 adds it on the next start; nothing to do. Where the catalog is cac
 
 On a single node placement schedules nothing: Lightstack's placement is a stub that reports no
 resource providers, so Horizon's tab shows an empty table rather than an error.
+
+## Rolling back
+
+Migrations run automatically on startup, and some were edited in place after shipping
+(e.g. `065`, the console-token columns, and `071`, the placement catalog rows), so a
+database that already ran the original version keeps it. The safe rollback order is
+therefore:
+
+1. **Stop the new binary** — nothing may run migrations forward again.
+2. **Migrate the schema down** to the target version's migration set with
+   `lightstack-migrate` (`lightstack-migrate status` shows where you are;
+   `lightstack-migrate down <n>` steps back). Down-migrations may lose data added by
+   the up side — the console columns and catalog rows above are dropped with it.
+3. **Then start the old binary.**
+
+Rolling the binary back alone against a newer schema can fail, or write to columns the
+old binary's migrations no longer have.

@@ -413,7 +413,7 @@ From Elektra's README:
 
 **Translation**: Elektra requires a non-vanilla OpenStack environment (SAP's customized stack).
 
-**lightstack's Position**: Lightstack **IS** a vanilla OpenStack implementation (104% API compatible with standard OpenStack).
+**lightstack's Position**: Lightstack **IS** a vanilla OpenStack implementation (API-compatible with the five core OpenStack services; ~335 functional operations vs the 330-endpoint baseline).
 
 **Logical Conclusion**: Elektra explicitly states it doesn't work with clouds like lightstack.
 
@@ -619,7 +619,7 @@ If Lightstack will run **alongside** SAP infrastructure:
 - [docs/QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Command reference
 
 **Related Lightstack Documentation**:
-- [docs/API_COVERAGE_REPORT.md](API_COVERAGE_REPORT.md) - 104% API coverage (342/330 endpoints)
+- [docs/blueprint.md](blueprint.md) - API coverage: ~335 functional operations vs the 330-endpoint baseline (authoritative)
 - [REMAINING_WORK.md](../REMAINING_WORK.md) - Sprint 66 Horizon integration results
 
 **OpenStack Horizon**:

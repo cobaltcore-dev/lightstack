@@ -268,7 +268,7 @@ Here are features that would be more valuable than the "optional" list:
 
 **What's Left?**: Nothing critical. Only optional enterprise features.
 
-**Coverage**: 104% (342/330 endpoints)
+**Coverage**: ~335 functional operations vs the 330-endpoint baseline ([blueprint.md](blueprint.md))
 
 **Status**: Production ready for private cloud deployments ✅
 

@@ -277,13 +277,11 @@ database:
   url: "postgres://lightstack:your-secure-password@localhost:5432/lightstack?sslmode=disable"
 
 keystone:
-  host: "0.0.0.0"
   port: 35357
   jwt_secret: "CHANGE-THIS-IN-PRODUCTION-min-32-chars-required-for-security"
   token_ttl: 24h
 
 nova:
-  host: "0.0.0.0"
   port: 8774
   libvirt_mode: real  # IMPORTANT: Enable real KVM mode
   libvirt_uri: "qemu:///system"
@@ -294,29 +292,23 @@ nova:
   console_reconcile_interval: 30s   # how often expired links are reaped
 
 neutron:
-  host: "0.0.0.0"
   port: 9696
   networking_mode: iptables  # Real networking with iptables
-  external_bridge: "br-ext"  # Bridge created earlier
   vxlan_enabled: false  # Single node doesn't need VXLAN
 
 cinder:
-  host: "0.0.0.0"
   port: 8776
   storage_mode: local  # Local filesystem storage
 
 glance:
-  host: "0.0.0.0"
   port: 9292
   storage_mode: local
 
 metadata:
-  host: "0.0.0.0"
-  port: 8775
+  bind_address: "0.0.0.0:8775"
 
 compute:
   node_id: "compute-node-1"
-  node_name: "lightstack-demo"
   tunnel_ip: "192.168.1.100"  # Replace with your host IP
 EOF
 

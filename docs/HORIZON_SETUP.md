@@ -341,8 +341,6 @@ openstack project delete my-project
 
 **Resolution**: This is a Horizon packaging issue, not a Lightstack API issue. The Keystone `/v3/projects` API endpoint works perfectly.
 
-**Documentation**: [HORIZON_PROJECTS_ISSUE.md](HORIZON_PROJECTS_ISSUE.md)
-
 ---
 
 ## Performance Considerations
@@ -354,8 +352,9 @@ Horizon makes many API calls per page load. Ensure Lightstack has sufficient dat
 ```yaml
 # config/lightstack.yaml
 database:
-  max_open_conns: 50  # Increase for high Horizon traffic
-  max_idle_conns: 10
+  max_connections: 50  # Increase for high Horizon traffic
+  min_connections: 10
+  # Also available: max_conn_lifetime, max_conn_idle_time, health_check_period
 ```
 
 ---

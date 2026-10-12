@@ -61,9 +61,11 @@ state_path: /var/lib/lightstack
 # Database connection
 database:
   url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
-  max_connections: 20
-  max_idle: 5
-  conn_max_lifetime: 1h
+  max_connections: 50
+  min_connections: 2
+  max_conn_lifetime: 1h
+  max_conn_idle_time: 10m
+  health_check_period: 30s
 
 # Keystone (Identity Service)
 keystone:
@@ -72,6 +74,7 @@ keystone:
   token_ttl: 24h
   admin_user: admin
   admin_password: secret
+  rgw_compat_tenant_ids: false  # Ceph RGW (Swift) tenant-id compatibility
 
 # Compute node configuration
 compute:
@@ -86,6 +89,10 @@ nova:
   libvirt_uri: "qemu:///system"
   default_flavor: m1.small
   libvirt_mode: stub         # "stub" or "real"
+  console_proxy_base_url: "" # noVNC proxy origin (scheme://host:port, no path)
+  console_token_ttl: 10m     # how long an issued console link stays usable
+  console_reconcile_interval: 30s  # expired console-token reaping
+  shutdown_timeout: 30s      # guest OS shutdown grace before a forced power-off
 
 # Neutron (Network Service)
 neutron:
@@ -113,15 +120,28 @@ glance:
   port: 9292
   ceph_pool: images
   ceph_conf: /etc/ceph/ceph.conf
-  storage_mode: local        # "stub", "local", "rbd", "s3", etc.
+  storage_mode: local        # "stub", "local", "s3", "local,s3"; "rbd"/"local,rbd"
+                             # are accepted but RBD ops are unimplemented placeholders
   s3_bucket: ""              # S3 bucket name (for S3 storage)
   s3_region: us-east-1       # S3 region
   s3_endpoint: ""            # Custom S3 endpoint (MinIO, Ceph RGW)
+
+# Metadata service (EC2-style, no auth)
+metadata:
+  bind_address: "0.0.0.0:8775"
+  trust_instance_header: false  # test stacks only — never where real guests reach it
 
 # Logging
 logging:
   level: info                # debug, info, warn, error
   format: json               # json, text
+
+# Redis cache (off by default)
+cache:
+  enabled: false
+  redis_url: "redis://localhost:6379/0"
+  key_prefix: "lightstack:"
+  default_ttl: 1h
 ```
 
 ---
@@ -262,9 +282,11 @@ services:
 ```yaml
 database:
   url: "postgres://user:password@host:port/database?sslmode=disable"
-  max_connections: 20        # Maximum open connections
-  max_idle: 5                # Maximum idle connections
-  conn_max_lifetime: 1h      # Connection maximum lifetime
+  max_connections: 50        # Maximum connections
+  min_connections: 2         # Minimum idle connections
+  max_conn_lifetime: 1h      # Connection maximum lifetime
+  max_conn_idle_time: 10m    # Maximum idle time
+  health_check_period: 30s   # Pool health check period
 ```
 
 ### Connection String Format
@@ -295,9 +317,11 @@ postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable&connect_t
 
 ```yaml
 database:
-  max_connections: 20        # Default: 20
-  max_idle: 5                # Default: 5
-  conn_max_lifetime: 1h      # Default: 1 hour
+  max_connections: 50        # Default: 50
+  min_connections: 2         # Default: 2
+  max_conn_lifetime: 1h      # Default: 1 hour
+  max_conn_idle_time: 10m    # Default: 10 minutes
+  health_check_period: 30s   # Default: 30 seconds
 ```
 
 **Guidelines:**
@@ -432,7 +456,7 @@ Lightstack. Without a retention age the table would only grow. Records belonging
 that still exists are never reclaimed, whatever their age. A non-positive value is
 clamped to the default, since `0` would mean reclaiming everything immediately.
 
-All three are **config-file only**. The binary honours exactly four environment variables
+All three are **config-file only**. The binary honours exactly fourteen environment variables
 (see [Environment Variables](#environment-variables)), so these must arrive through the
 `lightstack.yaml` you pass to `--config` — in Helm, through the rendered Secret. The chart
 exposes them as `nova.stateReconcileInterval`, `nova.shutdownTimeout` and
@@ -498,9 +522,9 @@ glance:
 **storage_mode options:**
 - `stub` - Mock storage (no actual images)
 - `local` - Local filesystem
-- `rbd` - Ceph RBD
-- `s3` - S3-compatible storage
-- `local,rbd` - Hybrid (local + Ceph)
+- `rbd` - Ceph RBD — **accepted but unimplemented placeholder**: no RBD operations exist for Glance
+- `s3` - S3-compatible storage (Ceph RGW, MinIO, AWS)
+- `local,rbd` - Hybrid (local + Ceph; the RBD half is an unimplemented placeholder)
 - `local,s3` - Hybrid (local + S3)
 
 > `rbd,s3` is **not supported** for Glance and is rejected at startup: the Glance RBD
@@ -518,7 +542,7 @@ glance:
 
 **Environment variables for S3 credentials** (read implicitly by the AWS SDK's
 standard config chain — they are not `LIGHTSTACK_`-prefixed and are not part of
-the thirteen Lightstack configuration variables):
+the fourteen Lightstack configuration variables):
 ```bash
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
@@ -624,19 +648,18 @@ glance:
 - Fast I/O (SSD recommended)
 - Regular backups
 
-### Ceph RBD Storage
+### Ceph RBD Storage (Cinder)
 
 ```yaml
 cinder:
   storage_mode: rbd
   ceph_pool: volumes
   ceph_conf: /etc/ceph/ceph.conf
-
-glance:
-  storage_mode: rbd
-  ceph_pool: images
-  ceph_conf: /etc/ceph/ceph.conf
 ```
+
+> **Glance has no working RBD backend.** `glance.storage_mode: rbd` (and `local,rbd`) is
+> an accepted-but-unimplemented placeholder. For shared image storage on Ceph, use the
+> S3 API via Ceph RGW instead (`storage_mode: s3`, `s3_endpoint` pointed at your RGW).
 
 **Prerequisites:**
 ```bash
@@ -682,11 +705,11 @@ glance:
 
 ```yaml
 glance:
-  storage_mode: local,rbd  # Try local first, fallback to Ceph
+  storage_mode: local,s3  # Try local first, fallback to S3 (e.g. Ceph RGW)
 ```
 
 **Use cases:**
-- Fast local cache + reliable Ceph backup
+- Fast local cache + reliable object-storage backup
 - Gradual migration between storage backends
 - Cost optimization (local SSD + slower network storage)
 
@@ -811,8 +834,9 @@ compute:
 ```yaml
 database:
   max_connections: 50          # Increase for high load
-  max_idle: 10
-  conn_max_lifetime: 30m       # Shorter for frequent schema changes
+  min_connections: 2
+  max_conn_lifetime: 30m       # Shorter for frequent schema changes
+  max_conn_idle_time: 10m
 ```
 
 **DHCP lease time:**
@@ -844,13 +868,19 @@ neutron:
 
 ## Rate Limiting Configuration
 
-Lightstack supports two-tier rate limiting to protect against brute-force attacks and resource exhaustion.
-See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural details.
+> ⚠️ **Not yet implemented.** Rate limiting is designed in
+> [ADR-002](adr/ADR-002-rate-limiting-architecture.md) (Accepted), but no middleware code
+> exists yet: the `rate_limiting` block below is **dead config** and currently has **no
+> effect**. Treat this section as a description of the planned behaviour.
+
+Two-tier rate limiting is planned to protect against brute-force attacks and resource
+exhaustion. See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural
+details.
 
 ### Configuration
 
 ```yaml
-# Rate limiting (v0.7.0+)
+# Rate limiting (planned — not yet implemented, see ADR-002)
 rate_limiting:
   enabled: false              # Set to true to enable rate limiting
   auth_rate: 20               # Requests per minute per IP (unauthenticated endpoints)
@@ -871,7 +901,7 @@ rate_limiting:
 | `max_entries` | int | `10000` | Max concurrent tracked IPs/projects |
 | `overflow_policy` | string | `allow` | Behavior when max_entries exceeded |
 
-### How It Works
+### How It Works (planned)
 
 1. **Unauthenticated requests** (e.g., `POST /v3/auth/tokens`): Limited by the client's address,
    meaning the TCP peer. Forwarding headers such as `X-Forwarded-For` are not believed: every
@@ -907,12 +937,12 @@ When rate limiting triggers, Lightstack logs at WARN level:
 
 ### Validate Configuration
 
-```bash
-# Check config syntax
-lightstack --config /path/to/lightstack.yaml --validate
+The binary accepts only two flags — `--config` (path to the config file) and
+`--migrations` (path to the migrations directory). There is no `--validate` or
+`--dry-run` flag; configuration errors are reported at startup:
 
-# Dry-run (validate without starting)
-lightstack --config /path/to/lightstack.yaml --dry-run
+```bash
+lightstack --config /path/to/lightstack.yaml
 ```
 
 ### Common Issues
@@ -988,8 +1018,9 @@ cinder:
   ceph_pool: volumes
 
 glance:
-  storage_mode: rbd
-  ceph_pool: images
+  storage_mode: s3            # Glance RBD is unimplemented — use S3/Ceph RGW
+  s3_bucket: images
+  s3_endpoint: "https://rgw.example.com"
 
 logging:
   level: info
@@ -1022,7 +1053,8 @@ cinder:
   storage_mode: rbd
 
 glance:
-  storage_mode: rbd
+  storage_mode: s3        # shared image storage via Ceph RGW (Glance RBD is unimplemented)
+  s3_bucket: images
 
 logging:
   level: info

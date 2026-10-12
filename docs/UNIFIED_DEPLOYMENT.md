@@ -3,7 +3,7 @@
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
-**lightstack Version**: v0.5.0+
+**lightstack Version**: Unreleased (post-v0.6.1)
 **OpenStack Release**: Flamingo (2025.2)
 **Last Updated**: 2026-03-13
 **Status**: Production Ready
@@ -179,23 +179,22 @@ For x86_64 systems or when performance is critical, the unified deployment (`doc
 You can customize the deployment by setting environment variables before starting:
 
 ```bash
-# Database configuration
-export LIGHTSTACK_DB_PASSWORD=your-secure-password
-export LIGHTSTACK_DB_NAME=lightstack
-export LIGHTSTACK_DB_USER=lightstack
+# Database configuration — read by docker-compose-horizon.yml: the POSTGRES_*
+# variables initialise the postgres container (initdb on an empty volume) and
+# are interpolated into the lightstack container's LIGHTSTACK_DB_URL.
+# The lightstack binary itself only reads the full LIGHTSTACK_DB_URL string.
+export POSTGRES_PASSWORD=your-secure-password
+export POSTGRES_DB=lightstack
+export POSTGRES_USER=lightstack
 
-# JWT secret for lightstack authentication
+# JWT secret for lightstack authentication (required by docker-compose-horizon.yml)
 export LIGHTSTACK_JWT_SECRET=your-secure-jwt-secret-here
-
-# lightstack modes
-export LIGHTSTACK_NOVA_MODE=stub      # or 'real' for actual VMs (Linux only)
-export LIGHTSTACK_NEUTRON_MODE=stub   # or 'iptables' for real networking
-export LIGHTSTACK_CINDER_MODE=local   # or 'rbd', 's3'
-export LIGHTSTACK_GLANCE_MODE=local   # or 'rbd', 's3'
 
 # Horizon configuration
 export HORIZON_SECRET_KEY=your-horizon-secret-key
 ```
+
+Service modes (stub/real, storage backends) are **not** controlled by environment variables — they are set in `config/lightstack.yaml` (`nova.libvirt_mode`, `neutron.networking_mode`, `cinder.storage_mode`, `glance.storage_mode`); mount a custom copy as shown below.
 
 ### Production Configuration
 
@@ -213,7 +212,7 @@ services:
 
   lightstack:
     environment:
-      - LIGHTSTACK_DATABASE_URL=postgres://lightstack:CHANGE_THIS_PASSWORD@postgres:5432/lightstack?sslmode=disable
+      - LIGHTSTACK_DB_URL=postgres://lightstack:CHANGE_THIS_PASSWORD@postgres:5432/lightstack?sslmode=disable
 ```
 
 **JWT Secret** - Edit `docker-compose-horizon.yml`:
@@ -222,7 +221,7 @@ services:
 services:
   lightstack:
     environment:
-      - LIGHTSTACK_KEYSTONE_JWT_SECRET=GENERATE_SECURE_RANDOM_STRING_HERE
+      - LIGHTSTACK_JWT_SECRET=GENERATE_SECURE_RANDOM_STRING_HERE
 ```
 
 Generate a secure JWT secret:
@@ -269,17 +268,24 @@ CSRF_COOKIE_SECURE = True
 
 #### 3. Real Mode (Linux Only)
 
-For production with actual VMs:
+For production with actual VMs, set the modes in `lightstack.yaml` and mount it into the container (there are no environment variables for these settings):
 
 ```yaml
+# config/lightstack.yaml
+nova:
+  libvirt_mode: real        # "stub" or "real"
+neutron:
+  networking_mode: iptables  # "stub", "iptables", or "ebpf"
+```
+
+```yaml
+# docker-compose-horizon.yml
 services:
   lightstack:
-    environment:
-      - LIGHTSTACK_NOVA_LIBVIRT_MODE=real
-      - LIGHTSTACK_NEUTRON_NETWORKING_MODE=iptables
-    privileged: true  # Required for networking
     volumes:
+      - ../config/lightstack.yaml:/app/config/lightstack.yaml:ro
       - /var/run/libvirt:/var/run/libvirt   # the socket's directory: survives a re-created socket
+    privileged: true  # Required for networking
 ```
 
 **Prerequisites**:
@@ -288,16 +294,24 @@ services:
 
 ### Storage Backends
 
+Storage modes are configured in `config/lightstack.yaml` (`cinder.storage_mode`, `glance.storage_mode`), not via environment variables. Mount your adjusted `lightstack.yaml` into the lightstack container as shown in [Real Mode](#3-real-mode-linux-only).
+
 #### Local Storage (Default)
 
 Suitable for development and small deployments:
 
 ```yaml
+# config/lightstack.yaml
+cinder:
+  storage_mode: local  # "stub", "local", "rbd", or "local,rbd"
+glance:
+  storage_mode: local  # "stub", "local", "s3", or "local,s3"
+```
+
+```yaml
+# docker-compose-horizon.yml
 services:
   lightstack:
-    environment:
-      - LIGHTSTACK_CINDER_STORAGE_MODE=local
-      - LIGHTSTACK_GLANCE_STORAGE_MODE=local
     volumes:
       - lightstack-images:/var/lib/lightstack/images
       - lightstack-volumes:/var/lib/lightstack/volumes
@@ -305,36 +319,45 @@ services:
 
 #### Ceph RBD Storage
 
-For production with Ceph cluster:
+For production with a Ceph cluster, use Cinder RBD. Cinder supports `rbd` and `local,rbd` (`cinder.storage_mode`); Glance accepts `rbd`/`local,rbd` values but its RBD operations are **unimplemented placeholders** — do not use RBD for Glance. For shared image storage, prefer Glance S3 backed by Ceph RGW (see below) together with Cinder RBD:
 
 ```yaml
+# config/lightstack.yaml
+cinder:
+  storage_mode: rbd
+  ceph_pool: volumes
+  ceph_conf: /etc/ceph/ceph.conf
+```
+
+```yaml
+# docker-compose-horizon.yml
 services:
   lightstack:
-    environment:
-      - LIGHTSTACK_CINDER_STORAGE_MODE=rbd
-      - LIGHTSTACK_GLANCE_STORAGE_MODE=rbd
-      - LIGHTSTACK_CEPH_CONF=/etc/ceph/ceph.conf
-      - LIGHTSTACK_CEPH_POOL_VOLUMES=lightstack-volumes
-      - LIGHTSTACK_CEPH_POOL_IMAGES=lightstack-images
     volumes:
       - /etc/ceph:/etc/ceph:ro
 ```
 
-#### S3 Storage
+#### S3 Storage (Glance)
 
-For AWS S3 or MinIO:
+For AWS S3, MinIO, or Ceph RGW — Glance only (Cinder has no S3 backend):
 
 ```yaml
+# docker-compose-horizon.yml
 services:
   lightstack:
     environment:
-      - LIGHTSTACK_CINDER_STORAGE_MODE=s3
-      - LIGHTSTACK_GLANCE_STORAGE_MODE=s3
-      - LIGHTSTACK_S3_ENDPOINT=https://s3.amazonaws.com
-      - LIGHTSTACK_S3_ACCESS_KEY=your-access-key
-      - LIGHTSTACK_S3_SECRET_KEY=your-secret-key
-      - LIGHTSTACK_S3_BUCKET_VOLUMES=lightstack-volumes
-      - LIGHTSTACK_S3_BUCKET_IMAGES=lightstack-images
+      - LIGHTSTACK_GLANCE_S3_ENDPOINT=https://s3.amazonaws.com
+      - LIGHTSTACK_GLANCE_S3_BUCKET=lightstack-images
+      - LIGHTSTACK_GLANCE_S3_REGION=us-east-1
+      # Credentials are read by the AWS SDK default chain:
+      - AWS_ACCESS_KEY_ID=your-access-key
+      - AWS_SECRET_ACCESS_KEY=your-secret-key
+```
+
+```yaml
+# config/lightstack.yaml
+glance:
+  storage_mode: s3  # or "local,s3"
 ```
 
 ## Operations
@@ -805,7 +828,7 @@ docker compose -f docker-compose-horizon.yml up -d horizon
 Lightstack automatically runs migrations on startup. To manually run migrations:
 
 ```bash
-docker exec lightstack /app/lightstack migrate
+docker exec lightstack /app/lightstack-migrate up
 ```
 
 ## Backup and Restore
@@ -947,7 +970,7 @@ Use an existing PostgreSQL instance:
 services:
   lightstack:
     environment:
-      - LIGHTSTACK_DATABASE_URL=postgres://user:pass@external-db.example.com:5432/lightstack?sslmode=require
+      - LIGHTSTACK_DB_URL=postgres://user:pass@external-db.example.com:5432/lightstack?sslmode=require
 
 # Remove postgres service
 ```
@@ -993,7 +1016,7 @@ A: Yes, with proper security hardening (HTTPS, secure passwords, resource limits
 A: Yes, containers run via Rosetta emulation. Native ARM64 support coming soon.
 
 **Q: Can I run real VMs?**
-A: Yes, on Linux with libvirt/KVM. Set LIGHTSTACK_NOVA_LIBVIRT_MODE=real.
+A: Yes, on Linux with libvirt/KVM. Set `nova.libvirt_mode: real` in `config/lightstack.yaml` (and `neutron.networking_mode` for real networking).
 
 **Q: How do I add more users?**
 A: Use OpenStack CLI or Horizon's Identity panel to create users.
@@ -1013,4 +1036,4 @@ This deployment configuration is part of the Lightstack project and is licensed 
 
 ---
 
-**Last Updated**: 2026-03-13 | **lightstack Version**: v0.5.0 | **Horizon Version**: Flamingo (2025.2)
+**Last Updated**: 2026-03-13 | **lightstack Version**: Unreleased (post-v0.6.1) | **Horizon Version**: Flamingo (2025.2)

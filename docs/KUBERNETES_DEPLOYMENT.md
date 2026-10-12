@@ -142,7 +142,7 @@ Key settings to adjust before deploying:
 | `nova.libvirt_mode` | `stub` (dev) or `real` (Linux with KVM) |
 | `neutron.networking_mode` | `stub` (dev) or `iptables` (Linux with privileges) |
 | `cinder.storage_mode` | `stub`, `local`, `rbd`, or `local,rbd` |
-| `glance.storage_mode` | `stub`, `local`, `rbd`, `s3`, or hybrid |
+| `glance.storage_mode` | `stub`, `local`, `s3`, or `local,s3` (`rbd`/`local,rbd` accepted but RBD ops are unimplemented placeholders) |
 | `server.cors_allowed_origins` | Your actual Horizon URL(s) |
 
 ### Deployment
@@ -295,7 +295,7 @@ volumes:
       claimName: lightstack-storage
 ```
 
-Note that `ReadWriteOnce` limits you to a single replica when using local storage. For multi-replica deployments, use `rbd` or `s3` storage backends.
+Note that `ReadWriteOnce` limits you to a single replica when using local storage. For multi-replica deployments, use shared backends: Glance `s3` (e.g. Ceph RGW — Glance `rbd` is an unimplemented placeholder) and Cinder `rbd` (Cinder has no `s3` mode).
 
 ### Service
 
@@ -656,7 +656,7 @@ Do not put the JWT secret or database password in a ConfigMap. Options beyond na
 
 For `cinder.storage_mode: local` or `glance.storage_mode: local`:
 - Use a PVC backed by a block storage class, not `emptyDir`
-- `ReadWriteOnce` limits you to a single pod — use `rbd` or `s3` backends for multi-replica deployments
+- `ReadWriteOnce` limits you to a single pod — for multi-replica deployments use shared backends: Glance `s3` (e.g. Ceph RGW; Glance `rbd` is an unimplemented placeholder) and Cinder `rbd` (Cinder has no `s3` mode)
 
 For `rbd` mode, provide Ceph credentials and `ceph.conf` via a separate Secret and mount them at `/etc/ceph/`.
 

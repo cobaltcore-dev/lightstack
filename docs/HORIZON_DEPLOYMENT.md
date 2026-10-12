@@ -1,6 +1,6 @@
 # Horizon Dashboard Deployment Guide
 
-**Lightstack Version**: v0.5.0+
+**Lightstack Version**: Unreleased (post-v0.6.1)
 **Last Updated**: 2026-03-13
 **Status**: Production Ready
 
@@ -130,14 +130,16 @@ CACHES = {
 
 #### Step 3: Create Docker Compose Configuration
 
-Create `docker-compose.yml`:
+Create `docker-compose.yml` (a new file in this directory — not the Lightstack repo's
+`deployments/docker-compose.yml`; for Lightstack + Horizon in one stack the repo also ships
+`deployments/docker-compose-horizon.yml`):
 
 ```yaml
 version: '3.8'
 
 services:
   horizon:
-    image: quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
+    image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
     container_name: lightstack-horizon
     hostname: horizon
     ports:
@@ -247,7 +249,7 @@ version: '3.8'
 
 services:
   horizon:
-    image: quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
+    image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
     container_name: lightstack-horizon-dev
     ports:
       - "8080:80"
@@ -276,11 +278,11 @@ docker network ls | grep lightstack
 ```
 
 Common network names:
-- `deployments_lightstack-network` (deployments/docker-compose.yml)
-- `lightstack_default` (root docker-compose.yml)
+- `deployments_lightstack-network` (when the repo's `deployments/docker-compose.yml` is run with `-f` from the repo root)
+- `lightstack-network` (when compose is run from inside `deployments/`)
 - Custom name specified in your Lightstack compose file
 
-Update `docker-compose.yml` accordingly:
+Update the network name in your `docker-compose.yml` accordingly:
 
 ```yaml
 networks:
@@ -653,7 +655,7 @@ Install custom Horizon panels:
 
 ```bash
 # Create Dockerfile
-FROM quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
+FROM quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
 RUN pip install horizon-custom-panel
 COPY panel-config.py /etc/openstack-dashboard/enabled/
 ```
