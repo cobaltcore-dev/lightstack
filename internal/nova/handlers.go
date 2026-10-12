@@ -2068,9 +2068,10 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 			attached = append(attached, a)
 		}
 	}
-	// Closed eagerly, not deferred: the transaction below acquires its own pooled
-	// connection, and a deferred close would hold this cursor open across all of it. The
-	// rows are already drained into `attached`, so there is nothing left to read.
+	// Closed eagerly, not deferred: these rows came from tx, and pgx refuses a second
+	// command on a connection while a result set is open ("conn busy"), so the tx.Exec
+	// calls below need this cursor gone. The rows are already drained into `attached`,
+	// so there is nothing left to read.
 	rows.Close()
 	if rErr := rows.Err(); rErr != nil {
 		logger.Error().Err(rErr).Str("instance_id", instanceUUID).Msg("delete: iterate volume attachments failed")
