@@ -989,7 +989,7 @@ For Kubernetes deployment, see separate guide: `docs/KUBERNETES_DEPLOYMENT.md` (
 A: Yes, with proper security hardening (HTTPS, secure passwords, resource limits).
 
 **Q: Does this work on Apple Silicon (M1/M2)?**
-A: Yes, containers run via Rosetta emulation. Native ARM64 support coming soon.
+A: Yes — lightstack runs natively on ARM64; the Horizon (x86_64 Kolla) container runs under QEMU emulation, which works but is slower. For API/CLI/SDK work, the API-only stack (`deployments/docker-compose.yml`) has no x86_64-only components. See [MULTIARCH.md](MULTIARCH.md).
 
 **Q: Can I run real VMs?**
 A: Yes, on Linux with libvirt/KVM. Set `nova.libvirt_mode: real` in `config/lightstack.yaml` (and `neutron.networking_mode` for real networking).

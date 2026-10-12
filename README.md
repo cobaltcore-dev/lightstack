@@ -369,7 +369,7 @@ lightstack/
 │   ├── networking/             # netlink, VXLAN, security groups
 │   └── storage/                # Storage backends (RBD, S3, local)
 ├── migrations/                  # SQL migrations (146 files - 73 up/down pairs)
-├── test/contract/              # Contract tests (71 test files, TDD-first)
+├── test/contract/              # Contract tests (97 test files, TDD-first)
 ├── test/*.sh                   # Integration tests (20+ bash scripts)
 ├── config/                     # Configuration files (YAML)
 ├── docs/                       # Documentation

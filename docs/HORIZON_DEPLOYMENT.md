@@ -51,14 +51,14 @@ SECRET_KEY = 'CHANGE-THIS-IN-PRODUCTION-' + os.urandom(32).hex()
 # OpenStack Backend Configuration
 OPENSTACK_HOST = "lightstack"  # Docker service name (or IP if not using Docker)
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
-OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"  # matches the seeded role (admin/member/reader)
 
 # API Version Configuration (matches Lightstack)
 OPENSTACK_API_VERSIONS = {
     "identity": 3,      # Keystone v3
     "image": 2,         # Glance v2
     "volume": 3,        # Cinder v3
-    "compute": 2.1,     # Nova v2.1
+    "compute": 2,       # integer 2 — Horizon rejects 2.1 here
 }
 
 # Keystone v3 Configuration
@@ -279,7 +279,7 @@ docker network ls | grep lightstack
 
 Common network names:
 - `deployments_lightstack-network` (when the repo's `deployments/docker-compose.yml` is run with `-f` from the repo root)
-- `lightstack-network` (when compose is run from inside `deployments/`)
+- `deployments_lightstack-network` (plain compose run from inside `deployments/` — same prefixed name as from the repo root)
 - Custom name specified in your Lightstack compose file
 
 Update the network name in your `docker-compose.yml` accordingly:

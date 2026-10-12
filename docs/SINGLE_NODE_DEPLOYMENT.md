@@ -467,7 +467,7 @@ OPENSTACK_API_VERSIONS = {
     "identity": 3,
     "image": 2,
     "volume": 3,
-    "compute": 2.1,
+    "compute": 2,  # integer 2 — Horizon rejects 2.1 here
 }
 
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True

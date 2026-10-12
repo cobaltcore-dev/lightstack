@@ -569,7 +569,7 @@ only the documented keys are accepted:
 ```yaml
 image:
   repository: ghcr.io/cobaltdev-cluster/lightstack   # REQUIRED — no default
-  tag: "0.7.0"
+  tag: "<tag>"
 
 replicaCount: 2
 

@@ -374,7 +374,7 @@ $ sudo ./scripts/upgrade-lightstack.sh
 ╚═══════════════════════════════════════════════════════════╝
 
 [INFO] lightstack installation found at /opt/lightstack
-[INFO] Current version: v0.5.0 (commit: c75f9dd)
+[INFO] Current version: v0.5.0 (commit: c75f9dd)   # example output from an older install
 [INFO] lightstack service is running
 
 [INFO] Starting upgrade process...
