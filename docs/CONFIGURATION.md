@@ -38,12 +38,10 @@ Lightstack can be configured through:
 
 ### Location
 
-**Default locations** (checked in order):
-1. `./lightstack.yaml` (current directory)
-2. `/etc/lightstack/lightstack.yaml` (system-wide)
-3. `~/.lightstack/lightstack.yaml` (user-specific)
+The binary reads exactly one config file: the `--config` flag, which defaults to
+`config/lightstack.yaml` (relative to the working directory). There is no search
+path — the file is not looked up in `/etc` or the home directory:
 
-**Specify custom location:**
 ```bash
 lightstack --config /path/to/custom.yaml
 ```
@@ -317,12 +315,15 @@ postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable&connect_t
 
 ```yaml
 database:
-  max_connections: 50        # Default: 50
-  min_connections: 2         # Default: 2
-  max_conn_lifetime: 1h      # Default: 1 hour
-  max_conn_idle_time: 10m    # Default: 10 minutes
-  health_check_period: 30s   # Default: 30 seconds
+  max_connections: 50        # binary default: 20 (shipped config: 50)
+  min_connections: 2         # default: 2
+  max_conn_lifetime: 1h      # binary default: 1h (shipped config: 1h)
+  max_conn_idle_time: 10m    # binary default: 15m (shipped config: 10m)
+  health_check_period: 30s   # binary default: 1m (shipped config: 30s)
 ```
+
+Values shown are what the shipped `config/lightstack.yaml` sets; when a key is
+missing or zero, the binary falls back to the defaults noted above.
 
 **Guidelines:**
 - **Small deployments:** 10-20 connections
@@ -847,12 +848,14 @@ neutron:
 
 ### Resource Limits
 
-**Default quotas** (set in database):
+**Default quotas** (set in database — quotas are stored row-per-resource in the
+`quotas` table, migration `007`):
 ```sql
-UPDATE projects SET quota_instances = 100 WHERE name = 'production';
-UPDATE projects SET quota_cores = 200 WHERE name = 'production';
-UPDATE projects SET quota_ram = 204800 WHERE name = 'production';
+UPDATE quotas SET hard_limit = 100 WHERE project_id = '<uuid>' AND resource = 'instances';
+UPDATE quotas SET hard_limit = 200 WHERE project_id = '<uuid>' AND resource = 'cores';
+UPDATE quotas SET hard_limit = 204800 WHERE project_id = '<uuid>' AND resource = 'ram';
 ```
+(Prefer the API: `openstack quota set <project> --instances 100 --cores 200 --ram 204800`.)
 
 ### Multi-Tenant Isolation
 
@@ -937,9 +940,10 @@ When rate limiting triggers, Lightstack logs at WARN level:
 
 ### Validate Configuration
 
-The binary accepts only two flags — `--config` (path to the config file) and
-`--migrations` (path to the migrations directory). There is no `--validate` or
-`--dry-run` flag; configuration errors are reported at startup:
+The server takes only two flags — `--config` (path to the config file) and
+`--migrations` (path to the migrations directory). There is no `--validate` flag;
+configuration errors are reported at startup. (The `cleanup` subcommand separately
+accepts `--dry-run`.)
 
 ```bash
 lightstack --config /path/to/lightstack.yaml

@@ -360,7 +360,7 @@ docker exec lightstack /app/lightstack-migrate status
 docker exec lightstack /app/lightstack-migrate up
 
 # Rollback last migration (if needed)
-docker exec lightstack /app/lightstack-migrate down 1
+docker exec lightstack /app/lightstack-migrate down
 ```
 
 > ⚠️ **Rolling back requires care.** Some migrations were edited in place after shipping
@@ -719,8 +719,8 @@ backend lightstack_keystone_backend
 
 ### CLI Subcommands
 
-The `lightstack` binary ships operational subcommands (its only flags are `--config`
-and `--migrations`):
+The `lightstack` binary ships operational subcommands. The server itself takes only
+`--config` and `--migrations`; the subcommands add their own flags as shown:
 
 ```bash
 # Reclaim host state for deleted instances

@@ -620,7 +620,7 @@ If Lightstack will run **alongside** SAP infrastructure:
 
 **Related Lightstack Documentation**:
 - [docs/blueprint.md](blueprint.md) - API coverage: ~335 functional operations vs the 330-endpoint baseline (authoritative)
-- [REMAINING_WORK.md](../REMAINING_WORK.md) - Sprint 66 Horizon integration results
+- Sprint 66 Horizon integration results (see docs/archive/)
 
 **OpenStack Horizon**:
 - Official docs: https://docs.openstack.org/horizon/latest/

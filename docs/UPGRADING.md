@@ -548,7 +548,8 @@ therefore:
 1. **Stop the new binary** — nothing may run migrations forward again.
 2. **Migrate the schema down** to the target version's migration set with
    `lightstack-migrate` (`lightstack-migrate status` shows where you are;
-   `lightstack-migrate down <n>` steps back). Down-migrations may lose data added by
+   `lightstack-migrate down` steps back exactly one migration — it takes no count; use
+   `goto <version>` to reach a specific version). Down-migrations may lose data added by
    the up side — the console columns and catalog rows above are dropped with it.
 3. **Then start the old binary.**
 

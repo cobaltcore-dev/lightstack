@@ -115,10 +115,12 @@ docker compose -f deployments/docker-compose.yml down -v       # wipe data too
 
 ## Path B — Docker Compose with the Horizon dashboard
 
-Adds the OpenStack Horizon web UI (Flamingo 2025.2) and a noVNC console proxy:
+Adds the OpenStack Horizon web UI (Flamingo 2025.2). This compose file **requires**
+a JWT secret to be set before it will start:
 
 ```bash
 cd lightstack
+export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)
 docker compose -f deployments/docker-compose-horizon.yml up -d
 ```
 
@@ -180,9 +182,14 @@ container image you supply (there is no default by design):
 helm install lightstack ./charts/lightstack \
   --set image.repository=<your-registry>/lightstack \
   --set image.tag=<tag> \
-  --set secrets.jwtSecret=$(openssl rand -base64 32) \
-  --set postgres.url="postgres://user:pass@host:5432/lightstack?sslmode=disable"
+  --set database.url="postgres://user:pass@host:5432/lightstack?sslmode=disable" \
+  --set secrets.adminPassword=$(openssl rand -base64 16) \
+  --set secrets.jwtSecret=$(openssl rand -base64 32)
 ```
+
+> The chart fails fast at install time if `database.url`, `secrets.jwtSecret` or
+> `secrets.adminPassword` are missing — there are no insecure defaults. This stub-mode
+> stack has no console proxy; the noVNC proxy is deployed by the chart in real mode.
 
 The chart runs readiness/liveness probes, drain handling and (optional) host-state
 teardown jobs. See [KUBERNETES_DEPLOYMENT.md](KUBERNETES_DEPLOYMENT.md) and the

@@ -18,7 +18,7 @@ Lightstack serves the APIs the OpenStack Horizon dashboard consumes (its UI is *
 
 | Component | Version | Requirement |
 |-----------|---------|-------------|
-| Lightstack | v0.5.0+ | Required |
+| Lightstack | Unreleased (post-v0.6.1) | Required |
 | OpenStack | Flamingo 2025.2+ | Required |
 | Horizon | Flamingo 2025.2+ | Required |
 | Earlier Versions | Zed, Yoga, etc. | **NOT SUPPORTED** |

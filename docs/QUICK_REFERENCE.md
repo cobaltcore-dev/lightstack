@@ -57,9 +57,9 @@ lightstack console-tokens list                        # noVNC console tokens (al
 | Neutron | 9696 | http://localhost:9696/ |
 | Cinder | 8776 | http://localhost:8776/ |
 | Glance | 9292 | http://localhost:9292/ |
-| Placement (stub) | 8778 | http://localhost:8778/ |
+| Placement (stub) | 8778 | in-process only — not published by the compose stacks |
 | Metadata | 8775 | http://localhost:8775/ |
-| noVNC | 6080 | http://localhost:6080/ |
+| noVNC console | — | not in the compose stacks; the proxy is chart/real-mode only (`console-tokens` manages its tokens) |
 | PostgreSQL | 5432 | localhost:5432 |
 
 ## OpenStack CLI Setup

@@ -107,14 +107,14 @@ X-Auth-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 ### Endpoint Coverage
 
-| Service | Endpoints | Coverage |
-|---------|-----------|----------|
-| **Keystone** (Identity) | 61 | 100% ✅ |
-| **Nova** (Compute) | 72 | 100% ✅ |
-| **Neutron** (Network) | 98 | 100% ✅ |
-| **Cinder** (Block Storage) | 73 | 100% ✅ |
-| **Glance** (Image) | 38 | 100% ✅ |
-| **Total** | **~335 functional operations** | **vs 330-endpoint baseline** ✅ |
+| Service | Raw routes (incl. aliases/discovery) |
+|---------|-----------|
+| **Keystone** (Identity) | 61 |
+| **Nova** (Compute) | 72 |
+| **Neutron** (Network) | 98 |
+| **Cinder** (Block Storage) | 73 |
+| **Glance** (Image) | 38 |
+| **Total** | **~335 functional operations vs the 330-endpoint baseline** |
 
 > Coverage is counted as ~335 functional operations against the 330-endpoint baseline — see
 > [blueprint.md](blueprint.md) for the counting rule (the earlier "342/330 (104%)" figure is superseded).

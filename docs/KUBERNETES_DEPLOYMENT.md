@@ -559,76 +559,44 @@ spec:
 
 ---
 
-## Helm Chart (Planned)
+## Helm Chart
 
-A full Helm chart is planned for a future release. When available it will live at `deployments/helm/lightstack/` and expose the following `values.yaml` structure:
+The chart is **available now** at [`charts/lightstack`](../charts/lightstack/README.md)
+(not `deployments/helm/` — ignore older references). It renders the configmap from a
+real `values.yaml` schema (`values.schema.json`, `additionalProperties: false`), so
+only the documented keys are accepted:
 
 ```yaml
-# Intended values.yaml structure (not yet available)
 image:
-  repository: ghcr.io/cobaltcore-dev/lightstack
-  tag: "0.6.0"
-  pullPolicy: IfNotPresent
+  repository: ghcr.io/cobaltdev-cluster/lightstack   # REQUIRED — no default
+  tag: "0.7.0"
 
 replicaCount: 2
 
-service:
-  type: ClusterIP
-
-ingress:
-  enabled: false
-  className: nginx
-  host: openstack.example.com
-
-config:
-  nova:
-    libvirtMode: stub
-  neutron:
-    networkingMode: stub
-  cinder:
-    storageMode: local
-  glance:
-    storageMode: local
-  server:
-    corsAllowedOrigins:
-      - "https://horizon.example.com"
+database:
+  url: "postgres://user:pass@host:5432/lightstack?sslmode=disable"  # REQUIRED
 
 secrets:
-  jwtSecret: ""      # Required — set via --set or external secret
-  dbPassword: ""     # Required — set via --set or external secret
+  jwtSecret: ""      # REQUIRED — no insecure default
+  adminPassword: ""  # REQUIRED — no deployment runs with admin/secret
 
-database:
-  url: ""            # Full DSN, overrides individual fields
-
-storage:
-  enabled: true
-  size: 50Gi
-  storageClass: standard
-
-resources:
-  requests:
-    cpu: 250m
-    memory: 256Mi
-  limits:
-    cpu: "2"
-    memory: 1Gi
-
-autoscaling:
-  enabled: false
-  minReplicas: 2
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 1
-
-cache:
-  enabled: false
-  redisUrl: ""
+nova:
+  libvirtMode: stub          # stub | real
+neutron:
+  networkingMode: stub       # stub | iptables | ebpf
+cinder:
+  storageMode: local         # stub | local | rbd | local,rbd
+glance:
+  storageMode: local         # stub | local | rbd | s3 | local,rbd | local,s3 (rbd ops unimplemented)
 ```
 
-Until the chart is published, use the manifests in this guide directly or wrap them with Kustomize.
+```bash
+helm install lightstack ./charts/lightstack -f my-values.yaml
+```
+
+Full key reference, probes, drain handling and the host-state teardown jobs:
+[charts/lightstack/README.md](../charts/lightstack/README.md). The manifests in this
+guide remain useful for understanding what the chart renders.
 
 ---
 

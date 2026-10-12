@@ -152,7 +152,6 @@ docker compose -f deployments/docker-compose.yml up -d
 **Expected output:**
 ```
 [+] Running 4/4
- ✔ Network lightstack_lightstack-network   Created
  ✔ Container lightstack-postgres       Started (healthy)
  ✔ Container lightstack-redis          Started (healthy)
  ✔ Container lightstack                Started (healthy)
@@ -178,17 +177,18 @@ lightstack-postgres   postgres:18.4-alpine   "docker-entrypoint.s…"   postgres
 docker compose -f deployments/docker-compose.yml logs lightstack --tail=20
 ```
 
-**Expected healthy logs** (zerolog JSON, one object per line):
+**Expected healthy logs** (illustrative — the binary logs plain-text startup lines
+plus zerolog JSON for request logs; look for the migration run and the per-service
+listener lines, with no repeated errors or restarts):
 ```
-lightstack | {"level":"info","time":"2026-03-07T21:45:12Z","message":"Running migrations"}
-lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Migrations complete"}
-lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Starting lightstack services"}
-lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Keystone listening on :35357"}
-lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Nova listening on :8774"}
-lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Neutron listening on :9696"}
-lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Cinder listening on :8776"}
-lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Glance listening on :9292"}
-lightstack | {"level":"info","time":"2026-03-07T21:45:13Z","message":"Placement listening on :8778"}
+Running database migrations...
+Database connection established (pool: max=50, min=2)
+  - Keystone:              http://localhost:35357
+  - Nova:                  http://localhost:8774
+  - Neutron:               http://localhost:9696
+  - Cinder:                http://localhost:8776
+  - Glance:                http://localhost:9292
+  - Placement:             http://localhost:8778
 ```
 
 ### Step 5: Test APIs
@@ -315,7 +315,8 @@ lightstack:
     LIGHTSTACK_ENDPOINT_HOST: "localhost"
     LIGHTSTACK_ENDPOINT_SCHEME: "http"
 
-    # Redis cache
+    # Set by the compose file, but NOT read by the binary —
+    # the cache is configured via the `cache:` block in lightstack.yaml only
     LIGHTSTACK_REDIS_URL: "redis://redis:6379/0"
     LIGHTSTACK_CACHE_ENABLED: "true"
 ```

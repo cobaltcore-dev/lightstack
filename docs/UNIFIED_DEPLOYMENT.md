@@ -17,7 +17,11 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 - **PostgreSQL 18**: Database backend
 - **lightstack Services**: All five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance)
 - **Horizon Dashboard**: OpenStack Flamingo (2025.2) web interface
-- **noVNC Proxy**: VNC console access for instances
+- **memcached**: Horizon session cache
+
+> This is the **stub-mode** stack: no real VMs and **no console proxy** — the noVNC
+> proxy is deployed by the Helm chart in real mode. Console access from the CLI
+> (`openstack console log show`) still works.
 
 ### Architecture
 
@@ -33,13 +37,13 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 │                          ▲                                   │
 │                          │                                   │
 │                  ┌───────┴────────┐                         │
-│                  │  noVNC Proxy   │                         │
-│                  │     :6080      │                         │
+│                  │   memcached    │                         │
+│                  │     :11211     │                         │
 │                  └────────────────┘                         │
 └─────────────────────────────────────────────────────────────┘
-         │              │              │              │
-    Port 5432      Port 35357    Port 80         Port 6080
-                   (+ 8774,      (HTTP)          (noVNC)
+         │              │              │
+    Port 5432      Port 35357    Port 80
+                   (+ 8774,      (HTTP)
                     9696, 8776,
                     9292, 8775)
 ```
@@ -53,7 +57,6 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 - **Available Ports**:
   - 80 (HTTP - Horizon dashboard)
   - 5432 (PostgreSQL)
-  - 6080 (noVNC)
   - 35357 (Keystone)
   - 8774 (Nova)
   - 8775 (Metadata)
@@ -68,10 +71,10 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 ### Platform Support
 
 - ✅ **Linux x86_64 (AMD64)**: Full support (all services)
-- ⚠️ **Linux ARM64**: Lightstack works natively; Horizon/noVNC run via emulation (slower)
+- ⚠️ **Linux ARM64**: Lightstack works natively; Horizon runs via emulation (slower)
 - ✅ **macOS Intel**: Full support (Docker Desktop with Rosetta)
-- ⚠️ **macOS Apple Silicon (ARM64)**: Lightstack works natively; Horizon/noVNC require emulation
-  - **Note**: Horizon and noVNC are x86_64 images and will run under emulation
+- ⚠️ **macOS Apple Silicon (ARM64)**: Lightstack works natively; Horizon requires emulation
+  - **Note**: Horizon is an x86_64 image and will run under emulation
   - Lightstack itself is built as ARM64 and runs natively
   - For ARM64-only environments, use API-only deployment (see Alternative Deployment Options below)
 - ⚠️ **Windows**: WSL2 required
@@ -115,7 +118,6 @@ docker compose -f docker-compose-horizon.yml up -d
  ✔ Network lightstack-horizon-network    Created
  ✔ Container lightstack-postgres         Started
  ✔ Container lightstack                  Started
- ✔ Container lightstack-novnc            Started
  ✔ Container lightstack-horizon          Started
 ```
 
@@ -586,7 +588,7 @@ openstack network delete test-net
 
 #### ARM64 (Apple Silicon, ARM Servers)
 
-**Symptom**: Horizon or noVNC containers restart repeatedly
+**Symptom**: Horizon container restarts repeatedly
 
 **Diagnosis**:
 ```bash
@@ -594,7 +596,7 @@ docker compose -f docker-compose-horizon.yml ps
 # Look for "platform (linux/amd64) does not match" warnings
 ```
 
-**Explanation**: Horizon (OpenStack Kolla) and noVNC are x86_64 images. On ARM64 systems, Docker runs them via emulation (QEMU). This works but may be slower and less stable.
+**Explanation**: Horizon (OpenStack Kolla) is an x86_64 image. On ARM64 systems, Docker runs it via emulation (QEMU). This works but may be slower and less stable.
 
 **Solutions**:
 1. **Continue with emulation** (works but slower):
@@ -693,31 +695,14 @@ docker exec lightstack-horizon ping -c 3 lightstack
 
 ### VNC Console Doesn't Work
 
-**Symptom**: Console tab shows "Unable to connect"
+**Expected in this stack**: the compose stack is stub mode and ships **no console
+proxy** — the Horizon console tab cannot connect to a guest. The noVNC proxy is
+deployed by the Helm chart in real mode (see
+[KUBERNETES_DEPLOYMENT.md](KUBERNETES_DEPLOYMENT.md)); its tokens are managed with
+`lightstack console-tokens list|purge`.
 
-**Diagnosis**:
-```bash
-# Check noVNC is running
-docker compose -f docker-compose-horizon.yml ps novnc
-curl -I http://localhost:6080
-
-# Check lightstack can reach noVNC
-docker exec lightstack curl -I http://novnc:6080
-```
-
-**Solutions**:
-
-1. **Verify noVNC container**:
-   ```bash
-   docker compose -f docker-compose-horizon.yml logs novnc
-   docker compose -f docker-compose-horizon.yml restart novnc
-   ```
-
-2. **Check port mapping**:
-   ```bash
-   docker ps | grep novnc
-   # Should show: 0.0.0.0:6080->6080/tcp
-   ```
+**What still works**: `openstack console log show <server>` returns the (stub)
+serial console log.
 
 ### Horizon Performance Issues
 
@@ -741,24 +726,11 @@ docker exec lightstack curl -I http://novnc:6080
    docker stats --no-stream
    ```
 
-3. **Enable memcached** (add to docker-compose-horizon.yml):
-   ```yaml
-   services:
-     memcached:
-       image: memcached:alpine
-       container_name: lightstack-memcached
-       networks:
-         - lightstack-network
-   ```
-
-   Update horizon-config/local_settings:
-   ```python
-   CACHES = {
-       'default': {
-           'BACKEND': 'django.core.cache.backends.memcached.PyMemcacheCache',
-           'LOCATION': 'memcached:11211',
-       }
-   }
+3. **Memcached is already enabled**: the stack ships a `lightstack-memcached`
+   service (`memcached:1.6-alpine`) on the `lightstack-horizon-network`, and
+   Horizon's `local_settings` is configured to use it. Verify it is healthy:
+   ```bash
+   docker compose -f deployments/docker-compose-horizon.yml ps memcached
    ```
 
 ### Database Issues

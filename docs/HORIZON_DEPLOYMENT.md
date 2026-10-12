@@ -16,7 +16,7 @@ This guide provides step-by-step instructions for deploying OpenStack Horizon da
 
 ## Prerequisites
 
-- Lightstack v0.5.0 or higher running
+- Lightstack Unreleased (post-v0.6.1) or higher running
 - Docker and Docker Compose installed
 - Network connectivity between Horizon and Lightstack services
 - 2GB RAM minimum for Horizon container

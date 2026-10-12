@@ -181,7 +181,7 @@ sudo ./deploy-single-node.sh
 git clone https://github.com/cobaltcore-dev/lightstack.git
 cd lightstack/deployments
 
-# 2. Start all services (lightstack + Horizon + PostgreSQL + noVNC)
+# 2. Start all services (lightstack + Horizon + PostgreSQL)
 docker compose -f docker-compose-horizon.yml up -d
 
 # 3. Access Horizon Dashboard
@@ -193,7 +193,6 @@ open http://localhost/dashboard
 - PostgreSQL 18 database
 - lightstack services (Keystone, Nova, Neutron, Cinder, Glance)
 - Horizon Dashboard (OpenStack Flamingo 2025.2)
-- noVNC console proxy
 - Complete web UI for cloud management
 
 **Documentation**: [docs/UNIFIED_DEPLOYMENT.md](docs/UNIFIED_DEPLOYMENT.md) | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md)
@@ -223,10 +222,18 @@ export OS_PASSWORD=secret
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 
-# 5. Test it!
+# 5. Create the prerequisites for a first VM
+openstack network create my-net
+openstack subnet create --network my-net --subnet-range 10.0.0.0/24 my-subnet
+curl -LO https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img
+openstack image create --file cirros-0.6.2-x86_64-disk.img --disk-format qcow2 cirros
+
+# 6. Test it!
 openstack token issue
 openstack server create --flavor m1.small --image cirros --network my-net test-vm
 ```
+
+(See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the guided version of this flow.)
 
 See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the complete quick start guide.
 
@@ -347,11 +354,11 @@ glance:
 lightstack/
 ├── cmd/lightstack/                     # Main binary entry point
 ├── internal/                    # Private packages
-│   ├── keystone/               # Identity service (61 endpoints)
-│   ├── nova/                   # Compute service (72 endpoints)
-│   ├── neutron/                # Network service (98 endpoints)
-│   ├── cinder/                 # Block storage (73 endpoints)
-│   ├── glance/                 # Image service (38 endpoints)
+│   ├── keystone/               # Identity service
+│   ├── nova/                   # Compute service
+│   ├── neutron/                # Network service
+│   ├── cinder/                 # Block storage
+│   ├── glance/                 # Image service
 │   ├── database/               # DB models and migrations (73 migrations)
 │   ├── middleware/             # Auth, logging, CORS, recovery
 │   └── common/                 # Shared utilities

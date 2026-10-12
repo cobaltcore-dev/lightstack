@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-All changes since v0.6.1 (63 commits, SPEC-009 through SPEC-027). Migrations now run
+All changes since v0.6.1 (65 commits, SPEC-009 through SPEC-027). Migrations now run
 to **073** (from 055).
 
 ### ⚡ Real-Mode Single Node (SPEC-009)

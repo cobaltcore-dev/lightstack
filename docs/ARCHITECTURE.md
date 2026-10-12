@@ -320,7 +320,7 @@ Key indexes for performance:
 
 ### Connection Pooling
 
-- **PostgreSQL**: 50 connections default (configurable)
+- **PostgreSQL**: 20 connections binary default (the shipped config sets 50)
 - **libvirt**: Connection pooling with max 10 connections
 - **Ceph**: Connection per operation (stateless)
 
