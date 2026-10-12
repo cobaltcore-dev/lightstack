@@ -14,7 +14,8 @@ import (
 // wrong directory, console-tokens would list and purge nothing.
 func TestLoadConfigAppliesStatePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "lightstack.yaml")
-	if err := os.WriteFile(path, []byte("state_path: /data/lightstack\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(
+		"state_path: /data/lightstack\nkeystone:\n  jwt_secret: test-secret-not-a-default\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { paths.SetBase(paths.DefaultBase) })

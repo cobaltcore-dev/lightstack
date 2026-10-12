@@ -80,8 +80,11 @@ openstack token issue
 ### Building and Running
 
 ```bash
-# Build the main binary
+# Build the main binary (version-stamped from git describe)
 make build                    # Outputs to bin/lightstack
+
+# Check the build version
+./bin/lightstack --version
 
 # Run with configuration
 make run                      # Builds and starts with config/lightstack.yaml

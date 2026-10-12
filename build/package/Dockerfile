@@ -20,7 +20,7 @@ COPY . .
 
 # Build the binary for target architecture
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-w -s" -o lightstack ./cmd/lightstack
+    go build -ldflags="-w -s -X main.Version=${VERSION}" -o lightstack ./cmd/lightstack
 
 # Build the migration tool for target architecture
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \

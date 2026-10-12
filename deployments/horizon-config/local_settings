@@ -62,7 +62,7 @@ STATIC_URL = '/static/'
 # Lightstack Service Discovery
 OPENSTACK_HOST = "lightstack"  # Docker service name
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
-OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"  # matches the seeded roles (admin/member/reader)
 
 # API Version Configuration (Lightstack Flamingo Compatible)
 OPENSTACK_API_VERSIONS = {

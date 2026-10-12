@@ -375,12 +375,47 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Nova.ShutdownTimeout = MaxShutdownTimeout
 	}
 
-	// Warn if using default JWT secret
-	if cfg.Keystone.JWTSecret == "change-me-in-production" {
-		fmt.Fprintln(os.Stderr, "WARNING: Using default JWT secret! Set LIGHTSTACK_JWT_SECRET environment variable in production.")
+	// Refuse well-known (or empty) JWT secrets unless explicitly overridden.
+	// The defaults below ship in this repository and in .env.example, so anyone
+	// can read them — and because tokens are stateless, knowing the secret is
+	// enough to mint an admin token for every service (review finding S2,
+	// docs/review/comprehensive-review-report-2026-10-12.md). The chart already
+	// fails fast on an empty secret; this gives the binary the same stance.
+	if isInsecureDefaultJWTSecret(cfg.Keystone.JWTSecret) && !allowInsecureDefaultJWTSecret() {
+		return nil, fmt.Errorf(
+			"keystone.jwt_secret is empty or a well-known default — refusing to start. " +
+				"Set keystone.jwt_secret in the config file (or the LIGHTSTACK_JWT_SECRET " +
+				"environment variable) to a random value, e.g. `openssl rand -base64 32`. " +
+				"For isolated development or test environments only, " +
+				"LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 opts out of this check")
 	}
 
 	return &cfg, nil
+}
+
+// insecureDefaultJWTSecrets are values that appear in this repository's shipped
+// configuration and examples. An empty secret is equally forgeable (HMAC with a
+// known key), so it is refused too.
+var insecureDefaultJWTSecrets = map[string]struct{}{
+	"":                        {},
+	"change-me-in-production": {},
+	"change-me-in-production-use-openssl-rand-base64-32": {},
+}
+
+func isInsecureDefaultJWTSecret(secret string) bool {
+	_, known := insecureDefaultJWTSecrets[secret]
+	return known
+}
+
+// allowInsecureDefaultJWTSecret is the documented escape hatch for stub-mode
+// development and test stacks that never validate a foreign token.
+func allowInsecureDefaultJWTSecret() bool {
+	switch os.Getenv("LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET") {
+	case "1", "true":
+		return true
+	default:
+		return false
+	}
 }
 
 // maxRealModeStatePath keeps a guest's console socket path within QEMU's 108-byte

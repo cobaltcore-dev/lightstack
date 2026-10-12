@@ -1,0 +1,124 @@
+# Release pipeline — triggered by pushing a v* tag.
+#
+# Produces, from the tagged commit and nothing else:
+#   1. linux/amd64 + linux/arm64 binaries (CGO_ENABLED=0 — the Ceph RBD backend
+#      sits behind the `ceph` build tag, so cross-compilation needs no cgo)
+#   2. a multi-arch container image pushed to ghcr.io
+#   3. a GitHub Release with the binaries and their checksums
+#   4. the Helm chart published as an OCI artifact (appVersion = the tag)
+#
+# Version stamping contract (review R1): the tag is injected with
+# `-ldflags "-X main.Version=<tag>"` and round-tripped through
+# `lightstack --version` before anything is published.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  GO_VERSION: '1.27.2'
+
+jobs:
+  test:
+    name: Test gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run unit tests
+        run: make test
+
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for GOOS_GOARCH in linux/amd64 linux/arm64; do
+            GOOS="${GOOS_GOARCH%/*}"
+            GOARCH="${GOOS_GOARCH#*/}"
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath \
+              -ldflags "-s -w -X main.Version=${VERSION}" \
+              -o "dist/lightstack-${VERSION}-${GOOS}-${GOARCH}" ./cmd/lightstack
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -s -w \
+              -o "dist/lightstack-migrate-${VERSION}-${GOOS}-${GOARCH}" ./cmd/lightstack-migrate
+          done
+
+      - name: Verify version stamping
+        # R1 regression guard: the Makefile used to inject -X main.Version
+        # into a variable that did not exist, which Go silently ignored.
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          GOT="$(./dist/lightstack-${VERSION}-linux-amd64 --version)"
+          if [ "$GOT" != "$VERSION" ]; then
+            echo "::error::--version reported '${GOT}', expected '${VERSION}'"
+            exit 1
+          fi
+
+      - name: Checksums
+        run: cd dist && sha256sum * > "checksums-${GITHUB_REF_NAME}.txt"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/package/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/lightstack-*
+            dist/checksums-*
+
+      - name: Publish Helm chart
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The chart's own version (Chart.yaml `version`) is bumped per chart
+          # change in the repo; the app version is pinned to this release tag
+          # (and the image tag matches it, including the leading "v").
+          CHART_VERSION="$(awk '/^version:/ {print $2}' charts/lightstack/Chart.yaml)"
+          helm package charts/lightstack --app-version "${GITHUB_REF_NAME}" -d dist/
+          echo "${GHCR_TOKEN}" | helm registry login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
+          helm push "dist/lightstack-${CHART_VERSION}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts"
