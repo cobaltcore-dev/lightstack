@@ -304,7 +304,7 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		LEFT JOIN LATERAL jsonb_array_elements(COALESCE(p.fixed_ips, '[]'::jsonb)) fx ON true
 		LEFT JOIN subnets s ON fx->>'subnet_id' IS NOT NULL AND s.id::text = fx->>'subnet_id'
 		WHERE p.device_id = $1
-		ORDER BY p.created_at
+		ORDER BY p.created_at, p.id
 	`, instanceID)
 
 	if err != nil {

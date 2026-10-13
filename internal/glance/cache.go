@@ -11,6 +11,14 @@ import (
 
 // ListCachedImages lists images in the cache
 func (svc *Service) ListCachedImages(c *gin.Context) {
+	// Admin-only (review 2026-10-13 M-2): the cache is a per-node operator
+	// surface — upstream's cache_list policy. The rest of the cache handlers
+	// were gated in this review's first pass; the list was missed.
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+		return
+	}
+
 	// Query images that have been marked as cached
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, size_bytes, cached_at

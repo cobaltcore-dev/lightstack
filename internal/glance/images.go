@@ -1022,6 +1022,14 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 			"queued", imageID); revertErr != nil {
 			log.Warn().Err(revertErr).Str("image_id", imageID).Msg("rollback: failed to revert image status to queued after upload failure")
 		}
+		// Over the cap is 413 — upstream's answer to image_size_cap — not a
+		// storage failure (round 2 of this review: the MaxBytesReader error
+		// surfaced from the storage read as a 503).
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			common.SendError(c, common.NewRequestEntityTooLargeError("Image data exceeds the maximum upload size"))
+			return
+		}
 		log.Error().Err(err).Str("operation", "upload_image").Str("image_id", imageID).Msg("failed to upload image to storage")
 		common.SendError(c, common.NewServiceUnavailableError("failed to upload image"))
 		return

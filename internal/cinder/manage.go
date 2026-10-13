@@ -158,6 +158,15 @@ func (svc *Service) UnmanageVolume(c *gin.Context, volumeID string) {
 
 // ManageSnapshot handles POST /v3/os-snapshot-manage
 func (svc *Service) ManageSnapshot(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-3): like os-volume-manage, this imports
+	// an operator's existing backing into the API — upstream gates it
+	// volume_admin_actions:snapshot_manage. Checked before the body is bound
+	// so a non-admin gets 403, not a 400.
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+		return
+	}
+
 	projectID := c.GetString("project_id")
 
 	var req struct {

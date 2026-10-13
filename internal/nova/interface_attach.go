@@ -1,7 +1,6 @@
 package nova
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -60,6 +58,10 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	var networkID string
 	var fixedIP string
 	var macAddress string
+	// novaCreatedPort is true when this request had Nova create the port
+	// (net_id path); false when it attached a port the tenant already owned
+	// (port_id path). It decides the device_owner stamp below (N-8).
+	novaCreatedPort := false
 
 	// If port_id provided, use existing port
 	if req.InterfaceAttachment.PortID != "" {
@@ -83,12 +85,19 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			return
 		}
 
-		// Parse fixed_ips from JSONB
-		// For simplicity, just extract first IP
-		fixedIP = "192.168.1.10" // Placeholder, would parse from fixedIPsJSON
+		// Parse the port's first fixed IP for the response. Its addressing lives
+		// in the fixed_ips JSONB; a hardcoded placeholder here used to describe
+		// an address the port does not hold (round 2 of this review).
+		var entries []struct {
+			IPAddress string `json:"ip_address"`
+		}
+		if jsonErr := json.Unmarshal(fixedIPsJSON, &entries); jsonErr == nil && len(entries) > 0 {
+			fixedIP = entries[0].IPAddress
+		}
 	} else if req.InterfaceAttachment.NetID != "" {
 		// Create new port on the specified network
 		networkID = req.InterfaceAttachment.NetID
+		novaCreatedPort = true
 
 		// The rule booting applies (neutron.GuestMayAttach): the server's own networks and shared
 		// ones, and an unshared external network for administrators only — upstream applies
@@ -116,14 +125,19 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		macAddress = generateMACAddress()
 
 		// Get subnet info for IP allocation
-		var cidr string
+		var subnetID, cidr string
 		err = svc.pool.QueryRow(c.Request.Context(),
-			"SELECT cidr FROM subnets WHERE network_id = $1 LIMIT 1",
+			"SELECT id, cidr FROM subnets WHERE network_id = $1 LIMIT 1",
 			networkID,
-		).Scan(&cidr)
+		).Scan(&subnetID, &cidr)
 
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.SendError(c, common.NewBadRequestError("network has no subnet"))
+			return
+		}
+		if err != nil {
+			log.Error().Err(err).Str("operation", "allocate_ip").Msg("subnet lookup error")
+			common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
 			return
 		}
 
@@ -131,17 +145,24 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		if req.InterfaceAttachment.FixedIP != "" {
 			fixedIP = req.InterfaceAttachment.FixedIP
 		} else {
-			// Allocate next available IP from subnet
-			fixedIP, err = allocateNextIP(c.Request.Context(), svc.pool, networkID, cidr)
+			// The same collision-free allocator every other port-creation path
+			// uses (review 2026-10-13 N-4): this path used to run its own
+			// next-free scan, and two allocators over one subnet is how they
+			// hand out the same address.
+			fixedIP, err = neutron.AllocateFreeIP(c.Request.Context(), svc.pool, subnetID, cidr)
 			if err != nil {
 				log.Error().Err(err).Str("operation", "allocate_ip").Msg("IP allocation error")
-				common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
+				common.SendError(c, common.NewConflictError("no IP address available in the network's subnet"))
 				return
 			}
 		}
 
-		// Create port
-		fixedIPsJSON := fmt.Sprintf(`[{"ip_address": "%s", "subnet_id": "%s"}]`, fixedIP, networkID)
+		// Create port. The fixed_ips entry carries the SUBNET's id, not the
+		// network's (round 2 of this review): everything that resolves a port's
+		// addressing — the metadata service's network_data.json, DHCP, the
+		// collision check above — joins on the subnet id and silently missed
+		// these ports when it held a network id.
+		fixedIPsJSON := fmt.Sprintf(`[{"ip_address": "%s", "subnet_id": "%s"}]`, fixedIP, subnetID)
 		_, err = svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
@@ -157,12 +178,24 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		return
 	}
 
-	// Update port to attach to instance
+	// Attach the port to the instance. device_owner is stamped
+	// 'compute:nova' only on the port Nova itself just created — that stamp
+	// is the ownership discriminator server delete and the boot-failure
+	// rollback key on (review 2026-10-13 N-8): a tenant's port attached by id
+	// keeps its own device_owner, so deleting the server DETACHES it instead
+	// of destroying it — upstream's deallocate_for_instance skips ports it
+	// did not create for exactly this reason. The old blanket stamp is also
+	// what made the tenant-port half of N-8 unreachable through the real
+	// attach flow (round 2 of this review).
+	var deviceOwner any
+	if novaCreatedPort {
+		deviceOwner = "compute:nova"
+	}
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE ports
-		SET device_id = $1, device_owner = $2, status = $3, updated_at = $4
+		SET device_id = $1, device_owner = COALESCE($2, device_owner), status = $3, updated_at = $4
 		WHERE id = $5
-	`, instanceID, "compute:nova", "ACTIVE", time.Now(), portID)
+	`, instanceID, deviceOwner, "ACTIVE", time.Now(), portID)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_port_attach").Msg("database error")
@@ -329,53 +362,4 @@ func generateMACAddress() string {
 	// Use OpenStack's OUI prefix: fa:16:3e
 	return fmt.Sprintf("fa:16:3e:%02x:%02x:%02x",
 		uuid.New()[0], uuid.New()[1], uuid.New()[2])
-}
-
-// allocateNextIP allocates the next available IP from a subnet
-func allocateNextIP(ctx context.Context, pool *pgxpool.Pool, networkID, cidr string) (string, error) {
-	// Simple allocation: get last used IP and increment
-	// In production, would use proper IPAM
-	var fixedIPsJSON []byte
-	err := pool.QueryRow(ctx,
-		"SELECT fixed_ips FROM ports WHERE network_id = $1 ORDER BY created_at DESC LIMIT 1",
-		networkID,
-	).Scan(&fixedIPsJSON)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		// First allocation, use .10
-		baseIP := cidr[:len(cidr)-3] // Remove /24
-		return baseIP + "10", nil
-	}
-
-	if err != nil {
-		return "", err
-	}
-
-	// For simplicity, parse JSON and increment
-	// In production, would use proper IPAM library
-	var ips []map[string]any
-	if err := json.Unmarshal(fixedIPsJSON, &ips); err != nil {
-		// Fallback to simple allocation
-		baseIP := cidr[:len(cidr)-3]
-		return baseIP + "11", nil
-	}
-
-	if len(ips) == 0 {
-		baseIP := cidr[:len(cidr)-3]
-		return baseIP + "10", nil
-	}
-
-	lastIP := ips[0]["ip_address"].(string)
-
-	// Increment last octet
-	var a, b, c, d int
-	if _, err := fmt.Sscanf(lastIP, "%d.%d.%d.%d", &a, &b, &c, &d); err != nil {
-		return "", fmt.Errorf("malformed IP %q in subnet allocation table: %w", lastIP, err)
-	}
-	d++
-	if d > 254 {
-		return "", fmt.Errorf("subnet exhausted")
-	}
-
-	return fmt.Sprintf("%d.%d.%d.%d", a, b, c, d), nil
 }

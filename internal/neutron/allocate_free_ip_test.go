@@ -44,12 +44,6 @@ func seedN4Port(t *testing.T, networkID, subnetID, ip string) {
 	}
 }
 
-func newN4Service(t *testing.T) *Service {
-	t.Helper()
-	svc := &Service{pool: testPool}
-	return svc
-}
-
 // TestAllocateFreeIPAvoidsUsedAddresses pins review 2026-10-13 N-4: allocation
 // used to be a purely random draw, so two ports in one subnet landed on the
 // same address at birthday-problem rates — two MACs claiming one IP. On a /28
@@ -66,9 +60,8 @@ func TestAllocateFreeIPAvoidsUsedAddresses(t *testing.T) {
 		seedN4Port(t, mustN4NetworkID(t, subnetID), subnetID, ip)
 	}
 
-	svc := newN4Service(t)
 	for range 20 {
-		ip, err := svc.allocateFreeIP(context.Background(), subnetID, "192.168.250.0/28")
+		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID, "192.168.250.0/28")
 		if err != nil {
 			t.Fatalf("allocateFreeIP: %v", err)
 		}
@@ -84,9 +77,8 @@ func TestAllocateFreeIPSkipsGateway(t *testing.T) {
 	requireDB(t)
 	_, subnetID := seedN4Subnet(t, "192.168.251.0/29", "192.168.251.1")
 
-	svc := newN4Service(t)
 	for range 20 {
-		ip, err := svc.allocateFreeIP(context.Background(), subnetID, "192.168.251.0/29")
+		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID, "192.168.251.0/29")
 		if err != nil {
 			t.Fatalf("allocateFreeIP: %v", err)
 		}
@@ -105,8 +97,7 @@ func TestAllocateFreeIPExhaustedSubnet(t *testing.T) {
 	seedN4Port(t, networkID, subnetID, "192.168.252.1")
 	seedN4Port(t, networkID, subnetID, "192.168.252.2")
 
-	svc := newN4Service(t)
-	if _, err := svc.allocateFreeIP(context.Background(), subnetID, "192.168.252.0/30"); err == nil {
+	if _, err := AllocateFreeIP(context.Background(), testPool, subnetID, "192.168.252.0/30"); err == nil {
 		t.Fatal("allocating from a subnet whose every usable address is held must fail")
 	}
 }

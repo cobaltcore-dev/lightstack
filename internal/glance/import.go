@@ -44,6 +44,13 @@ func (svc *Service) StageImageData(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageUploadBytes)
 	stagedData, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		// Over the cap is 413, upstream's answer to image_size_cap (round 2
+		// of this review — it used to read as a 400 read failure).
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"message": "Image data exceeds the maximum upload size"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Failed to read image data"})
 		return
 	}

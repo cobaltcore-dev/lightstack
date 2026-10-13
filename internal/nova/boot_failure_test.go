@@ -15,6 +15,8 @@ import (
 
 	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
+	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 )
 
@@ -591,18 +593,22 @@ func TestSuccessfulBootKeepsItsPorts(t *testing.T) {
 	const name = "n6-keep-ports"
 	cleanupServerNamed(t, name)
 
-	imgID := seededImageID(t)
 	// The boot path stages a per-instance overlay over the image's local raw
 	// base; without the base file the boot fails for reasons unrelated to
-	// ports, so stage a real one.
-	basePath := "/var/lib/lightstack/images/image-" + imgID + ".raw"
+	// ports. Redirect the node-local state root into a test directory (the
+	// image store resolves it per call, so /var/lib is never touched) and
+	// stage a real base there.
+	origBase := paths.Base()
+	paths.SetBase(t.TempDir())
+	t.Cleanup(func() { paths.SetBase(origBase) })
+	imgID := seededImageID(t)
+	basePath := storage.LocalImagePath(imgID)
 	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
 		t.Fatalf("staging image base dir: %v", err)
 	}
 	if err := os.WriteFile(basePath, make([]byte, 1<<20), 0o644); err != nil {
 		t.Fatalf("staging image base file: %v", err)
 	}
-	t.Cleanup(func() { os.Remove(basePath) })
 
 	body := fmt.Sprintf(`{"server":{"name":%q,"flavorRef":"m1.small","imageRef":%q,"networks":[{"uuid":%q}]}}`,
 		name, imgID, good)

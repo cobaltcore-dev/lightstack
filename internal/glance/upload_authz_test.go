@@ -2,6 +2,7 @@ package glance
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -88,6 +89,14 @@ func TestImageCacheManagementAdminOnly_DB(t *testing.T) {
 	}
 	if code, _ := doReq(r, "PUT", "/cache/images/"+id, hdr(seededProjectID, "member")); code != 403 {
 		t.Errorf("member cache prefetch: code=%d; want 403", code)
+	}
+	// The list is part of the same operator surface (round 2 of this review:
+	// the write paths were gated, the list was missed).
+	if code, _ := doReq(r, "GET", "/cache/images", hdr(seededProjectID, "member")); code != 403 {
+		t.Errorf("member cache list: code=%d; want 403", code)
+	}
+	if code, body := doReq(r, "GET", "/cache/images", hdr(seededProjectID, "admin")); code != 200 || !strings.Contains(body, id) {
+		t.Errorf("admin cache list: code=%d body=%s; want 200 listing the cached image", code, body)
 	}
 	// Still cached after the denied attempts.
 	var cached bool

@@ -146,7 +146,9 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 				fmt.Sprintf("volume status is %s, must be available", volumeStatus)}
 		}
 		if attachedToInstance != nil {
-			return &novaAttachRefusal{http.StatusConflict, "volume is already attached to an instance"}
+			// Upstream answers a re-attach with 400 (Invalid input /
+			// volume already attached), not 409 — round 2 of this review.
+			return &novaAttachRefusal{http.StatusBadRequest, "volume is already attached to an instance"}
 		}
 
 		// Auto-assign device if not provided

@@ -1847,7 +1847,7 @@ func (svc *Service) DeleteSnapshot(c *gin.Context) {
 // ListVolumeTypes lists all volume types
 func (svc *Service) ListVolumeTypes(c *gin.Context) {
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT id, name, description, is_public, created_at
+		SELECT id, name, COALESCE(description, ''), is_public, created_at
 		FROM volume_types
 		ORDER BY name
 	`)

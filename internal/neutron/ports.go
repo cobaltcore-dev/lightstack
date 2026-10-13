@@ -87,7 +87,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	var fixedIPs []map[string]any
 	if err == nil {
 		// Allocate an address no other port in the subnet holds (N-4).
-		allocatedIP, allocErr := svc.allocateFreeIP(c.Request.Context(), subnetID, cidr)
+		allocatedIP, allocErr := AllocateFreeIP(c.Request.Context(), svc.pool, subnetID, cidr)
 		if allocErr != nil {
 			log.Warn().Err(allocErr).Str("subnet_id", subnetID).Msg("port create: address allocation failed")
 			common.SendError(c, common.NewConflictError("no IP address available in the network's subnet"))
@@ -689,7 +689,7 @@ func allocateIP(cidr string) string {
 	return ip.String()
 }
 
-// allocateFreeIP picks a random usable address in the subnet that no port in
+// AllocateFreeIP picks a random usable address in the subnet that no port in
 // it already holds (review 2026-10-13 N-4): allocateIP drew purely at random,
 // so two ports in one subnet landed on the same address at birthday-problem
 // rates — two MACs claiming one IP, dnsmasq handing it to one of them, and a
@@ -697,14 +697,19 @@ func allocateIP(cidr string) string {
 // set) is excluded too: a port claiming it breaks routing for the whole
 // subnet.
 //
+// Exported and pool-taking because Nova's os-interface path allocates against
+// the same subnets and used to run its own next-free scan — two allocators
+// over one subnet is how they hand out the same address (round 2 of this
+// review).
+//
 // The check-then-use is not a lock: two simultaneous allocations can still
 // race for the last free address. It collapses the collision space from
 // "every existing port" to "the same instant", which for port creation — a
 // user- or boot-paced operation — is the practical fix; a DB-level exclusion
 // on the JSONB elements would be the complete one.
-func (svc *Service) allocateFreeIP(ctx context.Context, subnetID, cidr string) (string, error) {
+func AllocateFreeIP(ctx context.Context, pool *pgxpool.Pool, subnetID, cidr string) (string, error) {
 	used := map[string]bool{}
-	rows, err := svc.pool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		SELECT fx->>'ip_address'
 		FROM ports, jsonb_array_elements(fixed_ips) fx
 		WHERE fx->>'subnet_id' = $1
@@ -728,7 +733,7 @@ func (svc *Service) allocateFreeIP(ctx context.Context, subnetID, cidr string) (
 
 	// The gateway belongs to the subnet, not to any port.
 	var gateway sql.NullString
-	if err := svc.pool.QueryRow(ctx,
+	if err := pool.QueryRow(ctx,
 		"SELECT gateway_ip FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err == nil &&
 		gateway.Valid && gateway.String != "" {
 		used[strings.ToLower(gateway.String)] = true
@@ -1586,7 +1591,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// ports — two MACs — the same address. Tenant-visible wording so the
 	// server's fault says what the tenant can do about it (a full or broken
 	// subnet), matching the no-subnet case above.
-	allocatedIP, allocErr := svc.allocateFreeIP(ctx, subnetID, cidr)
+	allocatedIP, allocErr := AllocateFreeIP(ctx, svc.pool, subnetID, cidr)
 	if allocErr != nil {
 		return nil, &tenantVisibleError{msg: fmt.Sprintf("failed to allocate a free IP from subnet %s", subnetID)}
 	}
