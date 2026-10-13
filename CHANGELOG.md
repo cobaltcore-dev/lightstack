@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 🔒 Security — identity & service authorization
+- **Keystone management surface authorized** (review 2026-10-13): the identity API was authentication-only, so any member could reset any user's password (including the admin's) via `PATCH /users/:id`, self-grant the admin role via role assignment, dump every tenant's recoverable EC2/S3 secret via the credentials API, mint application credentials for other users, and enumerate users/projects/roles/groups/domains/catalog. User/project/role/group/domain/service/endpoint management is now admin-only; user-scoped subresources are self-or-admin; PATCH of one's own password/enabled stays admin-only so ChangePassword keeps its original-password contract. Role assignment also 404s on nonexistent project/user/role ids instead of silently recording garbage.
+- **Glance image upload ownership** (H-1): uploading bytes to a public image was allowed for any project that could *see* it — image poisoning of an operator-staged base every tenant boots. Upload now follows the same owner-or-admin rule as delete (403 visible-but-foreign, 404 invisible).
+- **Glance tasks & cache** (M-1/M-2): tasks are owner-scoped and no longer echo internal errors; cache management (prefetch/evict/clear) is admin-only.
+- **Nova flavor catalog** (H-2): flavor create/delete, extra-specs and tenant-access grants are admin-only; flavor inputs get sanity bounds.
+- **Cinder operator surfaces** (H-3): volume types (incl. project-access grants), QoS specs and manage/unmanage are admin-only; volume-type reads stay open for tenants.
+- **Neutron shared networks** (M-4): `shared=true` on create is admin-only, like `router:external`.
+- **Volume-transfer auth keys** (L-1) are compared in constant time.
+
+### 🐛 Correctness
+- **Glance checksums describe the stored bytes** (N-3): normalizing backends rewrite a qcow2 upload to a raw base, but the recorded checksum hashed the upload stream, so `EnsureLocalBase` failed on every node without the local base and boot-from-image errored. The checksum is now taken from the stored object.
+- **Neutron IP allocation is collision-free** (N-4): allocation drew purely at random, so ports in one subnet could land on the same address; allocation now avoids every held address and the subnet gateway, and tiny subnets (≤ /29) no longer panic `crypto/rand.Int`.
+- **Metadata `network_data.json` works** (N-7): the query selected a nonexistent `fixed_ip` column and answered 500 to every guest; it now resolves each port's JSONB addresses with their own subnets (one link per port).
+- **Nova volume attach/detach are atomic** (N-9/N-10): single transaction with the volume row locked — no more 500s on concurrent double-attach, and no stranded in-use volume after a failed detach.
+- **Nova boot port lifecycle** (N-6/N-8): a failed multi-network boot releases the ports it already allocated; server delete deletes only the ports Nova created and *detaches* tenant-created ports instead of destroying them.
+- **Keypair name races** (L-3) map the unique-constraint violation to the same 409 as the pre-check.
+- **Request bodies bounded** (M-3): glance upload/stage wrap the body in `MaxBytesReader` (10 GiB, upstream's `image_size_cap`); imported SSH public keys are capped at 64 KiB.
+
+---
+
 ## [0.6.1] - 2026-04-22
 
 ### 📋 v0.7.0 Planning & Specifications
