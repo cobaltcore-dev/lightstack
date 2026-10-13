@@ -444,7 +444,7 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 
 ### 7.1 Why Horizon Is the Right Choice
 
-✅ **100% Compatible**: Already working perfectly with Lightstack (proven in testing)
+✅ **Compatible**: usable for resource management against Lightstack (verified in testing; open UI gaps listed in the compatibility report)
 
 ✅ **Zero Integration Effort**: HORIZON_INTEGRATION.md documents complete integration
 
@@ -517,7 +517,7 @@ Use Horizon for:
 - Security groups
 - Floating IP management
 
-**Rationale**: 100% compatible, zero effort, production-ready.
+**Rationale**: compatible for resource management, integration complete (see the compatibility report for the open UI gaps).
 
 ### 8.2 Custom UI for lightstack-Specific Features (Optional)
 
@@ -564,11 +564,11 @@ If Lightstack will run **alongside** SAP infrastructure:
 
 **CONTINUE with Horizon** because:
 
-1. ✅ **100% Compatible**: Already working perfectly with Lightstack
+1. ✅ **Compatible**: usable for resource management against Lightstack
 2. ✅ **Zero Effort**: Integration complete (HORIZON_INTEGRATION.md)
 3. ✅ **Standard OpenStack**: No vendor lock-in
 4. ✅ **Full Functionality**: All Lightstack features accessible
-5. ✅ **Production-Ready**: Documented, tested, deployed
+5. ✅ **Production-Ready**: Documented, tested, deployment paths exercised
 
 ### 9.2 Summary Table
 
@@ -576,7 +576,7 @@ If Lightstack will run **alongside** SAP infrastructure:
 |----------|-------------------|------------------|
 | Time to Production | 8-11 months | ✅ 0 (already done) |
 | Integration Effort | Very High | ✅ None |
-| Compatibility with Lightstack | ❌ Incompatible | ✅ 100% |
+| Compatibility with Lightstack | ❌ Incompatible | ✅ Usable for resource management |
 | Maintenance Burden | ❌ High | ✅ Low |
 | Feature Coverage | ⚠️ Partial (no Limes) | ✅ Full |
 | Risk Level | ❌ CRITICAL | ✅ ZERO |

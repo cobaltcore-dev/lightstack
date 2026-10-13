@@ -70,7 +70,7 @@ Choose your deployment strategy based on your use case.
 
 Lightstack serves the OpenStack APIs Horizon consumes, and the **dashboard is usable for resource
 management** — networks, volumes and instances can be created from the UI in stub and real mode (#532,
-#533). The noVNC console works in real mode (#534); the remaining open UI gaps (F10, F11, F18) are listed in the report (findings F1–F18).
+#533). The noVNC console works in real mode (#534); F10/F11 were fixed by SPEC-024/#546 (Horizon re-pass outstanding), leaving domain switching (F18) as the open UI gap — see the report (findings F1–F18).
 
 - **[Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)** ⭐ **NEW** - Browser-level verification: dashboard **usable** for resource management after #532/#533 (F1–F18)
 - **[HORIZON_FULL_COMPATIBILITY_REPORT](HORIZON_FULL_COMPATIBILITY_REPORT.md)** - SUPERSEDED (API-endpoint coverage only; see the report above for UI verdicts)

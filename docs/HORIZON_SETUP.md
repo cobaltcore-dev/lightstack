@@ -455,7 +455,7 @@ keystone:
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Command cheatsheet
 
 **Support**:
-- API compatibility: broad. **UI workflows**: network, volume and instance create work; the noVNC console and a few other gaps remain — see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
+- API compatibility: broad. **UI workflows**: network, volume and instance create work; the noVNC console is absent from the stub stack (it works in real mode, #534) — open UI gaps are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 - Known issues: Identity projects page 404 (Horizon bug, not lightstack)
 - Primary interfaces: OpenStack CLI, API, SDK
 - Web UI: Optional Horizon dashboard

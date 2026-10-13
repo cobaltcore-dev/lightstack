@@ -2,11 +2,11 @@
 
 **Date**: October 12, 2026
 **Version**: Lightstack Unreleased (post-v0.6.1) + Horizon Flamingo 2025.2
-**Status**: ⚠️ The Horizon dashboard is **usable for resource management**; its open UI gaps (F10, F11, F18) are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
+**Status**: ⚠️ The Horizon dashboard is **usable for resource management**; the remaining open UI gap is domain switching (F18) — see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 
 ## Executive Summary
 
-Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon renders against it without modifications, patches or workarounds. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). The noVNC console works in real mode (#534, SPEC-021) — it is absent from the stub compose stacks, which ship no console proxy. Open UI gaps: standalone port create in real mode (F10), router gateways (F11) and domain switching (F18). See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
+Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon renders against it without modifications, patches or workarounds. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). The noVNC console works in real mode (#534, SPEC-021) — it is absent from the stub compose stacks, which ship no console proxy. Standalone port create in real mode (F10) and router gateways (F11) were fixed by SPEC-024/#546 (Horizon re-pass outstanding); the remaining open UI gap is domain switching (F18). See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
 
 ### Key Features
 

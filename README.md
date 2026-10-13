@@ -19,7 +19,7 @@ Just as **K3s** is to Kubernetes, **lightstack** is to OpenStack:
 - **Lightweight**: Single ~35MB binary vs multi-GB Python distributions
 - **Fast**: Go-based synchronous architecture (10x faster than traditional OpenStack)
 - **Simple**: One process, one database, zero message queues
-- **Drop-in Compatible**: Use existing Terraform scripts and OpenStack CLI unchanged (Horizon's UI is API-compatible but **not** a drop-in for resource management — see the [compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
+- **Drop-in Compatible**: Terraform's validated topology and OpenStack CLI run against lightstack (blueprint §6 documents the port-id workaround and coverage limits; Horizon's UI is API-compatible but **not** a drop-in for resource management — see the [compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - **Production tracked**: feature-complete for the covered surface; see the [comprehensive review report](docs/review/comprehensive-review-report-2026-10-12.md) for the issues that must be fixed before the v0.7.0 release
 - **Modern**: Supports OpenStack Flamingo (2025.2) and later versions only
 
@@ -60,10 +60,10 @@ Coverage is measured in *functional operations*, not raw routes — see [docs/bl
 
 ### Client Compatibility
 
-**Zero-Modification Migration**: lightstack provides complete API compatibility - use your existing tools unchanged.
+**Near-Zero-Modification Migration**: lightstack provides API compatibility for the validated topology — existing tools run with the documented workarounds ([blueprint §6](docs/blueprint.md)).
 
 - ✅ **Terraform Provider**: the validated topology runs unchanged — compute, network and storage resources work (security groups and object storage are outside the validated set; see [blueprint §6](docs/blueprint.md))
-- ⚠️ **Horizon Dashboard**: **usable for resource management** — network, volume and instance create work from the UI; remaining open gaps are F10, F11 and F18 ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
+- ⚠️ **Horizon Dashboard**: **usable for resource management** — network, volume and instance create work from the UI; the remaining open gap is domain switching (F18) — F10/F11 were fixed by SPEC-024/#546 ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ **OpenStack CLI**: All `openstack` commands function identically
 - ✅ **gophercloud SDK**: Full Go client library compatibility
 - ✅ **python-openstackclient**: Python client verified
@@ -245,7 +245,7 @@ See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the complete quick start guide.
 
 **IMPORTANT**: Horizon dashboard integration is **extended functionality** (not core lightstack feature). Horizon requires independent setup and configuration to work with lightstack. See setup guides below for detailed integration steps.
 
-Lightstack serves the OpenStack APIs that Horizon (Flamingo 2025.2 and later) consumes. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). The noVNC console works in real mode (#534, SPEC-021) — it is absent from the stub compose stacks, which ship no console proxy. Open UI gaps: standalone port create in real mode (F10), router gateways (F11) and domain switching (F18). See the [Horizon Compatibility Report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
+Lightstack serves the OpenStack APIs that Horizon (Flamingo 2025.2 and later) consumes. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). The noVNC console works in real mode (#534, SPEC-021) — it is absent from the stub compose stacks, which ship no console proxy. Standalone port create in real mode (F10) and router gateways (F11) were fixed by SPEC-024/#546 (the Horizon re-pass is still outstanding); the remaining open UI gap is domain switching (F18). See the [Horizon Compatibility Report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
 
 **Features** — each works through the **API/CLI**; the trailing note is the *dashboard* status from the
 [compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md):
@@ -454,7 +454,7 @@ The seed data creates:
 - ✅ **TDD Methodology**: All endpoints developed test-first (RED → GREEN → REFACTOR)
 - ✅ **20+ Integration Tests**: Bash scripts with OpenStack CLI validation
 - ✅ **Schema Validation**: OpenStack API spec compliance
-- ✅ **Horizon Testing**: browser-level verification done — create/write flows work in stub and real mode; the noVNC console works in real mode (#534), and the remaining open gaps are F10/F11/F18 ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
+- ✅ **Horizon Testing**: browser-level verification done — create/write flows work in stub and real mode; the noVNC console works in real mode (#534); F10/F11 were fixed by SPEC-024/#546 (Horizon re-pass outstanding), leaving domain switching (F18) open ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ **Client Compatibility**: OpenStack CLI, Terraform, gophercloud, python-openstackclient
 - 🚀 **CI/CD Strategy**: Comprehensive E2E and automation plan - [E2E_CI_TESTING_STRATEGY.md](docs/testing/E2E_CI_TESTING_STRATEGY.md)
 
@@ -509,7 +509,7 @@ The seed data creates:
 - ✅ Multi-backend storage (Ceph RBD, S3, hybrid failover)
 - ✅ VXLAN multi-node networking
 - ✅ L3 routing, floating IPs, and port forwarding
-- ⚠️ Horizon dashboard: usable for resource management; remaining open gaps F10/F11/F18 (findings F1–F18)
+- ⚠️ Horizon dashboard: usable for resource management; remaining open gap F18 (findings F1–F18; F10/F11 fixed by SPEC-024/#546, Horizon re-pass outstanding)
 - ✅ Comprehensive test coverage (97 contract test files, 20+ integration tests)
 - ✅ Deployment paths exercised (compose, KVM/systemd, turnkey scripts; see the [review report](docs/review/comprehensive-review-report-2026-10-12.md) for open release blockers)
 - ✅ Performance optimization (pagination, indexes)

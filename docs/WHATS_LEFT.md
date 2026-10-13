@@ -61,7 +61,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 
 ## TL;DR
 
-**Nothing critical is left.** Lightstack has exceeded the OpenStack baseline by 12 endpoints. All remaining work is optional enterprise features with low demand.
+**Nothing critical is left.** Coverage stands at ~335 functional operations against the 330-endpoint baseline (394 raw routes — see [blueprint.md](blueprint.md)). All remaining work is optional enterprise features with low demand.
 
 ---
 
@@ -75,7 +75,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 - Cinder Volume Actions ✅
 
 **🟡 MEDIUM Priority** - All important operational features
-- Nova Console Access (VNC, SPICE, RDP, Serial) ✅
+- Nova Console Access (VNC in real mode, Serial via CLI; SPICE/RDP refused by design) ✅
 - Nova Tenant Usage & Availability Zones ✅
 - Keystone Domain Management ✅
 - Keystone Credential Management ✅
@@ -178,7 +178,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 
 ---
 
-## What Lightstack HAS That Exceeds Baseline (+12 endpoints)
+## What Lightstack HAS That Exceeds Baseline
 
 These are BONUS features beyond the 330 baseline:
 
@@ -190,7 +190,7 @@ These are BONUS features beyond the 330 baseline:
 6. **Service Catalog CRUD** (8 endpoints) - Dynamic service registration
 7. **Domain Management** (6 endpoints) - Multi-domain support
 
-Total: **52 endpoints** in "bonus" category, but 12 net over baseline
+Total: **52 endpoints** in "bonus" category — see [blueprint.md](blueprint.md) for the reconciled coverage arithmetic (raw vs functional counts).
 
 ---
 
@@ -205,7 +205,7 @@ Total: **52 endpoints** in "bonus" category, but 12 net over baseline
 | Images | ✅ 100% | Upload, download, metadata, import workflow |
 | Authentication | ✅ 100% | Users, projects, domains, roles, tokens |
 | Multi-Tenancy | ✅ 100% | Project isolation, RBAC, quotas |
-| Horizon Dashboard | ⚠️ Usable | APIs served; **UI usable** for resource management, open gaps F10/F11/F18 (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`) |
+| Horizon Dashboard | ⚠️ Usable | APIs served; **UI usable** for resource management, remaining open gap F18 — F10/F11 fixed by SPEC-024/#546 (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`) |
 | Performance | ✅ Optimized | Pagination, indexes, <3s queries |
 | Testing | ✅ Comprehensive | 65+ tests (contract + integration) |
 | Documentation | ✅ Complete | Deployment guides, API docs |

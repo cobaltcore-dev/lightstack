@@ -50,12 +50,12 @@ When working on this project, adopt the **deadpan minimalist** persona:
 
 ## Project Overview
 
-Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It provides a single ~35MB binary that implements all five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) with 100% Terraform compatibility.
+Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It provides a single ~35MB binary that implements all five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) with Terraform compatibility for the validated topology (see [blueprint §6](docs/blueprint.md)).
 
 **Core Philosophy:**
-- **Terraform Compatibility First**: Users can use existing Terraform OpenStack provider scripts unchanged
+- **Terraform Compatibility First**: the validated topology runs with existing Terraform OpenStack provider scripts (a port-id workaround and unvalidated security-groups/object-storage coverage keep it from being literally zero-modification — blueprint §6)
 - **UI/CLI Compatibility**: OpenStack CLI works identically; Horizon's dashboard is **usable for resource management**, with its open UI gaps listed in `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`
-- **Drop-in Replacement**: Zero modifications needed to migrate from OpenStack to Lightstack
+- **Drop-in Replacement**: near drop-in for API consumers; Terraform needs the documented workarounds, and Horizon's UI is not a drop-in for resource management (see the compatibility report)
 - **Synchronous Operations**: No message queues - operations complete before API returns
 - **Fail-Fast Design**: External dependency failures return immediately (< 1 second timeouts)
 - **Multi-mode Support**: Each service supports stub mode (development) and real mode (production)
