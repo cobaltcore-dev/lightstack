@@ -4,10 +4,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -100,7 +101,7 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 		// surface as a generic 500 — the same defect CreateProject just shed. The
 		// message names the domain because, unlike projects.name, the constraint is
 		// per-domain: the same group name is legitimate in another domain.
-		if common.IsUniqueViolation(err) {
+		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("group with name '"+req.Group.Name+"' already exists in this domain"))
 			return
 		}
@@ -132,7 +133,7 @@ func (svc *Service) GetGroup(c *gin.Context) {
 		groupID,
 	).Scan(&name, &domainID, &description, &createdAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewIdentityNotFoundError("group", groupID))
 		return
 	}

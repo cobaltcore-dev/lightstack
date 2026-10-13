@@ -86,7 +86,7 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | Key | Default | Mode | Purpose |
 |-----|---------|------|---------|
 | `database.url` | `""` **(required)** | all | external PostgreSQL URL |
-| `database.existingSecret` | `""` | all | Secret holding the DB URL (alternative to `database.url`); injected as `LIGHTSTACK_DB_URL` |
+| `database.existingSecret` | `""` | all | Secret holding the DB URL (alternative to `database.url`); injected as `LIGHTSTACK_DB_URL` into the Lightstack pods and the teardown purge Job |
 | `database.existingSecretKey` | `url` | all | key within `database.existingSecret` that holds the URL |
 | `secrets.jwtSecret` | `""` **(required)** | all | token signing secret |
 | `secrets.adminUser` | `admin` | all | admin account name |
@@ -96,7 +96,17 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 > Config (including credentials) is rendered into a **Secret** mounted at the binary's
 > `--config` path — the binary has no per-key env override for most settings, so they are
 > not injectable via individual env vars. The pod also sets
-> `automountServiceAccountToken: false` (lightstack never calls the Kubernetes API).
+> `automountServiceAccountToken: false` (lightstack never calls the Kubernetes API), and names its
+> node in `LIGHTSTACK_NODE_NAME` (`spec.nodeName`): block-storage creates are recorded under that
+> name, so a recreated pod — a new pod name — still sweeps the creates its predecessor left
+> unfinished.
+>
+> Several processes can share that node name — stub replicas on one node, or an old and new
+> pod overlapping during a rolling update. Each also records a per-process owner on the
+> block-storage reservations it makes and heartbeats it while it runs, so the sweep sets to
+> `error` only a create whose owner has stopped; a co-located replica's or a surged pod's live
+> create is left alone (FR-033). The sweep never removes a backing: deleting the `error` volume
+> or snapshot reclaims it.
 
 ### Exposure & TLS
 | Key | Default | Mode | Purpose |
@@ -223,6 +233,7 @@ The hooks run in order: **quiesce** (scale the Deployment to 0, then delete the 
 which `helm uninstall` does *not* remove by default), then **purge** (`lightstack cleanup`: destroy
 libvirt domains; remove all host network state — bridges, SNAT / floating-IP / security-group /
 metadata iptables, dnsmasq, namespaces; and remove all node-local storage under `/var/lib/lightstack`).
+It finds the domains and networks in the database, through `database.url` or `database.existingSecret`.
 The purge is blocking and fail-closed — if it cannot complete, `helm uninstall` aborts; inspect
 `kubectl logs job/<release>-lightstack-teardown-purge`.
 

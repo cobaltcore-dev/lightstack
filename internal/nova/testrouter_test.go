@@ -1,12 +1,14 @@
 package nova
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
@@ -20,6 +22,11 @@ import (
 // all of which are nil-guarded on the server create/get/list paths under test
 // (svc.cache only in flavor paths; svc.neutronSvc only when networks are supplied).
 func newNovaTestRouter() *gin.Engine {
+	return novaRouterOn(testPool)
+}
+
+// novaRouterOn is newNovaTestRouter on another database handle.
+func novaRouterOn(db database.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -33,18 +40,25 @@ func newNovaTestRouter() *gin.Engine {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	NewService(testPool, "", "stub", nil).RegisterRoutes(&r.RouterGroup)
+	NewService(db, "", "stub", nil).RegisterRoutes(&r.RouterGroup)
 	return r
 }
 
 // doReq issues an httptest request with an optional JSON body and headers,
 // returning the status code and response body.
 func doReq(r *gin.Engine, method, path, body string, headers map[string]string) (int, string) {
+	return doReqCtx(context.Background(), r, method, path, body, headers)
+}
+
+// doReqCtx is doReq with a caller-supplied request context. Tests that make a table
+// unavailable (dbtest.Unavailable) pass a deadline so a statement blocked on PostgreSQL's
+// ACCESS EXCLUSIVE lock fails rather than waiting indefinitely.
+func doReqCtx(ctx context.Context, r *gin.Engine, method, path, body string, headers map[string]string) (int, string) {
 	var rdr io.Reader
 	if body != "" {
 		rdr = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(method, path, rdr)
+	req := httptest.NewRequest(method, path, rdr).WithContext(ctx)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}

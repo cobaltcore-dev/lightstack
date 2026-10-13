@@ -15,19 +15,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // Service handles Glance API endpoints
 type Service struct {
-	pool        *pgxpool.Pool
+	pool        database.DB
 	mode        string
 	storageMode string
 	cephPool    string
@@ -45,7 +45,7 @@ type Service struct {
 // in a way that cannot be served by a hybrid fallback (e.g. mode == "s3"
 // with no AWS credentials). See storage.NewImageStore for the per-mode
 // failure policy.
-func NewService(pool *pgxpool.Pool, mode, cephPool, cephConf string, s3opts storage.S3Options, cacheInstance *cache.Cache) (*Service, error) {
+func NewService(pool database.DB, mode, cephPool, cephConf string, s3opts storage.S3Options, cacheInstance *cache.Cache) (*Service, error) {
 	imageStore, err := storage.NewImageStore(mode, cephPool, cephConf, s3opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Glance image store: %w", err)
@@ -345,7 +345,7 @@ func (svc *Service) ListImages(c *gin.Context) {
 			"SELECT i.created_at, i.id FROM images i WHERE i.id::text = $1 AND "+common.ImageVisibleSQL("i", 2, 3),
 			marker, common.CallerProjectID(projectID), common.HasRole(c, common.RoleAdmin),
 		).Scan(&markerCreatedAt, &markerID)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewBadRequestError(fmt.Sprintf("No image found with ID %s", marker)))
 			return
 		}
@@ -477,7 +477,7 @@ func (svc *Service) GetImage(c *gin.Context) {
 		LIMIT 1
 	`, imageID, common.CallerProjectID(projectID), admin).Scan(&id, &name, &status, &visibility, &sizeBytes, &diskFormat, &containerFormat, &minDisk, &minRAM, &checksum, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -593,7 +593,7 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 		"SELECT project_id, visibility FROM images WHERE id = $1",
 		imageID,
 	).Scan(&owner, &visibility)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -862,7 +862,7 @@ func planImagePatch(updates []map[string]any) ([]string, map[string]any, *common
 // previous form checked nothing and let the trailing read produce the 404 — the right
 // answer for the wrong reason, since the write had already matched nothing and nobody
 // looked.
-func applyImagePatch(ctx context.Context, pool *pgxpool.Pool, imageID, projectID string, order []string, assignments map[string]any) (bool, error) {
+func applyImagePatch(ctx context.Context, pool database.DB, imageID, projectID string, order []string, assignments map[string]any) (bool, error) {
 	var upd common.SQLUpdate
 	for _, column := range order {
 		upd.Set(column, assignments[column])
@@ -953,7 +953,7 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 		imageID, projectID,
 	).Scan(&status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1018,7 +1018,7 @@ func (svc *Service) DownloadImageData(c *gin.Context) {
 		imageID, common.CallerProjectID(projectID), common.HasRole(c, common.RoleAdmin),
 	).Scan(&status, &sizeBytes)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1104,7 +1104,7 @@ func (svc *Service) CreateImageMember(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1156,7 +1156,7 @@ func (svc *Service) ListImageMembers(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1234,7 +1234,7 @@ func (svc *Service) GetImageMember(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1258,7 +1258,7 @@ func (svc *Service) GetImageMember(c *gin.Context) {
 		WHERE image_id = $1 AND member_id = $2
 	`, imageID, memberID).Scan(&status, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("member"))
 		return
 	}
@@ -1305,7 +1305,7 @@ func (svc *Service) UpdateImageMember(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1384,7 +1384,7 @@ func (svc *Service) DeleteImageMember(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1437,7 +1437,7 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1482,7 +1482,7 @@ func (svc *Service) DeleteImageTag(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1524,7 +1524,7 @@ func (svc *Service) DeactivateImage(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
@@ -1566,7 +1566,7 @@ func (svc *Service) ReactivateImage(c *gin.Context) {
 		imageID,
 	).Scan(&ownerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}

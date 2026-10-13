@@ -18,3 +18,4 @@ Each ADR follows this structure:
 |-----|-------|--------|------|
 | [ADR-001](ADR-001-database-dependency-injection.md) | Database Dependency Injection | Accepted | 2026-04-20 |
 | [ADR-002](ADR-002-rate-limiting-architecture.md) | Rate Limiting Architecture | Accepted | 2026-04-20 |
+| [ADR-003](ADR-003-pluggable-database-backend.md) | Pluggable Database Backend | Accepted | 2026-10-12 |

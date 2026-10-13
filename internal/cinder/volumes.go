@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -16,45 +15,53 @@ import (
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
+// volumeBacking is the block storage volumes and snapshots are created on —
+// storage.CephClient, which serves every storage mode. An interface so tests can stand
+// in a store that fails or takes its time.
+type volumeBacking interface {
+	CreateVolume(ctx context.Context, volumeID string, sizeGB int) error
+	CreateVolumeFromImage(ctx context.Context, volumeID, imageRawPath string, sizeGB int) error
+	DeleteVolume(ctx context.Context, volumeID string) error
+	CreateSnapshot(ctx context.Context, volumeID, snapshotID string) error
+	DeleteSnapshot(ctx context.Context, volumeID, snapshotID string) error
+}
+
 // Service handles Cinder API endpoints
 type Service struct {
-	pool       *pgxpool.Pool
+	pool       database.DB
 	mode       string
 	cephPool   string
 	cephConf   string
-	cephClient *storage.CephClient
+	cephClient volumeBacking
+	// nodeName is what this node reserves volumes and snapshots under while it creates
+	// them, and what its startup sweep looks for (FR-033).
+	nodeName string
+	// ownerID identifies this process as the owner of the reservations it makes
+	// (reserved_owner), so the sweep reclaims a stopped owner's creates but never a live
+	// sibling's that shares the node name (reservation_owner.go).
+	ownerID        string
+	hbStop, hbDone chan struct{}
 	// fetchImageBase puts an image's raw base on this node before a local create-from-image
 	// reads it; the image store's EnsureLocalBase once SetImageStore has run, nil before.
 	fetchImageBase func(ctx context.Context, imageID, expectedChecksum string) (string, error)
-	wg             sync.WaitGroup
-	ctx            context.Context
-	cancel         context.CancelFunc
 }
 
-// NewService creates a new Cinder service
-func NewService(pool *pgxpool.Pool, mode, cephPool, cephConf string) *Service {
-	ctx, cancel := context.WithCancel(context.Background())
+// NewService creates a new Cinder service. nodeName is this node's (common.NodeName).
+func NewService(pool database.DB, mode, cephPool, cephConf, nodeName string) *Service {
 	return &Service{
 		pool:       pool,
 		mode:       mode,
 		cephPool:   cephPool,
 		cephConf:   cephConf,
 		cephClient: storage.NewCephClient(mode, cephPool, cephConf),
-		ctx:        ctx,
-		cancel:     cancel,
+		nodeName:   nodeName,
+		ownerID:    uuid.NewString(),
+		hbStop:     make(chan struct{}),
+		hbDone:     make(chan struct{}),
 	}
-}
-
-// Shutdown signals all background goroutines to stop and waits for them.
-func (svc *Service) Shutdown() {
-	svc.cancel()
-	svc.wg.Wait()
 }
 
 // RegisterRoutes registers Cinder routes
@@ -92,6 +99,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	r.PUT("/v3/snapshots/:id", svc.UpdateSnapshot)
 	r.PATCH("/v3/snapshots/:id", svc.UpdateSnapshot)
 	r.DELETE("/v3/snapshots/:id", svc.DeleteSnapshot)
+	r.POST("/v3/snapshots/:id/action", svc.SnapshotAction)
 
 	// Volume types without project_id (extracts from token)
 	r.GET("/v3/types", svc.ListVolumeTypes)
@@ -266,6 +274,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 		v3.PUT("/snapshots/:id", svc.UpdateSnapshot)
 		v3.PATCH("/snapshots/:id", svc.UpdateSnapshot)
 		v3.DELETE("/snapshots/:id", svc.DeleteSnapshot)
+		v3.POST("/snapshots/:id/action", svc.SnapshotAction)
 
 		// Snapshot metadata
 		v3.GET("/snapshots/:id/metadata", svc.GetSnapshotMetadata)
@@ -473,95 +482,162 @@ func (svc *Service) SetImageStore(s *storage.ImageStore) {
 	svc.fetchImageBase = s.EnsureLocalBase
 }
 
-// provisionVolume creates a volume's backing store and records it, reporting whether the
-// result is bootable.
+// provisionVolume creates a volume — its row and its backing store — reporting whether
+// the result is bootable.
 //
 // CreateVolume and the compute service's boot-from-new-volume path (SPEC-020 FR-025) both
 // use it, so there is one place that decides what makes a volume bootable. Synchronous
 // (Constitution II): the volume is usable as soon as this returns, which boot-from-volume
 // requires. With an ImageRef the volume is a bootable copy of the image's raw base;
 // otherwise it is empty (SPEC-009 WS-5 / T040).
+//
+// Three steps, so that no transaction is open while the backing store works (FR-032,
+// research R13): an image copy can take minutes, and on SQLite an open write transaction
+// holds the whole database, not one project.
+//
+//  1. Reserve: the quota checks and the INSERT of the row — creating, under this node's
+//     name — in one transaction under the project's lock (FR-023). Checking in a
+//     transaction of its own would not do: the check would commit, release the lock, and
+//     two creates against one remaining allowance would both pass before either
+//     inserted. From here on the reservation counts towards the quota.
+//  2. Create the backing store, outside any transaction.
+//  3. Finalise the row to available; when the backing failed, or the row is gone, remove
+//     the row and whatever backing there is.
+//
+// The image base is fetched before the reservation, so a fetch that fails leaves nothing.
 func (svc *Service) provisionVolume(ctx context.Context, spec volumeSpec) (bootable bool, err error) {
-	// The checks and the INSERT share one transaction, and the project lock is held
-	// across both (FR-023) — which is withVolumeQuota's whole purpose.
-	//
-	// Checking in a transaction of its own is not enough, and this is worth spelling out
-	// because it is the mistake this code made first: the check committed, releasing the
-	// lock, and the row was inserted afterwards. Two concurrent creates against a single
-	// remaining allowance both passed the check before either inserted, and both
-	// succeeded. The window is small and entirely real — a test with two goroutines finds
-	// it every time.
-	//
-	// The backing store is created inside the transaction so a failure to record the
-	// volume can still reclaim it. It is the one non-database operation under the lock;
-	// the lock is per-project, so a slow backing store delays only that project's own
-	// concurrent creates.
-	//
-	// The image base is fetched BEFORE the transaction. The fetch reads the image's
-	// checksum through svc.pool, and inside the transaction that read would need a second
-	// connection while this one is held — once every connection belongs to a create
-	// waiting on this project's lock, none is ever free.
 	if spec.ImageRef != "" {
 		if berr := svc.ensureLocalImageBase(ctx, spec.ImageRef); berr != nil {
 			log.Error().Err(berr).Str("operation", "fetch_image_base").Str("image", spec.ImageRef).Msg("failed to fetch the image base for a volume")
 			return false, &volumeBackingError{"failed to create volume from image", berr}
 		}
 	}
-	var backingCreated bool
-	err = withVolumeQuota(ctx, svc.pool, spec.ProjectID, spec.SizeGB, func(tx pgx.Tx) error {
-		var perr error
-		bootable, backingCreated, perr = svc.writeVolume(ctx, tx, spec)
-		return perr
-	})
+	if err := withVolumeQuota(ctx, svc.pool, spec.ProjectID, spec.SizeGB, func(tx database.Tx) error {
+		return svc.reserveVolume(ctx, tx, spec)
+	}); err != nil {
+		return false, err
+	}
+
+	// From here the row and the backing are this function's to finalise or remove, even
+	// when the request has gone away.
+	done := context.WithoutCancel(ctx)
+	bootable, err = svc.createVolumeBacking(ctx, spec)
 	if err != nil {
-		if backingCreated {
-			// The row was rolled back with the transaction, so the backing store would
-			// otherwise be a leak: the recorded volume is the one users can see.
-			if cephErr := svc.cephClient.DeleteVolume(ctx, spec.ID); cephErr != nil {
-				log.Warn().Err(cephErr).Str("volume_id", spec.ID).
-					Msg("rollback: failed to delete volume backing after transaction failure")
-			}
-		}
+		svc.abandonVolume(done, spec.ID)
+		return false, err
+	}
+	if err := svc.finaliseVolume(done, spec, bootable); err != nil {
 		return false, err
 	}
 	return bootable, nil
 }
 
-// writeVolume creates the backing store and records the volume inside the caller's
-// transaction, reporting whether the volume is bootable and whether a backing store now
-// exists to be reclaimed if the transaction fails.
-func (svc *Service) writeVolume(ctx context.Context, tx pgx.Tx, spec volumeSpec) (bootable, backingCreated bool, err error) {
+// finaliseVolume marks a reserved volume available now its backing is built, or abandons it if the
+// row vanished meanwhile. ctx must be uncancellable: the row is this call's to finish.
+func (svc *Service) finaliseVolume(ctx context.Context, spec volumeSpec, bootable bool) error {
 	var sourceImageID any
+	if spec.ImageRef != "" {
+		sourceImageID = spec.ImageRef
+	}
+	tag, err := svc.pool.Exec(ctx, `
+		UPDATE volumes SET status = 'available', bootable = $2, source_image_id = $3, updated_at = $4
+		WHERE id = $1 AND status = 'creating'`, spec.ID, bootable, sourceImageID, time.Now())
+	if err == nil && tag.RowsAffected() == 0 {
+		err = fmt.Errorf("volume %s was removed while it was being created", spec.ID)
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "finalise_volume").Str("volume_id", spec.ID).Msg("failed to finalise a created volume")
+		svc.abandonVolume(ctx, spec.ID)
+		return fmt.Errorf("finalising volume %s: %w", spec.ID, err)
+	}
+	return nil
+}
+
+// reserveVolume records the volume as creating, under this node's name, in the caller's
+// transaction: the one whose quota check authorised it. volume_type and description are
+// persisted so they read back verbatim (F9, FR-003).
+func (svc *Service) reserveVolume(ctx context.Context, tx database.Tx, spec volumeSpec) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO volumes (id, name, description, project_id, user_id, size_gb, status, bootable, rbd_pool, rbd_image, volume_type, reserved_by, reserved_owner, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'creating', false, $7, $8, $9, $10, $11, $12, $12)
+	`, spec.ID, spec.Name, spec.Description, spec.ProjectID, spec.UserID, spec.SizeGB,
+		svc.cephPool, "volume-"+spec.ID, spec.VolumeType, svc.nodeName, svc.ownerID, spec.CreatedAt); err != nil {
+		log.Error().Err(err).Str("operation", "create_volume_db").Msg("failed to insert volume into database")
+		return fmt.Errorf("recording volume %s: %w", spec.ID, err)
+	}
+	return nil
+}
+
+// createVolumeBacking creates a reserved volume's backing store, reporting whether the
+// volume is bootable.
+func (svc *Service) createVolumeBacking(ctx context.Context, spec volumeSpec) (bootable bool, err error) {
 	if spec.ImageRef != "" {
 		if berr := svc.cephClient.CreateVolumeFromImage(ctx, spec.ID, storage.LocalImagePath(spec.ImageRef), spec.SizeGB); berr != nil {
 			log.Error().Err(berr).Str("operation", "create_volume_from_image").Str("image", spec.ImageRef).Msg("failed to create volume from image")
-			return false, false, &volumeBackingError{"failed to create volume from image", berr}
+			return false, &volumeBackingError{"failed to create volume from image", berr}
 		}
-		sourceImageID = spec.ImageRef
-		bootable = true
-	} else if berr := svc.cephClient.CreateVolume(ctx, spec.ID, spec.SizeGB); berr != nil {
+		return true, nil
+	}
+	if berr := svc.cephClient.CreateVolume(ctx, spec.ID, spec.SizeGB); berr != nil {
 		log.Error().Err(berr).Str("operation", "create_volume_backing").Msg("failed to create volume backing")
-		return false, false, &volumeBackingError{"failed to create volume backing", berr}
+		return false, &volumeBackingError{"failed to create volume backing", berr}
 	}
-	backingCreated = true
+	return false, nil
+}
 
-	// Status available — the backing is already provisioned. volume_type and description
-	// are persisted so they read back verbatim (F9, FR-003); both columns exist (migrations
-	// 016 and 012) but were once parsed and discarded.
-	//
-	// Written through the caller's TRANSACTION, not svc.pool: the quota check that
-	// authorised this row holds its lock in that transaction, and an insert outside it
-	// would commit independently of the check — which is exactly the race FR-023 forbids.
-	// The caller reclaims the backing store if the transaction fails.
-	if _, derr := tx.Exec(ctx, `
-		INSERT INTO volumes (id, name, description, project_id, user_id, size_gb, status, bootable, source_image_id, rbd_pool, rbd_image, volume_type, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-	`, spec.ID, spec.Name, spec.Description, spec.ProjectID, spec.UserID, spec.SizeGB, "available", bootable,
-		sourceImageID, svc.cephPool, "volume-"+spec.ID, spec.VolumeType, spec.CreatedAt, spec.CreatedAt); derr != nil {
-		log.Error().Err(derr).Str("operation", "create_volume_db").Msg("failed to insert volume into database")
-		return bootable, backingCreated, fmt.Errorf("recording volume %s: %w", spec.ID, derr)
+// abandonSnapshot is abandonVolume for a snapshot: if the DELETE removes nothing but a row
+// with this id survives in another status, the create lost a race to an out-of-band change
+// (an admin os-reset_status, say), so the row is not ours to remove and its backing must be
+// kept, because that row now owns it.
+func (svc *Service) abandonSnapshot(ctx context.Context, volumeID, snapshotID string) {
+	tag, err := svc.pool.Exec(ctx, `DELETE FROM snapshots WHERE id = $1 AND status = 'creating'`, snapshotID)
+	if err != nil {
+		log.Warn().Err(err).Str("snapshot_id", snapshotID).Msg("failed to remove the row of a snapshot whose create did not complete")
+	} else if tag.RowsAffected() == 0 && svc.rowSurvives(ctx, "snapshots", snapshotID) {
+		log.Warn().Str("snapshot_id", snapshotID).
+			Msg("snapshot left creating while its create was abandoned; keeping its backing for the surviving row")
+		return
 	}
-	return bootable, backingCreated, nil
+	if err := svc.cephClient.DeleteSnapshot(ctx, volumeID, snapshotID); err != nil {
+		log.Warn().Err(err).Str("snapshot_id", snapshotID).
+			Msg("failed to remove the backing of a snapshot whose create did not complete (it may never have been created)")
+	}
+}
+
+// abandonVolume removes a volume whose create did not complete: its row, while it is
+// still creating, and whatever backing the create left. What cannot be removed is
+// logged; a row left behind stays creating until this node's next start sweeps it.
+//
+// If the DELETE removes nothing but a row with this id survives in another status, the
+// create lost a race to an out-of-band change (an admin os-reset_status, say): the row is
+// not ours to remove, and its backing must be kept, because that row now owns it.
+func (svc *Service) abandonVolume(ctx context.Context, volumeID string) {
+	tag, err := svc.pool.Exec(ctx, `DELETE FROM volumes WHERE id = $1 AND status = 'creating'`, volumeID)
+	if err != nil {
+		log.Warn().Err(err).Str("volume_id", volumeID).Msg("failed to remove the row of a volume whose create did not complete")
+	} else if tag.RowsAffected() == 0 && svc.rowSurvives(ctx, "volumes", volumeID) {
+		log.Warn().Str("volume_id", volumeID).
+			Msg("volume left creating while its create was abandoned; keeping its backing for the surviving row")
+		return
+	}
+	if err := svc.cephClient.DeleteVolume(ctx, volumeID); err != nil {
+		log.Warn().Err(err).Str("volume_id", volumeID).
+			Msg("failed to remove the backing of a volume whose create did not complete (it may never have been created)")
+	}
+}
+
+// rowSurvives reports whether a row with this id still exists in the given table after an
+// abandon's DELETE matched nothing — i.e. the row left `creating` by another request
+// rather than being gone. A query error is treated as "survives", so a backing in doubt
+// is kept rather than deleted.
+func (svc *Service) rowSurvives(ctx context.Context, table, id string) bool {
+	var exists bool
+	if err := svc.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM `+table+` WHERE id = $1 AND status <> 'creating')`, id).Scan(&exists); err != nil {
+		log.Warn().Err(err).Str("id", id).Str("table", table).Msg("could not check whether an abandoned row survives; keeping its backing")
+		return true
+	}
+	return exists
 }
 
 // ensureLocalImageBase makes sure the raw base of imageID is on this node before a
@@ -863,7 +939,7 @@ func (svc *Service) GetVolume(c *gin.Context) {
 		WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))
 	`, volumeID, projectID).Scan(&id, &name, &description, &size, &status, &bootable, &userID, &volumeType, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -899,6 +975,11 @@ func imageNotActive(imageID string) string {
 // errVolumeNotFound: the volume an action names is not in the caller's project.
 var errVolumeNotFound = errors.New("volume not found")
 
+// errVolumeCreating: the volume an action names is still being created (FR-036a). A
+// reservation is visible while its backing is built, and an action that moved it out of
+// `creating` would make the create finalise against a changed row and lose its backing.
+var errVolumeCreating = errors.New("volume is creating")
+
 // attachRefusal is an os-attach the API answers with status and msg rather than a 500.
 type attachRefusal struct {
 	status int
@@ -915,12 +996,12 @@ func (e *attachRefusal) Error() string { return e.msg }
 func (svc *Service) attachVolume(c *gin.Context, volumeID, projectID, instanceID, mountpoint string) {
 	ctx := c.Request.Context()
 	admin := common.HasRole(c, common.RoleAdmin)
-	err := database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
 		var id, status string
 		if err := tx.QueryRow(ctx,
 			`SELECT id::text, status FROM volumes WHERE id::text = $1 AND project_id = $2 FOR UPDATE`,
 			volumeID, projectID).Scan(&id, &status); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, database.ErrNoRows) {
 				return errVolumeNotFound
 			}
 			return err
@@ -942,8 +1023,7 @@ func (svc *Service) attachVolume(c *gin.Context, volumeID, projectID, instanceID
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO volume_attachments (volume_id, instance_id, device, attached_at) VALUES ($1, $2, $3, $4)`,
 			id, instanceID, mountpoint, now); err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+			if database.IsUniqueViolation(err) {
 				return &attachRefusal{http.StatusConflict,
 					fmt.Sprintf("mountpoint %s is already in use on server %s", mountpoint, instanceID)}
 			}
@@ -976,15 +1056,18 @@ func (svc *Service) attachVolume(c *gin.Context, volumeID, projectID, instanceID
 // compute service's attachment list agree (SPEC-020 FR-027).
 func (svc *Service) detachVolume(c *gin.Context, volumeID, projectID, operation, failure string) {
 	ctx := c.Request.Context()
-	err := database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
-		var id string
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		var id, status string
 		if err := tx.QueryRow(ctx,
-			`SELECT id::text FROM volumes WHERE id::text = $1 AND project_id = $2 FOR UPDATE`,
-			volumeID, projectID).Scan(&id); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			`SELECT id::text, status FROM volumes WHERE id::text = $1 AND project_id = $2 FOR UPDATE`,
+			volumeID, projectID).Scan(&id, &status); err != nil {
+			if errors.Is(err, database.ErrNoRows) {
 				return errVolumeNotFound
 			}
 			return err
+		}
+		if status == "creating" {
+			return errVolumeCreating
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM volume_attachments WHERE volume_id = $1`, id); err != nil {
 			return err
@@ -999,6 +1082,9 @@ func (svc *Service) detachVolume(c *gin.Context, volumeID, projectID, operation,
 		c.Status(http.StatusAccepted)
 	case errors.Is(err, errVolumeNotFound):
 		common.SendError(c, common.NewNotFoundError("volume"))
+	case errors.Is(err, errVolumeCreating):
+		common.SendError(c, common.NewBadRequestError(
+			"Invalid volume: Volume status must be in-use to detach, currently creating."))
 	default:
 		log.Error().Err(err).Str("operation", operation).Str("volume_id", volumeID).Msg(failure)
 		common.SendError(c, common.NewInternalServerError(failure))
@@ -1014,7 +1100,7 @@ func (svc *Service) detachVolume(c *gin.Context, volumeID, projectID, operation,
 // Upstream's "id" is the volume's id; the attachment's own id is "attachment_id".
 // host_name stays null: upstream shows it to administrators and services only, and
 // Lightstack does not record the host.
-func volumeAttachments(ctx context.Context, pool *pgxpool.Pool, volumeIDs []string) (map[string][]any, error) {
+func volumeAttachments(ctx context.Context, pool database.DB, volumeIDs []string) (map[string][]any, error) {
 	result := make(map[string][]any, len(volumeIDs))
 	if len(volumeIDs) == 0 {
 		return result, nil
@@ -1064,7 +1150,7 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 		volumeID, projectID,
 	).Scan(&attachedTo, &status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -1082,6 +1168,11 @@ func (svc *Service) DeleteVolume(c *gin.Context) {
 		return
 	}
 	if refuseAwaitingTransfer(c, volumeID, status) {
+		return
+	}
+	// Its create is still under way (FR-036a); upstream's refusal (cinder/volume/api.py).
+	if status == "creating" {
+		common.SendError(c, common.NewBadRequestError("Invalid volume: Volume status must be available or error or error_restoring or error_extending or error_managing and must not be migrating, attached, belong to a group, have snapshots, awaiting a transfer, or be disassociated from snapshots after volume transfer."))
 		return
 	}
 
@@ -1226,11 +1317,18 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 		// Update volume size
 		var currentSize int
+		var status string
 		err := svc.pool.QueryRow(c.Request.Context(), `
-			SELECT size_gb FROM volumes WHERE id = $1 AND project_id = $2
-		`, volumeID, projectID).Scan(&currentSize)
+			SELECT size_gb, status FROM volumes WHERE id = $1 AND project_id = $2
+		`, volumeID, projectID).Scan(&currentSize, &status)
 		if err != nil {
 			common.SendError(c, common.NewInternalServerError("failed to fetch volume"))
+			return
+		}
+		// Its create is still under way (FR-036a); upstream's refusal (cinder/volume/api.py).
+		if status == "creating" {
+			common.SendError(c, common.NewBadRequestError(fmt.Sprintf(
+				"Invalid volume: Volume %s status must be 'available' to extend, currently creating.", volumeID)))
 			return
 		}
 		if newSize <= currentSize {
@@ -1248,7 +1346,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 		// sharing one allowance, where each request reads the same pre-extension usage.
 		err = withCinderQuota(c.Request.Context(), svc.pool, projectID,
 			[]quotaWant{{"gigabytes", newSize - currentSize}},
-			func(tx pgx.Tx) error {
+			func(tx database.Tx) error {
 				_, uerr := tx.Exec(c.Request.Context(), `
 			UPDATE volumes
 			SET size_gb = $1, updated_at = $2
@@ -1289,7 +1387,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			newType,
 		).Scan(&typeID)
 
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			// Create new volume type if it doesn't exist
 			typeID = uuid.New().String()
 			_, err = svc.pool.Exec(c.Request.Context(),
@@ -1551,6 +1649,12 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 
 	// Get volume info
 	var volumeID string
+	// A malformed volume id is a volume that does not exist — 404, as upstream and the SQLite
+	// backend (TEXT ids) answer — not the PostgreSQL 22P02 the raw lookup would surface as a 500.
+	if _, err := uuid.Parse(req.Snapshot.VolumeID); err != nil {
+		common.SendError(c, common.NewNotFoundError("volume"))
+		return
+	}
 	var size int
 	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
@@ -1558,82 +1662,46 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 		req.Snapshot.VolumeID, projectID,
 	).Scan(&volumeID, &size, &status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_snapshot").Msg("failed to look up the volume")
+		common.SendError(c, common.NewInternalServerError("failed to create snapshot"))
 		return
 	}
 	if refuseAwaitingTransfer(c, req.Snapshot.VolumeID, status) {
 		return
 	}
-
-	// Snapshots consume the snapshot count AND gigabytes, because a snapshot occupies
-	// backend storage and FR-026 counts its size toward the allowance. Checked before the
-	// backing snapshot is created, so a refusal leaves nothing behind (FR-028a).
-	//
-	// The Ceph call and the INSERT run under the project's quota lock, following
-	// provisionVolume: the backing snapshot is created inside the transaction so a failure
-	// to record it can still reclaim it. This was the WIDEST of the eight windows the
-	// check-then-write shape left open — a full Ceph round trip sat between the check and
-	// the insert, with the lock already released. The lock is per-project, so a slow Ceph
-	// delays only that project's own concurrent snapshots.
-	now := time.Now()
-	var backingCreated bool
-	err = withCinderQuota(c.Request.Context(), svc.pool, projectID,
-		[]quotaWant{{"snapshots", 1}, {"gigabytes", size}},
-		func(tx pgx.Tx) error {
-			if cerr := svc.cephClient.CreateSnapshot(c.Request.Context(), volumeID, snapshotID); cerr != nil {
-				log.Error().Err(cerr).Str("operation", "create_snapshot_ceph").Str("volume_id", volumeID).Msg("failed to create snapshot in Ceph")
-				return &volumeBackingError{"failed to create snapshot", cerr}
-			}
-			backingCreated = true
-			_, ierr := tx.Exec(c.Request.Context(), `
-		INSERT INTO snapshots (id, name, description, volume_id, project_id, size_gb, status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, snapshotID, req.Snapshot.Name, req.Snapshot.Description, volumeID, projectID, size, "creating", now)
-			return ierr
-		})
-
-	if err != nil {
-		if backingCreated {
-			// The row was rolled back with the transaction, so the backing snapshot would
-			// otherwise be a leak: the recorded snapshot is the one users can see.
-			if cephErr := svc.cephClient.DeleteSnapshot(c.Request.Context(), volumeID, snapshotID); cephErr != nil {
-				log.Warn().Err(cephErr).Str("snapshot_id", snapshotID).Str("volume_id", volumeID).Msg("rollback: failed to delete snapshot from Ceph after DB insert failure")
-			}
-		}
-		if sendQuotaError(c, err) {
-			return
-		}
-		// A backing-store failure is an external dependency being down; a recording
-		// failure is ours. Clients act on those differently, which is what
-		// volumeBackingError exists to distinguish.
-		var backingErr *volumeBackingError
-		if errors.As(err, &backingErr) {
-			common.SendError(c, common.NewServiceUnavailableError("failed to create snapshot"))
-			return
-		}
-		log.Error().Err(err).Str("operation", "create_snapshot_db").Msg("failed to insert snapshot into database")
-		common.SendError(c, common.NewInternalServerError("failed to create snapshot"))
+	// The volume's own backing is not there yet (FR-036a): a snapshot of it would capture a
+	// half-written image, and the volume's create failing would cascade the snapshot away.
+	if status == "creating" {
+		common.SendError(c, common.NewBadRequestError(
+			fmt.Sprintf("Invalid volume: Volume %s status must be available, but current status is: creating.", volumeID)))
 		return
 	}
 
-	// Update status to available
-	svc.wg.Add(1)
-	go func() {
-		defer svc.wg.Done()
-		select {
-		case <-time.After(100 * time.Millisecond):
-		case <-svc.ctx.Done():
+	now := time.Now()
+	ctx := c.Request.Context()
+	if err := svc.provisionSnapshot(ctx, snapshotSpec{
+		ID: snapshotID, Name: req.Snapshot.Name, Description: req.Snapshot.Description,
+		VolumeID: volumeID, ProjectID: projectID, SizeGB: size, CreatedAt: now,
+	}); err != nil {
+		if sendQuotaError(c, err) {
 			return
 		}
-		ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
-		defer cancel()
-		if _, err := svc.pool.Exec(ctx,
-			"UPDATE snapshots SET status = $1 WHERE id = $2",
-			"available", snapshotID); err != nil {
-			log.Error().Err(err).Str("snapshot_id", snapshotID).Msg("failed to update snapshot status to available")
+		var backing *volumeBackingError
+		if errors.As(err, &backing) {
+			// A backing-store failure is an external dependency being down, which clients act
+			// on differently from a failure of ours.
+			common.SendError(c, common.NewServiceUnavailableError(backing.msg))
+			return
 		}
-	}()
+		log.Error().Err(err).Str("operation", "create_snapshot").Str("snapshot_id", snapshotID).Msg("failed to create snapshot")
+		common.SendError(c, common.NewInternalServerError("failed to create snapshot"))
+		return
+	}
 
 	c.JSON(http.StatusAccepted, gin.H{
 		"snapshot": gin.H{
@@ -1646,6 +1714,59 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 			"created_at":  now.Format("2006-01-02T15:04:05.000000"),
 		},
 	})
+}
+
+// snapshotSpec is one snapshot create, assembled by the handler and provisioned outside any
+// transaction (reserve, backing, finalise), as volumeSpec is.
+type snapshotSpec struct {
+	ID, Name, Description, VolumeID, ProjectID string
+	SizeGB                                     int
+	CreatedAt                                  time.Time
+}
+
+// provisionSnapshot reserves the snapshot under the project's quota lock, makes the backing
+// snapshot outside any transaction, then finalises it (FR-032, FR-028a). Snapshots consume the
+// snapshot count AND gigabytes (FR-026), and concurrent snapshots count each other under the lock.
+// A reservation failure is returned as is (the handler maps a quota refusal); a backing failure as
+// a *volumeBackingError, as CreateVolume maps one.
+func (svc *Service) provisionSnapshot(ctx context.Context, spec snapshotSpec) error {
+	if err := withCinderQuota(ctx, svc.pool, spec.ProjectID,
+		[]quotaWant{{"snapshots", 1}, {"gigabytes", spec.SizeGB}},
+		func(tx database.Tx) error {
+			_, ierr := tx.Exec(ctx, `
+				INSERT INTO snapshots (id, name, description, volume_id, project_id, size_gb, status, reserved_by, reserved_owner, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, 'creating', $7, $8, $9)`,
+				spec.ID, spec.Name, spec.Description, spec.VolumeID, spec.ProjectID, spec.SizeGB, svc.nodeName, svc.ownerID, spec.CreatedAt)
+			return ierr
+		}); err != nil {
+		return err
+	}
+	// From here the row and the backing are this call's to finalise or remove, even when the
+	// client has gone away.
+	done := context.WithoutCancel(ctx)
+	if cerr := svc.cephClient.CreateSnapshot(ctx, spec.VolumeID, spec.ID); cerr != nil {
+		log.Error().Err(cerr).Str("operation", "create_snapshot_ceph").Str("volume_id", spec.VolumeID).Msg("failed to create snapshot in Ceph")
+		svc.abandonSnapshot(done, spec.VolumeID, spec.ID)
+		return &volumeBackingError{"failed to create snapshot", cerr}
+	}
+	return svc.finaliseSnapshot(done, spec)
+}
+
+// finaliseSnapshot marks a reserved snapshot available now its backing is made — upstream's 202
+// stays status creating (FR-036) — or abandons it if the row vanished meanwhile. ctx must be
+// uncancellable: the row is this call's to finish.
+func (svc *Service) finaliseSnapshot(ctx context.Context, spec snapshotSpec) error {
+	tag, err := svc.pool.Exec(ctx,
+		`UPDATE snapshots SET status = 'available' WHERE id = $1 AND status = 'creating'`, spec.ID)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = fmt.Errorf("snapshot %s was removed while it was being created", spec.ID)
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "finalise_snapshot").Str("snapshot_id", spec.ID).Msg("failed to finalise a created snapshot")
+		svc.abandonSnapshot(ctx, spec.VolumeID, spec.ID)
+		return fmt.Errorf("finalising snapshot %s: %w", spec.ID, err)
+	}
+	return nil
 }
 
 // ListSnapshotsDetail is an alias that works with both URL patterns
@@ -1781,7 +1902,7 @@ func (svc *Service) GetSnapshot(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, snapshotID, projectID).Scan(&id, &name, &description, &volumeID, &size, &status, &createdAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("snapshot"))
 		return
 	}
@@ -1810,14 +1931,24 @@ func (svc *Service) DeleteSnapshot(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Get volume ID
-	var volumeID string
+	var volumeID, status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT volume_id FROM snapshots WHERE id = $1 AND project_id = $2",
+		"SELECT volume_id, status FROM snapshots WHERE id = $1 AND project_id = $2",
 		snapshotID, projectID,
-	).Scan(&volumeID)
+	).Scan(&volumeID, &status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("snapshot"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_snapshot").Str("snapshot_id", snapshotID).Msg("failed to look up the snapshot")
+		common.SendError(c, common.NewInternalServerError("failed to delete snapshot"))
+		return
+	}
+	// Its create is still under way (FR-036a); upstream's refusal (cinder/volume/api.py).
+	if status == "creating" {
+		common.SendError(c, common.NewBadRequestError("Invalid snapshot: Snapshot status must be available or error and must not be part of a group."))
 		return
 	}
 
@@ -1840,6 +1971,56 @@ func (svc *Service) DeleteSnapshot(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// SnapshotAction handles POST /v3/snapshots/:id/action. It supports os-reset_status, the
+// admin-only escape upstream Cinder provides for a snapshot stuck in creating: the startup sweep
+// reclaims a creating snapshot only on the node that reserved it, so one whose node never returns
+// under the same name — a replaced multi-node PostgreSQL host — can be freed no other way (its own
+// delete is refused while creating, and its volume's delete is refused while it holds a snapshot).
+func (svc *Service) SnapshotAction(c *gin.Context) {
+	snapshotID := c.Param("id")
+	projectID := c.GetString("project_id")
+
+	var req map[string]any
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+
+	resetStatusData, ok := req["os-reset_status"]
+	if !ok {
+		common.SendError(c, common.NewBadRequestError("unknown action"))
+		return
+	}
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-reset_status to be performed."))
+		return
+	}
+	resetStatusMap, ok := resetStatusData.(map[string]any)
+	if !ok {
+		common.SendError(c, common.NewBadRequestError("os-reset_status must be an object"))
+		return
+	}
+	newStatus, ok := resetStatusMap["status"].(string)
+	if !ok {
+		common.SendError(c, common.NewBadRequestError("os-reset_status.status must be a string"))
+		return
+	}
+
+	tag, err := svc.pool.Exec(c.Request.Context(),
+		`UPDATE snapshots SET status = $1 WHERE id = $2 AND project_id = $3`,
+		newStatus, snapshotID, projectID)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "reset_snapshot_status").Str("snapshot_id", snapshotID).Msg("failed to reset snapshot status")
+		common.SendError(c, common.NewInternalServerError("failed to reset snapshot status"))
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		common.SendError(c, common.NewNotFoundError("snapshot"))
+		return
+	}
+	c.Status(http.StatusAccepted)
 }
 
 // Volume types
@@ -1903,7 +2084,7 @@ func (svc *Service) GetVolumeType(c *gin.Context) {
 		WHERE id = $1
 	`, typeID).Scan(&id, &name, &description, &isPublic)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume type"))
 		return
 	}
@@ -1949,7 +2130,7 @@ func (svc *Service) UpdateVolume(c *gin.Context) {
 		volumeID, projectID,
 	).Scan(&currentName, &currentDesc, &sizeGB, &status, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -2018,7 +2199,7 @@ func (svc *Service) UpdateSnapshot(c *gin.Context) {
 		snapshotID, projectID,
 	).Scan(&currentName, &currentDesc, &volumeID, &sizeGB, &status, &createdAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("snapshot"))
 		return
 	}
@@ -2131,7 +2312,7 @@ func (svc *Service) SetVolumeMetadata(c *gin.Context) {
 	}
 
 	// Delete existing metadata then insert new metadata atomically
-	if err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+	if err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		if _, err := tx.Exec(c.Request.Context(),
 			"DELETE FROM volume_metadata WHERE volume_id = $1",
 			volumeID,
@@ -2180,7 +2361,7 @@ func (svc *Service) GetVolumeMetadataKey(c *gin.Context) {
 		volumeID, key,
 	).Scan(&value)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("metadata key"))
 		return
 	}
@@ -2228,9 +2409,9 @@ func (svc *Service) UpdateVolumeMetadataKey(c *gin.Context) {
 	// Upsert metadata
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO volume_metadata (volume_id, meta_key, meta_value, updated_at)
-		VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (volume_id, meta_key)
-		DO UPDATE SET meta_value = $3, updated_at = CURRENT_TIMESTAMP
+		DO UPDATE SET meta_value = $3, updated_at = NOW()
 	`, volumeID, key, value)
 
 	if err != nil {
@@ -2345,7 +2526,7 @@ func (svc *Service) SetSnapshotMetadata(c *gin.Context) {
 	}
 
 	// Delete existing metadata then insert new metadata atomically
-	if err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+	if err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		if _, err := tx.Exec(c.Request.Context(),
 			"DELETE FROM snapshot_metadata WHERE snapshot_id = $1",
 			snapshotID,
@@ -2394,7 +2575,7 @@ func (svc *Service) GetSnapshotMetadataKey(c *gin.Context) {
 		snapshotID, key,
 	).Scan(&value)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("metadata key"))
 		return
 	}
@@ -2442,9 +2623,9 @@ func (svc *Service) UpdateSnapshotMetadataKey(c *gin.Context) {
 	// Upsert metadata
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO snapshot_metadata (snapshot_id, meta_key, meta_value, updated_at)
-		VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (snapshot_id, meta_key)
-		DO UPDATE SET meta_value = $3, updated_at = CURRENT_TIMESTAMP
+		DO UPDATE SET meta_value = $3, updated_at = NOW()
 	`, snapshotID, key, value)
 
 	if err != nil {

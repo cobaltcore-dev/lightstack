@@ -2,14 +2,15 @@ package common
 
 import (
 	"errors"
+
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
 // HandleDatabaseError converts database errors to appropriate OpenStack errors
 func HandleDatabaseError(c *gin.Context, err error, resource string) {
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		SendError(c, NewNotFoundError(resource))
 		return
 	}
@@ -25,7 +26,7 @@ func HandleDatabaseError(c *gin.Context, err error, resource string) {
 
 // HandleDatabaseErrorWithOperation converts database errors with operation context
 func HandleDatabaseErrorWithOperation(c *gin.Context, err error, operation, resourceType, resourceID string) {
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		SendError(c, NewResourceNotFoundError(resourceType, resourceID))
 		return
 	}

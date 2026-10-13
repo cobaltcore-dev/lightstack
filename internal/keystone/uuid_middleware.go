@@ -12,23 +12,31 @@ import (
 // uuidParamMiddleware rejects a management request whose UUID path parameter is
 // not a well-formed UUID, returning Keystone's verbatim 404
 // ("Could not find <resource>: <id>.") before the handler runs. Lightstack's identity
-// id columns are Postgres `uuid`, so a non-UUID can never name a row — 404 is the
+// id columns hold canonical ids, so a non-UUID can never name a row — 404 is the
 // faithful behavior, and validating up front avoids the `22P02` cast that would
 // otherwise surface as 500 (cloud-storage#515).
+//
+// A well-formed but non-canonical id — dash-free (the form rgw_compat_tenant_ids
+// advertises) or upper-case — is rewritten to canonical form in place, so the handler's
+// id comparison matches on SQLite, where ids are text, as it did on PostgreSQL's `uuid`
+// columns. uuid.Parse accepts exactly the forms uuid.Validate did.
 //
 // It validates only params named "id" or "<something>_id"; the EC2 "access" key
 // and any other param pass through untouched (FR-005). It is registered only on
 // the non-authz-gated route group, so authentication (401) and authorization
 // (403), which run for the gated routes, still precede a malformed-id 404.
 func uuidParamMiddleware(c *gin.Context) {
-	for _, p := range c.Params {
+	for i := range c.Params {
+		p := c.Params[i]
 		if !isUUIDParam(p.Key) {
 			continue
 		}
-		if uuid.Validate(p.Value) != nil {
+		id, err := uuid.Parse(p.Value)
+		if err != nil {
 			common.AbortWithError(c, common.NewIdentityNotFoundError(resourceNoun(c.FullPath(), p.Key), p.Value))
 			return
 		}
+		c.Params[i].Value = id.String()
 	}
 	// No c.Next() needed: when a middleware returns without aborting, gin's engine
 	// advances to the next handler on its own.

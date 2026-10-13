@@ -221,6 +221,29 @@ func TestCreateUserAcceptsDomainAlias(t *testing.T) {
 	}
 }
 
+// TestCreateUserDuplicateNameIsConflict: a second user with the same name answers 409,
+// not 500. The duplicate used to be detected by PostgreSQL's error text, which SQLite
+// does not produce; it now goes through database.IsUniqueViolation, so both backends 409.
+func TestCreateUserDuplicateNameIsConflict(t *testing.T) {
+	if !testDBAvailable {
+		t.Skip("LIGHTSTACK_TEST_DB_URL not set")
+	}
+	r := newIdentityTestRouter()
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(context.Background(), `DELETE FROM users WHERE name = $1`, "spec028-dup"); err != nil {
+			t.Logf("cleanup user: %v", err)
+		}
+	})
+
+	body := `{"user":{"name":"spec028-dup","password":"pw","domain_id":"default"}}`
+	if code, resp := doJSONReq(r, http.MethodPost, "/v3/users", body, adminHdr); code != http.StatusCreated {
+		t.Fatalf("first create: code=%d body=%s; want 201", code, resp)
+	}
+	if code, resp := doJSONReq(r, http.MethodPost, "/v3/users", body, adminHdr); code != http.StatusConflict {
+		t.Fatalf("duplicate create: code=%d body=%s; want 409", code, resp)
+	}
+}
+
 // TestCreateGroupAcceptsDomainAlias — FR-006. CreateGroup used to store the reference
 // verbatim (groups.domain_id was a VARCHAR with no foreign key until migration 072), so
 // `default` was kept as the string and any value was accepted. It now resolves like the

@@ -3,17 +3,15 @@ package metadata
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // testDBAvailable is true when LIGHTSTACK_TEST_DB_URL is set and migrated; DB-backed
@@ -23,36 +21,15 @@ var testDBAvailable bool
 
 // testPool is this package's test pool: opened by TestMain when LIGHTSTACK_TEST_DB_URL
 // is set, and handed to the services the tests construct (SPEC-027).
-var testPool *pgxpool.Pool
+var testPool database.DB
 
 func TestMain(m *testing.M) {
-	if dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL"); dbURL != "" {
-		ctx := context.Background()
-		var err error
-		if testPool, err = database.Connect(ctx, dbURL, &database.PoolConfig{
-			MaxConns: 5, MinConns: 1, MaxConnLifetime: time.Hour,
-			MaxConnIdleTime: 15 * time.Minute, HealthCheckPeriod: time.Minute,
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but connecting failed: %v\n", err)
-			os.Exit(1)
-		}
-		if err := database.MigrateUp(dbURL, "../../migrations"); err != nil {
-			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but migrations failed: %v\n", err)
-			testPool.Close()
-			os.Exit(1)
-		}
-		testDBAvailable = true
-	}
+	// Skip DB-backed tests only when no test DB is configured. A configured database
+	// that cannot be opened or migrated fails the run instead (dbtest.Open), so a broken
+	// test database in CI fails the job rather than quietly hiding the DB-backed tests.
+	testPool, testDBAvailable = dbtest.Open("../../migrations")
 	code := m.Run()
-	if testDBAvailable {
-		// pgxpool.Close blocks until every acquired connection is released, so a handler
-		// that leaks rows would hang the run here with no diagnostic. Fail loudly instead.
-		if n := testPool.Stat().AcquiredConns(); n != 0 {
-			fmt.Fprintf(os.Stderr, "connection leak: %d pool connection(s) still acquired after the tests — a handler did not close its rows\n", n)
-			os.Exit(1)
-		}
-		testPool.Close()
-	}
+	dbtest.Close(testPool)
 	os.Exit(code)
 }
 

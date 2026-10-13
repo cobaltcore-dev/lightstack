@@ -226,7 +226,7 @@ func TestUpdateSubnetPoolAssignsEachFieldToItsOwnColumn(t *testing.T) {
 	id := uuid.NewString()
 	cleanupRows(t, "subnet_pools", id)
 	mustExec(t, `INSERT INTO subnet_pools (id, project_id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen)
-		VALUES ($1, $2, 'before-name', ARRAY['10.0.0.0/8'], 8, 32, 24)`, id, seededProjectID)
+		VALUES ($1, $2, 'before-name', $3, 8, 32, 24)`, id, seededProjectID, []string{"10.0.0.0/8"})
 
 	code, body := doReqBody(r, http.MethodPut, "/v2.0/subnetpools/"+id,
 		`{"subnetpool":{"name":"after-name","prefixes":["192.0.2.0/24"],"min_prefixlen":11,"max_prefixlen":29,"default_prefixlen":27}}`,

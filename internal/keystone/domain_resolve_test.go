@@ -2,9 +2,11 @@ package keystone
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // The default domain's stored id, seeded by migration 009. Tests assert against
@@ -87,6 +89,27 @@ func TestResolveDomainRefRejectsDisabledDomain(t *testing.T) {
 	}
 }
 
+// TestResolveDomainRefCanonicalisesIDs pins that a well-formed but non-canonical domain
+// id — dash-free or upper-case, the forms uuid.Validate accepts — still resolves. On
+// SQLite the id column is text, so the resolver must canonicalise the reference before
+// the comparison rather than bind it as the client wrote it; PostgreSQL's uuid column did
+// this on its own. It mirrors TestResolveProjectRefCanonicalisesIDs.
+func TestResolveDomainRefCanonicalisesIDs(t *testing.T) {
+	if !testDBAvailable {
+		t.Skip("LIGHTSTACK_TEST_DB_URL not set")
+	}
+	ctx := t.Context()
+	id := insertTestDomain(t, "spec028-domain-canon", true)
+
+	dashFree := strings.ReplaceAll(id, "-", "")
+	for _, ref := range []string{id, dashFree, strings.ToUpper(id), strings.ToUpper(dashFree)} {
+		gotID, outcome := resolveDomainRef(ctx, testPool, ref, enabledDomainsOnly)
+		if outcome != domainResolved || gotID != id {
+			t.Errorf("resolveDomainRef(%q) = (%q, %v), want (%q, domainResolved)", ref, gotID, outcome, id)
+		}
+	}
+}
+
 // TestResolveDomainRefAnyDomainState pins the difference between the two callers'
 // questions. Creation asks "is this a valid home for a new resource", so a disabled
 // domain is not an answer; retrieval asks "does this domain exist", and its response
@@ -138,18 +161,43 @@ func TestResolveDomainRefQueryFailure(t *testing.T) {
 	}
 }
 
-// unreachablePool returns a pool whose every query fails to connect, standing in for a
-// database outage without needing a database: pgxpool.New does not dial, and port 1
-// on loopback refuses at once.
-func unreachablePool(t *testing.T) *pgxpool.Pool {
+// unreachablePool returns a database whose every statement fails as a refused
+// connection would, standing in for a database outage without needing a database.
+func unreachablePool(t *testing.T) database.DB {
 	t.Helper()
-	pool, err := pgxpool.New(t.Context(), "postgres://lightstack:secret@127.0.0.1:1/unreachable?connect_timeout=1")
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return unreachableDB{}
 }
+
+var errUnreachable = errors.New("dial tcp 127.0.0.1:1: connect: connection refused")
+
+type unreachableDB struct{}
+
+func (unreachableDB) Query(context.Context, string, ...any) (database.Rows, error) {
+	return failedRows{}, errUnreachable
+}
+func (unreachableDB) QueryRow(context.Context, string, ...any) database.Row { return failedRow{} }
+func (unreachableDB) Exec(context.Context, string, ...any) (database.Result, error) {
+	return failedResult{}, errUnreachable
+}
+func (unreachableDB) Begin(context.Context) (database.Tx, error) { return nil, errUnreachable }
+func (unreachableDB) Ping(context.Context) error                 { return errUnreachable }
+func (unreachableDB) Close()                                     {}
+func (unreachableDB) Backend() database.Backend                  { return database.Postgres }
+
+type failedRows struct{}
+
+func (failedRows) Next() bool        { return false }
+func (failedRows) Scan(...any) error { return errUnreachable }
+func (failedRows) Err() error        { return errUnreachable }
+func (failedRows) Close()            {}
+
+type failedRow struct{}
+
+func (failedRow) Scan(...any) error { return errUnreachable }
+
+type failedResult struct{}
+
+func (failedResult) RowsAffected() int64 { return 0 }
 
 // insertTestDomain adds a domain row and removes it when the test ends.
 func insertTestDomain(t *testing.T, name string, enabled bool) string {

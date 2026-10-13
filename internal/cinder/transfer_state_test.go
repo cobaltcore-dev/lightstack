@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -180,20 +181,29 @@ func TestConcurrentTransferCreatesHoldTheVolumeOnce(t *testing.T) {
 			codes[i], _, _ = createTransfer(t, r, vol)
 		}(i)
 	}
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		var queued int
-		if err := testPool.QueryRow(ctx,
-			`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'UPDATE volumes SET status = $1%'`,
-		).Scan(&queued); err != nil {
-			t.Fatalf("reading lock waits: %v", err)
+	if testPool.Backend() == database.SQLite {
+		// SQLite shows no waiting writers. The held transaction keeps the write lock, so
+		// both creates read the volume and then wait for the lock, up to the busy
+		// timeout; give them the time to get there. A create that had not would read
+		// the volume once the other's transfer holds it and be refused there — the
+		// outcome checked below is the same, only the path differs.
+		time.Sleep(300 * time.Millisecond)
+	} else {
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			var queued int
+			if err := testPool.QueryRow(ctx,
+				`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'UPDATE volumes SET status = $1%'`,
+			).Scan(&queued); err != nil {
+				t.Fatalf("reading lock waits: %v", err)
+			}
+			if queued >= 2 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("only %d creates queued on the volume row; want both", queued)
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
-		if queued >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d creates queued on the volume row; want both", queued)
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatalf("release the volume row: %v", err)

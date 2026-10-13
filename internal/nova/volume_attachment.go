@@ -8,13 +8,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -95,7 +95,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -113,7 +113,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		req.VolumeAttachment.VolumeID, projectID,
 	).Scan(&volumeStatus, &attachedToInstance)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -233,7 +233,7 @@ func (svc *Service) GetVolumeAttachment(c *gin.Context) {
 		"SELECT device, attached_at FROM volume_attachments WHERE volume_id = $1 AND instance_id = $2",
 		volumeID, instanceID,
 	).Scan(&device, &attachedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume attachment"))
 		return
 	}
@@ -269,7 +269,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -286,7 +286,7 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 		volumeID, instanceID,
 	).Scan(&attachmentID, &device)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume attachment"))
 		return
 	}
@@ -403,7 +403,7 @@ func (svc *Service) ListVolumeAttachments(c *gin.Context) {
 // is what upstream reports: {id, delete_on_termination} per volume, in the order they were
 // attached. delete_on_termination is part of the entry from microversion 2.3; Lightstack
 // answers every request with its current microversion.
-func volumesAttachedForServers(ctx context.Context, pool *pgxpool.Pool, serverIDs []string) (map[string][]gin.H, error) {
+func volumesAttachedForServers(ctx context.Context, pool database.DB, serverIDs []string) (map[string][]gin.H, error) {
 	result := make(map[string][]gin.H, len(serverIDs))
 	if len(serverIDs) == 0 {
 		return result, nil

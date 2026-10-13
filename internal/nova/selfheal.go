@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -107,7 +108,7 @@ func (svc *Service) storedRootDisk(ctx context.Context, instanceID string) (stri
 	if err == nil {
 		return volumeRootDiskPath(volumeID, rbdPool, rbdImage), nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !errors.Is(err, database.ErrNoRows) {
 		return "", fmt.Errorf("reading the root volume of instance %s: %w", instanceID, err)
 	}
 	overlay := hypervisor.OverlayPath(instanceID)

@@ -220,8 +220,8 @@ func TestConflictCorrectionYieldsToANewerWrite(t *testing.T) {
 	raced, _ := seedLifecycleInstance(t, mgr, "spec025-conflict-raced")
 	readAt := revision(raced)
 	if _, err := testPool.Exec(ctx,
-		`UPDATE instances SET status = 'SHUTOFF', power_state = 4, updated_at = updated_at + interval '1 second' WHERE id = $1`,
-		raced); err != nil {
+		`UPDATE instances SET status = 'SHUTOFF', power_state = 4, updated_at = $2 WHERE id = $1`,
+		raced, readAt.Add(time.Second)); err != nil {
 		t.Fatalf("concurrent stop: %v", err)
 	}
 	if svc.persistObservedRunState(ctx, raced, seededProjectID, "ACTIVE", 1, readAt) {

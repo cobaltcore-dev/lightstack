@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ImageVisibleSQL is upstream Glance's rule for reading one image
@@ -54,7 +54,7 @@ func CallerProjectID(projectID string) string {
 // found is false for an image the caller cannot read and for an id that names no image or
 // is not a UUID, so callers answer "not found" for all of them and a refusal does not tell
 // which.
-func VisibleImage(ctx context.Context, pool *pgxpool.Pool, imageID, projectID string, admin bool) (status string, found bool, err error) {
+func VisibleImage(ctx context.Context, pool database.DB, imageID, projectID string, admin bool) (status string, found bool, err error) {
 	id, perr := uuid.Parse(imageID)
 	if perr != nil {
 		return "", false, nil
@@ -63,7 +63,7 @@ func VisibleImage(ctx context.Context, pool *pgxpool.Pool, imageID, projectID st
 		`SELECT i.status FROM images i WHERE i.id = $1 AND `+ImageVisibleSQL("i", 2, 3),
 		id.String(), CallerProjectID(projectID), admin,
 	).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {

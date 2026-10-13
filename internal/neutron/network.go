@@ -11,19 +11,19 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // Service handles Neutron API endpoints
 type Service struct {
-	pool             *pgxpool.Pool
+	pool             database.DB
 	mode             string
 	nsManager        *networking.NetworkNamespaceManager
 	brManager        *networking.BridgeManager
@@ -37,7 +37,7 @@ type Service struct {
 }
 
 // NewService creates a new Neutron service
-func NewService(pool *pgxpool.Pool, mode string, cacheInstance *cache.Cache) *Service {
+func NewService(pool database.DB, mode string, cacheInstance *cache.Cache) *Service {
 	sgManager, err := networking.NewSecurityGroupManager(mode, "")
 	if err != nil {
 		log.Error().Err(err).Str("mode", mode).Msg("failed to initialize security group manager")
@@ -1000,7 +1000,7 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		LIMIT 1
 	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
@@ -1063,7 +1063,7 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 		"SELECT id::text FROM networks WHERE id::text = $1 AND project_id = $2",
 		networkID, projectID,
 	).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
@@ -1288,7 +1288,7 @@ func (svc *Service) writeNetworkResponse(c *gin.Context, networkID string) {
 		LIMIT 1
 	`, networkID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
@@ -1390,7 +1390,7 @@ func (svc *Service) callerMaySubnetNetwork(c *gin.Context, networkID, projectID 
 		networkID,
 	).Scan(&owner, &shared)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		// FR-011: no network of that id. Previously this reached the foreign key and
 		// surfaced as a 500.
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -1581,7 +1581,7 @@ func (svc *Service) resolveListMarker(c *gin.Context, limit any, resource, query
 	}
 	var m listMarker
 	err := svc.pool.QueryRow(c.Request.Context(), query, marker, c.GetString("project_id")).Scan(&m.createdAt, &m.id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError(resource))
 		return nil, false
 	}
@@ -1758,7 +1758,7 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 		LIMIT 1
 	`, subnetID, projectID).Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
 		return
 	}
@@ -1814,7 +1814,7 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		LIMIT 1
 	`, subnetID, projectID).Scan(&resolvedID, &networkID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
 		return
 	}
@@ -1892,19 +1892,27 @@ func (svc *Service) reconcileNetworkDHCPAfterSubnetDelete(ctx context.Context, n
 // upstream's get_alloc_routerports. A router interface is a port carrying the subnet's gateway in its
 // fixed_ips, recorded in router_interfaces.
 func (svc *Service) routerPortHolding(ctx context.Context, subnetID, ip string) (string, error) {
-	var portID string
-	err := svc.pool.QueryRow(ctx, `
-		SELECT p.id::text
+	rows, err := svc.pool.Query(ctx, `
+		SELECT p.id::text, p.fixed_ips
 		FROM router_interfaces ri
 		JOIN ports p ON p.id = ri.port_id
 		WHERE ri.subnet_id = $1
-		  AND p.fixed_ips @> jsonb_build_array(jsonb_build_object('ip_address', $2::text))
-		LIMIT 1
-	`, subnetID, ip).Scan(&portID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+	`, subnetID)
+	if err != nil {
+		return "", err
 	}
-	return portID, err
+	defer rows.Close()
+	for rows.Next() {
+		var portID string
+		var fixedIPs common.FixedIPs
+		if err := rows.Scan(&portID, &fixedIPs); err != nil {
+			return "", err
+		}
+		if fixedIPs.Holds(ip) {
+			return portID, nil
+		}
+	}
+	return "", rows.Err()
 }
 
 // reconcileNetworkDHCPAfterGatewayChange moves the host side of a DHCP-enabled subnet whose gateway
@@ -1978,7 +1986,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		LIMIT 1
 	`, subnetID, projectID).Scan(&resolvedID, &currentName, &subnetNetwork, &subnetCIDR, &currentGateway, &subnetDHCP)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
 		return
 	}

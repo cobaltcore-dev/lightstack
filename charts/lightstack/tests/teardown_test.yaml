@@ -96,6 +96,54 @@ tests:
           path: spec.backoffLimit
           value: 0
 
+  # `lightstack cleanup` reads the database to enumerate what to purge and refuses an empty
+  # URL (SPEC-028 FR-001). With the URL in database.existingSecret the rendered config holds
+  # none, so the purge Job needs the same LIGHTSTACK_DB_URL the workload gets — without it
+  # the job exits 2 and the blocking hook halts the uninstall.
+  - it: purge Job reads the database URL from database.existingSecret, as the workload does
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+      database.url: ""
+      database.existingSecret: my-db-secret
+    template: templates/teardown-purge-job.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DB_URL
+            valueFrom:
+              secretKeyRef:
+                name: my-db-secret
+                key: url
+
+  - it: purge Job honors a custom database.existingSecretKey
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+      database.url: ""
+      database.existingSecret: my-db-secret
+      database.existingSecretKey: dburl
+    template: templates/teardown-purge-job.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DB_URL
+            valueFrom:
+              secretKeyRef:
+                name: my-db-secret
+                key: dburl
+
+  - it: purge Job carries no env when the URL is in the rendered config
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+    template: templates/teardown-purge-job.yaml
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env
+
   - it: delete without teardown.kubectlImage fails to render (FR-018)
     set:
       dataRetentionPolicy: delete

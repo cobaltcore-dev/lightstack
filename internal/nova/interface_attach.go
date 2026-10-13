@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -46,7 +46,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -73,7 +73,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			portID, projectID,
 		).Scan(&networkID, &fixedIPsJSON, &macAddress, &deviceID)
 
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("port"))
 			return
 		}
@@ -122,7 +122,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			networkID,
 		).Scan(&cidr)
 
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewBadRequestError("network has no subnet"))
 			return
 		}
@@ -217,7 +217,7 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 		portID,
 	).Scan(&attachedInstanceID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
 		return
 	}
@@ -332,7 +332,7 @@ func generateMACAddress() string {
 }
 
 // allocateNextIP allocates the next available IP from a subnet
-func allocateNextIP(ctx context.Context, pool *pgxpool.Pool, networkID, cidr string) (string, error) {
+func allocateNextIP(ctx context.Context, pool database.DB, networkID, cidr string) (string, error) {
 	// Simple allocation: get last used IP and increment
 	// In production, would use proper IPAM
 	var fixedIPsJSON []byte
@@ -341,7 +341,7 @@ func allocateNextIP(ctx context.Context, pool *pgxpool.Pool, networkID, cidr str
 		networkID,
 	).Scan(&fixedIPsJSON)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		// First allocation, use .10
 		baseIP := cidr[:len(cidr)-3] // Remove /24
 		return baseIP + "10", nil

@@ -10,14 +10,23 @@ services:
       # The socket's directory, not the socket: a bind of the file keeps its inode, so a
       # libvirtd that re-creates its socket would stay unreachable until a restart.
       - /var/run/libvirt:/var/run/libvirt
-      - /var/lib/lightstack/volumes:/var/lib/lightstack/volumes
-      - /var/lib/lightstack/images:/var/lib/lightstack/images
-      - /var/lib/lightstack/instances:/var/lib/lightstack/instances
-      # Every guest's domain names its VNC socket here, and the host's QEMU creates it, so
-      # it must be the host's directory, even with no console proxy running: without it
-      # no guest could start (SPEC-021 FR-017a). Lightstack makes it QEMU's at startup.
-      - /var/lib/lightstack/console-sockets:/var/lib/lightstack/console-sockets
-      - /opt/lightstack/config:/opt/lightstack/config:ro
+      # The whole node-local state root, at the same path inside and out: libvirtd on the
+      # host opens the paths Lightstack writes into each domain's XML — disks, config-drive
+      # ISOs, and the VNC socket QEMU creates even with no console proxy running (SPEC-021
+      # FR-017a) — and a SQLite database lives in its db/ directory. Set
+      # LIGHTSTACK_STATE_PATH to the config's state_path when that is not the default.
+      - ${LIGHTSTACK_STATE_PATH:-/var/lib/lightstack}:${LIGHTSTACK_STATE_PATH:-/var/lib/lightstack}
+      - ${LIGHTSTACK_CONFIG_DIR:-/opt/lightstack/config}:/opt/lightstack/config:ro
+    environment:
+      # Overrides the config's database.url when set — postgres://… or
+      # sqlite:///<state_path>/db/lightstack.db; empty keeps the config's.
+      LIGHTSTACK_DB_URL: ${LIGHTSTACK_DB_URL:-}
+      # The name block-storage reservations are recorded under (SPEC-028 FR-033). A stable,
+      # node-specific value, not the container's hostname: on Docker the hostname defaults to
+      # the container id and changes on recreation, so a recreated container would no longer
+      # find the creates its predecessor left unfinished. Override per host in a multi-node
+      # deployment.
+      LIGHTSTACK_NODE_NAME: ${LIGHTSTACK_NODE_NAME:-lightstack-kvm}
     # metadata.trust_instance_header (LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER) stays
     # unset here on purpose. It makes the metadata service believe an X-Instance-ID header
     # from any caller, which only test stacks without real guests may allow: real guests

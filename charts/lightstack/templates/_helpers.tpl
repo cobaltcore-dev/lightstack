@@ -185,6 +185,22 @@ cache:
 {{- end -}}
 
 {{/*
+LIGHTSTACK_DB_URL from database.existingSecret, for every container that opens the database:
+the workload and the teardown purge Job. With the URL in a Secret, the rendered config
+holds none, and `lightstack cleanup` refuses an empty URL (SPEC-028 FR-001). Renders
+nothing without database.existingSecret.
+*/}}
+{{- define "lightstack.dbUrlEnv" -}}
+{{- if .Values.database.existingSecret -}}
+- name: LIGHTSTACK_DB_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.database.existingSecret }}
+      key: {{ .Values.database.existingSecretKey | default "url" }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Shared pod spec (spec.template.spec) for both the single-node Deployment and the
 multi-node DaemonSet, so the container, config mount, probes, and real-mode host
 access stay identical across modes. Include with: {{- include "lightstack.podSpec" . | nindent 6 }}
@@ -300,18 +316,21 @@ containers:
     securityContext:
       privileged: {{ .Values.realMode.privileged }}
     {{- end }}
-    {{- if or .Values.endpointHost .Values.tls.enabled .Values.database.existingSecret (gt (int .Values.drainSeconds) 0) .Values.extraEnv }}
     env:
+      # The name block-storage reservations are recorded under (SPEC-028 FR-033). Without
+      # host networking the host name is the pod's name, which a recreated pod does not
+      # keep; the node's name lets it find and sweep the creates it was running when it
+      # stopped.
+      - name: LIGHTSTACK_NODE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: spec.nodeName
       {{- if gt (int .Values.drainSeconds) 0 }}
       - name: LIGHTSTACK_DRAIN_SECONDS
         value: {{ .Values.drainSeconds | quote }}
       {{- end }}
-      {{- if .Values.database.existingSecret }}
-      - name: LIGHTSTACK_DB_URL
-        valueFrom:
-          secretKeyRef:
-            name: {{ .Values.database.existingSecret }}
-            key: {{ .Values.database.existingSecretKey | default "url" }}
+      {{- with include "lightstack.dbUrlEnv" . }}
+      {{- . | nindent 6 }}
       {{- end }}
       {{- if .Values.endpointHost }}
       - name: LIGHTSTACK_ENDPOINT_HOST
@@ -324,7 +343,6 @@ containers:
       {{- with .Values.extraEnv }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
-    {{- end }}
     ports:
       - { name: identity, containerPort: 35357 }
       - { name: compute, containerPort: 8774 }

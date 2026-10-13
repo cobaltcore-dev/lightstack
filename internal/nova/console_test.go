@@ -804,8 +804,8 @@ func TestLifecycleActionsFailClosedWhenRevocationFails(t *testing.T) {
 			}
 			if _, err := testPool.Exec(t.Context(),
 				`INSERT INTO console_auth_tokens (token, instance_id, project_id, socket, domain_id, expires_at)
-				 VALUES ($1, $2, $3, $4, $5, now() + interval '10 minutes')`,
-				"bad/"+tc.name, id, seededProjectID, testConsoleSocket, testDomainID); err != nil {
+				 VALUES ($1, $2, $3, $4, $5, $6)`,
+				"bad/"+tc.name, id, seededProjectID, testConsoleSocket, testDomainID, time.Now().Add(10*time.Minute)); err != nil {
 				t.Fatalf("seeding the unrevocable token: %v", err)
 			}
 

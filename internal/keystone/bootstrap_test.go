@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
@@ -17,7 +18,7 @@ func userRow(t *testing.T, name string) (id, hash string, enabled, ok bool) {
 	t.Helper()
 	err := testPool.QueryRow(context.Background(),
 		"SELECT id, password_hash, enabled FROM users WHERE name = $1", name).Scan(&id, &hash, &enabled)
-	if err == pgx.ErrNoRows {
+	if err == database.ErrNoRows {
 		return "", "", false, false
 	}
 	if err != nil {

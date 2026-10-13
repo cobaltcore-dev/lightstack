@@ -1,11 +1,14 @@
 package common
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // TestQuotaTargetProject_ScopesWithoutTouchingTheDatabase covers every branch that
@@ -130,5 +133,29 @@ func TestQuotaTargetProject_RejectsUnscopedToken(t *testing.T) {
 					"(an empty project id reaches a uuid column and 500s)", gotID, gotErr)
 			}
 		})
+	}
+}
+
+// TestResolveProjectRefCanonicalisesIDs: an id is stored canonical, and on SQLite it is
+// compared as text, so a dash-free or upper-case id — the advertised rgw_compat form, or
+// a client's spelling — must still resolve to the project. The admin quota branch relies
+// on this (SRC-8).
+func TestResolveProjectRefCanonicalisesIDs(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	var id string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO projects (name, description) VALUES ($1, 'resolve-ref test') RETURNING id::text`,
+		"spec028-resolve-"+uuid.NewString()[:8]).Scan(&id); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM projects WHERE id = $1`, id) })
+
+	dashFree := strings.ReplaceAll(id, "-", "")
+	for _, ref := range []string{id, dashFree, strings.ToUpper(id), strings.ToUpper(dashFree)} {
+		got, oerr := ResolveProjectRef(ctx, testPool, ref)
+		if oerr != nil || got != id {
+			t.Errorf("ResolveProjectRef(%q) = (%q, %v); want (%q, nil)", ref, got, oerr, id)
+		}
 	}
 }

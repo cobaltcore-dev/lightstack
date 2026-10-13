@@ -12,8 +12,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -37,7 +35,7 @@ var cinderQuotaDefaults = map[string]int{
 
 // resolveCinderQuotaLimits returns the effective limits for a project: the package
 // defaults overlaid with whatever cinder_quotas configures.
-func resolveCinderQuotaLimits(ctx context.Context, pool *pgxpool.Pool, projectID string) (map[string]int, error) {
+func resolveCinderQuotaLimits(ctx context.Context, pool database.DB, projectID string) (map[string]int, error) {
 	limits := make(map[string]int, len(cinderQuotaDefaults))
 	maps.Copy(limits, cinderQuotaDefaults)
 
@@ -68,7 +66,7 @@ func resolveCinderQuotaLimits(ctx context.Context, pool *pgxpool.Pool, projectID
 // cinderQuotaUsage counts the project's block-storage consumption, keyed by the same
 // resource names as cinderQuotaDefaults so the two can be zipped. A failed count is
 // returned, never reported as zero usage.
-func cinderQuotaUsage(ctx context.Context, pool *pgxpool.Pool, projectID string) (map[string]int, error) {
+func cinderQuotaUsage(ctx context.Context, pool database.DB, projectID string) (map[string]int, error) {
 	var volumes, gigabytes, snapshots, snapshotGigabytes, backups, backupGigabytes int
 	if err := pool.QueryRow(ctx,
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volumes WHERE project_id = $1 AND status != 'deleted'",
@@ -271,7 +269,7 @@ func (svc *Service) DeleteQuotaSet(c *gin.Context) {
 
 	// A DELETE matching no rows is not an error: resetting a project that never had an
 	// override is a successful no-op, and Exec reports that as a zero row count, never
-	// as pgx.ErrNoRows (that sentinel only comes from QueryRow/Scan).
+	// as database.ErrNoRows (that sentinel only comes from QueryRow/Scan).
 	if _, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM cinder_quotas WHERE project_id = $1",
 		targetProjectID); err != nil {
@@ -356,10 +354,16 @@ func (e *QuotaExceededError) Error() string {
 // The two services are deliberately decoupled — compute reaches block storage through a
 // narrow interface it declares itself — and a type assertion on *QuotaExceededError would
 // have coupled them just to distinguish two error kinds. Compute asserts the behaviour
-// instead, which is what lets it answer 413 for an exhausted quota where it answers 503
+// instead, which is what lets it answer 403 for an exhausted quota where it answers 503
 // for a storage backend that is down. Without it, a tenant over quota is told the service
 // is unavailable.
 func (e *QuotaExceededError) QuotaResource() string { return e.Resource }
+
+// QuotaUsage reports the numbers behind the refusal, for compute's message: what was
+// asked for, what is in use and the limit.
+func (e *QuotaExceededError) QuotaUsage() (requested, used, limit int) {
+	return e.Requested, e.Usage, e.Limit
+}
 
 // quotaWant is one resource a request consumes, and how much of it.
 //
@@ -390,8 +394,8 @@ type quotaWant struct {
 //
 // An empty projectID performs the write with no checks: internal callers legitimately have
 // no project scope, and refusing them here would break paths that never consumed quota.
-func withCinderQuota(ctx context.Context, pool *pgxpool.Pool, projectID string, want []quotaWant, write func(tx pgx.Tx) error) error {
-	return database.WithTx(ctx, pool, func(tx pgx.Tx) error {
+func withCinderQuota(ctx context.Context, pool database.DB, projectID string, want []quotaWant, write func(tx database.Tx) error) error {
+	return database.WithTx(ctx, pool, func(tx database.Tx) error {
 		if projectID != "" {
 			if err := lockCinderQuota(ctx, tx, projectID); err != nil {
 				return err
@@ -414,7 +418,7 @@ func withCinderQuota(ctx context.Context, pool *pgxpool.Pool, projectID string, 
 // projects an administrator had configured and to nobody else — a guarantee nothing could
 // rely on. The lock is transaction-scoped, so it is released on commit or rollback with no
 // unlock path to forget.
-func lockCinderQuota(ctx context.Context, tx pgx.Tx, projectID string) error {
+func lockCinderQuota(ctx context.Context, tx database.Tx, projectID string) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "cinder_quota:"+projectID); err != nil {
 		return fmt.Errorf("locking cinder quota for project %s: %w", projectID, err)
 	}
@@ -428,7 +432,7 @@ func lockCinderQuota(ctx context.Context, tx pgx.Tx, projectID string) error {
 // it authorises. A check that commits before the write releases the lock between them, and
 // two concurrent requests then both pass — which is not a theoretical window: two
 // goroutines find it every time.
-func checkLockedCinderQuota(ctx context.Context, tx pgx.Tx, projectID, resource string, amount int) error {
+func checkLockedCinderQuota(ctx context.Context, tx database.Tx, projectID, resource string, amount int) error {
 	if projectID == "" || amount <= 0 {
 		return nil
 	}
@@ -454,12 +458,12 @@ func checkLockedCinderQuota(ctx context.Context, tx pgx.Tx, projectID, resource 
 // falling back to the package default. FOR UPDATE on the row keeps a concurrent
 // administrator's quota change from interleaving with a check that already read the old
 // value; the advisory lock above covers the no-row case that has nothing to lock.
-func lockedCinderLimit(ctx context.Context, tx pgx.Tx, projectID, resource string) (int, error) {
+func lockedCinderLimit(ctx context.Context, tx database.Tx, projectID, resource string) (int, error) {
 	var limit int
 	err := tx.QueryRow(ctx,
 		`SELECT "limit" FROM cinder_quotas WHERE project_id = $1 AND resource = $2 FOR UPDATE`,
 		projectID, resource).Scan(&limit)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		def, ok := cinderQuotaDefaults[resource]
 		if !ok {
 			return 0, fmt.Errorf("unknown block-storage quota resource: %s", resource)
@@ -479,7 +483,7 @@ func lockedCinderLimit(ctx context.Context, tx pgx.Tx, projectID, resource strin
 // number and the product enforces another. `gigabytes` therefore counts volume AND
 // snapshot size, matching upstream's "total gigabytes for volumes and snapshots" — the
 // reporting side was corrected to match in cinderQuotaUsage.
-func cinderResourceUsage(ctx context.Context, tx pgx.Tx, projectID, resource string) (int, error) {
+func cinderResourceUsage(ctx context.Context, tx database.Tx, projectID, resource string) (int, error) {
 	var query string
 	switch resource {
 	case "volumes":
@@ -505,7 +509,7 @@ func cinderResourceUsage(ctx context.Context, tx pgx.Tx, projectID, resource str
 
 // checkPerVolumeCeiling refuses a single request larger than per_volume_gigabytes,
 // independently of what the project's total allowance permits (FR-024).
-func checkPerVolumeCeiling(ctx context.Context, pool *pgxpool.Pool, projectID string, sizeGB int) error {
+func checkPerVolumeCeiling(ctx context.Context, pool database.DB, projectID string, sizeGB int) error {
 	if projectID == "" || sizeGB <= 0 {
 		return nil
 	}
@@ -536,7 +540,7 @@ func checkPerVolumeCeiling(ctx context.Context, pool *pgxpool.Pool, projectID st
 // against one configured maximum, so no concurrent request can change its answer and it
 // has nothing to serialise against (FR-024). Keeping it out holds the locked section to
 // the two checks that actually count rows.
-func withVolumeQuota(ctx context.Context, pool *pgxpool.Pool, projectID string, sizeGB int, write func(tx pgx.Tx) error) error {
+func withVolumeQuota(ctx context.Context, pool database.DB, projectID string, sizeGB int, write func(tx database.Tx) error) error {
 	if err := checkPerVolumeCeiling(ctx, pool, projectID, sizeGB); err != nil {
 		return err
 	}

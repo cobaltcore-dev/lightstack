@@ -350,3 +350,46 @@ func TestServerListIPFilterRequiresThePortToBelongToTheServer(t *testing.T) {
 		t.Errorf("the address map lost the server's own address: %v", addrs)
 	}
 }
+
+// TestServerListIPFilterAcrossProjects: an administrator's cross-tenant listing filters
+// every project's servers by address; without all_tenants, and for anyone else, the
+// filter stays inside the caller's project.
+func TestServerListIPFilterAcrossProjects(t *testing.T) {
+	requireDB(t)
+	const otherProject = "00000000-0000-0000-0000-0000000000e8"
+	createTestProject(t, otherProject, "spec028-ipf-other")
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM projects WHERE id = $1`, otherProject)
+	})
+	ownNet, _ := addrFixture(t, seededProjectID, "spec028-ipf-own", "10.82.0.10")
+	own := seedInstanceForAddresses(t, seededProjectID)
+	attachPort(t, ownNet, seededProjectID, own, "10.82.0.21")
+	otherNet, _ := addrFixture(t, otherProject, "spec028-ipf-other", "10.82.1.10")
+	other := seedInstanceForAddresses(t, otherProject)
+	attachPort(t, otherNet, otherProject, other, "10.82.1.21")
+
+	r := newNovaTestRouter()
+	for _, tc := range []struct {
+		name, roles, query string
+		wantOwn, wantOther bool
+	}{
+		{"admin across projects", "admin", "?all_tenants=1&ip=^10%5C.82%5C.", true, true},
+		{"admin across projects, one address", "admin", "?all_tenants=1&ip=10.82.1.21", false, true},
+		{"admin without all_tenants", "admin", "?ip=^10%5C.82%5C.", true, false},
+		{"member with all_tenants", "member", "?all_tenants=1&ip=^10%5C.82%5C.", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-User": seededUserID, "X-Test-Roles": tc.roles}
+			for _, path := range []string{"/v2.1/servers", "/v2.1/servers/detail"} {
+				code, body := doReq(r, http.MethodGet, path+tc.query, "", hdr)
+				if code != http.StatusOK {
+					t.Fatalf("%s%s: code=%d body=%s", path, tc.query, code, body)
+				}
+				if containsID(t, body, own) != tc.wantOwn || containsID(t, body, other) != tc.wantOther {
+					t.Errorf("%s%s: own listed=%v other listed=%v; want %v, %v",
+						path, tc.query, containsID(t, body, own), containsID(t, body, other), tc.wantOwn, tc.wantOther)
+				}
+			}
+		})
+	}
+}

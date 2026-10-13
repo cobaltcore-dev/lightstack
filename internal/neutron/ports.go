@@ -18,8 +18,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -60,7 +58,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		req.Port.NetworkID, projectID,
 	).Scan(&networkID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return
 	}
@@ -449,7 +447,7 @@ func (svc *Service) GetPort(c *gin.Context) {
 		WHERE p.id = $1 AND `+portReadScope("$2")+`
 	`, portID, projectID).Scan(&id, &name, &networkID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
 		return
 	}
@@ -522,7 +520,7 @@ func (svc *Service) DeletePort(c *gin.Context) {
 		"SELECT id::text FROM ports WHERE id::text = $1 AND project_id = $2",
 		portID, projectID,
 	).Scan(&resolvedID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
 		return
 	}
@@ -731,7 +729,7 @@ func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 // securityGroupRulesByGroup loads the rules of the given security groups, keyed by
 // security_group_id. Groups without rules are absent from the map; callers must
 // substitute an empty slice rather than nil — see ListSecurityGroups.
-func securityGroupRulesByGroup(ctx context.Context, pool *pgxpool.Pool, sgIDs []string) (map[string][]gin.H, error) {
+func securityGroupRulesByGroup(ctx context.Context, pool database.DB, sgIDs []string) (map[string][]gin.H, error) {
 	byGroup := make(map[string][]gin.H, len(sgIDs))
 	if len(sgIDs) == 0 {
 		return byGroup, nil
@@ -804,7 +802,7 @@ type securityGroupRow struct {
 // connection when it returns — before the caller issues the rules query. Scanning
 // inline in ListSecurityGroups would hold two pool connections per in-flight request,
 // which a busy endpoint can turn into pool exhaustion rather than mere slowness.
-func listSecurityGroupRows(ctx context.Context, pool *pgxpool.Pool, projectID string) ([]securityGroupRow, error) {
+func listSecurityGroupRows(ctx context.Context, pool database.DB, projectID string) ([]securityGroupRow, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT id, name, description, created_at, updated_at
 		FROM security_groups
@@ -899,7 +897,7 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 		LIMIT 1
 	`, sgID, projectID).Scan(&id, &name, &description, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
 		return
 	}
@@ -986,7 +984,7 @@ func (svc *Service) UpdateSecurityGroup(c *gin.Context) {
 		sgID, projectID,
 	).Scan(&currentName, &currentDesc)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
 		return
 	}
@@ -1048,7 +1046,7 @@ type CreateSecurityGroupRuleRequest struct {
 // compared as text so a malformed id simply fails to match instead of raising
 // "invalid input syntax for type uuid" as a 500 — that includes the empty project id an
 // unscoped token carries.
-func securityGroupOwnedByCaller(ctx context.Context, pool *pgxpool.Pool, sgID, projectID string) (bool, error) {
+func securityGroupOwnedByCaller(ctx context.Context, pool database.DB, sgID, projectID string) (bool, error) {
 	var owned bool
 	err := pool.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM security_groups WHERE id::text = $1 AND project_id::text = $2)",
@@ -1273,7 +1271,7 @@ func (svc *Service) GetSecurityGroupRule(c *gin.Context) {
 	`, ruleID, c.GetString("project_id")).Scan(&id, &sgID, &direction, &ethertype, &protocol, &portRangeMin, &portRangeMax,
 		&remoteIPPrefix, &remoteGroupID, &createdAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group rule"))
 		return
 	}
@@ -1318,7 +1316,7 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 		WHERE sgr.id::text = $1 AND sg.project_id::text = $2
 	`, ruleID, projectID).Scan(&sgID, &direction, &etherType, &protocol, &portMin, &portMax, &remoteIP, &remoteGroup)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group rule"))
 		return
 	}
@@ -1433,14 +1431,14 @@ func (svc *Service) guestMayAttach(ctx context.Context, networkID, projectID str
 //   - an unshared external network takes only an administrator's, whoever owns it;
 //   - any other network takes only its owner's. Upstream would also let an administrator onto
 //     another project's private network; Lightstack does not.
-func GuestMayAttach(ctx context.Context, pool *pgxpool.Pool, networkID, projectID string, admin bool) error {
+func GuestMayAttach(ctx context.Context, pool database.DB, networkID, projectID string, admin bool) error {
 	var owned, shared, external bool
 	err := pool.QueryRow(ctx,
 		`SELECT COALESCE(project_id = $2, false), COALESCE(shared, false), external
 		   FROM networks WHERE id = $1`,
 		networkID, projectID,
 	).Scan(&owned, &shared, &external)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return errNoSuchNetwork
 	}
 	if err != nil {
@@ -1496,9 +1494,9 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 
 	// The two cases are not the same answer: no subnet is something the tenant can fix, so it is
 	// marked for them and shown in the server's fault (SPEC-025 FR-018); a failed query is
-	// something only an operator can, so its text stays out of it. Wrapping pgx.ErrNoRows used
+	// something only an operator can, so its text stays out of it. Surfacing pgx.ErrNoRows used
 	// to put "no rows in result set" in front of a tenant.
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, &tenantVisibleError{msg: fmt.Sprintf("no subnet found for network %s", networkID)}
 	}
 	if err != nil {
@@ -1580,7 +1578,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// with it. The caller (Nova CreateServer) then boots without this network,
 	// which keeps the API and the dataplane in agreement.
 	now := time.Now()
-	if err := database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
+	if err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)

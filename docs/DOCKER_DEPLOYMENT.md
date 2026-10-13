@@ -385,7 +385,7 @@ docker exec -it lightstack /bin/sh
 # PostgreSQL container
 docker exec -it lightstack-postgres psql -U lightstack -d lightstack
 
-# Run migrations manually
+# Run migrations manually (the image also runs this before every start; either backend)
 docker exec lightstack /app/lightstack-migrate up
 
 # Check migration status
@@ -411,6 +411,43 @@ docker exec lightstack-postgres pg_dump -U lightstack lightstack > backup.sql
 # Restore database
 cat backup.sql | docker exec -i lightstack-postgres psql -U lightstack lightstack
 ```
+
+### Running on SQLite (single node)
+
+A single node can run without the PostgreSQL container: point the database at a file on a volume
+of its own, so it outlives the container.
+
+```yaml
+services:
+  lightstack:
+    environment:
+      LIGHTSTACK_DB_URL: "sqlite:///var/lib/lightstack/db/lightstack.db"
+      LIGHTSTACK_NODE_NAME: "node-a"   # stable across container recreation
+    volumes:
+      - lightstack-db:/var/lib/lightstack/db
+volumes:
+  lightstack-db:
+    name: lightstack-db   # un-prefixed, so the live backup below mounts this volume, not a project-prefixed one
+```
+
+Drop the `postgres` service and the `depends_on` entry that waits for it. `lightstack-migrate`
+creates and migrates the file on the first start; the `database ready` log line names it.
+`neutron.vxlan_enabled` must stay off. To back the file up, stop the container and copy the volume —
+the `-wal` file beside the database holds committed data until a checkpoint. The Lightstack image
+ships no `sqlite3`, so for a live backup run one from another image against the volume:
+
+```bash
+docker run --rm -v lightstack-db:/db alpine sh -c \
+  'apk add --no-cache sqlite >/dev/null && sqlite3 /db/lightstack.db ".backup /db/backup.db"'
+```
+
+The KVM stack (`deployments/docker-compose-kvm.yml`) needs no edit: it mounts the whole state root
+at the same path, so `LIGHTSTACK_DB_URL=sqlite:///var/lib/lightstack/db/lightstack.db` in the
+environment of `docker compose` — or that URL as `database.url` in its config — selects SQLite.
+It ships a stable `LIGHTSTACK_NODE_NAME` (overridable per host) so block-storage recovery survives a
+container recreation: on Docker the container's hostname defaults to its container id and changes when
+the container is recreated, which would otherwise hide a predecessor's unfinished creates from the
+startup sweep ([README-KVM.md](../deployments/README-KVM.md)).
 
 ### Update Lightstack
 

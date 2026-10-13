@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 	"github.com/google/uuid"
 )
 
@@ -153,8 +155,8 @@ func TestForeignSubnetOnOwnNetworkIsListableAndResolvable(t *testing.T) {
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version,
 		                      enable_dhcp, dns_nameservers, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, '10.44.0.0/24', '10.44.0.1', 4, true, '{}', NOW(), NOW())`,
-		subnetID, "spec020-foreign-sub", netID, otherProject); err != nil {
+		 VALUES ($1, $2, $3, $4, '10.44.0.0/24', '10.44.0.1', 4, true, $5, NOW(), NOW())`,
+		subnetID, "spec020-foreign-sub", netID, otherProject, []string{}); err != nil {
 		t.Fatalf("insert foreign subnet: %v", err)
 	}
 	t.Cleanup(func() {
@@ -241,8 +243,8 @@ func TestSubnetReferenceIntegrity(t *testing.T) {
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version,
 		                      enable_dhcp, dns_nameservers, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, '10.43.0.0/24', '10.43.0.1', 4, true, '{}', NOW(), NOW())`,
-		subnetID, "spec020-integrity-sub", netID, seededProjectID); err != nil {
+		 VALUES ($1, $2, $3, $4, '10.43.0.0/24', '10.43.0.1', 4, true, $5, NOW(), NOW())`,
+		subnetID, "spec020-integrity-sub", netID, seededProjectID, []string{}); err != nil {
 		t.Fatalf("insert subnet: %v", err)
 	}
 	t.Cleanup(func() {
@@ -304,15 +306,19 @@ func TestNetworkSubnetIDsPropagatesFailure(t *testing.T) {
 	svc := NewService(testPool, "stub", nil)
 	ctx := context.Background()
 
-	// A malformed network id reaches a uuid-typed column: Postgres rejects it, which is a
-	// stand-in for any query/scan/iteration failure. Previously this logged and returned
-	// an empty list, which a caller could not tell apart from "no subnets".
-	ids, err := svc.networkSubnetIDs(ctx, "not-a-uuid")
+	// subnets is unavailable, a stand-in for any query/scan/iteration failure. Previously
+	// this logged and returned an empty list, which a caller could not tell apart from
+	// "no subnets".
+	release := dbtest.Unavailable(t, testPool, "subnets")
+	failCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	ids, err := svc.networkSubnetIDs(failCtx, uuid.NewString())
+	cancel()
+	release()
 	if err == nil {
-		t.Errorf("networkSubnetIDs(bad id) = (%v, nil); want an error, not a short list", ids)
+		t.Errorf("networkSubnetIDs with subnets unavailable = (%v, nil); want an error, not a short list", ids)
 	}
 	if ids != nil {
-		t.Errorf("networkSubnetIDs(bad id) returned %v alongside the error; want nil so a caller cannot use a partial list", ids)
+		t.Errorf("networkSubnetIDs with subnets unavailable returned %v alongside the error; want nil so a caller cannot use a partial list", ids)
 	}
 
 	// And the happy path still yields a non-nil slice, so the JSON stays a list.
