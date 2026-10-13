@@ -852,14 +852,12 @@ sudo certbot --haproxy -d lightstack-api.example.com
 
 ### Step 8: Monitoring and Logging
 
-**Deploy Prometheus + Grafana**:
+**Deploy Prometheus + Grafana** — the repository ships no monitoring compose file; create `deployments/monitoring/docker-compose.yml` with the following contents, then:
 
 ```bash
 # On separate monitoring node or controller1
 docker compose -f deployments/monitoring/docker-compose.yml up -d
 ```
-
-**Contents of `deployments/monitoring/docker-compose.yml`**:
 
 ```yaml
 version: '3.8'

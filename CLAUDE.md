@@ -334,11 +334,11 @@ Configuration loaded from `config/lightstack.yaml` (or via `--config` flag).
 - `keystone.jwt_secret`: MUST change in production (security critical)
 - `nova.libvirt_mode`: `stub` (dev) or `real` (prod)
 - `neutron.networking_mode`: `stub`, `iptables`, or `ebpf`
-- `cinder.storage_mode`: `stub`, `local`, `rbd`, `s3`, or hybrid (comma-separated)
+- `cinder.storage_mode`: `stub`, `local`, `rbd`, or `local,rbd` (no S3 backend — that is Glance-only)
 - `glance.storage_mode`: `stub`, `local`, `rbd`, `s3`, or hybrid (comma-separated)
-- `rate_limiting.enabled`: Enable rate limiting (default: false)
-- `rate_limiting.auth_rate`: Requests/minute per IP for auth endpoints
-- `rate_limiting.api_rate`: Requests/minute per project for API endpoints
+- `rate_limiting.enabled`: Enable rate limiting (default: false) — **not yet implemented: dead config** (see ADR-002)
+- `rate_limiting.auth_rate`: Requests/minute per IP for auth endpoints — **not yet implemented: dead config**
+- `rate_limiting.api_rate`: Requests/minute per project for API endpoints — **not yet implemented: dead config**
 
 **Multi-node VXLAN** (advanced):
 - Set `neutron.vxlan_enabled: true`

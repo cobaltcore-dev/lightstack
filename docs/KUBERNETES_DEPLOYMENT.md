@@ -147,7 +147,7 @@ Key settings to adjust before deploying:
 
 | Setting | Description |
 |---------|-------------|
-| `database.url` | Point to your PostgreSQL instance |
+| `LIGHTSTACK_DB_URL` (Deployment env) | Point at your PostgreSQL instance — the ConfigMap carries no `database.url`; the Deployment's env builds the DSN from the secret-backed `DB_PASSWORD` |
 | `nova.libvirt_mode` | `stub` (dev) or `real` (Linux with KVM) |
 | `neutron.networking_mode` | `stub` (dev) or `iptables` (Linux with privileges) |
 | `cinder.storage_mode` | `stub`, `local`, `rbd`, or `local,rbd` |

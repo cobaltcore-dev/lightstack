@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon renders against it without modifications, patches or workarounds. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). Open UI gaps: the noVNC console (F1), standalone port create in real mode (F10), router gateways (F11), project create (F13) and domain switching (F18). See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
+Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon renders against it without modifications, patches or workarounds. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). The noVNC console works in real mode (#534, SPEC-021) — it is absent from the stub compose stacks, which ship no console proxy. Open UI gaps: standalone port create in real mode (F10), router gateways (F11) and domain switching (F18). See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
 
 ### Key Features
 

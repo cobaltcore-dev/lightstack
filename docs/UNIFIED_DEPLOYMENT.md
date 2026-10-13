@@ -1004,7 +1004,7 @@ A: Yes, on Linux with libvirt/KVM. Set `nova.libvirt_mode: real` in `config/ligh
 A: Use OpenStack CLI or Horizon's Identity panel to create users.
 
 **Q: Can I integrate with Active Directory?**
-A: Yes, configure Keystone LDAP backend (see Lightstack docs).
+A: No — identity is PostgreSQL-backed and managed via the Identity API or Horizon. The domain-config endpoint returns an empty LDAP stub; no LDAP backend is implemented.
 
 **Q: What's the difference between stub and real mode?**
 A: Stub mode returns fake data (for testing). Real mode creates actual VMs and networks.

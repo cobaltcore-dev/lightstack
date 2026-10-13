@@ -2,7 +2,7 @@
 
 [![CI Pipeline](https://github.com/cobaltcore-dev/lightstack/actions/workflows/ci.yml/badge.svg)](https://github.com/cobaltcore-dev/lightstack/actions/workflows/ci.yml)
 
-**Status**: Unreleased (post-v0.6.1) | ~335 functional operations vs the 330-endpoint baseline | 100% Terraform Compatible
+**Status**: Unreleased (post-v0.6.1) | ~335 functional operations vs the 330-endpoint baseline | Terraform-compatible (validated topology — see [blueprint §6](docs/blueprint.md))
 **Last Updated**: October 12, 2026
 
 **lightstack** (OpenStack 3 Kubernetes-style) is a lightweight, high-performance implementation of OpenStack APIs in pure Go, inspired by how K3s simplified Kubernetes.
@@ -11,7 +11,7 @@
 
 ## 🎯 Coverage & Terraform Compatibility
 
-lightstack implements **~335 functional operations** across the five core OpenStack services against the 330-endpoint baseline — coverage is substantial and Terraform-compatible, though not literally "104%"; the earlier "342/330 (104%)" figure counted raw routes (URL aliases + version discovery), see [docs/blueprint.md](docs/blueprint.md) for the reconciled analysis. Existing Terraform scripts and OpenStack CLI commands run against lightstack without any modifications. The Horizon **dashboard is usable for resource management** — networks, volumes and instances can be created from it, while the noVNC console is still open ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md)).
+lightstack implements **~335 functional operations** across the five core OpenStack services against the 330-endpoint baseline — coverage is substantial and Terraform-compatible, though not literally "104%"; the earlier "342/330 (104%)" figure counted raw routes (URL aliases + version discovery), see [docs/blueprint.md](docs/blueprint.md) for the reconciled analysis. Terraform's validated topology runs against lightstack unchanged (a port-id workaround and missing security-group/object-storage coverage keep it from being literally zero-modification — blueprint §6). The Horizon **dashboard is usable for resource management** — networks, volumes and instances can be created from it, and the noVNC console works in real mode ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md)).
 
 ## 🎯 What is lightstack?
 
@@ -62,8 +62,8 @@ Coverage is measured in *functional operations*, not raw routes — see [docs/bl
 
 **Zero-Modification Migration**: lightstack provides complete API compatibility - use your existing tools unchanged.
 
-- ✅ **Terraform Provider**: All `openstack_*` resources work identically (compute, network, storage)
-- ⚠️ **Horizon Dashboard**: **usable for resource management** — network, volume and instance create work from the UI; open gaps include the noVNC console (F1) ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
+- ✅ **Terraform Provider**: the validated topology runs unchanged — compute, network and storage resources work (security groups and object storage are outside the validated set; see [blueprint §6](docs/blueprint.md))
+- ⚠️ **Horizon Dashboard**: **usable for resource management** — network, volume and instance create work from the UI; remaining open gaps are F10, F11 and F18 ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ **OpenStack CLI**: All `openstack` commands function identically
 - ✅ **gophercloud SDK**: Full Go client library compatibility
 - ✅ **python-openstackclient**: Python client verified
@@ -245,12 +245,12 @@ See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the complete quick start guide.
 
 **IMPORTANT**: Horizon dashboard integration is **extended functionality** (not core lightstack feature). Horizon requires independent setup and configuration to work with lightstack. See setup guides below for detailed integration steps.
 
-Lightstack serves the OpenStack APIs that Horizon (Flamingo 2025.2 and later) consumes. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). Open UI gaps: the noVNC console (F1), standalone port create in real mode (F10), router gateways (F11), project create (F13) and domain switching (F18). See the [Horizon Compatibility Report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
+Lightstack serves the OpenStack APIs that Horizon (Flamingo 2025.2 and later) consumes. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). The noVNC console works in real mode (#534, SPEC-021) — it is absent from the stub compose stacks, which ship no console proxy. Open UI gaps: standalone port create in real mode (F10), router gateways (F11) and domain switching (F18). See the [Horizon Compatibility Report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
 
 **Features** — each works through the **API/CLI**; the trailing note is the *dashboard* status from the
 [compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md):
 - ✅ Instance lifecycle (launch, start, stop, delete, resize, rebuild) — ⚠️ the launch wizard's "Create New Volume" boots from the image without creating a volume (F16)
-- ✅ VNC console access (integrated with noVNC proxy) — ❌ UI console shows no guest (F1); `openstack console log show` works
+- ✅ VNC console access (integrated with noVNC proxy; works in real mode, #534) — absent from the stub stacks, which ship no console proxy
 - ✅ Network topology visualization
 - ✅ Volume management (create, attach, snapshot)
 - ✅ Image management (upload, download, launch)
@@ -454,7 +454,7 @@ The seed data creates:
 - ✅ **TDD Methodology**: All endpoints developed test-first (RED → GREEN → REFACTOR)
 - ✅ **20+ Integration Tests**: Bash scripts with OpenStack CLI validation
 - ✅ **Schema Validation**: OpenStack API spec compliance
-- ✅ **Horizon Testing**: browser-level verification done — create/write flows work in stub and real mode; the noVNC console is still open (F1) ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
+- ✅ **Horizon Testing**: browser-level verification done — create/write flows work in stub and real mode; the noVNC console works in real mode (#534), and the remaining open gaps are F10/F11/F18 ([report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
 - ✅ **Client Compatibility**: OpenStack CLI, Terraform, gophercloud, python-openstackclient
 - 🚀 **CI/CD Strategy**: Comprehensive E2E and automation plan - [E2E_CI_TESTING_STRATEGY.md](docs/testing/E2E_CI_TESTING_STRATEGY.md)
 
@@ -509,9 +509,9 @@ The seed data creates:
 - ✅ Multi-backend storage (Ceph RBD, S3, hybrid failover)
 - ✅ VXLAN multi-node networking
 - ✅ L3 routing, floating IPs, and port forwarding
-- ⚠️ Horizon dashboard: usable for resource management; open gaps include the noVNC console (findings F1–F18)
+- ⚠️ Horizon dashboard: usable for resource management; remaining open gaps F10/F11/F18 (findings F1–F18)
 - ✅ Comprehensive test coverage (97 contract test files, 20+ integration tests)
-- ✅ Production deployments validated
+- ✅ Deployment paths exercised (compose, KVM/systemd, turnkey scripts; see the [review report](docs/review/comprehensive-review-report-2026-10-12.md) for open release blockers)
 - ✅ Performance optimization (pagination, indexes)
 
 **Current Focus (stability, real-mode polish & release process):**

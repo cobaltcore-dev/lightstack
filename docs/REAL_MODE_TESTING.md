@@ -365,7 +365,5 @@ For **development and testing**, stub mode provides perfect OpenStack CLI compat
 
 ---
 
-**Tested On:** macOS (libvirt not available - expected)
-**Ready For:** Linux with KVM (production deployment)
-**Status:** ✅ Implementation complete, awaiting Linux testing
-**Date:** 2026-03-06
+**Tested On:** Linux with KVM/libvirt — validated 2026-06-22 (see the header banner)
+**Status:** ✅ Validated on Linux + libvirt/KVM

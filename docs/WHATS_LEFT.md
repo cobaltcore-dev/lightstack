@@ -205,12 +205,14 @@ Total: **52 endpoints** in "bonus" category, but 12 net over baseline
 | Images | ✅ 100% | Upload, download, metadata, import workflow |
 | Authentication | ✅ 100% | Users, projects, domains, roles, tokens |
 | Multi-Tenancy | ✅ 100% | Project isolation, RBAC, quotas |
-| Horizon Dashboard | ⚠️ Usable | APIs served; **UI usable** for resource management, open gaps F1/F10/F11/F13/F18 (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`) |
+| Horizon Dashboard | ⚠️ Usable | APIs served; **UI usable** for resource management, open gaps F10/F11/F18 (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`) |
 | Performance | ✅ Optimized | Pagination, indexes, <3s queries |
 | Testing | ✅ Comprehensive | 65+ tests (contract + integration) |
 | Documentation | ✅ Complete | Deployment guides, API docs |
 
-**Verdict**: **PRODUCTION READY** ✅
+**Verdict**: feature-complete for the covered surface — see
+[the comprehensive review report](review/comprehensive-review-report-2026-10-12.md)
+for the issues that must be fixed before the v0.7.0 release.
 
 ---
 
@@ -270,6 +272,6 @@ Here are features that would be more valuable than the "optional" list:
 
 **Coverage**: ~335 functional operations vs the 330-endpoint baseline ([blueprint.md](blueprint.md))
 
-**Status**: Production ready for private cloud deployments ✅
+**Status**: feature-complete for the covered surface — see [the comprehensive review report](review/comprehensive-review-report-2026-10-12.md) for the issues that must be fixed before the v0.7.0 release
 
 **Next Steps**: Focus on stability, documentation, and real-world testing rather than implementing low-demand features.

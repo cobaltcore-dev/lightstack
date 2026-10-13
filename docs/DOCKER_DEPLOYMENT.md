@@ -636,9 +636,8 @@ See [MULTIARCH.md](MULTIARCH.md) for detailed multi-architecture guide.
    ```
 
 3. **Enable TLS:**
-   - Use reverse proxy (nginx, traefik)
-   - Mount TLS certificates
-   - Configure Lightstack to listen on HTTPS
+   - Terminate TLS at a reverse proxy (nginx, traefik) — the binary has no TLS listener
+   - Set `LIGHTSTACK_ENDPOINT_SCHEME=https` so advertised URLs and the catalog use https
 
 4. **Resource limits:**
    ```yaml
