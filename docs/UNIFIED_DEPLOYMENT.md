@@ -146,7 +146,7 @@ http://localhost/dashboard
 **Login Credentials**:
 - Domain: `Default`
 - User Name: `admin`
-- Password: `secret`
+- Password: the `LIGHTSTACK_ADMIN_PASSWORD` you exported in Step 3
 
 🎉 **You're done!** You now have a fully functional OpenStack environment with web UI.
 
