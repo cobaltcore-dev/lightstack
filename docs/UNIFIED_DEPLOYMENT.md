@@ -101,11 +101,14 @@ cat horizon-config/local_settings
 - Database: PostgreSQL on port 5432
 - Lightstack Mode: Stub (no real VMs, suitable for testing)
 - Horizon: Flamingo (2025.2) on port 80
-- Default Credentials: admin/secret
+- Credentials: admin / the LIGHTSTACK_ADMIN_PASSWORD you set below
 
 ### Step 3: Start All Services
 
 ```bash
+# Both secrets are required — the stack renders no insecure defaults
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
@@ -186,6 +189,9 @@ export LIGHTSTACK_DB_USER=lightstack
 
 # JWT secret for lightstack authentication
 export LIGHTSTACK_JWT_SECRET=your-secure-jwt-secret-here
+
+# Bootstrap admin password (required — no insecure default renders)
+export LIGHTSTACK_ADMIN_PASSWORD=your-secure-admin-password-here
 
 # lightstack modes
 export LIGHTSTACK_NOVA_MODE=stub      # or 'real' for actual VMs (Linux only)
@@ -516,7 +522,7 @@ curl -s http://localhost:9292/ | jq
 ### 3. Horizon Dashboard
 
 1. Open http://localhost/dashboard
-2. Login with admin/secret
+2. Login with admin / the LIGHTSTACK_ADMIN_PASSWORD you set when starting the stack
 3. Check "Overview" page loads
 4. Verify "Compute > Instances" shows empty list
 5. Click "Launch Instance" to test wizard

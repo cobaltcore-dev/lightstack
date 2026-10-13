@@ -6,13 +6,15 @@
 ## Quick Start
 
 ```bash
-# Start everything
+# Start everything (both secrets are required — no insecure defaults render)
 cd lightstack/deployments
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 
 # Access Horizon
 open http://localhost/dashboard
-# Login: Domain=Default, User=admin, Password=secret
+# Login: Domain=Default, User=admin, Password=$LIGHTSTACK_ADMIN_PASSWORD
 
 # Check status
 docker compose -f docker-compose-horizon.yml ps
@@ -59,11 +61,11 @@ docker exec -it lightstack-postgres psql -U lightstack       # Database
 ## OpenStack CLI Setup
 
 ```bash
-# Export environment
+# Export environment (the admin password you set when starting the stack)
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set LIGHTSTACK_ADMIN_PASSWORD (see Quick Start above)}"
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3

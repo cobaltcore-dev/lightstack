@@ -31,6 +31,10 @@ echo ""
 echo -e "${YELLOW}[2/5]${NC} Starting Lightstack + Horizon stack..."
 export LIGHTSTACK_JWT_SECRET="${LIGHTSTACK_JWT_SECRET:-validation-only-secret}"
 export LIGHTSTACK_ADMIN_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:-validation-only-admin-password}"
+# BootstrapAdmin replaces the seeded admin/secret hash with the configured
+# password on a fresh volume — the validation suite (step 4/5) must
+# authenticate with the same password the stack was booted with.
+export OS_PASSWORD="${OS_PASSWORD:-$LIGHTSTACK_ADMIN_PASSWORD}"
 docker compose -f deployments/docker-compose-horizon.yml down &> /dev/null || true
 docker compose -f deployments/docker-compose-horizon.yml up -d --build
 echo -e "${GREEN}✓ Lightstack services started${NC}"
@@ -88,7 +92,7 @@ echo -e "                    http://localhost:8776/v3 (Cinder)"
 echo -e "                    http://localhost:9292/v2 (Glance)"
 echo ""
 echo -e "✓ Horizon UI:       ${GREEN}http://localhost${NC}"
-echo -e "  Login:            admin / secret"
+echo -e "  Login:            admin / $OS_PASSWORD"
 echo ""
 echo -e "✓ Validation Log:   validation_results_*.txt"
 echo ""
@@ -98,7 +102,7 @@ if [ $VALIDATION_EXIT -eq 0 ]; then
     echo ""
     echo -e "${BLUE}Next Steps:${NC}"
     echo "1. Open Horizon in browser: http://localhost"
-    echo "2. Login with: admin / secret"
+    echo "2. Login with: admin / $OS_PASSWORD"
     echo "3. Test these workflows:"
     echo "   - Launch an instance"
     echo "   - Create a network"

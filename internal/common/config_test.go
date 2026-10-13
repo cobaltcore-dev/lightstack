@@ -832,6 +832,8 @@ func TestLoadConfigRefusesInsecureDefaultJWTSecret(t *testing.T) {
 		"change-me-in-production-use-openssl-rand-base64-32", // .env.example
 		"CHANGE-ME-IN-PRODUCTION",                            // deployments/README-KVM.md
 		"  change-me-in-production  ",
+		"change-this-in-production-min-32-chars-required-for-security", // docs/SINGLE_NODE_DEPLOYMENT.md
+		"production-secret-min-32-chars-change-this-immediately",       // docs/SCALING.md
 	} {
 		body := "keystone:\n  jwt_secret: \"" + secret + "\"\n"
 		_, err := LoadConfig(writeTestConfig(t, body))
@@ -862,6 +864,7 @@ func TestLoadConfigRefusesInsecureDefaultAdminPassword(t *testing.T) {
 		{"uppercase default", "SECRET"},
 		{"padded default", "  secret  "},
 		{"empty with a user", ""},
+		{"README-KVM placeholder", "PASTE-OUTPUT-OF-openssl-rand-base64-24"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := "keystone:\n  jwt_secret: \"" + goodSecret + "\"\n  admin_user: admin\n  admin_password: \"" + tc.password + "\"\n"

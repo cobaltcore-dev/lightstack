@@ -456,10 +456,13 @@ var insecureDefaultJWTSecrets = map[string]struct{}{
 	"":                        {},
 	"change-me-in-production": {},
 	"change-me-in-production-use-openssl-rand-base64-32": {},
-	// deployments/README-KVM.md's example placeholders — copy-pasting the doc
-	// verbatim must be caught like the config file's own default.
+	// Placeholders shipped in boot-path docs — copy-pasting the doc verbatim
+	// must be caught like the config file's own default.
 	"paste-output-of-openssl-rand-base64-32": {},
-	"paste-output-of-openssl-rand-base64-24": {},
+	// docs/SINGLE_NODE_DEPLOYMENT.md
+	"change-this-in-production-min-32-chars-required-for-security": {},
+	// docs/SCALING.md
+	"production-secret-min-32-chars-change-this-immediately": {},
 }
 
 // insecureDefaultAdminPasswords are the well-known bootstrap-admin passwords
@@ -470,6 +473,10 @@ var insecureDefaultJWTSecrets = map[string]struct{}{
 var insecureDefaultAdminPasswords = map[string]struct{}{
 	"":       {},
 	"secret": {},
+	// deployments/README-KVM.md's example placeholder — the JWT sibling
+	// (...-32) is denylisted too; a user who fixes only the JWT after the
+	// first refusal must not boot with this one.
+	"paste-output-of-openssl-rand-base64-24": {},
 }
 
 // isInsecureDefaultSecret reports whether secret is in the well-known-default

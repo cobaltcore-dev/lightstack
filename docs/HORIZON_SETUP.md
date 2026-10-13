@@ -38,6 +38,9 @@ Deploy Lightstack and Horizon together using `docker-compose-horizon.yml`:
 
 ```bash
 cd lightstack/deployments
+# Both secrets are required — the stack renders no insecure defaults
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
