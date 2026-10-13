@@ -3,12 +3,12 @@ package keystone
 import (
 	"context"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,18 +24,18 @@ const seededDefaultProjectID = "00000000-0000-0000-0000-000000000002"
 // Both pool holders are exercised: the AuthService authenticates a password,
 // the Service reads a project.
 func TestServiceRunsOnItsOwnPool(t *testing.T) {
-	dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL")
+	dbURL := dbtest.URL()
 	if dbURL == "" {
 		t.Skip("set LIGHTSTACK_TEST_DB_URL to run the pool-injection demonstrator")
 	}
 	ctx := context.Background()
-	pool, err := database.Connect(ctx, dbURL, &database.PoolConfig{
+	pool, err := database.Open(ctx, dbURL, database.Options{Pool: database.PoolConfig{
 		MaxConns:          2,
 		MinConns:          1,
 		MaxConnLifetime:   time.Hour,
 		MaxConnIdleTime:   time.Minute,
 		HealthCheckPeriod: time.Minute,
-	})
+	}})
 	if err != nil {
 		t.Fatalf("connect to LIGHTSTACK_TEST_DB_URL: %v", err)
 	}

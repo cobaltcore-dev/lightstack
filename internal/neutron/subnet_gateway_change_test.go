@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
@@ -68,6 +69,19 @@ func TestSubnetGatewayIsValidated(t *testing.T) {
 	})
 }
 
+// seedRouterPort writes the rows AddRouterInterface writes for a router port holding ip on the
+// subnet: the port, carrying the address in its fixed_ips, and its router_interfaces row. It
+// returns the generated port id.
+func seedRouterPort(t *testing.T, routerID, netID, subnetID, ip string) (portID string) {
+	t.Helper()
+	portID = uuid.NewString()
+	mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, fixed_ips)
+		VALUES ($1, 'router-interface', $2, $3, $4, 'network:router_interface', 'fa:16:3e:00:00:05', $5::jsonb)`,
+		portID, netID, seededProjectID, routerID, fmt.Sprintf(`[{"subnet_id":%q,"ip_address":%q}]`, subnetID, ip))
+	mustExec(t, `INSERT INTO router_interfaces (router_id, port_id, subnet_id) VALUES ($1, $2, $3)`, routerID, portID, subnetID)
+	return portID
+}
+
 // TestSubnetGatewayHeldByARouterIsNotChanged — GatewayIpInUse. Upstream refuses to change or clear a
 // gateway while a router port holds it (get_alloc_routerports on the current gateway). Here a router
 // interface is a port carrying the subnet's gateway in fixed_ips, recorded in router_interfaces —
@@ -79,14 +93,10 @@ func TestSubnetGatewayHeldByARouterIsNotChanged(t *testing.T) {
 	netID := seedNetwork(t, "spec024-gw-router-"+uuid.NewString()[:8])
 	subnetID := seedSubnet(t, netID, "spec024-gw-router", "10.92.0.0/24", &gw, 4, false)
 
-	routerID, portID := uuid.NewString(), uuid.NewString()
+	routerID := uuid.NewString()
 	mustExec(t, `INSERT INTO routers (id, name, project_id) VALUES ($1, 'spec024-gw-router', $2)`, routerID, seededProjectID)
 	cleanupRows(t, "routers", routerID)
-	mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, fixed_ips)
-		VALUES ($1, 'router-interface', $2, $3, $4, 'network:router_interface', 'fa:16:3e:00:00:05',
-		        jsonb_build_array(jsonb_build_object('subnet_id', $5::text, 'ip_address', $6::text)))`,
-		portID, netID, seededProjectID, routerID, subnetID, gw)
-	mustExec(t, `INSERT INTO router_interfaces (router_id, port_id, subnet_id) VALUES ($1, $2, $3)`, routerID, portID, subnetID)
+	portID := seedRouterPort(t, routerID, netID, subnetID, gw)
 
 	for _, tc := range []struct{ name, body string }{
 		{"changed", `{"subnet":{"gateway_ip":"10.92.0.254"}}`},
@@ -119,4 +129,23 @@ func TestSubnetGatewayHeldByARouterIsNotChanged(t *testing.T) {
 			t.Errorf("stored gateway = %s, want 10.92.0.254", derefOr(got, "null"))
 		}
 	})
+}
+
+// A router port is matched on its whole address: one holding 10.93.0.10 does not hold the
+// gateway 10.93.0.1, so the gateway may still change.
+func TestSubnetGatewayIsMatchedWholeAgainstRouterPorts(t *testing.T) {
+	requireDB(t)
+	r := newEnvelopeRouter()
+	gw := "10.93.0.1"
+	netID := seedNetwork(t, "spec028-gw-prefix-"+uuid.NewString()[:8])
+	subnetID := seedSubnet(t, netID, "spec028-gw-prefix", "10.93.0.0/24", &gw, 4, false)
+	routerID := uuid.NewString()
+	mustExec(t, `INSERT INTO routers (id, name, project_id) VALUES ($1, 'spec028-gw-prefix', $2)`, routerID, seededProjectID)
+	cleanupRows(t, "routers", routerID)
+	portID := seedRouterPort(t, routerID, netID, subnetID, "10.93.0.10")
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), "DELETE FROM ports WHERE id = $1", portID) })
+
+	if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.93.0.254"}}`, nil); code != http.StatusOK {
+		t.Fatalf("code=%d body=%s, want 200: no router port holds 10.93.0.1", code, body)
+	}
 }

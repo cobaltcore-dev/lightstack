@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -36,15 +36,20 @@ import (
 // A database failure is an internal error (500), never "not found": answering 404 during an
 // outage would tell the client the project does not exist. It is logged at Error; the
 // no-rows case is silent, since that one is an ordinary answer.
-func ResolveProjectRef(ctx context.Context, pool *pgxpool.Pool, ref string) (string, *OpenStackError) {
+func ResolveProjectRef(ctx context.Context, pool database.DB, ref string) (string, *OpenStackError) {
 	query := "SELECT id FROM projects WHERE name = $1"
-	if uuid.Validate(ref) == nil {
+	// Ids are stored canonical, and on SQLite they are compared as text, so a dash-free or
+	// upper-case id — the form rgw_compat_tenant_ids puts in token payloads, which a client
+	// sends back as the target — must be canonicalised here, not handed to the query as the
+	// client wrote it. uuid.Parse accepts exactly the forms uuid.Validate did.
+	if id, err := uuid.Parse(ref); err == nil {
 		query = "SELECT id FROM projects WHERE id = $1"
+		ref = id.String()
 	}
 
 	var resolved string
 	if err := pool.QueryRow(ctx, query, ref).Scan(&resolved); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return "", NewNotFoundError("project")
 		}
 		log.Error().Err(err).Str("ref", ref).Msg("failed to resolve project reference")
@@ -81,7 +86,7 @@ func ResolveProjectRef(ctx context.Context, pool *pgxpool.Pool, ref string) (str
 //
 // pool is the calling service's pool. Only the admin branch queries it; every other
 // branch resolves from the request alone.
-func QuotaTargetProject(c *gin.Context, pool *pgxpool.Pool) (string, *OpenStackError) {
+func QuotaTargetProject(c *gin.Context, pool database.DB) (string, *OpenStackError) {
 	requested := c.Param("id")
 	caller := c.GetString("project_id")
 	switch {

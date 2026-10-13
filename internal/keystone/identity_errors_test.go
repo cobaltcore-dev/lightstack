@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 )
 
 // TestNotFoundOr500 verifies FR-010: a real not-found maps to the verbatim 404,
@@ -19,7 +20,7 @@ func TestNotFoundOr500(t *testing.T) {
 	t.Run("ErrNoRows -> 404 verbatim", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		notFoundOr500(c, pgx.ErrNoRows, "user", "abc")
+		notFoundOr500(c, database.ErrNoRows, "user", "abc")
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("code = %d, want 404", w.Code)
 		}

@@ -21,7 +21,7 @@ func BenchmarkDatabaseQuery(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Open(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", database.Options{Pool: *poolConfig})
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
@@ -48,7 +48,7 @@ func BenchmarkDatabaseQueryRow(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Open(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", database.Options{Pool: *poolConfig})
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
@@ -77,7 +77,7 @@ func BenchmarkDatabaseJoinQuery(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Open(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", database.Options{Pool: *poolConfig})
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
@@ -111,7 +111,7 @@ func BenchmarkConnectionPoolUtilization(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Open(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", database.Options{Pool: *poolConfig})
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}
@@ -150,7 +150,7 @@ func BenchmarkDatabaseInsert(b *testing.B) {
 		HealthCheckPeriod: 30 * time.Second,
 	}
 
-	pool, err := database.Connect(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", poolConfig)
+	pool, err := database.Open(ctx, "postgres://lightstack:secret@localhost/lightstack?sslmode=disable", database.Options{Pool: *poolConfig})
 	if err != nil {
 		b.Skipf("Database not available: %v", err)
 	}

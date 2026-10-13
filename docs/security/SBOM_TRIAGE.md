@@ -48,6 +48,7 @@ The generated runtime SPDX artifact replaces this export as the release inventor
 | Vulnerable transitive modules in the pinned linter graph | Development-only but executed in CI | Upgrade the affected modules and scan the linter command with `govulncheck` |
 | GO-2026-6603, -6605, -6607, -6608, -6610, -6611, -6612, -6613, -6617 in the Go 1.26.8 standard library, published 2026-10-08 | Reachable; toolchain affects every binary | Pin Go 1.27.2, the current release, in modules, CI, builder image, test container, and the single-node deploy script |
 | GO-2026-6603, -6610, -6611, -6612, -6617 in `x/net`, published 2026-10-08 | Reachable through gin's HTTP/2 support | Upgrade transitively from 0.57.0 to 0.60.0; `x/crypto`, `x/sys`, `x/sync`, and `x/text` move to its minimums |
+| GO-2026-6809 (`crypto/x509` intermediate-certificate distrust) in the Go 1.27.2 standard library, published after the 1.27.2 pin; reachable via `http.Server.Serve` → `x509.Certificate.Verify` | Reachable; toolchain affects every binary | Raise the go.mod floor to 1.27.3; CI (setup-go `go-version: stable`) and the builder and test images (`golang:1`) track the latest stable release, so later standard-library patches apply without a code change. The checksum-pinned single-node deploy script is the deliberate exception. |
 
 ## Triage procedure
 

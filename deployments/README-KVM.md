@@ -11,7 +11,8 @@ This deployment configuration runs Lightstack in a Docker container with access 
    sudo systemctl enable --now libvirtd
    ```
 3. **Docker and Docker Compose** installed
-4. **PostgreSQL 18** running on host (for database)
+4. **A database**: PostgreSQL 18 on the host, or a SQLite file under the state root — one node only,
+   nothing to install
 5. **Storage base directory** — subdirs are auto-created by Lightstack on startup (SPEC-011 / #510);
    this is needed only if Lightstack runs as a non-root user that cannot create `/var/lib/lightstack`:
    ```bash
@@ -31,6 +32,8 @@ state_path: "/var/lib/lightstack"
 
 database:
   url: "postgres://lightstack:YOUR_PASSWORD@localhost:5432/lightstack?sslmode=disable"
+  # Or a SQLite file in the state root, for one node (neutron.vxlan_enabled must stay false):
+  # url: "sqlite:///var/lib/lightstack/db/lightstack.db"
   max_connections: 20
 
 keystone:
@@ -76,7 +79,10 @@ compute:
 
 ## Database Setup
 
-Create the PostgreSQL database and user:
+**SQLite**: nothing to set up. Lightstack creates `<state_path>/db/lightstack.db` on its first start
+(the directory `0750`, the file `0600`) and migrates it.
+
+**PostgreSQL**: create the database and user:
 
 ```bash
 sudo -u postgres psql << EOF
@@ -100,6 +106,15 @@ EOF
    docker compose -f deployments/docker-compose-kvm.yml up -d
    ```
 
+   Three variables in the environment of `docker compose` change what the stack uses; unset, it uses
+   the paths above and the config's database:
+   - `LIGHTSTACK_STATE_PATH` — the host's state root, mounted at the same path. Set it to the
+     config's `state_path` when that is not `/var/lib/lightstack`.
+   - `LIGHTSTACK_CONFIG_DIR` — the directory holding `lightstack.yaml`, instead of
+     `/opt/lightstack/config`.
+   - `LIGHTSTACK_DB_URL` — overrides the config's `database.url`, for example
+     `sqlite:///var/lib/lightstack/db/lightstack.db`.
+
 3. **Check logs**:
    ```bash
    docker logs lightstack -f
@@ -117,9 +132,8 @@ This deployment uses:
 - **Host networking** (`network_mode: host`): Allows Lightstack to bind directly to host ports
 - **Privileged mode**: Required for network namespace operations
 - **Libvirt socket mount**: the directory `/var/run/libvirt`, not the socket file — a bind of the file keeps its inode, so a libvirtd that re-creates its socket would stay unreachable until the container restarts
-- **Storage directories**: Mounted from host for persistence
-- **Console socket directory** (`/var/lib/lightstack/console-sockets`): mounted from the host even though no console proxy runs here. Every guest's domain names its VNC socket there and the host's QEMU creates it, so without the mount no guest could start. Lightstack makes the directory QEMU's at startup.
-- **Config mount**: `/opt/lightstack/config` (read-only)
+- **State root** (`state_path`, default `/var/lib/lightstack`): mounted whole, at the same path inside and out. libvirtd on the host opens the paths Lightstack writes into each domain's XML — disks, config-drive ISOs, and the VNC socket the host's QEMU creates in `console-sockets/` even though no console proxy runs here, so without the mount no guest could start. Lightstack makes that directory QEMU's at startup. A SQLite database lives in `db/`, so it outlives the container too.
+- **Config mount**: `/opt/lightstack/config` (read-only), or `LIGHTSTACK_CONFIG_DIR`
 - **No graphical console**: no console proxy runs here, so the config sets `nova.console_enabled: false` and console requests are answered `400 Unavailable console type novnc` instead of with a link that leads nowhere. The serial log (`openstack console log show`) still works. For noVNC, deploy with the Helm chart (`charts/lightstack`) or `scripts/deploy-turnkey.sh` / `scripts/deploy-single-node.sh`, which run the proxy.
 
 ## Why Not Pure Docker Compose?
@@ -187,7 +201,7 @@ docker compose -f deployments/docker-compose-kvm.yml down
 # Remove image
 docker rmi deployments-lightstack
 
-# Clean storage (CAUTION: Deletes all VMs, volumes, images)
+# Clean storage (CAUTION: Deletes all VMs, volumes, images, and a SQLite database)
 sudo rm -rf /var/lib/lightstack/*
 ```
 

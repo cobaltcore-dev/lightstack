@@ -11,9 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -128,8 +129,8 @@ func TestTargetInstance_NonAdminCannotReachForeign(t *testing.T) {
 	requireDB(t)
 	_, idB := seedAuthzFixtures(t)
 
-	if _, _, err := targetInstance(authzCtx(authzProjectA, false), testPool, idB); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("member in A resolving B's instance: err = %v; want pgx.ErrNoRows", err)
+	if _, _, err := targetInstance(authzCtx(authzProjectA, false), testPool, idB); !errors.Is(err, database.ErrNoRows) {
+		t.Fatalf("member in A resolving B's instance: err = %v; want database.ErrNoRows", err)
 	}
 }
 
@@ -144,8 +145,8 @@ func TestTargetInstance_ForeignAndAbsentAreIndistinguishable(t *testing.T) {
 	_, _, absentErr := targetInstance(authzCtx(authzProjectA, false), testPool,
 		"11111111-1111-1111-1111-111111111111")
 
-	if !errors.Is(foreignErr, pgx.ErrNoRows) || !errors.Is(absentErr, pgx.ErrNoRows) {
-		t.Fatalf("foreign=%v absent=%v; both must be pgx.ErrNoRows", foreignErr, absentErr)
+	if !errors.Is(foreignErr, database.ErrNoRows) || !errors.Is(absentErr, database.ErrNoRows) {
+		t.Fatalf("foreign=%v absent=%v; both must be database.ErrNoRows", foreignErr, absentErr)
 	}
 }
 
@@ -183,8 +184,8 @@ func TestTargetInstance_AdminNameNotInOwnProjectIsNotFound(t *testing.T) {
 		t.Fatalf("seeding only-in-b: %v", err)
 	}
 
-	if _, _, err := targetInstance(authzCtx(authzProjectA, true), testPool, "only-in-b"); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("admin in A resolving name 'only-in-b' (owned by B): err = %v; want pgx.ErrNoRows", err)
+	if _, _, err := targetInstance(authzCtx(authzProjectA, true), testPool, "only-in-b"); !errors.Is(err, database.ErrNoRows) {
+		t.Fatalf("admin in A resolving name 'only-in-b' (owned by B): err = %v; want database.ErrNoRows", err)
 	}
 }
 
@@ -197,8 +198,8 @@ func TestTargetInstance_MalformedRefIsNotFound(t *testing.T) {
 
 	for _, ref := range []string{"not-a-uuid", "'; DROP TABLE instances; --", ""} {
 		_, _, err := targetInstance(authzCtx(authzProjectA, true), testPool, ref)
-		if !errors.Is(err, pgx.ErrNoRows) {
-			t.Errorf("targetInstance(%q) = %v; want pgx.ErrNoRows", ref, err)
+		if !errors.Is(err, database.ErrNoRows) {
+			t.Errorf("targetInstance(%q) = %v; want database.ErrNoRows", ref, err)
 		}
 	}
 }
@@ -211,8 +212,8 @@ func TestTargetInstance_UnscopedCallerIsNotFound(t *testing.T) {
 	requireDB(t)
 	idA, _ := seedAuthzFixtures(t)
 	for _, ref := range []string{idA, "web-1"} {
-		if _, _, err := targetInstance(authzCtx("", false), testPool, ref); !errors.Is(err, pgx.ErrNoRows) {
-			t.Errorf("%s: err = %v, want pgx.ErrNoRows", ref, err)
+		if _, _, err := targetInstance(authzCtx("", false), testPool, ref); !errors.Is(err, database.ErrNoRows) {
+			t.Errorf("%s: err = %v, want database.ErrNoRows", ref, err)
 		}
 	}
 }
@@ -1005,7 +1006,7 @@ func TestRequestIDPrefersTheContext(t *testing.T) {
 }
 
 // TestResolveServerOr404_DatabaseErrorIs500: SRC-6. The function deliberately
-// separates pgx.ErrNoRows from every other error, and that distinction is
+// separates database.ErrNoRows from every other error, and that distinction is
 // security-relevant in both directions:
 //
 //   - no-rows must be 404, because 403 would confirm a foreign instance exists;

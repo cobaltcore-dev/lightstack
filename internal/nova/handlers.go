@@ -26,14 +26,12 @@ import (
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // Service handles Nova API endpoints
 type Service struct {
-	pool        *pgxpool.Pool
+	pool        database.DB
 	libvirtURI  string
 	libvirtMode string
 	vmManager   *hypervisor.VMManager
@@ -75,7 +73,7 @@ type NeutronService interface {
 }
 
 // NewService creates a new Nova service
-func NewService(pool *pgxpool.Pool, libvirtURI, libvirtMode string, cacheInstance *cache.Cache) *Service {
+func NewService(pool database.DB, libvirtURI, libvirtMode string, cacheInstance *cache.Cache) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
 		pool:        pool,
@@ -578,7 +576,7 @@ func (e *bootVolumeSizeError) Error() string { return e.msg }
 //
 // An image that does not exist is errBootImageNotFound and a size that cannot work is a
 // *bootVolumeSizeError; both are the caller's to fix. Any other error is the database's.
-func resolveBootVolumeSize(ctx context.Context, pool *pgxpool.Pool, imageID string, requested, flavorDiskGB int) (int, error) {
+func resolveBootVolumeSize(ctx context.Context, pool database.DB, imageID string, requested, flavorDiskGB int) (int, error) {
 	parsed, err := uuid.Parse(imageID)
 	if err != nil {
 		return 0, errBootImageNotFound
@@ -588,7 +586,7 @@ func resolveBootVolumeSize(ctx context.Context, pool *pgxpool.Pool, imageID stri
 	if err := pool.QueryRow(ctx,
 		`SELECT COALESCE(min_disk_gb, 0), size_bytes FROM images WHERE id = $1`, parsed.String(),
 	).Scan(&minDiskGB, &sizeBytes); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return 0, errBootImageNotFound
 		}
 		return 0, fmt.Errorf("reading image %s: %w", imageID, err)
@@ -731,7 +729,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	).Scan(&flavor.ID, &flavor.Name, &flavor.VCPUs, &flavor.RAMMB, &flavor.DiskGB)
 	middleware.LogDatabaseQuery(c, "SELECT flavor", time.Since(queryStart), err)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		logger.Warn().Str("flavor_ref", req.Server.FlavorRef).Msg("Flavor not found")
 		middleware.LogOperationEnd(c, "create", "server", req.Server.Name, time.Since(start), err)
 		common.SendError(c, common.NewNotFoundError("flavor"))
@@ -774,35 +772,16 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		}
 	}
 
-	// Check quotas before creating instance
-	if err := CheckQuota(c, svc.pool, "instances", 1); err != nil {
-		if _, ok := err.(*QuotaExceededError); ok {
-			common.SendError(c, common.NewQuotaExceededError("instances"))
+	// The resources a server consumes, checked here (non-binding, before any boot volume)
+	// and again in the insert transaction below (binding). One slice drives both.
+	quotaWants := []quotaRequest{{"instances", 1}, {"cores", flavor.VCPUs}, {"ram", flavor.RAMMB}}
+	if err := checkQuota(c.Request.Context(), svc.pool, projectID, quotaWants); err != nil {
+		var over *QuotaExceededError
+		if errors.As(err, &over) {
+			common.SendError(c, over.forbidden())
 			return
 		}
-		log.Error().Err(err).Str("operation", "check_quota_instances").Msg("quota check error")
-		common.SendError(c, common.NewInternalServerError("failed to check quota"))
-		return
-	}
-
-	// Check cores quota
-	if err := CheckQuota(c, svc.pool, "cores", flavor.VCPUs); err != nil {
-		if _, ok := err.(*QuotaExceededError); ok {
-			common.SendError(c, common.NewQuotaExceededError("cores"))
-			return
-		}
-		log.Error().Err(err).Str("operation", "check_quota_cores").Msg("quota check error")
-		common.SendError(c, common.NewInternalServerError("failed to check quota"))
-		return
-	}
-
-	// Check RAM quota
-	if err := CheckQuota(c, svc.pool, "ram", flavor.RAMMB); err != nil {
-		if _, ok := err.(*QuotaExceededError); ok {
-			common.SendError(c, common.NewQuotaExceededError("ram"))
-			return
-		}
-		log.Error().Err(err).Str("operation", "check_quota_ram").Msg("quota check error")
+		log.Error().Err(err).Str("operation", "check_quota").Msg("quota check error")
 		common.SendError(c, common.NewInternalServerError("failed to check quota"))
 		return
 	}
@@ -900,7 +879,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			 LIMIT 1`,
 			name, projectID,
 		).Scan(&sgID)
-		if errors.Is(sgErr, pgx.ErrNoRows) {
+		if errors.Is(sgErr, database.ErrNoRows) {
 			if name == "default" {
 				if sgID, sgErr = neutron.EnsureDefaultSecurityGroup(c.Request.Context(), svc.pool, projectID); sgErr != nil {
 					log.Error().Err(sgErr).Str("operation", "ensure_default_sg").Msg("database error")
@@ -976,15 +955,19 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			//
 			// A quota refusal is answered as one (SPEC-025-followup FR-020, FR-022): the
 			// boot is refused BEFORE any instance row exists, so nothing is left implying a
-			// volume, and the caller gets 413 naming the resource rather than a 503 that
-			// reads as "the storage service is down". Recognised through a behavioural
-			// interface because compute does not import block storage — see
-			// QuotaExceededError.QuotaResource.
-			var limited interface{ QuotaResource() string }
+			// volume, and the caller gets 403 naming the resource (FR-035a) rather than a
+			// 503 that reads as "the storage service is down". Recognised through a
+			// behavioural interface because compute does not import block storage — see
+			// cinder's QuotaExceededError.QuotaResource.
+			var limited interface {
+				QuotaResource() string
+				QuotaUsage() (requested, used, limit int)
+			}
 			if errors.As(volErr, &limited) {
 				logger.Warn().Err(volErr).Str("resource", limited.QuotaResource()).
 					Msg("refusing server create: block-storage quota exhausted")
-				common.SendError(c, common.NewQuotaExceededError(limited.QuotaResource()))
+				requested, used, limit := limited.QuotaUsage()
+				common.SendError(c, overQuotaError(limited.QuotaResource(), requested, used, limit))
 				return
 			}
 			logger.Error().Err(volErr).Str("image_id", bootVolImage).Int("size_gb", size).
@@ -1034,7 +1017,13 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	// transaction as the operation"). Associations cascade on delete
 	// (server_security_groups FKs instances ON DELETE CASCADE).
 	queryStart = time.Now()
-	err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		// The binding quota check (FR-035): under the project's lock, the usage it reads
+		// and the insert below are one step, so two creates cannot both take the last
+		// instance. The early checks above only spare a refused create the boot volume.
+		if txErr := checkQuotaLocked(c.Request.Context(), tx, projectID, quotaWants); txErr != nil {
+			return txErr
+		}
 		if _, txErr := tx.Exec(c.Request.Context(), `
 			INSERT INTO instances (id, name, project_id, user_id, flavor_id, image_id, status, power_state, created_at, updated_at, key_name)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -1053,6 +1042,19 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	})
 	middleware.LogDatabaseQuery(c, "INSERT instance and security groups", time.Since(queryStart), err)
 
+	var over *QuotaExceededError
+	if errors.As(err, &over) {
+		// Err(err) because WithTx may have wrapped a rollback failure into it. Remove the
+		// boot volume this create provisioned before ending the operation, and end it under
+		// the request's server name — no instance was created, so instanceID names nothing.
+		logger.Warn().Err(err).Str("resources", over.resourceList()).Msg("refusing server create: quota exhausted")
+		if newBootVolumeID != "" {
+			svc.removeBootVolume(newBootVolumeID)
+		}
+		middleware.LogOperationEnd(c, "create", "server", req.Server.Name, time.Since(start), err)
+		common.SendError(c, over.forbidden())
+		return
+	}
 	if err != nil {
 		logger.Error().Err(err).Str("instance_id", instanceID).Msg("Failed to create instance in database")
 		middleware.LogOperationEnd(c, "create", "server", instanceID, time.Since(start), err)
@@ -1389,7 +1391,7 @@ func (svc *Service) ListServers(c *gin.Context) {
 	// Filters are applied to BOTH listings from the same accumulator, so a client cannot
 	// get different rows for one query depending on which representation it asked for
 	// (FR-002). A refused filter is answered here rather than silently dropped (FR-004).
-	if ferr := filter.applyQueryFilters(c, ""); ferr != nil {
+	if ferr := filter.applyQueryFilters(c, svc.pool, ""); ferr != nil {
 		common.SendError(c, ferr)
 		return
 	}
@@ -1433,7 +1435,7 @@ func (svc *Service) ListServers(c *gin.Context) {
 			 ) ranked WHERE id::text = `+markerPlaceholder,
 			rank.Args()...,
 		).Scan(&markerOffset)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewBadRequestError(fmt.Sprintf("marker [%s] not found", markerParam)))
 			return
 		}
@@ -1499,7 +1501,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	// Same accumulator, same refusals as the brief listing (FR-002, FR-004). The alias
 	// differs because this query joins flavors, which is exactly why serverFilter takes the
 	// alias rather than having the caller patch the rendered SQL afterwards.
-	if ferr := filter.applyQueryFilters(c, "i."); ferr != nil {
+	if ferr := filter.applyQueryFilters(c, svc.pool, "i."); ferr != nil {
 		common.SendError(c, ferr)
 		return
 	}
@@ -1533,7 +1535,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		// listing, so the two agree in every case a client produces — but leaving them
 		// asymmetric means the pathological case behaves differently depending on which
 		// representation was asked for, which is what FR-002 forbids.
-		if ferr := lookup.applyQueryFilters(c, ""); ferr != nil {
+		if ferr := lookup.applyQueryFilters(c, svc.pool, ""); ferr != nil {
 			common.SendError(c, ferr)
 			return
 		}
@@ -1544,7 +1546,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 			"SELECT created_at, id::text FROM instances"+lookup.Where(),
 			lookup.Args()...,
 		).Scan(&markerCreatedAt, &markerID)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewBadRequestError(fmt.Sprintf("marker [%s] not found", marker)))
 			return
 		}
@@ -1688,9 +1690,9 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 // (SPEC-025-followup US7, FR-045 – FR-048).
 //
 // The detailed listing called getInstanceAddresses once per row, so a page of N servers
-// cost N address queries. This is the same SQL — the same floating_ips LEFT JOIN with
-// ARRAY_AGG ... FILTER, the same GROUP BY p.id giving one row per port — taking the page's
-// instance ids at once and returning device_id so rows can be bucketed by server.
+// cost N address queries. This is the same SQL — the same floating_ips LEFT JOIN, folded
+// per port by the same readPortAddresses — taking the page's instance ids at once and
+// bucketing the ports by server.
 //
 // THE PROJECT PREDICATE IS THE SUBTLE PART. The per-instance form filtered
 // `p.project_id = $2`, where the argument was the INSTANCE's own project rather than the
@@ -1706,43 +1708,64 @@ func (svc *Service) instanceAddressMap(ctx context.Context, instanceIDs []string
 	}
 
 	rows, err := svc.pool.Query(ctx, `
-		SELECT p.device_id::text,
-		       p.network_id,
-		       p.fixed_ips,
-		       n.name,
-		       COALESCE(
-		           ARRAY_AGG(f.floating_ip_address) FILTER (WHERE f.floating_ip_address IS NOT NULL),
-		           '{}'
-		       ) AS floating_ips
+		SELECT p.device_id::text, p.id::text, n.name, p.fixed_ips, f.floating_ip_address
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
 		JOIN instances i ON i.id = p.device_id AND i.project_id = p.project_id
 		LEFT JOIN floating_ips f ON f.port_id = p.id
 		WHERE p.device_id::text = ANY($1)
-		GROUP BY p.device_id, p.id, p.network_id, p.fixed_ips, n.name
+		ORDER BY p.id, f.floating_ip_address
 	`, instanceIDs)
 	if err != nil {
 		return nil, fmt.Errorf("query ports for %d instances: %w", len(instanceIDs), err)
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var deviceID, networkID, networkName string
-		var fixedIPsJSON []byte
-		var floatingIPs []string
-		if err := rows.Scan(&deviceID, &networkID, &fixedIPsJSON, &networkName, &floatingIPs); err != nil {
-			log.Warn().Err(err).Msg("failed to scan batched address row")
-			continue
-		}
-		if byInstance[deviceID] == nil {
-			byInstance[deviceID] = gin.H{}
-		}
-		appendAddressEntries(byInstance[deviceID], networkName, fixedIPsJSON, floatingIPs)
-	}
-	if err := rows.Err(); err != nil {
+	ports, err := readPortAddresses(rows)
+	if err != nil {
 		return nil, fmt.Errorf("iterate ports for %d instances: %w", len(instanceIDs), err)
 	}
+	for _, p := range ports {
+		if byInstance[p.deviceID] == nil {
+			byInstance[p.deviceID] = gin.H{}
+		}
+		appendAddressEntries(byInstance[p.deviceID], p.networkName, p.fixedIPs, p.floating)
+	}
 	return byInstance, nil
+}
+
+// portAddresses is one port as the address readers report it: the server it is bound
+// to, its network's name, its fixed addresses as stored and the floating addresses
+// associated with it.
+type portAddresses struct {
+	deviceID, networkName string
+	fixedIPs              []byte
+	floating              []string
+}
+
+// readPortAddresses folds the address readers' rows — one per port and associated
+// floating address, a port without one giving a single row with a NULL address, ordered
+// by port — into one entry per port. The fold is here rather than an aggregate in SQL,
+// which the backends spell differently.
+func readPortAddresses(rows database.Rows) ([]portAddresses, error) {
+	defer rows.Close()
+	var ports []portAddresses
+	lastPort := ""
+	for rows.Next() {
+		var deviceID, portID, networkName string
+		var fixedIPs []byte
+		var floating *string
+		if err := rows.Scan(&deviceID, &portID, &networkName, &fixedIPs, &floating); err != nil {
+			return nil, err
+		}
+		if portID != lastPort {
+			ports = append(ports, portAddresses{deviceID: deviceID, networkName: networkName, fixedIPs: fixedIPs})
+			lastPort = portID
+		}
+		if floating != nil {
+			p := &ports[len(ports)-1]
+			p.floating = append(p.floating, *floating)
+		}
+	}
+	return ports, rows.Err()
 }
 
 // appendAddressEntries merges one port's fixed and floating addresses into a network's
@@ -1788,8 +1811,8 @@ func appendAddressEntries(addresses gin.H, networkName string, fixedIPsJSON []by
 func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projectID string) (gin.H, error) {
 	addresses := gin.H{}
 
-	// One row per port, with every floating address associated to it aggregated
-	// alongside its fixed ones.
+	// One row per port and associated floating address, folded per port by
+	// readPortAddresses.
 	//
 	// The floating join is the fix for cloud-storage#547 B17: this query read
 	// ports.fixed_ips alone, so a floating address that was successfully associated —
@@ -1798,47 +1821,29 @@ func (svc *Service) getInstanceAddresses(ctx context.Context, instanceID, projec
 	// infrastructure-as-code provider all read. The user was told the association had
 	// not taken effect.
 	//
-	// Aggregated in SQL rather than by a second query per port: a listing already runs
+	// Joined in one query rather than a second query per port: a listing already runs
 	// this once per instance, and one round trip per port on top of that would make the
 	// cost quadratic in a project's size.
 	rows, err := svc.pool.Query(ctx, `
-		SELECT p.network_id,
-		       p.fixed_ips,
-		       n.name,
-		       COALESCE(
-		           ARRAY_AGG(f.floating_ip_address) FILTER (WHERE f.floating_ip_address IS NOT NULL),
-		           '{}'
-		       ) AS floating_ips
+		SELECT p.device_id::text, p.id::text, n.name, p.fixed_ips, f.floating_ip_address
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
 		LEFT JOIN floating_ips f ON f.port_id = p.id
 		WHERE p.device_id = $1 AND p.project_id = $2
-		GROUP BY p.id, p.network_id, p.fixed_ips, n.name
+		ORDER BY p.id, f.floating_ip_address
 	`, instanceID, projectID)
-
 	if err != nil {
 		return nil, fmt.Errorf("query ports for instance %s: %w", instanceID, err)
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var networkID, networkName string
-		var fixedIPsJSON []byte
-		var floatingIPs []string
-
-		if err := rows.Scan(&networkID, &fixedIPsJSON, &networkName, &floatingIPs); err != nil {
-			log.Warn().Err(err).Msg("failed to scan network row")
-			continue
-		}
-
-		// Shared with the batched reader (FR-046): both must describe a port the same
-		// way, and a second copy of this merge is how they would come to disagree.
-		appendAddressEntries(addresses, networkName, fixedIPsJSON, floatingIPs)
-	}
-	if err := rows.Err(); err != nil {
+	ports, err := readPortAddresses(rows)
+	if err != nil {
 		return nil, fmt.Errorf("iterate ports for instance %s: %w", instanceID, err)
 	}
-
+	// Shared with the batched reader (FR-046): both must describe a port the same way,
+	// and a second copy of this merge is how they would come to disagree.
+	for _, p := range ports {
+		appendAddressEntries(addresses, p.networkName, p.fixedIPs, p.floating)
+	}
 	return addresses, nil
 }
 
@@ -1883,7 +1888,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projectID, &userID, &flavorID, &imageID,
 		&createdAt, &updatedAt, &keyName, &faultCode, &faultMessage, &faultCreated)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -2001,7 +2006,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	).Scan(&instanceUUID, &libvirtDomainID, &instanceImageID)
 	middleware.LogDatabaseQuery(c, "SELECT libvirt_domain_id", time.Since(queryStart), err)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		logger.Warn().Str("instance_id", instanceID).Msg("Instance not found")
 		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -2121,7 +2126,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	// would also delete a server named after this one's id, and leave its ports
 	// and attachments behind.
 	queryStart = time.Now()
-	_, err = tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		"DELETE FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
 	)
@@ -2130,6 +2135,17 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		logger.Error().Err(err).Msg("Failed to delete instance from database")
 		log.Error().Err(err).Str("operation", "delete_instance").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+	// Exactly-once delete: the existence check at the top of this handler runs before the
+	// transaction, so two concurrent deletes can both pass it. The row is removed under the
+	// transaction's write lock, so only one DELETE affects a row; the loser affects none and
+	// is a 404 (upstream's answer), its volume and port deletes rolled back by the deferred
+	// Rollback.
+	if tag.RowsAffected() == 0 {
+		logger.Warn().Str("instance_id", instanceUUID).Msg("delete: instance already gone (concurrent delete)")
+		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), nil)
+		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
 
@@ -2410,7 +2426,7 @@ func (svc *Service) lifecycleAction(c *gin.Context, action, instanceID, projectI
 		instanceID,
 	).Scan(&libvirtDomainID, &readAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		log.Warn().Str("instance_id", instanceID).Msg("Instance not found in ServerAction")
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
@@ -2847,7 +2863,7 @@ func (svc *Service) GetFlavor(c *gin.Context) {
 		flavorID,
 	).Scan(&id, &name, &vcpus, &ramMB, &diskGB, &isPublic)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("flavor"))
 		return
 	}
@@ -3292,7 +3308,7 @@ func (svc *Service) UpdateServerMetadata(c *gin.Context) {
 			`INSERT INTO instance_metadata (instance_id, meta_key, meta_value)
 			 VALUES ($1, $2, $3)
 			 ON CONFLICT (instance_id, meta_key)
-			 DO UPDATE SET meta_value = $3, created_at = CURRENT_TIMESTAMP`,
+			 DO UPDATE SET meta_value = $3, created_at = NOW()`,
 			serverID, key, value,
 		)
 		if err != nil {
@@ -3352,7 +3368,7 @@ func (svc *Service) ResetServerMetadata(c *gin.Context) {
 	}
 
 	// Delete all existing metadata then insert new metadata atomically
-	err := database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+	err := database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		if _, err := tx.Exec(c.Request.Context(),
 			"DELETE FROM instance_metadata WHERE instance_id = $1",
 			serverID,

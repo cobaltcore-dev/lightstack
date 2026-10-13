@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -30,16 +29,17 @@ const defaultCheckTimeout = 800 * time.Millisecond
 
 // Check is one named component check that gates readiness. Probe MUST return
 // promptly once ctx is done — Ready relies on that for its never-hang guarantee
-// (FR-003); the database check satisfies it via pgx, which honors ctx deadlines.
+// (FR-003); the database check satisfies it by honoring the ctx deadline on its Ping,
+// on either backend.
 type Check struct {
 	Name  string
 	Probe func(ctx context.Context) error
 }
 
 // DatabaseCheck is the sole readiness-gating check (FR-001, Q1). It wraps the
-// existing database.HealthCheck — a Ping on the given pool, i.e. a real server
-// round-trip, not a TCP-only probe (Q7).
-func DatabaseCheck(pool *pgxpool.Pool) Check {
+// existing database.HealthCheck — a Ping on the given pool, i.e. a live query
+// round-trip (a `SELECT 1` on SQLite), not a TCP-only probe (Q7).
+func DatabaseCheck(pool database.DB) Check {
 	return Check{
 		Name:  "database",
 		Probe: func(ctx context.Context) error { return database.HealthCheck(ctx, pool) },

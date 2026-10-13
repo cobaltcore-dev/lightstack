@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/ceph/go-ceph/rados"
@@ -79,9 +80,12 @@ func (c *CephClient) deleteVolumeRBD(ctx context.Context, volumeID string) error
 
 	imageName := "volume-" + volumeID
 
-	// Remove RBD image
+	// Remove RBD image. A missing image is already deleted, not an error: the startup
+	// sweep reclaims a backing it may have already removed once, and a retried delete
+	// would otherwise 503 forever on a row whose image is gone (upstream's RBD driver
+	// treats ErrNotFound the same way).
 	err := rbd.RemoveImage(c.ioctx, imageName)
-	if err != nil {
+	if err != nil && !errors.Is(err, rbd.ErrNotFound) {
 		return fmt.Errorf("failed to remove RBD image %s: %w", imageName, err)
 	}
 
@@ -146,9 +150,13 @@ func (c *CephClient) DeleteSnapshotRBD(ctx context.Context, volumeID, snapshotID
 	imageName := "volume-" + volumeID
 	snapName := "snap-" + snapshotID
 
-	// Open RBD image
+	// A missing image or snapshot is already deleted (as for a volume above): the sweep
+	// may reclaim a backing twice, and a retried delete must not 503 on an absent one.
 	image, err := rbd.OpenImage(c.ioctx, imageName, "")
 	if err != nil {
+		if errors.Is(err, rbd.ErrNotFound) {
+			return nil
+		}
 		return fmt.Errorf("failed to open RBD image %s: %w", imageName, err)
 	}
 	defer image.Close()
@@ -158,7 +166,7 @@ func (c *CephClient) DeleteSnapshotRBD(ctx context.Context, volumeID, snapshotID
 
 	// Remove snapshot
 	err = snapshot.Remove()
-	if err != nil {
+	if err != nil && !errors.Is(err, rbd.ErrNotFound) {
 		return fmt.Errorf("failed to remove snapshot %s: %w", snapName, err)
 	}
 

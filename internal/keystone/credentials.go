@@ -4,10 +4,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -120,7 +121,7 @@ func (svc *Service) GetCredential(c *gin.Context) {
 		WHERE id = $1
 	`, credID).Scan(&id, &userID, &projectID, &credType, &blob)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewIdentityNotFoundError("credential", credID))
 		return
 	}

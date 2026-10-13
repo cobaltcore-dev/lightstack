@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 	"github.com/google/uuid"
 )
 
@@ -24,16 +25,10 @@ func TestActionHistoryLookupFailureIsOneResponse(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 
-	// Another connection holds instances exclusively, so the lookup blocks until the request's
-	// deadline and fails — a stand-in for a database that cannot answer.
-	tx, err := testPool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // only releases the lock
-	if _, err := tx.Exec(ctx, "LOCK TABLE instances IN ACCESS EXCLUSIVE MODE"); err != nil {
-		t.Fatalf("lock instances: %v", err)
-	}
+	// instances is unavailable, so the lookup fails — a stand-in for a database that cannot
+	// answer.
+	release := dbtest.Unavailable(t, testPool, "instances")
+	defer release()
 
 	reqCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
@@ -74,15 +69,9 @@ func TestDeletedHistoryLookupFailureIs500(t *testing.T) {
 	ctx := context.Background()
 
 	// instances stays readable, so the live lookup finds nothing at once and the fallback runs;
-	// instance_actions is held, so the fallback's lookup waits out the deadline and fails.
-	tx, err := testPool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // only releases the lock
-	if _, err := tx.Exec(ctx, "LOCK TABLE instance_actions IN ACCESS EXCLUSIVE MODE"); err != nil {
-		t.Fatalf("lock instance_actions: %v", err)
-	}
+	// instance_actions is unavailable, so the fallback's lookup fails.
+	release := dbtest.Unavailable(t, testPool, "instance_actions")
+	defer release()
 
 	reqCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()

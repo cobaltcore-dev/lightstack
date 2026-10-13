@@ -6,7 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 )
 
 // Migration 072 makes groups.domain_id what users.domain_id and projects.domain_id already
@@ -25,6 +26,9 @@ func TestGroupsDomainIDReferencesDomains(t *testing.T) {
 	if !testDBAvailable {
 		t.Skip("LIGHTSTACK_TEST_DB_URL not set")
 	}
+	// Migration 072 and the catalog it changes are PostgreSQL's; SQLite starts at its
+	// baseline, above it.
+	dbtest.RequirePostgres(t)
 
 	var dataType, nullable string
 	if err := testPool.QueryRow(t.Context(),
@@ -39,6 +43,7 @@ func TestGroupsDomainIDReferencesDomains(t *testing.T) {
 
 	var refTable, onDelete string
 	if err := testPool.QueryRow(t.Context(),
+		//sqlcheck:postgres-only — reads PostgreSQL's catalog
 		`SELECT c.confrelid::regclass::text, c.confdeltype::text
 		   FROM pg_constraint c
 		  WHERE c.conrelid = 'groups'::regclass AND c.contype = 'f'
@@ -56,7 +61,7 @@ func TestGroupsDomainIDReferencesDomains(t *testing.T) {
 // lets seed write rows the way the old handler could, then runs the up migration and
 // returns its error. Everything happens in one transaction that is rolled back, so the
 // shared test database keeps its schema.
-func migrateLegacyGroups(t *testing.T, seed func(tx pgx.Tx)) (pgx.Tx, error) {
+func migrateLegacyGroups(t *testing.T, seed func(tx database.Tx)) (database.Tx, error) {
 	t.Helper()
 	up, err := os.ReadFile(groupsDomainUp)
 	if err != nil {
@@ -83,7 +88,7 @@ func migrateLegacyGroups(t *testing.T, seed func(tx pgx.Tx)) (pgx.Tx, error) {
 	return tx, err
 }
 
-func insertLegacyGroup(t *testing.T, tx pgx.Tx, name string, domainID any) {
+func insertLegacyGroup(t *testing.T, tx database.Tx, name string, domainID any) {
 	t.Helper()
 	if _, err := tx.Exec(t.Context(), `INSERT INTO groups (name, domain_id) VALUES ($1, $2)`, name, domainID); err != nil {
 		t.Fatalf("insert legacy group %q: %v", name, err)
@@ -97,12 +102,15 @@ func TestGroupsDomainMigrationNormalisesTheAlias(t *testing.T) {
 	if !testDBAvailable {
 		t.Skip("LIGHTSTACK_TEST_DB_URL not set")
 	}
+	// Migration 072 and the catalog it changes are PostgreSQL's; SQLite starts at its
+	// baseline, above it.
+	dbtest.RequirePostgres(t)
 	var defaultID string
 	if err := testPool.QueryRow(t.Context(), `SELECT id::text FROM domains WHERE name = 'Default'`).Scan(&defaultID); err != nil {
 		t.Fatalf("read the Default domain: %v", err)
 	}
 
-	tx, err := migrateLegacyGroups(t, func(tx pgx.Tx) {
+	tx, err := migrateLegacyGroups(t, func(tx database.Tx) {
 		insertLegacyGroup(t, tx, "spec022-legacy-alias", "default")
 		insertLegacyGroup(t, tx, "spec022-legacy-empty", "")
 		insertLegacyGroup(t, tx, "spec022-legacy-null", nil)
@@ -143,6 +151,9 @@ func TestGroupsDomainMigrationRefusesToGuess(t *testing.T) {
 	if !testDBAvailable {
 		t.Skip("LIGHTSTACK_TEST_DB_URL not set")
 	}
+	// Migration 072 and the catalog it changes are PostgreSQL's; SQLite starts at its
+	// baseline, above it.
+	dbtest.RequirePostgres(t)
 	var defaultID string
 	if err := testPool.QueryRow(t.Context(), `SELECT id::text FROM domains WHERE name = 'Default'`).Scan(&defaultID); err != nil {
 		t.Fatalf("read the Default domain: %v", err)
@@ -158,7 +169,7 @@ func TestGroupsDomainMigrationRefusesToGuess(t *testing.T) {
 		{"one name twice in the Default domain", [][2]any{{"spec022-legacy-dup", "default"}, {"spec022-legacy-dup", defaultID}}, "spec022-legacy-dup"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := migrateLegacyGroups(t, func(tx pgx.Tx) {
+			_, err := migrateLegacyGroups(t, func(tx database.Tx) {
 				for _, r := range tc.rows {
 					insertLegacyGroup(t, tx, r[0].(string), r[1])
 				}

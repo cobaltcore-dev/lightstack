@@ -15,7 +15,7 @@ import (
 func TestCreateBootVolumeFromImageRecordsABootableVolume(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
-	svc := NewService(testPool, "stub", "", "")
+	svc := NewService(testPool, "stub", "", "", testNodeName)
 	imageID := uuid.New().String()
 
 	id, err := svc.CreateBootVolumeFromImage(ctx, "vm-1-boot", seededProjectID, seededUserID, imageID, 3)
@@ -81,7 +81,7 @@ func TestVolumeFromImageFetchesTheImageBaseFirst(t *testing.T) {
 		t.Run(tt.mode, func(t *testing.T) {
 			// The backing client stays a stub: in the local modes the failing fetch below
 			// must stop the create before any backing store is touched.
-			svc := NewService(testPool, "stub", "", "")
+			svc := NewService(testPool, "stub", "", "", testNodeName)
 			svc.mode = tt.mode
 			type fetch struct{ image, checksum string }
 			var fetched []fetch

@@ -27,6 +27,9 @@ type fakeCinder struct {
 	t        *testing.T
 	calls    []fakeCinderCall
 	failWith error
+	// afterCreate runs once the volume exists, before the call returns: what another
+	// request might do while this one provisions.
+	afterCreate func()
 }
 
 type fakeCinderCall struct {
@@ -50,6 +53,9 @@ func (f *fakeCinder) CreateBootVolumeFromImage(_ context.Context, name, projectI
 		return "", err
 	}
 	f.calls[len(f.calls)-1].volumeID = id
+	if f.afterCreate != nil {
+		f.afterCreate()
+	}
 	if f.t != nil {
 		f.t.Cleanup(func() {
 			_, _ = testPool.Exec(context.Background(), `DELETE FROM volume_attachments WHERE volume_id = $1`, id)
@@ -326,29 +332,54 @@ func TestBootVolumeFailureNeverFallsBackToAnImageBoot(t *testing.T) {
 }
 
 // quotaRefusal is a block-storage quota refusal as compute sees it: an error carrying
-// QuotaResource, as cinder's QuotaExceededError does, recognised without importing cinder.
-type quotaRefusal struct{ resource string }
+// QuotaResource and QuotaUsage, as cinder's QuotaExceededError does, recognised without
+// importing cinder.
+type quotaRefusal struct {
+	resource                 string
+	requested, used, allowed int
+}
 
 func (e quotaRefusal) Error() string         { return "quota exceeded for " + e.resource }
 func (e quotaRefusal) QuotaResource() string { return e.resource }
+func (e quotaRefusal) QuotaUsage() (requested, used, limit int) {
+	return e.requested, e.used, e.allowed
+}
 
-// A boot volume refused for quota answers 413 naming the resource, not the 503 an
-// unavailable backing store gets, and leaves no server behind (SPEC-025-followup FR-020,
-// FR-022).
-func TestBootVolumeQuotaRefusalIs413(t *testing.T) {
+// A boot volume refused for quota answers 403 with upstream's message, as a create
+// refused for compute quota does (FR-035a) — not the 503 an unavailable backing store
+// gets — and leaves no server behind (SPEC-025-followup FR-020, FR-022).
+func TestBootVolumeQuotaRefusalIs403(t *testing.T) {
 	requireDB(t)
-	fake := &fakeCinder{t: t, failWith: fmt.Errorf("provisioning: %w", quotaRefusal{"gigabytes"})}
+	fake := &fakeCinder{t: t, failWith: fmt.Errorf("provisioning: %w", quotaRefusal{"gigabytes", 4, 998, 1000})}
 	_, r := newBootVolumeService(t, fake)
 
 	const name = "fr025-bfv-quota"
 	cleanupServerNamed(t, name)
 
 	code, body := doReq(r, http.MethodPost, "/v2.1/servers", wizardBody(name, seededImageID(t), 4, true), bootHdr())
-	if code != http.StatusRequestEntityTooLarge || !strings.Contains(body, "gigabytes") {
-		t.Errorf("create = %d %s; want 413 naming gigabytes", code, body)
+	const want = `{"forbidden":{"code":403,"message":"Quota exceeded for gigabytes: Requested 4, but already used 998 of 1000 gigabytes"}}`
+	if code != http.StatusForbidden || body != want {
+		t.Errorf("create = %d %s;\n want 403 %s", code, body, want)
 	}
 	if n := countServersNamed(t, name); n != 0 {
 		t.Errorf("%d instance rows after a quota refusal; want 0", n)
+	}
+}
+
+// A boot volume refused by the per-volume size ceiling answers 403 with Cinder's
+// size-limit wording, not the consumption template (which reads as headroom still free).
+func TestBootVolumeSizeCeilingMessage(t *testing.T) {
+	requireDB(t)
+	fake := &fakeCinder{t: t, failWith: fmt.Errorf("provisioning: %w", quotaRefusal{"per_volume_gigabytes", 1500, 0, 1000})}
+	_, r := newBootVolumeService(t, fake)
+
+	const name = "fr025-bfv-size"
+	cleanupServerNamed(t, name)
+
+	code, body := doReq(r, http.MethodPost, "/v2.1/servers", wizardBody(name, seededImageID(t), 1500, true), bootHdr())
+	const want = `{"forbidden":{"code":403,"message":"Requested volume size 1500G is larger than maximum allowed limit 1000G."}}`
+	if code != http.StatusForbidden || body != want {
+		t.Errorf("create = %d %s;\n want 403 %s", code, body, want)
 	}
 }
 
@@ -551,5 +582,49 @@ func TestBootVolumeDeleteOnTermination(t *testing.T) {
 				t.Errorf("%d attachment rows survived the server", attachments)
 			}
 		})
+	}
+}
+
+// A project already at its instance limit is refused before any boot volume is made
+// (US4 AS8): the early check runs first.
+func TestBootVolumeNotMadeForAProjectAtItsInstanceLimit(t *testing.T) {
+	requireDB(t)
+	project, image := quotaProject(t, map[string]int{"instances": 0})
+	fake := &fakeCinder{t: t}
+	_, r := newBootVolumeService(t, fake)
+
+	code, body := doReq(r, http.MethodPost, "/v2.1/servers", wizardBody("fr028-bfv-limit", image, 4, true), quotaHdr(project))
+	if code != http.StatusForbidden {
+		t.Errorf("create = %d %s; want 403", code, body)
+	}
+	if len(fake.calls) != 0 {
+		t.Errorf("%d boot volumes made for a create the instance quota refuses; want 0", len(fake.calls))
+	}
+}
+
+// A create the binding recheck refuses removes the boot volume it provisioned (US4 AS7).
+// The last instance is taken while the volume is provisioned, after the early check
+// passed — the window the recheck closes.
+func TestBootVolumeRemovedWhenTheRecheckRefuses(t *testing.T) {
+	requireDB(t)
+	project, image := quotaProject(t, map[string]int{"instances": 1})
+	fake := &fakeCinder{t: t}
+	fake.afterCreate = func() { seedQuotaInstances(t, project, 1) }
+	_, r := newBootVolumeService(t, fake)
+
+	code, body := doReq(r, http.MethodPost, "/v2.1/servers", wizardBody("fr028-bfv-recheck", image, 4, true), quotaHdr(project))
+	const want = `{"forbidden":{"code":403,"message":"Quota exceeded for instances: Requested 1, but already used 1 of 1 instances"}}`
+	if code != http.StatusForbidden || body != want {
+		t.Errorf("create = %d %s;\n want 403 %s", code, body, want)
+	}
+	if len(fake.calls) != 1 || fake.calls[0].volumeID == "" {
+		t.Fatalf("volume creations = %+v; want one", fake.calls)
+	}
+	var left int
+	if err := testPool.QueryRow(t.Context(), `SELECT count(*) FROM volumes WHERE id = $1`, fake.calls[0].volumeID).Scan(&left); err != nil {
+		t.Fatalf("counting volumes: %v", err)
+	}
+	if left != 0 {
+		t.Errorf("the boot volume outlived the refused create; want it removed")
 	}
 }

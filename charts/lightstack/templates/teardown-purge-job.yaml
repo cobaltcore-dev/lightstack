@@ -33,6 +33,10 @@ spec:
           image: {{ include "lightstack.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/app/lightstack", "cleanup", "--config", "/app/config/lightstack.yaml"]
+          {{- with include "lightstack.dbUrlEnv" . }}
+          env:
+            {{- . | nindent 12 }}
+          {{- end }}
           {{- if .Values.realMode.enabled }}
           securityContext:
             privileged: {{ .Values.realMode.privileged }}

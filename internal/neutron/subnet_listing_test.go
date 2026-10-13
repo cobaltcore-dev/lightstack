@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -172,8 +173,8 @@ func TestSubnetListPagesWithoutRepeatingOrLosingRows(t *testing.T) {
 		id := uuid.New().String()
 		if _, err := testPool.Exec(ctx, `
 			INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version, enable_dhcp, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, NULL, 4, true, '2026-01-01 00:00:00', '2026-01-01 00:00:00')
-		`, id, name, netID, seededProjectID, fmt.Sprintf("10.70.%d.0/24", i)); err != nil {
+			VALUES ($1, $2, $3, $4, $5, NULL, 4, true, $6, $6)
+		`, id, name, netID, seededProjectID, fmt.Sprintf("10.70.%d.0/24", i), time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("seed paged subnet: %v", err)
 		}
 		want[name] = true

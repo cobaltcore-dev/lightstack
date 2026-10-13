@@ -32,6 +32,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	// Refuse a bad database configuration before anything touches the disk.
+	backend, err := database.ParseURL(cfg.Database.URL)
+	if err == nil {
+		err = database.CheckDeclaredBackend(os.Getenv("LIGHTSTACK_DB_BACKEND"), backend)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 
 	// Initialize logging
 	middleware.InitLogger(&cfg.Logging)
@@ -136,6 +145,13 @@ func handleGoto(dbURL, migrationsPath string) {
 		os.Exit(1)
 	}
 
+	// Refuse an impossible target before prompting, so a below-baseline version is rejected at
+	// once rather than after the operator confirms a destructive migration.
+	if err := database.RefuseBelowBaseline(dbURL, migrationsPath, int(targetVersion)); err != nil {
+		fmt.Fprintf(os.Stderr, "Migration failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	fmt.Printf("⚠️  Migrating to version %d. Continue? (yes/no): ", targetVersion)
 	var response string
 	_, _ = fmt.Scanln(&response) // EOF/parse errors leave response empty, which falls through to the cancel branch — the safe default for destructive ops
@@ -160,6 +176,12 @@ func handleForce(dbURL, migrationsPath string) {
 	version, err := strconv.Atoi(flag.Arg(0))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid version number: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Refuse an impossible target before prompting (see handleGoto).
+	if err := database.RefuseBelowBaseline(dbURL, migrationsPath, version); err != nil {
+		fmt.Fprintf(os.Stderr, "Force failed: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -192,6 +214,10 @@ func printUsage() {
 	fmt.Println("  goto <version>        Migrate to specific version")
 	fmt.Println("  reset                 Drop all tables and re-run migrations (DANGEROUS)")
 	fmt.Println("  force <version>       Force migration version (for fixing dirty state)")
+	fmt.Println()
+	fmt.Println("The database is database.url in the configuration file, or LIGHTSTACK_DB_URL when set:")
+	fmt.Println("postgres://… for PostgreSQL, sqlite:///absolute/path/lightstack.db for SQLite. Both read")
+	fmt.Println("the one migrations folder, each through its own view (migrations/README.md).")
 	fmt.Println()
 	fmt.Println("Options:")
 	fmt.Println("  -config <path>        Path to configuration file (default: config/lightstack.yaml)")

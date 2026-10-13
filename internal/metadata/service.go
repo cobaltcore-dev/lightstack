@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -23,7 +23,7 @@ type Service struct {
 	// In production, this would run on 169.254.169.254
 	// For testing, it runs on localhost:8775
 	bindAddr string
-	pool     *pgxpool.Pool
+	pool     database.DB
 
 	// trustInstanceHeader believes X-Instance-ID from any caller
 	// (metadata.trust_instance_header). Test stacks only.
@@ -31,7 +31,7 @@ type Service struct {
 }
 
 // NewService creates a new metadata service
-func NewService(pool *pgxpool.Pool, bindAddr string) *Service {
+func NewService(pool database.DB, bindAddr string) *Service {
 	return &Service{
 		bindAddr: bindAddr,
 		pool:     pool,
@@ -110,19 +110,87 @@ func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
 		// model (bridges share the gateway IP), so it is deferred to multi-node v2
 		// (#504), where per-tenant network namespaces + network-scoped metadata
 		// identity belong.
-		var instanceID string
-		err := svc.pool.QueryRow(c.Request.Context(),
-			`SELECT device_id FROM ports
-			 WHERE device_id IS NOT NULL AND fixed_ips @> $1::jsonb
-			 LIMIT 1`,
-			fmt.Sprintf(`[{"ip_address":%q}]`, peer),
-		).Scan(&instanceID)
-		if err == nil && instanceID != "" {
+		//
+		// The text search only narrows the ports down to those whose fixed_ips mention
+		// the address as a whole JSON string; the address itself is compared below.
+		instanceID, err := svc.instanceHolding(c.Request.Context(), peer)
+		if err != nil {
+			return "", err // a database failure is a 500, not "no such instance"
+		}
+		if instanceID != "" {
 			return instanceID, nil
 		}
 	}
 
-	return "", fmt.Errorf("cannot determine instance ID from request")
+	return "", errUnidentified
+}
+
+// errUnidentified: the caller could not be matched to an instance — a 404, as opposed to a
+// database failure while looking it up, which is a 500.
+var errUnidentified = errors.New("cannot determine instance ID from request")
+
+// writeIdentifyError answers an instanceFromRequest failure: 404 for a caller that cannot be
+// identified, 500 for a database error. plain selects the empty-body text form the EC2
+// endpoints use rather than the JSON error envelope.
+func writeIdentifyError(c *gin.Context, err error, plain bool) {
+	if errors.Is(err, errUnidentified) {
+		if plain {
+			c.String(http.StatusNotFound, "")
+		} else {
+			common.SendError(c, common.NewNotFoundError("instance"))
+		}
+		return
+	}
+	log.Warn().Err(err).Msg("metadata: identifying the instance failed")
+	if plain {
+		c.String(http.StatusInternalServerError, "")
+	} else {
+		common.SendError(c, common.NewInternalServerError("failed to identify the instance"))
+	}
+}
+
+// instanceHolding returns the instance whose port holds ip as a fixed IP, or "" when none
+// does. A database failure is returned as an error, so the caller answers 500 rather than a
+// 404 that tells the guest it has no instance.
+//
+// The port must belong to the same project as the instance it names. A port's device_id
+// is caller-settable (PUT /v2.0/ports/{id}), so without the join a tenant could point
+// their own port at another project's instance and read its metadata and user-data; the
+// join drops that row, because the port carries the caller's project, not the victim's.
+// Two different instances holding one address is ambiguous and resolves to "" (upstream's
+// metadata agent answers only when exactly one port matches).
+func (svc *Service) instanceHolding(ctx context.Context, ip string) (string, error) {
+	rows, err := svc.pool.Query(ctx,
+		`SELECT p.device_id, p.fixed_ips FROM ports p
+		 JOIN instances i ON i.id = p.device_id AND i.project_id = p.project_id
+		 WHERE p.fixed_ips::text LIKE '%' || $1 || '%'`,
+		strconv.Quote(ip))
+	if err != nil {
+		return "", fmt.Errorf("looking up the instance holding %s: %w", ip, err)
+	}
+	defer rows.Close()
+	holder := ""
+	for rows.Next() {
+		var deviceID string
+		var fixedIPs common.FixedIPs
+		if err := rows.Scan(&deviceID, &fixedIPs); err != nil {
+			// A single undecodable row must not hide a later exact match: log and skip it.
+			log.Warn().Err(err).Str("ip", ip).Msg("metadata: reading a port failed; skipping it")
+			continue
+		}
+		if deviceID == "" || !fixedIPs.Holds(ip) {
+			continue
+		}
+		if holder != "" && holder != deviceID {
+			log.Warn().Str("ip", ip).Msg("metadata: address held by more than one instance; not identifying")
+			return "", nil
+		}
+		holder = deviceID
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("looking up the instance holding %s: %w", ip, err)
+	}
+	return holder, nil
 }
 
 // trustsInstanceHeader reports whether a request from peer may name its instance with
@@ -139,7 +207,7 @@ func (svc *Service) trustsInstanceHeader(peer string) bool {
 func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
-		common.SendError(c, common.NewNotFoundError("instance"))
+		writeIdentifyError(c, err, false)
 		return
 	}
 
@@ -152,7 +220,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 		WHERE id = $1
 	`, instanceID).Scan(&uuid, &name, &hostname, &projectID, &userID, &keyName)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -251,7 +319,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 func (svc *Service) GetUserData(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
-		c.String(http.StatusNotFound, "")
+		writeIdentifyError(c, err, true)
 		return
 	}
 
@@ -262,7 +330,7 @@ func (svc *Service) GetUserData(c *gin.Context) {
 		WHERE instance_id = $1
 	`, instanceID).Scan(&userData)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		// No user-data is not an error, just return empty
 		c.String(http.StatusOK, "")
 		return
@@ -280,7 +348,7 @@ func (svc *Service) GetUserData(c *gin.Context) {
 func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
-		common.SendError(c, common.NewNotFoundError("instance"))
+		writeIdentifyError(c, err, false)
 		return
 	}
 
@@ -602,7 +670,7 @@ func ec2PublicKey(r ec2Request, sub string) {
 func (svc *Service) GetEC2MetaData(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
-		c.String(http.StatusNotFound, "")
+		writeIdentifyError(c, err, true)
 		return
 	}
 	r := ec2Request{svc: svc, c: c, instanceID: instanceID}
