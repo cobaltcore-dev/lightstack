@@ -80,8 +80,12 @@ docker run -d --name lightstack-postgres \
 ### 3. Run Migrations
 
 ```bash
-make migrate-up
+make migrate
 ```
+
+(`make migrate` shells out to the golang-migrate CLI — run `make install-tools`
+once first if you have not. `make run` also auto-applies migrations at startup,
+so this step is optional for local development.)
 
 ### 4. Build and Run
 

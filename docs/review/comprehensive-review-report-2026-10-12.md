@@ -53,7 +53,7 @@ shutdown/goroutine races, release-process debt, and a few correctness loose ends
 ### S2 — HIGH — Well-known default JWT secret ⇒ forged-admin-token takeover
 - `config/lightstack.yaml:15` (`jwt_secret: "change-me-in-production"`),
   `deployments/docker-compose.yml:67` (same literal as compose default),
-  `.env.example:7` (yet another distinct public literal).
+  `.env.example:9` (yet another distinct public literal).
 - `internal/common/config.go:378-381` warns only for the exact string
   `"change-me-in-production"` — the `.env.example` value trips nothing.
 - Combined with S1 (no DB cross-check), anyone who knows the public secret can mint a

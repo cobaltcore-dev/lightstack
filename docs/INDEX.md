@@ -326,6 +326,6 @@ Analysis of dashboard compatibility and integration options.
 
 ---
 
-**Last Updated**: April 2026
-**Total Documentation Files**: 40
+**Last Updated**: October 2026
+**Documentation Files**: 37 top-level guides in `docs/` (plus review reports and per-component deep-dives in subdirectories — 323 markdown files in total)
 **Coverage**: Getting Started, Installation, Configuration, Operations, Architecture, API Reference, Testing, Code Quality

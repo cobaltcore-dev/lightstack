@@ -676,9 +676,11 @@ See [MULTIARCH.md](MULTIARCH.md) for detailed multi-architecture guide.
 curl http://localhost:35357/v3
 ```
 
-**Prometheus metrics** (if enabled):
+**Prometheus metrics** — planned, not yet implemented (no `/metrics` endpoint or
+9090 listener exists as of v0.6.x; see [OPERATIONS.md](OPERATIONS.md#monitoring)
+for what the health endpoints provide today):
 ```bash
-curl http://localhost:9090/metrics
+# curl http://localhost:9090/metrics   # (the endpoint above, once implemented)
 ```
 
 **Container stats:**

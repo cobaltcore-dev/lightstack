@@ -114,9 +114,10 @@ X-Auth-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 | **Neutron** (Network) | 98 |
 | **Cinder** (Block Storage) | 73 |
 | **Glance** (Image) | 38 |
-| **Total** | **~335 functional operations vs the 330-endpoint baseline** |
+| **Total** | **342** |
 
-> Coverage is counted as ~335 functional operations against the 330-endpoint baseline — see
+> The raw-route count (342, including aliases and discovery routes) covers the
+> 330-endpoint baseline with ~335 functional operations — see
 > [blueprint.md](blueprint.md) for the counting rule (the earlier "342/330 (104%)" figure is superseded).
 
 ### Microversions

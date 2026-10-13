@@ -8,7 +8,12 @@ Lightstack runs as a single binary serving all OpenStack services, making it str
 - kubectl configured for your cluster
 - Helm 3.x (for Helm deployment)
 - PostgreSQL 18+ (external or in-cluster)
-- Container image: `ghcr.io/cobaltcore-dev/lightstack:0.6.0`
+- A container image in a registry your cluster can pull. **No image is published yet** — build and push one first:
+  ```bash
+  docker build -t <registry>/lightstack:<tag> -f build/package/Dockerfile .
+  docker push <registry>/lightstack:<tag>
+  ```
+  (See [QUICKSTART.md Path D](QUICKSTART.md#path-d--helm-chart-kubernetes) for the containerized flow; once the v0.7.0 release pipeline runs, published images will appear under `ghcr.io/cobaltcore-dev/lightstack`.)
 
 ## Architecture
 
@@ -171,27 +176,34 @@ spec:
       labels:
         app: lightstack
       annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "35357"
-        prometheus.io/path: "/metrics"
+        # NOTE: no /metrics endpoint exists yet — Lightstack exposes no
+        # Prometheus scrape target as of v0.6.x (planned; see
+        # OPERATIONS.md "Monitoring"). These annotations are left as the
+        # shape a future deployment will take, but a Prometheus server
+        # scraping them today gets nothing.
+        prometheus.io/scrape: "false"
     spec:
       # Run migrations as an init container so the main container
       # only starts once the schema is current.
       initContainers:
         - name: migrate
-          image: ghcr.io/cobaltcore-dev/lightstack:0.6.0
+          image: <registry>/lightstack:<tag>   # built and pushed in Prerequisites
           command: ["/app/lightstack-migrate", "up"]
           env:
-            - name: LIGHTSTACK_DB_URL
-              value: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
+            # DB_PASSWORD must be defined before LIGHTSTACK_DB_URL: Kubernetes
+            # expands $(VAR) references in dependent env vars in definition
+            # order, so the reverse order leaves the literal "$(DB_PASSWORD)"
+            # in the DSN.
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: lightstack-secrets
                   key: db-password
+            - name: LIGHTSTACK_DB_URL
+              value: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
       containers:
         - name: lightstack
-          image: ghcr.io/cobaltcore-dev/lightstack:0.6.0
+          image: <registry>/lightstack:<tag>   # built and pushed in Prerequisites
           # Override the default CMD to skip the built-in migration step
           # (init container already ran it).
           command: ["/app/lightstack", "--config", "/app/config/lightstack.yaml"]
@@ -537,17 +549,19 @@ With multiple replicas each holding up to 50 database connections, connection co
 
 ## Monitoring
 
-The Deployment manifest above includes Prometheus scrape annotations. Standard metrics to watch:
+Lightstack exposes **no `/metrics` endpoint and no Prometheus listener as of v0.6.x** — the platform-level health surface today is the per-service health endpoints the liveness and readiness probes use (see [OPERATIONS.md "Monitoring"](OPERATIONS.md)). Prometheus integration is planned; the scrape annotations and `ServiceMonitor` below are the shape a future deployment will take, kept here so the rollout is a config flip rather than a redesign. Until an `/metrics` endpoint ships, a scraping Prometheus receives nothing.
 
-| Metric | Alert threshold | Notes |
+Operational signals available today:
+
+| Signal | Alert threshold | Notes |
 |--------|----------------|-------|
 | Pod restarts | > 2 in 5 min | Points to crash loop — check liveness probe |
 | Readiness probe failures | Any sustained | Pod receiving traffic but not responding |
 | PostgreSQL connection errors | Any | Database availability problem |
-| HTTP 5xx rate | > 1% of requests | Application errors |
-| Request latency p99 | > 2s | Performance degradation |
+| HTTP 5xx rate (via your ingress) | > 1% of requests | Application errors |
+| Request latency p99 (via your ingress) | > 2s | Performance degradation |
 
-Add a `ServiceMonitor` if you use the Prometheus Operator:
+Once metrics exist, a Prometheus Operator `ServiceMonitor` would look like:
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1
@@ -576,7 +590,7 @@ only the documented keys are accepted:
 
 ```yaml
 image:
-  repository: ghcr.io/cobaltdev-cluster/lightstack   # REQUIRED — no default
+  repository: ghcr.io/your-org/lightstack   # REQUIRED — no default
   tag: "<tag>"
 
 replicaCount: 2
@@ -644,7 +658,7 @@ For `s3` mode, set `glance.s3_bucket`, `glance.s3_region`, and optionally `glanc
 
 ### JWT secret rotation
 
-The JWT secret is stateless — all tokens signed with the old secret become invalid immediately when the secret changes. Plan a maintenance window or implement a grace period using two active secrets if zero-downtime rotation is required.
+The JWT secret is stateless — all tokens signed with the old secret become invalid immediately when the secret changes. There is exactly one active secret (no dual-secret grace mechanism), so rotation requires a maintenance window: clients re-authenticate after the change.
 
 ### CORS
 

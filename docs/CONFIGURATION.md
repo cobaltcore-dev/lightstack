@@ -999,15 +999,29 @@ logging:
 
 ### Production Setup (Single-Node)
 
+Note on secrets: **the config file does no environment-variable interpolation**
+— a literal `${JWT_SECRET}` in the YAML is used verbatim as the secret. Inject
+secrets through the environment variables the loader applies *over* the file —
+`LIGHTSTACK_DB_URL` and `LIGHTSTACK_JWT_SECRET` — and put the admin password in
+the file itself:
+
+```bash
+export DB_PASSWORD="..."; export JWT_SECRET="$(openssl rand -base64 32)"
+```
+
 ```yaml
 database:
-  url: "postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+  # ${...} below is NOT expanded by Lightstack — set LIGHTSTACK_DB_URL instead
+  # (shown under the file). The placeholder host/user stay in the file.
   max_connections: 50
 
 keystone:
-  jwt_secret: "${JWT_SECRET}"  # From environment
+  # Set via LIGHTSTACK_JWT_SECRET, not through the file:
+  #   export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
   token_ttl: 24h
-  admin_password: "${ADMIN_PASSWORD}"
+  # No environment override: write a real value here before deploying
+  # (substitute before the file reaches the host):
+  admin_password: "CHANGE_ME_before_deploying"
 
 nova:
   libvirt_mode: real
@@ -1031,11 +1045,20 @@ logging:
   format: json
 ```
 
+```bash
+# The database URL is provided through the environment, overriding the file:
+export LIGHTSTACK_DB_URL="postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+```
+
 ### Production Setup (Multi-Node)
 
 ```yaml
+# Secrets via environment (the file performs no ${...} expansion):
+#   export LIGHTSTACK_DB_URL="postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+#   export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+
 database:
-  url: "postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+  max_connections: 50
 
 compute:
   tunnel_ip: auto

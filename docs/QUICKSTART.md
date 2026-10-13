@@ -52,6 +52,11 @@ docker compose -f deployments/docker-compose.yml up -d
 > **Note:** the compose file lives in `deployments/` — run the command from the repo
 > root with `-f deployments/docker-compose.yml` (or `cd deployments` first).
 
+> **Security note:** this evaluation stack also publishes port **8775** — the
+> EC2-style metadata service, which serves **unauthenticated** responses and
+> trusts an instance-identifying header (a test-only setting). On a shared
+> host, do not expose 8775 beyond localhost.
+
 Three containers start:
 
 ```
@@ -147,7 +152,8 @@ cd lightstack
 
 # Start PostgreSQL (18) and apply migrations
 make db-up
-make migrate
+make migrate   # shells out to the golang-migrate CLI — make install-tools once
+               # if it is missing; make run also auto-applies at startup
 
 # Build and run (config/lightstack.yaml is used by default)
 make run
@@ -233,7 +239,7 @@ All install paths seed the same identity:
 | `The resource could not be found` (404) on auth | Wrong `OS_AUTH_URL` path — it must end in `/v3`. |
 | Authentication fails | Domain names are case-sensitive: `OS_USER_DOMAIN_NAME=Default`. |
 | Compose build fails | Run from the repo root with `-f deployments/docker-compose.yml`. |
-| Port already in use | Something else holds 35357/8774/9696/8776/9292 — stop it or edit the port mapping. |
+| Port already in use | Something else holds 35357/8774/9696/8776/9292/8775 — stop it or edit the port mapping. |
 
 More: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 

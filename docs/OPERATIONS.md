@@ -413,12 +413,10 @@ SystemKeepFree=2G
 ### Cleanup Old Data
 
 ```bash
-# Delete old deleted VMs (soft-deleted)
-docker exec lightstack-postgres psql -U lightstack -d lightstack -c "
-  DELETE FROM instances
-  WHERE deleted = true
-    AND deleted_at < NOW() - INTERVAL '30 days';
-"
+# Deleted VMs: nothing to run — Lightstack hard-DELETEs rows (there is no
+# soft-delete `deleted`/`deleted_at` column on `instances`). To reclaim the
+# space old rows left behind in tables and indexes:
+docker exec lightstack-postgres psql -U lightstack -d lightstack -c "VACUUM FULL;"
 
 # Tokens: nothing to clean up in the database — tokens are stateless JWTs and
 # there is no `tokens` table. They expire on their own per `keystone.token_ttl`.
@@ -764,4 +762,4 @@ lightstack healthcheck --ready && exit 0 || exit 1
 **Next steps:**
 - [CONFIGURATION.md](CONFIGURATION.md) - Detailed configuration
 - [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md) - Docker-specific operations
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Detailed troubleshooting (if created)
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Detailed troubleshooting

@@ -907,6 +907,9 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
+  # NOTE: Lightstack itself exposes no /metrics endpoint as of v0.6.x — the
+  # lightstack-controllers job below is the planned shape and will scrape
+  # nothing until that ships. Node and C exporters work today.
   - job_name: 'lightstack-controllers'
     static_configs:
       - targets:

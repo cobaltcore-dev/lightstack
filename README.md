@@ -285,7 +285,7 @@ OPENSTACK_API_VERSIONS = {
 }
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
 OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
-SESSION_TIMEOUT = 14400  # 4 hours (matches lightstack token TTL)
+SESSION_TIMEOUT = 14400  # 4 hours (deliberately shorter than lightstack's 24h token_ttl)
 CONSOLE_TYPE = 'VNC'  # a Horizon CONSOLES key; 'novnc' is not one, and fails without calling Nova
 ```
 

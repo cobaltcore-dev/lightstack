@@ -5,8 +5,8 @@
 
 **lightstack Version**: Unreleased (post-v0.6.1)
 **OpenStack Release**: Flamingo (2025.2)
-**Last Updated**: 2026-03-13
-**Status**: Production Ready
+**Last Updated**: 2026-10-12
+**Status**: Feature-complete for the covered surface; see [the comprehensive review report](review/comprehensive-review-report-2026-10-12.md) for the issues that must be fixed before the v0.7.0 release
 
 ## Overview
 
@@ -42,11 +42,15 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 │                  └────────────────┘                         │
 └─────────────────────────────────────────────────────────────┘
          │              │              │
-    Port 5432      Port 35357    Port 80
-                   (+ 8774,      (HTTP)
+   (internal —     Port 35357    Port 80
+    not exposed)   (+ 8774,      (HTTP)
                     9696, 8776,
                     9292, 8775)
 ```
+
+> PostgreSQL (`:5432`) is network-internal in this stack — the compose file
+> never publishes it to the host; only the Lightstack API ports and Horizon's
+> port 80 are exposed.
 
 ## Prerequisites
 
@@ -56,12 +60,13 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 - **Docker Compose** 2.0+
 - **Available Ports**:
   - 80 (HTTP - Horizon dashboard)
-  - 5432 (PostgreSQL)
   - 35357 (Keystone)
   - 8774 (Nova)
   - 8775 (Metadata)
   - 8776 (Cinder)
   - 9292 (Glance)
+
+  (PostgreSQL runs network-internal — no host port needed.)
   - 9696 (Neutron)
 - **System Resources**:
   - 4GB RAM minimum (8GB recommended)
@@ -615,8 +620,8 @@ docker compose -f docker-compose-horizon.yml ps
    ```
 
 3. **Use native ARM64 Horizon** (future):
-   - Track: https://github.com/cobaltcore-dev/lightstack/issues/XXX
    - Custom ARM64 Horizon build in development
+   - Track progress in the [issue tracker](https://github.com/cobaltcore-dev/lightstack/issues)
 
 **Verification**:
 ```bash
@@ -877,8 +882,9 @@ docker inspect lightstack --format='{{.HostConfig.NanoCpus}}'
 ### Application Metrics
 
 ```bash
-# lightstack metrics endpoint (if enabled)
-curl http://localhost:9090/metrics
+# lightstack metrics endpoint (planned, not yet implemented — no
+# Prometheus listener exists as of v0.6.x; see OPERATIONS.md "Monitoring")
+# curl http://localhost:9090/metrics
 
 # Database connections
 docker exec lightstack-postgres psql -U lightstack -c \
@@ -974,7 +980,7 @@ Configure load balancer:
 
 ### Container Orchestration
 
-For Kubernetes deployment, see separate guide: `docs/KUBERNETES_DEPLOYMENT.md` (coming soon)
+For Kubernetes deployment, see separate guide: [`docs/KUBERNETES_DEPLOYMENT.md`](KUBERNETES_DEPLOYMENT.md)
 
 ## Support and Resources
 
@@ -1012,4 +1018,4 @@ This deployment configuration is part of the Lightstack project and is licensed 
 
 ---
 
-**Last Updated**: 2026-03-13 | **lightstack Version**: Unreleased (post-v0.6.1) | **Horizon Version**: Flamingo (2025.2)
+**Last Updated**: 2026-10-12 | **lightstack Version**: Unreleased (post-v0.6.1) | **Horizon Version**: Flamingo (2025.2)

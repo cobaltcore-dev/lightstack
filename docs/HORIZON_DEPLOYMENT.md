@@ -1,8 +1,8 @@
 # Horizon Dashboard Deployment Guide
 
 **Lightstack Version**: Unreleased (post-v0.6.1)
-**Last Updated**: 2026-03-13
-**Status**: Production Ready
+**Last Updated**: 2026-10-12
+**Status**: Production-ready for the covered surface; see [the comprehensive review report](review/comprehensive-review-report-2026-10-12.md) for the issues that must be fixed before the v0.7.0 release
 
 ## Overview
 
