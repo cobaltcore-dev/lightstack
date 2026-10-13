@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -580,6 +581,15 @@ func TestFailedBootReleasesAllocatedPorts(t *testing.T) {
 // release is recorded.
 func TestSuccessfulBootKeepsItsPorts(t *testing.T) {
 	requireDB(t)
+
+	// A fully successful boot stages a per-instance qcow2 overlay, which
+	// needs qemu-img. The CI unit-test runner does not install it (the same
+	// guard pkg/storage's tests use); without the guard this test fails there
+	// with the boot in ERROR on overlay staging instead of testing port
+	// release.
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not installed — the success-path boot needs overlay staging")
+	}
 
 	// Redirect the node-local state root into a test directory BEFORE the
 	// service is built: the boot runs in a goroutine the service's Shutdown
