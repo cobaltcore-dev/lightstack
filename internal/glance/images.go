@@ -39,6 +39,12 @@ type Service struct {
 	cache       *cache.Cache
 }
 
+// maxImageUploadBytes bounds PUT /images/:id/file (review 2026-10-13 M-3):
+// without it an unbounded stream lands on disk (and, in local mode, is
+// qemu-img-normalized) until the host fills. 10 GiB, the same default as
+// upstream Glance's image_size_cap.
+const maxImageUploadBytes = 10 << 30
+
 // NewService creates a new Glance service.
 //
 // Returns an error if the configured storage backend fails to initialize
@@ -946,11 +952,39 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	imageID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Check if image exists and is in queued status
-	var status string
+	// Ownership, not visibility (review 2026-10-13 H-1): seeing a public
+	// image must not grant write access to its bytes — otherwise anyone
+	// could poison an operator-staged public base image that every tenant
+	// boots from. Same rule as delete (F6): owner or admin, 403 for a
+	// visible-but-foreign image, 404 for an invisible one.
+	var uploadOwner sql.NullString
+	var uploadVisibility string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT status FROM images WHERE id = $1 AND (visibility = 'public' OR project_id = $2)",
-		imageID, projectID,
+		"SELECT project_id, visibility FROM images WHERE id = $1",
+		imageID,
+	).Scan(&uploadOwner, &uploadVisibility)
+	if errors.Is(err, pgx.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("image"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "upload_image_lookup").Str("image_id", imageID).Msg("failed to look up image")
+		common.SendError(c, common.NewInternalServerError("failed to upload image"))
+		return
+	}
+	switch imageDeleteAuthz(common.HasRole(c, common.RoleAdmin), uploadOwner, projectID, uploadVisibility) {
+	case http.StatusForbidden:
+		common.SendError(c, common.NewForbiddenError("not authorized to upload data to this image"))
+		return
+	case http.StatusNotFound:
+		common.SendError(c, common.NewNotFoundError("image"))
+		return
+	}
+
+	var status string
+	err = svc.pool.QueryRow(c.Request.Context(),
+		"SELECT status FROM images WHERE id = $1",
+		imageID,
 	).Scan(&status)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -962,6 +996,11 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 		common.SendError(c, common.NewConflictError("image data already exists"))
 		return
 	}
+
+	// Bound the upload (review 2026-10-13 M-3): without a cap an unbounded
+	// stream lands on disk (and, in local mode, is normalized) until the
+	// host fills. Same default as upstream Glance's image_size_cap.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageUploadBytes)
 
 	// Update status to saving
 	if _, err := svc.pool.Exec(c.Request.Context(),
@@ -993,6 +1032,22 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	// the S3 backend stores the bytes as-is, so its create-time disk_format is left
 	// untouched rather than mislabeled "raw" (SPEC-014).
 	checksum := hex.EncodeToString(hasher.Sum(nil))
+	if normalizedToRaw {
+		// The recorded checksum must describe the STORED bytes: downloads serve
+		// them, and EnsureLocalBase verifies a lazily fetched base against this
+		// value on every boot (review 2026-10-13 N3 — hashing the upload stream
+		// instead broke boot-from-image on any node without the local base,
+		// because MD5(raw replica) != MD5(original qcow2)).
+		if stored, csErr := svc.imageStore.StoredChecksum(c.Request.Context(), imageID); csErr == nil {
+			checksum = stored
+		} else {
+			// The local object is what was just written; not being able to read
+			// it back is exceptional. Fall back to the stream hash (the old,
+			// mismatch-prone behavior) rather than failing a successful upload.
+			log.Warn().Err(csErr).Str("image_id", imageID).
+				Msg("could not hash stored image bytes; recording upload-stream checksum")
+		}
+	}
 	if _, err := svc.pool.Exec(c.Request.Context(),
 		`UPDATE images SET status = $1, size_bytes = $2,
 			disk_format = CASE WHEN $3 THEN 'raw' ELSE disk_format END,

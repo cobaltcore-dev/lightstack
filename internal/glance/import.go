@@ -38,7 +38,10 @@ func (svc *Service) StageImageData(c *gin.Context) {
 		return
 	}
 
-	// Read staged data (in real implementation, would save to staging area)
+	// Read staged data (in real implementation, would save to staging area).
+	// Bounded like the upload path (review 2026-10-13 M-3): ReadAll on a raw
+	// request body is an unbounded memory allocation.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageUploadBytes)
 	stagedData, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Failed to read image data"})

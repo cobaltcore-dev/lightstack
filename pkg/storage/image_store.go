@@ -605,6 +605,30 @@ func (s *ImageStore) uploadLocalToS3(ctx context.Context, imageID string) error 
 	return nil
 }
 
+// StoredChecksum returns the MD5 hex digest of the image's stored local bytes.
+// Normalizing backends (local, local,rbd, local,s3) rewrite the upload — a
+// qcow2 becomes a raw base — so the checksum Glance advertises, downloads
+// serve and EnsureLocalBase verifies against must be taken from the stored
+// object, not from the client's upload stream (review 2026-10-13 N3: the
+// stream hash made boot-from-image fail on any node without the local base,
+// because MD5(raw replica) never equals MD5(original qcow2)). For S3-only and
+// stub modes the stored bytes are the upload bytes, so the stream hash the
+// caller already computed is the stored checksum and this method is not
+// consulted. A future RBD-only backend should hash its own object instead.
+func (s *ImageStore) StoredChecksum(ctx context.Context, imageID string) (string, error) {
+	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := md5.New() // #nosec G401 -- Glance checksum is MD5 (compatibility), not a security control
+	if _, err := io.Copy(h, &ctxReader{ctx: ctx, r: f}); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // DownloadImage downloads an image from storage
 func (s *ImageStore) DownloadImage(ctx context.Context, imageID string, writer io.Writer) error {
 	switch s.mode {

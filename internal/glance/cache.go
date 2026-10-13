@@ -61,9 +61,16 @@ func (svc *Service) ListCachedImages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"cached_images": cachedImages})
 }
 
-// PrefetchImage prefetches an image into the cache
+// PrefetchImage prefetches an image into the cache. Admin-only (review
+// 2026-10-13 M-2): cache management is an operator surface (upstream
+// `admin_api`) — it moves shared disk state for every tenant.
 func (svc *Service) PrefetchImage(c *gin.Context) {
 	imageID := c.Param("id")
+
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("admin role required to manage the image cache"))
+		return
+	}
 
 	// Verify image exists
 	var exists bool
@@ -93,9 +100,15 @@ func (svc *Service) PrefetchImage(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// DeleteCachedImage removes an image from the cache
+// DeleteCachedImage removes an image from the cache. Admin-only (review
+// 2026-10-13 M-2).
 func (svc *Service) DeleteCachedImage(c *gin.Context) {
 	imageID := c.Param("id")
+
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("admin role required to manage the image cache"))
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(), `
 		UPDATE images
@@ -117,8 +130,15 @@ func (svc *Service) DeleteCachedImage(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// ClearCache clears all cached images
+// ClearCache clears all cached images. Admin-only (review 2026-10-13 M-2):
+// without the gate any member could flush the deployment-wide cache (DoS on
+// boot-time caching) with one request.
 func (svc *Service) ClearCache(c *gin.Context) {
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("admin role required to manage the image cache"))
+		return
+	}
+
 	_, err := svc.pool.Exec(c.Request.Context(), `
 		UPDATE images
 		SET cached_at = NULL

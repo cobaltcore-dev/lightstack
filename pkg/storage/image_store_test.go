@@ -274,3 +274,62 @@ func makeQcow2(t *testing.T, dir string) string {
 	_ = os.Remove(raw)
 	return qcow
 }
+
+// TestStoredChecksumMatchesStoredBytesNotUploadBytes pins review 2026-10-13
+// N3: normalizing backends rewrite the upload (qcow2 → raw base), so the
+// checksum recorded for an image must describe the STORED bytes — downloads
+// serve them and EnsureLocalBase verifies a lazily fetched base against the
+// recorded value on every boot. Hashing the upload stream instead made
+// MD5(raw replica) != MD5(original qcow2), so boot-from-image failed on any
+// node without the local base.
+func TestStoredChecksumMatchesStoredBytesNotUploadBytes(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available")
+	}
+	s, err := NewImageStore("local", "", "", S3Options{})
+	if err != nil {
+		t.Fatalf("NewImageStore: %v", err)
+	}
+	s.localPath = t.TempDir() // same-package override: keep the test off /var/lib
+
+	// A real qcow2: not raw bytes, so normalizeToRaw must convert it.
+	qcow2Path := filepath.Join(t.TempDir(), "disk.qcow2")
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", qcow2Path, "1M").CombinedOutput(); err != nil {
+		t.Fatalf("qemu-img create: %v: %s", err, out)
+	}
+	qcow2Bytes, err := os.ReadFile(qcow2Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	imageID := "11111111-2222-3333-4444-555555555555"
+	size, normalized, err := s.UploadImage(context.Background(), imageID, bytes.NewReader(qcow2Bytes))
+	if err != nil {
+		t.Fatalf("UploadImage: %v", err)
+	}
+	if !normalized {
+		t.Fatal("local mode must report normalization")
+	}
+	// The stored size is the raw virtual size, not the qcow2 file size.
+	if size != 1<<20 {
+		t.Errorf("stored size = %d; want the raw size %d", size, 1<<20)
+	}
+
+	streamHash := fmt.Sprintf("%x", md5.Sum(qcow2Bytes))
+	stored, err := s.StoredChecksum(context.Background(), imageID)
+	if err != nil {
+		t.Fatalf("StoredChecksum: %v", err)
+	}
+	storedBytes, err := os.ReadFile(filepath.Join(s.localPath, imageFileName(imageID)))
+	if err != nil {
+		t.Fatalf("read stored image: %v", err)
+	}
+	wantHash := fmt.Sprintf("%x", md5.Sum(storedBytes))
+
+	if stored != wantHash {
+		t.Errorf("StoredChecksum = %s; want MD5 of the stored bytes %s", stored, wantHash)
+	}
+	if stored == streamHash {
+		t.Error("StoredChecksum equals the upload-stream hash; the qcow2 bytes were normalized, so the hashes must differ — this is the N3 regression")
+	}
+}
