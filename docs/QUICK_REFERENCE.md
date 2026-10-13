@@ -158,15 +158,13 @@ tar czf config-backup-$(date +%Y%m%d).tar.gz docker-compose-horizon.yml horizon-
 cat backup-20260313.sql | docker exec -i lightstack-postgres psql -U lightstack lightstack
 ```
 
-## Default Credentials
+## Credentials
 
 - **Horizon URL**: http://localhost/dashboard
 - **Domain**: Default
 - **Username**: admin
-- **Password**: secret
+- **Password**: the `LIGHTSTACK_ADMIN_PASSWORD` you exported before `up -d` (no default — the guard refuses admin/secret)
 - **Project**: default
-
-⚠️ **Change these in production!**
 
 ## Production Checklist
 

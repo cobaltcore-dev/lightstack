@@ -463,6 +463,10 @@ var insecureDefaultJWTSecrets = map[string]struct{}{
 	"change-this-in-production-min-32-chars-required-for-security": {},
 	// docs/SCALING.md
 	"production-secret-min-32-chars-change-this-immediately": {},
+	// docs/CONFIGURATION.md (development-setup example)
+	"dev-secret-do-not-use-in-prod": {},
+	// docs/HORIZON_SETUP.md
+	"use-strong-random-secret": {},
 }
 
 // insecureDefaultAdminPasswords are the well-known bootstrap-admin passwords

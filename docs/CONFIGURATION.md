@@ -566,7 +566,8 @@ keystone:
 
 **⚠️ CRITICAL: Change these in production!**
 
-**Change via the config file** (there is no env override for these — see
+**Change via the config file** (the admin password also has an environment
+override, `LIGHTSTACK_ADMIN_PASSWORD` — see
 [Environment Variables](#environment-variables)):
 ```yaml
 keystone:

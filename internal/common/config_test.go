@@ -834,6 +834,8 @@ func TestLoadConfigRefusesInsecureDefaultJWTSecret(t *testing.T) {
 		"  change-me-in-production  ",
 		"change-this-in-production-min-32-chars-required-for-security", // docs/SINGLE_NODE_DEPLOYMENT.md
 		"production-secret-min-32-chars-change-this-immediately",       // docs/SCALING.md
+		"dev-secret-do-not-use-in-prod",                                // docs/CONFIGURATION.md
+		"USE-STRONG-RANDOM-SECRET",                                     // docs/HORIZON_SETUP.md
 	} {
 		body := "keystone:\n  jwt_secret: \"" + secret + "\"\n"
 		_, err := LoadConfig(writeTestConfig(t, body))
