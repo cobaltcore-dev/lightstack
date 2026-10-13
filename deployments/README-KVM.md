@@ -36,7 +36,9 @@ database:
 keystone:
   host: "0.0.0.0"
   port: 35357
-  jwt_secret: "CHANGE-ME-IN-PRODUCTION"
+  # Generate per deployment: `openssl rand -base64 32`. A well-known default
+  # (including this comment's old placeholder) is refused at startup.
+  jwt_secret: "PASTE-OUTPUT-OF-openssl-rand-base64-32"
   token_ttl: 24h
 
 nova:

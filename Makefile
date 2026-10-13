@@ -1,4 +1,4 @@
-.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui
+.PHONY: build build-with-ebpf run test test-contract test-integration test-multi-tenant test-performance test-errors test-all lint chart-test test-endpoint-migration test-compose-identity clean dev fmt install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui install-ebpf-tools help
 
 # Build variables
 BINARY_NAME=lightstack

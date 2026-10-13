@@ -35,7 +35,7 @@ keystone:
   jwt_secret: "test-secret"
   token_ttl: 24h
   admin_user: "admin"
-  admin_password: "secret"
+  admin_password: "test-admin-password"
 
 nova:
   port: 8774
@@ -810,14 +810,28 @@ func writeTestConfig(t *testing.T, body string) string {
 	return tmp.Name()
 }
 
+// hermeticGuardEnv neutralizes secret-related environment a developer shell
+// may carry (LIGHTSTACK_JWT_SECRET, the opt-out hatch), so the guard tests
+// observe the config file and nothing else.
+func hermeticGuardEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("LIGHTSTACK_JWT_SECRET", "")
+	t.Setenv("LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET", "")
+}
+
 // TestLoadConfigRefusesInsecureDefaultJWTSecret pins the S2 guard: the secrets
 // shipped in this repository's config and examples are public, and tokens are
 // stateless — knowing one is enough to mint an admin token for every service.
+// Case variants and surrounding whitespace are refused too: the uppercase
+// spelling shipped in deployments/README-KVM.md is the same placeholder.
 func TestLoadConfigRefusesInsecureDefaultJWTSecret(t *testing.T) {
+	hermeticGuardEnv(t)
 	for _, secret := range []string{
 		"",                        // omitted from the file
 		"change-me-in-production", // config/lightstack.yaml
 		"change-me-in-production-use-openssl-rand-base64-32", // .env.example
+		"CHANGE-ME-IN-PRODUCTION",                            // deployments/README-KVM.md
+		"  change-me-in-production  ",
 	} {
 		body := "keystone:\n  jwt_secret: \"" + secret + "\"\n"
 		_, err := LoadConfig(writeTestConfig(t, body))
@@ -831,18 +845,72 @@ func TestLoadConfigRefusesInsecureDefaultJWTSecret(t *testing.T) {
 	}
 }
 
+// TestLoadConfigRefusesInsecureDefaultAdminPassword pins the admin half of
+// the guard: config/lightstack.yaml ships admin_password "secret", which is
+// public and authenticates as the bootstrap admin directly. Empty is refused
+// whenever an admin account is configured (the seeded account would accept an
+// empty password); a config that omits both admin fields seeds no account and
+// must keep loading (the minimal fixtures above the guard tests rely on it).
+func TestLoadConfigRefusesInsecureDefaultAdminPassword(t *testing.T) {
+	hermeticGuardEnv(t)
+	const goodSecret = "k4FNxqKmLwW3ZRFvMscJ0d1oO5gYhN"
+	for _, tc := range []struct {
+		name     string
+		password string
+	}{
+		{"shipped default", "secret"},
+		{"uppercase default", "SECRET"},
+		{"padded default", "  secret  "},
+		{"empty with a user", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "keystone:\n  jwt_secret: \"" + goodSecret + "\"\n  admin_user: admin\n  admin_password: \"" + tc.password + "\"\n"
+			_, err := LoadConfig(writeTestConfig(t, body))
+			if err == nil {
+				t.Fatalf("LoadConfig accepted admin_password %q; want refusal", tc.password)
+			}
+			if !strings.Contains(err.Error(), "admin_password") {
+				t.Errorf("error does not name admin_password: %v", err)
+			}
+		})
+	}
+
+	// Both admin fields omitted: no account is seeded, no credentials to
+	// guard — must keep loading (this is what every minimal fixture looks
+	// like).
+	if _, err := LoadConfig(writeTestConfig(t, "keystone:\n  jwt_secret: \""+goodSecret+"\"\n")); err != nil {
+		t.Errorf("LoadConfig without admin fields: %v; want acceptance", err)
+	}
+
+	// A random password with a random secret: the positive control.
+	body := "keystone:\n  jwt_secret: \"" + goodSecret + "\"\n  admin_user: admin\n  admin_password: \"T3st-Not-The-Shipped-Default\"\n"
+	cfg, err := LoadConfig(writeTestConfig(t, body))
+	if err != nil {
+		t.Fatalf("LoadConfig with a random admin password: %v", err)
+	}
+	if cfg.Keystone.AdminPassword != "T3st-Not-The-Shipped-Default" {
+		t.Errorf("AdminPassword = %q; want it preserved", cfg.Keystone.AdminPassword)
+	}
+}
+
 // TestLoadConfigAllowsInsecureDefaultSecretWithOverride pins the documented
-// escape hatch for isolated development and test stacks.
+// escape hatch for isolated development and test stacks — for both halves of
+// the guard.
 func TestLoadConfigAllowsInsecureDefaultSecretWithOverride(t *testing.T) {
+	hermeticGuardEnv(t) // a developer shell's LIGHTSTACK_JWT_SECRET must not leak in
 	for _, opt := range []string{"1", "true"} {
 		t.Run("opt="+opt, func(t *testing.T) {
 			t.Setenv("LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET", opt)
-			cfg, err := LoadConfig(writeTestConfig(t, "keystone:\n  jwt_secret: \"change-me-in-production\"\n"))
+			cfg, err := LoadConfig(writeTestConfig(t,
+				"keystone:\n  jwt_secret: \"change-me-in-production\"\n  admin_user: admin\n  admin_password: \"secret\"\n"))
 			if err != nil {
 				t.Fatalf("LoadConfig with override %q: %v", opt, err)
 			}
 			if cfg.Keystone.JWTSecret != "change-me-in-production" {
 				t.Errorf("JWTSecret = %q; want it passed through unchanged", cfg.Keystone.JWTSecret)
+			}
+			if cfg.Keystone.AdminPassword != "secret" {
+				t.Errorf("AdminPassword = %q; want it passed through unchanged", cfg.Keystone.AdminPassword)
 			}
 		})
 	}
@@ -851,6 +919,7 @@ func TestLoadConfigAllowsInsecureDefaultSecretWithOverride(t *testing.T) {
 // TestLoadConfigAcceptsARandomSecret is the positive control for the guard: a
 // non-default secret loads without any opt-in.
 func TestLoadConfigAcceptsARandomSecret(t *testing.T) {
+	hermeticGuardEnv(t)
 	cfg, err := LoadConfig(writeTestConfig(t, "keystone:\n  jwt_secret: \"k4FNxqKmLwW3ZRFvMscJ0d1oO5gYhN\"\n"))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -865,11 +934,44 @@ func TestLoadConfigAcceptsARandomSecret(t *testing.T) {
 // paths (image entrypoint, Kubernetes init container) run it against the
 // canned config before any secret is wired in.
 func TestLoadConfigForMigrationSkipsSecretGuard(t *testing.T) {
+	hermeticGuardEnv(t)
 	cfg, err := LoadConfigForMigration(writeTestConfig(t, "database:\n  url: postgres://u:p@h/l\n"))
 	if err != nil {
 		t.Fatalf("LoadConfigForMigration: %v", err)
 	}
 	if cfg.Database.URL != "postgres://u:p@h/l" {
 		t.Errorf("Database.URL = %q; want it preserved", cfg.Database.URL)
+	}
+}
+
+// TestLoadConfigAdminPasswordEnvOverride pins the container path: the image
+// ships the canned config (admin_password "secret"), so `docker run` injects
+// the real password through the environment like the JWT secret.
+func TestLoadConfigAdminPasswordEnvOverride(t *testing.T) {
+	hermeticGuardEnv(t)
+	t.Setenv("LIGHTSTACK_ADMIN_PASSWORD", "injected-through-env")
+	body := "keystone:\n  jwt_secret: \"k4FNxqKmLwW3ZRFvMscJ0d1oO5gYhN\"\n  admin_user: admin\n  admin_password: \"secret\"\n"
+	cfg, err := LoadConfig(writeTestConfig(t, body))
+	if err != nil {
+		t.Fatalf("LoadConfig with LIGHTSTACK_ADMIN_PASSWORD: %v", err)
+	}
+	if cfg.Keystone.AdminPassword != "injected-through-env" {
+		t.Errorf("AdminPassword = %q; want the env value", cfg.Keystone.AdminPassword)
+	}
+}
+
+// TestLoadConfigForCLISkipsSecretGuard pins the CLI subcommands' exemption
+// (cleanup, console-tokens, migrate): they run on the same host as the
+// server, whose config is only valid because the server's own process
+// carries the escape hatch — the guard must not refuse them there.
+func TestLoadConfigForCLISkipsSecretGuard(t *testing.T) {
+	hermeticGuardEnv(t)
+	body := "database:\n  url: postgres://u:p@h/l\nkeystone:\n  jwt_secret: \"change-me-in-production\"\n  admin_user: admin\n  admin_password: \"secret\"\n"
+	cfg, err := LoadConfigForCLI(writeTestConfig(t, body))
+	if err != nil {
+		t.Fatalf("LoadConfigForCLI: %v", err)
+	}
+	if cfg.Keystone.JWTSecret != "change-me-in-production" {
+		t.Errorf("JWTSecret = %q; want it preserved", cfg.Keystone.JWTSecret)
 	}
 }

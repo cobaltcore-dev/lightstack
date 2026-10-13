@@ -102,9 +102,11 @@ LABEL org.opencontainers.image.title="Lightstack" \
 
 # Run migrations and start Lightstack.
 #
-# Note on the JWT-secret guard (S2): the server refuses the canned config's
-# well-known default secret, so a bare `docker run` of this image needs
-# LIGHTSTACK_JWT_SECRET set (or LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1
+# Note on the secret guard (S2): the server refuses the canned config's
+# well-known defaults — both the JWT secret and the bootstrap admin password
+# ("admin"/"secret", which is public and authenticates as the admin directly).
+# A bare `docker run` of this image therefore needs LIGHTSTACK_JWT_SECRET and
+# LIGHTSTACK_ADMIN_PASSWORD set (or LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1
 # for an isolated dev container). lightstack-migrate above is exempt — it
 # never signs or validates a token.
 CMD ["/bin/sh", "-c", "/app/lightstack-migrate up && /app/lightstack --config /app/config/lightstack.yaml"]

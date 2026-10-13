@@ -22,19 +22,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ghcr.io` (tagged with the bare version — `0.7.0` — matching the chart's
   `appVersion` and the `image.tag` default), creates a draft GitHub Release and
   publishes the Helm chart as an OCI artifact with `appVersion` pinned to the
-  release version.
+  release version. The charts are linted, rendered and unit-tested (`make
+  chart-test`, the same gate CI runs on PRs) before `helm push` — a published
+  chart cannot be unpublished.
+- **`lightstack migrate` subcommand** (review round follow-up): applies pending
+  database migrations and exits, with `--dry-run` reporting pending ones
+  ("No migrations to run" when current). `scripts/deploy-single-node.sh` and
+  `scripts/upgrade-lightstack.sh` have always called it — previously the
+  positional fell through to flag parsing and started the server instead of
+  migrating.
 - **Chart version** 0.3.0 → 0.4.0 (appVersion 0.7.0, matching the target release).
 
 ### 🔒 Security
 - **Refuse well-known/empty JWT secrets at startup** (review S2): the defaults
   shipped in `config/lightstack.yaml` and `.env.example` are public, and with
   stateless tokens knowing one is enough to mint an admin token. `LoadConfig` now
-  refuses them; `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1` is the documented
+  refuses them — case-insensitively and ignoring surrounding whitespace, so the
+  uppercase spelling in `deployments/README-KVM.md` is caught too (that example
+  now generates a per-deployment secret instead). It also refuses a well-known
+  or empty `keystone.admin_password` whenever an admin account is configured —
+  `admin`/`secret` authenticates as the bootstrap admin directly. A
+  `LIGHTSTACK_ADMIN_PASSWORD` environment override (mirroring
+  `LIGHTSTACK_JWT_SECRET`) lets `docker run` inject the real password without
+  mounting a config.
+  `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1` is the documented
   escape hatch for isolated dev/test stacks (the plain docker-compose dev stacks
   and `make run` opt in explicitly; the Horizon stack and the Helm chart already
-  require a real secret). `lightstack-migrate` is exempt — it never signs or
-  validates a token, and the image entrypoint and the documented Kubernetes init
-  container run it against the canned config before any secret is wired in.
+  require a real secret). `lightstack-migrate` and the operational CLI
+  subcommands (`cleanup`, `console-tokens`, `migrate`) are exempt — they never
+  sign or validate a token, and the image entrypoint and the documented
+  Kubernetes init container run migrations against the canned config before any
+  secret is wired in.
   Consequently a bare `docker run` of the image now requires `LIGHTSTACK_JWT_SECRET`
   (fail-closed by design; see the comment above the Dockerfile `CMD`).
 - **Horizon default role** corrected: `OPENSTACK_KEYSTONE_DEFAULT_ROLE` is `member`

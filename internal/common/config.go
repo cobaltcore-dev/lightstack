@@ -272,6 +272,15 @@ func LoadConfigForMigration(path string) (*Config, error) {
 	return loadConfig(path, false)
 }
 
+// LoadConfigForCLI loads configuration for the operational CLI subcommands
+// (cleanup, console-tokens, migrate). Like the migration tool they neither
+// sign nor validate tokens, and they are typically run on the same host as
+// the server — whose own config is only valid because the server's process
+// carries the escape hatch. The guard must not refuse them there.
+func LoadConfigForCLI(path string) (*Config, error) {
+	return loadConfig(path, false)
+}
+
 // loadConfig is the shared loader; enforceSecretGuard selects the S2 check.
 func loadConfig(path string, enforceSecretGuard bool) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -290,6 +299,13 @@ func loadConfig(path string, enforceSecretGuard bool) (*Config, error) {
 	}
 	if jwtSecret := os.Getenv("LIGHTSTACK_JWT_SECRET"); jwtSecret != "" {
 		cfg.Keystone.JWTSecret = jwtSecret
+	}
+	// The bootstrap admin password (seeds the admin account on first start;
+	// see internal/keystone BootstrapAdmin). Same read-only-mount rationale
+	// as LIGHTSTACK_JWT_SECRET — the container image ships the canned config,
+	// so `docker run` needs to inject both secrets through the environment.
+	if adminPassword := os.Getenv("LIGHTSTACK_ADMIN_PASSWORD"); adminPassword != "" {
+		cfg.Keystone.AdminPassword = adminPassword
 	}
 	// Ceph RGW compatibility (keystone.rgw_compat_tenant_ids). Two-way override:
 	// an operator must be able to flip it from the env in either direction when
@@ -394,21 +410,39 @@ func loadConfig(path string, enforceSecretGuard bool) (*Config, error) {
 		cfg.Nova.ShutdownTimeout = MaxShutdownTimeout
 	}
 
-	// Refuse well-known (or empty) JWT secrets unless explicitly overridden.
-	// The defaults below ship in this repository and in .env.example, so anyone
-	// can read them — and because tokens are stateless, knowing the secret is
-	// enough to mint an admin token for every service (review finding S2,
-	// docs/review/comprehensive-review-report-2026-10-12.md). The chart already
-	// fails fast on an empty secret; this gives the binary the same stance.
-	// Skipped by LoadConfigForMigration (the migration tool is outside the
-	// token trust domain).
-	if enforceSecretGuard && isInsecureDefaultJWTSecret(cfg.Keystone.JWTSecret) && !allowInsecureDefaultJWTSecret() {
-		return nil, fmt.Errorf(
-			"keystone.jwt_secret is empty or a well-known default — refusing to start. " +
-				"Set keystone.jwt_secret in the config file (or the LIGHTSTACK_JWT_SECRET " +
-				"environment variable) to a random value, e.g. `openssl rand -base64 32`. " +
-				"For isolated development or test environments only, " +
-				"LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 opts out of this check")
+	// Refuse well-known (or empty) JWT secrets and admin passwords unless
+	// explicitly overridden. The defaults below ship in this repository and in
+	// .env.example, so anyone can read them — and because tokens are stateless,
+	// knowing the JWT secret is enough to mint an admin token for every service
+	// (review finding S2, docs/review/comprehensive-review-report-2026-10-12.md),
+	// while knowing the bootstrap admin password authenticates as that admin
+	// directly. The chart already fails fast on an empty secret; this gives the
+	// binary the same stance. Matching is case-insensitive and whitespace-
+	// trimmed: a "CHANGE-ME-IN-PRODUCTION" in deployments/README-KVM.md must be
+	// caught just like the lowercase original. Skipped by LoadConfigForMigration
+	// and LoadConfigForCLI (both are outside the token trust domain).
+	if enforceSecretGuard && !insecureDefaultSecretOptOut() {
+		if isInsecureDefaultSecret(cfg.Keystone.JWTSecret, insecureDefaultJWTSecrets) {
+			return nil, fmt.Errorf(
+				"keystone.jwt_secret is empty or a well-known default — refusing to start. " +
+					"Set keystone.jwt_secret in the config file (or the LIGHTSTACK_JWT_SECRET " +
+					"environment variable) to a random value, e.g. `openssl rand -base64 32`. " +
+					"For isolated development or test environments only, " +
+					"LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 opts out of this check")
+		}
+		// Only enforced when an admin account is actually configured: minimal
+		// test fixtures legitimately omit both fields (no account is seeded).
+		if cfg.Keystone.AdminUser != "" || cfg.Keystone.AdminPassword != "" {
+			if isInsecureDefaultSecret(cfg.Keystone.AdminPassword, insecureDefaultAdminPasswords) {
+				return nil, fmt.Errorf(
+					"keystone.admin_password is empty or a well-known default — refusing to start. " +
+						"Set keystone.admin_password in the config file (or the " +
+						"LIGHTSTACK_ADMIN_PASSWORD environment variable) to a random value " +
+						"(it seeds the bootstrap admin account). For isolated development or " +
+						"test environments only, LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 " +
+						"opts out of this check")
+			}
+		}
 	}
 
 	return &cfg, nil
@@ -421,16 +455,41 @@ var insecureDefaultJWTSecrets = map[string]struct{}{
 	"":                        {},
 	"change-me-in-production": {},
 	"change-me-in-production-use-openssl-rand-base64-32": {},
+	// deployments/README-KVM.md's example placeholder — copy-pasting the doc
+	// verbatim must be caught like the config file's own default.
+	"paste-output-of-openssl-rand-base64-32": {},
 }
 
-func isInsecureDefaultJWTSecret(secret string) bool {
-	_, known := insecureDefaultJWTSecrets[secret]
-	return known
+// insecureDefaultAdminPasswords are the well-known bootstrap-admin passwords
+// shipped in this repository (config/lightstack.yaml: "secret") and left by
+// operators who never changed it. Empty is refused when an admin user is
+// configured — the seeded account would authenticate with an empty password.
+var insecureDefaultAdminPasswords = map[string]struct{}{
+	"":       {},
+	"secret": {},
 }
 
-// allowInsecureDefaultJWTSecret is the documented escape hatch for stub-mode
-// development and test stacks that never validate a foreign token.
-func allowInsecureDefaultJWTSecret() bool {
+// isInsecureDefaultSecret reports whether secret is in the well-known-default
+// denylist, ignoring case and surrounding whitespace (docs have shipped the
+// uppercase spelling of the same placeholders).
+func isInsecureDefaultSecret(secret string, known map[string]struct{}) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(secret))
+	if _, ok := known[trimmed]; ok {
+		return true
+	}
+	for candidate := range known {
+		if strings.ToLower(candidate) == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// insecureDefaultSecretOptOut is the documented escape hatch for stub-mode
+// development and test stacks that never validate a foreign token and never
+// face an untrusted network. It opts out of both the JWT-secret and the
+// admin-password checks.
+func insecureDefaultSecretOptOut() bool {
 	switch os.Getenv("LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET") {
 	case "1", "true":
 		return true

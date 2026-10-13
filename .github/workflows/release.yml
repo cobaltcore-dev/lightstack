@@ -160,6 +160,26 @@ jobs:
             dist/lightstack-migrate-${{ github.ref_name }}-*-*
             dist/checksums-*
 
+      # The same validation CI runs on every PR (the helm-check job): lint,
+      # render and unit-test both charts. The release must not publish a
+      # chart that CI would have rejected — helm push cannot be undone.
+      - name: Install Helm and the helm-unittest plugin
+        run: |
+          if ! command -v helm >/dev/null 2>&1; then
+            # Downloaded, not piped: the default run shell is `bash -e` without
+            # pipefail, so `curl ... | bash` would swallow a failed download.
+            curl -fsSL -o "$RUNNER_TEMP/get-helm-3" \
+              https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+            bash "$RUNNER_TEMP/get-helm-3"
+          fi
+          if ! helm plugin list 2>/dev/null | grep -q '^unittest'; then
+            helm plugin install https://github.com/helm-unittest/helm-unittest
+          fi
+          helm version --short
+
+      - name: Validate Helm charts before publishing
+        run: make chart-test
+
       - name: Publish Helm chart
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
