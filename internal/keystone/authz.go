@@ -1,0 +1,42 @@
+package keystone
+
+import (
+	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+// The identity management API is authentication-only by transport: every route
+// under /v3 (except /auth/*) requires a valid token. What it historically did
+// NOT require is authorization — the management surface (users, projects,
+// roles, assignments, groups, domains, catalog, credentials) honored any
+// authenticated caller, so a plain member could reset the admin's password,
+// self-grant the admin role, or dump another tenant's S3 secret. These helpers
+// put the same check the EC2-credentials API and ChangePassword already use
+// (self-or-admin) plus the admin-only variant across that surface.
+//
+// Convention (cloud-storage#515, asserted by TestIdentityAuthzPrecedence):
+// on a route with an authz check, the check runs in-handler BEFORE id
+// validation, so a caller without permission gets 403 even for a malformed id.
+// Such routes therefore sit on `mgmt` (no uuidParamMiddleware) and validate
+// their path ids with denyIfMalformedID below, after the authz decision.
+
+// denyIfNotAdmin writes a 403 and returns true unless the caller holds the
+// admin role.
+func denyIfNotAdmin(c *gin.Context) bool {
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("admin role required"))
+		return true
+	}
+	return false
+}
+
+// denyIfMalformedID writes the Keystone-verbatim 404 and returns true when id
+// is not a well-formed UUID. Call it after the authz check (see above).
+func denyIfMalformedID(c *gin.Context, kind, id string) bool {
+	if uuid.Validate(id) != nil {
+		common.SendError(c, common.NewIdentityNotFoundError(kind, id))
+		return true
+	}
+	return false
+}

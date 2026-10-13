@@ -14,6 +14,13 @@ import (
 
 // ListServices returns all services in the catalog
 func (svc *Service) ListServices(c *gin.Context) {
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+
 	var f listFilter
 	f.eq(c, "type", "type")
 	f.eq(c, "name", "name")
@@ -63,6 +70,13 @@ func (svc *Service) ListServices(c *gin.Context) {
 
 // CreateService creates a new service in the catalog
 func (svc *Service) CreateService(c *gin.Context) {
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+
 	var req struct {
 		Service struct {
 			Type        string `json:"type" binding:"required"`
@@ -114,6 +128,17 @@ func (svc *Service) CreateService(c *gin.Context) {
 func (svc *Service) GetService(c *gin.Context) {
 	serviceID := c.Param("id")
 
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "service", serviceID) {
+		return
+	}
+
 	var id, svcType, name string
 	var description *string
 	var enabled bool
@@ -152,6 +177,17 @@ func (svc *Service) GetService(c *gin.Context) {
 func (svc *Service) DeleteService(c *gin.Context) {
 	serviceID := c.Param("id")
 
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "service", serviceID) {
+		return
+	}
+
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM services WHERE id = $1",
 		serviceID)
@@ -173,6 +209,17 @@ func (svc *Service) DeleteService(c *gin.Context) {
 // UpdateService updates a service (PATCH /v3/services/:id)
 func (svc *Service) UpdateService(c *gin.Context) {
 	serviceID := c.Param("id")
+
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "service", serviceID) {
+		return
+	}
 
 	// Parse request body
 	var req struct {
@@ -256,6 +303,13 @@ func (svc *Service) UpdateService(c *gin.Context) {
 
 // ListEndpoints returns all endpoints in the catalog
 func (svc *Service) ListEndpoints(c *gin.Context) {
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+
 	var f listFilter
 	f.eq(c, "interface", "e.interface")
 	f.eqID(c, "service_id", "e.service_id")
@@ -308,6 +362,13 @@ func (svc *Service) ListEndpoints(c *gin.Context) {
 
 // CreateEndpoint creates a new endpoint in the catalog
 func (svc *Service) CreateEndpoint(c *gin.Context) {
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+
 	var req struct {
 		Endpoint struct {
 			ServiceID string `json:"service_id" binding:"required"`
@@ -359,6 +420,17 @@ func (svc *Service) CreateEndpoint(c *gin.Context) {
 // DeleteEndpoint deletes an endpoint from the catalog
 func (svc *Service) DeleteEndpoint(c *gin.Context) {
 	endpointID := c.Param("id")
+
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "endpoint", endpointID) {
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM endpoints WHERE id = $1",

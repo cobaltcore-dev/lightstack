@@ -13,6 +13,13 @@ import (
 
 // ListGroups handles GET /v3/groups
 func (svc *Service) ListGroups(c *gin.Context) {
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+
 	var f listFilter
 	f.eq(c, "name", "name")
 	f.eqDomain(c, "domain_id", "domain_id")
@@ -60,6 +67,13 @@ func (svc *Service) ListGroups(c *gin.Context) {
 
 // CreateGroup handles POST /v3/groups
 func (svc *Service) CreateGroup(c *gin.Context) {
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+
 	var req struct {
 		Group struct {
 			Name        string `json:"name" binding:"required"`
@@ -124,6 +138,17 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 func (svc *Service) GetGroup(c *gin.Context) {
 	groupID := c.Param("id")
 
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "group", groupID) {
+		return
+	}
+
 	var name, domainID, description string
 	var createdAt time.Time
 
@@ -156,6 +181,17 @@ func (svc *Service) GetGroup(c *gin.Context) {
 // UpdateGroup handles PATCH /v3/groups/:id
 func (svc *Service) UpdateGroup(c *gin.Context) {
 	groupID := c.Param("id")
+
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "group", groupID) {
+		return
+	}
 
 	var req struct {
 		Group struct {
@@ -220,6 +256,17 @@ func (svc *Service) UpdateGroup(c *gin.Context) {
 func (svc *Service) DeleteGroup(c *gin.Context) {
 	groupID := c.Param("id")
 
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "group", groupID) {
+		return
+	}
+
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM groups WHERE id = $1",
 		groupID,
@@ -242,6 +289,17 @@ func (svc *Service) DeleteGroup(c *gin.Context) {
 // ListGroupUsers handles GET /v3/groups/:id/users
 func (svc *Service) ListGroupUsers(c *gin.Context) {
 	groupID := c.Param("id")
+
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "group", groupID) {
+		return
+	}
 
 	rows, err := svc.pool.Query(c.Request.Context(),
 		`SELECT u.id, u.name, u.domain_id, u.enabled
@@ -292,6 +350,17 @@ func (svc *Service) AddUserToGroup(c *gin.Context) {
 	groupID := c.Param("id")
 	userID := c.Param("user_id")
 
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "group", groupID) || denyIfMalformedID(c, "user", userID) {
+		return
+	}
+
 	_, err := svc.pool.Exec(c.Request.Context(),
 		`INSERT INTO group_members (group_id, user_id)
 		 VALUES ($1, $2)
@@ -311,6 +380,17 @@ func (svc *Service) AddUserToGroup(c *gin.Context) {
 func (svc *Service) RemoveUserFromGroup(c *gin.Context) {
 	groupID := c.Param("id")
 	userID := c.Param("user_id")
+
+	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if denyIfNotAdmin(c) {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "group", groupID) || denyIfMalformedID(c, "user", userID) {
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM group_members WHERE group_id = $1 AND user_id = $2",
