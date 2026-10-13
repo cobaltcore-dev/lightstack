@@ -284,12 +284,25 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		return
 	}
 
-	// Query all ports for this instance
+	// Query the instance's ports and, through each port's fixed_ips JSONB,
+	// its addresses and subnets (review 2026-10-13 N-7: this used to select
+	// `p.fixed_ip`, a column that does not exist — ports store `fixed_ips` as
+	// a JSONB array — so every request failed and network_data.json answered
+	// 500, and cloud-init fell back to DHCP or configured nothing).
+	//
+	// One row per (port, address): a link per port (one MAC, one interface),
+	// a network per address. The lateral is LEFT so a port with no address
+	// still yields its link; subnets resolve by the address's own subnet_id,
+	// not by the network, so a network with several subnets no longer fans a
+	// single port into duplicate rows.
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT p.id, p.mac_address, p.fixed_ip, p.network_id, n.name, s.cidr, s.gateway_ip, s.dns_nameservers
+		SELECT p.id, p.mac_address, COALESCE(fx->>'ip_address', ''), p.network_id, n.name,
+		       COALESCE(s.cidr, ''), COALESCE(s.gateway_ip, ''),
+		       COALESCE(s.dns_nameservers, ARRAY[]::text[])
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
-		LEFT JOIN subnets s ON p.network_id = s.network_id
+		LEFT JOIN LATERAL jsonb_array_elements(COALESCE(p.fixed_ips, '[]'::jsonb)) fx ON true
+		LEFT JOIN subnets s ON fx->>'subnet_id' IS NOT NULL AND s.id::text = fx->>'subnet_id'
 		WHERE p.device_id = $1
 		ORDER BY p.created_at
 	`, instanceID)
@@ -305,6 +318,7 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 	var networks []gin.H
 
 	linkID := 0
+	currentPort := ""
 	for rows.Next() {
 		var portID, mac, ip, networkID, networkName, cidr, gateway string
 		var dnsServers []string
@@ -315,18 +329,28 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 			return
 		}
 
-		// Create link (interface)
-		links = append(links, gin.H{
-			"id":                   fmt.Sprintf("tap%d", linkID),
-			"type":                 "bridge",
-			"ethernet_mac_address": mac,
-			"mtu":                  1500,
-		})
+		// One link per port, not per row: a port with two addresses is still
+		// one interface with one MAC.
+		if portID != currentPort {
+			currentPort = portID
+			links = append(links, gin.H{
+				"id":                   fmt.Sprintf("tap%d", linkID),
+				"type":                 "bridge",
+				"ethernet_mac_address": mac,
+				"mtu":                  1500,
+			})
+			linkID++
+		}
+
+		// An address-less port contributes its link and nothing else.
+		if ip == "" {
+			continue
+		}
 
 		// Create network config
 		netConfig := gin.H{
-			"id":         fmt.Sprintf("network%d", linkID),
-			"link":       fmt.Sprintf("tap%d", linkID),
+			"id":         fmt.Sprintf("network%d", linkID-1),
+			"link":       fmt.Sprintf("tap%d", linkID-1),
 			"type":       "ipv4",
 			"ip_address": ip,
 			"netmask":    cidrToNetmask(cidr), // Convert /24 → "255.255.255.0"
@@ -341,7 +365,6 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		}
 
 		networks = append(networks, netConfig)
-		linkID++
 	}
 	// Fail rather than serve a partial network_data.json: a missing interface would
 	// leave the guest misconfigured, and cloud-init retries on error.

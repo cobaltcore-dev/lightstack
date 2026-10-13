@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -85,8 +86,13 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	var fixedIPs []map[string]any
 	if err == nil {
-		// Allocate IP from subnet
-		allocatedIP := allocateIP(cidr)
+		// Allocate an address no other port in the subnet holds (N-4).
+		allocatedIP, allocErr := svc.allocateFreeIP(c.Request.Context(), subnetID, cidr)
+		if allocErr != nil {
+			log.Warn().Err(allocErr).Str("subnet_id", subnetID).Msg("port create: address allocation failed")
+			common.SendError(c, common.NewConflictError("no IP address available in the network's subnet"))
+			return
+		}
 		fixedIPs = []map[string]any{
 			{
 				"subnet_id":  subnetID,
@@ -663,14 +669,84 @@ func allocateIP(cidr string) string {
 	}
 	maxOffset := int64(1<<uint(hostBits)) - 2 // exclude network(0) and broadcast
 
-	n, err := rand.Int(rand.Reader, big.NewInt(maxOffset-10))
-	offset := uint(10) // fallback to offset 10 if rand fails
+	// Candidate range [10, maxOffset): low offsets are commonly taken by
+	// gateways, infra, and earlier ports. A tiny subnet (<= /29) does not have
+	// ten addresses, so fall back to the whole usable range — rand.Int panics
+	// on a non-positive bound, which this used to do for exactly those
+	// subnets (found while fixing N-4).
+	lo, hi := int64(10), maxOffset
+	if hi <= lo {
+		lo, hi = 1, maxOffset+1
+	}
+
+	n, err := rand.Int(rand.Reader, big.NewInt(hi-lo))
+	offset := uint(lo) // fallback to the lowest usable offset if rand fails
 	if err == nil {
-		offset = uint(n.Int64() + 10)
+		offset = uint(n.Int64() + lo)
 	}
 
 	ip := incrementIP(ipNet.IP, offset)
 	return ip.String()
+}
+
+// allocateFreeIP picks a random usable address in the subnet that no port in
+// it already holds (review 2026-10-13 N-4): allocateIP drew purely at random,
+// so two ports in one subnet landed on the same address at birthday-problem
+// rates — two MACs claiming one IP, dnsmasq handing it to one of them, and a
+// guest that could not reliably reach anything. The subnet's gateway (when
+// set) is excluded too: a port claiming it breaks routing for the whole
+// subnet.
+//
+// The check-then-use is not a lock: two simultaneous allocations can still
+// race for the last free address. It collapses the collision space from
+// "every existing port" to "the same instant", which for port creation — a
+// user- or boot-paced operation — is the practical fix; a DB-level exclusion
+// on the JSONB elements would be the complete one.
+func (svc *Service) allocateFreeIP(ctx context.Context, subnetID, cidr string) (string, error) {
+	used := map[string]bool{}
+	rows, err := svc.pool.Query(ctx, `
+		SELECT fx->>'ip_address'
+		FROM ports, jsonb_array_elements(fixed_ips) fx
+		WHERE fx->>'subnet_id' = $1
+	`, subnetID)
+	if err != nil {
+		return "", fmt.Errorf("reading the subnet's used addresses: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return "", fmt.Errorf("scanning a used address: %w", err)
+		}
+		if ip != "" {
+			used[strings.ToLower(ip)] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterating the subnet's used addresses: %w", err)
+	}
+
+	// The gateway belongs to the subnet, not to any port.
+	var gateway sql.NullString
+	if err := svc.pool.QueryRow(ctx,
+		"SELECT gateway_ip FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err == nil &&
+		gateway.Valid && gateway.String != "" {
+		used[strings.ToLower(gateway.String)] = true
+	}
+
+	// Random candidates until one is free. A hundred attempts covers any
+	// realistically dense subnet well before it is full; a subnet that is full
+	// is an error, not an infinite loop.
+	for range 100 {
+		candidate := allocateIP(cidr)
+		if candidate == "" {
+			return "", fmt.Errorf("subnet %s has no usable addresses", subnetID)
+		}
+		if !used[strings.ToLower(candidate)] {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no free address in subnet %s", subnetID)
 }
 
 // Security Groups implementation
@@ -1505,10 +1581,14 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		return nil, fmt.Errorf("looking up a subnet for network %s: %w", networkID, err)
 	}
 
-	// Allocate IP from subnet
-	allocatedIP := allocateIP(cidr)
-	if allocatedIP == "" {
-		return nil, &tenantVisibleError{msg: fmt.Sprintf("failed to allocate IP from subnet %s", subnetID)}
+	// Allocate an IP no other port in the subnet holds (review 2026-10-13
+	// N-4): the old random pick collided at birthday-problem rates, giving two
+	// ports — two MACs — the same address. Tenant-visible wording so the
+	// server's fault says what the tenant can do about it (a full or broken
+	// subnet), matching the no-subnet case above.
+	allocatedIP, allocErr := svc.allocateFreeIP(ctx, subnetID, cidr)
+	if allocErr != nil {
+		return nil, &tenantVisibleError{msg: fmt.Sprintf("failed to allocate a free IP from subnet %s", subnetID)}
 	}
 
 	fixedIPs := []map[string]any{
