@@ -15,7 +15,7 @@ Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Hor
 - ✅ **Multi-tenant isolation** enforced at database level
 - ✅ **Microversion support** (Nova 2.1-2.90, Cinder 3.0-3.71)
 - ✅ **Zero modifications required** in Horizon
-- ✅ **Production-ready** deployment
+- ✅ **Production-trackable** deployment (see the [review report](review/comprehensive-review-report-2026-10-12.md) for open release blockers)
 
 ---
 
@@ -109,16 +109,17 @@ X-Auth-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 | Service | Raw routes (incl. aliases/discovery) |
 |---------|-----------|
-| **Keystone** (Identity) | 61 |
-| **Nova** (Compute) | 72 |
-| **Neutron** (Network) | 98 |
-| **Cinder** (Block Storage) | 73 |
+| **Keystone** (Identity) | 66 |
+| **Nova** (Compute) | 74 |
+| **Neutron** (Network) | 100 |
+| **Cinder** (Block Storage) | 116 |
 | **Glance** (Image) | 38 |
-| **Total** | **342** |
+| **Total** | **394** |
 
-> The raw-route count (342, including aliases and discovery routes) covers the
-> 330-endpoint baseline with ~335 functional operations — see
-> [blueprint.md](blueprint.md) for the counting rule (the earlier "342/330 (104%)" figure is superseded).
+> Coverage is ~335 functional operations against the 330-endpoint baseline —
+> see [blueprint.md](blueprint.md) (the counting authority; its table explains
+> the per-service deductions for discovery routes and aliases) and
+> [API_COVERAGE_REPORT.md](API_COVERAGE_REPORT.md) for the earlier, superseded count.
 
 ### Microversions
 

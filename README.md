@@ -20,7 +20,7 @@ Just as **K3s** is to Kubernetes, **lightstack** is to OpenStack:
 - **Fast**: Go-based synchronous architecture (10x faster than traditional OpenStack)
 - **Simple**: One process, one database, zero message queues
 - **Drop-in Compatible**: Use existing Terraform scripts and OpenStack CLI unchanged (Horizon's UI is API-compatible but **not** a drop-in for resource management — see the [compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
-- **Production Ready**: All HIGH and MEDIUM priority features complete
+- **Production tracked**: feature-complete for the covered surface; see the [comprehensive review report](docs/review/comprehensive-review-report-2026-10-12.md) for the issues that must be fixed before the v0.7.0 release
 - **Modern**: Supports OpenStack Flamingo (2025.2) and later versions only
 
 ## 🆕 What's New since v0.6.1
@@ -432,18 +432,18 @@ The seed data creates:
 
 | Service | Status |
 |---------|--------|
-| Keystone (Identity) | ✅ Production Ready |
-| Nova (Compute) | ✅ Production Ready |
-| Neutron (Network) | ✅ Production Ready |
-| Cinder (Block Storage) | ✅ Production Ready |
-| Glance (Image) | ✅ Production Ready |
+| Keystone (Identity) | ✅ Feature-complete for the covered surface |
+| Nova (Compute) | ✅ Feature-complete for the covered surface |
+| Neutron (Network) | ✅ Feature-complete for the covered surface |
+| Cinder (Block Storage) | ✅ Feature-complete for the covered surface |
+| Glance (Image) | ✅ Feature-complete for the covered surface |
 | Placement | ⚠️ Stub (version discovery + empty listings, for Horizon) |
 
 **See [docs/blueprint.md](docs/blueprint.md) for the reconciled, per-resource coverage analysis.** (The earlier "104% (342/330)" figure counted raw routes — URL aliases and version discovery — and is superseded.)
 
 **Priority Status**:
-- ✅ **HIGH Priority**: 100% complete (all critical production features)
-- ✅ **MEDIUM Priority**: 100% complete (all important management features)
+- ✅ **HIGH Priority**: complete for the covered surface (see the [review report](docs/review/comprehensive-review-report-2026-10-12.md) for open release blockers)
+- ✅ **MEDIUM Priority**: complete for the covered surface
 - ⏳ **LOW Priority**: Optional only (enterprise SSO, DVR - <5% demand)
 
 ### Testing & Validation

@@ -1146,7 +1146,7 @@ sudo ceph osd reweight osd.1 0.9
 
 ## Conclusion
 
-This scaling guide provides a production-ready Lightstack deployment with:
+This scaling guide provides a deployment pattern for a multi-node Lightstack with:
 - ✅ High Availability (2-3 controllers)
 - ✅ Horizontal Scaling (N compute nodes)
 - ✅ Shared Storage (Ceph RBD)
@@ -1165,5 +1165,5 @@ This scaling guide provides a production-ready Lightstack deployment with:
 ---
 
 **Document Version**: 1.0
-**Last Updated**: March 17, 2026
+**Last Updated**: October 12, 2026
 **Tested On**: Ubuntu 24.04 LTS (3-node cluster)

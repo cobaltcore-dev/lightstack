@@ -239,7 +239,7 @@ All install paths seed the same identity:
 | `The resource could not be found` (404) on auth | Wrong `OS_AUTH_URL` path — it must end in `/v3`. |
 | Authentication fails | Domain names are case-sensitive: `OS_USER_DOMAIN_NAME=Default`. |
 | Compose build fails | Run from the repo root with `-f deployments/docker-compose.yml`. |
-| Port already in use | Something else holds 35357/8774/9696/8776/9292/8775 — stop it or edit the port mapping. |
+| Port already in use | Something else holds 35357/8774/9696/8776/9292/8775 (plus 5432/6379 for the stack's postgres/redis) — stop it or edit the port mapping. |
 
 More: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 

@@ -200,12 +200,18 @@ docker compose logs lightstack | grep "slow query"
 
 ### Prometheus Metrics (Future)
 
+Lightstack exposes **no `/metrics` endpoint and no Prometheus listener as of
+v0.6.x** — the monitoring surface today is the per-service health endpoints
+(`lightstack healthcheck`, the `/v3`-style unauthenticated liveness probes) and
+the structured JSON logs. A Prometheus exporter is planned; when it ships, the
+expected shape is:
+
 ```bash
-# Endpoint (when implemented)
+# Endpoint (once implemented)
 curl http://localhost:9090/metrics
 ```
 
-**Key metrics:**
+**Planned metric names** (illustrative — none exist yet):
 - `lightstack_api_requests_total{service="nova",method="POST",status="200"}`
 - `lightstack_api_request_duration_seconds{service="nova"}`
 - `lightstack_database_connections{state="active"}`

@@ -19,7 +19,7 @@ Complete guide for deploying Lightstack using Docker and Docker Compose.
 
 ## Overview
 
-Lightstack provides a production-ready Docker Compose deployment that includes:
+Lightstack provides a Docker Compose deployment that includes:
 
 - **lightstack service** - All OpenStack APIs in one container
 - **PostgreSQL** - Persistent database storage
@@ -749,7 +749,7 @@ Mount the adjusted file as shown in [Custom Configuration File](#custom-configur
 - ✅ Data persistence
 - ✅ Easy updates (`docker compose -f deployments/docker-compose.yml build && docker compose -f deployments/docker-compose.yml up -d`)
 - ✅ Multi-architecture support (ARM64 + AMD64)
-- ✅ Production-ready configuration
+- ✅ Production-trackable configuration (set real secrets before exposing it — the compose defaults are for evaluation only; see the [review report](review/comprehensive-review-report-2026-10-12.md))
 
 **Next steps:**
 - [QUICKSTART.md](QUICKSTART.md) - Create your first VM

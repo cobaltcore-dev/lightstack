@@ -1171,5 +1171,5 @@ docker compose up -d
 ---
 
 **Document Version**: 1.0
-**Last Updated**: March 17, 2026
+**Last Updated**: October 12, 2026
 **Tested On**: Ubuntu 24.04 LTS with KVM

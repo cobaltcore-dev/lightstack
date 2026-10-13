@@ -65,9 +65,9 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
   - 8775 (Metadata)
   - 8776 (Cinder)
   - 9292 (Glance)
+  - 9696 (Neutron)
 
   (PostgreSQL runs network-internal — no host port needed.)
-  - 9696 (Neutron)
 - **System Resources**:
   - 4GB RAM minimum (8GB recommended)
   - 20GB disk space minimum

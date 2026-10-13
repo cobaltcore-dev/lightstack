@@ -70,7 +70,7 @@ openssl rand -hex 32
 
 ### ConfigMap
 
-The ConfigMap carries the full `lightstack.yaml` configuration. The database password and JWT secret are injected at runtime via environment variables (the application reads `LIGHTSTACK_DB_URL` and `LIGHTSTACK_JWT_SECRET` when present, overriding the config file values).
+The ConfigMap carries the full `lightstack.yaml` configuration. The database URL and JWT secret are injected at runtime via environment variables (the application reads `LIGHTSTACK_DB_URL` and `LIGHTSTACK_JWT_SECRET` when present, overriding the config file values) — so the ConfigMap itself contains **neither**: Kubernetes expands `$(VAR)` only in container `env:` values, never in ConfigMap data, and the Lightstack loader performs no `${...}` expansion either, so anything left in the file is used verbatim.
 
 ```yaml
 apiVersion: v1
@@ -81,7 +81,7 @@ metadata:
 data:
   lightstack.yaml: |
     database:
-      url: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
+      # No url: here — LIGHTSTACK_DB_URL supplies it (see the Deployment env)
       max_connections: 50
       min_connections: 2
       max_conn_lifetime: 1h
@@ -90,10 +90,13 @@ data:
 
     keystone:
       port: 35357
-      jwt_secret: "overridden-by-env"
+      # No jwt_secret: here — LIGHTSTACK_JWT_SECRET supplies it
       token_ttl: 24h
       admin_user: admin
-      admin_password: secret
+      # Substitute a real value before applying (or wire a Secret + env into
+      # your own rendering) — the well-known default must not reach a real
+      # deployment.
+      admin_password: "CHANGE_ME_before_applying"
 
     compute:
       node_id: auto

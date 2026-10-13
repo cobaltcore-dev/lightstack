@@ -1006,13 +1006,13 @@ secrets through the environment variables the loader applies *over* the file —
 the file itself:
 
 ```bash
-export DB_PASSWORD="..."; export JWT_SECRET="$(openssl rand -base64 32)"
+export DB_PASSWORD="..."; export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
 ```
 
 ```yaml
 database:
-  # ${...} below is NOT expanded by Lightstack — set LIGHTSTACK_DB_URL instead
-  # (shown under the file). The placeholder host/user stay in the file.
+  # The URL itself comes from LIGHTSTACK_DB_URL (shown under the file) —
+  # the file performs no ${...} expansion.
   max_connections: 50
 
 keystone:
@@ -1065,7 +1065,8 @@ compute:
   vxlan_port: 4789
 
 keystone:
-  jwt_secret: "${JWT_SECRET}"
+  # Set via LIGHTSTACK_JWT_SECRET, not through the file:
+  #   export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
 
 nova:
   libvirt_mode: real
