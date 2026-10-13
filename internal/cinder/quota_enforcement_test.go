@@ -529,15 +529,25 @@ func TestQuotaConcurrentCreates(t *testing.T) {
 // assertion is the one that matters, since it holds even if the HTTP codes race.
 
 // concurrentQuotaReqs fires n identical requests at once and reports how many were
-// accepted.
+// accepted. admin marks the caller's role: os-volume-manage is admin-only (review
+// 2026-10-13 H-3) while still consuming the target project's quota, so its test
+// drives the route as an administrator.
 func concurrentQuotaReqs(r *gin.Engine, n int, method, path, body string) []int {
+	return concurrentQuotaReqsAs(r, n, method, path, body, "member")
+}
+
+func concurrentQuotaReqsAs(r *gin.Engine, n int, method, path, body, roles string) []int {
 	codes := make([]int, n)
 	var wg sync.WaitGroup
 	for i := range codes {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			codes[i], _ = quotaReq(r, method, path, body, quotaProject)
+			codes[i], _ = doReq(r, method, path, body, map[string]string{
+				"X-Test-Project": quotaProject,
+				"X-Test-User":    "00000000-0000-0000-0000-000000000001",
+				"X-Test-Roles":   roles,
+			})
 		}(i)
 	}
 	wg.Wait()
@@ -651,6 +661,9 @@ func TestQuotaConcurrentExtends(t *testing.T) {
 // and with it the old checkVolumeQuota: that helper ran the ceiling read, the count check
 // and the gigabytes check as three separate round trips under two separate lock
 // acquisitions, so its own three parts were not atomic with each other either.
+// The caller is an administrator because os-volume-manage is admin-only (review
+// 2026-10-13 H-3) — upstream's volume_admin_actions:manage — while the import still
+// consumes the target project's quota.
 func TestQuotaConcurrentManagedVolumes(t *testing.T) {
 	requireDB(t)
 	seedQuotaProject(t)
@@ -659,7 +672,7 @@ func TestQuotaConcurrentManagedVolumes(t *testing.T) {
 	r := quotaRouter(t)
 
 	body := `{"volume":{"host":"h1","ref":{"source-name":"race"},"name":"race"}}`
-	codes := concurrentQuotaReqs(r, 4, http.MethodPost, "/v3/"+quotaProject+"/os-volume-manage", body)
+	codes := concurrentQuotaReqsAs(r, 4, http.MethodPost, "/v3/"+quotaProject+"/os-volume-manage", body, "admin")
 
 	if n := countAccepted(codes); n != 1 {
 		t.Errorf("concurrent managed imports against one remaining allowance: %d accepted (codes %v); want exactly 1", n, codes)

@@ -2,6 +2,7 @@ package cinder
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -318,8 +319,11 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 		return
 	}
 
-	// Verify auth key
-	if req.Accept.AuthKey != storedAuthKey {
+	// Verify auth key. Constant-time (review 2026-10-13 L-1): a plain string
+	// compare short-circuits on the first differing byte, and a transfer id is
+	// cheap to enumerate, so the key could be recovered byte-by-byte from
+	// response timing.
+	if subtle.ConstantTimeCompare([]byte(req.Accept.AuthKey), []byte(storedAuthKey)) != 1 {
 		common.SendError(c, common.NewBadRequestError("invalid auth key"))
 		return
 	}

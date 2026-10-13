@@ -13,6 +13,16 @@ import (
 
 // ManageVolume handles POST /v3/os-volume-manage
 func (svc *Service) ManageVolume(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-3): volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+		return
+	}
+
 	projectID := c.GetString("project_id")
 
 	var req struct {
@@ -72,6 +82,16 @@ func (svc *Service) ManageVolume(c *gin.Context) {
 
 // ListManageableVolumes handles GET /v3/manageable_volumes
 func (svc *Service) ListManageableVolumes(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-3): volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+		return
+	}
+
 	host := c.Query("host")
 
 	if host == "" {
@@ -88,6 +108,16 @@ func (svc *Service) ListManageableVolumes(c *gin.Context) {
 
 // UnmanageVolume handles volume action: os-unmanage
 func (svc *Service) UnmanageVolume(c *gin.Context, volumeID string) {
+	// Admin-only (review 2026-10-13 H-3): volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+		return
+	}
+
 	projectID := c.GetString("project_id")
 
 	// Verify volume exists and belongs to project
