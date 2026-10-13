@@ -2,6 +2,7 @@ package glance
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -102,5 +103,40 @@ func TestImageCacheManagementAdminOnly_DB(t *testing.T) {
 	var cached bool
 	if err := testPool.QueryRow(ctx, "SELECT cached_at IS NOT NULL FROM images WHERE id=$1", id).Scan(&cached); err != nil || !cached {
 		t.Errorf("denied cache clear still took effect (cached=%v err=%v)", cached, err)
+	}
+}
+
+// TestOverCapUploadAnswers413 pins the round-3 fix for the M-3 cap: a body
+// over maxImageUploadBytes must answer 413 (upstream's image_size_cap
+// semantics). The cap is a var so the test can lower it instead of streaming
+// 10 GiB; in stub mode the store's read surfaces http.MaxBytesError raw, and
+// in local mode it is wrapped with %w — errors.As covers both.
+func TestOverCapUploadAnswers413(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+
+	id := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO images (id, name, project_id, status, visibility) VALUES ($1,'cap-me',$2,'queued','private')`,
+		id, seededProjectID); err != nil {
+		t.Fatalf("insert image: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM images WHERE id=$1", id) })
+
+	origCap := maxImageUploadBytes
+	maxImageUploadBytes = 8
+	t.Cleanup(func() { maxImageUploadBytes = origCap })
+
+	r := newGlanceTestRouter(t)
+	code, body := doReqBody(r, "PUT", "/images/"+id+"/file",
+		"this body is longer than eight bytes", hdr(seededProjectID, "member"))
+	if code != http.StatusRequestEntityTooLarge {
+		t.Errorf("over-cap upload: code=%d body=%s; want 413", code, body)
+	}
+
+	// And the image is left queued, not stuck in saving.
+	var status string
+	if err := testPool.QueryRow(ctx, "SELECT status FROM images WHERE id=$1", id).Scan(&status); err != nil || status != "queued" {
+		t.Errorf("image status after refused upload = %q (err=%v); want queued", status, err)
 	}
 }

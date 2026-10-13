@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -58,6 +59,10 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	var networkID string
 	var fixedIP string
 	var macAddress string
+	// fixedIPEntries is what the response reports as the attachment's
+	// fixed_ips: the port's actual entries (port_id path) or the one just
+	// allocated (net_id path). Empty means none — not a fabricated one.
+	var fixedIPEntries []gin.H
 	// novaCreatedPort is true when this request had Nova create the port
 	// (net_id path); false when it attached a port the tenant already owned
 	// (port_id path). It decides the device_owner stamp below (N-8).
@@ -67,16 +72,27 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	if req.InterfaceAttachment.PortID != "" {
 		portID = req.InterfaceAttachment.PortID
 
-		// Verify port exists and is available
+		// Verify port exists and is available. device_id is nullable — every
+		// free port has NULL there — so it is read COALESCE'd rather than
+		// scanned into a plain string (round 3 of this review): that scan
+		// fails on NULL, and the error used to be dropped, leaving the attach
+		// "correct" only because pgx fills earlier columns before the failed
+		// one. Any real database error on this lookup surfaced the same way:
+		// a bogus 200 with an empty net_id and MAC.
 		var deviceID string
 		var fixedIPsJSON []byte
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT network_id, fixed_ips, mac_address, device_id FROM ports WHERE id = $1 AND project_id = $2",
+			"SELECT network_id, fixed_ips, mac_address, COALESCE(device_id::text, '') FROM ports WHERE id = $1 AND project_id = $2",
 			portID, projectID,
 		).Scan(&networkID, &fixedIPsJSON, &macAddress, &deviceID)
 
 		if errors.Is(err, pgx.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("port"))
+			return
+		}
+		if err != nil {
+			log.Error().Err(err).Str("operation", "attach_interface").Str("port_id", portID).Msg("port lookup failed")
+			common.SendError(c, common.NewInternalServerError("database error"))
 			return
 		}
 
@@ -85,15 +101,12 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			return
 		}
 
-		// Parse the port's first fixed IP for the response. Its addressing lives
-		// in the fixed_ips JSONB; a hardcoded placeholder here used to describe
-		// an address the port does not hold (round 2 of this review).
-		var entries []struct {
-			IPAddress string `json:"ip_address"`
-		}
-		if jsonErr := json.Unmarshal(fixedIPsJSON, &entries); jsonErr == nil && len(entries) > 0 {
-			fixedIP = entries[0].IPAddress
-		}
+		// The port's actual fixed_ips, for the response and for nothing else:
+		// its addressing lives in the JSONB, and a hardcoded placeholder used
+		// to be reported instead (round 2 of this review). A port with no
+		// addresses reports an empty list, as upstream does — not a fabricated
+		// {"ip_address": ""}.
+		fixedIPEntries = parseFixedIPEntries(fixedIPsJSON)
 	} else if req.InterfaceAttachment.NetID != "" {
 		// Create new port on the specified network
 		networkID = req.InterfaceAttachment.NetID
@@ -144,6 +157,28 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		// Use provided fixed_ip or allocate one
 		if req.InterfaceAttachment.FixedIP != "" {
 			fixedIP = req.InterfaceAttachment.FixedIP
+			// A caller-specified address is validated, not trusted (round 3
+			// of this review): it must parse and lie in the subnet (400), and
+			// no other port may hold it (409, upstream's "IP address already
+			// allocated") — the explicit side of the N-4 collision rule the
+			// allocator covers for generated addresses. Parsing also keeps
+			// arbitrary strings out of the JSONB build below.
+			ip := net.ParseIP(fixedIP)
+			_, ipNet, cidrErr := net.ParseCIDR(cidr)
+			if ip == nil || cidrErr != nil || !ipNet.Contains(ip) {
+				common.SendError(c, common.NewBadRequestError("fixed_ip is not a valid address in the network's subnet"))
+				return
+			}
+			available, availErr := neutron.IPAvailable(c.Request.Context(), svc.pool, subnetID, fixedIP)
+			if availErr != nil {
+				log.Error().Err(availErr).Str("operation", "attach_interface").Msg("IP availability check failed")
+				common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
+				return
+			}
+			if !available {
+				common.SendError(c, common.NewConflictError("IP address already allocated in the subnet"))
+				return
+			}
 		} else {
 			// The same collision-free allocator every other port-creation path
 			// uses (review 2026-10-13 N-4): this path used to run its own
@@ -163,6 +198,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		// collision check above — joins on the subnet id and silently missed
 		// these ports when it held a network id.
 		fixedIPsJSON := fmt.Sprintf(`[{"ip_address": "%s", "subnet_id": "%s"}]`, fixedIP, subnetID)
+		fixedIPEntries = []gin.H{{"ip_address": fixedIP, "subnet_id": subnetID}}
 		_, err = svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
@@ -223,16 +259,40 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	// an administrator's change in their own history (SPEC-023 FR-007a).
 	recordInstanceAction(c, svc.pool, instanceID, projectID, "attach_interface")
 
+	// The port's actual fixed_ips — entries with their subnet ids, or an
+	// empty list for a port with none (round 3 of this review: this used to
+	// fabricate exactly one {"ip_address": ""}).
+	if fixedIPEntries == nil {
+		fixedIPEntries = []gin.H{}
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"interfaceAttachment": gin.H{
 			"id":         attachmentID,
 			"port_id":    portID,
 			"net_id":     networkID,
-			"fixed_ips":  []gin.H{{"ip_address": fixedIP}},
+			"fixed_ips":  fixedIPEntries,
 			"mac_addr":   macAddress,
 			"port_state": "ACTIVE",
 		},
 	})
+}
+
+// parseFixedIPEntries reads a port's fixed_ips JSONB into response entries.
+// NULL or malformed JSON yields no entries — a port with no addresses reports
+// none, never a fabricated one.
+func parseFixedIPEntries(fixedIPsJSON []byte) []gin.H {
+	var entries []struct {
+		IPAddress string `json:"ip_address"`
+		SubnetID  string `json:"subnet_id"`
+	}
+	if err := json.Unmarshal(fixedIPsJSON, &entries); err != nil {
+		return nil
+	}
+	out := make([]gin.H, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, gin.H{"ip_address": e.IPAddress, "subnet_id": e.SubnetID})
+	}
+	return out
 }
 
 // DetachInterface detaches a network interface from an instance

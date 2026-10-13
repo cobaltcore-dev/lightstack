@@ -42,8 +42,9 @@ type Service struct {
 // maxImageUploadBytes bounds PUT /images/:id/file (review 2026-10-13 M-3):
 // without it an unbounded stream lands on disk (and, in local mode, is
 // qemu-img-normalized) until the host fills. 10 GiB, the same default as
-// upstream Glance's image_size_cap.
-const maxImageUploadBytes = 10 << 30
+// upstream Glance's image_size_cap. A var, not a const, so tests can pin the
+// over-cap response without streaming 10 GiB.
+var maxImageUploadBytes = 10 << 30
 
 // NewService creates a new Glance service.
 //
@@ -1000,7 +1001,7 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	// Bound the upload (review 2026-10-13 M-3): without a cap an unbounded
 	// stream lands on disk (and, in local mode, is normalized) until the
 	// host fills. Same default as upstream Glance's image_size_cap.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageUploadBytes)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(maxImageUploadBytes))
 
 	// Update status to saving
 	if _, err := svc.pool.Exec(c.Request.Context(),

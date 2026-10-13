@@ -581,6 +581,16 @@ func TestFailedBootReleasesAllocatedPorts(t *testing.T) {
 func TestSuccessfulBootKeepsItsPorts(t *testing.T) {
 	requireDB(t)
 
+	// Redirect the node-local state root into a test directory BEFORE the
+	// service is built: the boot runs in a goroutine the service's Shutdown
+	// (registered by newBootService, and so running LAST in cleanup's LIFO
+	// order) must stop before this restore runs, or a still-booting goroutine
+	// could read the paths global mid-rewrite (round 3 of this review). The
+	// image store resolves the root per call, so /var/lib is never touched.
+	origBase := paths.Base()
+	paths.SetBase(t.TempDir())
+	t.Cleanup(func() { paths.SetBase(origBase) })
+
 	good := seedBootNetwork(t, seededProjectID, "n6-ok-net")
 	fake := &fakeNeutron{
 		portFor: map[string]*neutron.PortInfo{
@@ -595,12 +605,7 @@ func TestSuccessfulBootKeepsItsPorts(t *testing.T) {
 
 	// The boot path stages a per-instance overlay over the image's local raw
 	// base; without the base file the boot fails for reasons unrelated to
-	// ports. Redirect the node-local state root into a test directory (the
-	// image store resolves it per call, so /var/lib is never touched) and
-	// stage a real base there.
-	origBase := paths.Base()
-	paths.SetBase(t.TempDir())
-	t.Cleanup(func() { paths.SetBase(origBase) })
+	// ports. Stage a real base in the redirected root.
 	imgID := seededImageID(t)
 	basePath := storage.LocalImagePath(imgID)
 	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {

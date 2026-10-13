@@ -344,14 +344,18 @@ func (s *ImageStore) uploadImageStub(imageID string, reader io.Reader) (int64, e
 // this raw file. The upload streams to a temp file, then qemu-img converts it
 // to raw (or renames it if already raw / qemu-img is unavailable).
 func (s *ImageStore) uploadImageLocal(ctx context.Context, imageID string, reader io.Reader) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
+	// No deadline here, deliberately: s.timeout is for metadata ops
+	// (head/delete, see its field comment); the body transfer streams to
+	// completion under the CALLER's context — the request's, cancelled on
+	// client disconnect — exactly as the S3 path's connect-only timeout does
+	// not bound transfers (FR-014). The 5 s cap here used to fire long before
+	// glance's 10 GiB upload cap could, turning oversized uploads into 503s
+	// instead of 413s (round 3 of this review).
 	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
 	tmpPath := imagePath + ".upload"
 
-	// Stream the upload to a temp file. Wrap the source so the timeout fires —
-	// os.File doesn't natively respect context.
+	// Stream the upload to a temp file. Wrap the source so cancellation fires
+	// — os.File doesn't natively respect context.
 	tmp, err := os.Create(tmpPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create image file: %w", err)

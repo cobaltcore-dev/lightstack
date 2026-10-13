@@ -689,6 +689,55 @@ func allocateIP(cidr string) string {
 	return ip.String()
 }
 
+// usedSubnetAddresses returns every address held by a port in the subnet
+// (lower-cased), plus the subnet's own gateway when set.
+func usedSubnetAddresses(ctx context.Context, pool *pgxpool.Pool, subnetID string) (map[string]bool, error) {
+	used := map[string]bool{}
+	rows, err := pool.Query(ctx, `
+		SELECT fx->>'ip_address'
+		FROM ports, jsonb_array_elements(fixed_ips) fx
+		WHERE fx->>'subnet_id' = $1
+	`, subnetID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the subnet's used addresses: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, fmt.Errorf("scanning a used address: %w", err)
+		}
+		if ip != "" {
+			used[strings.ToLower(ip)] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating the subnet's used addresses: %w", err)
+	}
+
+	// The gateway belongs to the subnet, not to any port.
+	var gateway sql.NullString
+	if err := pool.QueryRow(ctx,
+		"SELECT gateway_ip FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err == nil &&
+		gateway.Valid && gateway.String != "" {
+		used[strings.ToLower(gateway.String)] = true
+	}
+	return used, nil
+}
+
+// IPAvailable reports whether no port in the subnet holds the address (and it
+// is not the subnet's gateway). Exported for Nova's os-interface path, which
+// accepts a caller-specified fixed_ip and must refuse one another port holds —
+// the explicit side of the N-4 collision rule the allocator covers for
+// generated addresses.
+func IPAvailable(ctx context.Context, pool *pgxpool.Pool, subnetID, ip string) (bool, error) {
+	used, err := usedSubnetAddresses(ctx, pool, subnetID)
+	if err != nil {
+		return false, err
+	}
+	return !used[strings.ToLower(ip)], nil
+}
+
 // AllocateFreeIP picks a random usable address in the subnet that no port in
 // it already holds (review 2026-10-13 N-4): allocateIP drew purely at random,
 // so two ports in one subnet landed on the same address at birthday-problem
@@ -708,35 +757,9 @@ func allocateIP(cidr string) string {
 // user- or boot-paced operation — is the practical fix; a DB-level exclusion
 // on the JSONB elements would be the complete one.
 func AllocateFreeIP(ctx context.Context, pool *pgxpool.Pool, subnetID, cidr string) (string, error) {
-	used := map[string]bool{}
-	rows, err := pool.Query(ctx, `
-		SELECT fx->>'ip_address'
-		FROM ports, jsonb_array_elements(fixed_ips) fx
-		WHERE fx->>'subnet_id' = $1
-	`, subnetID)
+	used, err := usedSubnetAddresses(ctx, pool, subnetID)
 	if err != nil {
-		return "", fmt.Errorf("reading the subnet's used addresses: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var ip string
-		if err := rows.Scan(&ip); err != nil {
-			return "", fmt.Errorf("scanning a used address: %w", err)
-		}
-		if ip != "" {
-			used[strings.ToLower(ip)] = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("iterating the subnet's used addresses: %w", err)
-	}
-
-	// The gateway belongs to the subnet, not to any port.
-	var gateway sql.NullString
-	if err := pool.QueryRow(ctx,
-		"SELECT gateway_ip FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err == nil &&
-		gateway.Valid && gateway.String != "" {
-		used[strings.ToLower(gateway.String)] = true
+		return "", err
 	}
 
 	// Random candidates until one is free. A hundred attempts covers any

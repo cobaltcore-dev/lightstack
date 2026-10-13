@@ -41,7 +41,7 @@ func (svc *Service) StageImageData(c *gin.Context) {
 	// Read staged data (in real implementation, would save to staging area).
 	// Bounded like the upload path (review 2026-10-13 M-3): ReadAll on a raw
 	// request body is an unbounded memory allocation.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxImageUploadBytes)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(maxImageUploadBytes))
 	stagedData, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		// Over the cap is 413, upstream's answer to image_size_cap (round 2
