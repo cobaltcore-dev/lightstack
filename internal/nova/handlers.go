@@ -62,6 +62,12 @@ const (
 // NeutronService defines the interface for Neutron operations Nova needs.
 type NeutronService interface {
 	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string, admin bool) (any, error)
+	// ReleaseInstancePorts is AllocatePortForInstance's rollback: it deletes the
+	// ports Neutron allocated for a boot that failed after allocating them
+	// (review 2026-10-13 N-6) — the port rows, their host plumbing and their
+	// DHCP reservations. Scoped to nova-owned ports; a tenant-created port the
+	// server was told to use is the tenant's, not the boot's.
+	ReleaseInstancePorts(ctx context.Context, instanceID string) error
 	// NetworkUsableBy reports whether a project may attach a guest to a network,
 	// returning a non-nil error naming the reason if not. admin is whether the caller
 	// holds the administrator role, which decides an unshared external network; both
@@ -1113,6 +1119,23 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			// Allocate ports from Neutron for requested networks
 			log.Debug().Str("instance_id", instanceID).Int("network_count", len(req.Server.Networks)).Msg("Allocating ports")
 			var networks []hypervisor.NetworkConfig
+			portsAllocated := false
+			bootSucceeded := false
+			// Any failure from the first successful allocation onward (a later
+			// network, the boot volume, libvirt itself) leaves the earlier ports
+			// allocated for a server that will never run. Release them on the way
+			// out unless the boot completed (review 2026-10-13 N-6: they used to
+			// leak — still listed by the API, leases still reserved).
+			defer func() {
+				if portsAllocated && !bootSucceeded && svc.neutronSvc != nil {
+					rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer rcancel()
+					if err := svc.neutronSvc.ReleaseInstancePorts(rctx, instanceID); err != nil {
+						log.Warn().Err(err).Str("instance_id", instanceID).
+							Msg("failed to release allocated ports after failed boot")
+					}
+				}
+			}()
 			if svc.neutronSvc != nil && len(req.Server.Networks) > 0 {
 				for _, network := range req.Server.Networks {
 					log.Debug().Str("network_id", network.UUID).Msg("Allocating port for network")
@@ -1157,6 +1180,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 						MACAddress: portInfo.MAC,
 						BridgeName: networking.BridgeNameForNetwork(portInfo.NetworkID),
 					})
+					portsAllocated = true
 				}
 			}
 
@@ -1335,6 +1359,9 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			}
 
 			log.Debug().Str("libvirt_uuid", libvirtUUID).Msg("VM created successfully")
+			// The boot completed: the allocated ports belong to the running
+			// server now, and the release defer must leave them alone.
+			bootSucceeded = true
 
 			logger.Info().
 				Str("instance_id", instanceID).
@@ -2106,11 +2133,29 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		return
 	}
 
-	// Delete the instance's auto-allocated neutron ports (Nova owns them). Without
-	// this the port lingers after the server is gone, and deleting its network then
-	// fails with "network has active ports" — which breaks `terraform destroy`
-	// (SPEC-009 / SC-007) and leaks ports.
-	if _, e := tx.Exec(ctx, "DELETE FROM ports WHERE device_id = $1", instanceUUID); e != nil {
+	// The instance's ports, split by who owns them (review 2026-10-13 N-8):
+	//
+	// - Ports Neutron allocated for the boot (device_owner 'compute:nova') are
+	//   Nova's to delete. Without this they linger after the server is gone and
+	//   deleting the network then fails with "network has active ports" — which
+	//   breaks `terraform destroy` (SPEC-009 / SC-007) and leaks ports.
+	//
+	// - A port the tenant created and attached (os-interface with port_id) is
+	//   the tenant's resource, not the server's: upstream detaches it — clears
+	//   the device, parks it DOWN — rather than deleting it. The blanket
+	//   `DELETE ... WHERE device_id = $1` used to destroy it: the tenant lost a
+	//   port they made, with its fixed IP, by deleting a server.
+	if _, e := tx.Exec(ctx, `
+		UPDATE ports
+		SET device_id = NULL, device_owner = NULL, status = 'DOWN', updated_at = NOW()
+		WHERE device_id = $1 AND COALESCE(device_owner, '') <> 'compute:nova'
+	`, instanceUUID); e != nil {
+		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: detach tenant ports failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return
+	}
+	if _, e := tx.Exec(ctx,
+		"DELETE FROM ports WHERE device_id = $1 AND device_owner = 'compute:nova'", instanceUUID); e != nil {
 		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: remove instance ports failed")
 		common.SendError(c, common.NewInternalServerError("failed to delete server"))
 		return

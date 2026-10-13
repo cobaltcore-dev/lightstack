@@ -1725,3 +1725,73 @@ func derefOr[T any](v *T, fallback T) T {
 	}
 	return *v
 }
+
+// ReleaseInstancePorts deletes the ports Neutron allocated for an instance
+// (device_owner 'compute:nova'), with the same best-effort host cleanup
+// DeletePort does. It is the rollback for a boot that allocated ports and then
+// failed on a later network (review 2026-10-13 N-6): the loop used to
+// markInstanceError and return with the earlier networks' ports still in the
+// database — rows the API still listed for a server that would never exist,
+// with leases still reserved, that only an operator could clean up.
+//
+// Scoped to 'compute:nova' on purpose: a port the tenant created and attached
+// (os-interface with port_id) is theirs, not the instance's — releasing a
+// failed boot must not delete it (same discriminator as server delete).
+func (svc *Service) ReleaseInstancePorts(ctx context.Context, instanceID string) error {
+	rows, err := svc.pool.Query(ctx, `
+		SELECT id::text, network_id::text FROM ports
+		WHERE device_id = $1 AND device_owner = 'compute:nova'
+	`, instanceID)
+	if err != nil {
+		return fmt.Errorf("looking up instance ports: %w", err)
+	}
+	defer rows.Close()
+
+	type released struct{ portID, networkID string }
+	var toRelease []released
+	for rows.Next() {
+		var r released
+		if err := rows.Scan(&r.portID, &r.networkID); err != nil {
+			return fmt.Errorf("scanning instance port: %w", err)
+		}
+		toRelease = append(toRelease, r)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating instance ports: %w", err)
+	}
+	if len(toRelease) == 0 {
+		return nil
+	}
+
+	for _, r := range toRelease {
+		// TAP device, same placement and derivation as DeletePort.
+		if svc.mode != "stub" {
+			tapName := "tap-" + r.portID[:8]
+			if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
+				log.Warn().Err(err).Str("port_id", r.portID).Str("tap", tapName).
+					Msg("release: failed to delete TAP device")
+			}
+		}
+		if svc.vxlanCoordinator != nil {
+			if err := svc.vxlanCoordinator.RemoveFDBEntry(ctx, r.portID); err != nil {
+				log.Warn().Err(err).Str("port_id", r.portID).Msg("release: failed to remove FDB entry")
+			}
+		}
+	}
+
+	if _, err := svc.pool.Exec(ctx, `
+		DELETE FROM ports WHERE device_id = $1 AND device_owner = 'compute:nova'
+	`, instanceID); err != nil {
+		return fmt.Errorf("deleting instance ports: %w", err)
+	}
+
+	// Refresh DHCP for the affected networks so the released addresses stop
+	// being reserved for a server that will not boot.
+	for _, r := range toRelease {
+		if _, _, err := svc.applyDHCPForNetwork(ctx, r.networkID, true); err != nil {
+			log.Warn().Err(err).Str("network_id", r.networkID).
+				Msg("release: failed to refresh DHCP after port release")
+		}
+	}
+	return nil
+}

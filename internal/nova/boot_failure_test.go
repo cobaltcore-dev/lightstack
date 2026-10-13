@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -39,9 +41,11 @@ func (e tenantErr) TenantMessage() string { return string(e) }
 
 // fakeNeutron is a NeutronService whose behaviour each test chooses.
 type fakeNeutron struct {
-	allocErrFor map[string]error // network id -> error to return
-	usableErr   map[string]error // network id -> pre-flight verdict
+	allocErrFor map[string]error             // network id -> error to return
+	usableErr   map[string]error             // network id -> pre-flight verdict
+	portFor     map[string]*neutron.PortInfo // network id -> successful port payload
 	allocCalls  int
+	released    []string // instance ids passed to ReleaseInstancePorts (N-6)
 
 	// The admin flag each call carried. Guarded because allocation runs in the
 	// VM-creation goroutine while the test reads.
@@ -58,6 +62,9 @@ func (f *fakeNeutron) AllocatePortForInstance(_ context.Context, networkID, _, _
 	if err, ok := f.allocErrFor[networkID]; ok && err != nil {
 		return nil, err
 	}
+	if p, ok := f.portFor[networkID]; ok && p != nil {
+		return p, nil
+	}
 	return nil, errors.New("fakeNeutron: no port payload configured")
 }
 
@@ -69,6 +76,23 @@ func (f *fakeNeutron) NetworkUsableBy(_ context.Context, networkID, _ string, ad
 		return err
 	}
 	return nil
+}
+
+// ReleaseInstancePorts records the rollback calls (review 2026-10-13 N-6) so a
+// test can assert that a failed boot released the ports it had already
+// allocated.
+func (f *fakeNeutron) ReleaseInstancePorts(_ context.Context, instanceID string) error {
+	f.mu.Lock()
+	f.released = append(f.released, instanceID)
+	f.mu.Unlock()
+	return nil
+}
+
+// releasedInstances returns the instance ids whose ports were released.
+func (f *fakeNeutron) releasedInstances() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.released...)
 }
 
 // adminFlags returns the admin flag of every pre-flight and every allocation so far.
@@ -499,5 +523,97 @@ func TestFailedBootLeavesADeletableServer(t *testing.T) {
 	}
 	if orphanPorts != 0 {
 		t.Errorf("%d ports still reference the deleted server (FR-019)", orphanPorts)
+	}
+}
+
+// Review 2026-10-13 N-6: a multi-network boot that fails on a later network used
+// to leak the ports already allocated for the earlier ones — rows the API kept
+// listing for a server that would never run, with leases still reserved. The
+// failure path must release what it allocated (the rollback is scoped to the
+// instance's nova-owned ports by the network service).
+func TestFailedBootReleasesAllocatedPorts(t *testing.T) {
+	requireDB(t)
+
+	good := seedBootNetwork(t, seededProjectID, "n6-good-net")
+	bad := seedBootNetwork(t, seededProjectID, "n6-bad-net")
+	fake := &fakeNeutron{
+		portFor: map[string]*neutron.PortInfo{
+			good: {ID: "11111111-1111-1111-1111-111111111111", NetworkID: good,
+				MAC: "52:54:00:12:34:56", IPAddress: "192.168.100.10"},
+		},
+		allocErrFor: map[string]error{
+			bad: errors.New("subnet exhausted"),
+		},
+	}
+	_, r := newBootService(t, fake)
+
+	const name = "n6-partial-release"
+	cleanupServerNamed(t, name)
+
+	body := fmt.Sprintf(`{"server":{"name":%q,"flavorRef":"m1.small","imageRef":%q,"networks":[{"uuid":%q},{"uuid":%q}]}}`,
+		name, seededImageID(t), good, bad)
+	if code, respBody := doReq(r, http.MethodPost, "/v2.1/servers", body, bootHdr()); code != http.StatusAccepted && code != http.StatusCreated {
+		t.Fatalf("create = %d. body: %s", code, respBody)
+	}
+
+	if got := awaitInstanceStatus(t, name, "ERROR"); got != "ERROR" {
+		t.Fatalf("status = %q; want ERROR (the later network's failure fails the boot)", got)
+	}
+
+	var instanceID string
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT id::text FROM instances WHERE name = $1 AND project_id = $2`, name, seededProjectID,
+	).Scan(&instanceID); err != nil {
+		t.Fatalf("resolving the failed instance: %v", err)
+	}
+
+	released := fake.releasedInstances()
+	if len(released) != 1 || released[0] != instanceID {
+		t.Errorf("ReleaseInstancePorts calls = %v; want exactly [%s] — the ports allocated for the good network must be rolled back with the failed boot", released, instanceID)
+	}
+}
+
+// The release must not fire on the success path: a booted server keeps its ports.
+// One network, one working port payload; the instance reaches ACTIVE and no
+// release is recorded.
+func TestSuccessfulBootKeepsItsPorts(t *testing.T) {
+	requireDB(t)
+
+	good := seedBootNetwork(t, seededProjectID, "n6-ok-net")
+	fake := &fakeNeutron{
+		portFor: map[string]*neutron.PortInfo{
+			good: {ID: "22222222-2222-2222-2222-222222222222", NetworkID: good,
+				MAC: "52:54:00:12:34:57", IPAddress: "192.168.100.11"},
+		},
+	}
+	_, r := newBootService(t, fake)
+
+	const name = "n6-keep-ports"
+	cleanupServerNamed(t, name)
+
+	imgID := seededImageID(t)
+	// The boot path stages a per-instance overlay over the image's local raw
+	// base; without the base file the boot fails for reasons unrelated to
+	// ports, so stage a real one.
+	basePath := "/var/lib/lightstack/images/image-" + imgID + ".raw"
+	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
+		t.Fatalf("staging image base dir: %v", err)
+	}
+	if err := os.WriteFile(basePath, make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatalf("staging image base file: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(basePath) })
+
+	body := fmt.Sprintf(`{"server":{"name":%q,"flavorRef":"m1.small","imageRef":%q,"networks":[{"uuid":%q}]}}`,
+		name, imgID, good)
+	if code, respBody := doReq(r, http.MethodPost, "/v2.1/servers", body, bootHdr()); code != http.StatusAccepted && code != http.StatusCreated {
+		t.Fatalf("create = %d. body: %s", code, respBody)
+	}
+
+	if got := awaitInstanceStatus(t, name, "ACTIVE"); got != "ACTIVE" {
+		t.Fatalf("status = %q; want ACTIVE (nothing on this path fails)", got)
+	}
+	if released := fake.releasedInstances(); len(released) != 0 {
+		t.Errorf("ReleaseInstancePorts calls = %v; want none — a booted server keeps its ports", released)
 	}
 }

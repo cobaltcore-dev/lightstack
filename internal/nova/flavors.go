@@ -11,6 +11,13 @@ import (
 
 // CreateFlavor handles POST /v2.1/flavors
 func (svc *Service) CreateFlavor(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !requireAdmin(c, "flavor-create") {
+		return
+	}
+
 	var req struct {
 		Flavor struct {
 			Name      string `json:"name" binding:"required"`
@@ -27,17 +34,24 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 		return
 	}
 
-	// Validate input ranges
-	if req.Flavor.RAM < 0 {
-		common.SendError(c, common.NewBadRequestError("RAM must be non-negative"))
+	// Validate input ranges. Upper bounds are sanity caps (review 2026-10-13
+	// L-4), not policy: without them a typo (MB vs GB, or a negative sign
+	// flip) schedules absurd values that only surface at boot time. 1 TiB of
+	// RAM, 4096 vCPUs and 1 PiB of disk comfortably exceed any real flavor.
+	if req.Flavor.RAM < 0 || req.Flavor.RAM > 1<<20 {
+		common.SendError(c, common.NewBadRequestError("RAM must be between 0 and 1048576 MB"))
 		return
 	}
-	if req.Flavor.VCPUs < 0 {
-		common.SendError(c, common.NewBadRequestError("VCPUs must be non-negative"))
+	if req.Flavor.VCPUs < 0 || req.Flavor.VCPUs > 4096 {
+		common.SendError(c, common.NewBadRequestError("VCPUs must be between 0 and 4096"))
 		return
 	}
-	if req.Flavor.Disk < 0 {
-		common.SendError(c, common.NewBadRequestError("Disk must be non-negative"))
+	if req.Flavor.Disk < 0 || req.Flavor.Disk > 1<<20 {
+		common.SendError(c, common.NewBadRequestError("Disk must be between 0 and 1048576 GB"))
+		return
+	}
+	if req.Flavor.Ephemeral < 0 || req.Flavor.Ephemeral > 1<<20 {
+		common.SendError(c, common.NewBadRequestError("Ephemeral disk must be between 0 and 1048576 GB"))
 		return
 	}
 
@@ -89,6 +103,13 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 
 // DeleteFlavor handles DELETE /v2.1/flavors/:id
 func (svc *Service) DeleteFlavor(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !requireAdmin(c, "flavor-delete") {
+		return
+	}
+
 	flavorID := c.Param("id")
 	ctx := c.Request.Context()
 
@@ -152,6 +173,13 @@ func (svc *Service) GetFlavorExtraSpecs(c *gin.Context) {
 
 // CreateFlavorExtraSpecs handles POST /v2.1/flavors/:id/os-extra_specs
 func (svc *Service) CreateFlavorExtraSpecs(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !requireAdmin(c, "flavor-extra-specs-create") {
+		return
+	}
+
 	flavorID := c.Param("id")
 
 	var req struct {
@@ -202,6 +230,13 @@ func (svc *Service) GetFlavorExtraSpecKey(c *gin.Context) {
 
 // UpdateFlavorExtraSpecKey handles PUT /v2.1/flavors/:id/os-extra_specs/:key
 func (svc *Service) UpdateFlavorExtraSpecKey(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !requireAdmin(c, "flavor-extra-specs-update") {
+		return
+	}
+
 	flavorID := c.Param("id")
 	key := c.Param("key")
 
@@ -236,6 +271,13 @@ func (svc *Service) UpdateFlavorExtraSpecKey(c *gin.Context) {
 
 // DeleteFlavorExtraSpecKey handles DELETE /v2.1/flavors/:id/os-extra_specs/:key
 func (svc *Service) DeleteFlavorExtraSpecKey(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !requireAdmin(c, "flavor-extra-specs-delete") {
+		return
+	}
+
 	flavorID := c.Param("id")
 	key := c.Param("key")
 
@@ -260,6 +302,13 @@ func (svc *Service) DeleteFlavorExtraSpecKey(c *gin.Context) {
 
 // FlavorAction handles POST /v2.1/flavors/:id/action
 func (svc *Service) FlavorAction(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !requireAdmin(c, "flavor-access-modify") {
+		return
+	}
+
 	flavorID := c.Param("id")
 
 	var req map[string]any
@@ -326,6 +375,13 @@ func (svc *Service) FlavorAction(c *gin.Context) {
 
 // GetFlavorAccess handles GET /v2.1/flavors/:id/os-flavor-access
 func (svc *Service) GetFlavorAccess(c *gin.Context) {
+	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !requireAdmin(c, "flavor-access-list") {
+		return
+	}
+
 	flavorID := c.Param("id")
 
 	rows, err := svc.pool.Query(c.Request.Context(),

@@ -126,6 +126,14 @@ func (svc *Service) CreateKeypair(c *gin.Context) {
 	var privateKey *string
 	var fingerprint string
 
+	// Bound the import (review 2026-10-13 M-3): an imported public key is
+	// parsed and stored verbatim — an unbounded string is an unbounded row.
+	// Authorized-key blobs are a few hundred bytes; 64 KiB is generous.
+	if len(req.Keypair.PublicKey) > 64<<10 {
+		common.SendError(c, common.NewBadRequestError("public key too large"))
+		return
+	}
+
 	if req.Keypair.PublicKey != "" {
 		// Import existing public key
 		publicKey = req.Keypair.PublicKey
@@ -163,7 +171,10 @@ func (svc *Service) CreateKeypair(c *gin.Context) {
 		return
 	}
 
-	// Insert into database
+	// Insert into database. The name pre-check above is only a friendly fast
+	// path — under concurrency the UNIQUE(user_id, name) constraint is the
+	// real guard, so its violation is the same 409, not a 500 (review
+	// 2026-10-13 L-3: check-then-insert raced into duplicate keys).
 	now := time.Now()
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO keypairs (user_id, name, public_key, fingerprint, created_at)
@@ -171,6 +182,10 @@ func (svc *Service) CreateKeypair(c *gin.Context) {
 	`, userID, req.Keypair.Name, publicKey, fingerprint, now)
 
 	if err != nil {
+		if common.IsUniqueViolation(err) {
+			common.SendError(c, common.NewConflictError("Keypair with this name already exists"))
+			return
+		}
 		log.Error().Err(err).Str("operation", "create_keypair").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create keypair"))
 		return
