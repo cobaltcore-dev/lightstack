@@ -202,3 +202,49 @@ func TestAttachInterfaceExplicitFixedIPIsValidated(t *testing.T) {
 		t.Errorf("response must report the requested address: %s", body)
 	}
 }
+
+// Round 3, L-1: an attachment whose port has no addresses must appear in the
+// os-interface list with an empty fixed_ips — the list used to skip it, so an
+// attachment created a moment earlier was invisible, disagreeing with the
+// attach response that (since F2) reports it.
+func TestListInterfacesIncludesAddresslessAttachments(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	r := newNovaTestRouter()
+
+	server, _ := seedAuthzFixtures(t)
+	member := map[string]string{"X-Test-Project": authzProjectA, "X-Test-User": seededUserID, "X-Test-Roles": "member"}
+
+	netID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO networks (id, name, project_id, status, admin_state_up)
+		 VALUES ($1, 'r3-list-empty', $2, 'ACTIVE', true)`, netID, authzProjectA); err != nil {
+		t.Fatalf("seeding network: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM interface_attachments WHERE port_id IN (SELECT id FROM ports WHERE network_id = $1)`, netID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM ports WHERE network_id = $1`, netID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM networks WHERE id = $1`, netID)
+	})
+
+	addrlessPort := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO ports (id, name, network_id, project_id, mac_address, status, fixed_ips)
+		 VALUES ($1, 'r3-list-addrless', $2, $3, '52:54:00:aa:bb:04', 'ACTIVE', '[]'::jsonb)`,
+		addrlessPort, netID, authzProjectA); err != nil {
+		t.Fatalf("seeding address-less port: %v", err)
+	}
+
+	if code, body := doReq(r, http.MethodPost, "/v2.1/servers/"+server+"/os-interface",
+		fmt.Sprintf(`{"interfaceAttachment":{"port_id":%q}}`, addrlessPort), member); code != http.StatusOK {
+		t.Fatalf("attach: code=%d body=%s", code, body)
+	}
+
+	code, body := doReq(r, http.MethodGet, "/v2.1/servers/"+server+"/os-interface", "", member)
+	if code != http.StatusOK {
+		t.Fatalf("list interfaces: code=%d body=%s", code, body)
+	}
+	if !strings.Contains(body, addrlessPort) {
+		t.Errorf("an attachment whose port has no addresses is missing from the os-interface list: %s", body)
+	}
+}

@@ -303,15 +303,25 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 	}
 	portID := c.Param("port_id")
 
-	// Verify port is attached to this instance
+	// Verify port is attached to this instance. device_id is nullable — a
+	// detached port has NULL there — so it is read COALESCE'd rather than
+	// scanned into a plain string (same class as the attach-path fix in this
+	// review: that scan fails on NULL, the error was dropped, and the "not
+	// attached" answer below was right only by accident, with real database
+	// errors 409-ing as "not attached" instead of 500-ing).
 	var attachedInstanceID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT device_id FROM ports WHERE id = $1",
+		"SELECT COALESCE(device_id::text, '') FROM ports WHERE id = $1",
 		portID,
 	).Scan(&attachedInstanceID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "detach_interface").Str("port_id", portID).Msg("port lookup failed")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -391,18 +401,24 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 			state = *portState
 		}
 
-		// Parse fixed_ips from JSONB
-		var fixedIPs []map[string]any
-		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err == nil && len(fixedIPs) > 0 {
-			attachments = append(attachments, gin.H{
-				"id":         id,
-				"port_id":    portID,
-				"net_id":     networkID,
-				"fixed_ips":  fixedIPs,
-				"mac_addr":   macAddress,
-				"port_state": state,
-			})
+		// Parse fixed_ips from JSONB. An attachment whose port has no
+		// addresses is still an attachment: it is listed with an empty
+		// fixed_ips, exactly as the attach response reports it (round 3 of
+		// this review — the guard here used to make an attachment invisible
+		// in the list the moment it was created).
+		fixedIPs := []map[string]any{}
+		_ = json.Unmarshal(fixedIPsJSON, &fixedIPs)
+		if fixedIPs == nil { // JSON null in the column
+			fixedIPs = []map[string]any{}
 		}
+		attachments = append(attachments, gin.H{
+			"id":         id,
+			"port_id":    portID,
+			"net_id":     networkID,
+			"fixed_ips":  fixedIPs,
+			"mac_addr":   macAddress,
+			"port_state": state,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
