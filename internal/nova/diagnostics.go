@@ -5,10 +5,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -98,7 +99,7 @@ func (svc *Service) resolveDeletedServerForHistory(c *gin.Context, ref string) (
 
 	var id string
 	err := svc.pool.QueryRow(c.Request.Context(), query, args...).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
@@ -130,7 +131,7 @@ func (svc *Service) ListInstanceActions(c *gin.Context) {
 	// so a 404 or the history itself followed the 500 in the same body.
 	instanceID, _, err := targetInstance(c, svc.pool, ref)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, database.ErrNoRows):
 		// The server is not reachable as a live instance. It may still be one this
 		// caller deleted, whose history they are entitled to.
 		id, ok, ferr := svc.resolveDeletedServerForHistory(c, ref)

@@ -55,3 +55,7 @@ func ConsoleSocketDir() string { return filepath.Join(base, "console-sockets") }
 func ConsoleSocketPath(instanceID string) string {
 	return filepath.Join(ConsoleSocketDir(), instanceID+".sock")
 }
+
+// DBDir is where a SQLite database lives on the node (lightstack.db and its -wal and
+// -shm files). PostgreSQL deployments leave it empty.
+func DBDir() string { return filepath.Join(base, "db") }

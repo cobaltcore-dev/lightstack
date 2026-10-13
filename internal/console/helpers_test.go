@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // The migration-001 seed data every Lightstack deployment starts with.
@@ -56,7 +57,7 @@ func deleteInstance(t *testing.T, ctx context.Context, id string) {
 func backdate(t *testing.T, ctx context.Context, token string) {
 	t.Helper()
 	if _, err := testPool.Exec(ctx,
-		"UPDATE console_auth_tokens SET expires_at = now() - interval '1 minute' WHERE token = $1", token,
+		"UPDATE console_auth_tokens SET expires_at = $2 WHERE token = $1", token, time.Now().Add(-time.Minute),
 	); err != nil {
 		t.Fatalf("backdating token: %v", err)
 	}

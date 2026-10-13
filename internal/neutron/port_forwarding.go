@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -162,7 +163,7 @@ func (svc *Service) CreatePortForwarding(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, floatingIPID, projectID).Scan(&floatingIP, &routerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
 		return
 	}
@@ -264,7 +265,7 @@ func (svc *Service) GetPortForwarding(c *gin.Context) {
 		&pf.InternalPortID, &pf.InternalIPAddress, &pf.ExternalPort, &pf.InternalPort,
 		&pf.Protocol, &pf.Status, &pf.Description, &pf.CreatedAt, &pf.UpdatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port forwarding"))
 		return
 	}
@@ -317,7 +318,7 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 		&currentPF.InternalIPAddress, &currentPF.ExternalPort, &currentPF.InternalPort,
 		&currentPF.Protocol, &floatingIP, &routerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port forwarding"))
 		return
 	}
@@ -430,7 +431,7 @@ func (svc *Service) DeletePortForwarding(c *gin.Context) {
 	`, pfID, floatingIPID, projectID).Scan(&externalPort, &internalPort, &protocol,
 		&internalIP, &floatingIP, &routerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port forwarding"))
 		return
 	}

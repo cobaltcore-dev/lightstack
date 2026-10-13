@@ -88,15 +88,15 @@ else
     echo "Response: $RESPONSE" | head -3
 fi
 
-# Test 3: 413 Quota Exceeded - overLimit format
-log_test "413 Quota Exceeded uses overLimit format"
+# Test 3: a server create over quota - 403 with the forbidden format, as upstream
+log_test "Server create over quota answers 403 forbidden"
 # First set a very low quota
 curl -s -X PUT "http://localhost:8774/v2.1/os-quota-sets/00000000-0000-0000-0000-000000000002" \
     -H "X-Auth-Token: $TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"quota_set":{"instances":0}}' > /dev/null
 
-# Try to create an instance (should fail with 413)
+# Try to create an instance (should fail with 403)
 RESPONSE=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
     -H "X-Auth-Token: $TOKEN" \
     -H "Content-Type: application/json" \
@@ -108,10 +108,10 @@ RESPONSE=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
         }
     }')
 
-if echo "$RESPONSE" | jq -e '.overLimit // .error' > /dev/null 2>&1; then
-    log_pass "413 quota error returned (format may vary)"
+if echo "$RESPONSE" | jq -e '.forbidden.message | startswith("Quota exceeded for instances: ")' > /dev/null 2>&1; then
+    log_pass "403 quota error returned"
 else
-    log_fail "413 quota error format incorrect"
+    log_fail "403 quota error format incorrect"
 fi
 
 # Reset quota
@@ -245,7 +245,7 @@ if [ $TESTS_FAILED -eq 0 ]; then
     echo "  - 401: unauthorized"
     echo "  - 403: forbidden"
     echo "  - 409: conflict / conflictingRequest"
-    echo "  - 413: overLimit"
+    echo "  - 413: overLimit (block-storage quota)"
     echo "  - 500: computeFault"
     echo "  - 503: serviceUnavailable"
     exit 0

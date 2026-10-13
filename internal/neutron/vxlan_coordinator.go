@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/compute"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // VXLANCoordinator coordinates VXLAN network state across compute nodes
 type VXLANCoordinator struct {
-	pool          *pgxpool.Pool
+	pool          database.DB
 	vxlanManager  *networking.VXLANManager
 	nodeRegistry  *compute.NodeRegistry
 	pollInterval  time.Duration
@@ -24,7 +25,7 @@ type VXLANCoordinator struct {
 
 // NewVXLANCoordinator creates a new VXLAN coordinator
 func NewVXLANCoordinator(
-	pool *pgxpool.Pool,
+	pool database.DB,
 	vxlanManager *networking.VXLANManager,
 	nodeRegistry *compute.NodeRegistry,
 	pollInterval time.Duration,
@@ -204,16 +205,19 @@ func (vc *VXLANCoordinator) syncPorts(ctx context.Context) {
 func (vc *VXLANCoordinator) allocateVNI(ctx context.Context, networkID string) (int, error) {
 	// Find and reserve the lowest available VNI in the configured range atomically.
 	// This avoids the O(N) sequential-insert loop and races under concurrent allocation.
+	// The recursive CTE counts up the range and both backends stop it at the first
+	// free VNI, so it never materialises the range.
 	var vni int
 	err := vc.pool.QueryRow(ctx, `
-		WITH next_vni AS (
-			SELECT generate_series AS vni
-			FROM generate_series($1::int, $2::int)
-			WHERE generate_series NOT IN (SELECT vni FROM network_vni_allocations)
-			LIMIT 1
+		WITH RECURSIVE candidate(vni) AS (
+			SELECT $1::int WHERE $1::int <= $2::int
+			UNION ALL
+			SELECT vni + 1 FROM candidate WHERE vni < $2::int
 		)
 		INSERT INTO network_vni_allocations (network_id, vni)
-		SELECT $3, vni FROM next_vni
+		SELECT $3, vni FROM candidate
+		 WHERE vni NOT IN (SELECT vni FROM network_vni_allocations)
+		 LIMIT 1
 		RETURNING vni
 	`, vc.vniRangeStart, vc.vniRangeEnd, networkID).Scan(&vni)
 

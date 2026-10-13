@@ -16,6 +16,7 @@ func TestLayout(t *testing.T) {
 		{DHCPDir(), "/var/lib/lightstack/dhcp"},
 		{ConsoleTokenDir(), "/var/lib/lightstack/console-tokens"},
 		{ConsoleSocketDir(), "/var/lib/lightstack/console-sockets"},
+		{DBDir(), "/var/lib/lightstack/db"},
 		{ConsoleSocketPath("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
 			"/var/lib/lightstack/console-sockets/1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d.sock"},
 	}
@@ -42,6 +43,7 @@ func TestSetBaseMovesEveryDir(t *testing.T) {
 		{DHCPDir(), "/data/lightstack/dhcp"},
 		{ConsoleTokenDir(), "/data/lightstack/console-tokens"},
 		{ConsoleSocketDir(), "/data/lightstack/console-sockets"},
+		{DBDir(), "/data/lightstack/db"},
 		{ConsoleSocketPath("x"), "/data/lightstack/console-sockets/x.sock"},
 	}
 	for _, c := range cases {

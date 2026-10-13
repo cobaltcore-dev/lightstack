@@ -139,7 +139,7 @@ else
 fi
 
 # Test 6: Try to exceed quota (should fail)
-log_test "Try to create instance exceeding quota (should fail with HTTP 413)"
+log_test "Try to create instance exceeding quota (should fail with HTTP 403)"
 EXCEEDED_RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "http://localhost:8774/v2.1/servers" \
     -H "X-Auth-Token: $TOKEN" \
     -H "Content-Type: application/json" \
@@ -152,12 +152,13 @@ EXCEEDED_RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "http://localh
     }')
 
 HTTP_CODE=$(echo "$EXCEEDED_RESPONSE" | grep "HTTP_CODE:" | sed 's/HTTP_CODE://')
-ERROR_MSG=$(echo "$EXCEEDED_RESPONSE" | grep -v "HTTP_CODE:" | jq -r '.error.message' 2>/dev/null)
+ERROR_MSG=$(echo "$EXCEEDED_RESPONSE" | grep -v "HTTP_CODE:" | jq -r '.forbidden.message' 2>/dev/null)
 
-if [ "$HTTP_CODE" == "413" ]; then
-    log_pass "Correctly rejected with HTTP 413 (Quota exceeded)"
+# Upstream answers a create over quota with 403 and TooManyInstances' message.
+if [ "$HTTP_CODE" == "403" ] && [[ "$ERROR_MSG" == "Quota exceeded for instances: "* ]]; then
+    log_pass "Correctly rejected with HTTP 403 (Quota exceeded)"
 else
-    log_fail "Expected HTTP 413, got HTTP $HTTP_CODE"
+    log_fail "Expected HTTP 403 naming the instances quota, got HTTP $HTTP_CODE"
     echo "Error message: $ERROR_MSG"
 fi
 

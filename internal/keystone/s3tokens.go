@@ -11,9 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/google/uuid"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -83,7 +85,7 @@ func (svc *Service) validateSignedRequest(c *gin.Context) {
 	err := svc.pool.QueryRow(c.Request.Context(),
 		`SELECT user_id, project_id, blob FROM credentials WHERE access_key = $1 AND type = 'ec2'`,
 		req.Credentials.Access).Scan(&userID, &projectID, &blob)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		// Unknown access key: not a Lightstack EC2 credential. Return 404 (as real
 		// Keystone does) so RGW *falls through* to its next auth engine instead of
 		// hard-rejecting the request — this lets local RGW users (e.g. the one
@@ -199,22 +201,24 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 		common.SendError(c, common.NewUnauthorizedError(authFailed))
 		return
 	}
-	var canonicalProjectID, projectName string
+	// The credential blob may predate canonicalization and contain a valid
+	// alternate UUID spelling (uppercase, 32-hex, or braced). Look it up in its
+	// canonical form — how ids are stored — and use the stored id for all
+	// downstream lookups and the RGW envelope, so those legacy credentials
+	// resolve to the same dash-free tenant as Swift and newly minted credentials.
+	if id, err := uuid.Parse(projectID); err == nil {
+		projectID = id.String()
+	}
+	var projectName string
 	var projectEnabled bool
 	if err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, name, enabled FROM projects WHERE id = $1", projectID,
-	).Scan(&canonicalProjectID, &projectName, &projectEnabled); err != nil || !projectEnabled {
+	).Scan(&projectID, &projectName, &projectEnabled); err != nil || !projectEnabled {
 		log.Warn().Err(err).Str("project_id", projectID).
 			Msg("s3tokens: project is missing or disabled")
 		common.SendError(c, common.NewUnauthorizedError(authFailed))
 		return
 	}
-	// The credential blob may predate canonicalization and contain a valid
-	// alternate UUID spelling (uppercase, 32-hex, or braced). Use the UUID
-	// returned by PostgreSQL for all downstream lookups and the RGW envelope,
-	// so those legacy credentials resolve to the same dash-free tenant as
-	// Swift and newly minted credentials.
-	projectID = canonicalProjectID
 
 	roles := []gin.H{}
 	rows, err := svc.pool.Query(c.Request.Context(), `

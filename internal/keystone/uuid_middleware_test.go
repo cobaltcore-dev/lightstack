@@ -214,3 +214,31 @@ func TestUUIDParamMiddlewareAbortsBeforeHandler(t *testing.T) {
 		t.Errorf("code = %d, want 404", w.Code)
 	}
 }
+
+// A well-formed but non-canonical id (dash-free, as rgw_compat_tenant_ids advertises, or
+// upper-case) is rewritten to canonical form, so the handler's id comparison matches on
+// SQLite, where ids are text.
+func TestUUIDParamMiddlewareCanonicalisesID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	g := r.Group("/v3")
+	g.Use(uuidParamMiddleware)
+
+	var seen string
+	g.GET("/projects/:id", func(c *gin.Context) {
+		seen = c.Param("id")
+		c.Status(http.StatusOK)
+	})
+
+	const canonical = "11111111-1111-1111-1111-111111111111"
+	for _, spelling := range []string{"11111111111111111111111111111111", "11111111-1111-1111-1111-111111111111"} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest("GET", "/v3/projects/"+spelling, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: code = %d; want 200", spelling, w.Code)
+		}
+		if seen != canonical {
+			t.Errorf("%s: handler saw %q; want the canonical %q", spelling, seen, canonical)
+		}
+	}
+}

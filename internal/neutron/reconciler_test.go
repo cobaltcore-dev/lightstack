@@ -107,6 +107,17 @@ func TestDesiredRedirectsNowAddsNetworksTheEnumerationMissed(t *testing.T) {
 	seedDHCPSubnet(t, missed, "spec024-redirect-missed", "10.71.0.0/24")
 	noDHCP := seedNetwork(t, "spec024-redirect-nodhcp-"+uuid.NewString()[:8])
 	seedSubnet(t, noDHCP, "spec024-redirect-nodhcp", "10.72.0.0/24", nil, 4, false)
+	// Two DHCP subnets: the redirect follows the first one created, as applyDHCPForNetwork's.
+	two := seedNetwork(t, "spec028-redirect-two-"+uuid.NewString()[:8])
+	later := seedDHCPSubnet(t, two, "spec028-redirect-later", "10.74.0.0/24")
+	first := seedDHCPSubnet(t, two, "spec028-redirect-first", "10.73.0.0/24")
+	created := time.Now().UTC().Add(-time.Hour)
+	for i, id := range []string{first, later} {
+		if _, err := testPool.Exec(context.Background(), "UPDATE subnets SET created_at = $1 WHERE id = $2",
+			created.Add(time.Duration(i)*time.Minute), id); err != nil {
+			t.Fatalf("order subnets: %v", err)
+		}
+	}
 
 	pass := map[string]string{"br-" + inPass[:8]: "10.70.0.99"}
 	want, err := svc.desiredRedirectsNow(context.Background(), pass)
@@ -118,6 +129,9 @@ func TestDesiredRedirectsNowAddsNetworksTheEnumerationMissed(t *testing.T) {
 	}
 	if got := want["br-"+missed[:8]]; got != "10.71.0.1" {
 		t.Errorf("the missed network's redirect = %q, want 10.71.0.1 (its gatewayless subnet's first host)", got)
+	}
+	if got := want["br-"+two[:8]]; got != "10.73.0.1" {
+		t.Errorf("a network with two DHCP subnets got %q, want 10.73.0.1 (its first subnet's first host)", got)
 	}
 	if _, ok := want["br-"+noDHCP[:8]]; ok {
 		t.Errorf("a network without a DHCP-enabled subnet got a redirect")

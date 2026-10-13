@@ -5,11 +5,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -26,7 +27,7 @@ func (svc *Service) GetAutoAllocatedTopology(c *gin.Context) {
 		LIMIT 1
 	`, projectID).Scan(&networkID, &networkName)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		// Hand-rolled here long before the rest of the service emitted Neutron's envelope. Now that
 		// the shared path does, keeping a second copy would leave two descriptions of one shape free
 		// to drift — the defect B9 is, in a different place (SPEC-024 FR-009).
@@ -140,7 +141,7 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 		LIMIT 1
 	`, projectID).Scan(&networkID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("auto-allocated topology"))
 		return
 	}

@@ -5,10 +5,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -136,7 +137,7 @@ func (svc *Service) GetGroup(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, groupID, projectID).Scan(&name, &description, &status, &groupType, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("group"))
 		return
 	}

@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -151,9 +152,10 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 
 // queryStrings runs a single-column query and returns its non-empty string values.
 // A query, scan, or iteration error is returned so the caller can fail-close
-// (FR-001/016). The DB is read-only here (operator-owned, never reset by teardown).
-func queryStrings(ctx context.Context, pool *pgxpool.Pool, query string) ([]string, error) {
-	rows, err := pool.Query(ctx, query)
+// (FR-001/016). Teardown uses it read-only (operator-owned, never reset); it also
+// serves any single-column read whose empty values are not wanted.
+func queryStrings(ctx context.Context, pool database.DB, query string, args ...any) ([]string, error) {
+	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

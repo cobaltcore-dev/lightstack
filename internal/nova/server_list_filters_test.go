@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // SPEC-025-followup US1: the server listing honours the filters it accepts.
@@ -190,6 +192,29 @@ func TestServerListFilterNarrowsWithinProject(t *testing.T) {
 	}
 	if hasName(names, "filter-alpha") {
 		t.Errorf("?status=ERROR returned %v; filter-alpha is ACTIVE and must be excluded", names)
+	}
+}
+
+// TestServerListIPFilterMatches: the ?ip= filter is resolved in Go against the scope's
+// port addresses (research R8). A server whose port holds the address is returned; the
+// address of no port returns nothing.
+func TestServerListIPFilterMatches(t *testing.T) {
+	requireDB(t)
+	f := seedFilterFixtures(t)
+	ctx := context.Background()
+	var portID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO ports (project_id, device_id, device_owner, fixed_ips) VALUES ($1, $2, 'compute:nova', $3::jsonb) RETURNING id`,
+		filterProject, f.alphaID, `[{"ip_address":"10.11.12.13"}]`).Scan(&portID); err != nil {
+		t.Fatalf("seed port: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM ports WHERE id = $1`, portID) })
+
+	if names := listedNames(t, "/v2.1/servers?ip=10.11.12.13", filterProject, false); !hasName(names, "filter-alpha") {
+		t.Errorf("?ip=10.11.12.13 returned %v; want filter-alpha", names)
+	}
+	if names := listedNames(t, "/v2.1/servers?ip=10.11.12.99", filterProject, false); len(names) != 0 {
+		t.Errorf("?ip=10.11.12.99 returned %v; want an empty collection (no port holds it)", names)
 	}
 }
 
@@ -572,5 +597,23 @@ func TestRefusalNamesWhatTheCallerCanActuallyUse(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestServerListNameFollowsTheDatabasesDialect: name is matched by the database, as
+// upstream matches it by its own (nova/db/main/api.py), so an escape the dialects read
+// differently follows the backend. `\b` is a backspace to PostgreSQL and a word boundary
+// to the regular expressions SQLite is given.
+func TestServerListNameFollowsTheDatabasesDialect(t *testing.T) {
+	requireDB(t)
+	seedFilterFixtures(t)
+
+	names := listedNames(t, "/v2.1/servers?name=%5Cbfilter-alpha", filterProject, false)
+	if testPool.Backend() == database.SQLite {
+		if !hasName(names, "filter-alpha") || hasName(names, "filter-beta") {
+			t.Errorf(`SQLite: ?name=\bfilter-alpha returned %v; want filter-alpha (\b is a word boundary)`, names)
+		}
+	} else if len(names) != 0 {
+		t.Errorf(`PostgreSQL: ?name=\bfilter-alpha returned %v; want none (\b is a backspace)`, names)
 	}
 }

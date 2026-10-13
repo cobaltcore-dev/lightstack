@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -86,7 +86,7 @@ const (
 // `state` decides whether a disabled domain resolves; see domainState. The Default
 // domain is always matched by name regardless, so a deployment that disables its
 // Default domain fails creation for the right reason rather than resolving to nothing.
-func resolveDomainRef(ctx context.Context, pool *pgxpool.Pool, ref string, state domainState) (string, domainOutcome) {
+func resolveDomainRef(ctx context.Context, pool database.DB, ref string, state domainState) (string, domainOutcome) {
 	enabledOnly := ""
 	if state == enabledDomainsOnly {
 		enabledOnly = " AND enabled = true"
@@ -111,7 +111,7 @@ func resolveDomainRef(ctx context.Context, pool *pgxpool.Pool, ref string, state
 
 	var id string
 	if err := pool.QueryRow(ctx, query, arg).Scan(&id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return "", domainNotFound
 		}
 		log.Error().Err(err).Str("ref", ref).Msg("failed to resolve domain reference")

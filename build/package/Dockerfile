@@ -1,5 +1,5 @@
 # Multi-stage build for Lightstack - Multi-architecture support
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1-alpine3.24 AS builder
 
 # Build arguments for cross-compilation
 ARG TARGETOS

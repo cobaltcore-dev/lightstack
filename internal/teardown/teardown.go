@@ -35,7 +35,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -79,10 +78,12 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 	}
 
 	// The DB is operator-owned: read it to enumerate, never reset it. If it is
-	// unreachable, ignore it (C9) and fall back to host-only cleanup.
+	// unreachable, ignore it (C9) and fall back to host-only cleanup. MustExist: a
+	// missing SQLite file is unreachable too — cleanup never creates one, and the
+	// error names the path.
 	var inv Inventory
 	dbReachable := false
-	if pool, connErr := database.Connect(ctx, cfg.Database.URL, database.DefaultPoolConfig()); connErr != nil {
+	if pool, connErr := database.Open(ctx, cfg.Database.URL, database.Options{MustExist: true}); connErr != nil {
 		log.Warn().Err(connErr).Msg("teardown: database unreachable — ignoring it (operator-owned); host cleanup is best-effort (C9)")
 		nsMgr := networking.NewNetworkNamespaceManager(netMode)
 		routerMgr := networking.NewRouterManager(netMode)
@@ -219,7 +220,7 @@ func purgeLocalStorage() error {
 // or iteration error is returned (not swallowed) so the caller fails the compute
 // class: the DB is reachable here, so a failed enumeration means compute could not
 // be completed (fail-closed, FR-001/016).
-func enumerateDomainIDs(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+func enumerateDomainIDs(ctx context.Context, pool database.DB) ([]string, error) {
 	rows, err := pool.Query(ctx,
 		`SELECT libvirt_domain_id FROM instances WHERE libvirt_domain_id IS NOT NULL AND libvirt_domain_id <> ''`)
 	if err != nil {

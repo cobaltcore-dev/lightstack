@@ -11,8 +11,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/ssh"
 
@@ -92,7 +93,7 @@ func (svc *Service) GetKeypair(c *gin.Context) {
 		WHERE user_id = $1 AND name = $2
 	`, userID, keypairName).Scan(&name, &publicKey, &fingerprint, &createdAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("keypair"))
 		return
 	}

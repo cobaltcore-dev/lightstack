@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // SPEC-023 US6: surfaces that describe or reshape the DEPLOYMENT, not a project.
@@ -317,8 +318,8 @@ func TestListServersPagingIsStable(t *testing.T) {
 	for i := range 5 {
 		if _, err := testPool.Exec(ctx,
 			`INSERT INTO instances (name, project_id, status, created_at)
-			 VALUES ($1, $2, 'ACTIVE', '2026-01-01 00:00:00')`,
-			fmt.Sprintf("tie-%d", i), authzProjectA); err != nil {
+			 VALUES ($1, $2, 'ACTIVE', $3)`,
+			fmt.Sprintf("tie-%d", i), authzProjectA, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("seeding tie instance: %v", err)
 		}
 	}

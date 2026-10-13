@@ -44,9 +44,13 @@ tests:
               secretKeyRef:
                 name: rgw-s3-creds
                 key: secretKey
-  - it: renders no env block when extraEnv is empty and nothing else needs it
+  - it: renders only the node name when extraEnv is empty and nothing else needs an entry
     set:
       database.url: postgres://lightstack@db/lightstack
     asserts:
-      - notExists:
+      - lengthEqual:
           path: spec.template.spec.containers[0].env
+          count: 1
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: LIGHTSTACK_NODE_NAME

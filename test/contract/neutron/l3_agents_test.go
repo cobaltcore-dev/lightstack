@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os/exec"
 	"testing"
 
 	contract "github.com/cobaltcore-dev/lightstack/test/contract"
@@ -150,9 +149,10 @@ func createTestAgent(t *testing.T, description, binary string) string {
 	t.Helper()
 
 	agentID := uuid.New().String()
-	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "INSERT INTO neutron_agents (id, agent_type, \"binary\", host, description, admin_state_up, alive, created_at) VALUES ('` + agentID + `', 'L3 agent', '` + binary + `', 'compute-1', '` + description + `', true, true, NOW()) ON CONFLICT DO NOTHING;"`
-	exec.Command("sh", "-c", cmd).Run()
-
+	contract.Seed(t,
+		`INSERT INTO neutron_agents (id, agent_type, "binary", host, description, admin_state_up, alive, created_at)
+		 VALUES ($1, 'L3 agent', $2, 'compute-1', $3, true, true, NOW()) ON CONFLICT DO NOTHING`,
+		agentID, binary, description)
 	return agentID
 }
 
@@ -160,8 +160,7 @@ func createTestAgent(t *testing.T, description, binary string) string {
 func cleanupTestAgent(t *testing.T, agentID string) {
 	t.Helper()
 
-	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "DELETE FROM neutron_agents WHERE id='` + agentID + `';"`
-	exec.Command("sh", "-c", cmd).Run()
+	contract.Seed(t, "DELETE FROM neutron_agents WHERE id = $1", agentID)
 }
 
 // Helper to create test router

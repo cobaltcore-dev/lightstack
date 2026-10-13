@@ -1,4 +1,4 @@
-package common
+package database
 
 import (
 	"errors"
@@ -38,6 +38,35 @@ func TestIsUniqueViolation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsUniqueViolation(tc.err); got != tc.want {
 				t.Fatalf("IsUniqueViolation(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPostgresErrorClassesByCode pins each classifier to its SQLSTATE, wrapped or not,
+// so a code typo cannot hide behind the one class a DB-backed test happens to hit.
+func TestPostgresErrorClassesByCode(t *testing.T) {
+	classes := []struct {
+		name string
+		is   func(error) bool
+		code string
+	}{
+		{"unique", IsUniqueViolation, "23505"},
+		{"foreign key", IsForeignKeyViolation, "23503"},
+		{"not null", IsNotNullViolation, "23502"},
+		{"check", IsCheckViolation, "23514"},
+		{"busy: serialization failure", IsBusy, "40001"},
+		{"busy: deadlock", IsBusy, "40P01"},
+		{"busy: lock not available", IsBusy, "55P03"},
+	}
+	for _, c := range classes {
+		t.Run(c.name, func(t *testing.T) {
+			err := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: c.code})
+			if !c.is(err) {
+				t.Fatalf("%s does not recognise SQLSTATE %s", c.name, c.code)
+			}
+			if c.is(&pgconn.PgError{Code: "22P02"}) {
+				t.Fatalf("%s recognises an unrelated SQLSTATE", c.name)
 			}
 		})
 	}

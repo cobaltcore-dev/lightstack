@@ -73,6 +73,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	if err := checkDatabaseConfig(cfg, true); err != nil {
+		log.Fatalf("%v", err)
+	}
+	// The name this node reserves block-storage rows under while it creates them (FR-033).
+	nodeName, err := common.NodeName()
+	if err != nil {
+		log.Fatalf("Cannot determine the node name: %v; set LIGHTSTACK_NODE_NAME", err)
+	}
 
 	// Initialize structured logging
 	middleware.InitLogger(&cfg.Logging)
@@ -88,7 +96,7 @@ func main() {
 	ctx := context.Background()
 	poolConfig := newPoolConfig(cfg)
 
-	pool, err := database.Connect(ctx, cfg.Database.URL, poolConfig)
+	pool, err := database.Open(ctx, cfg.Database.URL, database.Options{Pool: *poolConfig})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -105,6 +113,7 @@ func main() {
 	if err := database.MigrateUp(cfg.Database.URL, *migrationsPath); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
+	logDatabaseReady(ctx, pool, cfg.Database.URL, nodeName)
 
 	// Bootstrap the admin account from configuration (SPEC-007 WS-2). Fail-soft:
 	// the install-blocking gate is owned by the Helm chart, not the binary.
@@ -234,8 +243,10 @@ func main() {
 	if cinderStorageMode == "" {
 		cinderStorageMode = "stub"
 	}
-	cinderService := cinder.NewService(pool, cinderStorageMode, cfg.Cinder.CephPool, cfg.Cinder.CephConf)
+	cinderService := cinder.NewService(pool, cinderStorageMode, cfg.Cinder.CephPool, cfg.Cinder.CephConf, nodeName)
 	log.Printf("Cinder initialized in %s mode", cinderStorageMode)
+	// Before the listeners open: no request may meet a volume this node stopped creating.
+	cinderService.SweepInterruptedReservations(ctx)
 
 	// Nova creates boot volumes through Cinder (boot-from-new-volume, SPEC-020 FR-025).
 	novaService.SetCinderService(cinderService)
@@ -420,8 +431,6 @@ func main() {
 	// Stop service background goroutines before closing HTTP servers
 	novaService.Shutdown()
 	log.Println("Nova background goroutines stopped")
-	cinderService.Shutdown()
-	log.Println("Cinder background goroutines stopped")
 	stopConsoleReconciler()
 	log.Println("Console-token reconciler stopped")
 
@@ -543,6 +552,10 @@ func runConsoleTokens(args []string) int {
 		fmt.Fprintf(os.Stderr, "console-tokens: failed to load config: %v\n", err)
 		return 2
 	}
+	if err := checkDatabaseConfig(cfg, false); err != nil {
+		fmt.Fprintf(os.Stderr, "console-tokens: %v\n", err)
+		return 2
+	}
 	middleware.InitLogger(&cfg.Logging)
 
 	// A short-lived CLI needs only a couple of connections, but it must still go
@@ -552,7 +565,9 @@ func runConsoleTokens(args []string) int {
 	pc.MinConns = 1
 
 	ctx := context.Background()
-	pool, err := database.Connect(ctx, cfg.Database.URL, pc)
+	// MustExist: inspecting tokens never creates a database; a missing SQLite file is
+	// reported, naming its path.
+	pool, err := database.Open(ctx, cfg.Database.URL, database.Options{Pool: *pc, MustExist: true})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "console-tokens: failed to connect to the database: %v\n", err)
 		return 1
@@ -561,6 +576,43 @@ func runConsoleTokens(args []string) int {
 
 	store := console.NewStore(pool, paths.ConsoleTokenDir(), cfg.Nova.ConsoleTokenTTL)
 	return console.RunCLI(ctx, store, rest, os.Stdout, os.Stderr)
+}
+
+// checkDatabaseConfig runs the checks every entry point runs right after loading its
+// configuration, before it opens anything, so a refusal leaves nothing behind
+// (contracts/configuration-and-startup.md §1–§3): the URL, the backend
+// LIGHTSTACK_DB_BACKEND declares and — for the server, which runs the networking —
+// SQLite's single-node limit.
+func checkDatabaseConfig(cfg *common.Config, server bool) error {
+	backend, err := database.ParseURL(cfg.Database.URL)
+	if err != nil {
+		return err
+	}
+	if err := database.CheckDeclaredBackend(os.Getenv("LIGHTSTACK_DB_BACKEND"), backend); err != nil {
+		return err
+	}
+	if server && backend == database.SQLite && cfg.Neutron.VXLANEnabled {
+		return errors.New("database.url selects sqlite, but neutron.vxlan_enabled is true; SQLite serves a single node only")
+	}
+	return nil
+}
+
+// logDatabaseReady writes the line that says which database the server runs on
+// (FR-013a): the backend, where it is — never with credentials — the schema version, the
+// node name and, on SQLite, the connection settings as read back from a pooled connection.
+func logDatabaseReady(ctx context.Context, db database.DB, url, node string) {
+	d, err := database.Describe(ctx, db, url)
+	if err != nil {
+		zlog.Warn().Err(err).Msg("database ready, but describing it failed")
+		return
+	}
+	ev := zlog.Info().Str("backend", string(d.Backend)).Str("location", d.Location).Uint("schema_version", d.SchemaVersion).
+		Str("node", node)
+	if d.Backend == database.SQLite {
+		ev = ev.Str("journal_mode", d.JournalMode).Str("synchronous", d.Synchronous).Bool("foreign_keys", d.ForeignKeys).
+			Int("busy_timeout_ms", d.BusyTimeoutMS).Str("txlock", d.TxLock)
+	}
+	ev.Msg("database ready")
 }
 
 func runCleanup(args []string) {
@@ -577,6 +629,10 @@ func runCleanup(args []string) {
 	cfg, err := loadConfig(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cleanup: failed to load config: %v\n", err)
+		os.Exit(2)
+	}
+	if err := checkDatabaseConfig(cfg, false); err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup: %v\n", err)
 		os.Exit(2)
 	}
 	middleware.InitLogger(&cfg.Logging)

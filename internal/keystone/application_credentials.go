@@ -6,10 +6,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -211,7 +212,7 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 		WHERE id = $1 AND user_id = $2
 	`, credID, userID).Scan(&id, &userIDVal, &projectID, &name, &description, &expiresAt, &unrestricted)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewIdentityNotFoundError("Application Credential", credID))
 		return
 	}
@@ -304,7 +305,7 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 		WHERE id = $1
 	`, credID).Scan(&id, &userID, &projectID, &name, &description, &expiresAt, &unrestricted)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewIdentityNotFoundError("Application Credential", credID))
 		return
 	}

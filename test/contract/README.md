@@ -47,6 +47,11 @@ export OS_USERNAME=admin
 export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
 export OS_USER_DOMAIN_NAME=default
+
+# The database of the Lightstack under test, for the few fixtures the API cannot
+# create (contract.Seed). Tests that need it skip when it is unset.
+export LIGHTSTACK_DB_URL='postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable'
+# or, for a server running on SQLite: sqlite:///var/lib/lightstack/db/lightstack.db
 ```
 
 ### Run All Contract Tests

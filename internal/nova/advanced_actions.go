@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -49,7 +49,7 @@ func (svc *Service) SuspendInstance(c *gin.Context, instanceID, projectID string
 	).Scan(&domainScan, &status, &powerState)
 	libvirtDomainID := guestDomain(domainScan)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -122,7 +122,7 @@ func (svc *Service) ResumeInstance(c *gin.Context, instanceID, projectID string)
 	).Scan(&domainScan, &status)
 	libvirtDomainID := guestDomain(domainScan)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -199,7 +199,7 @@ func (svc *Service) ShelveInstance(c *gin.Context, instanceID, projectID string)
 	).Scan(&domainScan, &status)
 	libvirtDomainID := guestDomain(domainScan)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -281,7 +281,7 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 		instanceID, projectID,
 	).Scan(&status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -349,7 +349,7 @@ func (svc *Service) resizeInstance(c *gin.Context, instanceID, projectID, flavor
 		instanceID, projectID,
 	).Scan(&status, &currentFlavorID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -372,7 +372,7 @@ func (svc *Service) resizeInstance(c *gin.Context, instanceID, projectID, flavor
 		flavorRef,
 	).Scan(&newFlavorID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("flavor"))
 		return
 	}
@@ -458,7 +458,7 @@ func (svc *Service) RevertResizeInstance(c *gin.Context, instanceID, projectID s
 		instanceID, projectID,
 	).Scan(&status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -508,7 +508,7 @@ func (svc *Service) EvacuateInstance(c *gin.Context, instanceID, _ string) {
 	}
 
 	instanceUUID, _, err := targetInstance(c, svc.pool, instanceID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -541,7 +541,7 @@ func (svc *Service) MigrateInstance(c *gin.Context, instanceID, projectID string
 		instanceID, projectID,
 	).Scan(&status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -633,7 +633,7 @@ func (svc *Service) LiveMigrateInstance(c *gin.Context, instanceID, projectID st
 		instanceID, projectID,
 	).Scan(&status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -665,7 +665,7 @@ func (svc *Service) LiveMigrateInstance(c *gin.Context, instanceID, projectID st
 // securityGroupNamesForServer returns the names of the security groups currently
 // associated with a server. The INNER JOIN drops orphaned associations (an SG row
 // deleted out from under a server_security_groups row, which has no FK).
-func securityGroupNamesForServer(ctx context.Context, pool *pgxpool.Pool, serverID string) ([]string, error) {
+func securityGroupNamesForServer(ctx context.Context, pool database.DB, serverID string) ([]string, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT sg.name
 		FROM server_security_groups ssg
@@ -694,7 +694,7 @@ func securityGroupNamesForServer(ctx context.Context, pool *pgxpool.Pool, server
 
 // securityGroupNamesForServers batches securityGroupNamesForServer across a page of
 // servers in a single query (no N+1), returning server_id → names.
-func securityGroupNamesForServers(ctx context.Context, pool *pgxpool.Pool, serverIDs []string) (map[string][]string, error) {
+func securityGroupNamesForServers(ctx context.Context, pool database.DB, serverIDs []string) (map[string][]string, error) {
 	result := make(map[string][]string, len(serverIDs))
 	if len(serverIDs) == 0 {
 		return result, nil
@@ -778,7 +778,7 @@ func (svc *Service) AddSecurityGroup(c *gin.Context, instanceID, projectID strin
 		sgName, projectID,
 	).Scan(&sgID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
 		return
 	}
@@ -866,7 +866,7 @@ func (svc *Service) RemoveSecurityGroup(c *gin.Context, instanceID, projectID st
 		sgName, projectID,
 	).Scan(&sgID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
 		return
 	}
@@ -958,7 +958,7 @@ func (svc *Service) ChangePassword(c *gin.Context, instanceID, projectID string)
 		instanceID, projectID,
 	).Scan(&status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -1055,7 +1055,7 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 		instanceID, projectID,
 	).Scan(&sourceImageID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
