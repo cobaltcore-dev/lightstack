@@ -2,7 +2,7 @@
 
 **Date**: October 12, 2026
 **Version**: Lightstack Unreleased (post-v0.6.1) + Horizon Flamingo 2025.2
-**Status**: ⚠️ The Horizon dashboard is **usable for resource management**; its open UI gaps (the noVNC console and others) are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
+**Status**: ⚠️ The Horizon dashboard is **usable for resource management**; its open UI gaps (F10, F11, F18) are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 
 ## Executive Summary
 

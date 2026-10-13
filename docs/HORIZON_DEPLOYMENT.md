@@ -351,8 +351,8 @@ Test key Horizon features:
 # - Click "Launch Instance"; give it a name, then pick an image (Source), a flavor and
 #   a network (create one under Network > Networks first if the project has none)
 # - Verify the instance is listed and reaches Active
-# - The wizard's default "Create New Volume: Yes" boots from the image without creating
-#   a volume (finding F16, see the compatibility report)
+# - The wizard's default "Create New Volume: Yes" creates a volume from the image and
+#   boots from it (finding F16, fixed — SPEC-020 FR-025)
 
 # Network Topology
 # - Navigate to Network > Network Topology

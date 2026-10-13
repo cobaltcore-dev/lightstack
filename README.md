@@ -249,7 +249,7 @@ Lightstack serves the OpenStack APIs that Horizon (Flamingo 2025.2 and later) co
 
 **Features** — each works through the **API/CLI**; the trailing note is the *dashboard* status from the
 [compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md):
-- ✅ Instance lifecycle (launch, start, stop, delete, resize, rebuild) — ⚠️ the launch wizard's "Create New Volume" boots from the image without creating a volume (F16)
+- ✅ Instance lifecycle (launch, start, stop, delete, resize, rebuild) — ✅ the launch wizard's "Create New Volume" creates a volume from the image and boots from it (F16 fixed, SPEC-020 FR-025)
 - ✅ VNC console access (integrated with noVNC proxy; works in real mode, #534) — absent from the stub stacks, which ship no console proxy
 - ✅ Network topology visualization
 - ✅ Volume management (create, attach, snapshot)
