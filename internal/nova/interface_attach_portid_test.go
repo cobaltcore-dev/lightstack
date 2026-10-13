@@ -247,4 +247,7 @@ func TestListInterfacesIncludesAddresslessAttachments(t *testing.T) {
 	if !strings.Contains(body, addrlessPort) {
 		t.Errorf("an attachment whose port has no addresses is missing from the os-interface list: %s", body)
 	}
+	if !strings.Contains(body, `"fixed_ips":[]`) {
+		t.Errorf("the address-less attachment must list fixed_ips as [], matching the attach response: %s", body)
+	}
 }
