@@ -499,6 +499,15 @@ func runMigrate(args []string) int {
 		}
 		return 2
 	}
+	// Go's flag parsing stops at the first positional, so
+	// `migrate up --config X --dry-run` would silently run a REAL migration
+	// against the DEFAULT config with the flags dropped (round-2 review F5).
+	// Reject positionals instead; the sibling tool's `lightstack-migrate up`
+	// style has no equivalent here.
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "migrate: unexpected argument %q (flags only — no subcommand; see `lightstack migrate --help`)\n", fs.Arg(0))
+		return 2
+	}
 
 	cfg, err := loadConfigForCLI(*cfgPath)
 	if err != nil {
@@ -537,10 +546,6 @@ func runMigrate(args []string) int {
 	return 0
 }
 
-// runCleanup executes the `lightstack cleanup` subcommand: the SPEC-010 release teardown
-// (issue #53). Exit codes: 0 success, 1 a required class could not be purged
-// (fail-closed — the blocking pre-delete hook then aborts uninstall), 2 usage or
-// config error.
 // loadConfig loads the config and applies state_path as the node-local root.
 // The server goes through here — the guarded path, since it signs and
 // validates tokens. Every subcommand goes through loadConfigForCLI, which
@@ -660,6 +665,10 @@ func runConsoleTokens(args []string) int {
 	return console.RunCLI(ctx, store, rest, os.Stdout, os.Stderr)
 }
 
+// runCleanup executes the `lightstack cleanup` subcommand: the SPEC-010 release teardown
+// (issue #53). Exit codes: 0 success, 1 a required class could not be purged
+// (fail-closed — the blocking pre-delete hook then aborts uninstall), 2 usage or
+// config error.
 func runCleanup(args []string) {
 	fs := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config/lightstack.yaml", "Path to configuration file")

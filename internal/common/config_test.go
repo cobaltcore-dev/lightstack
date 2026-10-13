@@ -875,11 +875,14 @@ func TestLoadConfigRefusesInsecureDefaultAdminPassword(t *testing.T) {
 		})
 	}
 
-	// Both admin fields omitted: no account is seeded, no credentials to
-	// guard — must keep loading (this is what every minimal fixture looks
-	// like).
-	if _, err := LoadConfig(writeTestConfig(t, "keystone:\n  jwt_secret: \""+goodSecret+"\"\n")); err != nil {
-		t.Errorf("LoadConfig without admin fields: %v; want acceptance", err)
+	// Both admin fields omitted: REFUSED. migrations/002 seeds an enabled
+	// admin/secret account in every deployment and BootstrapAdmin only warns
+	// on an empty configured password — omitting the field is how the public
+	// credential stays live (round-2 review F1).
+	if _, err := LoadConfig(writeTestConfig(t, "keystone:\n  jwt_secret: \""+goodSecret+"\"\n")); err == nil {
+		t.Error("LoadConfig without admin fields: accepted; want refusal (the seeded admin/secret stays live)")
+	} else if !strings.Contains(err.Error(), "admin_password") {
+		t.Errorf("error does not name admin_password: %v", err)
 	}
 
 	// A random password with a random secret: the positive control.
@@ -917,10 +920,11 @@ func TestLoadConfigAllowsInsecureDefaultSecretWithOverride(t *testing.T) {
 }
 
 // TestLoadConfigAcceptsARandomSecret is the positive control for the guard: a
-// non-default secret loads without any opt-in.
+// non-default secret (and non-default admin password) loads without any
+// opt-in.
 func TestLoadConfigAcceptsARandomSecret(t *testing.T) {
 	hermeticGuardEnv(t)
-	cfg, err := LoadConfig(writeTestConfig(t, "keystone:\n  jwt_secret: \"k4FNxqKmLwW3ZRFvMscJ0d1oO5gYhN\"\n"))
+	cfg, err := LoadConfig(writeTestConfig(t, "keystone:\n  jwt_secret: \"k4FNxqKmLwW3ZRFvMscJ0d1oO5gYhN\"\n  admin_password: \"T3st-Not-The-Shipped-Default\"\n"))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}

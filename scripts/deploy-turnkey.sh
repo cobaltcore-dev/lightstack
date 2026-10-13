@@ -66,6 +66,7 @@ NETMASK="${LIGHTSTACK_NETMASK:-24}"
 # so the workers get PermissionError on read and Horizon fails to start.
 DB_PASSWORD="${LIGHTSTACK_DB_PASSWORD:-}"
 JWT_SECRET=""
+ADMIN_PASSWORD=""
 HORIZON_SECRET_KEY=""
 INSTALL_DIR="${LIGHTSTACK_INSTALL_DIR:-/opt/lightstack}"
 CONFIG_DIR="$INSTALL_DIR/config"
@@ -343,6 +344,11 @@ validate_config() {
 
 generate_secrets() {
     JWT_SECRET="$(openssl rand -hex 32)"
+    # The seeded admin account (migrations/002) starts with the public
+    # default; the secret guard refuses to boot on it, so a real one is
+    # generated here and flows into the config, the CLI env file, Horizon's
+    # deployment and the summary.
+    ADMIN_PASSWORD="$(openssl rand -hex 24)"
     HORIZON_SECRET_KEY="$(openssl rand -hex 32)"
     if [ -z "$DB_PASSWORD" ]; then
         DB_PASSWORD="$(openssl rand -hex 16)"
@@ -637,6 +643,8 @@ keystone:
   port: 35357
   jwt_secret: "$JWT_SECRET"
   token_ttl: 24h
+  admin_user: admin
+  admin_password: "$ADMIN_PASSWORD"
 
 nova:
   host: "0.0.0.0"
@@ -888,7 +896,7 @@ create_cli_env() {
 export OS_AUTH_URL=http://$HOST_IP:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=$ADMIN_PASSWORD
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
@@ -913,7 +921,7 @@ show_completion() {
     echo "🌐 Horizon Dashboard:"
     echo "   URL: http://$HOST_IP/dashboard"
     echo "   Username: admin"
-    echo "   Password: secret"
+    echo "   Password: $ADMIN_PASSWORD"
     echo "   Domain: Default"
     echo ""
     echo "🖥️  Instance Console (noVNC):"

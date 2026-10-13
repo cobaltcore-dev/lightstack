@@ -30,6 +30,7 @@ echo ""
 # Start Lightstack + Horizon stack
 echo -e "${YELLOW}[2/5]${NC} Starting Lightstack + Horizon stack..."
 export LIGHTSTACK_JWT_SECRET="${LIGHTSTACK_JWT_SECRET:-validation-only-secret}"
+export LIGHTSTACK_ADMIN_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:-validation-only-admin-password}"
 docker compose -f deployments/docker-compose-horizon.yml down &> /dev/null || true
 docker compose -f deployments/docker-compose-horizon.yml up -d --build
 echo -e "${GREEN}✓ Lightstack services started${NC}"

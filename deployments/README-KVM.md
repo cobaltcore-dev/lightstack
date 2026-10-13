@@ -40,6 +40,11 @@ keystone:
   # (including this comment's old placeholder) is refused at startup.
   jwt_secret: "PASTE-OUTPUT-OF-openssl-rand-base64-32"
   token_ttl: 24h
+  # The bootstrap admin account's password — also generate per deployment
+  # (`openssl rand -base64 24`); the shipped `secret` default is public and
+  # refused at startup.
+  admin_user: admin
+  admin_password: "PASTE-OUTPUT-OF-openssl-rand-base64-24"
 
 nova:
   host: "0.0.0.0"

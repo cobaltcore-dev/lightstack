@@ -40,15 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses them — case-insensitively and ignoring surrounding whitespace, so the
   uppercase spelling in `deployments/README-KVM.md` is caught too (that example
   now generates a per-deployment secret instead). It also refuses a well-known
-  or empty `keystone.admin_password` whenever an admin account is configured —
-  `admin`/`secret` authenticates as the bootstrap admin directly. A
+  or empty `keystone.admin_password` — unconditionally: migrations/002 seeds an
+  enabled `admin` account with bcrypt(`secret`) in every deployment, so a config
+  that omits the field boots with the public credential live. A
   `LIGHTSTACK_ADMIN_PASSWORD` environment override (mirroring
   `LIGHTSTACK_JWT_SECRET`) lets `docker run` inject the real password without
   mounting a config.
   `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1` is the documented
   escape hatch for isolated dev/test stacks (the plain docker-compose dev stacks
-  and `make run` opt in explicitly; the Horizon stack and the Helm chart already
-  require a real secret). `lightstack-migrate` and the operational CLI
+  and `make run` opt in explicitly; the Horizon stack now requires a real
+  `LIGHTSTACK_ADMIN_PASSWORD` alongside its JWT secret, and the Helm chart
+  already fails fast on both). `lightstack-migrate` and the operational CLI
   subcommands (`cleanup`, `console-tokens`, `migrate`) are exempt — they never
   sign or validate a token, and the image entrypoint and the documented
   Kubernetes init container run migrations against the canned config before any

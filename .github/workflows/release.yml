@@ -18,10 +18,13 @@ on:
     tags:
       - 'v*'
 
-# A re-pushed tag must not run two release pipelines in parallel.
+# A re-pushed tag must not run two release pipelines in parallel — but a
+# cancellation can also kill an in-flight publish between steps (e.g. after
+# the image push, before the chart push), leaving exactly the partial state
+# this pipeline warns about. Queue instead of cancelling.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # Least privilege: the test gate only needs to read the repo; only the
 # publishing job needs to write releases and packages.

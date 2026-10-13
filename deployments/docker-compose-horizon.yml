@@ -51,6 +51,10 @@ services:
     environment:
       - LIGHTSTACK_DB_URL=postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable
       - LIGHTSTACK_JWT_SECRET=${LIGHTSTACK_JWT_SECRET:?LIGHTSTACK_JWT_SECRET must be set}
+      # The bootstrap admin password: the image's canned config ships the
+      # public admin/secret default, which the secret guard refuses. Provide
+      # a real one (openssl rand -base64 24).
+      - LIGHTSTACK_ADMIN_PASSWORD=${LIGHTSTACK_ADMIN_PASSWORD:?LIGHTSTACK_ADMIN_PASSWORD must be set}
       - LIGHTSTACK_ENDPOINT_HOST=lightstack
     volumes:
       - lightstack-data:/var/lib/lightstack

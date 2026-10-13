@@ -4,6 +4,11 @@
 
 set -e
 
+# Isolated test fixture: both nodes boot with the public admin/secret
+# bootstrap credential (the auth payloads below use it), which the secret
+# guard refuses without this opt-in — same policy as the dev compose stacks.
+export LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET="${LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET:-1}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 TEST_DIR="$PROJECT_ROOT/test/tmp"

@@ -430,18 +430,19 @@ func loadConfig(path string, enforceSecretGuard bool) (*Config, error) {
 					"For isolated development or test environments only, " +
 					"LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 opts out of this check")
 		}
-		// Only enforced when an admin account is actually configured: minimal
-		// test fixtures legitimately omit both fields (no account is seeded).
-		if cfg.Keystone.AdminUser != "" || cfg.Keystone.AdminPassword != "" {
-			if isInsecureDefaultSecret(cfg.Keystone.AdminPassword, insecureDefaultAdminPasswords) {
-				return nil, fmt.Errorf(
-					"keystone.admin_password is empty or a well-known default — refusing to start. " +
-						"Set keystone.admin_password in the config file (or the " +
-						"LIGHTSTACK_ADMIN_PASSWORD environment variable) to a random value " +
-						"(it seeds the bootstrap admin account). For isolated development or " +
-						"test environments only, LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 " +
-						"opts out of this check")
-			}
+		// The admin half has no omit-both escape: migrations/002 seeds an
+		// enabled `admin` account with bcrypt("secret") in EVERY deployment,
+		// and BootstrapAdmin only warns when no password is configured — so
+		// a config that omits the field boots with the public credential
+		// live. An empty or well-known admin_password is always refused.
+		if isInsecureDefaultSecret(cfg.Keystone.AdminPassword, insecureDefaultAdminPasswords) {
+			return nil, fmt.Errorf(
+				"keystone.admin_password is empty or a well-known default — refusing to start. " +
+					"Set keystone.admin_password in the config file (or the " +
+					"LIGHTSTACK_ADMIN_PASSWORD environment variable) to a random value " +
+					"(it seeds the bootstrap admin account). For isolated development or " +
+					"test environments only, LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 " +
+					"opts out of this check")
 		}
 	}
 
@@ -455,15 +456,17 @@ var insecureDefaultJWTSecrets = map[string]struct{}{
 	"":                        {},
 	"change-me-in-production": {},
 	"change-me-in-production-use-openssl-rand-base64-32": {},
-	// deployments/README-KVM.md's example placeholder — copy-pasting the doc
+	// deployments/README-KVM.md's example placeholders — copy-pasting the doc
 	// verbatim must be caught like the config file's own default.
 	"paste-output-of-openssl-rand-base64-32": {},
+	"paste-output-of-openssl-rand-base64-24": {},
 }
 
 // insecureDefaultAdminPasswords are the well-known bootstrap-admin passwords
 // shipped in this repository (config/lightstack.yaml: "secret") and left by
-// operators who never changed it. Empty is refused when an admin user is
-// configured — the seeded account would authenticate with an empty password.
+// operators who never changed it. Empty is refused unconditionally — the
+// migrations/002 seed leaves admin/secret live when no password is
+// configured, so "omitted" is exactly as dangerous as the public default.
 var insecureDefaultAdminPasswords = map[string]struct{}{
 	"":       {},
 	"secret": {},
