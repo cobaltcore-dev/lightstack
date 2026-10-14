@@ -1,0 +1,64 @@
+name: Feature request
+description: Propose new API surface or behavior — ideally to close a gap with upstream OpenStack
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Before proposing something new, check the [roadmap](ROADMAP.md) and
+        [STATUS.md](STATUS.md) — much of the plan is driven by upstream parity. If this request
+        closes an API gap with upstream OpenStack, say so up front; per [SPEC-000](docs/specs/000-api-compliance)
+        compliance is priority zero and parity work is prioritized accordingly.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What can't you do today, and who is blocked by it? If a real client (openstack CLI, Terraform provider, Horizon, gophercloud) fails against lightstack, name it.
+      placeholder: >
+        The Terraform openstack provider calls GET /v2.1/{tenant_id}/servers/detail?changes-since=...
+        during refresh; lightstack ignores the changes-since filter so the provider sees stale state.
+    validations:
+      required: true
+  - type: textarea
+    id: upstream-parity
+    attributes:
+      label: Upstream OpenStack parity target
+      description: >
+        Is there an upstream API this should match? Cite the docs.openstack.org API reference
+        (or upstream service source). SPEC-000 makes upstream compliance priority zero, so
+        "upstream does X, we don't" is the strongest possible justification here. If this is
+        deliberately lightstack-specific, say so and why.
+      placeholder: >
+        https://docs.openstack.org/api-ref/compute/... — changes-since is a standard list filter
+        since microversion 2.1; upstream returns only servers updated after the timestamp.
+    validations:
+      required: true
+  - type: textarea
+    id: api-surface
+    attributes:
+      label: Proposed API surface (optional)
+      description: Endpoint(s), request/response shapes, microversion gating. Match upstream naming exactly — clients depend on it.
+      render: text
+      placeholder: |
+        GET /v2.1/{tenant_id}/servers/detail?changes-since=<ISO8601>
+        → 200 {"servers": [...]} filtered server-side; 400 on malformed timestamp (upstream behavior).
+  - type: checkboxes
+    id: client-impact
+    attributes:
+      label: Client impact
+      description: Which OpenStack clients would exercise this? Helps us prioritize contract tests in test/contract/.
+      options:
+        - label: OpenStack CLI (python-openstackclient)
+        - label: Terraform provider (terraform-provider-openstack)
+        - label: Horizon dashboard
+        - label: gophercloud SDKs
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
+      description: Other ways to solve this, including "wait for upstream parity work" — and why they fall short.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context (optional)
+      description: Links, sketches, related specs in docs/specs/ or ADRs in docs/adr/.

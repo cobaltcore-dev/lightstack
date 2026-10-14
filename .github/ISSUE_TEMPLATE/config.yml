@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions
+    url: https://github.com/cobaltcore-dev/lightstack/discussions
+    about: Questions, design ideas, and deployment help — start here before opening an issue.
+  - name: Security vulnerabilities
+    url: https://github.com/cobaltcore-dev/lightstack/security/advisories/new
+    about: >
+      Report vulnerabilities privately via a GitHub security advisory — do NOT open a public issue.
+      For triage of SBOM findings (dependency advisories), see docs/security/SBOM_TRIAGE.md;
+      known/not-applicable findings are tracked in docs/security/openvex.json.
