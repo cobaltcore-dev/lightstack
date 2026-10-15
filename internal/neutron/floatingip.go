@@ -62,6 +62,40 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	f := &common.SQLFilter{}
 	f.Eq("project_id", projectID)
 
+	// Standard Neutron list filters (neutron-lib FloatingIPDbMixin):
+	// floating_network_id, port_id, router_id, status, fixed_ip_address,
+	// floating_ip_address, description. All exact matches. They were silently
+	// ignored before, so `openstack floating ip list --network <net>` returned
+	// every tenant's addresses (SPEC-028). The slice keeps the WHERE layout
+	// deterministic.
+	for _, flt := range []struct{ param, column string }{
+		{"floating_network_id", "floating_network_id"},
+		{"port_id", "port_id"},
+		{"router_id", "router_id"},
+		{"status", "status"},
+		{"fixed_ip_address", "fixed_ip_address"},
+		{"floating_ip_address", "floating_ip_address"},
+		{"description", "description"},
+	} {
+		v := c.Query(flt.param)
+		if v == "" {
+			continue
+		}
+		switch flt.column {
+		case "floating_network_id", "port_id", "router_id":
+			// UUID columns: a non-UUID value can only match nothing, but it
+			// would fail the cast and answer 500 — answer the empty list a
+			// well-formed-but-unknown value gets.
+			if _, err := uuid.Parse(v); err != nil {
+				c.JSON(http.StatusOK, gin.H{"floatingips": []gin.H{}})
+				return
+			}
+			f.Eq(flt.column+"::text", v)
+		default:
+			f.Eq(flt.column, v)
+		}
+	}
+
 	// Marker paging over a TOTAL order. created_at alone is not unique, so the order was undefined
 	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
 	// only those before it — a page walk silently dropped them. id is the primary key, so

@@ -697,7 +697,14 @@ func networkListDecision(sharedParam, routerExternalParam string) (sf sharedFilt
 // caller's authorized scope), plus the id/name filters the Terraform provider uses.
 // Placeholders are numbered from $1; `empty` means the query must return nothing. The
 // caller continues numbering marker/pagination args from $(len(args)+1). Pure — no DB.
-func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantParam, idParam, nameParam string) (f *common.SQLFilter, empty bool) {
+// buildNetworkListFilter builds the WHERE conditions and positional args for the
+// networks listing. isAdmin matters only together with tenantParam: an
+// administrator filtering by tenant gets that tenant's networks outright
+// (upstream honours the filter for admin tokens), so the caller's read scope
+// must not be ANDed in — it would leave only the shared/external subset and
+// answer [] for another project's private networks (SPEC-028). A non-admin
+// keeps the scope AND tenant intersection.
+func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantParam, idParam, nameParam string, isAdmin bool) (f *common.SQLFilter, empty bool) {
 	sf, empty := networkListDecision(sharedParam, routerExternalParam)
 	if empty {
 		return nil, true
@@ -714,7 +721,12 @@ func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantPara
 		// select it as a router gateway; requiring `shared` as well would leave the tenant-facing
 		// Set Gateway dropdown empty and fix F11 for administrators only (FR-033a). Read-only:
 		// visibility confers no authority (FR-033b, and #545's rule for shared networks).
-		f.Cond(networkReadScope(f.Arg(caller)))
+		//
+		// Skipped when an admin explicitly filters by tenant: the tenant filter
+		// is then the authoritative owner scope.
+		if !(isAdmin && tenantParam != "") {
+			f.Cond(networkReadScope(f.Arg(caller)))
+		}
 	}
 
 	if ext, ok := neutronBool(routerExternalParam); ok {
@@ -856,7 +868,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	if tenant == "" {
 		tenant = c.Query("project_id")
 	}
-	f, empty := buildNetworkListFilter(projectID, c.Query("shared"), c.Query("router:external"), tenant, c.Query("id"), c.Query("name"))
+	f, empty := buildNetworkListFilter(projectID, c.Query("shared"), c.Query("router:external"), tenant, c.Query("id"), c.Query("name"), common.HasRole(c, common.RoleAdmin))
 	if empty {
 		// No filter combination produces this today; kept so a future filter can short-circuit
 		// without re-plumbing the caller.
