@@ -160,6 +160,15 @@ func (svc *Service) GetBackup(c *gin.Context) {
 	backupID := c.Param("id")
 	projectID := c.GetString("project_id")
 
+	// A non-UUID reference (a backup name — cinderclient resolves show and
+	// delete by name with no list fallback, so the name itself reaches this
+	// lookup) can only name nothing; the uuid-typed query used to surface
+	// the cast error as 500 instead of 404 (SPEC-028).
+	if _, err := uuid.Parse(backupID); err != nil {
+		common.SendError(c, common.NewNotFoundError("backup"))
+		return
+	}
+
 	var (
 		volumeID    string
 		name        *string
@@ -204,6 +213,12 @@ func (svc *Service) GetBackup(c *gin.Context) {
 func (svc *Service) DeleteBackup(c *gin.Context) {
 	backupID := c.Param("id")
 	projectID := c.GetString("project_id")
+
+	// See GetBackup: a non-UUID reference must 404, not 500 (SPEC-028).
+	if _, err := uuid.Parse(backupID); err != nil {
+		common.SendError(c, common.NewNotFoundError("backup"))
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM volume_backups WHERE id = $1 AND project_id = $2",
