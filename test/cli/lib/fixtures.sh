@@ -54,16 +54,29 @@ _sweep_list() {
 
 # _delete_all <label> <json-list-output> <delete-args-template-with-{id}>
 _delete_all() {
-    local label="$1" json="$2" tmpl="$3"
+    # _delete_all <label> <json> <template> [<template>...]
+    # Each template is "verb kind {id}"; they are tried in order and the
+    # first that succeeds wins, so a sweep can fall back (plain volume
+    # delete first, --force for the in-use leftovers, for instance).
+    local label="$1" json="$2"
+    shift 2
+    local templates=("$@")
     local id count=0
     local -a del_args
     while IFS= read -r id; do
         [[ -z "$id" || "$id" == "null" ]] && continue
-        # Split "delete <kind> {id}" into argv words; {id} is a UUID and
-        # never contains whitespace.
-        read -ra del_args <<<"${tmpl/\{id\}/$id}"
-        osc "${del_args[@]}"
-        if (( OSC_RC != 0 )); then
+        local deleted=1
+        for tmpl in "${templates[@]}"; do
+            # Split "delete <kind> {id}" into argv words; {id} is a UUID and
+            # never contains whitespace.
+            read -ra del_args <<<"${tmpl/\{id\}/$id}"
+            osc "${del_args[@]}"
+            if (( OSC_RC == 0 )); then
+                deleted=0
+                break
+            fi
+        done
+        if (( deleted != 0 )); then
             log_warn "sweep: failed to delete $label $id: $(_snip "$OSC_ERR")"
         else
             count=$(( count + 1 ))
@@ -91,7 +104,10 @@ fixtures_sweep() {
     out=$(_sweep_list backups volume backup list)
     _delete_all backups "$out" "backup delete {id}"
     out=$(_sweep_list volumes volume list)
-    _delete_all volumes "$out" "volume delete --force {id}"
+    # Plain delete handles the available volumes; --force is the fallback for
+    # in-use ones (os-force-delete, a fallback only because this Lightstack
+    # build does not implement it — see the suite's known-failing ledger).
+    _delete_all volumes "$out" "volume delete {id}" "volume delete --force {id}"
 
     # Network: ports, subnets, routers, then networks. Floating IPs are NOT
     # swept (they carry no name); suites that allocate them must release them.
