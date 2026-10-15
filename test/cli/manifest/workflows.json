@@ -2,12 +2,47 @@
   "service": "workflows",
   "description": "Tier C — cross-service scenario coverage. Case ids are used verbatim by suites/workflows.sh.",
   "commands": [
-    { "id": "wf.boot.volume-and-network", "cmd": "scenario: boot a server with a volume and a network, verify reachability of state", "endpoints": ["POST /v2.1/servers", "POST /v3/volumes", "POST /v2.0/networks"], "tiers": ["C"] },
-    { "id": "wf.snapshot.to-image.to-server", "cmd": "scenario: snapshot a server into an image, boot a new server from it", "endpoints": ["POST /v2.1/servers/{id}/action", "POST /v2/images", "POST /v2.1/servers"], "tiers": ["C"] },
-    { "id": "wf.volume.lifecycle.attach-detach", "cmd": "scenario: create volume, attach to server, detach, reattach, delete", "endpoints": ["POST /v2.1/servers/{id}/os-volume_attachments", "DELETE /v2.1/servers/{id}/os-volume_attachments/{id}"], "tiers": ["C"] },
-    { "id": "wf.securitygroup.lifecycle", "cmd": "scenario: security group create, rule add/remove, bind to server, delete", "endpoints": ["POST /v2.0/security-groups", "POST /v2.0/security-group-rules"], "tiers": ["C"] },
-    { "id": "wf.floatingip.associate-disassociate", "cmd": "scenario: external network, floating ip create/associate/disassociate/release", "endpoints": ["POST /v2.0/floatingips", "PUT /v2.0/floatingips/{id}"], "tiers": ["C"] },
-    { "id": "wf.project.isolation", "cmd": "scenario: two projects, identical resource names, verify isolation", "endpoints": ["GET /v2.1/servers/detail", "GET /v3/projects"], "tiers": ["C"] },
-    { "id": "wf.quota.enforcement", "cmd": "scenario: set a low volume quota, verify enforcement, restore", "endpoints": ["PUT /v2.1/os-quota-sets/{id}"], "tiers": ["C"] }
+    {
+      "id": "wf.boot.volume-and-network",
+      "cmd": "scenario: net+subnet, bootable volume from image, server boot with --network and --block-device; verify ACTIVE, address on the net, attachment from compute and volume views",
+      "endpoints": ["POST /v2.0/networks", "POST /v2.0/subnets", "POST /v3/volumes", "GET /v3/volumes/{id}", "POST /v2.1/servers", "GET /v2.1/servers/{id}"],
+      "tiers": ["C"]
+    },
+    {
+      "id": "wf.snapshot.to-image.to-server",
+      "cmd": "scenario: boot a server, snapshot it with server image create, boot a second server from the new image; verify both ACTIVE",
+      "endpoints": ["POST /v2.1/servers", "POST /v2.1/servers/{id}/action (createImage)", "GET /v2/images/{id}", "POST /v2.1/servers"],
+      "tiers": ["C"]
+    },
+    {
+      "id": "wf.volume.lifecycle.attach-detach",
+      "cmd": "scenario: volume create, server add volume, verify attachment on volume show and server show, server remove volume, verify empty, delete",
+      "endpoints": ["POST /v3/volumes", "POST /v2.1/servers", "POST /v2.1/servers/{id}/os-volume_attachments", "DELETE /v2.1/servers/{id}/os-volume_attachments/{volume_id}", "DELETE /v3/volumes/{id}"],
+      "tiers": ["C"]
+    },
+    {
+      "id": "wf.securitygroup.lifecycle",
+      "cmd": "scenario: security group create, ssh rule add with port range, rule listed, server add/remove security group, rule remove, group delete (API state only — stub mode does not enforce dataplane)",
+      "endpoints": ["POST /v2.0/security-groups", "POST /v2.0/security-group-rules", "GET /v2.0/security-groups/{id}", "POST /v2.1/servers/{id}/action (addSecurityGroup/removeSecurityGroup)", "DELETE /v2.0/security-group-rules/{id}", "DELETE /v2.0/security-groups/{id}"],
+      "tiers": ["C"]
+    },
+    {
+      "id": "wf.floatingip.associate-disassociate",
+      "cmd": "scenario: external network + subnet, router with external gateway and internal interface, server on the internal net, floating ip create/associate/disassociate/release (API state only — router dataplane not exercised)",
+      "endpoints": ["POST /v2.0/networks", "POST /v2.0/routers", "PUT /v2.0/routers/{id}", "PUT /v2.0/routers/{id}/add_router_interface", "POST /v2.0/floatingips", "PUT /v2.0/floatingips/{id}", "DELETE /v2.0/floatingips/{id}"],
+      "tiers": ["C"]
+    },
+    {
+      "id": "wf.project.isolation",
+      "cmd": "scenario: two projects with a user each and identically-named networks; each user's auth-scoped list shows only their own network; admin tenant_id list filter tracked as known failure",
+      "endpoints": ["POST /v3/projects", "POST /v3/users", "POST /v2.0/networks", "GET /v2.0/networks", "GET /v2.0/networks?tenant_id={project_id}"],
+      "tiers": ["C"]
+    },
+    {
+      "id": "wf.quota.enforcement",
+      "cmd": "scenario: set tiny volume quota (gigabytes and volumes) on a dedicated project, verify exceeding creations fail with quota errors, restore, verify creation works again",
+      "endpoints": ["PUT /v3/os-quota-sets/{project_id}", "GET /v3/os-quota-sets/{project_id}", "POST /v3/volumes", "DELETE /v3/volumes/{id}"],
+      "tiers": ["C"]
+    }
   ]
 }
