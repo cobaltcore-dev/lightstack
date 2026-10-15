@@ -112,6 +112,9 @@ func (svc *Service) CreateDomain(c *gin.Context) {
 	if description != nil {
 		domain["description"] = *description
 	}
+	// Upstream always embeds links.self; the pinned OSC 7 formatter aborts
+	// with KeyError 'links' without it (SPEC-028).
+	domain["links"] = identityLink(c, "domains", domainID.String())
 
 	c.JSON(201, gin.H{"domain": domain})
 }
@@ -160,6 +163,8 @@ func (svc *Service) GetDomain(c *gin.Context) {
 	if description != nil {
 		domain["description"] = *description
 	}
+	// See CreateDomain: links.self is mandatory for the CLI's formatter.
+	domain["links"] = identityLink(c, "domains", id.String())
 
 	c.JSON(200, gin.H{"domain": domain})
 }
