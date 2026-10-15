@@ -1,4 +1,4 @@
-.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui
+.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui test-cli cli-coverage test-terraform
 
 # Build variables
 BINARY_NAME=lightstack
@@ -116,6 +116,29 @@ test-compose-identity:
 	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' not found." && exit 1)
 	@bash test/compose_db_identity_test.sh
 
+# Run the OpenStack CLI conformance suite (SPEC-028, issue #105) against a
+# lightstack server. Builds bin/lightstack first if absent — the suite tests
+# the built artifact. Uses a server at OS_AUTH_URL if one is running,
+# otherwise starts the binary-test compose stack (requires docker).
+test-cli:
+	@echo "Running OpenStack CLI conformance suite..."
+	@test -x bin/lightstack || $(MAKE) build
+	@bash test/cli/bin/run.sh
+
+# CLI conformance coverage gate (SPEC-028): cross-reference manifest/*.json
+# with results/results.json; fails on untested/failed/skipped tier A+B
+# commands. Run after test-cli (or a CI job that stores its results there).
+cli-coverage:
+	@echo "Checking CLI conformance coverage..."
+	@bash test/cli/bin/coverage.sh
+
+# Run the Terraform provider conformance module (SPEC-028) against a running
+# lightstack server. Requires terraform and network access to the provider
+# registry on first run.
+test-terraform:
+	@echo "Running Terraform conformance tests..."
+	@bash test/terraform/run.sh
+
 # Run Helm chart tests (helm lint + template + unittest; no cluster or running Lightstack needed)
 chart-test:
 	@echo "Running Helm chart tests (lint + template + unittest)..."
@@ -166,7 +189,7 @@ horizon-chart-check:
 		fi
 
 # Run all tests (unit + chart + contract + integration + performance)
-test-all: test chart-test test-contract test-integration test-multi-tenant test-errors test-horizon-ui test-performance
+test-all: test chart-test test-contract test-integration test-multi-tenant test-errors test-horizon-ui test-performance test-cli cli-coverage
 	@echo ""
 	@echo "All tests completed!"
 
@@ -279,6 +302,9 @@ help:
 	@echo "  test-performance - Run performance and load tests"
 	@echo "  test-errors      - Run error handling tests"
 	@echo "  test-horizon-ui  - Run the Horizon create-UI regression probe (requires Lightstack running)"
+	@echo "  test-cli         - Run the OpenStack CLI conformance suite (SPEC-028; builds the binary first)"
+	@echo "  cli-coverage     - CLI conformance coverage gate (run after test-cli)"
+	@echo "  test-terraform   - Run the Terraform provider conformance module (requires Lightstack running)"
 	@echo "  chart-test       - Run Helm chart tests (lint + template + unittest; no cluster)"
 	@echo "  horizon-chart-sync - Sync charts/horizon files/ from deployments/horizon-config/"
 	@echo "  horizon-chart-check - Fail if that synced copy is stale (non-destructive; run by chart-test)"

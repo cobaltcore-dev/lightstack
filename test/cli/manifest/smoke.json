@@ -1,0 +1,17 @@
+{
+  "service": "smoke",
+  "description": "Tier S — harness end-to-end proof. Not gated; smoke exists to fail loudly when the stack, CLI, or lib is broken.",
+  "commands": [
+    { "id": "smoke.token.issue", "cmd": "openstack token issue", "endpoints": ["POST /v3/auth/tokens"], "tiers": ["S"] },
+    { "id": "smoke.project.list", "cmd": "openstack project list", "endpoints": ["GET /v3/projects"], "tiers": ["S"] },
+    { "id": "smoke.project.crud", "cmd": "openstack project create/show/set/delete", "endpoints": ["POST /v3/projects", "GET /v3/projects/{id}", "PATCH /v3/projects/{id}", "DELETE /v3/projects/{id}"], "tiers": ["S"] },
+    { "id": "smoke.project.show.missing.neg", "cmd": "openstack project show <missing>", "endpoints": ["GET /v3/projects/{id}"], "tiers": ["S"] },
+    { "id": "smoke.flavor.list", "cmd": "openstack flavor list", "endpoints": ["GET /v2.1/flavors"], "tiers": ["S"] },
+    { "id": "smoke.server.list", "cmd": "openstack server list", "endpoints": ["GET /v2.1/servers/detail"], "tiers": ["S"] },
+    { "id": "smoke.availabilityzone.list", "cmd": "openstack availability zone list", "endpoints": ["GET /v2.1/os-availability-zone"], "tiers": ["S"] },
+    { "id": "smoke.network.list", "cmd": "openstack network list", "endpoints": ["GET /v2.0/networks"], "tiers": ["S"] },
+    { "id": "smoke.securitygroup.list", "cmd": "openstack security group list", "endpoints": ["GET /v2.0/security-groups"], "tiers": ["S"] },
+    { "id": "smoke.volume.list", "cmd": "openstack volume list", "endpoints": ["GET /v3/volumes/detail"], "tiers": ["S"] },
+    { "id": "smoke.image.list", "cmd": "openstack image list", "endpoints": ["GET /v2/images"], "tiers": ["S"] }
+  ]
+}

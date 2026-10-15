@@ -1,0 +1,84 @@
+# Binary-test stack (SPEC-028): run the artifact from `make build`, not a
+# container-internal rebuild.
+#
+# The lightstack service uses the same runtime image as docker-compose.yml,
+# but bind-mounts this checkout's bin/lightstack over the in-image binary.
+# The binary self-applies migrations on startup (cmd/lightstack/main.go), so
+# lightstack-migrate is not invoked. Build the image once from the normal
+# compose file (layers are cached), then:
+#
+#   make build
+#   docker compose -f deployments/docker-compose.binary-test.yml up -d
+#   ./test/cli/bin/run.sh --keep-server
+#
+# The distinct project name (lightstack-binary-test) and volume prefix keep
+# this stack from colliding with a developer's docker-compose.yml deployment.
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    container_name: lightstack-binary-test-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lightstack}
+      POSTGRES_USER: ${POSTGRES_USER:-lightstack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+    volumes:
+      - binary_test_postgres_data:/var/lib/postgresql
+    ports:
+      - "5433:5432" # offset from the dev stack to allow both at once
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightstack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lightstack-binary-test-network
+
+  lightstack:
+    image: lightstack-binary-test:latest
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile
+    container_name: lightstack-binary-test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "35357:35357" # Keystone (Identity)
+      - "8774:8774" # Nova (Compute)
+      - "9696:9696" # Neutron (Network)
+      - "8776:8776" # Cinder (Block Storage)
+      - "9292:9292" # Glance (Image)
+      - "8775:8775" # Metadata Service
+    volumes:
+      # THE POINT OF THIS FILE: test the binary this checkout builds. The
+      # image's own copy is shadowed; CI downloads the build artifact into
+      # bin/ before starting this stack.
+      - ../bin/lightstack:/app/lightstack:ro
+    environment:
+      LIGHTSTACK_DB_URL: "postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable"
+      LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
+      LIGHTSTACK_ENDPOINT_HOST: "localhost" # service catalog URLs reachable from the host
+      # Stub-mode stack, no real guests: safe to trust the instance header
+      # from the Docker bridge. Never set this where real guests run.
+      LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER: "true"
+    networks:
+      - lightstack-binary-test-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:35357/v3 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    # The image CMD runs lightstack-migrate then lightstack; the mounted
+    # binary self-migrates, so run it directly.
+    command: ["/bin/sh", "-c", "/app/lightstack --config /app/config/lightstack.yaml"]
+
+volumes:
+  binary_test_postgres_data:
+    driver: local
+
+networks:
+  lightstack-binary-test-network:
+    driver: bridge
