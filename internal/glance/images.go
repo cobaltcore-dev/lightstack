@@ -239,6 +239,23 @@ func (svc *Service) CreateImage(c *gin.Context) {
 		return
 	}
 
+	// Persist the requested tags. The 201 response below echoes req.Tags, but
+	// the rows were never written before, so a follow-up show returned `tags: []`
+	// — `openstack image create --tag` silently dropped them (SPEC-028). The
+	// dedicated PUT uses the same ON CONFLICT DO NOTHING, so a request repeating
+	// a tag stays legal.
+	for _, tag := range req.Tags {
+		if _, err := svc.pool.Exec(c.Request.Context(), `
+			INSERT INTO image_tags (image_id, tag)
+			VALUES ($1, $2)
+			ON CONFLICT (image_id, tag) DO NOTHING
+		`, imageID, tag); err != nil {
+			log.Error().Err(err).Str("operation", "create_image").Str("image_id", imageID).Msg("failed to insert image tag")
+			common.SendError(c, common.NewInternalServerError("failed to create image"))
+			return
+		}
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"id":               imageID,
 		"name":             req.Name,
@@ -323,6 +340,47 @@ func (svc *Service) ListImages(c *gin.Context) {
 	}
 	if status := c.Query("status"); status != "" {
 		f.Eq("i.status", status)
+	}
+
+	// The remaining standard Glance v2 list parameters (glance's ALLOWED_PARAMS):
+	// name, disk_format, container_format, size_min, size_max, owner, tag. All are
+	// exact matches upstream. They were silently ignored before, which broke the
+	// terraform-provider-openstack image data source (it sends `name` server-side
+	// and does no client-side matching) and `openstack image list --tag` (SPEC-028).
+	if name := c.Query("name"); name != "" {
+		f.Eq("i.name", name)
+	}
+	if diskFormat := c.Query("disk_format"); diskFormat != "" {
+		f.Eq("i.disk_format", diskFormat)
+	}
+	if containerFormat := c.Query("container_format"); containerFormat != "" {
+		f.Eq("i.container_format", containerFormat)
+	}
+	// size_min/size_max are byte bounds; a NULL size (a queued image) matches
+	// neither, which is upstream's behaviour too.
+	if sizeMin := c.Query("size_min"); sizeMin != "" {
+		if n, err := strconv.ParseInt(sizeMin, 10, 64); err == nil && n >= 0 {
+			f.Cond("i.size_bytes >= " + f.Arg(n))
+		} else {
+			common.SendError(c, common.NewBadRequestError("Invalid size_min value: "+sizeMin))
+			return
+		}
+	}
+	if sizeMax := c.Query("size_max"); sizeMax != "" {
+		if n, err := strconv.ParseInt(sizeMax, 10, 64); err == nil && n >= 0 {
+			f.Cond("i.size_bytes <= " + f.Arg(n))
+		} else {
+			common.SendError(c, common.NewBadRequestError("Invalid size_max value: "+sizeMax))
+			return
+		}
+	}
+	if owner := c.Query("owner"); owner != "" {
+		// Dash-insensitive, like the membership comparison above — callers hold
+		// the id in either spelling.
+		f.Cond("replace(i.project_id::text, '-', '') = replace(" + f.Arg(owner) + ", '-', '')")
+	}
+	if tag := c.Query("tag"); tag != "" {
+		f.Cond("EXISTS (SELECT 1 FROM image_tags t WHERE t.image_id = i.id AND t.tag = " + f.Arg(tag) + ")")
 	}
 
 	// Marker-based pagination over a TOTAL order.
