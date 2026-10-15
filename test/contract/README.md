@@ -55,6 +55,9 @@ export OS_USER_DOMAIN_NAME=default
 # Run all contract tests
 go test ./test/contract/... -v
 
+# Or use the runner script (preflight + auth check + per-service pass/fail summary)
+./test/run_contract_tests.sh
+
 # Run specific service tests
 go test ./test/contract/keystone/... -v
 go test ./test/contract/nova/... -v
@@ -68,16 +71,27 @@ go test ./test/contract/keystone -run TestKeystoneCreateUser_Contract -v
 
 ### CI Integration
 
-Contract tests are part of the CI pipeline:
+Contract tests run in the `contract-tests` job of the main CI pipeline
+(`.github/workflows/ci.yml`):
 
 ```yaml
-# .github/workflows/contract-tests.yml
-- name: Run Contract Tests
+# .github/workflows/ci.yml — contract-tests job
+- name: Run contract tests
   run: |
-    docker compose up -d
-    sleep 5  # Wait for lightstack to start
-    go test ./test/contract/... -v
+    cd test/contract && go test -v ./... -count=1 -timeout=10m
+  env:
+    OS_AUTH_URL: "http://localhost:35357/v3"
+    OS_USERNAME: "admin"
+    OS_PASSWORD: "secret"
+    OS_PROJECT_NAME: "default"
+    OS_USER_DOMAIN_NAME: "Default"
+    OS_PROJECT_DOMAIN_NAME: "Default"
 ```
+
+The job brings up `deployments/docker-compose.yml`, waits for all five
+service ports, then runs the suite. Note: the job is currently a soft gate
+(`continue-on-error` with a pass-rate floor) — see `ci.yml` for the current
+threshold logic.
 
 ## Writing Contract Tests
 
@@ -132,14 +146,15 @@ func TestKeystoneCreateUser_Contract(t *testing.T) {
 - **Cinder**: `github.com/gophercloud/gophercloud/openstack/blockstorage/v3/{volumes,snapshots}`
 - **Glance**: `github.com/gophercloud/gophercloud/openstack/imageservice/v2/{images,members}`
 
-## Test Coverage Goals
+## Test Coverage
 
-- **Phase 1** (Weeks 1-8): 60+ contract tests (33% → 52% endpoint coverage)
-- **Phase 2** (Weeks 9-16): 75+ contract tests (52% → 70% endpoint coverage)
-- **Phase 3** (Weeks 17-24): 80+ contract tests (70% → 85% endpoint coverage)
-- **Phase 4** (Weeks 25-32): 30+ contract tests (85% → 95%+ endpoint coverage)
-
-**Total**: 245+ contract tests for 95%+ OpenStack API compliance.
+Current endpoint coverage per service (implemented vs. covered, including the
+list of endpoints with zero coverage) is tracked in
+[docs/testing/BLUEPRINT_TEST_COVERAGE.md](../../docs/testing/BLUEPRINT_TEST_COVERAGE.md) —
+consult that matrix instead of any older per-run count in this repo. A
+machine-generated CLI conformance report (`test/cli/results/`, produced by
+`make cli-coverage`) is being added under SPEC-028 and will extend this
+coverage tracking to the `openstack` CLI surface.
 
 ## Validation Gates
 
@@ -181,5 +196,5 @@ Timeline per endpoint: ~2 hours (write test 30min, confirm RED 2min, review 10mi
 
 - OpenStack API Reference: https://docs.openstack.org/api-ref/
 - Gophercloud Documentation: https://github.com/gophercloud/gophercloud
-- SPEC-000 Compliance: `/Users/I761222/git/lightstack/specs/000-compliance/SPEC.md`
-- Implementation Plan: `/Users/I761222/git/lightstack/DEVELOPMENT_PLAN_SUMMARY.md`
+- SPEC-000 Compliance: [docs/specs/000-api-compliance/README.md](../../docs/specs/000-api-compliance/README.md)
+- Test Coverage Matrix: [docs/testing/BLUEPRINT_TEST_COVERAGE.md](../../docs/testing/BLUEPRINT_TEST_COVERAGE.md)
