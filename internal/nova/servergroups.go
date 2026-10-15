@@ -44,14 +44,8 @@ func (svc *Service) ListServerGroups(c *gin.Context) {
 			continue
 		}
 
-		serverGroups = append(serverGroups, gin.H{
-			"id":         id,
-			"name":       name,
-			"policies":   policies,
-			"members":    members,
-			"metadata":   gin.H{},
-			"project_id": projectID,
-		})
+		serverGroups = append(serverGroups,
+			serverGroupResponse(id, name, policies, members, projectID))
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
@@ -62,19 +56,92 @@ func (svc *Service) ListServerGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"server_groups": serverGroups})
 }
 
+// validServerGroupPolicies — the vocabulary upstream accepts for either the
+// legacy `policies` array or the 2.64+ `policy` string.
+var validServerGroupPolicies = map[string]bool{
+	"affinity":          true,
+	"anti-affinity":     true,
+	"soft-affinity":     true,
+	"soft-anti-affinity": true,
+}
+
+// serverGroupPolicyFrom resolves the policy from either request shape:
+// pre-2.63 clients send `policies: ["anti-affinity"]`, 2.64+ clients (OSC 7
+// among them, whenever the negotiated microversion is ≥2.64 — and the server
+// advertises 2.90) send `policy: "anti-affinity"`. Returns ok=false when
+// both or neither is present, which upstream answers with 400.
+func serverGroupPolicyFrom(policies []string, policy string) (string, bool) {
+	if policy != "" && len(policies) > 0 {
+		return "", false
+	}
+	if policy != "" {
+		if !validServerGroupPolicies[policy] {
+			return "", false
+		}
+		return policy, true
+	}
+	if len(policies) == 1 {
+		if !validServerGroupPolicies[policies[0]] {
+			return "", false
+		}
+		return policies[0], true
+	}
+	// An empty policies array or more than one entry: upstream's array form
+	// takes exactly one policy.
+	return "", false
+}
+
+// serverGroupResponse renders one server group for the API. It carries BOTH
+// the legacy `policies` array and the 2.64+ `policy` string, so clients of
+// any microversion read the field they negotiated for.
+func serverGroupResponse(id, name string, policies []string, members []string, projectID string) gin.H {
+	policy := ""
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	return gin.H{
+		"id":         id,
+		"name":       name,
+		"policies":   policies,
+		"policy":     policy,
+		"members":    members,
+		"metadata":   gin.H{},
+		"project_id": projectID,
+	}
+}
+
 // CreateServerGroup handles POST /v2.1/os-server-groups
 func (svc *Service) CreateServerGroup(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	var req struct {
 		ServerGroup struct {
-			Name     string   `json:"name" binding:"required"`
-			Policies []string `json:"policies" binding:"required"`
-		} `json:"server_group" binding:"required"`
+			Name     string   `json:"name"`
+			Policies []string `json:"policies"`
+			Policy   string   `json:"policy"`
+			// 2.64+ also accepts rules (max_server_per_host). Accepted and
+			// validated for shape, not persisted: placement is not enforced
+			// in stub mode, and a rules column would need a migration for a
+			// knob nothing reads yet.
+			Rules *struct {
+				MaxServerPerHost int `json:"max_server_per_host"`
+			} `json:"rules"`
+		} `json:"server_group"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+	if req.ServerGroup.Name == "" {
+		common.SendError(c, common.NewBadRequestError("name is required"))
+		return
+	}
+
+	policy, ok := serverGroupPolicyFrom(req.ServerGroup.Policies, req.ServerGroup.Policy)
+	if !ok {
+		common.SendError(c, common.NewBadRequestError(
+			"server group needs exactly one policy (policy string or policies array)"))
 		return
 	}
 
@@ -91,7 +158,7 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 	_, err := svc.pool.Exec(c.Request.Context(),
 		`INSERT INTO server_groups (id, name, policies, members, project_id, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		groupID, req.ServerGroup.Name, req.ServerGroup.Policies, []string{}, projectID, now, now,
+		groupID, req.ServerGroup.Name, []string{policy}, []string{}, projectID, now, now,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_server_group").Msg("database error")
@@ -100,14 +167,7 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"server_group": gin.H{
-			"id":         groupID,
-			"name":       req.ServerGroup.Name,
-			"policies":   req.ServerGroup.Policies,
-			"members":    []string{},
-			"metadata":   gin.H{},
-			"project_id": projectID,
-		},
+		"server_group": serverGroupResponse(groupID, req.ServerGroup.Name, []string{policy}, []string{}, projectID),
 	})
 }
 
@@ -138,14 +198,7 @@ func (svc *Service) GetServerGroup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"server_group": gin.H{
-			"id":         groupID,
-			"name":       name,
-			"policies":   policies,
-			"members":    members,
-			"metadata":   gin.H{},
-			"project_id": projectIDFromDB,
-		},
+		"server_group": serverGroupResponse(groupID, name, policies, members, projectIDFromDB),
 	})
 }
 

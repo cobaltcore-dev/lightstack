@@ -137,12 +137,29 @@ func (svc *Service) CreateAggregate(c *gin.Context) {
 	})
 }
 
+// aggregateRefOr404 answers 404 for a path reference that is not a UUID.
+// openstacksdk's find_aggregate probes by name first, so a name reaches the
+// uuid-typed query and used to surface the cast error as 500 — the client
+// aborts there instead of taking the 404 fallback it needs. A well-formed
+// but unknown UUID was already a clean 404.
+func aggregateRefOr404(c *gin.Context) (string, bool) {
+	ref := c.Param("id")
+	if _, err := uuid.Parse(ref); err != nil {
+		common.SendError(c, common.NewNotFoundError("aggregate"))
+		return "", false
+	}
+	return ref, true
+}
+
 // GetAggregate retrieves a specific host aggregate
 func (svc *Service) GetAggregate(c *gin.Context) {
 	if !requireAdmin(c, "os-aggregates:show") {
 		return
 	}
-	aggregateID := c.Param("id")
+	aggregateID, ok := aggregateRefOr404(c)
+	if !ok {
+		return
+	}
 
 	var (
 		name             string
@@ -195,7 +212,6 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 	if !requireAdmin(c, "os-aggregates:update") {
 		return
 	}
-	aggregateID := c.Param("id")
 
 	var req struct {
 		Aggregate struct {
@@ -206,6 +222,11 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+
+	aggregateID, ok := aggregateRefOr404(c)
+	if !ok {
 		return
 	}
 
@@ -257,7 +278,10 @@ func (svc *Service) DeleteAggregate(c *gin.Context) {
 	if !requireAdmin(c, "os-aggregates:delete") {
 		return
 	}
-	aggregateID := c.Param("id")
+	aggregateID, ok := aggregateRefOr404(c)
+	if !ok {
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM host_aggregates WHERE uuid = $1",
@@ -287,7 +311,10 @@ func (svc *Service) AggregateAction(c *gin.Context) {
 		return
 	}
 
-	aggregateID := c.Param("id")
+	aggregateID, ok := aggregateRefOr404(c)
+	if !ok {
+		return
+	}
 
 	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {

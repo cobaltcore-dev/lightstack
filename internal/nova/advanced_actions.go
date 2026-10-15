@@ -221,8 +221,22 @@ func (svc *Service) ShelveInstance(c *gin.Context, instanceID, projectID string)
 		return
 	}
 
-	// Create snapshot before shelving
+	// Create snapshot before shelving. instance_snapshots has
+	// UNIQUE(instance_id), so a stale row from a crashed shelving — or from
+	// an unshelve path that predates snapshot consumption — would fail this
+	// insert with 500. Reclaim any leftover first: at this point the instance
+	// is ACTIVE/SHUTOFF and about to be SHELVED, so no live snapshot of it
+	// can exist (SPEC-028: shelve → unshelve → shelve was a 500).
 	snapshotName := fmt.Sprintf("shelved-%s-%d", instanceID[:8], time.Now().Unix())
+
+	_, err = svc.pool.Exec(c.Request.Context(), `
+		DELETE FROM instance_snapshots WHERE instance_id = $1
+	`, instanceID)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "reclaim_shelve_snapshot").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to create snapshot"))
+		return
+	}
 
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO instance_snapshots (id, instance_id, snapshot_name, flavor_id, created_at)
@@ -294,6 +308,19 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 	// Can only unshelve a shelved instance
 	if status != "SHELVED" {
 		common.SendError(c, common.NewInvalidStateError(fmt.Sprintf("cannot unshelve instance in %s state", status)))
+		return
+	}
+
+	// Unshelve restores from the snapshot, consuming it (upstream deletes the
+	// shelved image when the instance is restored). The row must not survive:
+	// instance_snapshots has UNIQUE(instance_id), and a leftover row made the
+	// next shelve fail with 500 (SPEC-028).
+	_, err = svc.pool.Exec(c.Request.Context(), `
+		DELETE FROM instance_snapshots WHERE instance_id = $1
+	`, instanceID)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "unshelve_delete_snapshot").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to unshelve instance"))
 		return
 	}
 
@@ -1068,15 +1095,16 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 	// Generate new UUID for backup image
 	backupImageID := uuid.New().String()
 
-	// Create backup image in images table
-	// Image name pattern: {backup_name}-{backup_type}-{timestamp}
-	timestamp := time.Now().Format("20060102-150405")
-	fullImageName := fmt.Sprintf("%s-%s-%s", backupName, backupType, timestamp)
-
+	// Create backup image in the images table. The image is named EXACTLY
+	// what the caller asked for — upstream Nova passes `name` through
+	// verbatim — so clients can look the image up by name afterwards
+	// (OSC's `server backup create` polls for it; the previous
+	// `{name}-{type}-{timestamp}` suffix broke that lookup). Rotation finds
+	// its candidates through the image_tags below, not through the name.
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO images (id, name, project_id, status, visibility, disk_format, container_format, created_at, updated_at)
 		VALUES ($1, $2, $3, 'active', 'private', 'qcow2', 'bare', $4, $4)
-	`, backupImageID, fullImageName, projectID, time.Now())
+	`, backupImageID, backupName, projectID, time.Now())
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_backup_image").Msg("database error")
