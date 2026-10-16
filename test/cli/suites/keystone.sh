@@ -858,9 +858,10 @@ t_end
 
 t_begin keystone.token.revoke.neg
 osc token revoke cli-conf-ke-not-a-real-token
-if (( OSC_RC == 0 )); then
-    t_known_failure "openstack token revoke <unknown-token>: upstream Keystone validates X-Subject-Token and answers 404 for an unknown token (the CLI exits non-zero); lightstack's DELETE /v3/auth/tokens is a no-op that always returns 204, so the CLI exits 0."
-fi
+# Upstream Keystone validates the subject token and answers 404 for an
+# unknown one, so the CLI exits non-zero — lightstack matches since cfacd1b
+# (the no-op 204 remains only for VALID tokens, the documented divergence).
+_ke_assert_failed
 t_end
 
 suite_end
