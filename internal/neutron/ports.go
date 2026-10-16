@@ -435,6 +435,15 @@ func (svc *Service) GetPort(c *gin.Context) {
 	portID := c.Param("id")
 	projectID := c.GetString("project_id")
 
+	// A non-UUID reference (a port name — the CLI resolves names with a list
+	// fallback only after a 404) can only name nothing here; the uuid-typed
+	// lookup used to surface the cast error as 500 instead, which broke the
+	// SDK's fallback for 'port show/set/delete <name>' (SPEC-028).
+	if _, err := uuid.Parse(portID); err != nil {
+		common.SendError(c, common.NewNotFoundError("port"))
+		return
+	}
+
 	var id, name, networkID string
 	var deviceID, deviceOwner sql.NullString
 	var macAddress, status string
@@ -595,6 +604,12 @@ func (svc *Service) UpdatePort(c *gin.Context) {
 	portID := c.Param("id")
 	projectID := c.GetString("project_id")
 
+	// See GetPort: a non-UUID reference must 404, not 500 (SPEC-028).
+	if _, err := uuid.Parse(portID); err != nil {
+		common.SendError(c, common.NewNotFoundError("port"))
+		return
+	}
+
 	var req struct {
 		Port struct {
 			Name         *string `json:"name"`
@@ -722,8 +737,13 @@ func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 			"name":        req.SecurityGroup.Name,
 			"tenant_id":   projectID,
 			"description": req.SecurityGroup.Description,
-			"created_at":  now.Format(time.RFC3339),
-			"updated_at":  now.Format(time.RFC3339),
+			// The key must exist and be a list: upstream reports [] for a
+			// fresh group, and OSC's table formatter iterates it — a null
+			// crashed 'security group create' with "'NoneType' object is
+			// not iterable" (SPEC-028).
+			"security_group_rules": []gin.H{},
+			"created_at":           now.Format(time.RFC3339),
+			"updated_at":           now.Format(time.RFC3339),
 		},
 	})
 }

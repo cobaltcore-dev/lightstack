@@ -1,7 +1,9 @@
 package neutron
 
 import (
+	"database/sql"
 	"errors"
+	"net"
 	"net/http"
 	"time"
 
@@ -18,7 +20,7 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
-		       shared, is_default, ip_version, created_at, updated_at
+		       shared, is_default, ip_version, COALESCE(description, ''), created_at, updated_at
 		FROM subnet_pools
 		WHERE project_id = $1 OR shared = true
 		ORDER BY created_at DESC
@@ -33,7 +35,7 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 
 	pools := []gin.H{}
 	for rows.Next() {
-		var id, name string
+		var id, name, description string
 		var prefixes []string
 		var minPrefixlen, maxPrefixlen, ipVersion int
 		var defaultPrefixlen *int
@@ -41,7 +43,7 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 		var createdAt, updatedAt time.Time
 
 		err := rows.Scan(&id, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
-			&shared, &isDefault, &ipVersion, &createdAt, &updatedAt)
+			&shared, &isDefault, &ipVersion, &description, &createdAt, &updatedAt)
 		if err != nil {
 			continue
 		}
@@ -56,6 +58,7 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 			"is_default":    isDefault,
 			"ip_version":    ipVersion,
 			"tenant_id":     projectID,
+			"description":   description,
 			"created_at":    createdAt.Format(time.RFC3339),
 			"updated_at":    updatedAt.Format(time.RFC3339),
 		}
@@ -87,12 +90,23 @@ func (svc *Service) CreateSubnetPool(c *gin.Context) {
 			Shared           *bool    `json:"shared"`
 			IsDefault        *bool    `json:"is_default"`
 			IPVersion        *int     `json:"ip_version"`
+			Description      *string  `json:"description"`
 		} `json:"subnetpool"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
+	}
+
+	// A pool's prefixes are CIDRs; a malformed one must be the caller's 400,
+	// not a 201 that stores garbage every subnet allocation then chokes on
+	// (subnets are validated this way already; SPEC-028).
+	for _, p := range req.SubnetPool.Prefixes {
+		if _, _, err := net.ParseCIDR(p); err != nil {
+			common.SendError(c, common.NewBadRequestError("invalid prefixes: '"+p+"' is not a valid CIDR"))
+			return
+		}
 	}
 
 	projectID := c.GetString("project_id")
@@ -127,10 +141,10 @@ func (svc *Service) CreateSubnetPool(c *gin.Context) {
 
 	_, err := svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO subnet_pools (id, project_id, name, prefixes, min_prefixlen, max_prefixlen,
-		                          default_prefixlen, shared, is_default, ip_version, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		                          default_prefixlen, shared, is_default, ip_version, description, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`, poolID, projectID, req.SubnetPool.Name, req.SubnetPool.Prefixes, minPrefixlen, maxPrefixlen,
-		req.SubnetPool.DefaultPrefixlen, shared, isDefault, ipVersion, now, now)
+		req.SubnetPool.DefaultPrefixlen, shared, isDefault, ipVersion, req.SubnetPool.Description, now, now)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_subnet_pool").Msg("failed to create subnet pool")
@@ -148,6 +162,7 @@ func (svc *Service) CreateSubnetPool(c *gin.Context) {
 		"is_default":    isDefault,
 		"ip_version":    ipVersion,
 		"tenant_id":     projectID,
+		"description":   derefOr(req.SubnetPool.Description, ""),
 		"created_at":    now.Format(time.RFC3339),
 		"updated_at":    now.Format(time.RFC3339),
 	}
@@ -164,20 +179,29 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 	poolID := c.Param("id")
 	projectID := c.GetString("project_id")
 
+	// A non-UUID reference (a pool name — the CLI resolves names with a list
+	// fallback only after a 404) can only name nothing here; the uuid-typed
+	// lookup used to surface the cast error as 500 instead (SPEC-028).
+	if _, err := uuid.Parse(poolID); err != nil {
+		common.SendError(c, common.NewNotFoundError("subnet pool"))
+		return
+	}
+
 	var id, name string
 	var prefixes []string
 	var minPrefixlen, maxPrefixlen, ipVersion int
 	var defaultPrefixlen *int
 	var shared, isDefault bool
+	var description sql.NullString
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
-		       shared, is_default, ip_version, created_at, updated_at
+		       shared, is_default, ip_version, description, created_at, updated_at
 		FROM subnet_pools
 		WHERE id = $1 AND (project_id = $2 OR shared = true)
 	`, poolID, projectID).Scan(&id, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
-		&shared, &isDefault, &ipVersion, &createdAt, &updatedAt)
+		&shared, &isDefault, &ipVersion, &description, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet pool"))
@@ -199,6 +223,7 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 		"is_default":    isDefault,
 		"ip_version":    ipVersion,
 		"tenant_id":     projectID,
+		"description":   description.String,
 		"created_at":    createdAt.Format(time.RFC3339),
 		"updated_at":    updatedAt.Format(time.RFC3339),
 	}
@@ -222,11 +247,27 @@ func (svc *Service) UpdateSubnetPool(c *gin.Context) {
 			MinPrefixlen     *int     `json:"min_prefixlen"`
 			MaxPrefixlen     *int     `json:"max_prefixlen"`
 			DefaultPrefixlen *int     `json:"default_prefixlen"`
+			Description      *string  `json:"description"`
 		} `json:"subnetpool"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+
+	// See CreateSubnetPool: prefixes are CIDRs, and a malformed one is the
+	// caller's 400 (SPEC-028).
+	for _, p := range req.SubnetPool.Prefixes {
+		if _, _, err := net.ParseCIDR(p); err != nil {
+			common.SendError(c, common.NewBadRequestError("invalid prefixes: '"+p+"' is not a valid CIDR"))
+			return
+		}
+	}
+
+	// See GetSubnetPool: a non-UUID reference must 404, not 500 (SPEC-028).
+	if _, err := uuid.Parse(poolID); err != nil {
+		common.SendError(c, common.NewNotFoundError("subnet pool"))
 		return
 	}
 
@@ -250,6 +291,10 @@ func (svc *Service) UpdateSubnetPool(c *gin.Context) {
 
 	if req.SubnetPool.DefaultPrefixlen != nil {
 		u.Set("default_prefixlen", *req.SubnetPool.DefaultPrefixlen)
+	}
+
+	if req.SubnetPool.Description != nil {
+		u.Set("description", *req.SubnetPool.Description)
 	}
 
 	if u.Empty() {

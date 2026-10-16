@@ -453,6 +453,7 @@ func (svc *Service) DeleteRouter(c *gin.Context) {
 func (svc *Service) AddRouterInterface(c *gin.Context) {
 	routerID := c.Param("id")
 	projectID := c.GetString("project_id")
+	ctx := c.Request.Context()
 
 	var req struct {
 		SubnetID string `json:"subnet_id"`
@@ -463,69 +464,158 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
-
-	// Verify router exists
-	var routerExists bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM routers WHERE id = $1 AND project_id = $2)",
-		routerID, projectID,
-	).Scan(&routerExists)
-
-	if err != nil || !routerExists {
-		common.SendError(c, common.NewNotFoundError("router"))
+	if req.SubnetID == "" && req.PortID == "" {
+		common.SendError(c, common.NewBadRequestError("either subnet_id or port_id must be specified"))
 		return
 	}
 
-	// Get subnet information
-	var subnetID, networkID, cidr, gatewayIP string
-	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, network_id, cidr, gateway_ip FROM subnets WHERE id = $1",
-		req.SubnetID,
-	).Scan(&subnetID, &networkID, &cidr, &gatewayIP)
+	// Authorise through the same resolver RemoveRouterInterface uses: the
+	// raw EXISTS lookup here did the same job for a UUID, but went unwrapped
+	// for the ownership question this answer now settles the same way.
+	id, ok := svc.resolveOwnRouter(c, routerID, projectID)
+	if !ok {
+		return
+	}
 
+	var subnetID, networkID, cidr, gatewayIP, portID string
+	if req.PortID != "" {
+		// port_id path — attach a port the caller already owns. The handler
+		// used to ignore the field entirely and read the (empty) subnet_id
+		// instead, so 'router add port' answered 500 "failed to get subnet"
+		// (SPEC-028).
+		if _, err := uuid.Parse(req.PortID); err != nil {
+			common.SendError(c, common.NewNotFoundError("port"))
+			return
+		}
+		var fixedIPsJSON []byte
+		var deviceID sql.NullString
+		err := svc.pool.QueryRow(ctx, `
+			SELECT id::text, network_id::text, fixed_ips, device_id
+			FROM ports
+			WHERE id = $1 AND project_id = $2
+		`, req.PortID, projectID).Scan(&portID, &networkID, &fixedIPsJSON, &deviceID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			common.SendError(c, common.NewNotFoundError("port"))
+			return
+		}
+		if err != nil {
+			log.Error().Err(err).Str("operation", "add_router_interface_port_lookup").Str("port_id", req.PortID).Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to get port"))
+			return
+		}
+		if deviceID.Valid && deviceID.String != "" {
+			common.SendError(c, common.NewResourceInUseError("port", "attach port to router",
+				"Port "+portID+" already has a device assigned and cannot be attached to a router."))
+			return
+		}
+		var fixedIPs []struct {
+			SubnetID string `json:"subnet_id"`
+		}
+		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil || len(fixedIPs) == 0 || fixedIPs[0].SubnetID == "" {
+			common.SendError(c, common.NewBadRequestError("port has no subnet; use a port with a fixed IP from a subnet"))
+			return
+		}
+		subnetID = fixedIPs[0].SubnetID
+	}
+
+	// Subnet row — reached from either path (the caller's subnet_id, or the
+	// subnet the port's first fixed IP comes from).
+	if req.PortID == "" {
+		if _, err := uuid.Parse(req.SubnetID); err != nil {
+			common.SendError(c, common.NewNotFoundError("subnet"))
+			return
+		}
+		subnetID = req.SubnetID
+	}
+	err := svc.pool.QueryRow(ctx, `
+		SELECT id::text, network_id::text, cidr, gateway_ip FROM subnets WHERE id = $1
+	`, subnetID).Scan(&subnetID, &networkID, &cidr, &gatewayIP)
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
 		return
 	}
 	if err != nil {
-		log.Error().Err(err).Str("operation", "add_router_interface_subnet_lookup").Str("subnet_id", req.SubnetID).Msg("database error")
+		log.Error().Err(err).Str("operation", "add_router_interface_subnet_lookup").Str("subnet_id", subnetID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get subnet"))
 		return
 	}
 
-	// Create a port for the router interface
-	portID := uuid.New().String()
-	macAddress := generateMAC()
-
-	fixedIPs := []map[string]string{
-		{
-			"subnet_id":  subnetID,
-			"ip_address": gatewayIP,
-		},
-	}
-	fixedIPsJSON, _ := json.Marshal(fixedIPs)
-
-	now := time.Now()
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, portID, "router-interface-"+routerID[:8], networkID, projectID, routerID, "network:router_interface",
-		macAddress, true, "ACTIVE", fixedIPsJSON, now, now)
-
+	// A second interface for the same (router, subnet) is upstream's 409 —
+	// and it must be refused BEFORE anything is written: the unique
+	// constraint used to turn it into a 500 that left the freshly created
+	// interface port behind, which then blocked the network's deletion with
+	// a 409 nobody could 'router remove port' away (the interface row had
+	// never been inserted, so the remove lookup found nothing; SPEC-028).
+	var alreadyAttached bool
+	err = svc.pool.QueryRow(ctx,
+		"SELECT EXISTS(SELECT 1 FROM router_interfaces WHERE router_id = $1 AND subnet_id = $2)",
+		id, subnetID).Scan(&alreadyAttached)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "add_router_interface_port").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to create router interface port"))
+		log.Error().Err(err).Str("operation", "add_router_interface_duplicate_check").Str("router_id", id).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to check router interface"))
+		return
+	}
+	if alreadyAttached {
+		common.SendError(c, common.NewResourceInUseError("router", "add interface to router",
+			"Router already has an interface on subnet "+subnetID+"."))
 		return
 	}
 
+	now := time.Now()
+	if req.PortID == "" {
+		// Create a port for the router interface
+		portID = uuid.New().String()
+		macAddress := generateMAC()
+
+		fixedIPs := []map[string]string{
+			{
+				"subnet_id":  subnetID,
+				"ip_address": gatewayIP,
+			},
+		}
+		fixedIPsJSON, _ := json.Marshal(fixedIPs)
+
+		_, err = svc.pool.Exec(ctx, `
+			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		`, portID, "router-interface-"+id[:8], networkID, projectID, id, "network:router_interface",
+			macAddress, true, "ACTIVE", fixedIPsJSON, now, now)
+
+		if err != nil {
+			log.Error().Err(err).Str("operation", "add_router_interface_port").Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to create router interface port"))
+			return
+		}
+	} else {
+		// Claim the caller's port for the router.
+		_, err = svc.pool.Exec(ctx, `
+			UPDATE ports SET device_id = $1, device_owner = 'network:router_interface', updated_at = $2
+			WHERE id = $3
+		`, id, now, portID)
+		if err != nil {
+			log.Error().Err(err).Str("operation", "add_router_interface_port_claim").Str("port_id", portID).Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to attach port to router"))
+			return
+		}
+	}
+
 	// Create router interface record
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	_, err = svc.pool.Exec(ctx, `
 		INSERT INTO router_interfaces (id, router_id, port_id, subnet_id, created_at)
 		VALUES ($1, $2, $3, $4, $5)
-	`, uuid.New().String(), routerID, portID, subnetID, now)
+	`, uuid.New().String(), id, portID, subnetID, now)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "add_router_interface_record").Msg("database error")
+		// The record is what ties the pieces together; without it the port
+		// above would be an orphan holding the network hostage. Only the
+		// port this handler created is taken back — the caller's own port
+		// keeps existing, exactly as it did before the call.
+		if req.PortID == "" {
+			if _, derr := svc.pool.Exec(ctx, "DELETE FROM ports WHERE id = $1", portID); derr != nil {
+				log.Warn().Err(derr).Str("port_id", portID).Msg("rollback: failed to delete router interface port")
+			}
+		}
 		common.SendError(c, common.NewInternalServerError("failed to create router interface record"))
 		return
 	}

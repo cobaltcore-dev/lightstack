@@ -475,6 +475,9 @@ type CreateNetworkRequest struct {
 		Name         string `json:"name" binding:"required"`
 		AdminStateUp *bool  `json:"admin_state_up"`
 		Shared       *bool  `json:"shared"`
+		// The standard resource annotation (migration 075). A pointer so an
+		// omitted key and an explicit empty string differ, as upstream does.
+		Description *string `json:"description"`
 		// Both spellings of the owning project. Neither was declared before, so the value a client
 		// sent was discarded by ShouldBindJSON and never reached the handler: the request was
 		// answered 201 with the network in the CALLER's project (cloud-storage#546 B11). Nothing was
@@ -601,9 +604,9 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 	}
 
 	_, err := svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, external, network_type, mtu, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, networkID, req.Network.Name, projectID, adminStateUp, "ACTIVE", shared, external, networkType, mtu, now, now)
+		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, external, network_type, mtu, description, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, networkID, req.Network.Name, projectID, adminStateUp, "ACTIVE", shared, external, networkType, mtu, req.Network.Description, now, now)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_network").Msg("database error")
@@ -639,6 +642,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 			"shared":          shared,
 			"router:external": external,
 			"mtu":             mtu,
+			"description":     derefOr(req.Network.Description, ""),
 			"subnets":         []string{},
 			"created_at":      now.Format(time.RFC3339),
 			"updated_at":      now.Format(time.RFC3339),
@@ -892,7 +896,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	where := f.Conds()
 	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external, COALESCE(description, '')
 		FROM networks
 		WHERE `+where+`
 		ORDER BY created_at DESC, id DESC`+limitOffset, f.Args()...)
@@ -906,12 +910,12 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	var networks []gin.H
 	for rows.Next() {
-		var id, name, status, owner string
+		var id, name, status, owner, description string
 		var adminStateUp, shared, external bool
 		var mtu int
 		var createdAt, updatedAt time.Time
 
-		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external); err != nil {
+		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description); err != nil {
 			log.Warn().Err(err).Str("network_id", id).Msg("skipping unreadable network row")
 			continue
 		}
@@ -929,6 +933,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 			"shared":          shared,
 			"router:external": external,
 			"mtu":             mtu,
+			"description":     description,
 			"created_at":      createdAt.Format(time.RFC3339),
 			"updated_at":      updatedAt.Format(time.RFC3339),
 		})
@@ -1000,17 +1005,17 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	}
 
 	// Cache miss - query database
-	var id, name, status, owner string
+	var id, name, status, owner, description string
 	var adminStateUp, shared, external bool
 	var mtu int
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(ctx, `
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external, COALESCE(description, '')
 		FROM networks
 		WHERE (id::text = $1 OR name = $1) AND `+networkReadScope("$2")+`
 		LIMIT 1
-	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external)
+	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -1034,6 +1039,7 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		"shared":          shared,
 		"router:external": external,
 		"mtu":             mtu,
+		"description":     description,
 		"created_at":      createdAt.Format(time.RFC3339),
 		"updated_at":      updatedAt.Format(time.RFC3339),
 	}
@@ -1200,6 +1206,10 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 			Name         *string `json:"name"`
 			AdminStateUp *bool   `json:"admin_state_up"`
 			External     *bool   `json:"router:external"`
+			// The standard resource annotation (migration 075): 'network set
+			// --description' PUTs it, and the handler had no column to
+			// persist it to (SPEC-028).
+			Description *string `json:"description"`
 		} `json:"network"`
 	}
 
@@ -1228,6 +1238,10 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 
 	if req.Network.AdminStateUp != nil {
 		u.Set("admin_state_up", *req.Network.AdminStateUp)
+	}
+
+	if req.Network.Description != nil {
+		u.Set("description", *req.Network.Description)
 	}
 
 	if u.Empty() {
@@ -1288,17 +1302,17 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 // writeNetworkResponse emits a network by id with no visibility predicate, for the caller that just
 // wrote it (see UpdateNetwork). Ownership was already decided by the write.
 func (svc *Service) writeNetworkResponse(c *gin.Context, networkID string) {
-	var id, name, status, owner string
+	var id, name, status, owner, description string
 	var adminStateUp, shared, external bool
 	var mtu int
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external, COALESCE(description, '')
 		FROM networks
 		WHERE id::text = $1
 		LIMIT 1
-	`, networkID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external)
+	`, networkID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -1327,6 +1341,7 @@ func (svc *Service) writeNetworkResponse(c *gin.Context, networkID string) {
 		"shared":          shared,
 		"router:external": external,
 		"mtu":             mtu,
+		"description":     description,
 		"created_at":      createdAt.Format(time.RFC3339),
 		"updated_at":      updatedAt.Format(time.RFC3339),
 		"subnets":         subnets,
@@ -1836,6 +1851,28 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		return
 	}
 
+	// A subnet with allocations is upstream's SubnetInUse: 409, not a delete
+	// that orphans the holder. The router interface case mattered most — the
+	// port survived the subnet (no FK from fixed_ips), silently blocked the
+	// network's deletion with a 409, and 'router remove port' 404s because the
+	// interface row cascaded away with the subnet (SPEC-028).
+	var holder string
+	err = svc.pool.QueryRow(c.Request.Context(), `
+		SELECT id::text FROM ports
+		WHERE network_id = $1 AND fixed_ips @> jsonb_build_array(jsonb_build_object('subnet_id', $2::text))
+		LIMIT 1
+	`, networkID, resolvedID).Scan(&holder)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		log.Error().Err(err).Str("operation", "delete_subnet_inuse").Str("subnet_id", resolvedID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+		return
+	}
+	if holder != "" {
+		common.SendError(c, common.NewResourceInUseError("subnet", "delete",
+			fmt.Sprintf("Unable to delete subnet: one or more ports have an IP allocation from this subnet (first: %s).", holder)))
+		return
+	}
+
 	// Delete by the id the entitlement check above already resolved. Re-filtering on
 	// project_id here would silently no-op for a network owner removing another
 	// project's subnet — 204 with the row still present — because the two predicates
@@ -1959,6 +1996,9 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 			// Raw for the same reason as CreateSubnet: an explicit null clears the gateway, an
 			// omitted key leaves it alone (FR-023, contract S14).
 			GatewayIP json.RawMessage `json:"gateway_ip"`
+			// 'subnet set --dhcp/--no-dhcp' PUTs it; the handler had no
+			// binding for it, so the flag was a 200 no-op (SPEC-028).
+			EnableDHCP *bool `json:"enable_dhcp"`
 		} `json:"subnet"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2059,6 +2099,26 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update subnet"))
 		return
+	}
+	// The DHCP flag is applied independently of the name/gateway switch above,
+	// so it works alone ('subnet set --no-dhcp') and together. Host state
+	// follows the row: dnsmasq restarts for a survivor when this was the
+	// network's only DHCP subnet, and stops when none remain — the same
+	// convergence the post-delete reconciler performs.
+	dhcpToggled := false
+	if req.Subnet.EnableDHCP != nil && *req.Subnet.EnableDHCP != subnetDHCP {
+		if _, err := svc.pool.Exec(c.Request.Context(),
+			"UPDATE subnets SET enable_dhcp = $1, updated_at = $2 WHERE id = $3",
+			*req.Subnet.EnableDHCP, time.Now(), resolvedID,
+		); err != nil {
+			log.Error().Err(err).Str("operation", "update_subnet_dhcp").Str("subnet_id", resolvedID).Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to update subnet"))
+			return
+		}
+		dhcpToggled = true
+	}
+	if dhcpToggled {
+		svc.reconcileNetworkDHCPAfterSubnetDelete(c.Request.Context(), subnetNetwork)
 	}
 	if gatewayChanged && subnetDHCP {
 		svc.reconcileNetworkDHCPAfterGatewayChange(c.Request.Context(), subnetNetwork, subnetCIDR, currentGateway, newGateway)
