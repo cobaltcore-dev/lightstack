@@ -1107,19 +1107,23 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 			project["name"] = pname.String
 			project["domain"] = gin.H{"id": pdomID.String, "name": pdomName.String}
 		}
-		assignments = append(assignments, gin.H{
-			"links": gin.H{
-				"assignment": baseURL + "/v3/projects/" + pid.String + "/users/" + uid.String + "/roles/" + rid.String,
-			},
-			"user": user,
-			"scope": gin.H{
-				"project": project,
-			},
+		assignment := gin.H{
+			"user":  user,
+			"scope": gin.H{"project": project},
 			"role": gin.H{
 				"id":   rid.String,
 				"name": rname.String,
 			},
-		})
+		}
+		// The self link names the user and project; a row without either
+		// (neither is creatable through the API today) would render empty
+		// path segments, so it gets no link at all.
+		if uid.Valid && pid.Valid && rid.Valid {
+			assignment["links"] = gin.H{
+				"assignment": baseURL + "/v3/projects/" + pid.String + "/users/" + uid.String + "/roles/" + rid.String,
+			}
+		}
+		assignments = append(assignments, assignment)
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")

@@ -85,12 +85,14 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 		case "floating_network_id", "port_id", "router_id":
 			// UUID columns: a non-UUID value can only match nothing, but it
 			// would fail the cast and answer 500 — answer the empty list a
-			// well-formed-but-unknown value gets.
+			// well-formed-but-unknown value gets. The comparison itself is
+			// uuid-typed (not ::text), so an upper-case filter value matches
+			// like any client would expect.
 			if _, err := uuid.Parse(v); err != nil {
 				c.JSON(http.StatusOK, gin.H{"floatingips": []gin.H{}})
 				return
 			}
-			f.Eq(flt.column+"::text", v)
+			f.Eq(flt.column, v)
 		default:
 			f.Eq(flt.column, v)
 		}

@@ -2042,7 +2042,9 @@ func (svc *Service) ListVolumeTypes(c *gin.Context) {
 		// deleted (SPEC-028).
 		var description sql.NullString
 		var isPublic bool
-		var extraSpecs map[string]string
+		// jsonb: scan as any-valued so non-string values (none are
+		// written today) pass through instead of failing the row.
+		var extraSpecs map[string]any
 		var createdAt time.Time
 
 		if err := rows.Scan(&id, &name, &description, &isPublic, &extraSpecs, &createdAt); err != nil {
@@ -2050,7 +2052,7 @@ func (svc *Service) ListVolumeTypes(c *gin.Context) {
 			continue
 		}
 		if extraSpecs == nil {
-			extraSpecs = map[string]string{}
+			extraSpecs = map[string]any{}
 		}
 
 		types = append(types, gin.H{
@@ -2092,7 +2094,7 @@ func (svc *Service) GetVolumeType(c *gin.Context) {
 	var id, name string
 	var description sql.NullString
 	var isPublic bool
-	var extraSpecs map[string]string
+	var extraSpecs map[string]any
 
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, is_public, COALESCE(extra_specs, '{}'::jsonb)
@@ -2110,7 +2112,7 @@ func (svc *Service) GetVolumeType(c *gin.Context) {
 		return
 	}
 	if extraSpecs == nil {
-		extraSpecs = map[string]string{}
+		extraSpecs = map[string]any{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
