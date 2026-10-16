@@ -315,7 +315,7 @@ jobs:
     name: CLI Conformance
     runs-on: ubuntu-latest
     needs: build
-    timeout-minutes: 25
+    timeout-minutes: 40
 
     # SPEC-028: drive the build artifact with the pinned python OpenStack CLI.
     # The downloaded binary runs natively against a PostgreSQL service (no
@@ -373,7 +373,13 @@ jobs:
           echo "✅ All Lightstack services are ready"
 
       - name: Install pinned OpenStack CLI
-        run: python3 -m pip install -c test/cli/constraints.txt python-openstackclient
+        # A venv, not the system python: ubuntu-latest is PEP 668
+        # externally-managed, and the harness resolves the CLI from PATH
+        # (command -v openstack), so the venv's bin dir joins GITHUB_PATH.
+        run: |
+          python3 -m venv /tmp/osc-venv
+          /tmp/osc-venv/bin/pip install -c test/cli/constraints.txt python-openstackclient
+          echo "/tmp/osc-venv/bin" >> "$GITHUB_PATH"
 
       - name: Run CLI conformance suite (fast subset)
         run: ./test/cli/bin/run.sh --fast

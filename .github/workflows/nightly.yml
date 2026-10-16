@@ -78,10 +78,14 @@ jobs:
           echo "✅ All Lightstack services are ready"
 
       - name: Install pinned OpenStack CLI
-        run: python3 -m pip install -c test/cli/constraints.txt python-openstackclient
+        # venv for PEP 668 + PATH resolution — see the ci.yml cli-conformance job.
+        run: |
+          python3 -m venv /tmp/osc-venv
+          /tmp/osc-venv/bin/pip install -c test/cli/constraints.txt python-openstackclient
+          echo "/tmp/osc-venv/bin" >> "$GITHUB_PATH"
 
       - name: Run CLI conformance suite (full, incl. workflows)
-        run: ./test/cli/bin/run.sh
+        run: ./test/cli/bin/run.sh --strict
         env:
           OS_AUTH_URL: "http://localhost:35357/v3"
           OS_USERNAME: "admin"
@@ -201,9 +205,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: terraform-conformance-results
+          # run.sh isolates state in a mktemp workspace and removes it on
+          # every exit path, so no state files survive to upload — the
+          # logs the wrapper writes to its results dir are the artifact.
           path: |
-            test/terraform/**/*.tfstate*
-            test/terraform/**/crash.log
             test/terraform/results/
           retention-days: 7
           if-no-files-found: ignore
