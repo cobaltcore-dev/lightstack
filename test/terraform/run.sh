@@ -82,10 +82,23 @@ die()  { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 WORKSPACE=""
 CREATED_IMAGE_ID=""
 DESTROY_DONE=0
+# Failure logs are copied here (and survive cleanup) so CI can archive them.
+RESULTS_DIR="${TF_RESULTS_DIR:-$(cd "$(dirname "$0")" && pwd)/results}"
 
 cleanup() {
     local rc=$?
     trap - EXIT
+    # A failed run must not take its evidence with it: the wrapper works in a
+    # mktemp workspace that this function removes, so the apply/destroy logs
+    # are copied to the results dir first. Nothing is written on success —
+    # the summary on stdout is the whole report.
+    if [ "$rc" -ne 0 ] && [ -n "$WORKSPACE" ] && [ -d "$WORKSPACE" ]; then
+        mkdir -p "$RESULTS_DIR"
+        for f in "$WORKSPACE"/*.log; do
+            [ -f "$f" ] && cp "$f" "$RESULTS_DIR/" 2>/dev/null || true
+        done
+        [ -f "$WORKSPACE/crash.log" ] && cp "$WORKSPACE/crash.log" "$RESULTS_DIR/" 2>/dev/null || true
+    fi
     # Best-effort teardown so a failed run leaves no tf-compat-* residue.
     if [ "$DESTROY_DONE" -eq 0 ] && [ -n "$WORKSPACE" ] \
         && [ -f "$WORKSPACE/terraform.tfstate" ] \
@@ -198,7 +211,8 @@ tf validate -no-color
 log "terraform apply"
 tf apply -auto-approve -input=false -no-color "${TF_VAR_ARGS[@]}" 2>&1 \
     | tee "$WORKSPACE/apply.log" || {
-    # Root-cause hints for a known lightstack divergence. The module itself stays
+    # Root-cause hint for a historical lightstack divergence (fixed by the
+    # SPEC-028 Glance name-filter change). The module itself stays
     # unmodified — see README.md "Known divergences".
     if grep -q 'data.openstack_images_image_v2' "$WORKSPACE/apply.log" 2>/dev/null \
         && grep -q 'more than one result' "$WORKSPACE/apply.log" 2>/dev/null; then
@@ -206,12 +220,12 @@ tf apply -auto-approve -input=false -no-color "${TF_VAR_ARGS[@]}" 2>&1 \
         cat >&2 <<EOF
 FAIL: terraform apply failed — see the output above.
 
-NOTE (known lightstack divergence, not a module bug): the provider's
-data.openstack_images_image_v2 resolves images with a server-side ?name= filter
-on GET /v2/images, which lightstack's Glance ignores — it returns every visible
-image instead. This server currently has $n image(s), so the data source sees
-more than one result and errors. On a server with exactly one image the module
-passes. See test/terraform/README.md, "Known divergences".
+NOTE: the provider's data.openstack_images_image_v2 resolves images with a
+server-side ?name= filter on GET /v2/images. Lightstack honours that filter
+since the SPEC-028 fix, so a "more than one result" error now means genuinely
+duplicate names (this server currently has $n image(s)) — not the historical
+ignored-filter divergence. Check for images sharing the module's image name.
+See test/terraform/README.md, "Known divergences".
 EOF
         exit 1
     fi
@@ -232,6 +246,13 @@ $plan_out"
 # ---------------------------------------------------------------------------
 # 6. destroy
 # ---------------------------------------------------------------------------
+# Floating IPs carry no name, so the post-destroy residue sweep cannot match
+# them by prefix. Capture the module's own FIP ids from the state now —
+# before destroy empties it — and assert each is gone afterwards.
+FIP_IDS_BEFORE_DESTROY="$(tf state pull -no-color 2>/dev/null \
+    | jq -r '[.resources[]? | select(.type == "openstack_networking_floatingip_v2")
+              | .instances[]?.attributes.id] | join(" ")' 2>/dev/null || true)"
+
 log "terraform destroy"
 tf destroy -auto-approve -input=false -no-color "${TF_VAR_ARGS[@]}" 2>&1 \
     | tee "$WORKSPACE/destroy.log" \
@@ -253,12 +274,28 @@ outputs="$(tf output -json 2>/dev/null)" || die "terraform output failed"
 log "outputs: none"
 
 # No tf-compat-* residue left in lightstack (the authoritative residue check —
-# an empty state alone cannot prove the infra is gone).
+# an empty state alone cannot prove the infra is gone). Subnets, routers and
+# floating IPs are included even though they are unnamed or differently
+# named: the compat module creates them, and a leaked one is indistinguishable
+# from a fresh create in the post-destroy plan below.
 residue=0
 for res in "server list" "network list" "security group list" "volume list" "keypair list"; do
     n="$("$OSC" $res -f value -c Name 2>/dev/null | grep -c '^tf-compat-' || true)"
     residue=$((residue + n))
 done
+n="$("$OSC" subnet list -f value -c Name 2>/dev/null | grep -c '^tf-compat-' || true)"
+residue=$((residue + n))
+n="$("$OSC" router list -f value -c Name 2>/dev/null | grep -c '^tf-compat-' || true)"
+residue=$((residue + n))
+# The module's own floating IPs, captured from state before destroy — the
+# only precise check available for nameless resources.
+if [ -n "$FIP_IDS_BEFORE_DESTROY" ]; then
+    for fip in $FIP_IDS_BEFORE_DESTROY; do
+        if "$OSC" floating ip show "$fip" >/dev/null 2>&1; then
+            residue=$((residue + 1))
+        fi
+    done
+fi
 [ "$residue" -eq 0 ] || die "tf-compat-* residue left in lightstack after destroy \
 ($residue object(s)) — destroy reported success but left objects behind"
 log "openstack residue: none"
