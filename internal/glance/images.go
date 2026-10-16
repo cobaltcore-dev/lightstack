@@ -741,9 +741,10 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 
 	// Invalidate cache. Entries are keyed per caller (imageCacheKey), so evicting this image
 	// means evicting every project's view of it, not just the deleter's.
+	// (Only `image:<project>:<scope>:<id>` keys are ever written — imageCacheKey —
+	// so this one pattern is the complete eviction.)
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(ctx, "image:*:"+imageID)
-		svc.cache.TryDeletePattern(ctx, "images:*")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -868,7 +869,6 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 	// every project's view of it, not just the patcher's — same as DeleteImage.
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(c.Request.Context(), "image:*:"+imageID)
-		svc.cache.TryDeletePattern(c.Request.Context(), "images:*")
 	}
 
 	// The response reports the applied state (FR-016).
@@ -1570,10 +1570,9 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 	// Evict like every other image mutation (UpdateImage, members): GetImage
 	// caches the object INCLUDING its tags, so without this a tag added here
 	// stays invisible to `image show` for the cache's whole TTL (SPEC-028).
+	// evictImage drops every caller's view via the one key family that
+	// exists (image:<project>:<scope>:<id>).
 	svc.evictImage(c.Request.Context(), imageID)
-	if svc.cache != nil {
-		svc.cache.TryDeletePattern(c.Request.Context(), "images:*")
-	}
 
 	c.Status(http.StatusNoContent)
 }
@@ -1621,9 +1620,6 @@ func (svc *Service) DeleteImageTag(c *gin.Context) {
 	// Evict like every other image mutation — the cached image body carries
 	// the tags array, and a removal must not linger in `image show` either.
 	svc.evictImage(c.Request.Context(), imageID)
-	if svc.cache != nil {
-		svc.cache.TryDeletePattern(c.Request.Context(), "images:*")
-	}
 
 	c.Status(http.StatusNoContent)
 }

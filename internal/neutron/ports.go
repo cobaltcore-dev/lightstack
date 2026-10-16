@@ -381,7 +381,7 @@ func (svc *Service) ListPorts(c *gin.Context) {
 	where := pf.Where()
 	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", pf.Arg(limit), pf.Arg(offset))
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
+		SELECT p.id, p.name, p.network_id, p.project_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id`+where+`
 		ORDER BY p.created_at DESC, p.id DESC`+limitOffset, pf.Args()...)
@@ -401,8 +401,12 @@ func (svc *Service) ListPorts(c *gin.Context) {
 		var adminStateUp bool
 		var fixedIPsJSON []byte
 		var createdAt, updatedAt time.Time
+		// The row's OWN project, not the caller's: the admin cross-project
+		// listing serves foreign ports, and stamping them with the admin's
+		// project would tell a client a resource is theirs when it is not.
+		var ownerID string
 
-		if err := rows.Scan(&id, &name, &networkID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &networkID, &ownerID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt); err != nil {
 			log.Warn().Err(err).Msg("failed to scan port row")
 			continue
 		}
@@ -435,7 +439,7 @@ func (svc *Service) ListPorts(c *gin.Context) {
 			"id":              id,
 			"name":            name,
 			"network_id":      networkID,
-			"tenant_id":       projectID,
+			"tenant_id":       ownerID,
 			"device_id":       deviceID.String,
 			"device_owner":    deviceOwner.String,
 			"mac_address":     macAddress,
@@ -484,9 +488,10 @@ func (svc *Service) GetPort(c *gin.Context) {
 	// An administrator may show any port — the same carve-out GetNetwork and
 	// GetSubnet have (upstream's get_port policy is admin_or_owner; the
 	// admin's cross-project visibility the listings grant must not 404 on
-	// the follow-up show). Non-admins keep the read scope.
+	// the follow-up show). Non-admins keep the read scope. The row's OWN
+	// project is selected and rendered as tenant_id — never the caller's.
 	portQuery := `
-		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
+		SELECT p.id, p.name, p.network_id, p.project_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
 		WHERE p.id = $1`
@@ -495,8 +500,9 @@ func (svc *Service) GetPort(c *gin.Context) {
 		portQuery += ` AND ` + portReadScope("$2")
 		portArgs = append(portArgs, projectID)
 	}
+	var ownerID string
 	err := svc.pool.QueryRow(c.Request.Context(), portQuery, portArgs...).
-		Scan(&id, &name, &networkID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt)
+		Scan(&id, &name, &networkID, &ownerID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
@@ -537,7 +543,7 @@ func (svc *Service) GetPort(c *gin.Context) {
 			"id":              id,
 			"name":            name,
 			"network_id":      networkID,
-			"tenant_id":       projectID,
+			"tenant_id":       ownerID,
 			"device_id":       deviceID.String,
 			"device_owner":    deviceOwner.String,
 			"mac_address":     macAddress,
@@ -717,6 +723,16 @@ func allocateIP(cidr string) string {
 		return ""
 	}
 	maxOffset := int64(1<<uint(hostBits)) - 2 // exclude network(0) and broadcast
+
+	// Too-small pools and the IPv6 overflow both land here: for hostBits ≥ 64
+	// (every IPv6 subnet) int64(1<<hostBits) overflows to 0, making
+	// maxOffset negative; /30 and /29 make maxOffset-10 negative or zero.
+	// rand.Int PANICS on a non-positive bound (surfacing as a 500 via the
+	// recovery middleware) — refuse those subnets with the empty string the
+	// callers already treat as "no usable address".
+	if maxOffset <= 10 {
+		return ""
+	}
 
 	n, err := rand.Int(rand.Reader, big.NewInt(maxOffset-10))
 	offset := uint(10) // fallback to offset 10 if rand fails

@@ -843,7 +843,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 	where := f.Where()
 	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT v.id, v.name, v.description, v.size_gb, v.status, v.bootable, v.user_id, v.volume_type, v.created_at, v.updated_at
+		SELECT v.id, v.name, v.description, v.size_gb, v.status, v.bootable, v.user_id, v.volume_type, v.project_id, v.created_at, v.updated_at
 		FROM volumes v`+where+`
 		ORDER BY v.created_at DESC, v.id DESC`+limitOffset, f.Args()...)
 
@@ -862,15 +862,21 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 		var bootable bool
 		var userID, volumeType, description sql.NullString
 		var createdAt, updatedAt time.Time
+		// The row's OWN project, not the caller's: the admin cross-project
+		// listing (all_tenants / project_id) serves other projects' rows,
+		// and stamping them with the admin's project would tell tooling a
+		// resource is theirs when it is not (os-vol-tenant-attr:tenant_id
+		// is consumed by `volume list --long --all-projects`).
+		var ownerID string
 
-		if err := rows.Scan(&id, &name, &description, &size, &status, &bootable, &userID, &volumeType, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &description, &size, &status, &bootable, &userID, &volumeType, &ownerID, &createdAt, &updatedAt); err != nil {
 			log.Warn().Err(err).Msg("failed to scan volume detail row")
 			continue
 		}
 
 		volumes = append(volumes, serializeVolume(volumeRow{
 			ID: id, Name: name, Description: common.NullString(description),
-			TenantID: projectID, UserID: userID.String, VolumeType: volumeType.String,
+			TenantID: ownerID, UserID: userID.String, VolumeType: volumeType.String,
 			Status: status, Size: size, Bootable: bootable,
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
 		}))
@@ -925,13 +931,25 @@ func (svc *Service) GetVolume(c *gin.Context) {
 	var bootable bool
 	var userID, volumeType, description sql.NullString
 	var createdAt, updatedAt time.Time
+	// The row's OWN project, not the caller's — see the detail listing.
+	var ownerID string
 
-	// Support lookup by ID or name
-	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT id, name, description, size_gb, status, bootable, user_id, volume_type, created_at, updated_at
+	// Support lookup by ID or name. An administrator may show any volume —
+	// the same carve-out the listings have for their cross-project walks
+	// (`volume list --project X` then `volume show <id>` must not dead-end
+	// with 404 on the very rows the listing returned; SPEC-028). A
+	// non-admin keeps the project scope.
+	getQuery := `
+		SELECT id, name, description, size_gb, status, bootable, user_id, volume_type, project_id, created_at, updated_at
 		FROM volumes
-		WHERE project_id = $2 AND ((id::text = $1) OR (name = $1))
-	`, volumeID, projectID).Scan(&id, &name, &description, &size, &status, &bootable, &userID, &volumeType, &createdAt, &updatedAt)
+		WHERE ((id::text = $1) OR (name = $1))`
+	getArgs := []any{volumeID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		getQuery += ` AND project_id = $2`
+		getArgs = append(getArgs, projectID)
+	}
+	err := svc.pool.QueryRow(c.Request.Context(), getQuery, getArgs...).
+		Scan(&id, &name, &description, &size, &status, &bootable, &userID, &volumeType, &ownerID, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
@@ -962,7 +980,7 @@ func (svc *Service) GetVolume(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"volume": serializeVolume(volumeRow{
 			ID: id, Name: name, Description: common.NullString(description),
-			TenantID: projectID, UserID: userID.String, VolumeType: volumeType.String,
+			TenantID: ownerID, UserID: userID.String, VolumeType: volumeType.String,
 			Status: status, Size: size, Bootable: bootable, Attachments: attachments[id],
 			Metadata: metadata[id], CreatedAt: createdAt, UpdatedAt: updatedAt,
 		}),

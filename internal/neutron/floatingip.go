@@ -402,16 +402,25 @@ func (svc *Service) GetFloatingIP(c *gin.Context) {
 
 	// id::text comparison resolves by UUID or floating-IP address without
 	// crashing on a non-UUID identifier — the CLI looks a FIP up by its address
-	// (e.g. `server add floating ip <vm> <address>`).
-	err := svc.pool.QueryRow(c.Request.Context(), `
+	// (e.g. `server add floating ip <vm> <address>`). An administrator may
+	// show any floating IP (upstream's get_floatingip policy is
+	// admin_or_owner), so the tenant-filtered listing's rows do not dead-end
+	// their follow-up show with 404 — the same carve-out the other reads got
+	// (SPEC-028). A non-admin keeps the project scope.
+	fipQuery := `
 		SELECT id, project_id, floating_network_id, floating_ip_address,
 		       fixed_ip_address, port_id, router_id, status, description,
 		       created_at, updated_at
 		FROM floating_ips
-		WHERE (id::text = $1 OR floating_ip_address = $1) AND project_id = $2
-		LIMIT 1
-	`, floatingIPID, projectID).Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
-		&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
+		WHERE (id::text = $1 OR floating_ip_address = $1)`
+	fipArgs := []any{floatingIPID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		fipQuery += ` AND project_id = $2`
+		fipArgs = append(fipArgs, projectID)
+	}
+	err := svc.pool.QueryRow(c.Request.Context(), fipQuery+" LIMIT 1", fipArgs...).
+		Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
+			&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))

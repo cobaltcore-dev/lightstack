@@ -859,11 +859,20 @@ func TestSubnetPortAdminCarveOut_DB(t *testing.T) {
 	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/"+portID, adminHdr); code != http.StatusOK {
 		t.Errorf("admin shows foreign port: code=%d; want 200 (body=%s)", code, body)
 	}
+	// Round 8: the row's OWN project is rendered, never the caller's —
+	// stamping the admin's project on a foreign port tells a client a
+	// resource is theirs when it is not.
+	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/"+portID, adminHdr); code != http.StatusOK || !strings.Contains(body, `"tenant_id":"`+otherProject+`"`) {
+		t.Errorf("admin shows foreign port: tenant_id must be the row's owner %s (code=%d body=%s)", otherProject, code, body)
+	}
 	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/"+portID, memberHdr); code != http.StatusNotFound {
 		t.Errorf("member shows foreign port: code=%d; want 404 (body=%s)", code, body)
 	}
 	if code, body := doReq(r, http.MethodGet, "/v2.0/ports?network_id="+netID, adminHdr); code != http.StatusOK || !strings.Contains(body, portID) {
 		t.Errorf("admin lists foreign network's ports: code=%d body=%s; want 200 containing the port", code, body)
+	}
+	if code, body := doReq(r, http.MethodGet, "/v2.0/ports?network_id="+netID, adminHdr); code != http.StatusOK || !strings.Contains(body, `"tenant_id":"`+otherProject+`"`) {
+		t.Errorf("admin lists foreign network's ports: tenant_id must be the row's owner %s (code=%d body=%s)", otherProject, code, body)
 	}
 }
 
@@ -914,5 +923,37 @@ func TestListTenantFilterHonoredForAdmin_DB(t *testing.T) {
 	code, body = doReq(r, http.MethodGet, "/v2.0/routers?tenant_id="+otherProject, memberHdr)
 	if code != http.StatusOK || strings.Contains(body, otherRouter) {
 		t.Errorf("member routers?tenant_id=<other>: code=%d body=%s; must not contain the foreign router", code, body)
+	}
+
+	// Round 8: the show must not dead-end the listing's rows — an admin
+	// follow-up `router show` on the foreign router answers 200, a member's
+	// 404 (the same carve-out GetNetwork/GetSubnet/GetPort carry).
+	if code, body := doReq(r, http.MethodGet, "/v2.0/routers/"+otherRouter, adminHdr); code != http.StatusOK {
+		t.Errorf("admin shows foreign router: code=%d; want 200 (body=%s)", code, body)
+	}
+	if code, body := doReq(r, http.MethodGet, "/v2.0/routers/"+otherRouter, memberHdr); code != http.StatusNotFound {
+		t.Errorf("member shows foreign router: code=%d; want 404 (body=%s)", code, body)
+	}
+}
+
+// TestAllocateIPRefusesUntenablePools — rand.Int PANICS on a non-positive
+// bound: an IPv4 /29–/30 or any IPv6 subnet (where int64(1<<hostBits)
+// overflows to 0) used to turn a NULL-gateway router-interface attach (and a
+// CreatePort on such a subnet) into a 500 via the recovery middleware. The
+// guard must refuse with the empty string the callers already treat as "no
+// usable address" (SPEC-028, round 8).
+func TestAllocateIPRefusesUntenablePools(t *testing.T) {
+	for _, cidr := range []string{
+		"10.0.0.0/30", // two usable hosts; maxOffset-10 <= 0
+		"10.0.0.0/29",
+		"fd00::/64", // hostBits 64: the int64 shift overflows
+	} {
+		if got := allocateIP(cidr); got != "" {
+			t.Errorf("allocateIP(%q) = %q; want \"\" (a panic-prone pool must be refused)", cidr, got)
+		}
+	}
+	// A healthy pool still allocates.
+	if got := allocateIP("10.0.0.0/24"); got == "" {
+		t.Errorf("allocateIP(\"10.0.0.0/24\") = \"\"; want an address")
 	}
 }

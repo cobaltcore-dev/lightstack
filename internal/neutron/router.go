@@ -289,15 +289,24 @@ func (svc *Service) GetRouter(c *gin.Context) {
 
 	// id::text comparison resolves by UUID or name without crashing on a
 	// non-UUID identifier — the CLI looks a router up by name this way
-	// (consistent with GetNetwork/GetSubnet).
-	err := svc.pool.QueryRow(c.Request.Context(), `
+	// (consistent with GetNetwork/GetSubnet). An administrator may show any
+	// router (upstream's get_router policy is admin_or_owner), so the
+	// tenant-filtered listing's rows do not dead-end their follow-up show
+	// with 404 — the same carve-out the other reads got (SPEC-028). A
+	// non-admin keeps the project scope.
+	routerQuery := `
 		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
 		       distributed, ha, created_at, updated_at
 		FROM routers
-		WHERE (id::text = $1 OR name = $1) AND project_id = $2
-		LIMIT 1
-	`, routerID, projectID).Scan(&r.ID, &r.Name, &r.ProjectID, &r.AdminStateUp, &r.Status,
-		&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt)
+		WHERE (id::text = $1 OR name = $1)`
+	routerArgs := []any{routerID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		routerQuery += ` AND project_id = $2`
+		routerArgs = append(routerArgs, projectID)
+	}
+	err := svc.pool.QueryRow(c.Request.Context(), routerQuery+" LIMIT 1", routerArgs...).
+		Scan(&r.ID, &r.Name, &r.ProjectID, &r.AdminStateUp, &r.Status,
+			&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("router"))

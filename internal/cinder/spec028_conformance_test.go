@@ -314,4 +314,28 @@ func TestVolumeListAllTenantsAndProjectFilter_DB(t *testing.T) {
 	if code != http.StatusOK || strings.Contains(body, otherVol) || !strings.Contains(body, ownVol) {
 		t.Errorf("member volumes?all_tenants: code=%d body=%s; must contain only the member's volume", code, body)
 	}
+
+	// Round 8, MAJOR-1: a foreign row must carry ITS OWN tenant_id — the
+	// detail listing used to stamp every row with the caller's project, so
+	// an admin's cross-project walk labeled project X's volumes as the
+	// admin's (os-vol-tenant-attr:tenant_id is consumed by tooling).
+	code, body = doReq(r, http.MethodGet, "/v3/volumes/detail?project_id="+otherProject, "", adminHdr)
+	if code != http.StatusOK || !strings.Contains(body, `"tenant_id":"`+otherProject+`"`) {
+		t.Errorf("admin volumes?project_id=<other>: tenant_id must be the row's owner %s (code=%d body=%s)", otherProject, code, body)
+	}
+	if strings.Contains(body, `"tenant_id":"`+seededProjectID+`"`) {
+		t.Errorf("admin volumes?project_id=<other>: a row carries the ADMIN's tenant_id: %s", body)
+	}
+
+	// Round 8, MINOR-3: the show must not dead-end the listing's rows — an
+	// admin's follow-up `volume show` on the foreign volume answers 200 with
+	// the row's own tenant_id; a member's answers 404.
+	code, body = doReq(r, http.MethodGet, "/v3/volumes/"+otherVol, "", adminHdr)
+	if code != http.StatusOK || !strings.Contains(body, `"tenant_id":"`+otherProject+`"`) {
+		t.Errorf("admin shows foreign volume: code=%d; want 200 with the row's own tenant_id (body=%s)", code, body)
+	}
+	code, body = doReq(r, http.MethodGet, "/v3/volumes/"+otherVol, "", memberHdr)
+	if code != http.StatusNotFound {
+		t.Errorf("member shows foreign volume: code=%d; want 404 (body=%s)", code, body)
+	}
 }
