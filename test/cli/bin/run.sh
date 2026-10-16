@@ -104,8 +104,13 @@ _start_compose_stack() {
     # -p pins the compose project: without it the project name defaults to the
     # CWD ("lightstack") and `down -v` here would also tear down a developer's
     # running docker-compose.yml stack.
-    (cd "$REPO_ROOT" && docker compose -p lightstack-binary-test -f deployments/docker-compose.binary-test.yml up -d) || return 1
+    # STARTED_STACK is set BEFORE `up -d`, not after: a partially-started
+    # project (up fails midway) still leaves containers and ports behind, and
+    # only a marked stack is torn down by the failed-startup exit path below —
+    # which runs before the EXIT trap exists. `down -v` on a project that never
+    # came up is a harmless no-op.
     STARTED_STACK=1
+    (cd "$REPO_ROOT" && docker compose -p lightstack-binary-test -f deployments/docker-compose.binary-test.yml up -d) || return 1
 
     log_info "waiting for services to become ready..."
     local deadline=$(( SECONDS + 180 ))

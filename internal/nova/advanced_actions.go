@@ -336,6 +336,7 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 	// candidate, and once the guest is up no verdict disagrees with ACTIVE.
 	// A domain that has gone missing since the shelve self-heals the way
 	// os-start does (FR-025) rather than answering 202 over nothing.
+	healedDomain := ""
 	if svc.vmManager != nil && libvirtDomainID != "" {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), common.LifecycleResponseSlack)
 		defer cancel()
@@ -344,7 +345,8 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 				sendLifecycleError(c, "unshelve", err)
 				return
 			}
-			healedDomain, herr := svc.reviveGuest(ctx, instanceID)
+			var herr error
+			healedDomain, herr = svc.reviveGuest(ctx, instanceID)
 			if herr != nil {
 				// The record must not go on claiming the server runs (FR-025c).
 				svc.persistRunState(c, instanceID, projectID, "ERROR", 0, "")
@@ -358,12 +360,24 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 		}
 	}
 
-	// Update status to ACTIVE
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		UPDATE instances
-		SET status = $1, power_state = $2, task_state = $3, updated_at = $4
-		WHERE id = $5
-	`, "ACTIVE", 1, "", time.Now(), instanceID)
+	// Update status to ACTIVE. A self-healed guest runs under a NEW domain
+	// identifier — the row must name it, or the reconciler selects the row,
+	// asks about the dead domain, and flips ACTIVE back to SHUTOFF within one
+	// sweep: the very bug this restart exists to fix, reborn on the self-heal
+	// path. persistRunState does the same for os-start's heal (FR-025).
+	if healedDomain != "" {
+		_, err = svc.pool.Exec(c.Request.Context(), `
+			UPDATE instances
+			SET status = $1, power_state = $2, task_state = $3, updated_at = $4, libvirt_domain_id = $5
+			WHERE id = $6
+		`, "ACTIVE", 1, "", time.Now(), healedDomain, instanceID)
+	} else {
+		_, err = svc.pool.Exec(c.Request.Context(), `
+			UPDATE instances
+			SET status = $1, power_state = $2, task_state = $3, updated_at = $4
+			WHERE id = $5
+		`, "ACTIVE", 1, "", time.Now(), instanceID)
+	}
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "unshelve_instance").Msg("database error")

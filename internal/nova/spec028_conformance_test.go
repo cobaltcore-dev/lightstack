@@ -306,3 +306,86 @@ func TestUnshelveRestartsGuest(t *testing.T) {
 		t.Errorf("instance state after unshelve = %s/%d; want ACTIVE/1", status, power)
 	}
 }
+
+// TestUnshelveSelfHealPersistsRevivedDomain — the unshelve self-heal path
+// (domain vanished while shelved) used to leave the row naming the DEAD
+// domain while the revived guest ran under a new one: the reconciler then
+// selected the row, asked about the stale id, and flipped ACTIVE back to
+// SHUTOFF within one sweep — the exact bug the restart exists to fix, reborn
+// on the self-heal path (round 10).
+func TestUnshelveSelfHealPersistsRevivedDomain(t *testing.T) {
+	requireDB(t)
+	_, r, mgr := newLifecycleService(t)
+	id, domainID := seedLifecycleInstance(t, mgr, "spec028-r10-unshelve-heal")
+	hdr := lifecycleHdr()
+	action := func(name string) (int, string) {
+		return doReq(r, http.MethodPost, "/v2.1/servers/"+id+"/action",
+			`{"`+name+`":null}`, hdr)
+	}
+
+	if code, body := action("shelve"); code != http.StatusAccepted {
+		t.Fatalf("shelve: code=%d body=%s; want 202", code, body)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if status, _ := readInstanceState(t, id); status == "SHELVED" {
+			if run, err := mgr.GuestRunState(t.Context(), domainID); err == nil && run == hypervisor.RunStateDown {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("shelve never stopped the guest")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// The guest vanishes while shelved (node loss, cleanup — anything that
+	// undefines the domain).
+	if err := mgr.DeleteVM(t.Context(), domainID); err != nil {
+		t.Fatalf("delete the shelved guest's domain: %v", err)
+	}
+
+	// The self-heal rebuilds the guest from STORED STATE, whose root disk is
+	// the attached volume at /dev/vda (a volume's path is computed, not
+	// probed — unlike the qcow2 overlay, which would need the node-local
+	// state root).
+	volID := uuid.NewString()
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, volume_type, created_at, updated_at)
+		 VALUES ($1, 'spec028-r10-heal-root', $2, $3, 1, 'in-use', true, '__DEFAULT__', now(), now())`,
+		volID, seededProjectID, seededUserID); err != nil {
+		t.Fatalf("seed root volume: %v", err)
+	}
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO volume_attachments (id, volume_id, instance_id, device, delete_on_termination, attached_at)
+		 VALUES ($1, $2, $3, '/dev/vda', false, now())`,
+		uuid.NewString(), volID, id); err != nil {
+		t.Fatalf("seed root attachment: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM volume_attachments WHERE volume_id = $1`, volID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM volumes WHERE id = $1`, volID)
+	})
+
+	if code, body := action("unshelve"); code != http.StatusAccepted {
+		t.Fatalf("unshelve after guest vanished: code=%d body=%s; want 202 (self-heal)", code, body)
+	}
+
+	// The row must name a RUNNING guest — a stale id is what the reconciler
+	// corrects into SHUTOFF.
+	var status, rowDomain string
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT status, COALESCE(libvirt_domain_id, '') FROM instances WHERE id = $1`, id,
+	).Scan(&status, &rowDomain); err != nil {
+		t.Fatalf("read instance row: %v", err)
+	}
+	if status != "ACTIVE" {
+		t.Errorf("status after self-healing unshelve = %s; want ACTIVE", status)
+	}
+	if rowDomain == "" || rowDomain == domainID {
+		t.Errorf("row's libvirt_domain_id = %q (was %q); want the REVIVED domain's id", rowDomain, domainID)
+	}
+	if run, err := mgr.GuestRunState(t.Context(), rowDomain); err != nil || run != hypervisor.RunStateUp {
+		t.Errorf("guest run state for the row's domain = %v (err=%v); want up — the row must name the revived guest", run, err)
+	}
+}
