@@ -95,6 +95,7 @@ t_skip "reason"                    # recorded as skipped (fails the gate)
 ./test/cli/bin/run.sh                     # everything (fixtures + all suites + teardown)
 ./test/cli/bin/run.sh --suite keystone    # one suite, no teardown (dev iteration)
 ./test/cli/bin/run.sh --fast              # PR subset (everything except workflows)
+./test/cli/bin/run.sh --strict            # known-failing/skip also fail the run (nightly)
 ./test/cli/bin/run.sh --no-cleanup        # keep fixtures and created resources
 bash suites/keystone.sh                   # standalone; results under results/standalone/
 ./test/cli/bin/coverage.sh                # gate against results/results.json
