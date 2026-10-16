@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/google/uuid"
 )
 
@@ -252,5 +254,55 @@ func TestServerGroupDuplicateName409(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("rows for (%s, %s) = %d; want exactly 1", seededProjectID, name, n)
+	}
+}
+
+// TestUnshelveRestartsGuest — shelve stops the guest; unshelve only wrote
+// ACTIVE to the record and never started it again, so the state reconciler
+// (whose whole job is correcting records that disagree with the hypervisor)
+// flipped the unshelved server back to SHUTOFF within one 30s sweep:
+// `server unshelve` observably did nothing. Upstream's unshelve boots the
+// restored instance; the guest must be up before the record claims ACTIVE
+// (SPEC-028, round 9 — caught by a full run losing the race).
+func TestUnshelveRestartsGuest(t *testing.T) {
+	requireDB(t)
+	_, r, mgr := newLifecycleService(t)
+	id, domainID := seedLifecycleInstance(t, mgr, "spec028-r9-unshelve")
+	hdr := lifecycleHdr()
+	action := func(name string) (int, string) {
+		return doReq(r, http.MethodPost, "/v2.1/servers/"+id+"/action",
+			`{"`+name+`":null}`, hdr)
+	}
+
+	if code, body := action("shelve"); code != http.StatusAccepted {
+		t.Fatalf("shelve: code=%d body=%s; want 202", code, body)
+	}
+	// The record flips synchronously; the guest stop is asynchronous — wait
+	// for the hypervisor to agree before unshelving, so the pin is about
+	// unshelve's start, not shelve's stop timing.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if status, _ := readInstanceState(t, id); status == "SHELVED" {
+			if run, err := mgr.GuestRunState(t.Context(), domainID); err == nil && run == hypervisor.RunStateDown {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("shelve never stopped the guest (status=%s)", func() string { s, _ := readInstanceState(t, id); return s }())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if code, body := action("unshelve"); code != http.StatusAccepted {
+		t.Fatalf("unshelve: code=%d body=%s; want 202", code, body)
+	}
+
+	// The guest must be up — a record claiming ACTIVE over a stopped guest
+	// is exactly what the reconciler exists to correct.
+	if run, err := mgr.GuestRunState(t.Context(), domainID); err != nil || run != hypervisor.RunStateUp {
+		t.Errorf("guest run state after unshelve = %v (err=%v); want up — unshelve must restart the guest shelve stopped", run, err)
+	}
+	if status, power := readInstanceState(t, id); status != "ACTIVE" || power != 1 {
+		t.Errorf("instance state after unshelve = %s/%d; want ACTIVE/1", status, power)
 	}
 }

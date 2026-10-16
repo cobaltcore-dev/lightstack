@@ -32,8 +32,8 @@ func seedGuest(t *testing.T, ip string) string {
 	ctx := context.Background()
 	var portID string
 	if err := testPool.QueryRow(ctx,
-		`INSERT INTO ports (device_id, device_owner, fixed_ips) VALUES ($1, 'compute:nova', $2::jsonb) RETURNING id`,
-		id, fmt.Sprintf(`[{"ip_address":%q}]`, ip)).Scan(&portID); err != nil {
+		`INSERT INTO ports (device_id, device_owner, project_id, fixed_ips) VALUES ($1, 'compute:nova', $2, $3::jsonb) RETURNING id`,
+		id, seededProjectID, fmt.Sprintf(`[{"ip_address":%q}]`, ip)).Scan(&portID); err != nil {
 		t.Fatalf("insert port: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM ports WHERE id=$1", portID) })

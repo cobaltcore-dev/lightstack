@@ -31,7 +31,10 @@ func newGlanceCacheRouter(t *testing.T) (*gin.Engine, *cache.Cache) {
 		t.Skipf("no local Redis for the cache regression: %v", err)
 	}
 	t.Cleanup(func() {
-		cacheInst.DeletePattern(context.Background(), "spec028-r8glance:*")
+		// DeletePattern prepends the instance's KeyPrefix itself, so the
+		// pattern is just "*" — a prefixed pattern would double the prefix
+		// and match nothing (round 9).
+		cacheInst.DeletePattern(context.Background(), "*")
 	})
 
 	gin.SetMode(gin.TestMode)
@@ -61,7 +64,11 @@ func TestAddImageTagEvictsCache(t *testing.T) {
 	r, _ := newGlanceCacheRouter(t)
 
 	hdr := map[string]string{"X-Test-Project": "00000000-0000-0000-0000-000000000002"}
-	name := "spec028-r8-tag-" + uuid.NewString()[:8]
+	// The tag is deliberately NOT a substring of the image name: the first
+	// version of this test asserted on a tag that matched the name in every
+	// response, so the check passed with the eviction deleted (round 9).
+	name := "spec028-r8-addtag-" + uuid.NewString()[:8]
+	const tag = "round8-evict-pin"
 	code, body := doReqBody(r, http.MethodPost, "/images",
 		`{"name":"`+name+`","disk_format":"raw","container_format":"bare"}`, hdr)
 	if code != http.StatusCreated {
@@ -83,18 +90,19 @@ func TestAddImageTagEvictsCache(t *testing.T) {
 	if code, body := doReq(r, http.MethodGet, "/images/"+imageID, hdr); code != http.StatusOK {
 		t.Fatalf("prime show: code=%d body=%s", code, body)
 	}
-	code, body = doReq(r, http.MethodPut, "/images/"+imageID+"/tags/spec028-r8-tag", hdr)
+	code, body = doReq(r, http.MethodPut, "/images/"+imageID+"/tags/"+tag, hdr)
 	if code != http.StatusNoContent {
 		t.Fatalf("add tag: code=%d body=%s; want 204", code, body)
 	}
 
 	// The follow-up show must see the tag — a stale cache would answer the
-	// primed body with tags: [].
+	// primed body with tags: []. The assertion is the exact single-element
+	// array: a loose substring could match unrelated response fields.
 	code, body = doReq(r, http.MethodGet, "/images/"+imageID, hdr)
 	if code != http.StatusOK {
 		t.Fatalf("post-tag show: code=%d body=%s", code, body)
 	}
-	if !strings.Contains(body, "spec028-r8-tag") {
+	if !strings.Contains(body, `"tags":["`+tag+`"]`) {
 		t.Errorf("post-tag show does not see the tag — cache not evicted: %s", body)
 	}
 }
@@ -135,7 +143,8 @@ func TestDeleteImageTagEvictsCache(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("post-untag show: code=%d body=%s", code, body)
 	}
-	if strings.Contains(body, "spec028-r8-gone") {
+	// Exact-array form, symmetric with the add-tag pin above.
+	if strings.Contains(body, `"tags":["spec028-r8-gone"]`) {
 		t.Errorf("post-untag show still sees the tag — cache not evicted: %s", body)
 	}
 }

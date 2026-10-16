@@ -686,7 +686,10 @@ func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 		t.Skipf("no local Redis for the cache regression: %v", err)
 	}
 	t.Cleanup(func() {
-		cacheInst.DeletePattern(context.Background(), "spec028-cachetest:network:*")
+		// DeletePattern prepends the instance's KeyPrefix itself, so the
+		// pattern is just "*" — a prefixed pattern would double the prefix
+		// and match nothing (round 9).
+		cacheInst.DeletePattern(context.Background(), "*")
 	})
 
 	ctx := context.Background()
@@ -955,5 +958,55 @@ func TestAllocateIPRefusesUntenablePools(t *testing.T) {
 	// A healthy pool still allocates.
 	if got := allocateIP("10.0.0.0/24"); got == "" {
 		t.Errorf("allocateIP(\"10.0.0.0/24\") = \"\"; want an address")
+	}
+}
+
+// TestCreatePortRefusesUntenablePool — CreatePort on a /30 subnet used to
+// persist fixed_ips with a BLANK ip_address once the allocateIP panic guard
+// landed (the 500 became silent bad data); the refusal must be a clean 400,
+// mirroring AddRouterInterface's handling (SPEC-028, round 9).
+func TestCreatePortRefusesUntenablePool(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	r := newNeutronTestRouter()
+	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+
+	code, body := doReqBody(r, http.MethodPost, "/v2.0/networks",
+		`{"network":{"name":"spec028-r9-tiny-net"}}`, hdr)
+	if code != http.StatusCreated {
+		t.Fatalf("create network: code=%d (body=%s)", code, body)
+	}
+	var net struct {
+		Network struct {
+			ID string `json:"id"`
+		} `json:"network"`
+	}
+	if err := json.Unmarshal([]byte(body), &net); err != nil {
+		t.Fatalf("unmarshal network: %v (body=%s)", err, body)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM ports WHERE network_id=$1", net.Network.ID)
+		testPool.Exec(ctx, "DELETE FROM subnets WHERE network_id=$1", net.Network.ID)
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", net.Network.ID)
+	})
+
+	code, body = doReqBody(r, http.MethodPost, "/v2.0/subnets",
+		`{"subnet":{"name":"spec028-r9-tiny-sub","network_id":"`+net.Network.ID+`","cidr":"10.198.0.0/30","ip_version":4}}`, hdr)
+	if code != http.StatusCreated {
+		t.Fatalf("create /30 subnet: code=%d (body=%s)", code, body)
+	}
+
+	code, body = doReqBody(r, http.MethodPost, "/v2.0/ports",
+		`{"port":{"network_id":"`+net.Network.ID+`","name":"spec028-r9-tiny-port"}}`, hdr)
+	if code != http.StatusBadRequest {
+		t.Errorf("port create on /30 subnet: code=%d body=%s; want 400 (no usable address)", code, body)
+	}
+	// And nothing was persisted.
+	var n int
+	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM ports WHERE network_id=$1", net.Network.ID).Scan(&n); err != nil {
+		t.Fatalf("count ports: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("port create on /30 subnet persisted %d row(s) despite the 400", n)
 	}
 }

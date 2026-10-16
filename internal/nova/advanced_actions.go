@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -289,11 +290,13 @@ func (svc *Service) ShelveInstance(c *gin.Context, instanceID, projectID string)
 func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Get instance
+	var domainScan *string
 	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT status FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT COALESCE(libvirt_domain_id, ''), status FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
-	).Scan(&status)
+	).Scan(&domainScan, &status)
+	libvirtDomainID := guestDomain(domainScan)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -322,6 +325,37 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 		log.Error().Err(err).Str("operation", "unshelve_delete_snapshot").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to unshelve instance"))
 		return
+	}
+
+	// Restart the guest shelve stopped — BEFORE the record claims ACTIVE. The
+	// state reconciler exists to correct records that disagree with the
+	// hypervisor, so a record written ACTIVE over a stopped guest was flipped
+	// back to SHUTOFF within one 30s sweep: `server unshelve` observably did
+	// nothing (SPEC-028, round 9). Starting first also wins the reconciler's
+	// compare-and-set by construction: a SHELVED row is never a reconcile
+	// candidate, and once the guest is up no verdict disagrees with ACTIVE.
+	// A domain that has gone missing since the shelve self-heals the way
+	// os-start does (FR-025) rather than answering 202 over nothing.
+	if svc.vmManager != nil && libvirtDomainID != "" {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), common.LifecycleResponseSlack)
+		defer cancel()
+		if err := svc.vmManager.StartVM(ctx, libvirtDomainID); err != nil {
+			if !errors.Is(err, hypervisor.ErrDomainNotFound) {
+				sendLifecycleError(c, "unshelve", err)
+				return
+			}
+			healedDomain, herr := svc.reviveGuest(ctx, instanceID)
+			if herr != nil {
+				// The record must not go on claiming the server runs (FR-025c).
+				svc.persistRunState(c, instanceID, projectID, "ERROR", 0, "")
+				log.Error().Err(herr).Str("instance_id", instanceID).
+					Msg("unshelve self-heal failed; the server has no guest and could not be given one")
+				common.SendError(c, common.NewOperationConflictError("unshelve",
+					"the server's guest is absent and could not be re-created"))
+				return
+			}
+			svc.recordSelfHeal(c, instanceID, projectID, healedDomain)
+		}
 	}
 
 	// Update status to ACTIVE

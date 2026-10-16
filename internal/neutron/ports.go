@@ -85,8 +85,14 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	var fixedIPs []map[string]any
 	if err == nil {
-		// Allocate IP from subnet
+		// Allocate IP from subnet. A pool the allocator must refuse (/29-/30,
+		// IPv6 with its int64 overflow) is a clean 400 — persisting a port
+		// with a blank ip_address would be silent bad data (round 9).
 		allocatedIP := allocateIP(cidr)
+		if allocatedIP == "" {
+			common.SendError(c, common.NewBadRequestError("subnet's cidr has no usable address for a port"))
+			return
+		}
 		fixedIPs = []map[string]any{
 			{
 				"subnet_id":  subnetID,

@@ -158,9 +158,10 @@ fi
 
 # A selection that matches nothing must fail loudly, not run zero suites and
 # exit 0 — the exact vacuous-green class this harness exists to prevent
-# (e.g. `--fast --suite workflows`: the fast pool excludes workflows).
+# (e.g. `--fast --suite workflows`: the fast pool excludes workflows). The
+# selection is necessarily empty here, so there is nothing to interpolate.
 if (( ${#SUITES[@]} == 0 )); then
-    log_error "--suite '${SUITES[*]:-?}' selected no suites under the current flags (--fast?)"
+    log_error "the --suite selection matches no suite under the current flags (--fast excludes workflows)"
     exit 2
 fi
 
@@ -177,8 +178,15 @@ fi
 
 if ! curl -sf -o /dev/null --max-time 5 "$OS_AUTH_URL"; then
     if ! _start_compose_stack; then
+        # The EXIT trap is not installed yet — anything the failed start left
+        # behind must be torn down HERE, or a half-started stack (up succeeded,
+        # readiness never came) would outlive the exit 2.
+        if (( STARTED_STACK )) && (( ! KEEP_SERVER )); then
+            (cd "$REPO_ROOT" && docker compose -p lightstack-binary-test -f deployments/docker-compose.binary-test.yml down -v) >/dev/null 2>&1 || true
+        fi
         cat >&2 <<EOF
-[cli] ERROR: no lightstack server at $OS_AUTH_URL and no docker to start one.
+[cli] ERROR: no lightstack server at $OS_AUTH_URL, and starting one failed
+(docker missing, build failed, or the stack never became ready — see above).
 
 Either start a server yourself:
     make build && make run
@@ -204,7 +212,10 @@ export CLI_RUNNER_ACTIVE=1
 source "$CLI_ROOT/lib/fixtures.sh"
 
 cleanup() {
-    local rc=$?
+    # failed is declared HERE, before report_write's check below — a later
+    # `local failed=0` would shadow an earlier assignment made while the
+    # variable was still global, silently disabling the check (round 9).
+    local rc=$? failed=0
     trap - EXIT INT TERM
     if (( ! NO_CLEANUP )); then
         fixtures_teardown || true
@@ -218,7 +229,6 @@ cleanup() {
     # it used to run after `rm -rf` and always saw a missing file, which
     # the old "missing means clean" reading silently absorbed (failure
     # detection at exit was dead code). Now it genuinely gates the exit.
-    local failed=0
     if (( rc == 0 )) && report_failed; then
         failed=1
     fi

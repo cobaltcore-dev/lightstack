@@ -1157,9 +1157,10 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 
 	// Invalidate cache. Entries are keyed per caller (networkCacheKey), so evicting this
 	// network means evicting every project's view of it, not just the deleter's.
+	// (Only `network:<project>:<id>` keys are ever written — networkCacheKey —
+	// so this one pattern is the complete eviction.)
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(ctx, "network:*:"+id)
-		svc.cache.TryDeletePattern(ctx, "networks:*")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -1326,7 +1327,6 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 	// reason DeleteNetwork's does.
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(c.Request.Context(), "network:*:"+networkID)
-		svc.cache.TryDeletePattern(c.Request.Context(), "networks:*")
 	}
 	svc.writeNetworkResponse(c, networkID)
 }
