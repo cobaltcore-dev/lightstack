@@ -385,7 +385,7 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description.String,
+			"description": common.NullString(description),
 			"enabled":     enabled,
 			"domain_id":   domainID.String,
 			"links":       identityLink(c, "projects", id),
@@ -444,8 +444,8 @@ func (svc *Service) ListUsers(c *gin.Context) {
 			"name":        name,
 			"enabled":     enabled,
 			"domain_id":   domainID,
-			"email":       email.String,
-			"description": description.String,
+			"email":       common.NullString(email),
+			"description": common.NullString(description),
 			"links":       identityLink(c, "users", id),
 		})
 	}
@@ -482,8 +482,8 @@ func (svc *Service) GetUser(c *gin.Context) {
 		"name":        name,
 		"enabled":     enabled,
 		"domain_id":   domainID,
-		"email":       email.String,
-		"description": description.String,
+		"email":       common.NullString(email),
+		"description": common.NullString(description),
 		"links":       identityLink(c, "users", id),
 	}})
 }
@@ -529,7 +529,7 @@ func (svc *Service) ListProjects(c *gin.Context) {
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description.String,
+			"description": common.NullString(description),
 			"enabled":     enabled,
 			"domain_id":   domainID.String,
 			"links":       identityLink(c, "projects", id),
@@ -580,7 +580,7 @@ func (svc *Service) GetProject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"project": gin.H{
 		"id":          id,
 		"name":        name,
-		"description": description.String,
+		"description": common.NullString(description),
 		"enabled":     enabled,
 		"domain_id":   domainID.String,
 		"links":       identityLink(c, "projects", id),
@@ -719,7 +719,7 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"project": gin.H{
 		"id":          projectID,
 		"name":        name,
-		"description": description.String,
+		"description": common.NullString(description),
 		"domain_id":   domainID.String,
 		"enabled":     enabled,
 		"links":       identityLink(c, "projects", projectID),
@@ -1503,7 +1503,7 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description.String,
+			"description": common.NullString(description),
 			"enabled":     enabled,
 			"domain_id":   domainID.String,
 			"links":       identityLink(c, "projects", id),

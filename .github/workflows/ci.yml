@@ -63,7 +63,7 @@ jobs:
     # SPEC-007 WS-2) run instead of skipping. Tests connect via LIGHTSTACK_TEST_DB_URL.
     services:
       postgres:
-        image: postgres:18.3-alpine
+        image: postgres:18.4-alpine
         env:
           POSTGRES_USER: lightstack
           POSTGRES_PASSWORD: secret
@@ -322,7 +322,7 @@ jobs:
     # docker), so the suite always exercises exactly what the build job made.
     services:
       postgres:
-        image: postgres:18.3-alpine
+        image: postgres:18.4-alpine
         env:
           POSTGRES_USER: lightstack
           POSTGRES_PASSWORD: secret

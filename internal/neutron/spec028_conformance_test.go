@@ -376,7 +376,10 @@ func TestNetworkDescriptionRoundTrip_DB(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &created); err != nil {
 		t.Fatalf("unmarshal create: %v (body=%s)", err, body)
 	}
-	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM ports WHERE network_id=$1", created.Network.ID); testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", created.Network.ID) })
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM ports WHERE network_id=$1", created.Network.ID)
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", created.Network.ID)
+	})
 	if created.Network.Description != "first" {
 		t.Errorf("create: description=%q; want first", created.Network.Description)
 	}
@@ -521,5 +524,115 @@ func TestSecurityGroupCreateRulesEmpty_DB(t *testing.T) {
 		t.Errorf("create: security_group_rules is null; want [] (body=%s)", body)
 	} else if len(created.SG.Rules) != 0 {
 		t.Errorf("create: security_group_rules has %d entries; want 0", len(created.SG.Rules))
+	}
+}
+
+// TestGetNetworkAdminCarveOut_DB — the admin tenant_id LIST filter is
+// honoured (see TestListNetworksAdminTenantFilter_DB), but GET
+// /v2.0/networks/{id} kept the caller's read scope unconditionally, so an
+// admin could list another project's private network and then get a 404
+// showing the id it just listed. Upstream's get_network policy is
+// "admin_or_owner or shared or external" (SPEC-028).
+func TestGetNetworkAdminCarveOut_DB(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+
+	otherProject := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
+		otherProject, "spec028-show-proj-"+otherProject[:8]); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	netID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
+		netID, "spec028-show-net-"+netID[:8], otherProject); err != nil {
+		t.Fatalf("insert network: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", netID)
+		testPool.Exec(ctx, "DELETE FROM projects WHERE id=$1", otherProject)
+	})
+
+	r := newNeutronTestRouter()
+	adminHdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}
+	memberHdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+
+	if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+netID, adminHdr); code != http.StatusOK {
+		t.Errorf("admin shows other project's private network: code=%d; want 200 (body=%s)", code, body)
+	}
+	// A plain member of ANOTHER project still cannot: 404, not 403, so the
+	// network's existence stays private.
+	if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+netID, memberHdr); code != http.StatusNotFound {
+		t.Errorf("member shows other project's private network: code=%d; want 404 (body=%s)", code, body)
+	}
+}
+
+// TestAddRouterInterfaceSubnetScope_DB — the subnet lookup behind
+// add_router_interface was unscoped: a caller who owned a router could attach
+// an interface to ANOTHER project's private subnet by id. The port path was
+// already project-scoped; now the subnet row must be the caller's, or sit on
+// a shared/external network (SPEC-028).
+func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+
+	otherProject := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
+		otherProject, "spec028-ifscope-proj-"+otherProject[:8]); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	// A private and a shared network, both owned by the other project.
+	privateNet, sharedNet := uuid.NewString(), uuid.NewString()
+	for _, n := range []struct {
+		id     string
+		shared bool
+	}{{privateNet, false}, {sharedNet, true}} {
+		if _, err := testPool.Exec(ctx,
+			`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,$4,false)`,
+			n.id, "spec028-ifscope-net-"+n.id[:8], otherProject, n.shared); err != nil {
+			t.Fatalf("insert network: %v", err)
+		}
+	}
+	privateSub, sharedSub := uuid.NewString(), uuid.NewString()
+	for _, s := range []struct{ id, net string }{{privateSub, privateNet}, {sharedSub, sharedNet}} {
+		if _, err := testPool.Exec(ctx,
+			`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version) VALUES ($1,$2,$3,$4,$5,$6,4)`,
+			s.id, "spec028-ifscope-sub-"+s.id[:8], s.net, otherProject, "10.231.0.0/24", "10.231.0.1"); err != nil {
+			t.Fatalf("insert subnet: %v", err)
+		}
+	}
+	routerID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
+		routerID, "spec028-ifscope-rt-"+routerID[:8], seededProjectID); err != nil {
+		t.Fatalf("insert router: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM router_interfaces WHERE router_id=$1", routerID)
+		testPool.Exec(ctx, "DELETE FROM ports WHERE network_id = ANY($1)", []string{privateNet, sharedNet})
+		testPool.Exec(ctx, "DELETE FROM subnets WHERE id = ANY($1)", []string{privateSub, sharedSub})
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id = ANY($1)", []string{privateNet, sharedNet})
+		testPool.Exec(ctx, "DELETE FROM routers WHERE id=$1", routerID)
+		testPool.Exec(ctx, "DELETE FROM projects WHERE id=$1", otherProject)
+	})
+
+	r := newNeutronTestRouter()
+	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+
+	// Another project's PRIVATE subnet: refused, and as a 404 so the subnet's
+	// existence stays private.
+	code, body := doReqBody(r, http.MethodPut, "/v2.0/routers/"+routerID+"/add_router_interface",
+		fmt.Sprintf(`{"subnet_id":"%s"}`, privateSub), hdr)
+	if code != http.StatusNotFound {
+		t.Errorf("attach other project's private subnet: code=%d; want 404 (body=%s)", code, body)
+	}
+
+	// A subnet on a SHARED network is legitimately attachable.
+	code, body = doReqBody(r, http.MethodPut, "/v2.0/routers/"+routerID+"/add_router_interface",
+		fmt.Sprintf(`{"subnet_id":"%s"}`, sharedSub), hdr)
+	if code != http.StatusOK {
+		t.Errorf("attach shared-network subnet: code=%d; want 200 (body=%s)", code, body)
 	}
 }

@@ -224,9 +224,9 @@ assert_rc 0
 assert_jq '.name' cli-conf-ke-user2
 osc user set cli-conf-ke-user2 --email ke-user2@cli-conf.invalid
 assert_rc 0
-# The email cannot be verified through the CLI until the user-show divergence
-# above is fixed (GET /v3/users/{id} drops email); the rename above proves the
-# PATCH itself works.
+osc user show cli-conf-ke-user2
+assert_rc 0
+assert_jq '.email' ke-user2@cli-conf.invalid
 osc user delete cli-conf-ke-user2
 t_end
 

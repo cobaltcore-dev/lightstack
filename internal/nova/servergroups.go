@@ -59,9 +59,9 @@ func (svc *Service) ListServerGroups(c *gin.Context) {
 // validServerGroupPolicies — the vocabulary upstream accepts for either the
 // legacy `policies` array or the 2.64+ `policy` string.
 var validServerGroupPolicies = map[string]bool{
-	"affinity":          true,
-	"anti-affinity":     true,
-	"soft-affinity":     true,
+	"affinity":           true,
+	"anti-affinity":      true,
+	"soft-affinity":      true,
 	"soft-anti-affinity": true,
 }
 

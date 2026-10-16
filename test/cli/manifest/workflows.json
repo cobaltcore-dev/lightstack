@@ -34,7 +34,7 @@
     },
     {
       "id": "wf.project.isolation",
-      "cmd": "scenario: two projects with a user each and identically-named networks; each user's auth-scoped list shows only their own network; admin tenant_id list filter tracked as known failure",
+      "cmd": "scenario: two projects with a user each and identically-named networks; each user's auth-scoped list shows only their own network; the admin tenant_id list filter is honoured (fixed by the SPEC-028 network list change)",
       "endpoints": ["POST /v3/projects", "POST /v3/users", "POST /v2.0/networks", "GET /v2.0/networks", "GET /v2.0/networks?tenant_id={project_id}"],
       "tiers": ["C"]
     },

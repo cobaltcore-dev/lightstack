@@ -17,9 +17,13 @@ suite_begin image
 # ---------------------------------------------------------------------------
 # Suite-local fixtures: one 64 KiB file of zeros, uploaded by the create cases
 # and compared byte-for-byte by the save case. MD5 (Glance's checksum) is
-# computed once. Removed at the end of the suite.
+# computed once. Removed by the EXIT trap (suite_cleanup, common.sh), so an
+# early exit or a killed run cannot leak it either.
 # ---------------------------------------------------------------------------
 IM_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cli-conf-im.XXXXXX")"
+suite_cleanup() {
+    rm -rf "$IM_TMP_DIR"
+}
 IM_IMG_FILE="$IM_TMP_DIR/im64k.bin"
 IM_IMG_MD5=""
 dd if=/dev/zero of="$IM_IMG_FILE" bs=1024 count=64 2>/dev/null
@@ -321,5 +325,3 @@ assert_rc 0
 t_end
 
 suite_end
-
-rm -rf "$IM_TMP_DIR"

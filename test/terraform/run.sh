@@ -51,7 +51,9 @@ export OS_USERNAME="${OS_USERNAME:-admin}"
 export OS_PASSWORD="${OS_PASSWORD:-secret}"
 export OS_PROJECT_NAME="${OS_PROJECT_NAME:-default}"
 export OS_USER_DOMAIN_NAME="${OS_USER_DOMAIN_NAME:-Default}"
-export OS_PROJECT_DOMAIN_NAME="${OS_USER_DOMAIN_NAME:-Default}"
+# A distinct project domain falls back to the user domain (the common
+# single-domain case), never the other way round.
+export OS_PROJECT_DOMAIN_NAME="${OS_PROJECT_DOMAIN_NAME:-${OS_USER_DOMAIN_NAME:-Default}}"
 export OS_IDENTITY_API_VERSION="${OS_IDENTITY_API_VERSION:-3}"
 export OS_REGION_NAME="${OS_REGION_NAME:-RegionOne}"
 # The compat module's provider block is empty: terraform-provider-openstack

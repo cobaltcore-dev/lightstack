@@ -47,7 +47,8 @@ _vo_clean_volume() {
 }
 
 # _vo_snap_id <name> — print the snapshot id, or nothing (resolved via list:
-# the by-name GET /v3/snapshots/{name} answers 500, see snapshot cases).
+# robust against the by-name GET answering 404, as upstream does, and against
+# display-cased list keys alike).
 _vo_snap_id() {
     OSC_QUIET=1 osc volume snapshot list
     (( OSC_RC != 0 )) && return 0
@@ -77,8 +78,8 @@ _vo_clean_backup() {
     [[ -n "$id" ]] && OSC_QUIET=1 osc volume backup delete "$id"
 }
 
-# _vo_type_id <name> — print the volume type id, or nothing (via list; the
-# by-name GET /v3/types/{name} answers 500, see the type cases).
+# _vo_type_id <name> — print the volume type id, or nothing (via list; same
+# robustness as _vo_snap_id — the by-name GET answers 404, as upstream does).
 _vo_type_id() {
     OSC_QUIET=1 osc volume type list
     (( OSC_RC != 0 )) && return 0
@@ -688,9 +689,10 @@ _vo_clean_type "$T"
 t_end
 
 t_begin volume.type.create.nodesc
-# Creating a type without --description stores NULL description; GET /v3/types
-# then 500s until the type is deleted. The case records the divergence and
-# restores list health so the rest of the surface keeps working.
+# Creating a type without --description used to store NULL description, which
+# made GET /v3/types 500 for every caller until the type was deleted; the
+# scan is null-safe now, and this case proves it stays that way (recording
+# the old divergence if it ever regresses) — cleanup runs either way.
 T="cli-conf-vo-nodesc"
 _vo_clean_type "$T"
 osc volume type create "$T"

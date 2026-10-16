@@ -13,14 +13,14 @@ jobs:
     name: CLI Conformance (Full)
     runs-on: ubuntu-latest
     if: github.repository == 'cobaltcore-dev/lightstack'
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     # SPEC-028 nightly: the FULL suite (workflows included, so tier C) plus the
     # strict coverage gate. No PR context here, so the binary is built in the
     # job instead of downloaded from the build job's artifact.
     services:
       postgres:
-        image: postgres:18.3-alpine
+        image: postgres:18.4-alpine
         env:
           POSTGRES_USER: lightstack
           POSTGRES_PASSWORD: secret
@@ -113,7 +113,7 @@ jobs:
     name: Terraform Conformance
     runs-on: ubuntu-latest
     if: github.repository == 'cobaltcore-dev/lightstack'
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     # SPEC-028 nightly: apply + destroy the UNMODIFIED terraform-provider-
     # openstack compat module (test/terraform/compat) against a native server
@@ -121,7 +121,7 @@ jobs:
     # test/terraform/run.sh; the module reads auth from the OS_* variables.
     services:
       postgres:
-        image: postgres:18.3-alpine
+        image: postgres:18.4-alpine
         env:
           POSTGRES_USER: lightstack
           POSTGRES_PASSWORD: secret

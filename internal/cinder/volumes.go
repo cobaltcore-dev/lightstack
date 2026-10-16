@@ -388,9 +388,9 @@ type volumeRow struct {
 	// Metadata is the volume's user metadata; nil means none, which
 	// serializes as the empty object — the key itself is mandatory
 	// (SPEC-028: OSC reads volume.properties from it).
-	Metadata   map[string]string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	Metadata  map[string]string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // serializeVolume renders a volume as the full upstream Cinder v3 object, with a
@@ -2058,7 +2058,7 @@ func (svc *Service) ListVolumeTypes(c *gin.Context) {
 		types = append(types, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description.String,
+			"description": common.NullString(description),
 			"is_public":   isPublic,
 			// The type object carries its extra_specs — the endpoint returns
 			// them, but the object omitted the key, so 'volume type show'
@@ -2117,11 +2117,11 @@ func (svc *Service) GetVolumeType(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"volume_type": gin.H{
-			"id":           id,
-			"name":         name,
-			"description":  description.String,
-			"is_public":    isPublic,
-			"extra_specs":  extraSpecs,
+			"id":          id,
+			"name":        name,
+			"description": common.NullString(description),
+			"is_public":   isPublic,
+			"extra_specs": extraSpecs,
 		},
 	})
 }

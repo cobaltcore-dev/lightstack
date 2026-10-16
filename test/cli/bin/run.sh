@@ -210,7 +210,13 @@ cleanup() {
     fi
     exit "$rc"
 }
-trap cleanup EXIT INT TERM
+# INT/TERM re-exit with the conventional 128+signal status so the EXIT trap
+# (which preserves and propagates it) runs once, with the right code — a trap
+# on the signal itself would run cleanup with whatever $? happened to be,
+# which can flatten a killed run into a successful exit.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fixtures_ensure || {
     log_error "fixture setup failed — cannot run suites"

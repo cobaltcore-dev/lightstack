@@ -1007,12 +1007,25 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	var mtu int
 	var createdAt, updatedAt time.Time
 
-	err := svc.pool.QueryRow(ctx, `
+	// An administrator may show any network — upstream's get_network policy
+	// is "admin_or_owner or shared or external", and the LIST already honours
+	// that for the admin (buildNetworkListFilter bypasses the read scope for
+	// an admin's tenant filter). Without the matching carve-out here, an
+	// admin could list another project's private network with --project and
+	// then get a 404 showing the id it just listed (SPEC-028).
+	query := `
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external, COALESCE(description, '')
 		FROM networks
-		WHERE (id::text = $1 OR name = $1) AND `+networkReadScope("$2")+`
-		LIMIT 1
-	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description)
+		WHERE (id::text = $1 OR name = $1)`
+	args := []any{networkID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		query += ` AND ` + networkReadScope("$2")
+		args = append(args, projectID)
+	}
+	query += ` LIMIT 1`
+
+	err := svc.pool.QueryRow(ctx, query, args...).
+		Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -2071,18 +2084,30 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	// the old name still stored, because the two predicates disagree (the same trap
 	// DeleteSubnet had).
 	// gateway_ip is only touched when the key was supplied; an explicit null clears it (S14).
-	switch {
-	case gatewayGiven:
+	// Every supplied column lands in ONE statement: two separate UPDATEs (name/gateway,
+	// then the DHCP flag) could leave a half-applied update behind if the second failed.
+	u := &common.SQLUpdate{}
+	if req.Subnet.Name != nil {
+		u.Set("name", *req.Subnet.Name)
+	}
+	if gatewayGiven {
+		u.Set("gateway_ip", newGateway)
+	}
+	// The DHCP flag is applied independently of name/gateway, so it works alone
+	// ('subnet set --no-dhcp') and together — but only when the flag actually
+	// flips. Host state follows the row: dnsmasq restarts for a survivor when
+	// this was the network's only DHCP subnet, and stops when none remain —
+	// the same convergence the post-delete reconciler performs.
+	dhcpToggled := req.Subnet.EnableDHCP != nil && *req.Subnet.EnableDHCP != subnetDHCP
+	if dhcpToggled {
+		u.Set("enable_dhcp", *req.Subnet.EnableDHCP)
+	}
+	if !u.Empty() {
+		u.Set("updated_at", time.Now())
 		_, err = svc.pool.Exec(c.Request.Context(),
-			"UPDATE subnets SET name = $1, gateway_ip = $2 WHERE id = $3",
-			currentName, newGateway, resolvedID,
-		)
-	case req.Subnet.Name != nil:
-		_, err = svc.pool.Exec(c.Request.Context(),
-			"UPDATE subnets SET name = $1 WHERE id = $2",
-			currentName, resolvedID,
-		)
-	default:
+			"UPDATE subnets SET "+u.Assignments()+" WHERE id = "+u.Arg(resolvedID),
+			u.Args()...)
+	} else {
 		// Nothing was supplied, so nothing is written. This used to issue
 		// `UPDATE subnets SET name = <the name just read>` — a statement that changed no column and
 		// did not even touch updated_at (second review, AGY-2).
@@ -2096,23 +2121,6 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update subnet"))
 		return
-	}
-	// The DHCP flag is applied independently of the name/gateway switch above,
-	// so it works alone ('subnet set --no-dhcp') and together. Host state
-	// follows the row: dnsmasq restarts for a survivor when this was the
-	// network's only DHCP subnet, and stops when none remain — the same
-	// convergence the post-delete reconciler performs.
-	dhcpToggled := false
-	if req.Subnet.EnableDHCP != nil && *req.Subnet.EnableDHCP != subnetDHCP {
-		if _, err := svc.pool.Exec(c.Request.Context(),
-			"UPDATE subnets SET enable_dhcp = $1, updated_at = $2 WHERE id = $3",
-			*req.Subnet.EnableDHCP, time.Now(), resolvedID,
-		); err != nil {
-			log.Error().Err(err).Str("operation", "update_subnet_dhcp").Str("subnet_id", resolvedID).Msg("database error")
-			common.SendError(c, common.NewInternalServerError("failed to update subnet"))
-			return
-		}
-		dhcpToggled = true
 	}
 	if dhcpToggled {
 		svc.reconcileNetworkDHCPAfterSubnetDelete(c.Request.Context(), subnetNetwork)
