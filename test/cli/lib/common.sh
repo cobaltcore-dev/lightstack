@@ -38,9 +38,11 @@ source "$CLI_LIB_DIR/report.sh"
 # Standalone mode: when a suite is run directly (bash suites/foo.sh) instead
 # of via bin/run.sh, record results to results/standalone/ and exit non-zero
 # if any case failed. run.sh sets CLI_RUNNER_ACTIVE=1 and owns reporting.
+# Takes the exit status to preserve as $1 — the EXIT trap runs other commands
+# before this, which would otherwise overwrite $?.
 # ---------------------------------------------------------------------------
 _standalone_exit() {
-    local rc=$?
+    local rc="${1:-$?}"
     trap - EXIT
     if [[ "${CLI_RUNNER_ACTIVE:-0}" != "1" ]] && (( ${_CASES_RECORDED:-0} )); then
         report_write "$CLI_ROOT/results/standalone"
@@ -141,11 +143,16 @@ _osc_exec() {
 
     local t0 t1
     t0=$(_now_ms)
+    # OSC_OUT/OSC_RC/OSC_ERR/LAST_CMD* are the harness's cross-file contract:
+    # every suite sources this library and reads them after each osc() call,
+    # which shellcheck cannot see from this file alone.
+    # shellcheck disable=SC2034
     OSC_OUT="$(timeout -k 10 "$OSC_TIMEOUT" "$OSC_BIN" "${args[@]}" 2>"$_CLI_ERR_FILE")"
     OSC_RC=$?
     t1=$(_now_ms)
     OSC_ERR="$(<"$_CLI_ERR_FILE")"
     LAST_CMD="$OSC_BIN ${args[*]}"
+    # shellcheck disable=SC2034
     LAST_CMD_MS=$(( t1 - t0 ))
 }
 
@@ -182,8 +189,12 @@ osc() {
 }
 
 _cli_cleanup() {
+    # Capture the exit status BEFORE any other command — rm would otherwise
+    # reset it, flattening every early failure (unknown option, preflight
+    # errors) to a successful exit.
+    local rc=$?
     rm -f "$_CLI_ERR_FILE"
-    _standalone_exit
+    _standalone_exit "$rc"
 }
 # The single EXIT trap: always removes the stderr capture file, and in
 # standalone mode (not under bin/run.sh) also writes results and converts

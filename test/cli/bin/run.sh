@@ -2,13 +2,16 @@
 # run.sh — entrypoint for the lightstack OpenStack CLI conformance harness (SPEC-028).
 #
 # Usage:
-#   run.sh [--suite <name>]... [--fast] [--no-cleanup] [--keep-server]
-#          [--results-dir <dir>] [--help]
+#   run.sh [--suite <name>]... [--fast] [--strict] [--no-cleanup]
+#          [--keep-server] [--results-dir <dir>] [--help]
 #
 #   --suite <name>     run only the named suite (repeatable). Implies
 #                      --no-cleanup unless --teardown is also given, so a
 #                      developer can iterate on one suite.
 #   --fast             run the PR-time subset (all suites except workflows).
+#   --strict           known-failing and skipped cases fail the run too.
+#                      The nightly runs this way: the PR gate tracks the debt,
+#                      the nightly refuses to carry it.
 #   --no-cleanup       skip the fixture teardown sweep at the end.
 #   --teardown         with --suite: still tear down afterwards.
 #   --keep-server      do not stop a server this script started itself.
@@ -25,6 +28,7 @@
 #
 # Exit code: 0 iff every recorded case passed (known-failing and skipped do
 # not fail the run; they are tracked separately and trended by coverage.sh).
+# With --strict they do fail it.
 
 set -uo pipefail
 
@@ -37,6 +41,7 @@ source "$CLI_ROOT/lib/common.sh"
 
 SUITES=()
 FAST=0
+STRICT=0
 NO_CLEANUP=0
 TEARDOWN=0
 KEEP_SERVER=0
@@ -47,14 +52,24 @@ usage() {
     exit "${1:-0}"
 }
 
+# Fail with the usage hint instead of bash's unbound-variable error when an
+# option that needs a value is given without one.
+_need_arg() {
+    if (( $# < 2 )); then
+        log_error "option $1 requires a value"
+        usage 1
+    fi
+}
+
 while (( $# > 0 )); do
     case "$1" in
-        --suite)       SUITES+=("$2"); shift 2 ;;
+        --suite)       _need_arg "$@"; SUITES+=("$2"); shift 2 ;;
         --fast)        FAST=1; shift ;;
+        --strict)      STRICT=1; shift ;;
         --no-cleanup)  NO_CLEANUP=1; shift ;;
         --teardown)    TEARDOWN=1; shift ;;
         --keep-server) KEEP_SERVER=1; shift ;;
-        --results-dir) RESULTS_DIR="$2"; shift 2 ;;
+        --results-dir) _need_arg "$@"; RESULTS_DIR="$2"; shift 2 ;;
         -h|--help)     usage 0 ;;
         *)             log_error "unknown option: $1"; usage 1 ;;
     esac
@@ -154,6 +169,12 @@ if (( FAST )); then
         filtered+=("$s")
     done
     SUITES=("${filtered[@]}")
+fi
+
+# Strict mode is read by report_failed (lib/report.sh): known-failing and
+# skipped cases fail the run as well.
+if (( STRICT )); then
+    export CLI_STRICT=1
 fi
 
 # --suite implies no teardown unless explicitly requested.

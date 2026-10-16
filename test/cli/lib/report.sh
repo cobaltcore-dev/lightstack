@@ -7,7 +7,9 @@
 #   report_write <dir>  aggregate $RESULTS_FILE into <dir>/results.json and
 #                       <dir>/results.junit.xml
 #   report_summary      human-readable summary to stderr
-#   report_failed       returns 0 (success) iff no case has status "fail"
+#   report_failed       returns 0 (success) when some case FAILED — callers
+#                       write `if report_failed; then rc=1; fi`. Strict mode
+#                       (CLI_STRICT=1) also counts known-failing and skip.
 #
 # Case statuses: pass | fail | known-failing | skip
 # Standalone suite runs (bash suites/foo.sh outside bin/run.sh) automatically
@@ -139,14 +141,25 @@ report_write() {
 }
 
 _xml_escape() {
-    local s="$1"
-    s="${s//&/&amp;}"
-    s="${s//</&lt;}"
-    s="${s//>/&gt;}"
-    s="${s//\"/&quot;}"
-    s="${s//\'/&apos;}"
+    # Escape the XML specials WITHOUT ${var//pat/repl}: bash >= 5.2 enables
+    # patsub_replacement by default, and a replacement starting with '&'
+    # then expands to the matched text — &amp; became &&amp; and the JUnit
+    # file was no longer well-formed. A per-character case is portable
+    # across every bash that can run this harness.
+    local s="$1" out='' ch i
+    for (( i = 0; i < ${#s}; i++ )); do
+        ch="${s:i:1}"
+        case "$ch" in
+            '&') out+='&amp;' ;;
+            '<') out+='&lt;' ;;
+            '>') out+='&gt;' ;;
+            '"') out+='&quot;' ;;
+            "'") out+='&apos;' ;;
+            *) out+="$ch" ;;
+        esac
+    done
     # Strip control characters that are illegal in XML 1.0.
-    printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
+    printf '%s' "$out" | tr -d '\000-\010\013\014\016-\037'
 }
 
 report_summary() {
@@ -170,6 +183,14 @@ report_summary() {
 }
 
 report_failed() {
+    # Returns 0 when the run HAS failing cases (so callers write
+    # `if report_failed; then rc=1; fi`), non-zero when it is clean.
+    # Strict mode also counts known-failing and skipped cases: the nightly
+    # wants to be told when its debt grows back, not only when it breaks.
     [[ -s "${RESULTS_FILE:-}" ]] || return 1
-    jq -e -s 'any(.[]; .status == "fail")' "$RESULTS_FILE" >/dev/null
+    if [[ "${CLI_STRICT:-0}" == "1" ]]; then
+        jq -e -s 'any(.[]; .status == "fail" or .status == "known-failing" or .status == "skip")' "$RESULTS_FILE" >/dev/null
+    else
+        jq -e -s 'any(.[]; .status == "fail")' "$RESULTS_FILE" >/dev/null
+    fi
 }

@@ -32,10 +32,12 @@ FIX_SUBNET="$FIX_PREFIX-subnet"
 # ---------------------------------------------------------------------------
 
 # _ids_by_name_prefix — read list JSON from stdin, print the IDs of entries
-# whose Name/name starts with $FIX_PREFIX, one per line.
+# whose Name/name starts with $FIX_PREFIX, one per line. Keypairs are the one
+# swept kind with no id at all (OSC lists Name/Fingerprint only), so the name
+# is the emitted handle — `keypair delete` takes the name anyway.
 _ids_by_name_prefix() {
     jq -r --arg p "$FIX_PREFIX" \
-        '.[] | select((.Name // .name // "") | startswith($p)) | (.ID // .id)' 2>/dev/null
+        '.[] | select((.Name // .name // "") | startswith($p)) | (.ID // .id // .Name // .name)' 2>/dev/null
 }
 
 # _sweep_list <label> <list-args...>: run the list command and echo its JSON
