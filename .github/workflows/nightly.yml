@@ -179,6 +179,9 @@ jobs:
         with:
           terraform_version: "1.13.4"
 
+      - name: Install pinned OpenStack CLI
+        run: python3 -m pip install -c test/cli/constraints.txt python-openstackclient
+
       - name: Run Terraform conformance module
         run: make test-terraform
         env:
