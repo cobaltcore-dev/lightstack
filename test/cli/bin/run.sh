@@ -1,0 +1,214 @@
+#!/bin/bash
+# run.sh — entrypoint for the lightstack OpenStack CLI conformance harness (SPEC-028).
+#
+# Usage:
+#   run.sh [--suite <name>]... [--fast] [--no-cleanup] [--keep-server]
+#          [--results-dir <dir>] [--help]
+#
+#   --suite <name>     run only the named suite (repeatable). Implies
+#                      --no-cleanup unless --teardown is also given, so a
+#                      developer can iterate on one suite.
+#   --fast             run the PR-time subset (all suites except workflows).
+#   --no-cleanup       skip the fixture teardown sweep at the end.
+#   --teardown         with --suite: still tear down afterwards.
+#   --keep-server      do not stop a server this script started itself.
+#   --results-dir      where results.json / results.junit.xml go
+#                      (default: test/cli/results)
+#
+# Server selection:
+#   1. If $OS_AUTH_URL (default http://localhost:35357/v3) answers, the
+#      already-running server is used as-is.
+#   2. Otherwise, if docker is available, the binary-test compose stack is
+#      started (deployments/docker-compose.binary-test.yml — the binary built
+#      by `make build`, bind-mounted over the image copy) and stopped on exit.
+#   3. Otherwise: error with instructions.
+#
+# Exit code: 0 iff every recorded case passed (known-failing and skipped do
+# not fail the run; they are tracked separately and trended by coverage.sh).
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLI_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$CLI_ROOT/../.." && pwd)"
+
+# shellcheck source=../lib/common.sh
+source "$CLI_ROOT/lib/common.sh"
+
+SUITES=()
+FAST=0
+NO_CLEANUP=0
+TEARDOWN=0
+KEEP_SERVER=0
+RESULTS_DIR="$CLI_ROOT/results"
+
+usage() {
+    sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit "${1:-0}"
+}
+
+while (( $# > 0 )); do
+    case "$1" in
+        --suite)       SUITES+=("$2"); shift 2 ;;
+        --fast)        FAST=1; shift ;;
+        --no-cleanup)  NO_CLEANUP=1; shift ;;
+        --teardown)    TEARDOWN=1; shift ;;
+        --keep-server) KEEP_SERVER=1; shift ;;
+        --results-dir) RESULTS_DIR="$2"; shift 2 ;;
+        -h|--help)     usage 0 ;;
+        *)             log_error "unknown option: $1"; usage 1 ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Preflight
+# ---------------------------------------------------------------------------
+for tool in jq curl python3; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        log_error "required tool '$tool' not found in PATH"
+        exit 2
+    }
+done
+_require_cli || exit 2
+
+# ---------------------------------------------------------------------------
+# Server selection
+# ---------------------------------------------------------------------------
+STARTED_STACK=0
+
+_start_compose_stack() {
+    command -v docker >/dev/null 2>&1 || return 1
+    docker compose version >/dev/null 2>&1 || return 1
+
+    if [[ ! -x "$REPO_ROOT/bin/lightstack" ]]; then
+        log_warn "bin/lightstack not found — building it first (make build)"
+        (cd "$REPO_ROOT" && make build) || return 1
+    fi
+
+    log_info "starting binary-test compose stack (uses bin/lightstack from this checkout)"
+    # -p pins the compose project: without it the project name defaults to the
+    # CWD ("lightstack") and `down -v` here would also tear down a developer's
+    # running docker-compose.yml stack.
+    (cd "$REPO_ROOT" && docker compose -p lightstack-binary-test -f deployments/docker-compose.binary-test.yml up -d) || return 1
+    STARTED_STACK=1
+
+    log_info "waiting for services to become ready..."
+    local deadline=$(( SECONDS + 180 ))
+    while (( SECONDS < deadline )); do
+        if _server_ready; then
+            log_info "all services ready"
+            return 0
+        fi
+        sleep 3
+    done
+    log_error "services did not become ready within 180s"
+    return 1
+}
+
+_server_ready() {
+    # Derive scheme://host (without the Keystone port) from OS_AUTH_URL so the
+    # probe works for non-default hosts too. The stub-mode stack is plain http.
+    local scheme="${OS_AUTH_URL%%://*}"
+    local host="${OS_AUTH_URL#*://}"
+    host="${host%%[:/]*}"
+    [[ -n "$host" ]] || host=localhost
+    local base="$scheme://$host"
+    curl -sf -o /dev/null --max-time 3 "$OS_AUTH_URL" || return 1
+    curl -sf -o /dev/null --max-time 3 "$base:8774/v2.1" || return 1
+    curl -sf -o /dev/null --max-time 3 "$base:9696/v2.0" || return 1
+    curl -sf -o /dev/null --max-time 3 "$base:8776/v3" || return 1
+    curl -sf -o /dev/null --max-time 3 "$base:9292/v2" || return 1
+    return 0
+}
+
+if ! curl -sf -o /dev/null --max-time 5 "$OS_AUTH_URL"; then
+    if ! _start_compose_stack; then
+        cat >&2 <<EOF
+[cli] ERROR: no lightstack server at $OS_AUTH_URL and no docker to start one.
+
+Either start a server yourself:
+    make build && make run
+or via docker compose:
+    docker compose -f deployments/docker-compose.yml up -d
+or point OS_AUTH_URL at a running server.
+EOF
+        exit 2
+    fi
+else
+    log_info "using external server at $OS_AUTH_URL"
+fi
+
+# ---------------------------------------------------------------------------
+# Suite selection
+# ---------------------------------------------------------------------------
+if (( ${#SUITES[@]} == 0 )); then
+    # Every suite in suites/, sorted for deterministic order.
+    for f in "$CLI_ROOT"/suites/*.sh; do
+        SUITES+=("$(basename "$f" .sh)")
+    done
+fi
+if (( FAST )); then
+    filtered=()
+    for s in "${SUITES[@]}"; do
+        [[ "$s" == "workflows" ]] && continue
+        filtered+=("$s")
+    done
+    SUITES=("${filtered[@]}")
+fi
+
+# --suite implies no teardown unless explicitly requested.
+if (( ${#SUITES[@]} == 1 )) && (( ! TEARDOWN )) && (( ! NO_CLEANUP )); then
+    NO_CLEANUP=1
+fi
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cli-conformance.XXXXXX")"
+export RESULTS_FILE="$RUN_DIR/cases.jsonl"
+: >"$RESULTS_FILE"
+export CLI_RUNNER_ACTIVE=1
+
+# shellcheck source=../lib/fixtures.sh
+source "$CLI_ROOT/lib/fixtures.sh"
+
+cleanup() {
+    local rc=$?
+    trap - EXIT INT TERM
+    if (( ! NO_CLEANUP )); then
+        fixtures_teardown || true
+    fi
+    if (( STARTED_STACK )) && (( ! KEEP_SERVER )); then
+        (cd "$REPO_ROOT" && docker compose -p lightstack-binary-test -f deployments/docker-compose.binary-test.yml down -v) >/dev/null 2>&1 || true
+    fi
+    report_write "$RESULTS_DIR"
+    report_summary
+    rm -rf "$RUN_DIR"
+    if (( rc == 0 )) && report_failed; then
+        exit 1
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT INT TERM
+
+fixtures_ensure || {
+    log_error "fixture setup failed — cannot run suites"
+    exit 2
+}
+
+FAILED_SUITES=0
+for suite in "${SUITES[@]}"; do
+    suite_file="$CLI_ROOT/suites/$suite.sh"
+    if [[ ! -f "$suite_file" ]]; then
+        log_error "suite not found: $suite (looked for $suite_file)"
+        FAILED_SUITES=1
+        continue
+    fi
+    log_info "running suite: $suite"
+    if ! bash "$suite_file"; then
+        log_error "suite $suite exited non-zero"
+        FAILED_SUITES=1
+    fi
+done
+
+exit $FAILED_SUITES

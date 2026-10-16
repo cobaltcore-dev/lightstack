@@ -1,5 +1,8 @@
 # Binaries
 bin/
+# The CLI conformance harness lives in test/cli/bin/ — scripts, not
+# binaries; re-include it so the gate scripts ship with the repo.
+!test/cli/bin/
 *.exe
 *.dll
 *.so
