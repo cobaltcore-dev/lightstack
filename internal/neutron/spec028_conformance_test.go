@@ -739,10 +739,18 @@ func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 	}
 
 	// The entitlement-positive path still caches: two member reads of the
-	// project's own network both succeed (the second is a cache hit).
+	// project's own network both succeed (the second is a cache hit), and
+	// the entry is provably present after the first — so the guard above
+	// suppresses only the foreign-private rows, not caching itself.
 	for i := 1; i <= 2; i++ {
 		if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+ownNet, memberHdr); code != http.StatusOK {
 			t.Errorf("member read #%d of own network: code=%d; want 200 (body=%s)", i, code, body)
 		}
+	}
+	var cached gin.H
+	if err := cacheInst.Get(ctx, "network:"+seededProjectID+":"+ownNet, &cached); err != nil {
+		t.Errorf("own network not cached after member read: %v", err)
+	} else if cached["id"] != ownNet {
+		t.Errorf("cached entry holds the wrong network: %v", cached["id"])
 	}
 }
