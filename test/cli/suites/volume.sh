@@ -364,7 +364,10 @@ else
     assert_rc 0
     assert_jq '.name' "$S"
     assert_jq '.size' 1
-    assert_jq '.status' 'available'
+    # Upstream Cinder also answers 202 with status 'creating' — the volume
+    # becomes 'available' asynchronously. The transition is asserted below
+    # via the list, after the server's create path has settled.
+    assert_jq '.status' 'creating'
     assert_jq_type '.volume_id' string
 fi
 osc volume snapshot list

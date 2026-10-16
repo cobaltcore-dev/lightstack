@@ -104,8 +104,8 @@ _cp_key_ensure() {
     fi
 }
 
-# Ensure an aggregate exists (by ID-based cleanup — see the known failure on
-# compute.aggregate.delete for why the name path cannot be used here).
+# Ensure an aggregate is gone (delete tolerates absence — the CLI resolves
+# names, but id-delete keeps the purge deterministic when a name is reused).
 _cp_agg_purge() {
     local name="$1" id
     OSC_QUIET=1 osc aggregate list
@@ -114,15 +114,13 @@ _cp_agg_purge() {
     return 0
 }
 
-# Ensure a server group exists. POST /os-server-groups only accepts the legacy
-# pre-2.63 'policies' body (see the known failure on compute.servergroup.create),
-# so this pins the CLI to microversion 2.15 to send that shape. This is a
-# documented client-side workaround for fixtures only — the create contract
-# itself is tested (and tracked) by compute.servergroup.create.
+# Ensure a server group exists. The create API accepts both the legacy
+# pre-2.63 'policies' array and the 2.64+ 'policy' string (SPEC-028 fix), so
+# the fixture uses the current client shape.
 _cp_sg_ensure() {
     local name="$1"
     OSC_QUIET=1 osc server group delete "$name"
-    OS_COMPUTE_API_VERSION=2.15 osc server group create "$name" --policy anti-affinity
+    OSC_QUIET=1 osc server group create "$name" --policy anti-affinity
     if (( OSC_RC != 0 )); then
         t_fail "fixture server group create failed: $(_snip "$OSC_ERR")"
         return 1
@@ -298,8 +296,11 @@ S="cli-conf-cp-lock"
 _cp_server_ensure "$S"
 osc server lock "$S"
 assert_rc 0
-# The locked flag is not surfaced in `server show` (.locked stays null); the
-# action history is the observable record of the lock.
+# The locked flag is surfaced in `server show` (SPEC-028 fix); the action
+# history is the independent record of the transition.
+osc server show "$S"
+assert_rc 0
+assert_jq '.locked' true
 _cp_assert_event "$S" "lock"
 _cp_server_purge "$S"
 t_end
@@ -310,6 +311,9 @@ _cp_server_ensure "$S"
 osc server lock "$S"
 osc server unlock "$S"
 assert_rc 0
+osc server show "$S"
+assert_rc 0
+assert_jq '.locked' false
 _cp_assert_event "$S" "unlock"
 _cp_server_purge "$S"
 t_end
