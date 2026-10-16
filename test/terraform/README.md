@@ -86,8 +86,9 @@ None currently. The one this wrapper used to carry — Glance ignoring the `?nam
 list filter, which broke the provider's `data.openstack_images_image_v2` with
 `Your query returned more than one result` on any multi-image server — is fixed
 (`internal/glance/images.go` implements the filter, guarded by
-`image_list_filters_test.go`), and the wrapper's apply-failure hint for it was
-removed with the fix.
+`image_list_filters_test.go`); the wrapper's apply-failure hint was reworded to
+say exactly that: a "more than one result" failure now means genuinely duplicate
+image names, not the ignored filter.
 
 ## The modules
 

@@ -245,6 +245,22 @@ func TestImageTagLengthValidated(t *testing.T) {
 	}
 
 	// A maximal tag stays legal on both paths.
+	code, body = doReqBody(r, http.MethodPost, "/images",
+		`{"name":"spec028-maxtag","tags":["`+strings.Repeat("t", 255)+`"]}`, hdr)
+	if code != http.StatusCreated {
+		t.Errorf("create with 255-char tag: code=%d; want 201 (body=%s)", code, body)
+	} else {
+		t.Cleanup(func() {
+			var created struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal([]byte(body), &created); err == nil && created.ID != "" {
+				testPool.Exec(context.Background(),
+					"DELETE FROM image_tags WHERE image_id=$1", created.ID)
+				testPool.Exec(context.Background(), "DELETE FROM images WHERE id=$1", created.ID)
+			}
+		})
+	}
 	code, _ = doReqBody(r, http.MethodPut, "/images/"+id+"/tags/"+strings.Repeat("t", 255), "", hdr)
 	if code != http.StatusNoContent {
 		t.Errorf("put 255-char tag: code=%d; want 204", code)

@@ -1072,9 +1072,9 @@ assert_jq "[.[] | select((.Name // .name) == \"$SP\")] | length" 0
 t_end
 
 t_begin network.subnetpool.create.neg
-# unknown pool: show and delete must refuse. Today the by-name GET answers
-# 500 instead of 404 (see network.subnetpool.show.byname for the tracked
-# divergence) — either way the command must not exit 0.
+# unknown pool: show and delete must refuse. The by-name GET answers 404
+# (the uuid guard; see network.subnetpool.show.byname) — either way the
+# command must not exit 0.
 osc subnet pool show cli-conf-nt-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent subnet pool must not exit 0"

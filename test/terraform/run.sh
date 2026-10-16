@@ -225,7 +225,6 @@ server-side ?name= filter on GET /v2/images. Lightstack honours that filter
 since the SPEC-028 fix, so a "more than one result" error now means genuinely
 duplicate names (this server currently has $n image(s)) — not the historical
 ignored-filter divergence. Check for images sharing the module's image name.
-See test/terraform/README.md, "Known divergences".
 EOF
         exit 1
     fi
