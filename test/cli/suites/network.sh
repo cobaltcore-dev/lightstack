@@ -10,9 +10,10 @@
 #
 # Every resource is named cli-conf-nt-* and removed by the case that created
 # it, so the suite is rerun-safe when run standalone. Ports, subnet pools and
-# floating IPs are addressed by ID everywhere: the by-name GETs of the first
-# two answer 500 on this server (see the .byname probe cases), and floating
-# IPs carry no name at all — every case that allocates one releases it before
+# floating IPs are addressed by ID everywhere: the first two resolve by name
+# only through the CLI's list fallback (their by-name GETs answer 404, as
+# upstream does — see the .byname probe cases), and floating IPs carry no
+# name at all — every case that allocates one releases it before
 # t_end, on all paths.
 #
 # Known-failing cases (t_known_failure) record today's product truth with the
@@ -43,8 +44,9 @@ _nt_subnet_id() { _nt_show_id subnet show "$1"; }
 _nt_router_id() { _nt_show_id router show "$1"; }
 _nt_sg_id()     { _nt_show_id security group show "$1"; }
 
-# Resources whose by-name GET answers 500 (see the .byname cases): resolve via
-# the list commands instead.
+# Ports and subnet pools resolve via the list commands: robust against the
+# by-name GET answering 404 (as upstream does) and against display-cased
+# list keys alike.
 _nt_port_id() {
     OSC_QUIET=1 osc port list
     (( OSC_RC != 0 )) && return 0
@@ -692,7 +694,10 @@ else
     osc router remove port "$R" "$PID"
     assert_rc 0
 fi
-# the port itself survives both paths — delete it either way
+# 'router remove port' deletes the interface port itself (upstream Neutron
+# does the same, and so does this server) — no separate cleanup needed on the
+# fixed path. The belt-and-braces delete below stays for the known-failure
+# path, where the interface row never existed and the port is still ours.
 OSC_QUIET=1 osc port delete "$PID"
 _nt_clean_router "$R"
 OSC_QUIET=1 osc subnet delete "$SUBID"

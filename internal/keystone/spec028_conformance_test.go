@@ -386,12 +386,6 @@ func TestIdentityErrorEnvelopeIsKeystoneShaped(t *testing.T) {
 	}
 
 	// Deleting an ENABLED domain is upstream's 403 — in upstream's envelope.
-	code, body = doReq(r, http.MethodDelete, "/v3/domains?name="+name, adminHdr)
-	if code != http.StatusMethodNotAllowed && code != http.StatusNotFound {
-		// (the route is /v3/domains/:id; the by-name probe above is only a
-		// sanity guard — the real assertions follow)
-		_ = body
-	}
 	var id string
 	if err := testPool.QueryRow(context.Background(),
 		"SELECT id::text FROM domains WHERE name=$1", name).Scan(&id); err != nil {

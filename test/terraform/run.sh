@@ -288,10 +288,15 @@ residue=$((residue + n))
 n="$("$OSC" router list -f value -c Name 2>/dev/null | grep -c '^tf-compat-' || true)"
 residue=$((residue + n))
 # The module's own floating IPs, captured from state before destroy — the
-# only precise check available for nameless resources.
+# only precise check available for nameless resources. Resolved through the
+# LIST, not 'floating ip show': the pinned OSC 7.0.0 fails that command
+# client-side on every invocation ("Invalid formatter provided.", osc-lib
+# 4.7.0 vs the plain-callable port_details formatter), so a show-based probe
+# would report "gone" unconditionally — including for a leaked FIP.
 if [ -n "$FIP_IDS_BEFORE_DESTROY" ]; then
+    fip_list="$("$OSC" floating ip list -f value -c ID 2>/dev/null || true)"
     for fip in $FIP_IDS_BEFORE_DESTROY; do
-        if "$OSC" floating ip show "$fip" >/dev/null 2>&1; then
+        if printf '%s\n' "$fip_list" | grep -qx "$fip"; then
             residue=$((residue + 1))
         fi
     done

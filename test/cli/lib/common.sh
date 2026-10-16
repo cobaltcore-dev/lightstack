@@ -194,6 +194,12 @@ _cli_cleanup() {
     # errors) to a successful exit.
     local rc=$?
     rm -f "$_CLI_ERR_FILE"
+    # A suite can register extra cleanup by defining suite_cleanup() — for
+    # its own temp files, which would otherwise leak when a standalone run
+    # is killed mid-flight (compute.sh's public-key file is the first user).
+    if declare -f suite_cleanup >/dev/null 2>&1; then
+        suite_cleanup || true
+    fi
     _standalone_exit "$rc"
 }
 # The single EXIT trap: always removes the stderr capture file, and in

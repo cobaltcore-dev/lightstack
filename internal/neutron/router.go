@@ -608,12 +608,21 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	if err != nil {
 		log.Error().Err(err).Str("operation", "add_router_interface_record").Msg("database error")
 		// The record is what ties the pieces together; without it the port
-		// above would be an orphan holding the network hostage. Only the
-		// port this handler created is taken back — the caller's own port
-		// keeps existing, exactly as it did before the call.
+		// above would be an orphan holding the network hostage. The port
+		// this handler created is taken back outright; the caller's own
+		// port is UNclaimed — its device_id was empty on entry (checked
+		// above), so clearing the fields restores exactly the pre-call
+		// state rather than leaving a router-owned port no 'router remove
+		// port' can match (no interface row exists to remove).
 		if req.PortID == "" {
 			if _, derr := svc.pool.Exec(ctx, "DELETE FROM ports WHERE id = $1", portID); derr != nil {
 				log.Warn().Err(derr).Str("port_id", portID).Msg("rollback: failed to delete router interface port")
+			}
+		} else {
+			if _, derr := svc.pool.Exec(ctx, `
+				UPDATE ports SET device_id = NULL, device_owner = NULL, updated_at = $2 WHERE id = $1
+			`, portID, now); derr != nil {
+				log.Warn().Err(derr).Str("port_id", portID).Msg("rollback: failed to unclaim router interface port")
 			}
 		}
 		common.SendError(c, common.NewInternalServerError("failed to create router interface record"))

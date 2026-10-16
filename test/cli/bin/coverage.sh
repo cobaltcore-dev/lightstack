@@ -33,14 +33,23 @@ DEFAULT_RESULTS="$CLI_ROOT/results/results.json"
 
 RESULTS="$DEFAULT_RESULTS"
 REQUIRE_TIERS="A,B"
-STRICT=0
 QUIET=0
+
+# A value-taking option must have its value: without this, a trailing bare
+# `--results` under `set -u` dies with an unbound-variable error naming $2
+# instead of naming the option (run.sh guards the same way with _need_arg).
+_need_arg() {
+    if (( $# < 2 )); then
+        echo "ERROR: option $1 requires a value" >&2
+        exit 2
+    fi
+}
 
 while (( $# > 0 )); do
     case "$1" in
-        --results)       RESULTS="$2"; shift 2 ;;
-        --require-tiers) REQUIRE_TIERS="$2"; shift 2 ;;
-        --strict)        STRICT=1; REQUIRE_TIERS="A,B,C"; shift ;;
+        --results)       _need_arg "$@"; RESULTS="$2"; shift 2 ;;
+        --require-tiers) _need_arg "$@"; REQUIRE_TIERS="$2"; shift 2 ;;
+        --strict)        REQUIRE_TIERS="A,B,C"; shift ;;
         --quiet)         QUIET=1; shift ;;
         *)               echo "unknown option: $1" >&2; exit 2 ;;
     esac

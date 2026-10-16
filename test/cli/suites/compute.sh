@@ -24,6 +24,11 @@ CP_MISSING="cli-conf-cp-missing"
 # fingerprint a constant).
 CP_KEY_FINGERPRINT="a5:01:44:15:f2:42:c6:cb:cc:fc:3d:e6:14:e6:b0:4d"
 CP_PUBKEY_FILE="$(mktemp "${TMPDIR:-/tmp}/cli-conf-cp-key.XXXXXX.pub")"
+# Removed by the EXIT trap via this hook (common.sh _cli_cleanup), so a
+# mid-flight kill of a standalone run cannot leak the temp file.
+suite_cleanup() {
+    rm -f "$CP_PUBKEY_FILE"
+}
 printf '%s\n' "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDIoG5/PC4ypt7TTVk9LqDrwDULkkkA+T7gROFk0Bb3s1hTGhE5JyUtHConWSKAPrEzw8X9CfZtuCi0t+abThZG6Va5ZJB2Vn4zmQA3ScGgd6vtMKUeesK69jOnw6CW1J/HspZn3/bFdZTBnB+JlFEDh1cm5RQQdDJsyURqkjcJQrZOwfBKgLPIY5T2iipNAZwLpmDdC3oJ90E3uqHBtvHKAzwJx8JccHeXrwUTkhrUx6j0Tje0uQjR1T0h/T+psrFtIY7G6EJ5vQ7E4dqtwkAHcgWdHww6iHXU7AC0Zk7WhR/nrp9IxpKQXok1pSKmzjWqwN+VLXqcEno77+wx7tl7 root@dev" >"$CP_PUBKEY_FILE"
 
 # ---------------------------------------------------------------------------
@@ -799,7 +804,5 @@ else
     _cp_assert_err_nonempty
 fi
 t_end
-
-rm -f "$CP_PUBKEY_FILE"
 
 suite_end

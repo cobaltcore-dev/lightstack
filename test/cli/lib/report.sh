@@ -19,6 +19,12 @@
 [[ -n "${_CLI_REPORT_SOURCED:-}" ]] && return 0
 _CLI_REPORT_SOURCED=1
 
+# Everything this library writes is machine-format (JSON, JUnit XML): pin the
+# numeric locale so bash's printf '%.3f' renders a decimal point, not a comma,
+# whatever the operator's environment is (a de_DE locale would otherwise emit
+# time="0,123" — invalid XML for every consumer).
+export LC_NUMERIC=C
+
 _record_case() {
     local suite="$1" id="$2" status="$3" dur="$4" cmd="$5" error="$6"
 

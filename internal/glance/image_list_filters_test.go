@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -216,5 +217,36 @@ func TestCreateImagePersistsTags(t *testing.T) {
 		hdr(seededProjectID, "member"))
 	if code != http.StatusCreated {
 		t.Errorf("create image with duplicate tags: code=%d; want 201", code)
+	}
+}
+
+// TestImageTagLengthValidated — upstream's image schema caps a tag at 255
+// characters and answers 400; the image_tags column is VARCHAR(255), so
+// without the check an over-long tag surfaced as a 500 after (create path)
+// the image row was already committed (SPEC-028).
+func TestImageTagLengthValidated(t *testing.T) {
+	requireDB(t)
+	r := newGlanceTestRouter(t)
+	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+	longTag := strings.Repeat("t", 256)
+
+	// Create path: refused before anything is written.
+	code, body := doReqBody(r, http.MethodPost, "/images",
+		`{"name":"spec028-longtag","tags":["`+longTag+`"]}`, hdr)
+	if code != http.StatusBadRequest {
+		t.Fatalf("create with over-long tag: code=%d; want 400 (body=%s)", code, body)
+	}
+
+	// Dedicated PUT path: same refusal.
+	id := insertListFilterImage(t, "spec028-longtag-put", "qcow2", 0)
+	code, body = doReqBody(r, http.MethodPut, "/images/"+id+"/tags/"+longTag, "", hdr)
+	if code != http.StatusBadRequest {
+		t.Fatalf("put over-long tag: code=%d; want 400 (body=%s)", code, body)
+	}
+
+	// A maximal tag stays legal on both paths.
+	code, _ = doReqBody(r, http.MethodPut, "/images/"+id+"/tags/"+strings.Repeat("t", 255), "", hdr)
+	if code != http.StatusNoContent {
+		t.Errorf("put 255-char tag: code=%d; want 204", code)
 	}
 }

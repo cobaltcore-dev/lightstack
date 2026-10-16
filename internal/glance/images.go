@@ -223,6 +223,17 @@ func (svc *Service) CreateImage(c *gin.Context) {
 		containerFormat = req.ContainerFormat
 	}
 
+	// Tag length is validated BEFORE the image row is written — upstream's
+	// schema caps a tag at 255 characters and answers 400, while the column's
+	// VARCHAR(255) would turn an over-long tag into a 500 after the image was
+	// already committed.
+	for _, tag := range req.Tags {
+		if len(tag) > 255 {
+			common.SendError(c, common.NewBadRequestError("image tag too long (max 255 characters)"))
+			return
+		}
+	}
+
 	// Insert into database. Record the owning project for images of EVERY visibility,
 	// not just private ones — visibility governs who can see an image, ownership governs
 	// who can delete it (F6, FR-014). Storing public images ownerless (project_id NULL)
@@ -243,7 +254,7 @@ func (svc *Service) CreateImage(c *gin.Context) {
 	// the rows were never written before, so a follow-up show returned `tags: []`
 	// — `openstack image create --tag` silently dropped them (SPEC-028). The
 	// dedicated PUT uses the same ON CONFLICT DO NOTHING, so a request repeating
-	// a tag stays legal.
+	// a tag stays legal. Length was validated above, before the image row.
 	for _, tag := range req.Tags {
 		if _, err := svc.pool.Exec(c.Request.Context(), `
 			INSERT INTO image_tags (image_id, tag)
@@ -1508,6 +1519,13 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 	// Only owner can add tags
 	if !ownerID.Valid || ownerID.String != projectID {
 		common.SendError(c, common.NewForbiddenError("not authorized"))
+		return
+	}
+
+	// Upstream's schema caps a tag at 255 characters and answers 400; the
+	// column's VARCHAR(255) would instead surface as a 500.
+	if len(tag) > 255 {
+		common.SendError(c, common.NewBadRequestError("image tag too long (max 255 characters)"))
 		return
 	}
 

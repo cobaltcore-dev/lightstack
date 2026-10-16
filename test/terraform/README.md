@@ -82,16 +82,12 @@ The wrapper is not part of the per-PR CI gate because it needs a running server.
 
 ## Known divergences
 
-- **Glance ignores the `?name=` list filter** (lightstack `internal/glance/images.go`
-  `ListImages` implements `visibility`/`member_status`/`status`/`marker`/`limit`/`offset` but
-  not `name`, which upstream Glance's `GET /v2/images` specifies). The provider's
-  `data.openstack_images_image_v2` resolves images with that server-side filter and does no
-  client-side name matching, so on any server holding **more than one image** the unmodified
-  module fails at apply with `Your query returned more than one result`. The wrapper detects
-  this exact failure and prints a root-cause note. The module is deliberately **not** worked
-  around (e.g. `most_recent` would silently resolve the wrong image); on a server with exactly
-  one image — like the nightly CI deployment — it passes. Fixed by implementing the `name`
-  filter in Glance, at which point the note can be removed.
+None currently. The one this wrapper used to carry — Glance ignoring the `?name=`
+list filter, which broke the provider's `data.openstack_images_image_v2` with
+`Your query returned more than one result` on any multi-image server — is fixed
+(`internal/glance/images.go` implements the filter, guarded by
+`image_list_filters_test.go`), and the wrapper's apply-failure hint for it was
+removed with the fix.
 
 ## The modules
 

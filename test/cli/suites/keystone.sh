@@ -53,9 +53,8 @@ _ke_domain_purge() {
     osc domain delete "$1"
 }
 
-# Ensure a domain exists. `domain create` currently aborts client-side on the
-# missing `links` field (see keystone.domain.create) but the POST itself is a
-# 201, so the domain is created regardless of the CLI exit code.
+# Ensure a domain exists. (`domain create` answers 201 and echoes `links`,
+# so the CLI renders it; it used to abort client-side on the missing key.)
 _ke_domain_ensure() {
     _ke_domain_purge "$1"
     osc domain create "$1"

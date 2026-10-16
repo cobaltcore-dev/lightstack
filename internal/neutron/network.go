@@ -695,19 +695,16 @@ func networkListDecision(sharedParam, routerExternalParam string) (sf sharedFilt
 }
 
 // buildNetworkListFilter builds the WHERE conditions and positional args for the
-// network list from the caller's project and the neutron list filters Horizon sends
-// (F4). It honors `shared` (only/exclude shared), `router:external` (a real predicate since
-// SPEC-024 F11), and `tenant_id`/`project_id` (narrowing within the
-// caller's authorized scope), plus the id/name filters the Terraform provider uses.
-// Placeholders are numbered from $1; `empty` means the query must return nothing. The
-// caller continues numbering marker/pagination args from $(len(args)+1). Pure — no DB.
-// buildNetworkListFilter builds the WHERE conditions and positional args for the
 // networks listing. isAdmin matters only together with tenantParam: an
 // administrator filtering by tenant gets that tenant's networks outright
 // (upstream honours the filter for admin tokens), so the caller's read scope
 // must not be ANDed in — it would leave only the shared/external subset and
 // answer [] for another project's private networks (SPEC-028). A non-admin
-// keeps the scope AND tenant intersection.
+// keeps the scope AND tenant intersection. The filter also honors `shared`
+// (only/exclude shared), `router:external` (a real predicate since SPEC-024
+// F11), and the id/name filters the Terraform provider uses. Placeholders are
+// numbered from $1; `empty` means the query must return nothing. The caller
+// continues numbering marker/pagination args from $(len(args)+1). Pure — no DB.
 func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantParam, idParam, nameParam string, isAdmin bool) (f *common.SQLFilter, empty bool) {
 	sf, empty := networkListDecision(sharedParam, routerExternalParam)
 	if empty {
