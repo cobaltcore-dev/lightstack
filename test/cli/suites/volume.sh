@@ -557,7 +557,7 @@ osc volume backup create "$V" --name "$B"
 assert_rc 0
 osc volume backup show "$B"
 if (( OSC_RC != 0 )); then
-    t_known_failure "GET /v3/backups/{id} with a non-UUID name answers HTTP 500 ('failed to get backup', uuid cast) instead of 404, and python-cinderclient does not fall back to name lookup for backups — 'volume backup show <name>' (and delete-by-name) fail while the ID forms work"
+    t_known_failure "pinned OSC 7.0.0 client bug, not a server divergence: 'volume backup show' calls sdk get_backup() (raw GET /v3/backups/{name-or-id}) with no name fallback, while 'volume backup delete' uses find_backup() — the server correctly answers 404 for a non-UUID reference (the old 500 uuid-cast is fixed), matching real Cinder, which does not resolve names there either. Fixed client-side in OSC 7.3.0 ('Fixed the openstack volume backup show command to show a backup by name', python-openstackclient release notes); this probe self-heals when the pin is raised. By-ID show and by-name delete/list work"
 else
     assert_jq '.name' "$B"
     assert_jq '.status' 'available'

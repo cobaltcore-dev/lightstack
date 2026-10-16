@@ -217,6 +217,33 @@ func TestDomainResponsesCarryLinks(t *testing.T) {
 	if !strings.Contains(body, `"links":{"self":`) {
 		t.Errorf("show response lacks links.self: %s", body)
 	}
+
+	// The list is how the CLI resolves a domain BY NAME (show and delete fall
+	// back to ?name= after the by-id GET 404s), so every item needs links
+	// too — the plain list answered without them, and 'domain show <name>'
+	// and 'domain delete <name>' aborted with KeyError 'links'.
+	code, body = doReq(r, http.MethodGet, "/v3/domains", adminHdr)
+	if code != http.StatusOK {
+		t.Fatalf("list domains: code=%d body=%s", code, body)
+	}
+	if !strings.Contains(body, `"links":{"self":`) {
+		t.Errorf("domain list items lack links.self: %s", body)
+	}
+	code, body = doReq(r, http.MethodGet, "/v3/domains?name="+name, adminHdr)
+	if code != http.StatusOK {
+		t.Fatalf("list domains by name: code=%d body=%s", code, body)
+	}
+	var filtered struct {
+		Domains []struct {
+			Links map[string]string `json:"links"`
+		} `json:"domains"`
+	}
+	if err := json.Unmarshal([]byte(body), &filtered); err != nil {
+		t.Fatalf("unmarshal name-filtered list: %v (body=%s)", err, body)
+	}
+	if len(filtered.Domains) != 1 || filtered.Domains[0].Links["self"] == "" {
+		t.Errorf("name-filtered list item lacks links.self: %s", body)
+	}
 }
 
 // TestApplicationCredentialConformance — three defects in one surface
@@ -337,5 +364,69 @@ func TestTokenRevokeUnknownToken(t *testing.T) {
 		map[string]string{"X-Subject-Token": tok})
 	if code != http.StatusNoContent {
 		t.Errorf("revoke valid token: code=%d body=%s; want 204", code, body)
+	}
+}
+
+// TestIdentityErrorEnvelopeIsKeystoneShaped — keystoneauth1's from_response
+// parses only {"error": {...}} (or the API-SIG {"errors": [...]}) bodies;
+// every other JSON shape degrades to "Unrecognized schema in response body.",
+// throwing away the reason. Upstream Keystone renders code/message/title, so
+// 'domain delete <enabled>' must say why it refused (SPEC-028).
+func TestIdentityErrorEnvelopeIsKeystoneShaped(t *testing.T) {
+	requireDB(t)
+	r, _ := spec028Router()
+
+	name := "spec028-envelope-" + uuid.NewString()[:8]
+	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM domains WHERE name=$1", name) })
+
+	code, body := doReqBody(r, http.MethodPost, "/v3/domains",
+		`{"domain":{"name":"`+name+`"}}`, adminHdr)
+	if code != http.StatusCreated {
+		t.Fatalf("create domain: code=%d body=%s", code, body)
+	}
+
+	// Deleting an ENABLED domain is upstream's 403 — in upstream's envelope.
+	code, body = doReq(r, http.MethodDelete, "/v3/domains?name="+name, adminHdr)
+	if code != http.StatusMethodNotAllowed && code != http.StatusNotFound {
+		// (the route is /v3/domains/:id; the by-name probe above is only a
+		// sanity guard — the real assertions follow)
+		_ = body
+	}
+	var id string
+	if err := testPool.QueryRow(context.Background(),
+		"SELECT id::text FROM domains WHERE name=$1", name).Scan(&id); err != nil {
+		t.Fatalf("resolve domain: %v", err)
+	}
+	code, body = doReq(r, http.MethodDelete, "/v3/domains/"+id, adminHdr)
+	if code != http.StatusForbidden {
+		t.Fatalf("delete enabled domain: code=%d body=%s; want 403", code, body)
+	}
+	var env struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Title   string `json:"title"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("error body is not keystone-shaped: %v (body=%s)", err, body)
+	}
+	if env.Error.Code != http.StatusForbidden || env.Error.Title != "Forbidden" {
+		t.Errorf("envelope code/title = %d/%q; want 403/Forbidden (body=%s)", env.Error.Code, env.Error.Title, body)
+	}
+	if env.Error.Message == "" {
+		t.Errorf("envelope message is empty; the refusal reason must reach keystoneauth clients (body=%s)", body)
+	}
+
+	// And the 404 shape, the one every 'show <missing>' hits.
+	code, body = doReq(r, http.MethodGet, "/v3/domains/"+uuid.NewString(), adminHdr)
+	if code != http.StatusNotFound {
+		t.Fatalf("show missing domain: code=%d body=%s; want 404", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		t.Fatalf("404 body is not keystone-shaped: %v (body=%s)", err, body)
+	}
+	if env.Error.Code != http.StatusNotFound || env.Error.Title != "Not Found" || env.Error.Message == "" {
+		t.Errorf("404 envelope = %+v; want code 404, title Not Found, non-empty message", env.Error)
 	}
 }

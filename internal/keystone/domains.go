@@ -55,6 +55,11 @@ func (svc *Service) ListDomains(c *gin.Context) {
 		if description != nil {
 			domain["description"] = *description
 		}
+		// See CreateDomain: links.self is mandatory for the CLI's formatter.
+		// This list is also how the CLI resolves a domain BY NAME (show and
+		// delete fall back to ?name= after the by-id GET 404s), so every item
+		// needs it, not just the direct GET (SPEC-028).
+		domain["links"] = identityLink(c, "domains", id.String())
 
 		domains = append(domains, domain)
 	}

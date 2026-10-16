@@ -34,6 +34,14 @@ func NewService(pool *pgxpool.Pool, authService *AuthService, cacheInstance *cac
 // RegisterRoutes registers Keystone routes.
 // Public routes (auth) require no token. Management routes require a valid token.
 func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.HandlerFunc) {
+	// Keystone's error envelope is {"error": {...}} (see
+	// common/identity_errors.go): keystoneauth1 — the client behind every
+	// identity command — parses only that shape, and every other body
+	// degrades to "Unrecognized schema in response body." Marked once here so
+	// every route below, plus the auth middleware and panic recovery inside,
+	// renders it.
+	r.Use(common.MarkIdentityErrors)
+
 	v3 := r.Group("/v3")
 
 	// Version discovery — no auth required
