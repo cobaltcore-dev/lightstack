@@ -45,7 +45,7 @@ _standalone_exit() {
     local rc="${1:-$?}"
     trap - EXIT
     if [[ "${CLI_RUNNER_ACTIVE:-0}" != "1" ]] && (( ${_CASES_RECORDED:-0} )); then
-        report_write "$CLI_ROOT/results/standalone"
+        report_write "$CLI_ROOT/results/standalone" || rc=1
         report_summary
         if report_failed; then
             rc=1

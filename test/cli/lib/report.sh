@@ -106,6 +106,8 @@ report_write() {
     mv "$outdir/results.json.tmp" "$outdir/results.json"
 
     # results.junit.xml — one <testsuite> per suite, standard JUnit 4 shape.
+    # Written atomically like results.json: nothing gates on this file, but a
+    # truncated XML from a killed runner must not masquerade as an artifact.
     {
         printf '<?xml version="1.0" encoding="UTF-8"?>\n'
         printf '<testsuites name="lightstack-cli-conformance" tests="%d" failures="%d" skipped="%d" time="%.3f">\n' \
@@ -152,7 +154,8 @@ report_write() {
             printf '  </testsuite>\n'
         done <<<"$suites"
         printf '</testsuites>\n'
-    } >"$outdir/results.junit.xml"
+    } >"$outdir/results.junit.xml.tmp"
+    mv "$outdir/results.junit.xml.tmp" "$outdir/results.junit.xml"
 }
 
 _xml_escape() {

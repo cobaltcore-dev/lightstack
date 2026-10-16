@@ -10,17 +10,19 @@
 #                       fixtures exist and only fall back to the full
 #                       sweep-then-create ensure when one is missing, so a
 #                       suite running under bin/run.sh (which already ensured
-#                       them) pays three cheap show calls, not a re-sweep.
+#                       them) pays four cheap show calls, not a re-sweep.
 #   fixtures_teardown   delete the resource kinds the sweep covers —
 #                       everything whose NAME starts with the fixture prefix
-#                       across servers, volumes, images, networks and their
-#                       children (subnets, ports, routers, FIPs, SGs),
-#                       keypairs and projects — best-effort. NOT covered:
-#                       nameless or differently-keyed kinds (roles, domains,
-#                       volume types, subnet pools, aggregates,
-#                       app-credentials) and volumes stuck in a transfer;
-#                       the suites' cases pre-clean their own residue of
-#                       those, so the gap only matters after a crash mid-case.
+#                       across servers, snapshots, backups, volumes, ports,
+#                       subnets, routers, networks, security groups,
+#                       keypairs, server groups, images, flavors, users,
+#                       groups and projects — best-effort. NOT covered:
+#                       nameless or differently-keyed kinds (floating IPs,
+#                       roles, domains, volume types, subnet pools,
+#                       aggregates, app-credentials) and volumes stuck in a
+#                       transfer; the suites' cases pre-clean their own
+#                       residue of those, so the gap only matters after a
+#                       crash mid-case.
 #
 # Conventions every suite MUST follow:
 #   - resources created by a case are named  cli-conf-<slug>-<unique>
@@ -244,7 +246,7 @@ _ensure_network() {
 }
 
 fixtures_require() {
-    local project_id="" image_id="" network_id=""
+    local project_id="" image_id="" network_id="" subnet_id=""
     _probe project show "$FIX_PROJECT"
     local have_project=$OSC_RC
     (( have_project == 0 )) && project_id=$(printf '%s' "$OSC_OUT" | jq -r '.id')
@@ -254,10 +256,19 @@ fixtures_require() {
     _probe network show "$FIX_NETWORK"
     local have_network=$OSC_RC
     (( have_network == 0 )) && network_id=$(printf '%s' "$OSC_OUT" | jq -r '.id')
-    if (( have_project == 0 && have_image == 0 && have_network == 0 )); then
+    # The subnet is probed separately: the sweep deletes subnets BEFORE
+    # networks, so an interrupted sweep leaves exactly "network present,
+    # subnet missing" — a state the three probes above would call healthy
+    # while compute's server cases (which allocate from the fixture subnet)
+    # fail later with the confusing errors this guard exists to prevent.
+    _probe subnet show "$FIX_SUBNET"
+    local have_subnet=$OSC_RC
+    (( have_subnet == 0 )) && subnet_id=$(printf '%s' "$OSC_OUT" | jq -r '.id')
+    if (( have_project == 0 && have_image == 0 && have_network == 0 && have_subnet == 0 )); then
         FIX_PROJECT_ID="$project_id"
         FIX_IMAGE_ID="$image_id"
         FIX_NETWORK_ID="$network_id"
+        FIX_SUBNET_ID="$subnet_id"
         return 0
     fi
     log_info "shared fixtures missing — re-ensuring (standalone suite run after a sweep?)"

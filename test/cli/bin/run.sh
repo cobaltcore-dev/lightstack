@@ -136,25 +136,10 @@ _server_ready() {
     return 0
 }
 
-if ! curl -sf -o /dev/null --max-time 5 "$OS_AUTH_URL"; then
-    if ! _start_compose_stack; then
-        cat >&2 <<EOF
-[cli] ERROR: no lightstack server at $OS_AUTH_URL and no docker to start one.
-
-Either start a server yourself:
-    make build && make run
-or via docker compose:
-    docker compose -f deployments/docker-compose.yml up -d
-or point OS_AUTH_URL at a running server.
-EOF
-        exit 2
-    fi
-else
-    log_info "using external server at $OS_AUTH_URL"
-fi
-
 # ---------------------------------------------------------------------------
-# Suite selection
+# Suite selection — BEFORE the server is (possibly) started: the selection is
+# pure flag logic, and an empty selection must die without having leased
+# anything (a started compose stack would otherwise outlive the exit 2).
 # ---------------------------------------------------------------------------
 if (( ${#SUITES[@]} == 0 )); then
     # Every suite in suites/, sorted for deterministic order.
@@ -175,7 +160,7 @@ fi
 # exit 0 — the exact vacuous-green class this harness exists to prevent
 # (e.g. `--fast --suite workflows`: the fast pool excludes workflows).
 if (( ${#SUITES[@]} == 0 )); then
-    log_error "--suite '${SUITE:-?}' selected no suites under the current flags (--fast?)"
+    log_error "--suite '${SUITES[*]:-?}' selected no suites under the current flags (--fast?)"
     exit 2
 fi
 
@@ -185,9 +170,26 @@ if (( STRICT )); then
     export CLI_STRICT=1
 fi
 
-# --suite implies no teardown unless explicitly requested.
+# A single --suite implies no teardown unless explicitly requested.
 if (( ${#SUITES[@]} == 1 )) && (( ! TEARDOWN )) && (( ! NO_CLEANUP )); then
     NO_CLEANUP=1
+fi
+
+if ! curl -sf -o /dev/null --max-time 5 "$OS_AUTH_URL"; then
+    if ! _start_compose_stack; then
+        cat >&2 <<EOF
+[cli] ERROR: no lightstack server at $OS_AUTH_URL and no docker to start one.
+
+Either start a server yourself:
+    make build && make run
+or via docker compose:
+    docker compose -f deployments/docker-compose.yml up -d
+or point OS_AUTH_URL at a running server.
+EOF
+        exit 2
+    fi
+else
+    log_info "using external server at $OS_AUTH_URL"
 fi
 
 # ---------------------------------------------------------------------------
@@ -210,7 +212,7 @@ cleanup() {
     if (( STARTED_STACK )) && (( ! KEEP_SERVER )); then
         (cd "$REPO_ROOT" && docker compose -p lightstack-binary-test -f deployments/docker-compose.binary-test.yml down -v) >/dev/null 2>&1 || true
     fi
-    report_write "$RESULTS_DIR"
+    report_write "$RESULTS_DIR" || failed=1
     report_summary
     # report_failed must read the results BEFORE the run dir is removed —
     # it used to run after `rm -rf` and always saw a missing file, which
