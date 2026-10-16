@@ -93,19 +93,40 @@ func (svc *Service) ListRouters(c *gin.Context) {
 	}
 
 	f := &common.SQLFilter{}
-	f.Eq("project_id", projectID)
+	// The caller's project — unless an administrator filters by tenant:
+	// upstream honours the filter for admin tokens, and it was silently
+	// ignored before, so `router list --project X` presented the admin's
+	// routers as project X's (SPEC-028; mirrors buildNetworkListFilter's
+	// tenant bypass). ::text so a non-UUID value narrows to nothing instead
+	// of failing the cast.
+	routerTenant := c.Query("tenant_id")
+	if routerTenant == "" {
+		routerTenant = c.Query("project_id")
+	}
+	routerAdminBypass := routerTenant != "" && common.HasRole(c, common.RoleAdmin)
+	if routerAdminBypass {
+		f.Eq("project_id::text", routerTenant)
+	} else {
+		f.Eq("project_id", projectID)
+	}
 
 	// Marker paging over a TOTAL order. created_at alone is not unique, so the order was undefined
 	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
 	// only those before it — a page walk silently dropped them. id is the primary key, so
-	// (created_at, id) is total (as #549 established for compute).
+	// (created_at, id) is total (as #549 established for compute). The marker resolves under the
+	// listing's own scope: an unresolvable marker would silently drop the condition and make the
+	// walk restart from the first page forever.
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
-		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at, id FROM routers WHERE id = $1 AND project_id = $2",
-			marker, projectID,
-		).Scan(&markerCreatedAt, &markerID)
+		markerQuery := "SELECT created_at, id FROM routers WHERE id = $1"
+		markerArgs := []any{marker}
+		if !routerAdminBypass {
+			markerQuery += " AND project_id = $2"
+			markerArgs = append(markerArgs, projectID)
+		}
+		err := svc.pool.QueryRow(c.Request.Context(), markerQuery, markerArgs...).
+			Scan(&markerCreatedAt, &markerID)
 		if err == nil {
 			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
@@ -477,7 +498,8 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		return
 	}
 
-	var subnetID, networkID, cidr, gatewayIP, portID string
+	var subnetID, networkID, cidr, portID string
+	var gatewayIP *string
 	if req.PortID != "" {
 		// port_id path — attach a port the caller already owns. The handler
 		// used to ignore the field entirely and read the (empty) subnet_id
@@ -551,6 +573,20 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		return
 	}
 
+	// A subnet without a gateway (an explicit null clears it, S14) used to
+	// 500 here: the scan above targeted a plain string and NULL cannot land
+	// in one. Upstream never refuses — the interface attaches with an
+	// address from the subnet — so a NULL gateway falls back to the same
+	// allocator CreatePort uses (SPEC-028).
+	if gatewayIP == nil {
+		allocated := allocateIP(cidr)
+		if allocated == "" {
+			common.SendError(c, common.NewBadRequestError("subnet's cidr has no usable address for a router interface"))
+			return
+		}
+		gatewayIP = &allocated
+	}
+
 	// A second interface for the same (router, subnet) is upstream's 409 —
 	// and it must be refused BEFORE anything is written: the unique
 	// constraint used to turn it into a 500 that left the freshly created
@@ -581,7 +617,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		fixedIPs := []map[string]string{
 			{
 				"subnet_id":  subnetID,
-				"ip_address": gatewayIP,
+				"ip_address": *gatewayIP,
 			},
 		}
 		fixedIPsJSON, _ := json.Marshal(fixedIPs)
@@ -598,14 +634,26 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 			return
 		}
 	} else {
-		// Claim the caller's port for the router.
-		_, err = svc.pool.Exec(ctx, `
+		// Claim the caller's port for the router — CONDITIONALLY. The
+		// device_id read earlier is only a check, not a reservation: two
+		// concurrent attaches of the same port to different routers both
+		// pass it, and an unconditional UPDATE lets both claims win (last
+		// write leaves the port owned by a router whose interface row also
+		// points at it). The WHERE keeps the claim atomic in the row lock;
+		// zero rows affected means someone claimed it in between. (The
+		// column is UUID: an unclaimed port is NULL, never ''.)
+		ct, err := svc.pool.Exec(ctx, `
 			UPDATE ports SET device_id = $1, device_owner = 'network:router_interface', updated_at = $2
-			WHERE id = $3
+			WHERE id = $3 AND device_id IS NULL
 		`, id, now, portID)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "add_router_interface_port_claim").Str("port_id", portID).Msg("database error")
 			common.SendError(c, common.NewInternalServerError("failed to attach port to router"))
+			return
+		}
+		if ct.RowsAffected() == 0 {
+			common.SendError(c, common.NewResourceInUseError("port", "attach port to router",
+				"Port "+portID+" already has a device assigned and cannot be attached to a router."))
 			return
 		}
 	}
@@ -617,14 +665,15 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	`, uuid.New().String(), id, portID, subnetID, now)
 
 	if err != nil {
-		log.Error().Err(err).Str("operation", "add_router_interface_record").Msg("database error")
 		// The record is what ties the pieces together; without it the port
 		// above would be an orphan holding the network hostage. The port
 		// this handler created is taken back outright; the caller's own
 		// port is UNclaimed — its device_id was empty on entry (checked
 		// above), so clearing the fields restores exactly the pre-call
 		// state rather than leaving a router-owned port no 'router remove
-		// port' can match (no interface row exists to remove).
+		// port' can match (no interface row exists to remove). The same
+		// rollback serves the unique-violation race below: it, too, has
+		// already claimed the port when it loses.
 		if req.PortID == "" {
 			if _, derr := svc.pool.Exec(ctx, "DELETE FROM ports WHERE id = $1", portID); derr != nil {
 				log.Warn().Err(derr).Str("port_id", portID).Msg("rollback: failed to delete router interface port")
@@ -636,6 +685,16 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 				log.Warn().Err(derr).Str("port_id", portID).Msg("rollback: failed to unclaim router interface port")
 			}
 		}
+		if common.IsUniqueViolation(err) {
+			// The constraint is the duplicate-interface backstop: the
+			// EXISTS check above can lose a race with a concurrent attach
+			// of the same (router, subnet). Answer the same 409 the check
+			// produces instead of surfacing the race as a 500.
+			common.SendError(c, common.NewResourceInUseError("router", "add interface to router",
+				"Router already has an interface on subnet "+subnetID+"."))
+			return
+		}
+		log.Error().Err(err).Str("operation", "add_router_interface_record").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create router interface record"))
 		return
 	}
@@ -665,7 +724,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	maskBits, _ := ipNet.Mask.Size()
 	cidrSuffix := fmt.Sprintf("%d", maskBits)
 
-	if err := svc.routerManager.AttachInterfaceToRouter(routerID, interfaceName, gatewayIP, cidrSuffix); err != nil {
+	if err := svc.routerManager.AttachInterfaceToRouter(routerID, interfaceName, *gatewayIP, cidrSuffix); err != nil {
 		log.Warn().Err(err).Str("router_id", routerID).Str("interface", interfaceName).Msg("failed to attach interface to router")
 	}
 

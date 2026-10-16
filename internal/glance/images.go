@@ -223,6 +223,14 @@ func (svc *Service) CreateImage(c *gin.Context) {
 		containerFormat = req.ContainerFormat
 	}
 
+	// Name length is validated with the tags, for the same reason: the
+	// column is VARCHAR(255) and upstream's schema answers 400, not a 500
+	// from the overflow after (part of) the write failed.
+	if len(req.Name) > 255 {
+		common.SendError(c, common.NewBadRequestError("image name too long (max 255 characters)"))
+		return
+	}
+
 	// Tag length is validated BEFORE the image row is written — upstream's
 	// schema caps a tag at 255 characters and answers 400, while the column's
 	// VARCHAR(255) would turn an over-long tag into a 500 after the image was
@@ -239,7 +247,18 @@ func (svc *Service) CreateImage(c *gin.Context) {
 	// who can delete it (F6, FR-014). Storing public images ownerless (project_id NULL)
 	// was the root cause of the delete no-op.
 	now := time.Now()
-	_, err := svc.pool.Exec(c.Request.Context(), `
+	// Image and tags land in ONE transaction: a tag-insert failure used to
+	// answer 500 with the image row already committed, so the client's
+	// retry created a duplicate image (upstream creates them atomically).
+	tx, err := svc.pool.Begin(c.Request.Context())
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_image").Msg("failed to begin transaction")
+		common.SendError(c, common.NewInternalServerError("failed to create image"))
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+
+	_, err = tx.Exec(c.Request.Context(), `
 		INSERT INTO images (id, name, project_id, status, visibility, disk_format, container_format, min_disk_gb, min_ram_mb, rbd_pool, rbd_image, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`, imageID, req.Name, sql.NullString{String: projectID, Valid: projectID != ""}, "queued", visibility, diskFormat, containerFormat, req.MinDisk, req.MinRAM, svc.cephPool, "image-"+imageID, now, now)
@@ -256,7 +275,7 @@ func (svc *Service) CreateImage(c *gin.Context) {
 	// dedicated PUT uses the same ON CONFLICT DO NOTHING, so a request repeating
 	// a tag stays legal. Length was validated above, before the image row.
 	for _, tag := range req.Tags {
-		if _, err := svc.pool.Exec(c.Request.Context(), `
+		if _, err := tx.Exec(c.Request.Context(), `
 			INSERT INTO image_tags (image_id, tag)
 			VALUES ($1, $2)
 			ON CONFLICT (image_id, tag) DO NOTHING
@@ -265,6 +284,12 @@ func (svc *Service) CreateImage(c *gin.Context) {
 			common.SendError(c, common.NewInternalServerError("failed to create image"))
 			return
 		}
+	}
+
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		log.Error().Err(err).Str("operation", "create_image").Msg("failed to commit image transaction")
+		common.SendError(c, common.NewInternalServerError("failed to create image"))
+		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -1542,6 +1567,14 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 		return
 	}
 
+	// Evict like every other image mutation (UpdateImage, members): GetImage
+	// caches the object INCLUDING its tags, so without this a tag added here
+	// stays invisible to `image show` for the cache's whole TTL (SPEC-028).
+	svc.evictImage(c.Request.Context(), imageID)
+	if svc.cache != nil {
+		svc.cache.TryDeletePattern(c.Request.Context(), "images:*")
+	}
+
 	c.Status(http.StatusNoContent)
 }
 
@@ -1583,6 +1616,13 @@ func (svc *Service) DeleteImageTag(c *gin.Context) {
 		log.Error().Err(err).Str("operation", "delete_image_tag").Str("image_id", imageID).Msg("failed to delete image tag")
 		common.SendError(c, common.NewInternalServerError("failed to delete image tag"))
 		return
+	}
+
+	// Evict like every other image mutation — the cached image body carries
+	// the tags array, and a removal must not linger in `image show` either.
+	svc.evictImage(c.Request.Context(), imageID)
+	if svc.cache != nil {
+		svc.cache.TryDeletePattern(c.Request.Context(), "images:*")
 	}
 
 	c.Status(http.StatusNoContent)

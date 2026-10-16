@@ -375,9 +375,13 @@ const (
 // rather than a positional argument list because the fields are mostly strings and
 // a transposed pair (tenant/user, name/description) would be silently wrong.
 type volumeRow struct {
-	ID          string
-	Name        string
-	Description string
+	ID   string
+	Name string
+	// Description is any so a NULL column renders as JSON null — the value
+	// upstream emits for an unset description — instead of the "" that
+	// NullString.String would produce (SPEC-028). Request-driven sites pass
+	// the string the caller supplied.
+	Description any
 	TenantID    string
 	UserID      string
 	VolumeType  string
@@ -675,6 +679,25 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 }
 
 // ListVolumes lists all volumes (brief)
+// volumeListScope decides the project predicate for the volume listings (the
+// summary and the detail variant share it): cinder's cross-project semantics
+// are all_tenants (every project, admin-only — `volume list --all-projects`)
+// and project_id (that one project, admin-only — `volume list --project`).
+// Both are IGNORED for non-administrators, whose listing stays their own
+// project — upstream ignores administrator-only query parameters the same
+// way nova's all_tenants does (FR-005b, SPEC-028). Before this, an admin's
+// --project filter was silently dropped and the ADMIN's volumes were
+// presented as the target project's.
+func volumeListScope(c *gin.Context) (tenant string, allTenants bool) {
+	if !common.HasRole(c, common.RoleAdmin) {
+		return "", false
+	}
+	if common.QueryFlag(c, "all_tenants") {
+		return "", true
+	}
+	return c.Query("project_id"), false
+}
+
 func (svc *Service) ListVolumes(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
@@ -693,19 +716,32 @@ func (svc *Service) ListVolumes(c *gin.Context) {
 	}
 
 	f := &common.SQLFilter{}
-	f.Eq("project_id", projectID)
+	volTenant, volAllTenants := volumeListScope(c)
+	volCrossProject := volAllTenants || volTenant != ""
+	switch {
+	case volTenant != "":
+		f.Eq("project_id::text", volTenant)
+	case !volAllTenants:
+		f.Eq("project_id", projectID)
+	}
 
 	// Marker-based pagination over the SAME total order the ORDER BY uses. Resolving the marker to
 	// `created_at < $n` excluded every volume sharing its timestamp rather than only those before it,
 	// so a page walk silently dropped the marker's siblings — volumes created by one script or
 	// Terraform apply share created_at. Same defect and same fix as the compute listings in #549.
+	// The marker resolves under the listing's own scope, or a cross-project walk would stall on
+	// the first page forever.
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
-		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at, id FROM volumes WHERE id = $1 AND project_id = $2",
-			marker, projectID,
-		).Scan(&markerCreatedAt, &markerID)
+		markerQuery := "SELECT created_at, id FROM volumes WHERE id = $1"
+		markerArgs := []any{marker}
+		if !volCrossProject {
+			markerQuery += " AND project_id = $2"
+			markerArgs = append(markerArgs, projectID)
+		}
+		err := svc.pool.QueryRow(c.Request.Context(), markerQuery, markerArgs...).
+			Scan(&markerCreatedAt, &markerID)
 		if err == nil {
 			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
@@ -773,19 +809,32 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 	}
 
 	f := &common.SQLFilter{}
-	f.Eq("v.project_id", projectID)
+	volTenant, volAllTenants := volumeListScope(c)
+	volCrossProject := volAllTenants || volTenant != ""
+	switch {
+	case volTenant != "":
+		f.Eq("v.project_id::text", volTenant)
+	case !volAllTenants:
+		f.Eq("v.project_id", projectID)
+	}
 
 	// Marker paging over a TOTAL order. This ordered by v.created_at alone, which is not unique, so
 	// ties had no defined relative order and two identical requests could return them differently —
 	// and `v.created_at < $n` then excluded the marker's tied siblings entirely. Adding v.id to both
 	// the ORDER BY and the comparison makes the boundary exact (as #549 did for compute).
+	// The marker resolves under the listing's own scope, or a cross-project walk would stall on
+	// the first page forever.
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
-		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at, id FROM volumes WHERE id = $1 AND project_id = $2",
-			marker, projectID,
-		).Scan(&markerCreatedAt, &markerID)
+		markerQuery := "SELECT created_at, id FROM volumes WHERE id = $1"
+		markerArgs := []any{marker}
+		if !volCrossProject {
+			markerQuery += " AND project_id = $2"
+			markerArgs = append(markerArgs, projectID)
+		}
+		err := svc.pool.QueryRow(c.Request.Context(), markerQuery, markerArgs...).
+			Scan(&markerCreatedAt, &markerID)
 		if err == nil {
 			f.Cond(fmt.Sprintf("(v.created_at, v.id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
@@ -820,7 +869,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 		}
 
 		volumes = append(volumes, serializeVolume(volumeRow{
-			ID: id, Name: name, Description: description.String,
+			ID: id, Name: name, Description: common.NullString(description),
 			TenantID: projectID, UserID: userID.String, VolumeType: volumeType.String,
 			Status: status, Size: size, Bootable: bootable,
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
@@ -912,7 +961,7 @@ func (svc *Service) GetVolume(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"volume": serializeVolume(volumeRow{
-			ID: id, Name: name, Description: description.String,
+			ID: id, Name: name, Description: common.NullString(description),
 			TenantID: projectID, UserID: userID.String, VolumeType: volumeType.String,
 			Status: status, Size: size, Bootable: bootable, Attachments: attachments[id],
 			Metadata: metadata[id], CreatedAt: createdAt, UpdatedAt: updatedAt,

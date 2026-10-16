@@ -734,7 +734,9 @@ func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantPara
 		f.Eq("external", ext)
 	}
 	if tenantParam != "" {
-		f.Eq("project_id", tenantParam)
+		// ::text — a non-UUID tenant value must narrow to nothing, not
+		// fail the uuid cast and answer 500 (SPEC-028).
+		f.Eq("project_id::text", tenantParam)
 	}
 	if idParam != "" {
 		f.Eq("id::text", idParam)
@@ -877,9 +879,20 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		return
 	}
 
-	// Marker-based pagination (see resolveListMarker).
-	m, ok := svc.resolveListMarker(c, limit, "network",
-		"SELECT created_at, id FROM networks WHERE id::text = $1 AND "+networkReadScope("$2"))
+	// Marker-based pagination (see resolveListMarker). The marker resolves
+	// under the SAME scope the listing used: an admin's tenant-filtered walk
+	// dropped the read scope above (buildNetworkListFilter), so resolving
+	// with it would 404 the walk mid-page on the very rows the listing just
+	// returned (SPEC-028).
+	var m *listMarker
+	var ok bool
+	if common.HasRole(c, common.RoleAdmin) && tenant != "" {
+		m, ok = svc.resolveListMarker(c, limit, "network",
+			"SELECT created_at, id FROM networks WHERE id::text = $1")
+	} else {
+		m, ok = svc.resolveListMarker(c, limit, "network",
+			"SELECT created_at, id FROM networks WHERE id::text = $1 AND "+networkReadScope("$2"), projectID)
+	}
 	if !ok {
 		return
 	}
@@ -1620,13 +1633,20 @@ type listMarker struct {
 // The networks, subnets and ports listings used to read the marker with no visibility and ignore one
 // that did not resolve, so another project's private row narrowed the page where an absent id did
 // not — telling the caller it exists.
-func (svc *Service) resolveListMarker(c *gin.Context, limit any, resource, query string) (*listMarker, bool) {
+// resolveListMarker resolves a listing's marker as upstream Neutron does (neutron-lib
+// _resolve_pagination_marker): the marker names a row of the SAME collection under the
+// SAME visibility the listing itself used, and the page continues after it. Callers
+// pass the scope predicates' arguments after the marker id (normally just the caller's
+// project id); a listing that dropped its read scope — an admin's tenant-filtered
+// walk — passes none, so the marker resolves under the listing's actual scope and an
+// admin's walk cannot 404 mid-page on a row the listing itself just returned.
+func (svc *Service) resolveListMarker(c *gin.Context, limit any, resource, query string, scopeArgs ...any) (*listMarker, bool) {
 	marker := c.Query("marker")
 	if marker == "" || limit == nil {
 		return nil, true
 	}
 	var m listMarker
-	err := svc.pool.QueryRow(c.Request.Context(), query, marker, c.GetString("project_id")).Scan(&m.createdAt, &m.id)
+	err := svc.pool.QueryRow(c.Request.Context(), query, append([]any{marker}, scopeArgs...)...).Scan(&m.createdAt, &m.id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError(resource))
 		return nil, false
@@ -1661,17 +1681,26 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 
 	f := &common.SQLFilter{}
 
-	// Scope by the owning NETWORK's visibility, not only the subnet's own project_id (see
-	// subnetReadScope). One argument read by two placeholders, so it is appended once and the
-	// placeholder reused.
-	caller := f.Arg(projectID)
-	f.Cond(subnetReadScope(caller))
-
 	// Client filters (B6). Both spellings of the project attribute map onto project_id.
 	tenant := c.Query("tenant_id")
 	if tenant == "" {
 		tenant = c.Query("project_id")
 	}
+
+	// Scope by the owning NETWORK's visibility, not only the subnet's own project_id (see
+	// subnetReadScope). One argument read by two placeholders, so it is appended once and the
+	// placeholder reused. Dropped for an administrator who filters by tenant or by network —
+	// upstream honours both for admin tokens, and network_id in particular is a pointer that
+	// comes straight out of a network body the admin was allowed to read, so scoping it again
+	// would answer 200 for the network and [] for its subnets (SPEC-028; mirrors
+	// buildNetworkListFilter's tenant bypass). A non-admin keeps the scope AND filter
+	// intersection.
+	adminBypass := common.HasRole(c, common.RoleAdmin) && (tenant != "" || c.Query("network_id") != "")
+	if !adminBypass {
+		caller := f.Arg(projectID)
+		f.Cond(subnetReadScope(caller))
+	}
+
 	addSubnetListFilter(f, subnetFilterParams{
 		NetworkID:  c.Query("network_id"),
 		ID:         c.Query("id"),
@@ -1685,9 +1714,16 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 	// Marker-based pagination on a TOTAL order. `created_at` alone is not unique, so ties made the
 	// page boundary unstable and a walk could repeat or skip rows — the same defect #549 found in the
 	// compute listings. ListNetworks already pages on (created_at, id); FR-025 requires the same here.
-	// The marker itself resolves as resolveListMarker describes.
-	m, ok := svc.resolveListMarker(c, limit, "subnet",
-		"SELECT s.created_at, s.id FROM subnets s JOIN networks n ON s.network_id = n.id WHERE s.id::text = $1 AND "+subnetReadScope("$2"))
+	// The marker itself resolves as resolveListMarker describes — under the listing's own scope.
+	var m *listMarker
+	var ok bool
+	if adminBypass {
+		m, ok = svc.resolveListMarker(c, limit, "subnet",
+			"SELECT s.created_at, s.id FROM subnets s JOIN networks n ON s.network_id = n.id WHERE s.id::text = $1")
+	} else {
+		m, ok = svc.resolveListMarker(c, limit, "subnet",
+			"SELECT s.created_at, s.id FROM subnets s JOIN networks n ON s.network_id = n.id WHERE s.id::text = $1 AND "+subnetReadScope("$2"), projectID)
+	}
 	if !ok {
 		return
 	}
@@ -1795,14 +1831,22 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	// Consequently s.project_id is selected, not assumed: this handler can return a subnet
 	// the caller does not own — one on their network, or on a shared network — so reporting
 	// the caller as tenant_id would tell them a resource is theirs when it is not.
-	err := svc.pool.QueryRow(c.Request.Context(), `
+	// An administrator may show any subnet — the same carve-out GetNetwork
+	// has (upstream's get_subnet policy includes ADMIN_OR_NET_OWNER_READER).
+	// Without it, an admin could show a network and then 404 on the subnet
+	// ids its own body lists (SPEC-028).
+	query := `
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at, s.project_id
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
-		WHERE (s.id::text = $1 OR s.name = $1)
-		  AND `+subnetReadScope("$2")+`
-		LIMIT 1
-	`, subnetID, projectID).Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner)
+		WHERE (s.id::text = $1 OR s.name = $1)`
+	args := []any{subnetID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		query += ` AND ` + subnetReadScope("$2")
+		args = append(args, projectID)
+	}
+	err := svc.pool.QueryRow(c.Request.Context(), query+" LIMIT 1", args...).
+		Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))

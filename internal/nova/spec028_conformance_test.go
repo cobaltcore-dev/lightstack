@@ -216,3 +216,41 @@ func TestServerShowLockedField(t *testing.T) {
 		t.Errorf("show must carry locked:true after lock, got: %s", body)
 	}
 }
+
+// TestServerGroupDuplicateName409 — upstream nova refuses a duplicate
+// (project, name) with 409; the handler inserted unconditionally, so a
+// second group with the same name was silently accepted with 200 and
+// `server group show <name>` became ambiguous. Migration 076 adds the
+// constraint; this pins the handler's clean 409 (SPEC-028).
+func TestServerGroupDuplicateName409(t *testing.T) {
+	requireDB(t)
+	r := newNovaTestRouter()
+	hdr := testAuthHdr(seededProjectID, seededUserID)
+	name := "spec028-sg-dup-" + uuid.NewString()[:8]
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(),
+			"DELETE FROM server_groups WHERE name=$1", name)
+	})
+
+	code, body := doReq(r, http.MethodPost, "/v2.1/os-server-groups",
+		`{"server_group":{"name":"`+name+`","policy":"anti-affinity"}}`, hdr)
+	if code != http.StatusOK {
+		t.Fatalf("first create: code=%d body=%s; want 200", code, body)
+	}
+
+	code, body = doReq(r, http.MethodPost, "/v2.1/os-server-groups",
+		`{"server_group":{"name":"`+name+`","policy":"affinity"}}`, hdr)
+	if code != http.StatusConflict {
+		t.Errorf("duplicate create: code=%d body=%s; want 409", code, body)
+	}
+
+	var n int
+	if err := testPool.QueryRow(t.Context(),
+		"SELECT count(*) FROM server_groups WHERE project_id=$1 AND name=$2",
+		seededProjectID, name).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows for (%s, %s) = %d; want exactly 1", seededProjectID, name, n)
+	}
+}

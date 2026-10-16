@@ -754,3 +754,165 @@ func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 		t.Errorf("cached entry holds the wrong network: %v", cached["id"])
 	}
 }
+
+// TestAddRouterInterfaceNullGateway_DB — a subnet without a gateway (an
+// explicit null clears it, S14) made add_router_interface 500: the lookup
+// scanned gateway_ip into a plain string and NULL cannot land in one.
+// Upstream attaches with an address allocated from the subnet; the fix
+// falls back to the same allocator CreatePort uses (SPEC-028).
+func TestAddRouterInterfaceNullGateway_DB(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+
+	netID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
+		netID, "spec028-nogw-net-"+netID[:8], seededProjectID); err != nil {
+		t.Fatalf("insert network: %v", err)
+	}
+	// gateway_ip deliberately omitted: NULL.
+	subID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO subnets (id, name, network_id, project_id, cidr, ip_version) VALUES ($1,$2,$3,$4,$5,4)`,
+		subID, "spec028-nogw-sub-"+subID[:8], netID, seededProjectID, "10.233.0.0/24"); err != nil {
+		t.Fatalf("insert subnet: %v", err)
+	}
+	routerID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
+		routerID, "spec028-nogw-rt-"+routerID[:8], seededProjectID); err != nil {
+		t.Fatalf("insert router: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM router_interfaces WHERE router_id=$1", routerID)
+		testPool.Exec(ctx, "DELETE FROM ports WHERE network_id=$1", netID)
+		testPool.Exec(ctx, "DELETE FROM subnets WHERE id=$1", subID)
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", netID)
+		testPool.Exec(ctx, "DELETE FROM routers WHERE id=$1", routerID)
+	})
+
+	r := newNeutronTestRouter()
+	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+	code, body := doReqBody(r, http.MethodPut, "/v2.0/routers/"+routerID+"/add_router_interface",
+		fmt.Sprintf(`{"subnet_id":"%s"}`, subID), hdr)
+	if code != http.StatusOK {
+		t.Errorf("attach subnet without gateway: code=%d; want 200 (body=%s)", code, body)
+	}
+}
+
+// TestSubnetPortAdminCarveOut_DB — GetNetwork's admin carve-out (see
+// TestGetNetworkAdminCarveOut_DB) stopped at networks: an admin could show
+// a foreign private NETWORK but 404 on the subnet ids its own body lists,
+// and list [] for them. Upstream's get_subnet policy includes
+// ADMIN_OR_NET_OWNER_READER; the carve-out now covers subnets and ports,
+// their listings under an explicit network_id pointer, and a member of
+// another project still gets 404 (SPEC-028).
+func TestSubnetPortAdminCarveOut_DB(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+
+	otherProject := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
+		otherProject, "spec028-sub-carve-"+otherProject[:8]); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	netID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
+		netID, "spec028-sub-carve-net-"+netID[:8], otherProject); err != nil {
+		t.Fatalf("insert network: %v", err)
+	}
+	subID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version) VALUES ($1,$2,$3,$4,$5,$6,4)`,
+		subID, "spec028-sub-carve-sub-"+subID[:8], netID, otherProject, "10.234.0.0/24", "10.234.0.1"); err != nil {
+		t.Fatalf("insert subnet: %v", err)
+	}
+	portID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,true,'ACTIVE','[]'::jsonb,now(),now())`,
+		portID, "spec028-sub-carve-port-"+portID[:8], netID, otherProject, "02:00:00:00:23:28"); err != nil {
+		t.Fatalf("insert port: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM ports WHERE id=$1", portID)
+		testPool.Exec(ctx, "DELETE FROM subnets WHERE id=$1", subID)
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", netID)
+		testPool.Exec(ctx, "DELETE FROM projects WHERE id=$1", otherProject)
+	})
+
+	r := newNeutronTestRouter()
+	adminHdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}
+	memberHdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+
+	if code, body := doReq(r, http.MethodGet, "/v2.0/subnets/"+subID, adminHdr); code != http.StatusOK {
+		t.Errorf("admin shows foreign subnet: code=%d; want 200 (body=%s)", code, body)
+	}
+	if code, body := doReq(r, http.MethodGet, "/v2.0/subnets/"+subID, memberHdr); code != http.StatusNotFound {
+		t.Errorf("member shows foreign subnet: code=%d; want 404 (body=%s)", code, body)
+	}
+	if code, body := doReq(r, http.MethodGet, "/v2.0/subnets?network_id="+netID, adminHdr); code != http.StatusOK || !strings.Contains(body, subID) {
+		t.Errorf("admin lists foreign network's subnets: code=%d body=%s; want 200 containing the subnet", code, body)
+	}
+	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/"+portID, adminHdr); code != http.StatusOK {
+		t.Errorf("admin shows foreign port: code=%d; want 200 (body=%s)", code, body)
+	}
+	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/"+portID, memberHdr); code != http.StatusNotFound {
+		t.Errorf("member shows foreign port: code=%d; want 404 (body=%s)", code, body)
+	}
+	if code, body := doReq(r, http.MethodGet, "/v2.0/ports?network_id="+netID, adminHdr); code != http.StatusOK || !strings.Contains(body, portID) {
+		t.Errorf("admin lists foreign network's ports: code=%d body=%s; want 200 containing the port", code, body)
+	}
+}
+
+// TestListTenantFilterHonoredForAdmin_DB — the admin tenant_id filter was
+// honored by the NETWORKS listing only; every other list silently ignored
+// it and presented the ADMIN's rows as the target project's. Router here
+// stands for the fixed pattern (subnets/ports/FIPs/cinder share it);
+// upstream honours the filter for admin tokens (SPEC-028).
+func TestListTenantFilterHonoredForAdmin_DB(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+
+	otherProject := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
+		otherProject, "spec028-rt-tenant-"+otherProject[:8]); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	otherRouter := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
+		otherRouter, "spec028-rt-tenant-rt-"+otherRouter[:8], otherProject); err != nil {
+		t.Fatalf("insert other router: %v", err)
+	}
+	ownRouter := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
+		ownRouter, "spec028-rt-tenant-own-"+ownRouter[:8], seededProjectID); err != nil {
+		t.Fatalf("insert own router: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM routers WHERE id = ANY($1)", []string{otherRouter, ownRouter})
+		testPool.Exec(ctx, "DELETE FROM projects WHERE id=$1", otherProject)
+	})
+
+	r := newNeutronTestRouter()
+	adminHdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}
+	memberHdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+
+	// Admin + tenant filter: the OTHER project's router appears, the
+	// admin's own does not.
+	code, body := doReq(r, http.MethodGet, "/v2.0/routers?tenant_id="+otherProject, adminHdr)
+	if code != http.StatusOK || !strings.Contains(body, otherRouter) || strings.Contains(body, ownRouter) {
+		t.Errorf("admin routers?tenant_id=<other>: code=%d body=%s; want only the other project's router", code, body)
+	}
+	// A non-admin's tenant filter stays intersected with their scope: the
+	// foreign router never appears.
+	code, body = doReq(r, http.MethodGet, "/v2.0/routers?tenant_id="+otherProject, memberHdr)
+	if code != http.StatusOK || strings.Contains(body, otherRouter) {
+		t.Errorf("member routers?tenant_id=<other>: code=%d body=%s; must not contain the foreign router", code, body)
+	}
+}

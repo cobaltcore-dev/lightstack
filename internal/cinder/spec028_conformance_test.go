@@ -259,3 +259,59 @@ func TestBackupNonUUIDIs404(t *testing.T) {
 		}
 	}
 }
+
+// TestVolumeListAllTenantsAndProjectFilter_DB — cinder's cross-project
+// listing semantics were absent: an admin's `volume list --project X`
+// (project_id filter) and `--all-projects` (all_tenants) were silently
+// ignored and the ADMIN's volumes were presented as the target project's.
+// Both are admin-only upstream, and ignored for non-admins (SPEC-028).
+func TestVolumeListAllTenantsAndProjectFilter_DB(t *testing.T) {
+	requireDB(t)
+
+	otherProject := uuid.NewString()
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
+		otherProject, "spec028-vol-tenant-"+otherProject[:8]); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	otherVol := uuid.NewString()
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,1,'available',false,now(),now())`,
+		otherVol, "spec028-vol-tenant-other", otherProject, seededUserID); err != nil {
+		t.Fatalf("insert other volume: %v", err)
+	}
+	ownVol := uuid.NewString()
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,1,'available',false,now(),now())`,
+		ownVol, "spec028-vol-tenant-own", seededProjectID, seededUserID); err != nil {
+		t.Fatalf("insert own volume: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), "DELETE FROM volumes WHERE id = ANY($1)", []string{otherVol, ownVol})
+		testPool.Exec(context.Background(), "DELETE FROM projects WHERE id=$1", otherProject)
+	})
+
+	r := newCinderTestRouter()
+	adminHdr := cinderAuthHdr(seededProjectID, seededUserID)
+	memberHdr := map[string]string{
+		"X-Test-Project": seededProjectID, "X-Test-User": seededUserID, "X-Test-Roles": "member",
+	}
+
+	// Admin + project_id: the OTHER project's volume appears, the own one does not.
+	code, body := doReq(r, http.MethodGet, "/v3/volumes/detail?project_id="+otherProject, "", adminHdr)
+	if code != http.StatusOK || !strings.Contains(body, otherVol) || strings.Contains(body, ownVol) {
+		t.Errorf("admin volumes?project_id=<other>: code=%d body=%s; want only the other project's volume", code, body)
+	}
+	// Admin + all_tenants: both appear.
+	code, body = doReq(r, http.MethodGet, "/v3/volumes/detail?all_tenants", "", adminHdr)
+	if code != http.StatusOK || !strings.Contains(body, otherVol) || !strings.Contains(body, ownVol) {
+		t.Errorf("admin volumes?all_tenants: code=%d body=%s; want both volumes", code, body)
+	}
+	// A non-admin's all_tenants is IGNORED (upstream FR-005b): only their own.
+	code, body = doReq(r, http.MethodGet, "/v3/volumes/detail?all_tenants", "", memberHdr)
+	if code != http.StatusOK || strings.Contains(body, otherVol) || !strings.Contains(body, ownVol) {
+		t.Errorf("member volumes?all_tenants: code=%d body=%s; must contain only the member's volume", code, body)
+	}
+}

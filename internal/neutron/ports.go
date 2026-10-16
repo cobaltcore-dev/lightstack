@@ -316,15 +316,42 @@ func (svc *Service) ListPorts(c *gin.Context) {
 	}
 
 	pf := &common.SQLFilter{}
-	pf.Cond(portReadScope(pf.Arg(projectID)))
+
+	// The caller's read scope (see portReadScope) — dropped for an
+	// administrator who filters by tenant, network, or device. Each is an
+	// explicit cross-project pointer (the network or device id comes
+	// straight out of a body the admin was allowed to read), and upstream
+	// honours all of them for admin tokens; scoping them again would answer
+	// 200 for the network and [] for its ports. Mirrors
+	// buildNetworkListFilter's tenant bypass (SPEC-028). A non-admin keeps
+	// the scope AND filter intersection.
+	tenant := c.Query("tenant_id")
+	if tenant == "" {
+		tenant = c.Query("project_id")
+	}
+	adminBypass := common.HasRole(c, common.RoleAdmin) &&
+		(tenant != "" || c.Query("network_id") != "" || c.Query("device_id") != "")
+	if !adminBypass {
+		pf.Cond(portReadScope(pf.Arg(projectID)))
+	}
+	if tenant != "" {
+		pf.Eq("p.project_id::text", tenant)
+	}
 
 	// Marker paging over a TOTAL order. p.created_at alone is not unique, so the order was undefined
 	// among ties AND `p.created_at < $n` excluded every port sharing the marker's timestamp rather
 	// than only those before it — ports created by one boot share it (as #549 established for
 	// compute).
-	// The marker itself resolves as resolveListMarker describes.
-	m, ok := svc.resolveListMarker(c, limit, "port",
-		"SELECT p.created_at, p.id FROM ports p JOIN networks n ON p.network_id = n.id WHERE p.id::text = $1 AND "+portReadScope("$2"))
+	// The marker itself resolves as resolveListMarker describes — under the listing's own scope.
+	var m *listMarker
+	var ok bool
+	if adminBypass {
+		m, ok = svc.resolveListMarker(c, limit, "port",
+			"SELECT p.created_at, p.id FROM ports p JOIN networks n ON p.network_id = n.id WHERE p.id::text = $1")
+	} else {
+		m, ok = svc.resolveListMarker(c, limit, "port",
+			"SELECT p.created_at, p.id FROM ports p JOIN networks n ON p.network_id = n.id WHERE p.id::text = $1 AND "+portReadScope("$2"), projectID)
+	}
 	if !ok {
 		return
 	}
@@ -335,13 +362,16 @@ func (svc *Service) ListPorts(c *gin.Context) {
 	// Standard Neutron port filters. Notably ?device_id=<server> is how
 	// `openstack server add floating ip` finds a server's port — without it the
 	// client gets every port on the network and may grab the wrong one (e.g. the
-	// router interface), associating the FIP to the gateway instead of the VM.
+	// router interface), associating the FIP to the VM instead of the gateway.
+	// The uuid-typed columns compare as ::text: a non-UUID value in the query
+	// string must narrow to nothing, not fail the cast and answer 500 — the
+	// same guard the floating-ip filter loop carries (SPEC-028).
 	for _, filter := range []struct{ col, val string }{
-		{"p.device_id", c.Query("device_id")},
-		{"p.network_id", c.Query("network_id")},
+		{"p.device_id::text", c.Query("device_id")},
+		{"p.network_id::text", c.Query("network_id")},
 		{"p.device_owner", c.Query("device_owner")},
 		{"p.mac_address", c.Query("mac_address")},
-		{"p.id", c.Query("id")},
+		{"p.id::text", c.Query("id")},
 	} {
 		if filter.val != "" {
 			pf.Eq(filter.col, filter.val)
@@ -451,12 +481,22 @@ func (svc *Service) GetPort(c *gin.Context) {
 	var fixedIPsJSON []byte
 	var createdAt, updatedAt time.Time
 
-	err := svc.pool.QueryRow(c.Request.Context(), `
+	// An administrator may show any port — the same carve-out GetNetwork and
+	// GetSubnet have (upstream's get_port policy is admin_or_owner; the
+	// admin's cross-project visibility the listings grant must not 404 on
+	// the follow-up show). Non-admins keep the read scope.
+	portQuery := `
 		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
-		WHERE p.id = $1 AND `+portReadScope("$2")+`
-	`, portID, projectID).Scan(&id, &name, &networkID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt)
+		WHERE p.id = $1`
+	portArgs := []any{portID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		portQuery += ` AND ` + portReadScope("$2")
+		portArgs = append(portArgs, projectID)
+	}
+	err := svc.pool.QueryRow(c.Request.Context(), portQuery, portArgs...).
+		Scan(&id, &name, &networkID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))

@@ -152,15 +152,42 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 		return
 	}
 
+	// Upstream nova refuses a duplicate (project, name) with 409 — and the
+	// server group is then addressable by name unambiguously. The handler
+	// used to insert unconditionally: a second group with the same name was
+	// silently accepted with 200, and `server group show <name>` became a
+	// coin toss (SPEC-028).
+	var nameTaken bool
+	err := svc.pool.QueryRow(c.Request.Context(),
+		`SELECT EXISTS(SELECT 1 FROM server_groups WHERE project_id = $1 AND name = $2)`,
+		projectID, req.ServerGroup.Name).Scan(&nameTaken)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_server_group_dupcheck").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to create server group"))
+		return
+	}
+	if nameTaken {
+		common.SendError(c, common.NewResourceInUseError("server group", "create",
+			"Server group "+req.ServerGroup.Name+" already exists."))
+		return
+	}
+
 	groupID := uuid.New().String()
 	now := time.Now()
 
-	_, err := svc.pool.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		`INSERT INTO server_groups (id, name, policies, members, project_id, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		groupID, req.ServerGroup.Name, []string{policy}, []string{}, projectID, now, now,
 	)
 	if err != nil {
+		// The migration 076 constraint makes the duplicate check race-safe:
+		// two concurrent creates both pass it, and exactly one insert wins.
+		if common.IsUniqueViolation(err) {
+			common.SendError(c, common.NewResourceInUseError("server group", "create",
+				"Server group "+req.ServerGroup.Name+" already exists."))
+			return
+		}
 		log.Error().Err(err).Str("operation", "create_server_group").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create server group"))
 		return

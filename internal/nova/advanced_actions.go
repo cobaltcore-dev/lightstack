@@ -1064,6 +1064,13 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 		common.SendError(c, common.NewBadRequestError("missing backup name"))
 		return
 	}
+	// The backup name becomes the glance image's name, whose schema (and
+	// column) cap at 255 — over-long names answer 400 upstream, not a 500
+	// from the VARCHAR overflow.
+	if len(backupName) > 255 {
+		common.SendError(c, common.NewBadRequestError("backup name too long (max 255 characters)"))
+		return
+	}
 
 	backupType, _ := backupMap["backup_type"].(string)
 	rotation, _ := backupMap["rotation"].(float64)

@@ -60,7 +60,21 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	}
 
 	f := &common.SQLFilter{}
-	f.Eq("project_id", projectID)
+	// The caller's project — unless an administrator filters by tenant:
+	// upstream honours the filter for admin tokens, and it was silently
+	// ignored before, so `floating ip list --project X` presented the
+	// ADMIN's addresses as project X's (SPEC-028; mirrors
+	// buildNetworkListFilter's tenant bypass). ::text so a non-UUID value
+	// narrows to nothing instead of failing the cast.
+	fipTenant := c.Query("tenant_id")
+	if fipTenant == "" {
+		fipTenant = c.Query("project_id")
+	}
+	if fipTenant != "" && common.HasRole(c, common.RoleAdmin) {
+		f.Eq("project_id::text", fipTenant)
+	} else {
+		f.Eq("project_id", projectID)
+	}
 
 	// Standard Neutron list filters (neutron-lib FloatingIPDbMixin):
 	// floating_network_id, port_id, router_id, status, fixed_ip_address,
@@ -101,14 +115,21 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	// Marker paging over a TOTAL order. created_at alone is not unique, so the order was undefined
 	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
 	// only those before it — a page walk silently dropped them. id is the primary key, so
-	// (created_at, id) is total (as #549 established for compute).
+	// (created_at, id) is total (as #549 established for compute). The marker resolves under the
+	// listing's own scope (see the tenant bypass above): an unresolvable marker would silently
+	// drop the condition and make the walk restart from the first page forever.
+	fipAdminBypass := fipTenant != "" && common.HasRole(c, common.RoleAdmin)
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
-		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at, id FROM floating_ips WHERE id = $1 AND project_id = $2",
-			marker, projectID,
-		).Scan(&markerCreatedAt, &markerID)
+		markerQuery := "SELECT created_at, id FROM floating_ips WHERE id = $1"
+		markerArgs := []any{marker}
+		if !fipAdminBypass {
+			markerQuery += " AND project_id = $2"
+			markerArgs = append(markerArgs, projectID)
+		}
+		err := svc.pool.QueryRow(c.Request.Context(), markerQuery, markerArgs...).
+			Scan(&markerCreatedAt, &markerID)
 		if err == nil {
 			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}

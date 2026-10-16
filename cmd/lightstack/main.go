@@ -663,6 +663,13 @@ func newEngine() *gin.Engine {
 
 func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService *keystone.AuthService, checker *health.Checker) *http.Server {
 	r := newEngine()
+	// FIRST, and on the engine rather than only the /v3 group (which keeps
+	// its own copy for the test routers): keystone answers in its own error
+	// envelope, and NoRoute/NoMethod are engine-level — without this, an
+	// unknown path under :35357 rendered the compute envelope and
+	// keystoneauth1 degraded it to "Unrecognized schema in response body."
+	// (SPEC-028; same placement Neutron's ErrorEnvelope uses.)
+	r.Use(common.MarkIdentityErrors)
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
