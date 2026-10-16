@@ -527,12 +527,16 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		}
 		subnetID = req.SubnetID
 	}
+	// The subnet must be the caller's, or sit on a network the caller can
+	// legitimately use — their own (an admin may have created the subnet
+	// on it, which subnetReadScope allows) or a shared/external one,
+	// mirroring the port path's project scoping.
 	err := svc.pool.QueryRow(ctx, `
 		SELECT s.id::text, s.network_id::text, s.cidr, s.gateway_ip
 		FROM subnets s
 		JOIN networks n ON n.id = s.network_id
 		WHERE s.id = $1
-		  AND (s.project_id = $2 OR n.shared = true OR n.external = true)
+		  AND (s.project_id = $2 OR n.project_id = $2 OR n.shared = true OR n.external = true)
 	`, subnetID, projectID).Scan(&subnetID, &networkID, &cidr, &gatewayIP)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Not-found for both a bogus id and another project's private subnet:

@@ -970,6 +970,11 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 // Scoping the key rather than re-checking on hit keeps a hit free of database work, at the cost of
 // one entry per (caller, network) pair — a shared or external network is cached once per project
 // that asks for it, which is the price of the lookup preceding the check.
+//
+// The invariant holds only because GetNetwork's WRITE side caches nothing the project is not
+// entitled to by the read scope: since the admin carve-out made visibility role-dependent, a
+// fetched row outside the read scope (an admin reading another project's private network) is
+// served but never cached — see the TrySet guard in GetNetwork.
 func networkCacheKey(projectID, networkID string) string {
 	return "network:" + projectID + ":" + networkID
 }
@@ -1057,8 +1062,12 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	// Store in cache (30min TTL per config) before adding the dynamic subnet
 	// list, so cached entries never carry a stale subnets field. Written under the SAME
 	// caller-scoped key the read above uses, so an entry can only ever be served back to a caller
-	// entitled to it.
-	if svc.cache != nil {
+	// entitled to it. The admin carve-out above can exceed that entitlement — an admin may
+	// fetch another project's PRIVATE network — and caching such a row under the
+	// project's key would hand it to the project's plain members as a 200 where the
+	// uncached answer is 404 (the key names only the project, not the role). Rows
+	// outside the project's read scope are therefore simply not cached.
+	if svc.cache != nil && (owner == projectID || shared || external) {
 		svc.cache.TrySet(ctx, networkCacheKey(projectID, id), network, 30*time.Minute)
 	}
 

@@ -8,8 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/cobaltcore-dev/lightstack/pkg/cache"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -634,5 +638,111 @@ func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 		fmt.Sprintf(`{"subnet_id":"%s"}`, sharedSub), hdr)
 	if code != http.StatusOK {
 		t.Errorf("attach shared-network subnet: code=%d; want 200 (body=%s)", code, body)
+	}
+
+	// A subnet ANOTHER project created on a network the caller owns is
+	// attachable too — the same entitlement subnetReadScope grants, so the
+	// network owner is not locked out of their own network by an admin
+	// subnet (e.g. the seeded public net's subnets).
+	adminSub := uuid.NewString()
+	ownNet := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
+		ownNet, "spec028-ifscope-own-"+ownNet[:8], seededProjectID); err != nil {
+		t.Fatalf("insert own network: %v", err)
+	}
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version) VALUES ($1,$2,$3,$4,$5,$6,4)`,
+		adminSub, "spec028-ifscope-asub-"+adminSub[:8], ownNet, otherProject, "10.232.0.0/24", "10.232.0.1"); err != nil {
+		t.Fatalf("insert admin subnet on own network: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM subnets WHERE id=$1", adminSub)
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", ownNet)
+	})
+	code, body = doReqBody(r, http.MethodPut, "/v2.0/routers/"+routerID+"/add_router_interface",
+		fmt.Sprintf(`{"subnet_id":"%s"}`, adminSub), hdr)
+	if code != http.StatusOK {
+		t.Errorf("attach admin-created subnet on own network: code=%d; want 200 (body=%s)", code, body)
+	}
+}
+
+// TestGetNetworkCacheDoesNotCrossRoles_DB — the admin carve-out (see
+// TestGetNetworkAdminCarveOut_DB) meets the project-scoped network cache:
+// the cache key names only (project, network), and the lookup precedes any
+// visibility check, so an ADMIN's fetch of another project's private network
+// must not leave an entry that a plain member of the admin's project then
+// reads as a 200 where the uncached answer is 404. Only rows the project is
+// entitled to by the read scope may be cached (SPEC-028).
+func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
+	requireDB(t)
+
+	// The poisoning only exists with a real cache behind the service.
+	cacheInst, err := cache.NewCache(cache.Config{
+		RedisURL: "redis://127.0.0.1:6379", Enabled: true,
+		KeyPrefix: "spec028-cachetest:", DefaultTTL: time.Minute,
+	})
+	if err != nil {
+		t.Skipf("no local Redis for the cache regression: %v", err)
+	}
+	t.Cleanup(func() {
+		cacheInst.DeletePattern(context.Background(), "spec028-cachetest:network:*")
+	})
+
+	ctx := context.Background()
+	otherProject := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
+		otherProject, "spec028-cache-proj-"+otherProject[:8]); err != nil {
+		t.Fatalf("insert other project: %v", err)
+	}
+	foreignNet := uuid.NewString() // other project's PRIVATE network
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
+		foreignNet, "spec028-cache-net-"+foreignNet[:8], otherProject); err != nil {
+		t.Fatalf("insert foreign network: %v", err)
+	}
+	ownNet := uuid.NewString() // the caller project's own network
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
+		ownNet, "spec028-cache-own-"+ownNet[:8], seededProjectID); err != nil {
+		t.Fatalf("insert own network: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM networks WHERE id = ANY($1)", []string{foreignNet, ownNet})
+		testPool.Exec(ctx, "DELETE FROM projects WHERE id=$1", otherProject)
+	})
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		if p := c.GetHeader("X-Test-Project"); p != "" {
+			c.Set("project_id", p)
+		}
+		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
+			c.Set("roles", strings.Split(roles, ","))
+		}
+	})
+	NewService(testPool, "stub", cacheInst).RegisterRoutes(&r.RouterGroup)
+
+	adminHdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}
+	memberHdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
+
+	// The admin may fetch the foreign private network...
+	if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+foreignNet, adminHdr); code != http.StatusOK {
+		t.Fatalf("admin fetches foreign private network: code=%d; want 200 (body=%s)", code, body)
+	}
+	// ...but that fetch must not poison the project's cache: a plain member
+	// of the same project still gets the uncached answer, 404.
+	if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+foreignNet, memberHdr); code != http.StatusNotFound {
+		t.Errorf("member reads foreign private network after admin fetch: code=%d; want 404 — cache poisoned (body=%s)", code, body)
+	}
+
+	// The entitlement-positive path still caches: two member reads of the
+	// project's own network both succeed (the second is a cache hit).
+	for i := 1; i <= 2; i++ {
+		if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+ownNet, memberHdr); code != http.StatusOK {
+			t.Errorf("member read #%d of own network: code=%d; want 200 (body=%s)", i, code, body)
+		}
 	}
 }
