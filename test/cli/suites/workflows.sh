@@ -19,6 +19,12 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
 
 suite_begin workflows
+# Standalone rerun-safety: this suite references the shared fixtures
+# (cli-conf, cli-conf-image, cli-conf-net) by name. bin/run.sh ensures them
+# and its teardown sweeps them, so running this suite alone after a sweep
+# re-ensures here instead of failing with confusing missing-resource errors.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/fixtures.sh"
+fixtures_require
 
 # ---------------------------------------------------------------------------
 # Suite-local helpers (the lib API is locked; additions stay in this file)
@@ -424,7 +430,7 @@ assert_jq '.addresses["cli-conf-wf-fip-net"] | index("'$WF_FP_FIP_ADDR'") != nul
 # (`floating ip show` is broken CLI-side in this pin — see the final report).
 osc floating ip list
 assert_rc 0
-assert_jq '[.[] | select(.ID == "'$WF_FP_FIP_ID'") | (.Port // "")] | .[0] != ""' 'true'
+assert_jq '[.[] | select(.ID == "'$WF_FP_FIP_ID'")] | (length == 1) and ((.[0].Port // "") != "")' 'true'
 
 osc server remove floating ip "$WF_FP_SRV" "$WF_FP_FIP_ID"
 assert_rc 0

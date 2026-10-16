@@ -64,10 +64,23 @@ if [[ ! -f "$RESULTS" ]]; then
     exit 2
 fi
 
+# Fail closed: a truncated, empty, or corrupt results file (e.g. a partial
+# write from a killed runner) or an unparseable manifest must FAIL the gate,
+# not iterate over nothing and print a vacuous pass. Every jq that feeds the
+# gate is exit-checked, and a zero-row result is itself an error.
+MANIFESTS_JSON=$(jq -s '.' "$MANIFEST_DIR"/*.json) || {
+    echo "ERROR: manifests in $MANIFEST_DIR are not parseable JSON" >&2
+    exit 2
+}
+CASES_JSON=$(jq '.cases // []' "$RESULTS") || {
+    echo "ERROR: $RESULTS is not parseable JSON — rerun ./test/cli/bin/run.sh" >&2
+    exit 2
+}
+
 # Flatten: every manifest command × required tier, joined with its case status.
-ROWS=$(jq -n \
-    --argjson manifests "$(jq -s '.' "$MANIFEST_DIR"/*.json)" \
-    --argjson in_cases "$(jq '.cases // []' "$RESULTS")" \
+if ! ROWS=$(jq -n \
+    --argjson manifests "$MANIFESTS_JSON" \
+    --argjson in_cases "$CASES_JSON" \
     --arg required_tiers "$REQUIRE_TIERS" '
 [$manifests[]
  | . as $m
@@ -78,7 +91,14 @@ ROWS=$(jq -n \
  | ([$in_cases[] | select(.id == $case_id)] | first | .status // "untested") as $status
  | {service: ($m.service // "unknown"), id: $c.id, tier: $tier,
    cmd: ($c.cmd // ""), case_id: $case_id, status: $status}
-]')
+]'); then
+    echo "ERROR: failed to compute coverage rows from $RESULTS and the manifests" >&2
+    exit 2
+fi
+if [[ -z "$ROWS" ]] || [[ "$(printf '%s' "$ROWS" | jq 'length')" == "0" ]]; then
+    echo "ERROR: coverage computed zero rows — empty results or empty manifests; a gate over nothing proves nothing" >&2
+    exit 2
+fi
 
 # Summary.
 SUMMARY=$(printf '%s' "$ROWS" | jq '{

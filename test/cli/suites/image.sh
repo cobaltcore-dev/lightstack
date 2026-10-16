@@ -13,6 +13,12 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
 
 suite_begin image
+# Standalone rerun-safety: this suite references the shared fixtures
+# (cli-conf, cli-conf-image, cli-conf-net) by name. bin/run.sh ensures them
+# and its teardown sweeps them, so running this suite alone after a sweep
+# re-ensures here instead of failing with confusing missing-resource errors.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/fixtures.sh"
+fixtures_require
 
 # ---------------------------------------------------------------------------
 # Suite-local fixtures: one 64 KiB file of zeros, uploaded by the create cases

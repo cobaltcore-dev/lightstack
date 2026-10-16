@@ -6,8 +6,21 @@
 #                       network+subnet); sweeps leftovers from a crashed prior
 #                       run first. Populates FIX_PROJECT_ID, FIX_IMAGE_ID,
 #                       FIX_NETWORK_ID, FIX_SUBNET_ID.
-#   fixtures_teardown   delete every resource whose name starts with the fixture
-#                       prefix (including the fixtures themselves), best-effort.
+#   fixtures_require    the standalone-suite entry point: verify the shared
+#                       fixtures exist and only fall back to the full
+#                       sweep-then-create ensure when one is missing, so a
+#                       suite running under bin/run.sh (which already ensured
+#                       them) pays three cheap show calls, not a re-sweep.
+#   fixtures_teardown   delete the resource kinds the sweep covers —
+#                       everything whose NAME starts with the fixture prefix
+#                       across servers, volumes, images, networks and their
+#                       children (subnets, ports, routers, FIPs, SGs),
+#                       keypairs and projects — best-effort. NOT covered:
+#                       nameless or differently-keyed kinds (roles, domains,
+#                       volume types, subnet pools, aggregates,
+#                       app-credentials) and volumes stuck in a transfer;
+#                       the suites' cases pre-clean their own residue of
+#                       those, so the gap only matters after a crash mid-case.
 #
 # Conventions every suite MUST follow:
 #   - resources created by a case are named  cli-conf-<slug>-<unique>
@@ -228,6 +241,27 @@ _ensure_network() {
     _probe subnet show "$FIX_SUBNET"
     FIX_SUBNET_ID=$(printf '%s' "$OSC_OUT" | jq -r '.id')
     log_info "fixture subnet $FIX_SUBNET ($FIX_SUBNET_ID)"
+}
+
+fixtures_require() {
+    local project_id="" image_id="" network_id=""
+    _probe project show "$FIX_PROJECT"
+    local have_project=$OSC_RC
+    (( have_project == 0 )) && project_id=$(printf '%s' "$OSC_OUT" | jq -r '.id')
+    _probe image show "$FIX_IMAGE"
+    local have_image=$OSC_RC
+    (( have_image == 0 )) && image_id=$(printf '%s' "$OSC_OUT" | jq -r '.id')
+    _probe network show "$FIX_NETWORK"
+    local have_network=$OSC_RC
+    (( have_network == 0 )) && network_id=$(printf '%s' "$OSC_OUT" | jq -r '.id')
+    if (( have_project == 0 && have_image == 0 && have_network == 0 )); then
+        FIX_PROJECT_ID="$project_id"
+        FIX_IMAGE_ID="$image_id"
+        FIX_NETWORK_ID="$network_id"
+        return 0
+    fi
+    log_info "shared fixtures missing — re-ensuring (standalone suite run after a sweep?)"
+    fixtures_ensure
 }
 
 fixtures_ensure() {

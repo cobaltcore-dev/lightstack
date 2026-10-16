@@ -62,7 +62,7 @@ A run passes (exit 0) iff **all** of the following hold:
 | `terraform destroy` | all 9 resources destroyed |
 | `terraform state list` | empty after destroy |
 | `terraform output` | no outputs after destroy |
-| OpenStack CLI residue check | zero `tf-compat-*` servers/networks/SGs/volumes/keypairs remain — the authoritative proof that destroy actually cleaned Lightstack (an empty state alone cannot show residue) |
+| OpenStack CLI residue check | zero `tf-compat-*` servers/networks/subnets/SGs/volumes/keypairs remain — the authoritative proof that destroy actually cleaned Lightstack (an empty state alone cannot show residue) |
 | post-destroy plan | `-detailed-exitcode` 0, or exit 2 with **adds only** — an empty state always re-proposes the 9 creates, so a bare "exit 0" is unattainable there; any to-change/to-destroy, or CLI residue, is a failure |
 
 ### Pinning policy

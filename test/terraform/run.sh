@@ -275,10 +275,12 @@ outputs="$(tf output -json 2>/dev/null)" || die "terraform output failed"
 log "outputs: none"
 
 # No tf-compat-* residue left in lightstack (the authoritative residue check —
-# an empty state alone cannot prove the infra is gone). Subnets, routers and
-# floating IPs are included even though they are unnamed or differently
-# named: the compat module creates them, and a leaked one is indistinguishable
-# from a fresh create in the post-destroy plan below.
+# an empty state alone cannot prove the infra is gone). The router and
+# floating-IP checks are defensive only: the current compat module creates
+# neither (network, subnet, security group + rules, keypair, server, volume,
+# attach), but a future module revision may add them, and the sweep must not
+# silently stop covering the surface when it does. Floating IPs carry no
+# name at all — they are covered by the id-based check below.
 residue=0
 for res in "server list" "network list" "security group list" "volume list" "keypair list"; do
     n="$("$OSC" $res -f value -c Name 2>/dev/null | grep -c '^tf-compat-' || true)"

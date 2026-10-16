@@ -12,7 +12,7 @@ jobs:
   cli-conformance-full:
     name: CLI Conformance (Full)
     runs-on: ubuntu-latest
-    if: github.repository == 'cobaltcore-dev/lightstack'
+    if: github.event_name == "workflow_dispatch" || github.repository == "cobaltcore-dev/lightstack"
     timeout-minutes: 60
 
     # SPEC-028 nightly: the FULL suite (workflows included, so tier C) plus the
@@ -112,7 +112,7 @@ jobs:
   terraform-conformance:
     name: Terraform Conformance
     runs-on: ubuntu-latest
-    if: github.repository == 'cobaltcore-dev/lightstack'
+    if: github.event_name == "workflow_dispatch" || github.repository == "cobaltcore-dev/lightstack"
     timeout-minutes: 45
 
     # SPEC-028 nightly: apply + destroy the UNMODIFIED terraform-provider-

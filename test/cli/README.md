@@ -17,9 +17,10 @@ make test-cli                   # runs against a running server, or starts one v
 ./test/cli/bin/coverage.sh      # the coverage gate — see below
 ```
 
-Requirements: `bash`, `jq`, `curl`, `python3`, and the pinned CLI
-(`pip install -c test/cli/constraints.txt python-openstackclient`, or point
-`OPENSTACK_CLI` at an existing binary).
+Requirements: `bash`, `jq`, `curl`, `python3`, `md5sum` (coreutils — the
+image suite checksums its uploads; macOS ships `md5` instead), and the pinned
+CLI (`pip install -c test/cli/constraints.txt python-openstackclient`, or
+point `OPENSTACK_CLI` at an existing binary).
 
 ## How it works
 

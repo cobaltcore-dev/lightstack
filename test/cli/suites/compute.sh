@@ -13,6 +13,12 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
 
 suite_begin compute
+# Standalone rerun-safety: this suite references the shared fixtures
+# (cli-conf, cli-conf-image, cli-conf-net) by name. bin/run.sh ensures them
+# and its teardown sweeps them, so running this suite alone after a sweep
+# re-ensures here instead of failing with confusing missing-resource errors.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/fixtures.sh"
+fixtures_require
 
 CP_IMAGE="cli-conf-image"
 CP_NETWORK="cli-conf-net"
@@ -593,6 +599,11 @@ t_begin compute.usage.list
 osc usage list
 assert_rc 0
 assert_jq_type '.' array
+# Deliberately NO length guard, unlike the hypervisor probe: usage lists
+# per-project instance aggregates, and every case before this one deletes
+# its server (rerun-safety), so an empty listing is the legitimate steady
+# state. `all` over [] is vacuously true by design here — the row-shape
+# assertion is the actual contract.
 assert_jq 'all(.[]; (.Project | type) == "string")' "true"
 t_end
 

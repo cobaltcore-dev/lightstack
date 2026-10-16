@@ -14,6 +14,12 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
 
 suite_begin volume
+# Standalone rerun-safety: this suite references the shared fixtures
+# (cli-conf, cli-conf-image, cli-conf-net) by name. bin/run.sh ensures them
+# and its teardown sweeps them, so running this suite alone after a sweep
+# re-ensures here instead of failing with confusing missing-resource errors.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/fixtures.sh"
+fixtures_require
 
 VO_TYPE="ceph-rbd" # seeded shared volume type (migration 002)
 QPROJECT="cli-conf" # shared fixture project for the admin quota cases

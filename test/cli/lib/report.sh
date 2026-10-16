@@ -6,7 +6,7 @@
 #                       append one case record to $RESULTS_FILE (JSONL)
 #   report_write <dir>  aggregate $RESULTS_FILE into <dir>/results.json and
 #                       <dir>/results.junit.xml
-#   report_summary      human-readable summary to stderr
+#   report_summary      human-readable summary to stdout
 #   report_failed       returns 0 (success) when some case FAILED — callers
 #                       write `if report_failed; then rc=1; fi`. Strict mode
 #                       (CLI_STRICT=1) also counts known-failing and skip.
@@ -79,8 +79,12 @@ report_write() {
     auth_url="${OS_AUTH_URL:-unknown}"
     git_rev="$(_git_rev)"
 
-    # results.json — full aggregate with metadata.
-    jq -s \
+    # results.json — full aggregate with metadata. Written atomically
+    # (tmp + mv on jq success only): a truncated results.json from a killed
+    # runner must not survive as a plausible input for coverage.sh, which
+    # would otherwise read a half-written file — the gate fails closed on
+    # unparseable input, and so does this write.
+    if ! jq -s \
         --arg generated "$generated" \
         --arg cli_version "$_CLI_OSC_VERSION" \
         --arg auth_url "$auth_url" \
@@ -94,7 +98,12 @@ report_write() {
           skipped: [.[] | select(.status == "skip")] | length,
           total_duration_ms: ([.[].duration_ms] | add // 0),
           cases: .}' \
-        "$RESULTS_FILE" >"$outdir/results.json"
+        "$RESULTS_FILE" >"$outdir/results.json.tmp"; then
+        rm -f "$outdir/results.json.tmp"
+        log_error "failed to aggregate $RESULTS_FILE into results.json — corrupt results file?"
+        return 1
+    fi
+    mv "$outdir/results.json.tmp" "$outdir/results.json"
 
     # results.junit.xml — one <testsuite> per suite, standard JUnit 4 shape.
     {
@@ -172,19 +181,22 @@ report_summary() {
     [[ -s "${RESULTS_FILE:-}" ]] || return 0
     echo
     echo "================ CLI conformance summary ================"
+    # Counts go to stdout with the banners (stderr is for the harness's own
+    # logging): `run.sh 2>/dev/null` must show a summary with numbers, not
+    # banners alone.
     jq -r -s '
         "  total:         \(length)",
         "  passed:        \([.[] | select(.status == "pass")] | length)",
         "  failed:        \([.[] | select(.status == "fail")] | length)",
         "  known-failing: \([.[] | select(.status == "known-failing")] | length)",
         "  skipped:       \([.[] | select(.status == "skip")] | length)"
-    ' "$RESULTS_FILE" >&2
+    ' "$RESULTS_FILE"
     echo "========================================================="
     local failed_ids
     failed_ids=$(jq -r -s '[.[] | select(.status == "fail") | "  \(.id): \(.error)"] | join("\n")' "$RESULTS_FILE")
     if [[ -n "$failed_ids" ]]; then
-        echo "Failures:" >&2
-        printf '%s\n' "$failed_ids" >&2
+        echo "Failures:"
+        printf '%s\n' "$failed_ids"
     fi
 }
 
@@ -193,10 +205,22 @@ report_failed() {
     # `if report_failed; then rc=1; fi`), non-zero when it is clean.
     # Strict mode also counts known-failing and skipped cases: the nightly
     # wants to be told when its debt grows back, not only when it breaks.
-    [[ -s "${RESULTS_FILE:-}" ]] || return 1
-    if [[ "${CLI_STRICT:-0}" == "1" ]]; then
-        jq -e -s 'any(.[]; .status == "fail" or .status == "known-failing" or .status == "skip")' "$RESULTS_FILE" >/dev/null
-    else
-        jq -e -s 'any(.[]; .status == "fail")' "$RESULTS_FILE" >/dev/null
+    # Fails CLOSED: a missing, empty, or unparseable results file counts as
+    # a failing run — a green result must be evidenced, not assumed.
+    if [[ ! -s "${RESULTS_FILE:-}" ]]; then
+        return 0
     fi
+    local predicate='any(.[]; .status == "fail")'
+    if [[ "${CLI_STRICT:-0}" == "1" ]]; then
+        predicate='any(.[]; .status == "fail" or .status == "known-failing" or .status == "skip")'
+    fi
+    jq -e -s "$predicate" "$RESULTS_FILE" >/dev/null 2>&1
+    local rc=$?
+    if (( rc == 0 )); then
+        return 0 # failures present
+    elif (( rc == 1 )); then
+        return 1 # predicate false — genuinely clean
+    fi
+    # jq exit >= 2: the results file is not parseable — corrupt means failed.
+    return 0
 }

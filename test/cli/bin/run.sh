@@ -5,9 +5,9 @@
 #   run.sh [--suite <name>]... [--fast] [--strict] [--no-cleanup]
 #          [--keep-server] [--results-dir <dir>] [--help]
 #
-#   --suite <name>     run only the named suite (repeatable). Implies
-#                      --no-cleanup unless --teardown is also given, so a
-#                      developer can iterate on one suite.
+#   --suite <name>     run only the named suite (repeatable). A single
+#                      --suite implies --no-cleanup unless --teardown is
+#                      also given, so a developer can iterate on one suite.
 #   --fast             run the PR-time subset (all suites except workflows).
 #   --strict           known-failing and skipped cases fail the run too.
 #                      The nightly runs this way: the PR gate tracks the debt,
@@ -171,6 +171,14 @@ if (( FAST )); then
     SUITES=("${filtered[@]}")
 fi
 
+# A selection that matches nothing must fail loudly, not run zero suites and
+# exit 0 — the exact vacuous-green class this harness exists to prevent
+# (e.g. `--fast --suite workflows`: the fast pool excludes workflows).
+if (( ${#SUITES[@]} == 0 )); then
+    log_error "--suite '${SUITE:-?}' selected no suites under the current flags (--fast?)"
+    exit 2
+fi
+
 # Strict mode is read by report_failed (lib/report.sh): known-failing and
 # skipped cases fail the run as well.
 if (( STRICT )); then
@@ -204,8 +212,16 @@ cleanup() {
     fi
     report_write "$RESULTS_DIR"
     report_summary
-    rm -rf "$RUN_DIR"
+    # report_failed must read the results BEFORE the run dir is removed —
+    # it used to run after `rm -rf` and always saw a missing file, which
+    # the old "missing means clean" reading silently absorbed (failure
+    # detection at exit was dead code). Now it genuinely gates the exit.
+    local failed=0
     if (( rc == 0 )) && report_failed; then
+        failed=1
+    fi
+    rm -rf "$RUN_DIR"
+    if (( failed )); then
         exit 1
     fi
     exit "$rc"
