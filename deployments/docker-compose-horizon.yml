@@ -71,7 +71,7 @@ services:
 
   # OpenStack Horizon Dashboard (Flamingo 2025.2)
   horizon:
-    image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
+    image: quay.io/openstack.kolla/horizon:2026.2-ubuntu-noble
     container_name: lightstack-horizon
     hostname: horizon
     ports:
