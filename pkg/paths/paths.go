@@ -5,7 +5,10 @@
 // here (SPEC-009 WS-0/WS-2/WS-5).
 package paths
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // DefaultBase is the node-local root used when state_path is not configured.
 const DefaultBase = "/var/lib/lightstack"
@@ -59,3 +62,22 @@ func ConsoleSocketPath(instanceID string) string {
 // DBDir is where a SQLite database lives on the node (lightstack.db and its -wal and
 // -shm files). PostgreSQL deployments leave it empty.
 func DBDir() string { return filepath.Join(base, "db") }
+
+// StorageTrees are the node-local directories teardown removes wholesale (the
+// internal/teardown purge). A SQLite database must never live inside any of them: a failed
+// teardown removes these before it knows whether the run succeeded, so a database nested here
+// would be deleted with the tree and the retry would lose its inventory.
+func StorageTrees() []string {
+	return []string{ImagesDir(), VolumesDir(), InstancesDir(), CloudInitDir(), DHCPDir(), ConsoleTokenDir(), ConsoleSocketDir()}
+}
+
+// WithinStorageTree returns the reserved storage tree (from StorageTrees) that contains the
+// absolute, cleaned path, or "" if none does. A path equal to a tree counts as within it.
+func WithinStorageTree(path string) string {
+	for _, t := range StorageTrees() {
+		if path == t || strings.HasPrefix(path, t+string(filepath.Separator)) {
+			return t
+		}
+	}
+	return ""
+}

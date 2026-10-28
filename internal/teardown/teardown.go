@@ -27,7 +27,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -59,6 +61,16 @@ type deps struct {
 	deleteDomain func(ctx context.Context, id string) error
 	purgeNetwork func() error // remove all host network state (DB-driven, or netns-prefix fallback)
 	purgeStorage func() error // RemoveAll the node-local /var/lib/lightstack trees (never RBD/S3 — C4/FR-015)
+	// purgeDatabase RemoveAll's the node-local SQLite db/ directory. execute() calls it ONLY
+	// after every other class purged cleanly, so a failed teardown leaves the database — the
+	// inventory a retry reads to enumerate domains and network state — in place (SPEC-029
+	// FR-013). Absent on PostgreSQL and real-mode-only nodes (RemoveAll of a missing dir is nil).
+	purgeDatabase func() error
+	// closeDB closes the enumeration connection. It runs AFTER the network purge (which
+	// queries the DB) and BEFORE the SQLite db/ directory is removed, so that directory is
+	// never unlinked while a connection holds -wal/-shm (SPEC-029 FR-013). nil when the DB
+	// was unreachable or on the no-DB path.
+	closeDB func()
 }
 
 // Run wires the real managers from cfg, enumerates the release's state, and purges
@@ -73,8 +85,9 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 
 	netMode := cmp.Or(cfg.Neutron.NetworkingMode, "stub")
 	d := deps{
-		deleteDomain: vmMgr.DeleteVM,
-		purgeStorage: purgeLocalStorage,
+		deleteDomain:  vmMgr.DeleteVM,
+		purgeStorage:  purgeLocalStorage,
+		purgeDatabase: func() error { return purgeLocalDatabase(cfg.Database.URL) },
 	}
 
 	// The DB is operator-owned: read it to enumerate, never reset it. If it is
@@ -93,7 +106,12 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 		// (C9, accepted limitation). Storage trees + a netns-prefix scan still run.
 	} else {
 		dbReachable = true
-		defer pool.Close()
+		// execute() closes this before the storage purge so the SQLite db/ directory can be
+		// removed last without a live connection holding -wal/-shm (SPEC-029 FR-013). The
+		// once-guard plus the deferred call make it safe if execute returns early.
+		var closeOnce sync.Once
+		d.closeDB = func() { closeOnce.Do(pool.Close) }
+		defer d.closeDB()
 		inv.DomainIDs, inv.enumErr = enumerateDomainIDs(ctx, pool)
 		neutronSvc := neutron.NewService(pool, netMode, nil)
 		d.purgeNetwork = func() error { return neutronSvc.PurgeRealModeNetworkState(ctx) }
@@ -125,6 +143,14 @@ func execute(ctx context.Context, d deps, inv Inventory, opts Options, dbReachab
 		network.purged++
 	}
 
+	// Close the enumeration connection before the SQLite db/ directory is removed: the network
+	// purge above queried it, and db/ is removed below once every class is clean, which must
+	// not happen while a connection holds -wal/-shm (SPEC-029 FR-013). nil on the
+	// unreachable / no-DB path.
+	if d.closeDB != nil && !opts.DryRun {
+		d.closeDB()
+	}
+
 	stor := classResult{name: "storage"}
 	if opts.DryRun {
 		log.Info().Msg("teardown: would purge node-local storage trees (dry-run)")
@@ -143,7 +169,23 @@ func execute(ctx context.Context, d deps, inv Inventory, opts Options, dbReachab
 		}
 	}
 	if len(failed) > 0 {
+		// A class failed, so the uninstall will be retried. Leave the node-local SQLite
+		// database — the inventory the retry reads to enumerate the release's domains and
+		// network state — in place rather than removing it here: a deleted file makes the
+		// retry's MustExist open fail, fall back to the DB-unreachable path (which cannot
+		// enumerate domains), and report best-effort success with host state still present
+		// (SPEC-029 FR-013).
 		return fmt.Errorf("teardown incomplete: failed to purge %s", strings.Join(failed, ", "))
+	}
+	// Every class purged cleanly, so the inventory is no longer needed: remove the node-local
+	// SQLite db/ directory last (delete policy). closeDB already ran above, so no connection
+	// holds -wal/-shm (SPEC-029 FR-013); the dir is absent on PostgreSQL and real-mode-only
+	// nodes (RemoveAll of a missing dir is nil). Skipped on dry-run.
+	if !opts.DryRun {
+		if err := d.purgeDatabase(); err != nil {
+			log.Error().Err(err).Msg("teardown: node-local database purge failed")
+			return fmt.Errorf("teardown incomplete: failed to purge database")
+		}
 	}
 	if dbReachable {
 		log.Info().Msg("teardown: complete — no lightstack-generated host state remaining (database left to its operator)")
@@ -205,12 +247,46 @@ func isAbsent(err error) bool {
 // C4/FR-015). Covers DB-tracked and orphaned files (FR-006) and needs no database
 // (C9); the trees are single-release per node (FR-003b). Removing an absent dir is nil.
 func purgeLocalStorage() error {
-	for _, dir := range []string{
-		paths.ImagesDir(), paths.VolumesDir(), paths.InstancesDir(), paths.CloudInitDir(), paths.DHCPDir(),
-		paths.ConsoleTokenDir(), paths.ConsoleSocketDir(),
-	} {
+	for _, dir := range paths.StorageTrees() {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// purgeLocalDatabase removes the node-local SQLite database for dbURL. It removes the directory
+// holding the file the binary opened at the URL's path (lightstack.db, -wal and -shm) — not a
+// fixed db/, so a non-default database.url is purged too rather than left behind for a reinstall
+// to reopen against deleted backing storage (SPEC-029 FR-013/FR-004). execute() calls it ONLY
+// after every other class purged cleanly and after closeDB, so a failed teardown preserves the
+// inventory for the retry and no connection holds -wal/-shm. It never RemoveAll's the state root
+// itself (the mount, which holds the other trees); a database placed directly in the root has
+// only its own files removed. Returns nil for PostgreSQL (no node-local database); RemoveAll of
+// a missing path is nil.
+func purgeLocalDatabase(dbURL string) error {
+	path, ok := database.SQLiteFilePath(dbURL)
+	if !ok {
+		return nil
+	}
+	// Remove the database file and its WAL sidecars, and only those: a database URL owns that
+	// file, not everything beside it. A custom or shared directory — or a path outside the state
+	// root, which the bare binary accepts — may hold unrelated files or other databases, so the
+	// directory is never removed recursively. An already-absent file is success.
+	for _, f := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", f, err)
+		}
+	}
+	// The one directory Lightstack owns is the canonical paths.DBDir(); remove it when the files
+	// above leave it empty, so a delete-policy teardown leaves nothing behind there. os.Remove is
+	// non-recursive, so a db/ that still holds another file is kept; any other directory is never
+	// removed.
+	if dir := filepath.Dir(path); filepath.Clean(dir) == filepath.Clean(paths.DBDir()) {
+		if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+			if err := os.Remove(dir); err != nil {
+				return fmt.Errorf("remove %s: %w", dir, err)
+			}
 		}
 	}
 	return nil

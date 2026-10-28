@@ -137,6 +137,16 @@ docker compose up -d
  ✔ Container lightstack                Started (healthy)
 ```
 
+#### Alternative: SQLite backend (no PostgreSQL)
+
+The default `docker-compose.yml` runs PostgreSQL. To run Lightstack on a single SQLite file instead — no PostgreSQL container — use the SQLite variant:
+
+```bash
+docker compose -f deployments/docker-compose-sqlite.yml up -d
+```
+
+It drops the `postgres` service and sets `LIGHTSTACK_DB_URL=sqlite:///var/lib/lightstack/db/lightstack.db`. The whole node-local state root `/var/lib/lightstack` lives on the named volume `lightstack_state` — the SQLite database (and its `-wal`/`-shm` sidecar files) under `db/`, plus the local Glance images and Cinder volumes the stack writes in local mode — so active records and their backing persist together across `down`/`up`. The backend is chosen by the URL scheme alone — no other change is needed. SQLite needs working POSIX file locks, so keep the state root on a **local filesystem**: a Docker named volume is local by default; do not back it with NFS or CephFS, whose locking can corrupt the database.
+
 ### Step 4: Verify Deployment
 
 ```bash

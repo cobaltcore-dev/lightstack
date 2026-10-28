@@ -57,6 +57,29 @@ func TestParseURL(t *testing.T) {
 	}
 }
 
+// TestSQLiteFilePath pins the helper teardown uses to find the one file (and so the directory)
+// a SQLite database.url names: the cleaned URL path for a SQLite URL, and (_, false) for a
+// PostgreSQL or invalid URL so the caller removes nothing.
+func TestSQLiteFilePath(t *testing.T) {
+	for _, tc := range []struct {
+		in       string
+		wantPath string
+		wantOK   bool
+	}{
+		{"sqlite:///var/lib/lightstack/db/lightstack.db", "/var/lib/lightstack/db/lightstack.db", true},
+		{"sqlite:///var/lib/lightstack/custom/lightstack.db", "/var/lib/lightstack/custom/lightstack.db", true},
+		{"sqlite:///var/lib/lightstack//db/x.db", "/var/lib/lightstack/db/x.db", true}, // cleaned
+		{"postgres://u:p@db/lightstack", "", false},
+		{"sqlite://relative/x.db", "", false}, // not a valid SQLite URL
+		{"", "", false},
+	} {
+		got, ok := database.SQLiteFilePath(tc.in)
+		if ok != tc.wantOK || got != tc.wantPath {
+			t.Errorf("SQLiteFilePath(%q) = (%q, %v); want (%q, %v)", tc.in, got, ok, tc.wantPath, tc.wantOK)
+		}
+	}
+}
+
 // TestCheckDeclaredBackend pins §2: LIGHTSTACK_DB_BACKEND, when set, must name the
 // backend the URL selects.
 func TestCheckDeclaredBackend(t *testing.T) {

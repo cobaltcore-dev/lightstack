@@ -110,6 +110,107 @@ FR-006/006a/007/007a/008b/012e/018.
 {{- if ge (int .Values.drainSeconds) (int .Values.terminationGracePeriodSeconds) -}}
 {{- fail (printf "\n\ndrainSeconds (%d) must be less than terminationGracePeriodSeconds (%d) (SPEC-013 FR-009): otherwise the SIGTERM drain sleep outlasts the grace period and the kubelet SIGKILLs mid-drain, dropping in-flight requests and leaving endpoint deregistration incomplete.\n" (int .Values.drainSeconds) (int .Values.terminationGracePeriodSeconds)) -}}
 {{- end -}}
+{{- /* The database backend and URL are configured only through database.url / database.existingSecret,
+       which drive validation, the hostPath mounts, startup and the teardown purge together. extraEnv is
+       applied last in the container env, so an override there would win for the workload yet never reach
+       the mounts or the purge Job (which does not inherit extraEnv) — refuse it (SPEC-029). */ -}}
+{{- range $e := .Values.extraEnv -}}
+{{-   if or (eq $e.name "LIGHTSTACK_DB_URL") (eq $e.name "LIGHTSTACK_DB_BACKEND") -}}
+{{- fail (printf "\n\nextraEnv must not set %s: the database backend and URL are configured only through database.url (or database.existingSecret), which drive validation, the hostPath mounts, startup and the teardown purge together. An override in extraEnv wins for the workload container but not for the mounts or the purge Job (which does not inherit extraEnv), so the database would diverge from where it is mounted and purged. Put the database settings in database.url; keep extraEnv for other variables.\n" $e.name) -}}
+{{-   end -}}
+{{- end -}}
+{{- /* SQLite single-node guards (SPEC-029 FR-002/003a/008/009). Keyed off database.url's
+       scheme, so they never fire for PostgreSQL. Ordered: Secret conflict, path canonical,
+       path under root, path not in a storage tree, mode, replicas, node pin — the message
+       names exactly what is wrong. */ -}}
+{{- if eq (include "lightstack.dbBackend" .) "sqlite" -}}
+{{-   if or .Values.database.existingSecret .Values.secrets.existingSecret -}}
+{{- fail "\n\nSQLite is selected only through database.url and cannot be combined with database.existingSecret or secrets.existingSecret (SPEC-029 FR-003a): a Secret-injected LIGHTSTACK_DB_URL would override it, so the rendered SQLite storage would serve a URL that never takes effect. Use database.url alone for SQLite.\n" -}}
+{{-   end -}}
+{{-   $path := trimPrefix "sqlite://" .Values.database.url -}}
+{{-   $root := .Values.realMode.hostStoragePath -}}
+{{-   if or (contains "%" $path) (ne $path (clean $path)) -}}
+{{- fail (printf "\n\ndatabase.url SQLite path %q must be a canonical absolute path (SPEC-029 FR-002): no '..' segments, no repeated or trailing slashes, and no percent-encoding. The chart compares this string against realMode.hostStoragePath and mounts its parent directory as a hostPath, while the binary percent-decodes the URL, so a non-canonical or encoded path could pass the prefix check yet open the database outside the mounted directory, where it is lost on pod recreation.\n" $path) -}}
+{{-   end -}}
+{{-   if not (hasPrefix (printf "%s/" $root) $path) -}}
+{{- fail (printf "\n\ndatabase.url SQLite path %q must lie under realMode.hostStoragePath (%s) (SPEC-029 FR-002): the chart mounts that directory as a hostPath, so an outside path is refused.\n" $path $root) -}}
+{{-   end -}}
+{{-   range $tree := (list "images" "volumes" "instances" "cloud-init" "dhcp" "console-tokens" "console-sockets") -}}
+{{-     if hasPrefix (printf "%s/%s/" $root $tree) $path -}}
+{{- fail (printf "\n\ndatabase.url SQLite path %q must not lie inside the node-local storage directory %s/%s (SPEC-029 FR-002): teardown removes that tree wholesale before it knows whether the run succeeded, so a database nested there would be deleted with it. Use a separate directory such as %s/db.\n" $path $root $tree $root) -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if ne .Values.deploymentMode "single-node" -}}
+{{- fail (printf "\n\nSQLite requires deploymentMode=single-node (got %q) (SPEC-029 FR-009): SQLite serves one node; a multi-node deployment must use PostgreSQL.\n" .Values.deploymentMode) -}}
+{{-   end -}}
+{{-   if gt (int .Values.replicaCount) 1 -}}
+{{- fail (printf "\n\nSQLite requires replicaCount<=1 (got %d) (SPEC-029 FR-009): one pod opens the single database file.\n" (int .Values.replicaCount)) -}}
+{{-   end -}}
+{{-   $pinned := false -}}
+{{-   if .Values.nodeSelector -}}
+{{-     if and (hasKey .Values.nodeSelector "kubernetes.io/hostname") (ne (index .Values.nodeSelector "kubernetes.io/hostname" | toString) "") -}}
+{{-       $pinned = true -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if and (not $pinned) .Values.affinity .Values.affinity.nodeAffinity .Values.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution -}}
+{{-     if ne (include "lightstack.sqliteAffinityIdentity" .) "" -}}
+{{-       $pinned = true -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if not $pinned -}}
+{{- fail "\n\nSQLite requires a single-node pin (SPEC-029 FR-008): set nodeSelector with a non-empty kubernetes.io/hostname (e.g. nodeSelector: { kubernetes.io/hostname: <node> }), or an affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution whose every nodeSelectorTerm constrains kubernetes.io/hostname (or metadata.name via matchFields) with operator In to the SAME single node. A group selector such as kubernetes.io/os: linux, a required affinity that allows more than one node (multiple hostnames, differing terms, or no hostname constraint), a soft (preferred) affinity, or no pin at all does not bind the pod to one node: a rescheduled pod would find an empty directory and SQLite would start a fresh database there while the data stays on the old node, and the teardown purge Job could run on a different node from the database.\n" -}}
+{{-   end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+lightstack.sqliteNodeSelectorTermIdentity — given one nodeSelectorTerm (the template context),
+renders the single node identity it pins to, tagged by kind: "hostname=<v>" from a
+kubernetes.io/hostname matchExpression (matchExpressions select by node labels), or "name=<v>" from
+a metadata.name matchFields entry (matchFields select by node fields; metadata.name is the only
+one Kubernetes supports). Each needs operator In and exactly one non-empty value. Renders "" when
+the term does not constrain the node to one identity — a metadata.name in matchExpressions is an
+ordinary label many nodes can share, and a kubernetes.io/hostname in matchFields is not a valid
+field, so neither counts. The kind tag keeps a hostname label and a metadata.name field with the
+same value distinct, since the kubelet hostname label need not equal the node name. Extra
+predicates in the term are ignored — they only narrow further (SPEC-029 FR-008).
+*/}}
+{{- define "lightstack.sqliteNodeSelectorTermIdentity" -}}
+{{- $id := "" -}}
+{{- range (default (list) .matchExpressions) -}}
+{{-   if and (eq .key "kubernetes.io/hostname") (eq (.operator | toString) "In") (eq (len (default (list) .values)) 1) (ne (index .values 0 | toString) "") -}}
+{{-     $id = printf "hostname=%s" (index .values 0 | toString) -}}
+{{-   end -}}
+{{- end -}}
+{{- range (default (list) .matchFields) -}}
+{{-   if and (eq .key "metadata.name") (eq (.operator | toString) "In") (eq (len (default (list) .values)) 1) (ne (index .values 0 | toString) "") -}}
+{{-     $id = printf "name=%s" (index .values 0 | toString) -}}
+{{-   end -}}
+{{- end -}}
+{{- $id -}}
+{{- end -}}
+
+{{/*
+lightstack.sqliteAffinityIdentity — renders the single node identity enforced across EVERY OR term
+of affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution, or "" when the affinity
+does not bind the pod to one node (an empty term list, a term with no single non-empty hostname
+identity, or terms that resolve to different nodes). SPEC-029 FR-008.
+*/}}
+{{- define "lightstack.sqliteAffinityIdentity" -}}
+{{- $terms := .Values.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms -}}
+{{- $identity := "" -}}
+{{- $valid := gt (len (default (list) $terms)) 0 -}}
+{{- range $t := (default (list) $terms) -}}
+{{-   $tid := include "lightstack.sqliteNodeSelectorTermIdentity" $t -}}
+{{-   if eq $tid "" -}}
+{{-     $valid = false -}}
+{{-   else if eq $identity "" -}}
+{{-     $identity = $tid -}}
+{{-   else if ne $identity $tid -}}
+{{-     $valid = false -}}
+{{-   end -}}
+{{- end -}}
+{{- if $valid -}}{{ $identity }}{{- end -}}
 {{- end -}}
 
 {{/*
@@ -201,12 +302,105 @@ nothing without database.existingSecret.
 {{- end -}}
 
 {{/*
+The database backend, read from database.url's scheme (SPEC-029 FR-001). Anchored on the
+`sqlite://` form the chart, docs and values use. Anything else — a URL hidden in
+database.existingSecret or secrets.existingSecret, or a non-canonical single-slash
+`sqlite:/path` the binary would still accept — resolves to postgres here, so the binary
+catches the scheme mismatch at startup (SPEC-028 FR-004) with a clear message rather than the
+chart failing the render with a confusing path error. Renders "sqlite" or "postgres".
+*/}}
+{{- define "lightstack.dbBackend" -}}
+{{- if hasPrefix "sqlite://" .Values.database.url -}}sqlite{{- else -}}postgres{{- end -}}
+{{- end -}}
+
+{{/* Truthy only when the chart renders SQLite storage (SPEC-029). */}}
+{{- define "lightstack.sqliteEnabled" -}}
+{{- if eq (include "lightstack.dbBackend" .) "sqlite" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+lightstack.sqliteStubMountPath — the hostPath the stub-mode SQLite workload mounts. When a local
+Glance or Cinder backend writes node-local backing (storageMode contains "local"), it is the whole
+state root (realMode.hostStoragePath), so images/ and volumes/ persist with the database across pod
+recreation and upgrades — matching the real-mode mount and the Compose variant. Otherwise (the
+stub-storage default) it is just the database directory, keeping FR-004's least-privilege mount.
+*/}}
+{{- define "lightstack.sqliteStubMountPath" -}}
+{{- if or (contains "local" .Values.glance.storageMode) (contains "local" .Values.cinder.storageMode) -}}
+{{- .Values.realMode.hostStoragePath -}}
+{{- else -}}
+{{- dir (trimPrefix "sqlite://" .Values.database.url) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+LIGHTSTACK_DB_BACKEND for every container that runs the binary — the workload and the teardown
+purge Job — so the binary can verify a URL the chart cannot see (SPEC-029 FR-003). Always set.
+*/}}
+{{- define "lightstack.dbBackendEnv" -}}
+- name: LIGHTSTACK_DB_BACKEND
+  value: {{ include "lightstack.dbBackend" . | quote }}
+{{- end -}}
+
+{{/*
+Node placement — nodeSelector and tolerations — shared by every scheduling variant below. Emits
+nothing when both are unset, so a default render is unchanged.
+*/}}
+{{- define "lightstack.nodePlacement" -}}
+{{- if eq .Values.deploymentMode "multi-node" }}
+{{- $kv := splitn "=" 2 .Values.multiNode.nodeSelectorLabel }}
+nodeSelector:
+  {{ $kv._0 }}: {{ $kv._1 | quote }}
+  {{- with .Values.nodeSelector }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- else if .Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml .Values.nodeSelector | nindent 2 }}
+{{- end }}
+{{- with .Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Full pod scheduling — node placement plus the operator's whole affinity — for the workload pod
+(lightstack.podSpec).
+*/}}
+{{- define "lightstack.scheduling" -}}
+{{- include "lightstack.nodePlacement" . }}
+{{- with .Values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Node-only scheduling for the teardown purge Job: node placement plus the operator's node affinity,
+but NOT podAffinity/podAntiAffinity. The purge must run on the workload's node (SPEC-029 FR-010), so
+it keeps the node pin — but it runs after the quiesce hook has scaled the workload to zero, so a
+required pod-affinity on live workload pods would make it unschedulable and hang the uninstall. The
+purge Job also deliberately omits app.kubernetes.io/name, so it would not satisfy such a term
+itself. It carries no pod affinity of its own.
+*/}}
+{{- define "lightstack.schedulingNodeOnly" -}}
+{{- include "lightstack.nodePlacement" . }}
+{{- with .Values.affinity }}
+{{- with .nodeAffinity }}
+affinity:
+  nodeAffinity:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
 Shared pod spec (spec.template.spec) for both the single-node Deployment and the
 multi-node DaemonSet, so the container, config mount, probes, and real-mode host
 access stay identical across modes. Include with: {{- include "lightstack.podSpec" . | nindent 6 }}
 */}}
 {{- define "lightstack.podSpec" -}}
-{{- $kv := splitn "=" 2 .Values.multiNode.nodeSelectorLabel -}}
 # Lightstack never calls the Kubernetes API — don't mount a ServiceAccount token (FR-009c; reduces attack surface).
 automountServiceAccountToken: false
 terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
@@ -217,16 +411,7 @@ imagePullSecrets:
 {{- if .Values.realMode.enabled }}
 hostNetwork: {{ .Values.realMode.hostNetwork }}
 {{- end }}
-{{- if eq .Values.deploymentMode "multi-node" }}
-nodeSelector:
-  {{ $kv._0 }}: {{ $kv._1 | quote }}
-  {{- with .Values.nodeSelector }}
-  {{- toYaml . | nindent 2 }}
-  {{- end }}
-{{- else if .Values.nodeSelector }}
-nodeSelector:
-  {{- toYaml .Values.nodeSelector | nindent 2 }}
-{{- end }}
+{{- include "lightstack.scheduling" . }}
 {{- if .Values.realMode.enabled }}
 initContainers:
   {{- if .Values.realMode.legacyStatePath }}
@@ -300,6 +485,7 @@ initContainers:
         "{{ .Values.realMode.hostStoragePath }}/dhcp"
         "{{ .Values.realMode.hostStoragePath }}/console-tokens"
         "{{ .Values.realMode.hostStoragePath }}/console-sockets"
+        "{{ .Values.realMode.hostStoragePath }}/db"
     volumeMounts:
       - name: host-storage
         mountPath: {{ .Values.realMode.hostStoragePath }}
@@ -332,6 +518,7 @@ containers:
       {{- with include "lightstack.dbUrlEnv" . }}
       {{- . | nindent 6 }}
       {{- end }}
+      {{- include "lightstack.dbBackendEnv" . | nindent 6 }}
       {{- if .Values.endpointHost }}
       - name: LIGHTSTACK_ENDPOINT_HOST
         value: {{ .Values.endpointHost | quote }}
@@ -385,6 +572,13 @@ containers:
       - name: config
         mountPath: /app/config
         readOnly: true
+      {{- if and (include "lightstack.sqliteEnabled" .) (not .Values.realMode.enabled) }}
+      # Stub-mode SQLite: the db directory (least privilege, SPEC-029 FR-004), or the whole state
+      # root when a local Glance/Cinder backend also writes node-local backing there, so images/
+      # and volumes/ persist with the database. Real mode reaches it through host-storage below.
+      - name: sqlite-db
+        mountPath: {{ include "lightstack.sqliteStubMountPath" . }}
+      {{- end }}
       {{- if .Values.realMode.enabled }}
       - name: libvirt-run
         mountPath: {{ dir .Values.realMode.libvirtSocketPath }}
@@ -399,6 +593,15 @@ volumes:
   - name: config
     secret:
       secretName: {{ include "lightstack.configSecretName" . }}
+  {{- if and (include "lightstack.sqliteEnabled" .) (not .Values.realMode.enabled) }}
+  # Stub-mode SQLite hostPath (no PVC): the db directory, or the whole state root when a local
+  # Glance/Cinder backend also writes there (so the images/ and volumes/ backing persists with the
+  # database). WAL keeps lightstack.db-wal and -shm beside the file, so a directory is mounted.
+  - name: sqlite-db
+    hostPath:
+      path: {{ include "lightstack.sqliteStubMountPath" . }}
+      type: DirectoryOrCreate
+  {{- end }}
   {{- if .Values.realMode.enabled }}
   # The directory that holds libvirtd's socket, not the socket. A bind of the file keeps
   # the inode the pod started with, so once libvirtd re-creates its socket — its socket
@@ -421,12 +624,4 @@ volumes:
       type: DirectoryOrCreate
   {{- end }}
   {{- end }}
-{{- with .Values.tolerations }}
-tolerations:
-  {{- toYaml . | nindent 2 }}
-{{- end }}
-{{- with .Values.affinity }}
-affinity:
-  {{- toYaml . | nindent 2 }}
-{{- end }}
 {{- end -}}
