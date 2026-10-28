@@ -632,6 +632,47 @@ Until the chart is published, use the manifests in this guide directly or wrap t
 
 ---
 
+## SQLite backend (single node)
+
+Instead of an external PostgreSQL, a single-node deployment can keep all state in one SQLite file on the node, through the Helm chart. PostgreSQL stays the default; SQLite is opt-in and selected only by the `database.url` scheme.
+
+```yaml
+# values.yaml (excerpt)
+database:
+  url: sqlite:///var/lib/lightstack/db/lightstack.db   # absolute path under realMode.hostStoragePath
+nodeSelector:
+  kubernetes.io/hostname: <your-node>                  # SQLite requires a node pin
+```
+
+```bash
+helm install ls charts/lightstack \
+  --set image.repository=<registry>/lightstack \
+  --set secrets.jwtSecret=<jwt> --set secrets.adminPassword=<pw> \
+  --set database.url='sqlite:///var/lib/lightstack/db/lightstack.db' \
+  --set nodeSelector."kubernetes\.io/hostname"=<your-node>
+```
+
+What the chart does for a SQLite URL:
+
+- **Node-local hostPath, no PVC.** The database directory (`<realMode.hostStoragePath>/db`, holding `lightstack.db` and its `-wal`/`-shm` files) is mounted as a `hostPath` with `type: DirectoryOrCreate`. In real mode it lives inside the existing `host-storage` mount; in stub mode the chart adds a hostPath scoped to the db directory only. The database shares the node's disk and is **lost with the node** — accepted, as the VM disks in real mode already are.
+- **`strategy: Recreate`** in both stub and real mode, so the old pod releases the file before the new one opens it (a brief API outage on upgrade — no two writers).
+- **`LIGHTSTACK_DB_BACKEND=sqlite`** on every container that runs the binary, so a `sqlite://` URL hidden in a Secret is refused at startup.
+
+Render-time guards (the install fails fast, naming the problem) — SQLite is refused when:
+
+- the path is not under `realMode.hostStoragePath`;
+- there is no node pin (`nodeSelector` or `affinity.nodeAffinity`) — a rescheduled pod would start a fresh database on another node;
+- `deploymentMode` is not `single-node`, or `replicaCount > 1`;
+- it is combined with `database.existingSecret` or `secrets.existingSecret` (SQLite is selected only through `database.url`).
+
+**Filesystem requirement:** SQLite needs working POSIX file locks, so `realMode.hostStoragePath` **must be a local filesystem — not NFS or CephFS**, whose locking can corrupt the database.
+
+**Uninstall and retention** (`dataRetentionPolicy`): the teardown purge Job is pinned to the same node as the workload, reads the database to enumerate the release's VMs, and — under `delete` — removes the node-local trees with the `db/` directory **last**. Under `retain` (the default) nothing runs and `db/` stays on the node; a reinstall on the same node opens the database and resumes. The three db files (`lightstack.db`, `-wal`, `-shm`) belong together and are never moved individually. Backup and restore are part 3 (cloud-storage#600).
+
+> **Note:** A namespace enforcing the `baseline` or `restricted` Pod Security level rejects the pod — SQLite (like real mode) requires a hostPath volume.
+
+---
+
 ## Production Considerations
 
 ### PostgreSQL

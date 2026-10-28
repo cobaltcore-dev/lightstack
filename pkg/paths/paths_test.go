@@ -27,6 +27,28 @@ func TestLayout(t *testing.T) {
 	}
 }
 
+// WithinStorageTree reports the reserved storage tree a path nests in (so a SQLite database
+// is kept out of the trees teardown wipes), and "" for the db dir, a custom dir, or a path
+// outside the root. StorageTrees must list exactly the directories the teardown purge removes.
+func TestWithinStorageTree(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"/var/lib/lightstack/images/control/lightstack.db", "/var/lib/lightstack/images"},
+		{"/var/lib/lightstack/volumes/x/lightstack.db", "/var/lib/lightstack/volumes"},
+		{"/var/lib/lightstack/console-sockets/x.db", "/var/lib/lightstack/console-sockets"},
+		{"/var/lib/lightstack/db/lightstack.db", ""},     // the db dir is not a storage tree
+		{"/var/lib/lightstack/custom/lightstack.db", ""}, // a custom dir is allowed
+		{"/var/lib/lightstack/images-backup/x.db", ""},   // prefix-but-not-child must not match
+		{"/srv/elsewhere/lightstack.db", ""},             // outside the root
+	} {
+		if got := WithinStorageTree(tc.path); got != tc.want {
+			t.Errorf("WithinStorageTree(%q) = %q; want %q", tc.path, got, tc.want)
+		}
+	}
+	if len(StorageTrees()) != 7 {
+		t.Errorf("StorageTrees() has %d entries; want 7 (keep it in sync with the teardown purge)", len(StorageTrees()))
+	}
+}
+
 // Every directory follows the configured root (state_path). A helper that kept the
 // default would split the node's state across two roots — and libvirtd, which opens
 // the paths written into the domain XML on the host, would find only half of it.

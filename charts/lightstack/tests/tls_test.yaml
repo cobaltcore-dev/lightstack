@@ -18,16 +18,17 @@ tests:
           content:
             name: LIGHTSTACK_ENDPOINT_SCHEME
             value: "https"
-  - it: sets no catalog scheme by default (the env block holds only the node name)
+  - it: sets no catalog scheme by default (the env block holds the node name and the backend marker)
     asserts:
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: LIGHTSTACK_ENDPOINT_SCHEME
             value: "https"
+      # LIGHTSTACK_NODE_NAME + LIGHTSTACK_DB_BACKEND (always set, SPEC-029 FR-003).
       - lengthEqual:
           path: spec.template.spec.containers[0].env
-          count: 1
+          count: 2
   - it: does not set the https scheme when only the endpoint host is configured
     set:
       endpointHost: lightstack.example.com

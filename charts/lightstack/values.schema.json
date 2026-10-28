@@ -49,15 +49,15 @@
     "database": {
       "type": "object",
       "additionalProperties": false,
-      "description": "External PostgreSQL reference. The chart deploys no database (FR-006). Provide url OR existingSecret.",
+      "description": "Database reference. External PostgreSQL (the chart deploys no database, FR-006), or single-node SQLite on a node-local hostPath. Provide url OR existingSecret (existingSecret is PostgreSQL-only).",
       "properties": {
         "url": {
           "type": "string",
-          "description": "PostgreSQL URL, e.g. postgres://user:pw@host:5432/lightstack?sslmode=disable. Required unless existingSecret is set (enforced at render time)."
+          "description": "Database URL; its scheme selects the backend. PostgreSQL: postgres://user:pw@host:5432/lightstack?sslmode=disable. SQLite (single node): sqlite:///<absolute path under realMode.hostStoragePath>, e.g. sqlite:///var/lib/lightstack/db/lightstack.db — the chart then renders a hostPath db directory (no PVC), strategy Recreate, and requires a node pin; a SQLite URL cannot be combined with existingSecret or secrets.existingSecret. Required unless existingSecret is set (enforced at render time)."
         },
         "existingSecret": {
           "type": "string",
-          "description": "Name of an existing Secret holding the DB URL (alternative to url); injected as LIGHTSTACK_DB_URL."
+          "description": "Name of an existing Secret holding the DB URL (alternative to url, PostgreSQL only); injected as LIGHTSTACK_DB_URL."
         },
         "existingSecretKey": {
           "type": "string",

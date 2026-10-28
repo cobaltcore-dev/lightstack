@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/rs/zerolog/log"
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 )
@@ -40,6 +41,38 @@ func sqlitePathFromURL(raw string) (string, error) {
 	}
 	u, _ := url.Parse(raw)
 	return filepath.Clean(u.Path), nil
+}
+
+// SQLiteFilePath returns the on-disk file a SQLite database.url names, and true, when raw is a
+// valid SQLite URL. It returns ("", false) for a PostgreSQL URL or anything that does not parse
+// as a SQLite URL. Callers that purge node-local storage use it to find the one database file
+// (and so its directory) the binary opened — which is the URL's path, not a fixed location.
+func SQLiteFilePath(raw string) (string, bool) {
+	if b, err := ParseURL(raw); err != nil || b != SQLite {
+		return "", false
+	}
+	p, err := sqlitePathFromURL(raw)
+	if err != nil {
+		return "", false
+	}
+	return p, true
+}
+
+// CheckSQLiteStorageLayout refuses a SQLite database.url whose file lies inside one of the
+// node-local storage trees the teardown purge removes wholesale (paths.StorageTrees): that purge
+// runs before it knows whether the run succeeded, so a database nested there would be deleted
+// with the tree and the retry would lose its inventory (SPEC-029 FR-002). It reads the node-local
+// root last set by paths.SetBase, so a caller must apply state_path first. A non-SQLite URL, or a
+// SQLite file outside those trees, passes.
+func CheckSQLiteStorageLayout(raw string) error {
+	path, ok := SQLiteFilePath(raw)
+	if !ok {
+		return nil
+	}
+	if tree := paths.WithinStorageTree(path); tree != "" {
+		return fmt.Errorf("database.url SQLite path %s lies inside the node-local storage directory %s, which teardown removes wholesale; a failed teardown would delete the database with that tree, so place it in its own directory such as %s", path, tree, paths.DBDir())
+	}
+	return nil
 }
 
 // sqliteDSN builds the driver's URI. mode=rw never creates the file: the create-if-

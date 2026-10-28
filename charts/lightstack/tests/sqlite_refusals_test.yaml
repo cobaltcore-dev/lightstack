@@ -1,0 +1,314 @@
+# helm-unittest specs for the SQLite render-time refusals (SPEC-029 / cloud-storage#599,
+# contract chart-render C-RENDER-4/6). The guards live in lightstack.validate, invoked
+# from service.yaml. Each refusal fires only when the backend is SQLite; PostgreSQL with
+# the same unsafe settings renders fine. Base values are a SQLite config with no node pin
+# (so the pin refusal fires on the base, and the earlier checks fire when triggered).
+suite: SQLite render-time refusals
+templates:
+  - templates/service.yaml
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: sqlite:///var/lib/lightstack/db/lightstack.db
+tests:
+  - it: refuses a SQLite path outside realMode.hostStoragePath (FR-002)
+    set:
+      database.url: sqlite:///tmp/elsewhere/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must lie under realMode.hostStoragePath
+
+  - it: refuses a path that only shares a prefix with the storage root (boundary) (FR-002)
+    set:
+      database.url: sqlite:///var/lib/lightstackEVIL/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must lie under realMode.hostStoragePath
+
+  # A database nested inside a node-local storage tree (images/, volumes/, …) is wiped by the
+  # teardown purge before it knows the run succeeded, so it must be refused (FR-002).
+  - it: refuses a SQLite path inside a storage tree (images/) (FR-002)
+    set:
+      database.url: sqlite:///var/lib/lightstack/images/control/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must not lie inside the node-local storage directory
+
+  - it: refuses a SQLite path inside a storage tree (volumes/) (FR-002)
+    set:
+      database.url: sqlite:///var/lib/lightstack/volumes/control/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must not lie inside the node-local storage directory
+
+  # A ".." traversal passes a raw hasPrefix check but escapes the mounted directory, so it
+  # must be refused before the prefix test (FR-002).
+  - it: refuses a SQLite path with ".." traversal (FR-002)
+    set:
+      database.url: sqlite:///var/lib/lightstack/../../../etc/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must be a canonical absolute path
+
+  # Percent-encoding is a raw string here but is decoded by the binary, so the mount and the
+  # opened path would diverge; refuse it (FR-002).
+  - it: refuses a percent-encoded SQLite path (FR-002)
+    set:
+      database.url: sqlite:///var/lib/lightstack/%2e%2e/etc/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must be a canonical absolute path
+
+  # A repeated slash is non-canonical: the mount dir and the binary's cleaned path would not
+  # match character-for-character; refuse it (FR-002).
+  - it: refuses a SQLite path with a repeated slash (FR-002)
+    set:
+      database.url: sqlite:///var/lib/lightstack//db/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must be a canonical absolute path
+
+  - it: refuses SQLite with no node pin (FR-008)
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  - it: refuses SQLite with deploymentMode other than single-node (FR-009)
+    set:
+      deploymentMode: multi-node
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: requires deploymentMode=single-node
+
+  - it: refuses SQLite with replicaCount > 1 (FR-009)
+    set:
+      replicaCount: 2
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: requires replicaCount
+
+  - it: refuses a SQLite URL combined with database.existingSecret (FR-003a)
+    set:
+      database.existingSecret: db-sec
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: cannot be combined with database.existingSecret
+
+  - it: refuses a SQLite URL combined with secrets.existingSecret (FR-003a)
+    set:
+      secrets.existingSecret: pre-rendered
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: cannot be combined with database.existingSecret
+
+  - it: accepts SQLite with a kubernetes.io/hostname nodeSelector (FR-008)
+    set:
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - notFailedTemplate: {}
+
+  # A nodeSelector that matches many nodes (a group label, not a single-node identity) does
+  # NOT bind the pod to one node, so it must be refused — otherwise a rescheduled pod starts a
+  # fresh SQLite database elsewhere and the purge Job can run on the wrong node (FR-008).
+  - it: refuses SQLite with a group nodeSelector that lacks kubernetes.io/hostname (FR-008)
+    set:
+      nodeSelector:
+        kubernetes.io/os: linux
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  - it: accepts SQLite pinned by a single-hostname node affinity (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a]
+    asserts:
+      - notFailedTemplate: {}
+
+  # Extra predicates may narrow the single identity further; the term still pins one node (FR-008).
+  - it: accepts a single-hostname affinity with an extra narrowing predicate (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a]
+                  - key: kubernetes.io/os
+                    operator: In
+                    values: [linux]
+    asserts:
+      - notFailedTemplate: {}
+
+  # metadata.name via matchFields is an equivalent single-node identity (FR-008).
+  - it: accepts a single-node affinity via matchFields metadata.name (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchFields:
+                  - key: metadata.name
+                    operator: In
+                    values: [node-a]
+    asserts:
+      - notFailedTemplate: {}
+
+  # matchExpressions select by node LABELS, so metadata.name there is an ordinary label (not the
+  # node name) that several nodes can share — not a single-node pin (FR-008).
+  - it: refuses metadata.name in matchExpressions (it is a label there, not the node name) (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: metadata.name
+                    operator: In
+                    values: [node-a]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  # matchFields support only metadata.name; kubernetes.io/hostname there is not a valid field (FR-008).
+  - it: refuses kubernetes.io/hostname in matchFields (not a valid field) (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchFields:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  # A hostname label and a metadata.name field with the same value are not guaranteed the same node,
+  # so OR terms mixing the two kinds are not a single identity and are refused (FR-008).
+  - it: refuses OR terms mixing a hostname label and a metadata.name field (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a]
+              - matchFields:
+                  - key: metadata.name
+                    operator: In
+                    values: [node-a]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  # A hostname In with two values allows two nodes — the workload and purge Job could diverge (FR-008).
+  - it: refuses an affinity whose hostname In lists more than one node (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a, node-b]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  # A required affinity that constrains only kubernetes.io/os matches many nodes (FR-008).
+  - it: refuses a required affinity with no hostname identity (os only) (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/os
+                    operator: In
+                    values: [linux]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  # Two OR terms naming different nodes allow the pod on either — not a single identity (FR-008).
+  - it: refuses a required affinity whose OR terms resolve to different nodes (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a]
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-b]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  # A soft (preferred) node affinity does not bind the pod to a node, so it must NOT satisfy
+  # the pin guard — otherwise a rescheduled pod starts a fresh SQLite database elsewhere (FR-008).
+  - it: refuses SQLite pinned only by a soft (preferred) node affinity (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a single-node pin
+
+  # PostgreSQL with the same unsafe settings must NOT trip any SQLite refusal (FR-017).
+  - it: PostgreSQL multi-node + many replicas + no pin + existingSecret renders fine
+    set:
+      database.url: ""
+      database.existingSecret: pg-sec
+      deploymentMode: multi-node
+      replicaCount: 3
+    asserts:
+      - notFailedTemplate: {}

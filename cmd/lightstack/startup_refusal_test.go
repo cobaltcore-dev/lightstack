@@ -158,6 +158,8 @@ func TestStartupRefusals(t *testing.T) {
 		{name: "SQLite with VXLAN", url: func(w string) string { return "sqlite://" + w + "/db/x.db" },
 			extra: "neutron:\n  vxlan_enabled: true\n", serverOnly: true,
 			msg: "database.url selects sqlite, but neutron.vxlan_enabled is true; SQLite serves a single node only"},
+		{name: "SQLite inside a storage tree", url: func(w string) string { return "sqlite://" + filepath.Join(w, "state", "images", "control", "x.db") },
+			msg: "lies inside the node-local storage directory"},
 	} {
 		for _, ep := range entryPoints {
 			if tc.serverOnly && ep.name != "server" {

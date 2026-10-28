@@ -610,6 +610,9 @@ func checkDatabaseConfig(cfg *common.Config, server bool) error {
 	if err := database.CheckDeclaredBackend(os.Getenv("LIGHTSTACK_DB_BACKEND"), backend); err != nil {
 		return err
 	}
+	if err := database.CheckSQLiteStorageLayout(cfg.Database.URL); err != nil {
+		return err
+	}
 	if server && backend == database.SQLite && cfg.Neutron.VXLANEnabled {
 		return errors.New("database.url selects sqlite, but neutron.vxlan_enabled is true; SQLite serves a single node only")
 	}

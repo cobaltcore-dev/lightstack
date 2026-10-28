@@ -135,14 +135,180 @@ tests:
                 name: my-db-secret
                 key: dburl
 
-  - it: purge Job carries no env when the URL is in the rendered config
+  - it: purge Job carries the backend marker but no DB_URL when the URL is in the rendered config
     set:
       dataRetentionPolicy: delete
       teardown.kubectlImage: rancher/kubectl:v1.31
     template: templates/teardown-purge-job.yaml
     asserts:
-      - notExists:
+      # LIGHTSTACK_DB_BACKEND is always set so a Secret-hidden scheme mismatch is caught
+      # (SPEC-029 FR-003); LIGHTSTACK_DB_URL is absent when the config carries the URL.
+      - contains:
           path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DB_BACKEND
+            value: postgres
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DB_URL
+
+  # SPEC-029 FR-010: the purge Job is scheduled exactly like the workload, so a SQLite
+  # purge reaches the database on the node. The nodeSelector/affinity/tolerations come
+  # from the shared lightstack.scheduling helper, included by both.
+  - it: purge Job is pinned like the Deployment (scheduling parity)
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+      tolerations:
+        - key: dedicated
+          operator: Exists
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: disktype, operator: Exists }
+    template: templates/teardown-purge-job.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            kubernetes.io/hostname: node-a
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Exists
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key
+          value: disktype
+
+  - it: the Deployment carries the identical scheduling (parity oracle)
+    set:
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+      tolerations:
+        - key: dedicated
+          operator: Exists
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: disktype, operator: Exists }
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            kubernetes.io/hostname: node-a
+      - equal:
+          path: spec.template.spec.tolerations
+          value:
+            - key: dedicated
+              operator: Exists
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key
+          value: disktype
+
+  # SPEC-029: the purge Job keeps the node pin but NOT the workload's pod affinity. The quiesce
+  # hook scales the workload to zero first, so a required self-podAffinity would leave the purge
+  # unschedulable and hang the uninstall. Covers PostgreSQL (suite base) and SQLite below.
+  - it: purge Job keeps nodeAffinity but drops the workload's podAffinity (PostgreSQL)
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: alpine/k8s:1.31.0
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: disktype, operator: Exists }
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app.kubernetes.io/name: lightstack }
+              topologyKey: kubernetes.io/hostname
+    template: templates/teardown-purge-job.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key
+          value: disktype
+      - notExists:
+          path: spec.template.spec.affinity.podAffinity
+
+  - it: the workload DOES keep podAffinity (the drop is purge-only)
+    set:
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app.kubernetes.io/name: lightstack }
+              topologyKey: kubernetes.io/hostname
+    template: templates/deployment.yaml
+    asserts:
+      - exists:
+          path: spec.template.spec.affinity.podAffinity
+
+  - it: SQLite purge Job also drops the workload's podAffinity
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: alpine/k8s:1.31.0
+      database.url: sqlite:///var/lib/lightstack/db/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app.kubernetes.io/name: lightstack }
+              topologyKey: kubernetes.io/hostname
+    template: templates/teardown-purge-job.yaml
+    asserts:
+      - notExists:
+          path: spec.template.spec.affinity.podAffinity
+
+  # SPEC-029 FR-011: a stub-mode SQLite purge mounts the node-local STATE ROOT (not the db
+  # directory), so `lightstack cleanup` can RemoveAll db/ — a direct db-dir mount would make
+  # db/ an un-unlinkable mountpoint and fail the purge.
+  - it: stub-mode SQLite purge Job mounts the state root and carries the sqlite backend
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: alpine/k8s:1.31.0
+      database.url: sqlite:///var/lib/lightstack/db/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    template: templates/teardown-purge-job.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: host-storage
+            hostPath:
+              path: /var/lib/lightstack
+              type: DirectoryOrCreate
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: host-storage
+            mountPath: /var/lib/lightstack
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: sqlite-db
+            hostPath:
+              path: /var/lib/lightstack/db
+              type: DirectoryOrCreate
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DB_BACKEND
+            value: sqlite
 
   - it: delete without teardown.kubectlImage fails to render (FR-018)
     set:

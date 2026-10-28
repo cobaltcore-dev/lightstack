@@ -9,6 +9,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/internal/middleware"
+	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
 func main() {
@@ -38,6 +39,13 @@ func main() {
 		err = database.CheckDeclaredBackend(os.Getenv("LIGHTSTACK_DB_BACKEND"), backend)
 	}
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	// Keep the SQLite database out of the node-local storage trees teardown wipes, like the
+	// other entry points (paths uses the configured state_path).
+	paths.SetBase(cfg.StatePath)
+	if err := database.CheckSQLiteStorageLayout(cfg.Database.URL); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
