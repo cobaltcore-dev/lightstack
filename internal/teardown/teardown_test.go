@@ -37,6 +37,35 @@ func TestExecute_PurgesInOrder(t *testing.T) {
 	}
 }
 
+// SPEC-029 FR-013: the enumeration connection is closed AFTER the network purge (which
+// queries the DB) and BEFORE the storage purge, so the SQLite db/ directory is never
+// unlinked while a connection holds -wal/-shm.
+func TestExecute_ClosesDBBeforeStoragePurge(t *testing.T) {
+	var order []string
+	d := deps{
+		deleteDomain: func(context.Context, string) error { return nil },
+		purgeNetwork: func() error { order = append(order, "network"); return nil },
+		purgeStorage: func() error { order = append(order, "storage"); return nil },
+		closeDB:      func() { order = append(order, "closeDB") },
+	}
+	if err := execute(context.Background(), d, Inventory{}, Options{}, true); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	want := []string{"network", "closeDB", "storage"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+}
+
+// SPEC-029 FR-012 (outcome): the unreachable-DB path (closeDB nil) completes and
+// returns success — the uninstall is not blocked when cleanup cannot reach the database.
+func TestExecute_UnreachableDBStillSucceeds(t *testing.T) {
+	d := okDeps() // closeDB nil, as Run leaves it on the unreachable branch
+	if err := execute(context.Background(), d, Inventory{}, Options{}, false); err != nil {
+		t.Fatalf("execute on the unreachable-DB path should succeed, got: %v", err)
+	}
+}
+
 // FR-008: a missing / already-deleted domain is success, not a failure.
 func TestExecute_AbsentDomainIsSuccess(t *testing.T) {
 	d := okDeps()
@@ -123,6 +152,7 @@ func TestPurgeLocalStorage(t *testing.T) {
 	ours := []string{
 		paths.ImagesDir(), paths.VolumesDir(), paths.InstancesDir(), paths.CloudInitDir(),
 		paths.DHCPDir(), paths.ConsoleTokenDir(), paths.ConsoleSocketDir(),
+		paths.DBDir(), // SPEC-029 FR-013: the SQLite db directory is purged too (last)
 	}
 	keep := filepath.Join(root, "not-lightstacks")
 	for _, dir := range append(ours, keep) {

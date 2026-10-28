@@ -110,6 +110,28 @@ FR-006/006a/007/007a/008b/012e/018.
 {{- if ge (int .Values.drainSeconds) (int .Values.terminationGracePeriodSeconds) -}}
 {{- fail (printf "\n\ndrainSeconds (%d) must be less than terminationGracePeriodSeconds (%d) (SPEC-013 FR-009): otherwise the SIGTERM drain sleep outlasts the grace period and the kubelet SIGKILLs mid-drain, dropping in-flight requests and leaving endpoint deregistration incomplete.\n" (int .Values.drainSeconds) (int .Values.terminationGracePeriodSeconds)) -}}
 {{- end -}}
+{{- /* SQLite single-node guards (SPEC-029 FR-002/003a/008/009). Keyed off database.url's
+       scheme, so they never fire for PostgreSQL. Ordered: Secret conflict, path, mode,
+       replicas, node pin — the message names exactly what is wrong. */ -}}
+{{- if eq (include "lightstack.dbBackend" .) "sqlite" -}}
+{{-   if or .Values.database.existingSecret .Values.secrets.existingSecret -}}
+{{- fail "\n\nSQLite is selected only through database.url and cannot be combined with database.existingSecret or secrets.existingSecret (SPEC-029 FR-003a): a Secret-injected LIGHTSTACK_DB_URL would override it, so the rendered SQLite storage would serve a URL that never takes effect. Use database.url alone for SQLite.\n" -}}
+{{-   end -}}
+{{-   $path := trimPrefix "sqlite://" .Values.database.url -}}
+{{-   $root := .Values.realMode.hostStoragePath -}}
+{{-   if not (hasPrefix (printf "%s/" $root) $path) -}}
+{{- fail (printf "\n\ndatabase.url SQLite path %q must lie under realMode.hostStoragePath (%s) (SPEC-029 FR-002): the chart mounts that directory as a hostPath, so an outside path is refused.\n" $path $root) -}}
+{{-   end -}}
+{{-   if ne .Values.deploymentMode "single-node" -}}
+{{- fail (printf "\n\nSQLite requires deploymentMode=single-node (got %q) (SPEC-029 FR-009): SQLite serves one node; a multi-node deployment must use PostgreSQL.\n" .Values.deploymentMode) -}}
+{{-   end -}}
+{{-   if gt (int .Values.replicaCount) 1 -}}
+{{- fail (printf "\n\nSQLite requires replicaCount<=1 (got %d) (SPEC-029 FR-009): one pod opens the single database file.\n" (int .Values.replicaCount)) -}}
+{{-   end -}}
+{{-   if not (or .Values.nodeSelector (and .Values.affinity .Values.affinity.nodeAffinity .Values.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution)) -}}
+{{- fail "\n\nSQLite requires a node pin: set nodeSelector or a hard affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution to bind the pod to one node (SPEC-029 FR-008). A soft (preferred) node affinity does not bind the pod; a rescheduled pod would find an empty directory and SQLite would start a fresh database there while the data stays on the old node.\n" -}}
+{{-   end -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -201,12 +223,65 @@ nothing without database.existingSecret.
 {{- end -}}
 
 {{/*
+The database backend, read from database.url's scheme (SPEC-029 FR-001). Anchored on the
+`sqlite://` form the chart, docs and values use. Anything else — a URL hidden in
+database.existingSecret or secrets.existingSecret, or a non-canonical single-slash
+`sqlite:/path` the binary would still accept — resolves to postgres here, so the binary
+catches the scheme mismatch at startup (SPEC-028 FR-004) with a clear message rather than the
+chart failing the render with a confusing path error. Renders "sqlite" or "postgres".
+*/}}
+{{- define "lightstack.dbBackend" -}}
+{{- if hasPrefix "sqlite://" .Values.database.url -}}sqlite{{- else -}}postgres{{- end -}}
+{{- end -}}
+
+{{/* Truthy only when the chart renders SQLite storage (SPEC-029). */}}
+{{- define "lightstack.sqliteEnabled" -}}
+{{- if eq (include "lightstack.dbBackend" .) "sqlite" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+LIGHTSTACK_DB_BACKEND for every container that runs the binary — the workload and the teardown
+purge Job — so the binary can verify a URL the chart cannot see (SPEC-029 FR-003). Always set.
+*/}}
+{{- define "lightstack.dbBackendEnv" -}}
+- name: LIGHTSTACK_DB_BACKEND
+  value: {{ include "lightstack.dbBackend" . | quote }}
+{{- end -}}
+
+{{/*
+Pod scheduling — nodeSelector, tolerations, affinity — shared by lightstack.podSpec and the
+teardown purge Job, so the purge runs where the workload does (SPEC-029 FR-010). With SQLite on
+a node-local hostPath, a purge on another node would find no database. Emits nothing when all
+three are unset, so a default render is unchanged.
+*/}}
+{{- define "lightstack.scheduling" -}}
+{{- if eq .Values.deploymentMode "multi-node" }}
+{{- $kv := splitn "=" 2 .Values.multiNode.nodeSelectorLabel }}
+nodeSelector:
+  {{ $kv._0 }}: {{ $kv._1 | quote }}
+  {{- with .Values.nodeSelector }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- else if .Values.nodeSelector }}
+nodeSelector:
+  {{- toYaml .Values.nodeSelector | nindent 2 }}
+{{- end }}
+{{- with .Values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with .Values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
+{{/*
 Shared pod spec (spec.template.spec) for both the single-node Deployment and the
 multi-node DaemonSet, so the container, config mount, probes, and real-mode host
 access stay identical across modes. Include with: {{- include "lightstack.podSpec" . | nindent 6 }}
 */}}
 {{- define "lightstack.podSpec" -}}
-{{- $kv := splitn "=" 2 .Values.multiNode.nodeSelectorLabel -}}
 # Lightstack never calls the Kubernetes API — don't mount a ServiceAccount token (FR-009c; reduces attack surface).
 automountServiceAccountToken: false
 terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
@@ -217,16 +292,7 @@ imagePullSecrets:
 {{- if .Values.realMode.enabled }}
 hostNetwork: {{ .Values.realMode.hostNetwork }}
 {{- end }}
-{{- if eq .Values.deploymentMode "multi-node" }}
-nodeSelector:
-  {{ $kv._0 }}: {{ $kv._1 | quote }}
-  {{- with .Values.nodeSelector }}
-  {{- toYaml . | nindent 2 }}
-  {{- end }}
-{{- else if .Values.nodeSelector }}
-nodeSelector:
-  {{- toYaml .Values.nodeSelector | nindent 2 }}
-{{- end }}
+{{- include "lightstack.scheduling" . }}
 {{- if .Values.realMode.enabled }}
 initContainers:
   {{- if .Values.realMode.legacyStatePath }}
@@ -300,6 +366,7 @@ initContainers:
         "{{ .Values.realMode.hostStoragePath }}/dhcp"
         "{{ .Values.realMode.hostStoragePath }}/console-tokens"
         "{{ .Values.realMode.hostStoragePath }}/console-sockets"
+        "{{ .Values.realMode.hostStoragePath }}/db"
     volumeMounts:
       - name: host-storage
         mountPath: {{ .Values.realMode.hostStoragePath }}
@@ -332,6 +399,7 @@ containers:
       {{- with include "lightstack.dbUrlEnv" . }}
       {{- . | nindent 6 }}
       {{- end }}
+      {{- include "lightstack.dbBackendEnv" . | nindent 6 }}
       {{- if .Values.endpointHost }}
       - name: LIGHTSTACK_ENDPOINT_HOST
         value: {{ .Values.endpointHost | quote }}
@@ -385,6 +453,12 @@ containers:
       - name: config
         mountPath: /app/config
         readOnly: true
+      {{- if and (include "lightstack.sqliteEnabled" .) (not .Values.realMode.enabled) }}
+      # Stub-mode SQLite: the db directory only (least privilege). Real mode reaches it
+      # through the host-storage mount below (SPEC-029 FR-004).
+      - name: sqlite-db
+        mountPath: {{ dir (trimPrefix "sqlite://" .Values.database.url) }}
+      {{- end }}
       {{- if .Values.realMode.enabled }}
       - name: libvirt-run
         mountPath: {{ dir .Values.realMode.libvirtSocketPath }}
@@ -399,6 +473,14 @@ volumes:
   - name: config
     secret:
       secretName: {{ include "lightstack.configSecretName" . }}
+  {{- if and (include "lightstack.sqliteEnabled" .) (not .Values.realMode.enabled) }}
+  # Stub-mode SQLite db directory on a node-local hostPath (no PVC). WAL mode keeps
+  # lightstack.db-wal and -shm beside the file, so the directory is mounted, not the file.
+  - name: sqlite-db
+    hostPath:
+      path: {{ dir (trimPrefix "sqlite://" .Values.database.url) }}
+      type: DirectoryOrCreate
+  {{- end }}
   {{- if .Values.realMode.enabled }}
   # The directory that holds libvirtd's socket, not the socket. A bind of the file keeps
   # the inode the pod started with, so once libvirtd re-creates its socket — its socket
@@ -421,12 +503,4 @@ volumes:
       type: DirectoryOrCreate
   {{- end }}
   {{- end }}
-{{- with .Values.tolerations }}
-tolerations:
-  {{- toYaml . | nindent 2 }}
-{{- end }}
-{{- with .Values.affinity }}
-affinity:
-  {{- toYaml . | nindent 2 }}
-{{- end }}
 {{- end -}}

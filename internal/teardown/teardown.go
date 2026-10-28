@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -59,6 +60,11 @@ type deps struct {
 	deleteDomain func(ctx context.Context, id string) error
 	purgeNetwork func() error // remove all host network state (DB-driven, or netns-prefix fallback)
 	purgeStorage func() error // RemoveAll the node-local /var/lib/lightstack trees (never RBD/S3 — C4/FR-015)
+	// closeDB closes the enumeration connection. It runs AFTER the network purge (which
+	// queries the DB) and BEFORE the storage purge, so the SQLite db/ directory — removed
+	// last by purgeStorage — is never unlinked while a connection holds -wal/-shm
+	// (SPEC-029 FR-013). nil when the DB was unreachable or on the no-DB path.
+	closeDB func()
 }
 
 // Run wires the real managers from cfg, enumerates the release's state, and purges
@@ -93,7 +99,12 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 		// (C9, accepted limitation). Storage trees + a netns-prefix scan still run.
 	} else {
 		dbReachable = true
-		defer pool.Close()
+		// execute() closes this before the storage purge so the SQLite db/ directory can be
+		// removed last without a live connection holding -wal/-shm (SPEC-029 FR-013). The
+		// once-guard plus the deferred call make it safe if execute returns early.
+		var closeOnce sync.Once
+		d.closeDB = func() { closeOnce.Do(pool.Close) }
+		defer d.closeDB()
 		inv.DomainIDs, inv.enumErr = enumerateDomainIDs(ctx, pool)
 		neutronSvc := neutron.NewService(pool, netMode, nil)
 		d.purgeNetwork = func() error { return neutronSvc.PurgeRealModeNetworkState(ctx) }
@@ -123,6 +134,14 @@ func execute(ctx context.Context, d deps, inv Inventory, opts Options, dbReachab
 		log.Error().Err(err).Msg("teardown: network purge failed")
 	} else {
 		network.purged++
+	}
+
+	// Close the enumeration connection before purging storage: the network purge above
+	// queried it, and the storage purge below removes the SQLite db/ directory last, which
+	// must not happen while a connection holds -wal/-shm (SPEC-029 FR-013). nil on the
+	// unreachable / no-DB path.
+	if d.closeDB != nil && !opts.DryRun {
+		d.closeDB()
 	}
 
 	stor := classResult{name: "storage"}
@@ -208,6 +227,11 @@ func purgeLocalStorage() error {
 	for _, dir := range []string{
 		paths.ImagesDir(), paths.VolumesDir(), paths.InstancesDir(), paths.CloudInitDir(), paths.DHCPDir(),
 		paths.ConsoleTokenDir(), paths.ConsoleSocketDir(),
+		// db/ last: the SQLite database (lightstack.db + -wal + -shm) on single-node
+		// deployments. execute() closes the enumeration connection before this runs, so the
+		// files are never unlinked while a connection holds them (SPEC-029 FR-013). Absent on
+		// PostgreSQL and real-mode-only nodes — RemoveAll of a missing dir is nil.
+		paths.DBDir(),
 	} {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove %s: %w", dir, err)

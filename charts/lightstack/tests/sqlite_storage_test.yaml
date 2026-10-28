@@ -1,0 +1,136 @@
+# helm-unittest specs for SQLite storage rendering (SPEC-029 / cloud-storage#599,
+# contract chart-render C-RENDER-1/2/3). SQLite is selected by database.url's scheme;
+# the chart renders a node-local hostPath db directory (no PVC), strategy Recreate in
+# both modes, and LIGHTSTACK_DB_BACKEND on the workload container. A node pin is set so
+# these values stay valid once the render-time guards (US4) land.
+suite: SQLite storage rendering
+templates:
+  - templates/deployment.yaml
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: sqlite:///var/lib/lightstack/db/lightstack.db
+  nodeSelector:
+    kubernetes.io/hostname: node-a
+tests:
+  - it: sets LIGHTSTACK_DB_BACKEND=sqlite on the workload container (C-RENDER-1)
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DB_BACKEND
+            value: sqlite
+
+  - it: stub mode mounts the db directory as a DirectoryOrCreate hostPath, no PVC (C-RENDER-2/FR-006)
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: sqlite-db
+            hostPath:
+              path: /var/lib/lightstack/db
+              type: DirectoryOrCreate
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: sqlite-db
+            mountPath: /var/lib/lightstack/db
+      - notExists:
+          path: spec.volumeClaimTemplates
+
+  - it: runs as root — no runAsUser (FR-005)
+    template: templates/deployment.yaml
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].securityContext.runAsUser
+
+  - it: strategy Recreate for SQLite in stub mode (C-RENDER-3)
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: strategy Recreate for SQLite in real mode (C-RENDER-3)
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.privileged: true
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: real mode keeps the db dir inside host-storage and adds no second volume (C-RENDER-2)
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.privileged: true
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: /var/lib/lightstack/db"
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: sqlite-db
+            hostPath:
+              path: /var/lib/lightstack/db
+              type: DirectoryOrCreate
+
+  - it: honors a custom hostStoragePath for the db mount (stub)
+    template: templates/deployment.yaml
+    set:
+      realMode.hostStoragePath: /data/lightstack
+      database.url: sqlite:///data/lightstack/db/lightstack.db
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: sqlite-db
+            hostPath:
+              path: /data/lightstack/db
+              type: DirectoryOrCreate
+
+  - it: PostgreSQL keeps RollingUpdate (no strategy) in stub mode and DB_BACKEND=postgres (C-RENDER-3/C-RENDER-1)
+    template: templates/deployment.yaml
+    set:
+      database.url: postgres://lightstack@db/lightstack
+    asserts:
+      - notExists:
+          path: spec.strategy
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DB_BACKEND
+            value: postgres
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: sqlite-db
+            hostPath:
+              path: /var/lib/lightstack/db
+              type: DirectoryOrCreate
+
+  # A non-canonical single-slash sqlite URL is not the sqlite:// form the chart renders storage
+  # for, so it resolves to postgres and the binary catches the scheme mismatch at startup with a
+  # clear message, rather than the chart failing the render with a confusing path error (FR-001).
+  - it: a single-slash sqlite URL resolves to postgres (the binary catches it, not the chart)
+    template: templates/deployment.yaml
+    set:
+      database.url: sqlite:/var/lib/lightstack/db/lightstack.db
+    asserts:
+      - notExists:
+          path: spec.strategy
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_DB_BACKEND
+            value: postgres
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: sqlite-db

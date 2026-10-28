@@ -1,0 +1,119 @@
+# helm-unittest specs for the SQLite render-time refusals (SPEC-029 / cloud-storage#599,
+# contract chart-render C-RENDER-4/6). The guards live in lightstack.validate, invoked
+# from service.yaml. Each refusal fires only when the backend is SQLite; PostgreSQL with
+# the same unsafe settings renders fine. Base values are a SQLite config with no node pin
+# (so the pin refusal fires on the base, and the earlier checks fire when triggered).
+suite: SQLite render-time refusals
+templates:
+  - templates/service.yaml
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: sqlite:///var/lib/lightstack/db/lightstack.db
+tests:
+  - it: refuses a SQLite path outside realMode.hostStoragePath (FR-002)
+    set:
+      database.url: sqlite:///tmp/elsewhere/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must lie under realMode.hostStoragePath
+
+  - it: refuses a path that only shares a prefix with the storage root (boundary) (FR-002)
+    set:
+      database.url: sqlite:///var/lib/lightstackEVIL/lightstack.db
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: must lie under realMode.hostStoragePath
+
+  - it: refuses SQLite with no node pin (FR-008)
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a node pin
+
+  - it: refuses SQLite with deploymentMode other than single-node (FR-009)
+    set:
+      deploymentMode: multi-node
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: requires deploymentMode=single-node
+
+  - it: refuses SQLite with replicaCount > 1 (FR-009)
+    set:
+      replicaCount: 2
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: requires replicaCount
+
+  - it: refuses a SQLite URL combined with database.existingSecret (FR-003a)
+    set:
+      database.existingSecret: db-sec
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: cannot be combined with database.existingSecret
+
+  - it: refuses a SQLite URL combined with secrets.existingSecret (FR-003a)
+    set:
+      secrets.existingSecret: pre-rendered
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - failedTemplate:
+          errorPattern: cannot be combined with database.existingSecret
+
+  - it: accepts SQLite with a non-empty nodeSelector (FR-008)
+    set:
+      nodeSelector:
+        kubernetes.io/hostname: node-a
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: accepts SQLite pinned by node affinity (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a]
+    asserts:
+      - notFailedTemplate: {}
+
+  # A soft (preferred) node affinity does not bind the pod to a node, so it must NOT satisfy
+  # the pin guard — otherwise a rescheduled pod starts a fresh SQLite database elsewhere (FR-008).
+  - it: refuses SQLite pinned only by a soft (preferred) node affinity (FR-008)
+    set:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [node-a]
+    asserts:
+      - failedTemplate:
+          errorPattern: requires a node pin
+
+  # PostgreSQL with the same unsafe settings must NOT trip any SQLite refusal (FR-017).
+  - it: PostgreSQL multi-node + many replicas + no pin + existingSecret renders fine
+    set:
+      database.url: ""
+      database.existingSecret: pg-sec
+      deploymentMode: multi-node
+      replicaCount: 3
+    asserts:
+      - notFailedTemplate: {}

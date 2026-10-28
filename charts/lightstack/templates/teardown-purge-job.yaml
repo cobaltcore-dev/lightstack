@@ -25,6 +25,12 @@ spec:
         app.kubernetes.io/component: teardown-purge
     spec:
       restartPolicy: Never
+      {{- /* Scheduled like the workload (shared helper) so the purge reaches the SQLite
+             database on the node (SPEC-029 FR-010). `with … trim` keeps an empty
+             scheduling block from leaving a trailing-whitespace line. */}}
+      {{- with (include "lightstack.scheduling" . | trim) }}
+      {{- . | nindent 6 }}
+      {{- end }}
       {{- if and .Values.realMode.enabled .Values.realMode.hostNetwork }}
       hostNetwork: true
       {{- end }}
@@ -33,10 +39,12 @@ spec:
           image: {{ include "lightstack.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/app/lightstack", "cleanup", "--config", "/app/config/lightstack.yaml"]
-          {{- with include "lightstack.dbUrlEnv" . }}
           env:
+            {{- /* Always set, so a Secret-hidden scheme mismatch is refused (SPEC-029 FR-003). */}}
+            {{- include "lightstack.dbBackendEnv" . | nindent 12 }}
+            {{- with include "lightstack.dbUrlEnv" . }}
             {{- . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           {{- if .Values.realMode.enabled }}
           securityContext:
             privileged: {{ .Values.realMode.privileged }}
@@ -48,6 +56,11 @@ spec:
             {{- if .Values.realMode.enabled }}
             - name: libvirt-run
               mountPath: {{ dir .Values.realMode.libvirtSocketPath }}
+            {{- end }}
+            {{- if or .Values.realMode.enabled (include "lightstack.sqliteEnabled" .) }}
+            # The node-local state root. The purge removes every tree under it, including
+            # db/ (SQLite). It must be the state root, not db/ itself: `lightstack cleanup`
+            # RemoveAll's db/, which cannot be unlinked when it is the mountpoint (SPEC-029).
             - name: host-storage
               mountPath: {{ .Values.realMode.hostStoragePath }}
             {{- end }}
@@ -61,6 +74,8 @@ spec:
           hostPath:
             path: {{ dir .Values.realMode.libvirtSocketPath }}
             type: Directory
+        {{- end }}
+        {{- if or .Values.realMode.enabled (include "lightstack.sqliteEnabled" .) }}
         - name: host-storage
           hostPath:
             path: {{ .Values.realMode.hostStoragePath }}

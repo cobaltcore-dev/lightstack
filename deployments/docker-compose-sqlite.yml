@@ -1,0 +1,82 @@
+version: "3.8"
+
+# SQLite variant of docker-compose.yml (SPEC-029 / cloud-storage#599). No PostgreSQL:
+# Lightstack keeps all state in one SQLite file on a named volume. The default
+# docker-compose.yml stays PostgreSQL. This is the stub-mode stack; the real-mode KVM
+# stack (docker-compose-kvm.yml) already runs either backend.
+#
+# The database lives at /var/lib/lightstack/db/lightstack.db on the named volume
+# `lightstack_db`; WAL mode keeps lightstack.db-wal and -shm beside it. The binary
+# creates the directory and the file on first start. SQLite needs working POSIX file
+# locks, so keep this on a local filesystem (a Docker named volume is local by default;
+# do not back it with NFS/CephFS).
+
+services:
+  # Redis Cache (optional - for performance optimization)
+  redis:
+    image: redis:7-alpine
+    container_name: lightstack-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - lightstack-network
+    restart: unless-stopped
+
+  # Lightstack OpenStack-Compatible Cloud (SQLite backend)
+  lightstack:
+    build:
+      context: ..
+      dockerfile: build/package/Dockerfile
+    container_name: lightstack
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "35357:35357" # Keystone (Identity)
+      - "8774:8774" # Nova (Compute)
+      - "9696:9696" # Neutron (Network)
+      - "8776:8776" # Cinder (Block Storage)
+      - "9292:9292" # Glance (Image)
+      - "8775:8775" # Metadata Service
+    environment:
+      # SQLite: the scheme selects the backend (SPEC-028). An absolute path under the
+      # mounted volume; three slashes after the scheme. LIGHTSTACK_DB_BACKEND is left
+      # unset here — unset means no scheme check, and the URL alone selects SQLite.
+      LIGHTSTACK_DB_URL: "sqlite:///var/lib/lightstack/db/lightstack.db"
+      LIGHTSTACK_REDIS_URL: "redis://redis:6379/0"
+      LIGHTSTACK_CACHE_ENABLED: "true"
+      LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
+      LIGHTSTACK_ENDPOINT_HOST: "localhost" # Use localhost for service catalog URLs (accessible from host)
+      # Stub mode only (no real guests). See docker-compose.yml for the full warning:
+      # never set this where real guests reach the metadata service.
+      LIGHTSTACK_METADATA_TRUST_INSTANCE_HEADER: "true"
+    volumes:
+      # The SQLite database directory (lightstack.db + -wal + -shm). Persists across
+      # `down`/`up` without -v.
+      - lightstack_db:/var/lib/lightstack/db
+    networks:
+      - lightstack-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:35357/v3 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  lightstack_db:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  lightstack-network:
+    driver: bridge
