@@ -338,8 +338,11 @@ database:
   For a missing file, `console-tokens` exits 1 naming the path; `cleanup` warns naming it and does
   its host-only cleanup, as for an unreachable PostgreSQL.
 - **Files**: `lightstack.db`, and beside it `lightstack.db-wal`, `lightstack.db-shm` and
-  `lightstack.db.migrate-lock`. Committed data can sit in the `-wal` file until a checkpoint: copy
-  the files together, with Lightstack stopped, or use `sqlite3 lightstack.db ".backup <file>"`.
+  `lightstack.db.migrate-lock`. Committed data can sit in the `-wal` file until a checkpoint, so
+  never copy `lightstack.db` alone. Back up with `lightstack-migrate backup` (a consistent copy while
+  Lightstack runs, to `<state_path>/backups`) and verify with `lightstack-migrate check`; restoring
+  means deleting `-wal` and `-shm` first ([KUBERNETES_DEPLOYMENT.md](KUBERNETES_DEPLOYMENT.md#backup-integrity-check-and-restore),
+  [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#backup-and-restore-on-sqlite)).
 
 The startup log line names the backend, where the database is (never with credentials), the schema
 version and the node name:

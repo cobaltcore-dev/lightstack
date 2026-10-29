@@ -91,6 +91,20 @@ func sqliteDSN(path, txlock string) string {
 		"&_txlock=" + txlock
 }
 
+// sqliteInspectDSN builds a read-only URI for inspecting an existing database without altering
+// it. mode=ro never creates the file and never changes its journal mode or permissions, and every
+// write on the connection fails with SQLITE_READONLY — so journal_mode is deliberately left out
+// (forcing WAL would fail the open of a non-WAL file). A WAL database is still read through its
+// existing -wal/-shm, so a live database reports its latest committed rows; a rollback-mode backup,
+// including one on read-only media, opens with no side files at all. immutable is not set: on a
+// live database it would read stale data by ignoring the WAL. Escaping matches sqliteDSN, so a path
+// with reserved characters names the same file.
+func sqliteInspectDSN(path string) string {
+	return "file:" + (&url.URL{Path: path}).EscapedPath() +
+		"?mode=ro" +
+		fmt.Sprintf("&_pragma=busy_timeout(%d)", sqliteBusyTimeoutMS)
+}
+
 // prepareSQLiteFile creates the directory and the file for a create-if-missing open,
 // or checks that the file exists for a must-exist one, then tightens the modes.
 func prepareSQLiteFile(path string, mustExist bool) error {

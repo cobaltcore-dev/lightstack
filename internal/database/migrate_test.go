@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -254,5 +255,50 @@ func TestMigrateResetCreatesAMissingDatabase(t *testing.T) {
 	}
 	if tables := sqliteTables(t, path); len(tables) < 50 {
 		t.Fatalf("%d tables after reset; want the whole schema", len(tables))
+	}
+}
+
+// TestMigrateUpRefusesANewerDatabase pins SPEC-030 FR-008 for a restored backup: a database
+// written by a newer Lightstack carries a version this binary has no migration for. It must be
+// refused — golang-migrate already stops on it — and the refusal must say why, naming both
+// versions, instead of "no migration found for version N: read down …". check, the gate a restore
+// runs before the start, refuses it the same way: it cannot know the schema a newer one wrote.
+func TestMigrateUpRefusesANewerDatabase(t *testing.T) {
+	const migrations = "../../migrations"
+	url := "sqlite://" + filepath.Join(t.TempDir(), "db", "lightstack.db")
+	if err := MigrateUp(url, migrations); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	st, err := GetMigrationStatus(url, migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := st.Version
+	if err := MigrateUp(url, migrations); err != nil {
+		t.Fatalf("up on a current database: %v; want no change", err)
+	}
+
+	// IntegrityCheck's "is this a Lightstack database" gate (schemaVersion) reads the real
+	// schema_migrations table golang-migrate wrote, not a hand-built mimic: a freshly migrated
+	// database passes and reports its version.
+	if v, err := IntegrityCheck(context.Background(), url, migrations); err != nil || v != uint64(latest) {
+		t.Fatalf("IntegrityCheck on a freshly migrated database = %d, %v; want version %d", v, err, latest)
+	}
+
+	if err := ForceMigrationVersion(url, migrations, int(latest)+1); err != nil {
+		t.Fatalf("force %d: %v", latest+1, err)
+	}
+	for name, err := range map[string]error{
+		"up":    MigrateUp(url, migrations),
+		"check": checkErr(IntegrityCheck(context.Background(), url, migrations)),
+	} {
+		if err == nil {
+			t.Fatalf("%s on a database newer than this binary succeeded", name)
+		}
+		for _, want := range []string{fmt.Sprint(latest + 1), fmt.Sprint(latest), "newer Lightstack"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s refusal %q does not mention %q", name, err, want)
+			}
+		}
 	}
 }

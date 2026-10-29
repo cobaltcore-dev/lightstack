@@ -8,6 +8,7 @@ package paths
 import (
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // DefaultBase is the node-local root used when state_path is not configured.
@@ -80,4 +81,15 @@ func WithinStorageTree(path string) string {
 		}
 	}
 	return ""
+}
+
+// BackupsDir holds the database backups lightstack-migrate takes (SPEC-030). It is a sibling
+// of DBDir, not inside it: the uninstall purge removes db/ under dataRetentionPolicy: delete
+// and leaves this directory alone, so backups stay the operator's.
+func BackupsDir() string { return filepath.Join(base, "backups") }
+
+// BackupPath is the default name of a backup taken at t: its UTC timestamp, so backups sort by
+// age and a second backup in the same second is refused rather than overwriting the first.
+func BackupPath(t time.Time) string {
+	return filepath.Join(BackupsDir(), "lightstack-"+t.UTC().Format("20060102T150405Z")+".db")
 }
