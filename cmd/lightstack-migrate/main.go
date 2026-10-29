@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -53,6 +56,14 @@ func main() {
 	// Initialize logging
 	middleware.InitLogger(&cfg.Logging)
 
+	// backup works on the database file alone and reads no migrations, so it runs wherever the
+	// binary does (SPEC-030). check reads them like the commands below: they say what schema the
+	// database's version requires.
+	if command == "backup" {
+		handleBackup(cfg.Database.URL, cfg.StatePath)
+		return
+	}
+
 	// Validate migrations directory
 	if err := database.ValidateMigrations(*migrationsPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Migration validation failed: %v\n", err)
@@ -73,6 +84,8 @@ func main() {
 		handleGoto(cfg.Database.URL, *migrationsPath)
 	case "force":
 		handleForce(cfg.Database.URL, *migrationsPath)
+	case "check":
+		handleCheck(cfg.Database.URL, *migrationsPath)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
 		printUsage()
@@ -209,6 +222,55 @@ func handleForce(dbURL, migrationsPath string) {
 	fmt.Printf("✅ Version forced to %d\n", version)
 }
 
+// handleBackup takes a consistent copy of the SQLite database while Lightstack keeps serving
+// it: to the named file, or by default to <state_path>/backups/lightstack-<UTC time>.db.
+func handleBackup(dbURL, statePath string) {
+	dest, err := resolveBackupDest(flag.Args(), statePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if err := database.Backup(context.Background(), dbURL, dest); err != nil {
+		fmt.Fprintf(os.Stderr, "Backup failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Backup written to %s\n", dest)
+}
+
+// resolveBackupDest picks the backup target as an absolute path: the named file, or — when no
+// file is given — the default <state_path>/backups/lightstack-<UTC time>.db. More than one
+// positional argument is a usage error.
+func resolveBackupDest(args []string, statePath string) (string, error) {
+	if len(args) > 1 {
+		return "", fmt.Errorf("usage: lightstack-migrate backup [options] [<file>]")
+	}
+	dest := ""
+	if len(args) == 1 {
+		dest = args[0]
+	}
+	if dest == "" {
+		paths.SetBase(statePath)
+		dest = paths.BackupPath(time.Now())
+	}
+	if abs, err := filepath.Abs(dest); err == nil {
+		dest = abs
+	}
+	return dest, nil
+}
+
+// handleCheck runs SQLite's integrity check; it exits non-zero, listing the problems, on a
+// damaged database, on one holding no Lightstack schema, on one marked dirty by an interrupted
+// migration, and on one lacking part of the schema its version requires. It only reads, so it
+// runs against a serving Lightstack too.
+func handleCheck(dbURL, migrationsPath string) {
+	version, err := database.IntegrityCheck(context.Background(), dbURL, migrationsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Check failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Integrity check passed (schema version %d)\n", version)
+}
+
 func printUsage() {
 	fmt.Println("Lightstack Database Migration Tool")
 	fmt.Println("===========================")
@@ -222,6 +284,14 @@ func printUsage() {
 	fmt.Println("  goto <version>        Migrate to specific version")
 	fmt.Println("  reset                 Drop all tables and re-run migrations (DANGEROUS)")
 	fmt.Println("  force <version>       Force migration version (for fixing dirty state)")
+	fmt.Println("  backup [<file>]       Copy the SQLite database while Lightstack runs; never overwrites.")
+	fmt.Println("                        Default file: <state_path>/backups/lightstack-<UTC time>.db")
+	fmt.Println("  check                 Check the SQLite database's integrity, and that it holds the whole")
+	fmt.Println("                        schema its version requires; non-zero if damaged, incomplete, dirty")
+	fmt.Println("                        (an interrupted migration), empty or not a Lightstack database")
+	fmt.Println()
+	fmt.Println("backup and check are for SQLite only; for PostgreSQL use pg_dump. Options go before")
+	fmt.Println("the file: lightstack-migrate backup -config <path> <file>.")
 	fmt.Println()
 	fmt.Println("The database is database.url in the configuration file, or LIGHTSTACK_DB_URL when set:")
 	fmt.Println("postgres://… for PostgreSQL, sqlite:///absolute/path/lightstack.db for SQLite. Both read")
@@ -237,5 +307,7 @@ func printUsage() {
 	fmt.Println("  lightstack-migrate down")
 	fmt.Println("  lightstack-migrate goto 5")
 	fmt.Println("  lightstack-migrate force 7")
+	fmt.Println("  lightstack-migrate backup")
+	fmt.Println("  lightstack-migrate check")
 	fmt.Println()
 }

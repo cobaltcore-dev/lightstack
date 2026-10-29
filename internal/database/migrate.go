@@ -148,6 +148,38 @@ func RefuseBelowBaseline(dbURL, migrationsPath string, version int) error {
 	return nil
 }
 
+// refuseNewerDatabase refuses a database whose version is above the newest migration in the
+// folder. golang-migrate stops on one too, but as "no migration found for version N: read down
+// …", which does not tell an operator who has just restored a backup what went wrong.
+func refuseNewerDatabase(m *migrate.Migrate, dbURL, migrationsPath string) error {
+	current, _, err := m.Version()
+	if errors.Is(err, migrate.ErrNilVersion) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get migration version: %w", err)
+	}
+	backend, err := ParseURL(dbURL)
+	if err != nil {
+		return err
+	}
+	return refuseNewerVersion(uint64(current), migrationsPath, backend)
+}
+
+// refuseNewerVersion refuses a database version above the newest migration in backend's view of the
+// folder, naming both: the database was written by a newer Lightstack (SPEC-030 FR-008).
+func refuseNewerVersion(version uint64, migrationsPath string, backend Backend) error {
+	view, err := newMigrationView(os.DirFS(migrationsPath), backend)
+	if err != nil {
+		return err
+	}
+	if latest := view.latestVersion(); version > latest {
+		return fmt.Errorf("the database is at migration version %d, but this Lightstack knows versions up to %d: "+
+			"it was written by a newer Lightstack. Run that version, or restore a backup this one wrote", version, latest)
+	}
+	return nil
+}
+
 // GetMigrationStatus returns current migration version and dirty state
 func GetMigrationStatus(dbURL, migrationsPath string) (*MigrationInfo, error) {
 	var info *MigrationInfo
@@ -162,9 +194,13 @@ func GetMigrationStatus(dbURL, migrationsPath string) (*MigrationInfo, error) {
 	return info, err
 }
 
-// MigrateUp applies all pending migrations
+// MigrateUp applies all pending migrations. A database newer than every migration this binary
+// carries — one restored from a newer Lightstack's backup — is refused by name (SPEC-030 FR-008).
 func MigrateUp(dbURL, migrationsPath string) error {
 	return withMigrator(dbURL, migrationsPath, true, func(m *migrate.Migrate) error {
+		if err := refuseNewerDatabase(m, dbURL, migrationsPath); err != nil {
+			return err
+		}
 		log.Info().Msg("Running database migrations...")
 		if err := m.Up(); err != nil {
 			if errors.Is(err, migrate.ErrNoChange) {

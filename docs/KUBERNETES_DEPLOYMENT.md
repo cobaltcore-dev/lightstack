@@ -667,9 +667,92 @@ Render-time guards (the install fails fast, naming the problem) — SQLite is re
 
 **Filesystem requirement:** SQLite needs working POSIX file locks, so `realMode.hostStoragePath` **must be a local filesystem — not NFS or CephFS**, whose locking can corrupt the database.
 
-**Uninstall and retention** (`dataRetentionPolicy`): the teardown purge Job is pinned to the same node as the workload, reads the database to enumerate the release's VMs, and — under `delete` — removes the node-local trees with the `db/` directory **last**. Under `retain` (the default) nothing runs and `db/` stays on the node; a reinstall on the same node opens the database and resumes. The three db files (`lightstack.db`, `-wal`, `-shm`) belong together and are never moved individually. Backup and restore are part 3 (cloud-storage#600).
+**Uninstall and retention** (`dataRetentionPolicy`): the teardown purge Job is pinned to the same node as the workload, reads the database to enumerate the release's VMs, and — under `delete` — removes the node-local trees with the `db/` directory **last**. Under `retain` (the default) nothing runs and `db/` stays on the node; a reinstall on the same node opens the database and resumes. The three db files (`lightstack.db`, `-wal`, `-shm`) belong together and are never moved individually — to copy the database, take a backup ([below](#backup-integrity-check-and-restore)).
 
 > **Note:** A namespace enforcing the `baseline` or `restricted` Pod Security level rejects the pod — SQLite (like real mode) requires a hostPath volume.
+
+### Backup, integrity check and restore
+
+These procedures are for **real-mode** SQLite deployments (`realMode.enabled: true`). A stub-mode release mounts only the `db/` directory, so the backups directory is not on the node and stub mode is not backed up. PostgreSQL deployments use `pg_dump`; `backup` and `check` refuse a PostgreSQL URL and say so.
+
+The examples use release `ls`, `realMode.hostStoragePath` `/var/lib/lightstack` and the chart's config path `/app/config/lightstack.yaml`. Flags go before the file name.
+
+#### Take a backup
+
+`lightstack-migrate backup` copies the database while Lightstack keeps serving requests — a consistent copy taken inside the database, never a copy of the live file, which can catch it mid-write:
+
+```bash
+kubectl exec deploy/ls-lightstack -- /app/lightstack-migrate backup -config /app/config/lightstack.yaml
+# ✅ Backup written to /var/lib/lightstack/backups/lightstack-20261028T143000Z.db
+```
+
+- The backup is **one file**, with no `-wal` or `-shm` beside it, named after its UTC time.
+- It is `0600` in a `0750` directory, like the database: it holds the same data, password hashes included.
+- It **never overwrites**: an existing target is refused. Pass a name to choose one: `backup -config … /var/lib/lightstack/backups/before-upgrade.db`.
+- `<hostStoragePath>/backups` sits beside `db/`, not inside it, so `dataRetentionPolicy: delete` leaves it on the node. It is still **lost with the node** — copy backups off it:
+
+```bash
+POD=$(kubectl get pod -l app.kubernetes.io/name=lightstack,app.kubernetes.io/instance=ls -o jsonpath='{.items[0].metadata.name}')
+kubectl cp "$POD":/var/lib/lightstack/backups/lightstack-20261028T143000Z.db ./lightstack-20261028T143000Z.db
+```
+
+Backups accumulate until you delete them; nothing prunes or schedules them.
+
+#### Check integrity
+
+```bash
+kubectl exec deploy/ls-lightstack -- /app/lightstack-migrate check -config /app/config/lightstack.yaml
+# ✅ Integrity check passed (schema version <N>)
+```
+
+`check` only reads, so it runs against the serving database with no downtime. On a damaged database it exits non-zero and lists the problems SQLite found. It also refuses a file that holds no Lightstack schema — an empty file passes SQLite's own check, and restoring one would start Lightstack as a fresh install — and one missing any table, index or column its schema version requires, which it lists: Lightstack would start on such a file and fail later. `check` reads the image's migrations to know that schema, so it also refuses a database written by a newer Lightstack. A database an interrupted migration left marked dirty is refused too, since Lightstack will not start on it; the message says how to repair it.
+
+#### Restore
+
+Restoring replaces the database with a backup. **Delete `lightstack.db-wal` and `lightstack.db-shm` first.** Left in place, SQLite replays the old write-ahead log onto the restored file at the next open, and the "restored" database comes back holding the data written after the backup.
+
+The running container has no shell, and a Deployment scaled to zero leaves no pod with the node's storage mounted, so the file work happens in a node debug pod:
+
+```bash
+# 1. Stop Lightstack. Wait until the pod is gone: nothing may hold the database.
+kubectl scale deployment ls-lightstack --replicas=0
+kubectl wait --for=delete pod -l app.kubernetes.io/name=lightstack,app.kubernetes.io/instance=ls --timeout=120s
+
+# 2. A debug pod on the node, from the Lightstack image. The node's filesystem is under /host.
+#    Give the command (sh): without one the image would run its own entrypoint.
+kubectl debug node/<node> -it --image=<registry>/lightstack:<tag> -- sh
+```
+
+In the debug pod (copy a backup kept off the node in first with `kubectl cp ./backup.db <debug-pod>:/host/var/lib/lightstack/backups/`):
+
+```sh
+H=/host/var/lib/lightstack                       # /host + realMode.hostStoragePath
+rm -f $H/db/lightstack.db-wal $H/db/lightstack.db-shm
+cp $H/backups/lightstack-20261028T143000Z.db $H/db/lightstack.db
+chmod 600 $H/db/lightstack.db
+LIGHTSTACK_DB_URL=sqlite://$H/db/lightstack.db /app/lightstack-migrate check -config /app/config/lightstack.yaml
+exit
+```
+
+```bash
+# 3. Remove the debug pod (kubectl debug names it node-debugger-<node>-<suffix>), then start Lightstack.
+kubectl delete pod <node-debugger-pod>
+kubectl scale deployment ls-lightstack --replicas=1
+```
+
+Lightstack migrates a backup taken by an older version forward when it starts. A backup taken by a **newer** version is refused — the pod fails with `the database is at migration version N, but this Lightstack knows versions up to M` — run that version, or restore a backup this one wrote.
+
+#### Recovery
+
+If the database is damaged, restore the latest backup that passes `check`. Data written after that backup is lost.
+
+If no usable backup exists, salvage what SQLite can read with the `sqlite3` shell's `.recover` command. The Lightstack image ships no `sqlite3`, so this runs off the node: stop Lightstack as in step 1, and copy `lightstack.db` together with its `-wal` and `-shm` — the three are one database — into one directory on a machine with Docker or Podman. Run `.recover` there with Alpine's `sqlite3`: distribution builds such as Debian's and Ubuntu's lack the `sqlite_dbpage` table it needs and stop with `no such table: sqlite_dbpage`, leaving an empty file.
+
+```bash
+podman run --rm -v "$PWD":/w docker.io/library/alpine:3.24 sh -c 'umask 077 && apk add -q sqlite && sqlite3 /w/lightstack.db ".recover" | sqlite3 /w/recovered.db && chown "$(stat -c %u:%g /w/lightstack.db)" /w/recovered.db'
+```
+
+(`docker run` takes the same arguments.) `.recover` is best effort. Restore `recovered.db` with the procedure above: its `check` refuses a result that holds no Lightstack schema, or only part of it, and lists what is missing.
 
 ---
 
