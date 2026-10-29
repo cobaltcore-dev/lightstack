@@ -176,3 +176,26 @@ func TestPurgeLocalStorage(t *testing.T) {
 		t.Errorf("the purge removed %s, which is not Lightstack's: %v", keep, err)
 	}
 }
+
+// Backups are the operator's, like a retained database: the uninstall purge leaves the backups
+// directory and its files where they are, even under dataRetentionPolicy: delete (SPEC-030
+// FR-004) — otherwise the one copy meant to survive the database would go with it.
+func TestPurgeKeepsBackups(t *testing.T) {
+	root := t.TempDir()
+	paths.SetBase(root)
+	t.Cleanup(func() { paths.SetBase(paths.DefaultBase) })
+
+	backup := filepath.Join(paths.BackupsDir(), "lightstack-20261028T143000Z.db")
+	if err := os.MkdirAll(paths.BackupsDir(), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := purgeLocalStorage(); err != nil {
+		t.Fatalf("purgeLocalStorage: %v", err)
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Errorf("the purge removed a backup: %v", err)
+	}
+}

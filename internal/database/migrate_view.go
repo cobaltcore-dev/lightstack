@@ -155,6 +155,17 @@ func (v *migrationView) Open(name string) (fs.File, error) {
 	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 }
 
+// latestVersion is the newest migration version the view holds.
+func (v *migrationView) latestVersion() uint64 {
+	var latest uint64
+	for _, e := range v.entries {
+		if f, ok := parseMigrationFile(e.Name()); ok && f.version > latest {
+			latest = f.version
+		}
+	}
+	return latest
+}
+
 // ReadDir lists the kept files.
 func (v *migrationView) ReadDir(name string) ([]fs.DirEntry, error) {
 	if name != "." {

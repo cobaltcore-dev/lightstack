@@ -1,6 +1,9 @@
 package paths
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestLayout pins the node-local hostPath layout under the default root. These exact
 // paths are what the chart mounts by default and what the host-validated real mode
@@ -17,6 +20,7 @@ func TestLayout(t *testing.T) {
 		{ConsoleTokenDir(), "/var/lib/lightstack/console-tokens"},
 		{ConsoleSocketDir(), "/var/lib/lightstack/console-sockets"},
 		{DBDir(), "/var/lib/lightstack/db"},
+		{BackupsDir(), "/var/lib/lightstack/backups"},
 		{ConsoleSocketPath("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
 			"/var/lib/lightstack/console-sockets/1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d.sock"},
 	}
@@ -44,11 +48,22 @@ func TestSetBaseMovesEveryDir(t *testing.T) {
 		{ConsoleTokenDir(), "/data/lightstack/console-tokens"},
 		{ConsoleSocketDir(), "/data/lightstack/console-sockets"},
 		{DBDir(), "/data/lightstack/db"},
+		{BackupsDir(), "/data/lightstack/backups"},
 		{ConsoleSocketPath("x"), "/data/lightstack/console-sockets/x.sock"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
 			t.Errorf("path = %q; want %q", c.got, c.want)
 		}
+	}
+}
+
+// A backup's default name is its UTC timestamp, whatever the caller's zone, so backups
+// sort by age and two nodes in different zones name the same moment alike (SPEC-030 FR-002).
+func TestBackupPath(t *testing.T) {
+	berlin := time.FixedZone("CET", 3600)
+	at := time.Date(2026, 10, 28, 15, 30, 0, 0, berlin)
+	if got, want := BackupPath(at), "/var/lib/lightstack/backups/lightstack-20261028T143000Z.db"; got != want {
+		t.Errorf("BackupPath = %q; want %q", got, want)
 	}
 }

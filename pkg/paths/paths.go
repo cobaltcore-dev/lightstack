@@ -5,7 +5,10 @@
 // here (SPEC-009 WS-0/WS-2/WS-5).
 package paths
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"time"
+)
 
 // DefaultBase is the node-local root used when state_path is not configured.
 const DefaultBase = "/var/lib/lightstack"
@@ -59,3 +62,14 @@ func ConsoleSocketPath(instanceID string) string {
 // DBDir is where a SQLite database lives on the node (lightstack.db and its -wal and
 // -shm files). PostgreSQL deployments leave it empty.
 func DBDir() string { return filepath.Join(base, "db") }
+
+// BackupsDir holds the database backups lightstack-migrate takes (SPEC-030). It is a sibling
+// of DBDir, not inside it: the uninstall purge removes db/ under dataRetentionPolicy: delete
+// and leaves this directory alone, so backups stay the operator's.
+func BackupsDir() string { return filepath.Join(base, "backups") }
+
+// BackupPath is the default name of a backup taken at t: its UTC timestamp, so backups sort by
+// age and a second backup in the same second is refused rather than overwriting the first.
+func BackupPath(t time.Time) string {
+	return filepath.Join(BackupsDir(), "lightstack-"+t.UTC().Format("20060102T150405Z")+".db")
+}
