@@ -260,7 +260,7 @@ Lightstack automatically generates libvirt XML based on flavor, image, and netwo
   <vcpu placement='static'>2</vcpu>
 
   <os>
-    <type arch='x86_64' machine='pc-i440fx-2.12'>hvm</type>
+    <type arch='x86_64' machine='pc'>hvm</type>
     <boot dev='hd'/>
   </os>
 
