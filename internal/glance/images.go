@@ -256,7 +256,7 @@ func (svc *Service) CreateImage(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to create image"))
 		return
 	}
-	defer tx.Rollback(c.Request.Context())
+	defer func() { _ = tx.Rollback(c.Request.Context()) }() // no-op once committed
 
 	_, err = tx.Exec(c.Request.Context(), `
 		INSERT INTO images (id, name, project_id, status, visibility, disk_format, container_format, min_disk_gb, min_ram_mb, rbd_pool, rbd_image, created_at, updated_at)

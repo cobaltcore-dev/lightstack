@@ -725,7 +725,7 @@ func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantPara
 		//
 		// Skipped when an admin explicitly filters by tenant: the tenant filter
 		// is then the authoritative owner scope.
-		if !(isAdmin && tenantParam != "") {
+		if !isAdmin || tenantParam == "" {
 			f.Cond(networkReadScope(f.Arg(caller)))
 		}
 	}
@@ -2155,20 +2155,13 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	if dhcpToggled {
 		u.Set("enable_dhcp", *req.Subnet.EnableDHCP)
 	}
+	// An empty update succeeds without a write, matching Neutron and clients that
+	// send unchanged resources. In particular, leave updated_at untouched.
 	if !u.Empty() {
 		u.Set("updated_at", time.Now())
 		_, err = svc.pool.Exec(c.Request.Context(),
 			"UPDATE subnets SET "+u.Assignments()+" WHERE id = "+u.Arg(resolvedID),
 			u.Args()...)
-	} else {
-		// Nothing was supplied, so nothing is written. This used to issue
-		// `UPDATE subnets SET name = <the name just read>` — a statement that changed no column and
-		// did not even touch updated_at (second review, AGY-2).
-		//
-		// The request still SUCCEEDS: upstream Neutron accepts an empty update and answers 200 with
-		// the unchanged resource, and Terraform and Horizon both send updates that can reduce to
-		// nothing. Refusing with 400 — the second review's suggestion — would have been an API
-		// compatibility regression, which this project's first principle forbids.
 	}
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", resolvedID).Msg("database error")
