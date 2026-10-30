@@ -88,7 +88,6 @@ cirros*.img
 # HOST_TESTING_REAL_MODE.md generates this (ideally under /tmp); guard the repo-root path too.
 /lightstack-real-values.yaml
 
-# Keep important root docs
 # Python harness regression tests
 __pycache__/
 

@@ -26,6 +26,9 @@ jobs:
         with:
           go-version: '1.27.3'
           cache: true
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
 
       - name: Scan Go code and pinned development tool
         run: |
