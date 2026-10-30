@@ -66,7 +66,7 @@ _osc_version_cached() {
 }
 
 _git_rev() {
-    git -C "$CLI_ROOT/../../.." rev-parse --short HEAD 2>/dev/null || echo "unknown"
+    git -C "$CLI_ROOT/../.." rev-parse --short HEAD 2>/dev/null || echo "unknown"
 }
 
 report_write() {

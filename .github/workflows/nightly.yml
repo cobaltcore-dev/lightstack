@@ -12,7 +12,7 @@ jobs:
   cli-conformance-full:
     name: CLI Conformance (Full)
     runs-on: ubuntu-latest
-    if: github.event_name == "workflow_dispatch" || github.repository == "cobaltcore-dev/lightstack"
+    if: github.event_name == 'workflow_dispatch' || github.repository == 'cobaltcore-dev/lightstack'
     timeout-minutes: 60
 
     # SPEC-028 nightly: the FULL suite (workflows included, so tier C) plus the
@@ -53,11 +53,19 @@ jobs:
       - name: Build binary
         run: make build
 
+      - name: Install local storage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils
+
       - name: Start lightstack server (native)
         run: |
+          # Match the PR job: local backing must be writable by the runner.
+          sed '/^state_path:/d' config/lightstack.yaml > "$RUNNER_TEMP/lightstack.yaml"
+          printf '\nstate_path: "%s"\n' "$RUNNER_TEMP/lightstack-state" >> "$RUNNER_TEMP/lightstack.yaml"
           LIGHTSTACK_DB_URL="postgres://lightstack:secret@localhost:5432/lightstack_test?sslmode=disable" \
           LIGHTSTACK_JWT_SECRET="ci-secret" LIGHTSTACK_ENDPOINT_HOST="localhost" \
-          nohup ./bin/lightstack --config config/lightstack.yaml --migrations migrations > /tmp/lightstack.log 2>&1 &
+          nohup ./bin/lightstack --config "$RUNNER_TEMP/lightstack.yaml" --migrations migrations > /tmp/lightstack.log 2>&1 &
 
       - name: Wait for lightstack to be ready
         run: |
@@ -112,7 +120,7 @@ jobs:
   terraform-conformance:
     name: Terraform Conformance
     runs-on: ubuntu-latest
-    if: github.event_name == "workflow_dispatch" || github.repository == "cobaltcore-dev/lightstack"
+    if: github.event_name == 'workflow_dispatch' || github.repository == 'cobaltcore-dev/lightstack'
     timeout-minutes: 45
 
     # SPEC-028 nightly: apply + destroy the UNMODIFIED terraform-provider-
@@ -154,11 +162,19 @@ jobs:
       - name: Build binary
         run: make build
 
+      - name: Install local storage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils
+
       - name: Start lightstack server (native)
         run: |
+          # Match the PR job: local backing must be writable by the runner.
+          sed '/^state_path:/d' config/lightstack.yaml > "$RUNNER_TEMP/lightstack.yaml"
+          printf '\nstate_path: "%s"\n' "$RUNNER_TEMP/lightstack-state" >> "$RUNNER_TEMP/lightstack.yaml"
           LIGHTSTACK_DB_URL="postgres://lightstack:secret@localhost:5432/lightstack_test?sslmode=disable" \
           LIGHTSTACK_JWT_SECRET="ci-secret" LIGHTSTACK_ENDPOINT_HOST="localhost" \
-          nohup ./bin/lightstack --config config/lightstack.yaml --migrations migrations > /tmp/lightstack.log 2>&1 &
+          nohup ./bin/lightstack --config "$RUNNER_TEMP/lightstack.yaml" --migrations migrations > /tmp/lightstack.log 2>&1 &
 
       - name: Wait for lightstack to be ready
         run: |

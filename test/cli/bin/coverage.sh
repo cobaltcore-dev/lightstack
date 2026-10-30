@@ -72,8 +72,22 @@ MANIFESTS_JSON=$(jq -s '.' "$MANIFEST_DIR"/*.json) || {
     echo "ERROR: manifests in $MANIFEST_DIR are not parseable JSON" >&2
     exit 2
 }
-CASES_JSON=$(jq '.cases // []' "$RESULTS") || {
-    echo "ERROR: $RESULTS is not parseable JSON — rerun ./test/cli/bin/run.sh" >&2
+# A parseable report is not necessarily valid evidence: an unknown status used
+# to evade every failure predicate, and selecting the first duplicate ID could
+# hide a later failed attempt. Require one recognized result per case.
+CASES_JSON=$(jq -e '
+    if type == "object" and (.cases |
+        type == "array" and length > 0 and
+        all(.[]; type == "object" and
+            (.id | type == "string" and length > 0) and
+            (.status == "pass" or .status == "fail" or
+             .status == "known-failing" or .status == "skip")) and
+        (map(.id) | length == (unique | length)))
+    then .cases
+    else error("expected nonempty cases with unique IDs and recognized statuses")
+    end
+' "$RESULTS") || {
+    echo "ERROR: $RESULTS is not a valid results report — rerun ./test/cli/bin/run.sh" >&2
     exit 2
 }
 

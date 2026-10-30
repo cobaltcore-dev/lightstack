@@ -101,6 +101,7 @@ t_skip "reason"                    # recorded as skipped (fails the gate)
 bash suites/keystone.sh                   # standalone; results under results/standalone/
 ./test/cli/bin/coverage.sh                # gate against results/results.json
 ./test/cli/bin/coverage.sh --strict       # also require tier C (nightly)
+python3 -m unittest discover -s test/cli -p 'test_*.py' -v  # harness regression tests; no server needed
 ```
 
 Environment: the standard `OS_*` variables (defaults match a local stub-mode
