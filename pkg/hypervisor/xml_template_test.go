@@ -202,3 +202,27 @@ func TestDomainXMLConsoleIsUnixSocketAndShared(t *testing.T) {
 		t.Errorf("graphics must set sharePolicy='force-shared' so a second viewer does not evict the first; got:\n%s", graphics)
 	}
 }
+
+// TestGenerateVMXMLMachineTypePortable guards against pinning an obsolete QEMU machine
+// type in the domain XML. The generic "pc" alias always resolves to the running QEMU's
+// current i440fx machine, so a guest defines on any supported QEMU; a pinned version such
+// as the old "pc-i440fx-2.12" is dropped by newer QEMU (>= 6.x no longer ships 2.12), and
+// every real-mode define then fails with "does not support machine type".
+func TestGenerateVMXMLMachineTypePortable(t *testing.T) {
+	spec := VMSpec{
+		Name:      "machine-vm",
+		UUID:      "550e8400-e29b-41d4-a716-446655440099",
+		MemoryMB:  512,
+		VCPUs:     1,
+		ImagePath: "/var/lib/libvirt/images/machine.qcow2",
+	}
+
+	xml := GenerateVMXML(spec)
+
+	if !strings.Contains(xml, "machine='pc'") {
+		t.Errorf("domain XML should use the portable machine type machine='pc'; got:\n%s", xml)
+	}
+	if strings.Contains(xml, "pc-i440fx-2.12") {
+		t.Error("domain XML pins the obsolete machine type pc-i440fx-2.12, which newer QEMU rejects")
+	}
+}
