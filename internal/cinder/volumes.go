@@ -692,10 +692,10 @@ func volumeListScope(c *gin.Context) (tenant string, allTenants bool) {
 	if !common.HasRole(c, common.RoleAdmin) {
 		return "", false
 	}
-	if common.QueryFlag(c, "all_tenants") {
-		return "", true
-	}
-	return c.Query("project_id"), false
+	// OSC sends all_tenants together with project_id for --project. Keep
+	// the explicit project filter: all_tenants enables cross-project access,
+	// it does not discard the requested scope.
+	return c.Query("project_id"), common.QueryFlag(c, "all_tenants")
 }
 
 func (svc *Service) ListVolumes(c *gin.Context) {

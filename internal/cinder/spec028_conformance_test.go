@@ -304,6 +304,19 @@ func TestVolumeListAllTenantsAndProjectFilter_DB(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, otherVol) || strings.Contains(body, ownVol) {
 		t.Errorf("admin volumes?project_id=<other>: code=%d body=%s; want only the other project's volume", code, body)
 	}
+	// OSC 7.0.0's --project sends BOTH parameters. The explicit filter must
+	// still select only that project's volumes on both list endpoints.
+	for _, path := range []string{"/v3/volumes", "/v3/volumes/detail"} {
+		query := path + "?all_tenants=1&project_id=" + otherProject
+		code, body = doReq(r, http.MethodGet, query, "", adminHdr)
+		if code != http.StatusOK || !strings.Contains(body, otherVol) || strings.Contains(body, ownVol) {
+			t.Errorf("admin %s: code=%d body=%s; want only the other project's volume", query, code, body)
+		}
+		code, body = doReq(r, http.MethodGet, query, "", memberHdr)
+		if code != http.StatusOK || strings.Contains(body, otherVol) || !strings.Contains(body, ownVol) {
+			t.Errorf("member %s: code=%d body=%s; want only the member's volume", query, code, body)
+		}
+	}
 	// Admin + all_tenants: both appear.
 	code, body = doReq(r, http.MethodGet, "/v3/volumes/detail?all_tenants", "", adminHdr)
 	if code != http.StatusOK || !strings.Contains(body, otherVol) || !strings.Contains(body, ownVol) {
