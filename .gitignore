@@ -89,6 +89,10 @@ cirros*.img
 /lightstack-real-values.yaml
 
 # Keep important root docs
+# Python harness regression tests
+__pycache__/
+
+# Keep important root docs
 !/README.md
 !/CLAUDE.md
 !/CHANGELOG.md

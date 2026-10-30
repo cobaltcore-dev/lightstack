@@ -138,7 +138,9 @@ OSC="${OPENSTACK_CLI:-$(command -v openstack || true)}"
 (e.g. /opt/osc-venv/bin/openstack) or put it on PATH."
 
 [ -d "$MODULE_DIR" ] || die "compat module not found at $MODULE_DIR"
-command -v curl >/dev/null 2>&1 || die "curl not found on PATH"
+for tool in curl jq timeout; do
+    command -v "$tool" >/dev/null 2>&1 || die "$tool not found on PATH"
+done
 
 log "terraform version"
 terraform version | head -1
@@ -151,11 +153,14 @@ curl -sf --max-time 10 "$OS_AUTH_URL" -o /dev/null \
 
 # Every catalog endpoint must be reachable, or apply will hang creating the
 # resource that talks to the dead port (HOST_TESTING.md §7).
+catalog_endpoints="$("$OSC" catalog list -f value -c Endpoints)" \
+    || die "cannot list service catalog endpoints"
+catalog_urls="$(printf '%s\n' "$catalog_endpoints" | grep -oE 'https?://[a-zA-Z0-9.:/-]+' | sort -u)" \
+    || die "service catalog contains no endpoint URLs"
 while IFS= read -r url; do
     curl -s -o /dev/null --max-time 10 "$url" \
         || die "catalog endpoint unreachable: $url (OS_AUTH_URL=$OS_AUTH_URL)"
-done < <("$OSC" catalog list -f value -c Endpoints 2>/dev/null \
-    | grep -oE 'https?://[a-zA-Z0-9.:/-]+' | sort -u)
+done <<<"$catalog_urls"
 log "auth OK, all catalog endpoints reachable"
 
 # ---------------------------------------------------------------------------
@@ -250,9 +255,14 @@ $plan_out"
 # Floating IPs carry no name, so the post-destroy residue sweep cannot match
 # them by prefix. Capture the module's own FIP ids from the state now —
 # before destroy empties it — and assert each is gone afterwards.
-FIP_IDS_BEFORE_DESTROY="$(tf state pull -no-color 2>/dev/null \
-    | jq -r '[.resources[]? | select(.type == "openstack_networking_floatingip_v2")
-              | .instances[]?.attributes.id] | join(" ")' 2>/dev/null || true)"
+# A failed pull or malformed state must not silently erase the IDs whose
+# absence we need to prove after destroy. pipefail preserves both failures.
+FIP_IDS_BEFORE_DESTROY="$(tf state pull \
+    | jq -er '[.resources[] | select(.type == "openstack_networking_floatingip_v2")
+               | .instances[].attributes.id]
+              | if all(.[]; type == "string" and length > 0) then join(" ")
+                else error("invalid floating IP ID in state") end')" \
+    || die "unable to capture floating IP IDs from Terraform state"
 
 log "terraform destroy"
 tf destroy -auto-approve -input=false -no-color "${TF_VAR_ARGS[@]}" 2>&1 \
@@ -282,14 +292,13 @@ log "outputs: none"
 # silently stop covering the surface when it does. Floating IPs carry no
 # name at all — they are covered by the id-based check below.
 residue=0
-for res in "server list" "network list" "security group list" "volume list" "keypair list"; do
-    n="$("$OSC" $res -f value -c Name 2>/dev/null | grep -c '^tf-compat-' || true)"
+for res in "server list" "network list" "security group list" "volume list" "keypair list" "subnet list" "router list"; do
+    read -r -a resource_args <<<"$res"
+    names="$("$OSC" "${resource_args[@]}" -f value -c Name)" \
+        || die "cannot check residue: openstack $res failed"
+    n="$(printf '%s\n' "$names" | grep -c '^tf-compat-' || true)"
     residue=$((residue + n))
 done
-n="$("$OSC" subnet list -f value -c Name 2>/dev/null | grep -c '^tf-compat-' || true)"
-residue=$((residue + n))
-n="$("$OSC" router list -f value -c Name 2>/dev/null | grep -c '^tf-compat-' || true)"
-residue=$((residue + n))
 # The module's own floating IPs, captured from state before destroy — the
 # only precise check available for nameless resources. Resolved through the
 # LIST, not 'floating ip show': the pinned OSC 7.0.0 fails that command
@@ -297,7 +306,8 @@ residue=$((residue + n))
 # 4.7.0 vs the plain-callable port_details formatter), so a show-based probe
 # would report "gone" unconditionally — including for a leaked FIP.
 if [ -n "$FIP_IDS_BEFORE_DESTROY" ]; then
-    fip_list="$("$OSC" floating ip list -f value -c ID 2>/dev/null || true)"
+    fip_list="$("$OSC" floating ip list -f value -c ID)" \
+        || die "cannot check residue: openstack floating ip list failed"
     for fip in $FIP_IDS_BEFORE_DESTROY; do
         if printf '%s\n' "$fip_list" | grep -qx "$fip"; then
             residue=$((residue + 1))

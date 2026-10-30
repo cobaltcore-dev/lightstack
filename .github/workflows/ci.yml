@@ -49,6 +49,9 @@ jobs:
       - name: Test CLI harness reporting and coverage gates
         run: python3 -m unittest discover -s test/cli -p 'test_*.py' -v
 
+      - name: Test Terraform harness evidence gates
+        run: python3 -m unittest discover -s test/terraform -p 'test_*.py' -v
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
         with:

@@ -39,6 +39,7 @@ bash test/terraform/run.sh
   The preflight prints an install hint if it is missing.
 - The **OpenStack CLI** for prerequisite setup (image/flavor); set `OPENSTACK_CLI` if it is not
   on `PATH` (e.g. `/opt/osc-venv/bin/openstack`).
+- **curl**, **jq**, and **timeout** (GNU coreutils) on `PATH`.
 - Network access to the public Terraform registry on **first** run only (provider download);
   afterwards the shared `TF_PLUGIN_CACHE_DIR` (default `~/.terraform.d/plugin-cache`) serves it.
 
@@ -79,6 +80,16 @@ A run passes (exit 0) iff **all** of the following hold:
 A **nightly workflow job** (`.github/workflows/nightly.yml`) runs `make test-terraform`
 against a fresh stub-mode Lightstack deployment with only the wrapper's own image present.
 The wrapper is not part of the per-PR CI gate because it needs a running server.
+
+PR CI exercises the wrapper's evidence gates with fake external clients:
+
+```bash
+python3 -m unittest discover -s test/terraform -p 'test_*.py' -v
+```
+
+These regression tests check that failed catalog/resource listings and unreadable
+Terraform state fail the run, and that leaked resources (including nameless floating
+IPs captured from state) cannot produce a successful cleanup report.
 
 ## Known divergences
 
