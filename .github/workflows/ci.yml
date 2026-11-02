@@ -19,7 +19,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
 
       - name: Cache Go modules
         uses: actions/cache@v5
@@ -83,7 +83,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
 
       - name: Cache Go modules
         uses: actions/cache@v5
@@ -118,7 +118,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
 
       - name: Cache Go modules
         uses: actions/cache@v5
@@ -322,6 +322,9 @@ jobs:
     name: Helm Charts
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      HELM_VERSION: v3.22.1
+      HELM_UNITTEST_VERSION: v1.2.1
 
     steps:
       - name: Checkout code
@@ -329,18 +332,14 @@ jobs:
 
       # Same mechanism as `make install-tools`: the official get-helm-3 script plus the
       # helm-unittest plugin, which `make chart-test` hard-requires (Makefile:103-104).
-      - name: Install Helm and the helm-unittest plugin
+      - name: Install pinned Helm and helm-unittest
         run: |
-          if ! command -v helm >/dev/null 2>&1; then
-            # Downloaded, not piped: the default run shell is `bash -e` without pipefail,
-            # so `curl ... | bash` would swallow a failed download.
-            curl -fsSL -o "$RUNNER_TEMP/get-helm-3" \
-              https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-            bash "$RUNNER_TEMP/get-helm-3"
-          fi
-          if ! helm plugin list 2>/dev/null | grep -q '^unittest'; then
-            helm plugin install https://github.com/helm-unittest/helm-unittest
-          fi
+          export HELM_PLUGINS="$RUNNER_TEMP/helm-plugins"
+          echo "HELM_PLUGINS=$HELM_PLUGINS" >> "$GITHUB_ENV"
+          curl -fsSL -o "$RUNNER_TEMP/get-helm-3" \
+            https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          bash "$RUNNER_TEMP/get-helm-3" --version "$HELM_VERSION"
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version "$HELM_UNITTEST_VERSION"
           helm version --short
 
       # Lints + renders + unit-tests both product charts: charts/lightstack, then
