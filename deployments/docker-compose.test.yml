@@ -7,7 +7,7 @@ version: '3.8'
 #   OS_PASSWORD="$(...)" docker compose -f deployments/docker-compose.test.yml run --rm test-runner
 services:
   test-runner:
-    image: golang:1.27.2
+    image: golang:1.27.3
     container_name: lightstack-test-runner
     working_dir: /workspace
     volumes:

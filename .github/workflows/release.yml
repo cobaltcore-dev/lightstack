@@ -32,7 +32,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.27.2'
+  GO_VERSION: '1.27.3'
   # Pinned to the same versions as CI (see the helm-check job in ci.yml). The
   # release must not let a runner-preinstalled Helm/plugin decide what gets
   # published.
