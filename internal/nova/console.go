@@ -380,6 +380,9 @@ func unsupportedConsoleTypeMsg(consoleType string) string {
 // projection directory without asking us, so nothing about the console depends
 // on this endpoint working — but `openstack` and third-party tooling expect it.
 func (svc *Service) ShowConsoleAuthToken(c *gin.Context) {
+	if !requireAdmin(c, "os-console-auth-tokens:show") {
+		return
+	}
 	if svc.consoleStore == nil {
 		common.SendError(c, common.NewNotFoundError("console token"))
 		return

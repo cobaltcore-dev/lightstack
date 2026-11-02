@@ -241,8 +241,9 @@ func (f *serverFilter) applyRegexFilters(c *gin.Context, alias string) *common.O
 		if alias == "" {
 			outerID, outerProject = "instances.id", "instances.project_id"
 		}
-		f.Cond("EXISTS (SELECT 1 FROM ports p, jsonb_array_elements(p.fixed_ips) e" +
-			" WHERE p.device_id = " + outerID + " AND p.project_id = " + outerProject +
+		f.Cond("EXISTS (SELECT 1 FROM ports p, jsonb_array_elements(" +
+			"CASE WHEN jsonb_typeof(p.fixed_ips) = 'array' THEN p.fixed_ips ELSE '[]'::jsonb END" +
+			") e WHERE p.device_id = " + outerID + " AND p.project_id = " + outerProject +
 			" AND e->>'ip_address' ~ " + f.Arg(v) + ")")
 	}
 	return nil

@@ -2935,6 +2935,9 @@ func (svc *Service) ListImagesDetail(c *gin.Context) {
 
 // ListHypervisors lists hypervisors (mock for Horizon)
 func (svc *Service) ListHypervisors(c *gin.Context) {
+	if !requireAdmin(c, "os-hypervisors:index") {
+		return
+	}
 	c.JSON(200, gin.H{"hypervisors": []gin.H{
 		{
 			"id":                  1,
@@ -2958,6 +2961,9 @@ func (svc *Service) ListHypervisors(c *gin.Context) {
 
 // ListHypervisorsDetail lists hypervisors with details (mock for Horizon)
 func (svc *Service) ListHypervisorsDetail(c *gin.Context) {
+	if !requireAdmin(c, "os-hypervisors:detail") {
+		return
+	}
 	cpuInfoJSON := `{"arch":"x86_64","model":"Skylake-Server-IBRS","vendor":"Intel","features":[],"topology":{"cores":8,"threads":2,"sockets":1}}`
 
 	c.JSON(200, gin.H{"hypervisors": []gin.H{
@@ -2984,6 +2990,9 @@ func (svc *Service) ListHypervisorsDetail(c *gin.Context) {
 
 // GetHypervisorStatistics returns aggregated hypervisor statistics (for Horizon)
 func (svc *Service) GetHypervisorStatistics(c *gin.Context) {
+	if !requireAdmin(c, "os-hypervisors:statistics") {
+		return
+	}
 	// Count running instances. Scan failures degrade to zero (the stats
 	// response still ships) and are logged for diagnosis.
 	var runningVMs int
@@ -3229,6 +3238,9 @@ func (svc *Service) GetLimits(c *gin.Context) {
 
 // ListServices returns list of compute services
 func (svc *Service) ListServices(c *gin.Context) {
+	if !requireAdmin(c, "os-services:index") {
+		return
+	}
 	// Format: "2006-01-02T15:04:05.000000" (without Z, microseconds)
 	now := time.Now().Format("2006-01-02T15:04:05.000000")
 

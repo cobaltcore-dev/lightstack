@@ -99,3 +99,51 @@ func TestNetworkDataJSONServesPortAddresses(t *testing.T) {
 		t.Errorf("networks missing the port's addresses: %s", body)
 	}
 }
+
+// TestNetworkDataJSONToleratesNullFixedIPs pins the metadata half of the
+// JSON-scalar-null defect. A port on a subnet-less network persisted JSON
+// `null` in fixed_ips; COALESCE does not rescue that (JSON null is not SQL
+// NULL), so jsonb_array_elements raised and network_data.json answered 500.
+func TestNetworkDataJSONToleratesNullFixedIPs(t *testing.T) {
+	requireDB(t)
+	ctx := t.Context()
+
+	instanceID := seedInstance(t, nil)
+
+	var networkID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO networks (name, project_id, status, admin_state_up)
+		 VALUES ('md-null-net', $1, 'ACTIVE', true) RETURNING id::text`,
+		seededProjectID).Scan(&networkID); err != nil {
+		t.Fatalf("seed network: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM networks WHERE id::text = $1", networkID) })
+
+	portID := uuid.NewString()
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, status, fixed_ips)
+		 VALUES ($1, 'md-null-port', $2, $3, $4, 'compute:nova', '52:54:00:0a:0b:0d', 'ACTIVE', 'null'::jsonb)`,
+		portID, networkID, seededProjectID, instanceID); err != nil {
+		t.Fatalf("seed port: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM ports WHERE id::text = $1", portID) })
+
+	code, body := metaGet(newMetadataTestRouter(), "/openstack/latest/network_data.json", instanceID)
+	if code != http.StatusOK {
+		t.Fatalf("network_data.json with a JSON-null fixed_ips: code=%d body=%s; want 200", code, body)
+	}
+
+	var doc struct {
+		Links    []json.RawMessage `json:"links"`
+		Networks []json.RawMessage `json:"networks"`
+	}
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("network_data.json is not JSON: %v (%s)", err, body)
+	}
+	if len(doc.Links) != 1 {
+		t.Errorf("links = %d; want the address-less port's one link: %s", len(doc.Links), body)
+	}
+	if len(doc.Networks) != 0 {
+		t.Errorf("networks = %d; an address-less port contributes none: %s", len(doc.Networks), body)
+	}
+}

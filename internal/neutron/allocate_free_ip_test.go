@@ -3,6 +3,7 @@ package neutron
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"testing"
 
 	"github.com/google/uuid"
@@ -54,8 +55,9 @@ func TestAllocateFreeIPAvoidsUsedAddresses(t *testing.T) {
 	_, subnetID := seedN4Subnet(t, "192.168.250.0/28", "")
 
 	held := map[string]bool{"192.168.250.1": true, "192.168.250.14": true}
-	// Hold every candidate except .13 (offset 10..13 in a /28: 10,11,12,13).
-	for _, ip := range []string{"192.168.250.10", "192.168.250.11", "192.168.250.12"} {
+	// Hold addresses across the range the allocator may now draw from — it is
+	// upstream-conformant and no longer biased to offsets 10..13.
+	for _, ip := range []string{"192.168.250.1", "192.168.250.10", "192.168.250.11", "192.168.250.12", "192.168.250.14"} {
 		held[ip] = true
 		seedN4Port(t, mustN4NetworkID(t, subnetID), subnetID, ip)
 	}
@@ -107,10 +109,112 @@ func TestAllocateFreeIPExhaustedSubnet(t *testing.T) {
 // subnets with fewer than ~12 addresses, and crypto/rand.Int PANICS on a
 // non-positive bound.
 func TestAllocateIPTinySubnetDoesNotPanic(t *testing.T) {
-	for _, cidr := range []string{"192.168.253.0/30", "192.168.253.0/29", "192.168.253.0/28"} {
+	for _, cidr := range []string{
+		"192.168.253.0/30",
+		"192.168.253.0/29",
+		"192.168.253.0/28",
+		"192.168.253.0/31",
+		"192.168.253.1/32",
+		"fd00::/64",
+		"fd00::/126",
+	} {
 		if ip := allocateIP(cidr); ip == "" {
 			t.Errorf("allocateIP(%s) = \"\"; want a usable address", cidr)
 		}
+	}
+}
+
+// TestAllocateFreeIPv6Subnet: an IPv6 subnet is allocated from normally. The
+// old allocator shifted by hostBits, so a /64 overflowed int64 and panicked —
+// IPv6 could not be used at all.
+func TestAllocateFreeIPv6Subnet(t *testing.T) {
+	requireDB(t)
+	_, subnetID := seedN4Subnet(t, "fd00:1::/64", "")
+	for range 10 {
+		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID, "fd00:1::/64")
+		if err != nil {
+			t.Fatalf("allocateFreeIP on IPv6: %v", err)
+		}
+		if parsed := net.ParseIP(ip); parsed == nil {
+			t.Fatalf("allocated %q, which is not an address", ip)
+		}
+	}
+}
+
+// TestAllocateFreeIPToleratesLegacyNullFixedIPs is the regression for the
+// tenant-triggerable deployment-wide allocation DoS. A port on a subnet-less
+// network used to persist JSON scalar `null` in ports.fixed_ips. Because
+// jsonb_array_elements was an unguarded FROM-clause SRF, one such row made
+// every allocation in every subnet fail with SQLSTATE 22023.
+func TestAllocateFreeIPToleratesLegacyNullFixedIPs(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+
+	// A network with no subnet and a LEGACY row whose fixed_ips is JSON null,
+	// exactly as the old writer left it.
+	var bareNetworkID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO networks (name, project_id, status, admin_state_up)
+		 VALUES ($1, $2, 'ACTIVE', true) RETURNING id::text`,
+		"n4-null-net-"+uuid.NewString()[:8], seededProjectID).Scan(&bareNetworkID); err != nil {
+		t.Fatalf("seeding subnet-less network: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM networks WHERE id::text = $1`, bareNetworkID)
+	})
+	if _, err := testPool.Exec(ctx,
+		`INSERT INTO ports (name, network_id, project_id, mac_address, status, fixed_ips)
+		 VALUES ('n4-null-port', $1, $2, '52:54:00:aa:bb:cc', 'ACTIVE', 'null'::jsonb)`,
+		bareNetworkID, seededProjectID); err != nil {
+		t.Fatalf("seeding legacy null-fixed_ips port: %v", err)
+	}
+
+	// A different, healthy subnet must still allocate. Before the guard this
+	// failed for every subnet in the deployment.
+	_, subnetID := seedN4Subnet(t, "192.168.254.0/29", "")
+	ip, err := AllocateFreeIP(ctx, testPool, subnetID, "192.168.254.0/29")
+	if err != nil {
+		t.Fatalf("allocation on a healthy subnet failed because another port has JSON-null fixed_ips: %v", err)
+	}
+	if ip == "" {
+		t.Fatal("allocated an empty address")
+	}
+}
+
+// TestCreatePortOnSubnetlessNetworkWritesEmptyArray: the writer side. A port on
+// a network with no subnet must persist `[]`, never JSON null, so no NEW poison
+// rows are created even though readers still tolerate old ones.
+func TestCreatePortOnSubnetlessNetworkWritesEmptyArray(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	r := newNeutronTestRouter()
+
+	var networkID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO networks (name, project_id, status, admin_state_up)
+		 VALUES ($1, $2, 'ACTIVE', true) RETURNING id::text`,
+		"n4-empty-net-"+uuid.NewString()[:8], seededProjectID).Scan(&networkID); err != nil {
+		t.Fatalf("seeding subnet-less network: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM ports WHERE network_id = $1`, networkID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM networks WHERE id = $1`, networkID)
+	})
+
+	body := `{"port":{"network_id":"` + networkID + `","name":"n4-empty-port"}}`
+	code, resp := doReqBody(r, "POST", "/v2.0/ports", body,
+		map[string]string{"X-Test-Project": seededProjectID})
+	if code != 201 {
+		t.Fatalf("create port on subnet-less network: code=%d body=%s; want 201", code, resp)
+	}
+
+	var typeof string
+	if err := testPool.QueryRow(ctx,
+		`SELECT jsonb_typeof(fixed_ips) FROM ports WHERE network_id = $1`, networkID).Scan(&typeof); err != nil {
+		t.Fatalf("reading the created port's fixed_ips: %v", err)
+	}
+	if typeof != "array" {
+		t.Fatalf("fixed_ips is JSON %s; want an array so every reader can unpack it", typeof)
 	}
 }
 

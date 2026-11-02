@@ -84,7 +84,11 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		req.Port.NetworkID,
 	).Scan(&subnetID, &cidr)
 
-	var fixedIPs []map[string]any
+	// Non-nil even when the network has no subnet: marshalling a nil slice
+	// produces JSON `null`, and ports.fixed_ips must always be an array so
+	// every jsonb_array_elements reader can unpack it. A legacy row may still
+	// hold `null`; readers guard on jsonb_typeof for those.
+	fixedIPs := []map[string]any{}
 	if err == nil {
 		// Allocate an address no other port in the subnet holds (N-4).
 		allocatedIP, allocErr := AllocateFreeIP(c.Request.Context(), svc.pool, subnetID, cidr)
@@ -661,32 +665,45 @@ func allocateIP(cidr string) string {
 		return ""
 	}
 
-	// Count usable host addresses (excluding network and broadcast)
 	ones, bits := ipNet.Mask.Size()
 	hostBits := bits - ones
-	if hostBits < 2 {
+	if hostBits < 0 {
 		return ""
 	}
-	maxOffset := int64(1<<uint(hostBits)) - 2 // exclude network(0) and broadcast
 
-	// Candidate range [10, maxOffset): low offsets are commonly taken by
-	// gateways, infra, and earlier ports. A tiny subnet (<= /29) does not have
-	// ten addresses, so fall back to the whole usable range — rand.Int panics
-	// on a non-positive bound, which this used to do for exactly those
-	// subnets (found while fixing N-4).
-	lo, hi := int64(10), maxOffset
-	if hi <= lo {
-		lo, hi = 1, maxOffset+1
+	// Match upstream Neutron's generate_pools(): a /32 and a /31 have no
+	// network/broadcast pair to exclude, IPv4 larger than /31 excludes both,
+	// and IPv6 is handled normally. A small pool is never refused as
+	// "untenable" — exhaustion is what fails, in AllocateFreeIP.
+	isV4 := ipNet.IP.To4() != nil
+	var lo, span int64
+	switch {
+	case isV4 && hostBits == 0: // /32: single address
+		lo, span = 0, 1
+	case isV4 && ones >= 31: // /31: both addresses usable
+		lo, span = 0, 2
+	case isV4: // exclude network and broadcast
+		lo, span = 1, (int64(1)<<uint(hostBits))-2
+	case hostBits == 0: // IPv6 /128
+		lo, span = 0, 1
+	case hostBits >= 32: // IPv6: bounded random window inside the subnet
+		// The offset must fit incrementIP's uint and int64 arithmetic; a /64
+		// has far more host bits than this, so sample a window rather than
+		// shifting by 64 (which overflows int64 and used to panic).
+		lo, span = 1, 1<<32
+	default: // small IPv6 subnet: first+1 .. last
+		lo, span = 1, (int64(1)<<uint(hostBits))-1
+	}
+	if span <= 0 {
+		return ""
 	}
 
-	n, err := rand.Int(rand.Reader, big.NewInt(hi-lo))
-	offset := uint(lo) // fallback to the lowest usable offset if rand fails
+	n, err := rand.Int(rand.Reader, big.NewInt(span))
+	offset := lo
 	if err == nil {
-		offset = uint(n.Int64() + lo)
+		offset += n.Int64()
 	}
-
-	ip := incrementIP(ipNet.IP, offset)
-	return ip.String()
+	return incrementIP(ipNet.IP, uint(offset)).String()
 }
 
 // usedSubnetAddresses returns every address held by a port in the subnet
@@ -695,7 +712,9 @@ func usedSubnetAddresses(ctx context.Context, pool *pgxpool.Pool, subnetID strin
 	used := map[string]bool{}
 	rows, err := pool.Query(ctx, `
 		SELECT fx->>'ip_address'
-		FROM ports, jsonb_array_elements(fixed_ips) fx
+		FROM ports, jsonb_array_elements(
+			CASE WHEN jsonb_typeof(fixed_ips) = 'array' THEN fixed_ips ELSE '[]'::jsonb END
+		) fx
 		WHERE fx->>'subnet_id' = $1
 	`, subnetID)
 	if err != nil {

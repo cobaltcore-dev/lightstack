@@ -301,7 +301,9 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		       COALESCE(s.dns_nameservers, ARRAY[]::text[])
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
-		LEFT JOIN LATERAL jsonb_array_elements(COALESCE(p.fixed_ips, '[]'::jsonb)) fx ON true
+		LEFT JOIN LATERAL jsonb_array_elements(
+			CASE WHEN jsonb_typeof(p.fixed_ips) = 'array' THEN p.fixed_ips ELSE '[]'::jsonb END
+		) fx ON true
 		LEFT JOIN subnets s ON fx->>'subnet_id' IS NOT NULL AND s.id::text = fx->>'subnet_id'
 		WHERE p.device_id = $1
 		ORDER BY p.created_at, p.id
