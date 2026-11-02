@@ -42,16 +42,16 @@ Statuses: `draft`, `accepted`, `implemented`, `superseded`, `archived` (see
 | 012 | [Integration Contract](./012-integration-contract/spec.md) | Helm values schema + status conventions | implemented | Merged (#69) |
 | 013 | [Readiness/Liveness Probes](./013-readiness-liveness-probes/spec.md) | Honest readiness/liveness endpoints for k8s-native heartbeating | implemented | Merged (#70); `internal/health/` exists; 10 code references |
 | 014 | [Ceph RGW (S3) Backend](./014-ceph-rgw-s3-backend/spec.md) | Glance image backend + tenant object storage on Ceph RGW | implemented | Merged; 31 code references |
-| 015 | [Identity UUID 404](./015-identity-uuid-404/spec.md) | Return 404 (not 500) for malformed identity resource ids | implemented | Merged (#515) |
-| 016 | [Terraform Provider Verification](./016-terraform-openstack-provider-verification/README.md) | Verify unmodified terraform-provider-openstack apply/destroy | implemented | Harness + report merged (#481); `docs/compatibility/TERRAFORM_COMPATIBILITY_REPORT.md` |
-| 017 | [Nova Server-Detail Read-back](./017-nova-server-detail-readback/spec.md) | Terraform-compat server-detail fields (`key_name`, `security_groups`) | implemented | Merged (#524); cited by `test/contract/server_readback_test.go` |
-| 018 | [Horizon Dashboard Verification](./018-horizon-dashboard-verification/spec.md) | Verify unmodified Horizon against Lightstack; publish findings report | implemented | Merged (#482); `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md` |
-| 019 | [Horizon Compat API Fixes](./019-horizon-compat-api-fixes/spec.md) | Backend/response fixes for findings F4/F5/F6/F9 | implemented | Merged (#532) |
-| 020 | [Horizon Create/UI Enablement](./020-horizon-create-ui-enablement/spec.md) | Enable Horizon create/write workflows (F2/F3/F7/F8) | implemented | Merged (#533); 58 code references |
-| 021 | [Real noVNC Console](./021-real-novnc-console/spec.md) | A real graphical console via noVNC (finding F1) | implemented | Merged (#534); 57 code references; host-pass validation tasks remain open in `tasks.md` |
-| 022 | [Project/Tenant Isolation](./022-project-tenant-isolation/spec.md) | Tenant lifecycle & isolation defect fixes (B2/B5/B8) | implemented | Merged (#545); EVIDENCE.md in spec dir |
-| 023 | [Tenant Scoping & Authz](./023-tenant-scoping-authz/spec.md) | Tenant scoping and authorization model (P2/P3) | implemented | Merged (#549); 57 code references |
-| 024 | [Neutron API Fidelity](./024-neutron-api-fidelity-realmode/spec.md) | Neutron API fidelity & real-mode networking fixes (B6/B9–B11, F10/F11) | implemented | Merged (#546); 60 code references |
+| 015 | [Identity UUID 404](./015-identity-uuid-404/spec.md) | Return 404 (not 500) for malformed identity resource ids | implemented | Merged (cloud-storage#515) |
+| 016 | [Terraform Provider Verification](./016-terraform-openstack-provider-verification/README.md) | Verify unmodified terraform-provider-openstack apply/destroy | implemented | Harness + report merged (cloud-storage#481); `docs/compatibility/TERRAFORM_COMPATIBILITY_REPORT.md` |
+| 017 | [Nova Server-Detail Read-back](./017-nova-server-detail-readback/spec.md) | Terraform-compat server-detail fields (`key_name`, `security_groups`) | implemented | Merged (cloud-storage#524); cited by `test/contract/server_readback_test.go` |
+| 018 | [Horizon Dashboard Verification](./018-horizon-dashboard-verification/spec.md) | Verify unmodified Horizon against Lightstack; publish findings report | implemented | Merged (cloud-storage#482); `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md` |
+| 019 | [Horizon Compat API Fixes](./019-horizon-compat-api-fixes/spec.md) | Backend/response fixes for findings F4/F5/F6/F9 | implemented | Merged; commit `0a4dde0` (cloud-storage#532) |
+| 020 | [Horizon Create/UI Enablement](./020-horizon-create-ui-enablement/spec.md) | Enable Horizon create/write workflows (F2/F3/F7/F8) | implemented | Merged (cloud-storage#533); 58 code references |
+| 021 | [Real noVNC Console](./021-real-novnc-console/spec.md) | A real graphical console via noVNC (finding F1) | implemented | Merged (cloud-storage#534); 57 code references; host-pass validation tasks remain open in `tasks.md` |
+| 022 | [Project/Tenant Isolation](./022-project-tenant-isolation/spec.md) | Tenant lifecycle & isolation defect fixes (B2/B5/B8) | implemented | Merged (cloud-storage#545); EVIDENCE.md in spec dir |
+| 023 | [Tenant Scoping & Authz](./023-tenant-scoping-authz/spec.md) | Tenant scoping and authorization model (P2/P3) | implemented | Merged (cloud-storage#549); 57 code references |
+| 024 | [Neutron API Fidelity](./024-neutron-api-fidelity-realmode/spec.md) | Neutron API fidelity & real-mode networking fixes (B6/B9–B11, F10/F11) | implemented | Merged (cloud-storage#546); 60 code references |
 | 025 | [Nova Gaps & Client Discovery](./025-nova-gaps-client-discovery/spec.md) | Ten defects: discovery self-links + compute answers that look successful | implemented | Merged; commit `3f6633d` |
 | 025 | [SPEC-025 Follow-ups](./025-followup/spec.md) | Pseudo-ticket for the follow-ups found while implementing SPEC-025 | implemented | Merged on the same branch; commit `fb6443a` |
 | 027 | [Database Pool Injection](./027-database-pool-injection/spec.md) | Inject `*pgxpool.Pool` through service constructors (implements ADR-001) | implemented | Merged; ADR-001 records "Implemented by SPEC-027" |
@@ -65,12 +65,29 @@ Statuses: `draft`, `accepted`, `implemented`, `superseded`, `archived` (see
   commit `7ea8682`). Its spec directory was deliberately never tracked — the rename
   could not be applied to a spec describing the rename — so no `026-*` directory exists.
 
+**Merge dependencies.** Open PRs overlap this registry and the contributor docs:
+
+- **#107** adds `028-cli-conformance-test-environment` as `plan.md` only; it needs
+  `spec.md`/`tasks.md` or a documented plan-first carve-out before it can land.
+- **#108/#109** claim 028/029 for SQLite. The later-merged spec PR must renumber as
+  described under [Numbering Rules](#numbering-rules).
+- **#103**'s secret guard (not current behavior on `main`) will require the
+  contract-test startup instruction in `docs/CONTRIBUTING.md` to use `make run`/env
+  vars, and CLAUDE.md's credential section to mention `LIGHTSTACK_JWT_SECRET` /
+  `LIGHTSTACK_ADMIN_PASSWORD`.
+- **#101** conflicts in `CLAUDE.md`/`docs/CONTRIBUTING.md`; its Terraform
+  compatibility hedges must win over any stronger "unchanged"/"zero-modification" claim.
+
 ## Numbering Rules
 
 - One number per spec. Numbers are **monotonic**: each new spec takes the next free
   number and never reuses or renumbers an existing one, even if earlier numbers are
   missing or duplicated (see anomalies above — they stay as-is for history).
-- The **next free number is 028.**
+- The **next number to mint is 028**, but it is currently claimed by two in-flight PRs:
+  #107 (`028-cli-conformance-test-environment`, `plan.md` only) and #108/#109
+  (SQLite, claiming 028/029). The number is **frozen until one lands**; the
+  later-merged PR must renumber its spec per these rules. Do not mint 028 from
+  `main` while both are open.
 - A spec directory is named `NNN-short-slug/` (lowercase, hyphenated), and the spec is
   cited as `SPEC-NNN` in code comments, commit messages, and ADRs.
 

@@ -64,7 +64,7 @@ Your git identity must be configured to the sap.com address (`git config user.em
 ### Prerequisites
 
 **Required:**
-- Go 1.27.2 or higher (the version pinned in [`go.mod`](../go.mod))
+- Go 1.27.x — use the exact version pinned in [`go.mod`](../go.mod)
 - PostgreSQL 18 or higher
 - Docker (for `make db-up` and the container-based test stacks)
 - Git

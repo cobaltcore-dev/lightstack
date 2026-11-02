@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It provides a single ~35MB binary that implements the five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance), a Placement stub, and an EC2-compatible metadata service, with 100% Terraform compatibility.
+Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It provides a single ~35MB binary that implements the five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance), a Placement stub, and an EC2-compatible metadata service. Terraform compatibility is **validated for one topology**, not literally 100% — see the qualifiers below.
 
 **Core Philosophy:**
-- **Terraform Compatibility First**: Users can use existing Terraform OpenStack provider scripts unchanged
+- **Terraform Compatibility First**: The unmodified Terraform OpenStack provider is validated for compute, networks, security groups, and volumes on the sc007 topology; see `docs/compatibility/TERRAFORM_COMPATIBILITY_REPORT.md` and `docs/blueprint.md` §6 for the scope, the port-id workaround, and the object-storage exclusion
 - **UI/CLI Compatibility**: OpenStack CLI works identically; Horizon's dashboard is **usable for resource management**, with its open UI gaps listed in `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`
-- **Drop-in Replacement**: Zero modifications needed to migrate from OpenStack to Lightstack
+- **Drop-in Replacement**: Migrating from OpenStack is designed to be low-friction, but the Terraform path is not literally zero-modification — it needs a one-line port-id workaround, is validated on one real-mode (non-CI) topology, and does not serve Terraform's Swift-based object storage; see `docs/blueprint.md` §6 and the [Terraform compatibility report](docs/compatibility/TERRAFORM_COMPATIBILITY_REPORT.md)
 - **Synchronous Operations**: No message queues - operations complete before API returns
 - **Fail-Fast Design**: External dependency failures return immediately (< 1 second timeouts)
 - **Multi-mode Support**: Each service supports stub mode (development) and real mode (production)
@@ -138,7 +138,7 @@ Lightstack runs as a single process (`cmd/lightstack/main.go`) that starts seven
 - **Keystone** (35357): Identity service, JWT-based authentication
 - **Nova** (8774): Compute service, VM lifecycle via libvirt
 - **Neutron** (9696): Network service, namespace isolation via netlink
-- **Cinder** (8776): Block storage, multi-backend support (local/RBD/S3)
+- **Cinder** (8776): Block storage, multi-backend support (local/RBD)
 - **Glance** (9292): Image service, multi-backend with hybrid failover
 - **Placement** (8778): Stub of the placement service
 - **Metadata** (8775): EC2-compatible metadata service (no auth)
@@ -193,9 +193,10 @@ test/                       # Test suites
 - Check mode via `libvirtMode` or `networkingMode` fields in service structs
 
 **Multi-backend Storage Pattern** (Cinder/Glance):
-- Storage modes specified as comma-separated strings: `"local"`, `"rbd"`, `"s3"`, `"local,rbd"`, `"local,s3"`, `"rbd,s3"`
-- First backend is primary, subsequent are fallback
-- Implemented in `pkg/storage/` with `ImageStore` and backend-specific implementations
+- **Cinder**: `stub`, `local`, `rbd`, `local,rbd` only. S3 is **not** a Cinder backend.
+- **Glance**: `stub`, `local`, `rbd`, `s3`, `local,rbd`, `local,s3` only. `rbd,s3` is **rejected at startup** (Glance has no RBD backend, so the S3 replica would never be written).
+- Storage modes are specified as comma-separated strings; the first backend is primary, subsequent ones are fallback
+- Implemented in `pkg/storage/` with `ImageStore` and backend-specific implementations; see `docs/STORAGE_MODES.md` for the authoritative matrix
 
 **Synchronous Operations**:
 - All API operations complete before returning (no async state machines)
@@ -268,10 +269,14 @@ Requires Linux with appropriate dependencies.
 - Uses `github.com/vishvananda/netlink` for namespace/bridge creation
 - iptables via `github.com/coreos/go-iptables` for security groups
 
-**Cinder/Glance real mode** (`storage_mode: local`, `rbd`, `s3`, or hybrid):
-- `local`: Host filesystem storage (node-local, under the `state_path` root)
-- `rbd`: Ceph RBD via `github.com/ceph/go-ceph`
-- `s3`: AWS S3/MinIO/Ceph RGW via `github.com/aws/aws-sdk-go-v2`
+**Cinder/Glance real mode** (`storage_mode` varies by service):
+- **Cinder** (`local`, `rbd`, or `local,rbd`):
+  - `local`: Host filesystem storage (node-local, under the `state_path` root)
+  - `rbd`: Ceph RBD via `github.com/ceph/go-ceph`
+- **Glance** (`local`, `rbd`, `s3`, `local,rbd`, or `local,s3`):
+  - `local`: Host filesystem storage (node-local, under the `state_path` root)
+  - `rbd`: Ceph RBD via `github.com/ceph/go-ceph`
+  - `s3`: AWS S3/MinIO/Ceph RGW via `github.com/aws/aws-sdk-go-v2` (Glance only; `rbd,s3` is rejected at startup)
 
 ## Database Schema
 
@@ -336,8 +341,8 @@ Configuration loaded from `config/lightstack.yaml` (or via `--config` flag).
 - `keystone.admin_password`: overrides the seeded `admin`/`secret` default — set it for any exposed deployment
 - `nova.libvirt_mode`: `stub` (dev) or `real` (prod)
 - `neutron.networking_mode`: `stub`, `iptables`, or `ebpf`
-- `cinder.storage_mode`: `stub`, `local`, `rbd`, `s3`, or hybrid (comma-separated)
-- `glance.storage_mode`: `stub`, `local`, `rbd`, `s3`, or hybrid (comma-separated)
+- `cinder.storage_mode`: `stub`, `local`, `rbd`, or `local,rbd` (Cinder has no S3 backend)
+- `glance.storage_mode`: `stub`, `local`, `rbd`, `s3`, `local,rbd`, or `local,s3` (`rbd,s3` is rejected at startup)
 - `state_path`: node-local state root (default `/var/lib/lightstack`; resolved via `pkg/paths`)
 
 **Dead config — do not rely on it**: the `rate_limiting.*` block (`enabled`, `auth_rate`, `api_rate`, …) appears in `config/lightstack.yaml` and in ADR-002's design, but **no code reads it** — there is no `RateLimiting` field in the `Config` struct (`internal/common/config.go`) and no rate-limiting middleware. Treat it as unimplemented until a spec lands it.

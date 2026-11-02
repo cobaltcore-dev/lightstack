@@ -62,7 +62,9 @@ so never point it at anything shared:
 
 ```bash
 make db-up   # start dev PostgreSQL in Docker
-LIGHTSTACK_TEST_DB_URL=postgres://lightstack:secret@localhost:5432/postgres make test
+# create the scratch database once (the harness migrates it but does not create it)
+docker exec lightstack-postgres psql -U lightstack -c 'CREATE DATABASE lightstack_test'
+LIGHTSTACK_TEST_DB_URL=postgres://lightstack:secret@localhost:5432/lightstack_test make test
 make migrate # apply migrations (golang-migrate)
 ```
 

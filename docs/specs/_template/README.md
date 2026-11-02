@@ -1,7 +1,8 @@
 # Spec Template
 
-Copy this directory to `docs/specs/NNN-short-slug/` (next free number — see the
-[specs registry](../README.md#numbering-rules)) and fill in each file. Delete the
+Copy this directory to `docs/specs/NNN-short-slug/` (pick the next number to mint per
+the [numbering rules](../README.md#numbering-rules) — 028 is currently frozen by
+in-flight PRs) and fill in each file. Delete the
 files you genuinely don't need, but keep the naming and the workflow.
 
 ## Workflow: specify → plan → tasks → implement → validate
