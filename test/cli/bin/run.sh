@@ -9,9 +9,11 @@
 #                      --suite implies --no-cleanup unless --teardown is
 #                      also given, so a developer can iterate on one suite.
 #   --fast             run the PR-time subset (all suites except workflows).
-#   --strict           known-failing and skipped cases fail the run too.
-#                      The nightly runs this way: the PR gate tracks the debt,
-#                      the nightly refuses to carry it.
+#   --strict           fail on skipped cases and on any known-failing case that
+#                      is not in test/cli/baseline/known_failures.txt. The
+#                      nightly runs this way: the PR gate tracks the debt, the
+#                      nightly refuses to let it grow. (A baseline entry that
+#                      now passes is a stale warning, not a failure.)
 #   --no-cleanup       skip the fixture teardown sweep at the end.
 #   --teardown         with --suite: still tear down afterwards.
 #   --keep-server      do not stop a server this script started itself.
@@ -27,8 +29,9 @@
 #   3. Otherwise: error with instructions.
 #
 # Exit code: 0 iff every recorded case passed (known-failing and skipped do
-# not fail the run; they are tracked separately and trended by coverage.sh).
-# With --strict they do fail it.
+# not fail the run; the coverage gate explains the known-failing baseline).
+# With --strict, skipped cases and known-failing cases outside the baseline
+# fail it.
 
 set -uo pipefail
 
@@ -48,7 +51,7 @@ KEEP_SERVER=0
 RESULTS_DIR="$CLI_ROOT/results"
 
 usage() {
-    sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 

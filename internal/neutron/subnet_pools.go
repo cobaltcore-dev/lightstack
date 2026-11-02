@@ -19,7 +19,7 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
+		SELECT id, project_id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
 		       shared, is_default, ip_version, COALESCE(description, ''), created_at, updated_at
 		FROM subnet_pools
 		WHERE project_id = $1 OR shared = true
@@ -35,14 +35,14 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 
 	pools := []gin.H{}
 	for rows.Next() {
-		var id, name, description string
+		var id, ownerID, name, description string
 		var prefixes []string
 		var minPrefixlen, maxPrefixlen, ipVersion int
 		var defaultPrefixlen *int
 		var shared, isDefault bool
 		var createdAt, updatedAt time.Time
 
-		err := rows.Scan(&id, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
+		err := rows.Scan(&id, &ownerID, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
 			&shared, &isDefault, &ipVersion, &description, &createdAt, &updatedAt)
 		if err != nil {
 			continue
@@ -57,10 +57,13 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 			"shared":        shared,
 			"is_default":    isDefault,
 			"ip_version":    ipVersion,
-			"tenant_id":     projectID,
-			"description":   description,
-			"created_at":    createdAt.Format(time.RFC3339),
-			"updated_at":    updatedAt.Format(time.RFC3339),
+			// The row's OWN project, not the caller's: the shared visibility
+			// clause above returns other projects' pools, and `tenant_id` must
+			// name the owner (same round-8 fix as cinder volumes and ports).
+			"tenant_id":   ownerID,
+			"description": description,
+			"created_at":  createdAt.Format(time.RFC3339),
+			"updated_at":  updatedAt.Format(time.RFC3339),
 		}
 
 		if defaultPrefixlen != nil {
@@ -187,7 +190,7 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 		return
 	}
 
-	var id, name string
+	var id, ownerID, name string
 	var prefixes []string
 	var minPrefixlen, maxPrefixlen, ipVersion int
 	var defaultPrefixlen *int
@@ -196,11 +199,11 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
+		SELECT id, project_id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
 		       shared, is_default, ip_version, description, created_at, updated_at
 		FROM subnet_pools
 		WHERE id = $1 AND (project_id = $2 OR shared = true)
-	`, poolID, projectID).Scan(&id, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
+	`, poolID, projectID).Scan(&id, &ownerID, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
 		&shared, &isDefault, &ipVersion, &description, &createdAt, &updatedAt)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -222,10 +225,12 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 		"shared":        shared,
 		"is_default":    isDefault,
 		"ip_version":    ipVersion,
-		"tenant_id":     projectID,
-		"description":   description.String,
-		"created_at":    createdAt.Format(time.RFC3339),
-		"updated_at":    updatedAt.Format(time.RFC3339),
+		// See ListSubnetPools: shared rows belong to another project, so
+		// rendering the caller's id here is false attribution.
+		"tenant_id":   ownerID,
+		"description": description.String,
+		"created_at":  createdAt.Format(time.RFC3339),
+		"updated_at":  updatedAt.Format(time.RFC3339),
 	}
 
 	if defaultPrefixlen != nil {

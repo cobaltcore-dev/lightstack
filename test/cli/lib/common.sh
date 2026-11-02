@@ -9,7 +9,9 @@
 #                            LAST_CMD_MS. Never fails the case by itself.
 #   t_begin <case-id>        open a test case (id must be unique, e.g. keystone.project.list)
 #   t_fail <message>         mark the current case failed with a reason (repeatable)
-#   t_known_failure <msg>    mark the current case known-failing (tracked, not fatal)
+#   t_known_failure <msg>    mark the current case known-failing (tracked, not
+#                            fatal in non-strict mode; it must be listed in
+#                            baseline/known_failures.txt or the strict gates fail)
 #   t_skip <message>         mark the current case skipped
 #   t_end                    close the current case and record it
 #   suite_begin <name> / suite_end

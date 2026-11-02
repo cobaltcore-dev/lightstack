@@ -9,7 +9,8 @@
 #   report_summary      human-readable summary to stdout
 #   report_failed       returns 0 (success) when some case FAILED — callers
 #                       write `if report_failed; then rc=1; fi`. Strict mode
-#                       (CLI_STRICT=1) also counts known-failing and skip.
+#                       (CLI_STRICT=1) also counts skip and any known-failing
+#                       that is not in the checked-in baseline.
 #
 # Case statuses: pass | fail | known-failing | skip
 # Standalone suite runs (bash suites/foo.sh outside bin/run.sh) automatically
@@ -18,6 +19,9 @@
 # Guard against double-sourcing.
 [[ -n "${_CLI_REPORT_SOURCED:-}" ]] && return 0
 _CLI_REPORT_SOURCED=1
+
+# shellcheck source=baseline.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/baseline.sh"
 
 # Everything this library writes is machine-format (JSON, JUnit XML): pin the
 # numeric locale so bash's printf '%.3f' renders a decimal point, not a comma,
@@ -206,8 +210,12 @@ report_summary() {
 report_failed() {
     # Returns 0 when the run HAS failing cases (so callers write
     # `if report_failed; then rc=1; fi`), non-zero when it is clean.
-    # Strict mode also counts known-failing and skipped cases: the nightly
-    # wants to be told when its debt grows back, not only when it breaks.
+    # Non-strict mode fails only on `fail`. Strict mode (the nightly) also
+    # fails on `skip` and on any `known-failing` case that is not in the
+    # checked-in baseline: the baseline records the structurally unpassable
+    # cases, so a probe that regresses into known-failing still turns the
+    # nightly red. A baseline entry that now passes is only a stale warning —
+    # fixing a divergence must not fail the run.
     # Fails CLOSED: a missing, empty, or unparseable results file counts as
     # a failing run — a green result must be evidenced, not assumed.
     if [[ ! -s "${RESULTS_FILE:-}" ]]; then
@@ -215,7 +223,41 @@ report_failed() {
     fi
     local predicate='any(.[]; .status == "fail")'
     if [[ "${CLI_STRICT:-0}" == "1" ]]; then
-        predicate='any(.[]; .status == "fail" or .status == "known-failing" or .status == "skip")'
+        local baseline_ids
+        if ! baseline_ids="$(cli_baseline_ids)"; then
+            log_error "cannot evaluate --strict: known-failure baseline is missing or unreadable"
+            return 0
+        fi
+        local -A baseline=()
+        local id
+        while IFS= read -r id; do
+            [[ -n "$id" ]] && baseline["$id"]=1
+        done <<<"$baseline_ids"
+
+        local known_ids
+        if ! known_ids=$(jq -r -s '.[] | select(.status == "known-failing") | .id' "$RESULTS_FILE" 2>/dev/null); then
+            return 0 # unparseable results are a failed run
+        fi
+        while IFS= read -r id; do
+            [[ -z "$id" ]] && continue
+            if [[ -z "${baseline[$id]:-}" ]]; then
+                log_error "new known-failing case not in $(cli_baseline_file): $id"
+                return 0
+            fi
+        done <<<"$known_ids"
+
+        local pass_ids
+        if ! pass_ids=$(jq -r -s '.[] | select(.status == "pass") | .id' "$RESULTS_FILE" 2>/dev/null); then
+            return 0
+        fi
+        while IFS= read -r id; do
+            [[ -z "$id" ]] && continue
+            if [[ -n "${baseline[$id]:-}" ]]; then
+                log_warn "stale baseline entry '$id' now passes — remove it from $(cli_baseline_file)"
+            fi
+        done <<<"$pass_ids"
+
+        predicate='any(.[]; .status == "fail" or .status == "skip")'
     fi
     jq -e -s "$predicate" "$RESULTS_FILE" >/dev/null 2>&1
     local rc=$?

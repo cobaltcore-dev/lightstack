@@ -584,9 +584,10 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 
 	// A subnet without a gateway (an explicit null clears it, S14) used to
 	// 500 here: the scan above targeted a plain string and NULL cannot land
-	// in one. Upstream never refuses — the interface attaches with an
-	// address from the subnet — so a NULL gateway falls back to the same
-	// allocator CreatePort uses (SPEC-028).
+	// in one. Upstream never refuses a usable pool — /30, /31, /32 and IPv6
+	// subnets all allocate — so a NULL gateway falls back to the same
+	// allocator CreatePort uses, and only an exhausted/invalid CIDR is a
+	// clean 400 (SPEC-028).
 	if gatewayIP == nil {
 		allocated := allocateIP(cidr)
 		if allocated == "" {

@@ -211,8 +211,13 @@ developer reproduces CI exactly.
 **TDD note (Constitution Art. III)**: for the harness itself the "red" step is running each new case
 against a stub-mode server and confirming it exercises the endpoint (manifest entry flips to
 `tested`). Product defects the cases uncover are filed and either fixed or recorded as
-`known-failing` entries in the manifest — never silently tolerated by the gate (a `known-failing`
-count is reported and trended, and blocks release at >0 new).
+`known-failing` in the suite. Every known-failing case must also appear in the checked-in baseline
+`test/cli/baseline/known_failures.txt` with the reason it cannot pass against the pinned environment
+(stub-mode console; the OSC 7.0.0 backup-by-name client bug). `coverage.sh` and `run.sh --strict`
+fail on any known-failing case missing from that ledger, so a regression cannot hide as tracked
+debt; the "known-failing count" is reported and trended instead. A ledger entry that starts passing
+is a stale-baseline warning (never a failure). **Maintenance:** when a genuine divergence is fixed,
+remove its baseline entry — and if the suite probe self-heals, convert it to a plain assertion.
 
 ### Phase 2 — CI integration
 
@@ -261,7 +266,7 @@ count is reported and trended, and blocks release at >0 new).
 |---|---|
 | CLI invocations are slow (~1-2s each; full matrix could be 600+ calls) | Tier split: curated PR subset, full matrix nightly; per-service parallel suites |
 | New CLI release changes output/behavior | Pinned `constraints.txt`; deliberate upgrade PRs |
-| Cases uncover real product bugs (likely — Cinder metadata/transfers already known weak) | Manifest `known-failing` state is explicit, counted, trended, and must shrink — not a silent 85% floor |
+| Cases uncover real product bugs (likely — Cinder metadata/transfers already known weak) | Every `known-failing` case is listed in the checked-in baseline with a reason; both gates fail on a new one, a stale entry only warns, and the count is visible — not a silent 85% floor |
 | Alpine runtime image differs from developers' environments | Same image already used in prod compose; local `make test-cli` uses the identical stack |
 | bash harness complexity grows | `report.sh` + strict `common.sh` from day one; revisit a Go/python runner only if suites exceed bash's comfort (~Tier C growth) |
 
@@ -285,5 +290,15 @@ count is reported and trended, and blocks release at >0 new).
    because the issue's wording ("working binary") points at the artifact.
 3. **PR-time scope** — default: Tier A+B + 2-3 Tier C workflows (<10 min). Alternative: everything
    nightly-only — rejected; PRs should catch CLI breakage before merge.
-4. **Known-failing policy** — default: explicit manifest state with a must-shrink trend, no pass-rate
-   floor. Alternative: an 85%-style threshold — rejected, it is how the Cinder debt went invisible.
+4. **Known-failing policy** — default: `known-failing` cases are explicit in the suite and must be
+   listed in `test/cli/baseline/known_failures.txt` with a reason; new ones fail the gate, stale ones
+   warn, no pass-rate floor. Alternative: an 85%-style threshold — rejected, it is how the Cinder
+   debt went invisible.
+
+## 9. Merge dependencies
+
+- This PR claims **SPEC-028** and **migrations 074–078**. Open PRs #108/#109 also claim
+  SPEC-028/029 and migration 074; whichever merges second must renumber its spec directory and
+  migrations per the specs registry rule (never silently share numbers).
+- This specification is **plan.md-only** today (no `spec.md`/`tasks.md`). It needs those files or a
+  documented plan-first carve-out before the registry can treat it as complete.

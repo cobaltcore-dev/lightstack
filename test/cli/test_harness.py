@@ -1,6 +1,7 @@
 """Regression tests for CI evidence; no running Lightstack or OpenStack CLI needed."""
 import copy
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -28,15 +29,38 @@ class HarnessTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.results = Path(self.directory.name) / "results.json"
+        self.baseline = Path(self.directory.name) / "known_failures.txt"
+        self.set_baseline()
+
+    def set_baseline(self, *ids):
+        lines = [f"{case_id}  # test reason\n" for case_id in ids]
+        self.baseline.write_text("".join(lines))
 
     def gate(self, cases, *flags):
         self.results.write_text(json.dumps({"cases": cases}))
         return self.run_gate(*flags)
 
     def run_gate(self, *flags):
+        env = dict(os.environ, CLI_BASELINE_FILE=str(self.baseline))
         return subprocess.run(
             ["bash", str(CLI_ROOT / "bin/coverage.sh"), "--quiet",
              "--results", str(self.results), *flags],
+            capture_output=True, text=True, check=False, env=env,
+        )
+
+    def strict_report_failed(self, cases):
+        """Run report_failed the way run.sh --strict does (JSONL input)."""
+        jsonl = "\n".join(json.dumps(case) for case in cases) + "\n"
+        self.results.write_text(jsonl)
+        script = (
+            'CLI_ROOT="$1"; source "$CLI_ROOT/lib/report.sh"; '
+            'log_error() { echo "ERROR: $*" >&2; }; '
+            'log_warn() { echo "WARNING: $*" >&2; }; '
+            'CLI_STRICT=1 RESULTS_FILE="$2" CLI_BASELINE_FILE="$3" report_failed'
+        )
+        return subprocess.run(
+            ["bash", "-c", script, "report-test", str(CLI_ROOT),
+             str(self.results), str(self.baseline)],
             capture_output=True, text=True, check=False,
         )
 
@@ -46,12 +70,47 @@ class HarnessTests(unittest.TestCase):
                 result = self.gate(self.complete, *flags)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_known_failure_remains_visible_and_allowed(self):
+    def test_baseline_known_failure_remains_visible_and_allowed(self):
         cases = copy.deepcopy(self.complete)
         cases[0]["status"] = "known-failing"
+        self.set_baseline(cases[0]["id"])
         result = self.gate(cases)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("1 known-failing", result.stdout)
+
+    def test_new_known_failure_is_not_allowed(self):
+        cases = copy.deepcopy(self.complete)
+        cases[0]["status"] = "known-failing"
+        result = self.gate(cases)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not in baseline", result.stdout)
+
+    def test_stale_baseline_entry_warns_but_passes(self):
+        self.set_baseline(self.complete[0]["id"])
+        result = self.gate(self.complete)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("stale known-failure baseline", result.stderr)
+
+    def test_missing_baseline_fails_closed(self):
+        self.baseline.unlink()
+        self.assertNotEqual(self.gate(self.complete).returncode, 0)
+
+    def test_strict_run_gate_uses_the_same_baseline(self):
+        cases = copy.deepcopy(self.complete)
+        cases[0]["status"] = "known-failing"
+
+        # A new known-failing case fails the nightly's run gate (report_failed
+        # returns 0 = run has a failing case).
+        self.assertEqual(self.strict_report_failed(cases).returncode, 0)
+        # The same case passes once the ledger explains it.
+        self.set_baseline(cases[0]["id"])
+        self.assertEqual(self.strict_report_failed(cases).returncode, 1)
+
+    def test_strict_run_gate_warns_when_a_baseline_entry_now_passes(self):
+        self.set_baseline(self.complete[0]["id"])
+        result = self.strict_report_failed(self.complete)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("stale baseline entry", result.stderr)
 
     def test_failed_skipped_and_untested_cases_fail(self):
         for status in ("fail", "skip", "untested"):

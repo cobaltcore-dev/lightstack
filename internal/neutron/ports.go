@@ -85,9 +85,11 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	var fixedIPs []map[string]any
 	if err == nil {
-		// Allocate IP from subnet. A pool the allocator must refuse (/29-/30,
-		// IPv6 with its int64 overflow) is a clean 400 — persisting a port
-		// with a blank ip_address would be silent bad data (round 9).
+		// Allocate IP from the subnet. Upstream allocates from /30, /31, /32
+		// and IPv6 pools normally and only fails on exhaustion; "" therefore
+		// means a genuinely unusable pool (bad CIDR/no address), never "too
+		// small". Keep it a clean 400 rather than persisting a port with a
+		// blank ip_address, which would be silent bad data (round 9).
 		allocatedIP := allocateIP(cidr)
 		if allocatedIP == "" {
 			common.SendError(c, common.NewBadRequestError("subnet's cidr has no usable address for a port"))
@@ -715,39 +717,47 @@ func (svc *Service) UpdatePort(c *gin.Context) {
 	svc.GetPort(c)
 }
 
-// allocateIP allocates an IP from a CIDR range using cryptographically random offset
+// allocateIP allocates an IP from a CIDR range using a cryptographically
+// random offset. It mirrors upstream Neutron's generate_pools(): /30, /31 and
+// /32 (and every IPv6 subnet) are valid pools, network/broadcast are excluded
+// where they exist, and only an exhausted/invalid pool yields "" — the
+// callers' "no usable address". It must never panic: rand.Int panics on a
+// non-positive bound, so every span is guarded.
 func allocateIP(cidr string) string {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return ""
 	}
-
-	// Count usable host addresses (excluding network and broadcast)
 	ones, bits := ipNet.Mask.Size()
 	hostBits := bits - ones
-	if hostBits < 2 {
+	if hostBits < 0 {
 		return ""
 	}
-	maxOffset := int64(1<<uint(hostBits)) - 2 // exclude network(0) and broadcast
-
-	// Too-small pools and the IPv6 overflow both land here: for hostBits ≥ 64
-	// (every IPv6 subnet) int64(1<<hostBits) overflows to 0, making
-	// maxOffset negative; /30 and /29 make maxOffset-10 negative or zero.
-	// rand.Int PANICS on a non-positive bound (surfacing as a 500 via the
-	// recovery middleware) — refuse those subnets with the empty string the
-	// callers already treat as "no usable address".
-	if maxOffset <= 10 {
+	isV4 := ipNet.IP.To4() != nil
+	var lo, span int64
+	switch {
+	case isV4 && hostBits == 0: // /32: single address
+		lo, span = 0, 1
+	case isV4 && ones >= 31: // /31: both addresses usable
+		lo, span = 0, 2
+	case isV4: // exclude network and broadcast
+		lo, span = 1, (int64(1)<<uint(hostBits))-2
+	case hostBits == 0: // IPv6 /128
+		lo, span = 0, 1
+	case hostBits >= 32: // IPv6: bounded random window inside the subnet
+		lo, span = 1, 1<<32
+	default: // small IPv6 subnet: first+1 .. last
+		lo, span = 1, (int64(1)<<uint(hostBits))-1
+	}
+	if span <= 0 {
 		return ""
 	}
-
-	n, err := rand.Int(rand.Reader, big.NewInt(maxOffset-10))
-	offset := uint(10) // fallback to offset 10 if rand fails
+	n, err := rand.Int(rand.Reader, big.NewInt(span))
+	offset := lo
 	if err == nil {
-		offset = uint(n.Int64() + 10)
+		offset += n.Int64()
 	}
-
-	ip := incrementIP(ipNet.IP, offset)
-	return ip.String()
+	return incrementIP(ipNet.IP, uint(offset)).String()
 }
 
 // Security Groups implementation

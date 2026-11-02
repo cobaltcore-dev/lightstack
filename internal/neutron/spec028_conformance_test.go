@@ -5,6 +5,7 @@ package neutron
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -251,6 +252,107 @@ func TestSubnetPoolShowByName404_DB(t *testing.T) {
 	}
 	if code, body := doReq(r, http.MethodGet, "/v2.0/subnetpools/"+poolID, hdr); code != http.StatusOK {
 		t.Errorf("GET subnet pool by id: code=%d; want 200 (body=%s)", code, body)
+	}
+}
+
+// TestSubnetPoolReportsOwningProjectForSharedPool_DB — shared pools are
+// visible to every project, so ListSubnetPools/GetSubnetPool serve rows whose
+// project_id is not the caller's. Both used to render the CALLER's project as
+// tenant_id; the response must name the row's owner (the same round-8 bug
+// fixed for cinder volumes and neutron ports). Visibility semantics stay:
+// another project's private pool remains invisible and 404s by id.
+func TestSubnetPoolReportsOwningProjectForSharedPool_DB(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	r := newNeutronTestRouter()
+	ensureTenantB(t)
+
+	ownerHdr := hdr(tenantA, "member")
+	otherHdr := hdr(tenantB, "member")
+
+	createPool := func(name string, shared bool) string {
+		t.Helper()
+		code, body := doReqBody(r, http.MethodPost, "/v2.0/subnetpools",
+			fmt.Sprintf(`{"subnetpool":{"name":%q,"prefixes":["198.51.100.0/24"],"shared":%t}}`, name, shared), ownerHdr)
+		if code != http.StatusCreated {
+			t.Fatalf("create pool %s: code=%d (body=%s)", name, code, body)
+		}
+		var created struct {
+			Pool struct {
+				ID string `json:"id"`
+			} `json:"subnetpool"`
+		}
+		if err := json.Unmarshal([]byte(body), &created); err != nil {
+			t.Fatalf("unmarshal pool: %v (body=%s)", err, body)
+		}
+		return created.Pool.ID
+	}
+	sharedID := createPool("spec028-shared-owner", true)
+	privateID := createPool("spec028-private-owner", false)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, "DELETE FROM subnet_pools WHERE id = ANY($1)", []string{sharedID, privateID})
+	})
+
+	// The other project's list sees the shared pool, attributed to its owner,
+	// and does not see the private one.
+	code, body := doReq(r, http.MethodGet, "/v2.0/subnetpools", otherHdr)
+	if code != http.StatusOK {
+		t.Fatalf("list subnet pools as the other project: code=%d (body=%s)", code, body)
+	}
+	var list struct {
+		Pools []struct {
+			ID       string `json:"id"`
+			TenantID string `json:"tenant_id"`
+		} `json:"subnetpools"`
+	}
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("unmarshal list: %v (body=%s)", err, body)
+	}
+	var sawShared, sawPrivate bool
+	for _, p := range list.Pools {
+		switch p.ID {
+		case sharedID:
+			sawShared = true
+			if p.TenantID != tenantA {
+				t.Errorf("shared pool list tenant_id = %q; want its owner %q, not the caller %q", p.TenantID, tenantA, tenantB)
+			}
+		case privateID:
+			sawPrivate = true
+		}
+	}
+	if !sawShared {
+		t.Errorf("other project's list does not contain the shared pool %s: %s", sharedID, body)
+	}
+	if sawPrivate {
+		t.Errorf("other project's list leaked the private pool %s: %s", privateID, body)
+	}
+
+	// Show the shared pool from the other project: 200, owner attribution.
+	code, body = doReq(r, http.MethodGet, "/v2.0/subnetpools/"+sharedID, otherHdr)
+	if code != http.StatusOK {
+		t.Fatalf("show shared pool as the other project: code=%d (body=%s)", code, body)
+	}
+	var got struct {
+		Pool struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"subnetpool"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("unmarshal shared pool: %v (body=%s)", err, body)
+	}
+	if got.Pool.TenantID != tenantA {
+		t.Errorf("shared pool show tenant_id = %q; want its owner %q, not the caller %q", got.Pool.TenantID, tenantA, tenantB)
+	}
+
+	// A foreign private pool keeps the existing 404 behaviour.
+	if code, body := doReq(r, http.MethodGet, "/v2.0/subnetpools/"+privateID, otherHdr); code != http.StatusNotFound {
+		t.Errorf("show foreign private pool: code=%d (body=%s); want 404", code, body)
+	}
+
+	// The owner's own read is unchanged.
+	code, body = doReq(r, http.MethodGet, "/v2.0/subnetpools/"+sharedID, ownerHdr)
+	if code != http.StatusOK {
+		t.Fatalf("owner shows shared pool: code=%d (body=%s)", code, body)
 	}
 }
 
@@ -939,74 +1041,118 @@ func TestListTenantFilterHonoredForAdmin_DB(t *testing.T) {
 	}
 }
 
-// TestAllocateIPRefusesUntenablePools — rand.Int PANICS on a non-positive
-// bound: an IPv4 /29–/30 or any IPv6 subnet (where int64(1<<hostBits)
-// overflows to 0) used to turn a NULL-gateway router-interface attach (and a
-// CreatePort on such a subnet) into a 500 via the recovery middleware. The
-// guard must refuse with the empty string the callers already treat as "no
-// usable address" (SPEC-028, round 8).
-func TestAllocateIPRefusesUntenablePools(t *testing.T) {
+// TestAllocateIPHandlesTinyAndIPv6Pools — upstream Neutron's generate_pools()
+// allocates from /30, /31, /32 and every IPv6 subnet, excluding only the
+// network/broadcast addresses where they exist; it refuses nothing as "too
+// small". The old allocator returned "" for maxOffset <= 10 (every /29–/30)
+// and for IPv6 (int64 overflow), turning valid subnets into 400s. Also guards
+// the old failure mode: rand.Int panics on a non-positive bound.
+func TestAllocateIPHandlesTinyAndIPv6Pools(t *testing.T) {
 	for _, cidr := range []string{
-		"10.0.0.0/30", // two usable hosts; maxOffset-10 <= 0
+		"10.0.0.0/30",
 		"10.0.0.0/29",
-		"fd00::/64", // hostBits 64: the int64 shift overflows
+		"10.0.0.0/31",
+		"10.0.0.0/32",
+		"fd00::/64",
+		"fd00::/126",
+		"10.0.0.0/24", // healthy pool, unchanged
 	} {
-		if got := allocateIP(cidr); got != "" {
-			t.Errorf("allocateIP(%q) = %q; want \"\" (a panic-prone pool must be refused)", cidr, got)
-		}
+		cidr := cidr
+		t.Run(cidr, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("allocateIP(%q) panicked: %v", cidr, r)
+				}
+			}()
+			if got := allocateIP(cidr); got == "" {
+				t.Errorf("allocateIP(%q) = \"\"; want an address (upstream allocates from this pool)", cidr)
+			}
+		})
 	}
-	// A healthy pool still allocates.
-	if got := allocateIP("10.0.0.0/24"); got == "" {
-		t.Errorf("allocateIP(\"10.0.0.0/24\") = \"\"; want an address")
+
+	// Invalid input still fails closed rather than panicking.
+	if got := allocateIP("not-a-cidr"); got != "" {
+		t.Errorf("allocateIP(\"not-a-cidr\") = %q; want \"\"", got)
 	}
 }
 
-// TestCreatePortRefusesUntenablePool — CreatePort on a /30 subnet used to
-// persist fixed_ips with a BLANK ip_address once the allocateIP panic guard
-// landed (the 500 became silent bad data); the refusal must be a clean 400,
-// mirroring AddRouterInterface's handling (SPEC-028, round 9).
-func TestCreatePortRefusesUntenablePool(t *testing.T) {
+// TestCreatePortAllocatesFromTinyPool — a /30 (two usable hosts, both
+// candidates when the subnet has no gateway) is a valid upstream pool. The old
+// allocator refused it with a 400; now the port must be created with a real
+// fixed IP and nothing blank may be persisted. The same must hold for IPv6,
+// which the old int64-overflow guard refused wholesale (SPEC-028, round 9).
+func TestCreatePortAllocatesFromTinyPool(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	r := newNeutronTestRouter()
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
 
-	code, body := doReqBody(r, http.MethodPost, "/v2.0/networks",
-		`{"network":{"name":"spec028-r9-tiny-net"}}`, hdr)
-	if code != http.StatusCreated {
-		t.Fatalf("create network: code=%d (body=%s)", code, body)
-	}
-	var net struct {
-		Network struct {
-			ID string `json:"id"`
-		} `json:"network"`
-	}
-	if err := json.Unmarshal([]byte(body), &net); err != nil {
-		t.Fatalf("unmarshal network: %v (body=%s)", err, body)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(ctx, "DELETE FROM ports WHERE network_id=$1", net.Network.ID)
-		testPool.Exec(ctx, "DELETE FROM subnets WHERE network_id=$1", net.Network.ID)
-		testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", net.Network.ID)
-	})
+	// createNetSubnet creates a network plus one subnet and returns the network
+	// id. Cidr/ipVersion are the only varying inputs between the IPv4 and IPv6
+	// halves of this test.
+	createNetSubnet := func(name, cidr string, ipVersion int) string {
+		t.Helper()
+		code, body := doReqBody(r, http.MethodPost, "/v2.0/networks",
+			fmt.Sprintf(`{"network":{"name":%q}}`, name+"-net"), hdr)
+		if code != http.StatusCreated {
+			t.Fatalf("create network %s: code=%d (body=%s)", name, code, body)
+		}
+		var net struct {
+			Network struct {
+				ID string `json:"id"`
+			} `json:"network"`
+		}
+		if err := json.Unmarshal([]byte(body), &net); err != nil {
+			t.Fatalf("unmarshal network: %v (body=%s)", err, body)
+		}
+		t.Cleanup(func() {
+			testPool.Exec(ctx, "DELETE FROM ports WHERE network_id=$1", net.Network.ID)
+			testPool.Exec(ctx, "DELETE FROM subnets WHERE network_id=$1", net.Network.ID)
+			testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", net.Network.ID)
+		})
 
-	code, body = doReqBody(r, http.MethodPost, "/v2.0/subnets",
-		`{"subnet":{"name":"spec028-r9-tiny-sub","network_id":"`+net.Network.ID+`","cidr":"10.198.0.0/30","ip_version":4}}`, hdr)
-	if code != http.StatusCreated {
-		t.Fatalf("create /30 subnet: code=%d (body=%s)", code, body)
+		// gateway_ip null makes BOTH /30 host addresses candidates, which is
+		// exactly the pool the old allocator used to refuse.
+		code, body = doReqBody(r, http.MethodPost, "/v2.0/subnets",
+			fmt.Sprintf(`{"subnet":{"name":%q,"network_id":%q,"cidr":%q,"gateway_ip":null,"ip_version":%d}}`,
+				name+"-sub", net.Network.ID, cidr, ipVersion), hdr)
+		if code != http.StatusCreated {
+			t.Fatalf("create %s subnet: code=%d (body=%s)", cidr, code, body)
+		}
+		return net.Network.ID
 	}
 
-	code, body = doReqBody(r, http.MethodPost, "/v2.0/ports",
-		`{"port":{"network_id":"`+net.Network.ID+`","name":"spec028-r9-tiny-port"}}`, hdr)
-	if code != http.StatusBadRequest {
-		t.Errorf("port create on /30 subnet: code=%d body=%s; want 400 (no usable address)", code, body)
+	assertAllocated := func(netID, label string) {
+		t.Helper()
+		code, body := doReqBody(r, http.MethodPost, "/v2.0/ports",
+			fmt.Sprintf(`{"port":{"network_id":%q,"name":%q}}`, netID, label), hdr)
+		if code != http.StatusCreated {
+			t.Fatalf("%s port create: code=%d body=%s; want 201 (the pool is valid upstream)", label, code, body)
+		}
+		var created struct {
+			Port struct {
+				FixedIPs []struct {
+					IPAddress string `json:"ip_address"`
+				} `json:"fixed_ips"`
+			} `json:"port"`
+		}
+		if err := json.Unmarshal([]byte(body), &created); err != nil {
+			t.Fatalf("%s: unmarshal port: %v (body=%s)", label, err, body)
+		}
+		if len(created.Port.FixedIPs) == 0 || strings.TrimSpace(created.Port.FixedIPs[0].IPAddress) == "" {
+			t.Fatalf("%s: fixed_ips = %+v; want a non-blank ip_address (body=%s)", label, created.Port.FixedIPs, body)
+		}
+		// The response is not enough: a blank address must never reach the table.
+		var stored sql.NullString
+		if err := testPool.QueryRow(ctx,
+			`SELECT fixed_ips->0->>'ip_address' FROM ports WHERE network_id=$1`, netID).Scan(&stored); err != nil {
+			t.Fatalf("%s: read back fixed_ips: %v", label, err)
+		}
+		if !stored.Valid || strings.TrimSpace(stored.String) == "" {
+			t.Fatalf("%s: persisted ip_address is %v; want a non-blank address", label, stored)
+		}
 	}
-	// And nothing was persisted.
-	var n int
-	if err := testPool.QueryRow(ctx, "SELECT count(*) FROM ports WHERE network_id=$1", net.Network.ID).Scan(&n); err != nil {
-		t.Fatalf("count ports: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("port create on /30 subnet persisted %d row(s) despite the 400", n)
-	}
+
+	assertAllocated(createNetSubnet("spec028-r9-tiny", "10.198.0.0/30", 4), "tiny-ipv4")
+	assertAllocated(createNetSubnet("spec028-r9-tiny6", "fd00:198::/64", 6), "tiny-ipv6")
 }

@@ -1,0 +1,28 @@
+# Known-failure baseline for the CLI conformance gates (SPEC-028).
+#
+# One case id per line. A case listed here may be recorded `known-failing`
+# without failing bin/coverage.sh or bin/run.sh --strict. Any OTHER case
+# recorded known-failing is a regression and fails both gates. Entries that
+# start passing are reported as stale warnings (not failures) by both gates.
+#
+# This file holds only cases that cannot pass against the pinned environment.
+# A product divergence belongs in a fix (or a tracked bug), not here. When a
+# genuine divergence is fixed, remove its entry (or, for a self-healing probe,
+# remove the entry once the probe asserts the real behaviour).
+#
+# Format: one <case-id> per line; blank lines and everything after '#' ignored.
+
+# Stub-mode Nova has no guest to proxy: POST /v2.1/servers/{id}/remote-consoles
+# deliberately answers 501 ("console unavailable: nova is running in stub
+# mode"), so no console URL can exist. A live libvirt-backed compute node is
+# required; the console suite probe asserts the 501 and self-heals when it
+# stops being returned.
+compute.console.url.show
+
+# Pinned python-openstackclient 7.0.0 client bug (constraints.txt): `volume
+# backup show <name>` calls sdk get_backup() with a raw GET
+# /v3/backups/{name-or-id} and no name-filtered list fallback; the server, like
+# real Cinder, correctly answers 404 for a non-UUID reference. Fixed client-side
+# in OSC 7.3.0; delete this entry when constraints.txt is raised (the suite
+# probe already self-heals into an assertion of the real backup shape).
+volume.backup.show.byname

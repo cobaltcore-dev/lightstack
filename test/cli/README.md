@@ -40,8 +40,30 @@ manifest/<service>.json ──────────────────�
   [manifest/README.md](manifest/README.md) for the schema.
 - **The gate** (`bin/coverage.sh`) cross-references manifests with results and
   fails on any tier A/B command that is untested, failing, or skipped.
-  `known-failing` cases are allowed but counted and listed — the debt must
-  shrink, never hide (no pass-rate thresholds).
+  `known-failing` cases are allowed only when they are in the checked-in
+  [baseline](baseline/known_failures.txt); anything else is a regression and
+  fails the gate. No pass-rate thresholds.
+
+## Known-failure baseline
+
+`baseline/known_failures.txt` is the ledger of cases that **cannot pass against
+the pinned environment** — currently the stub-mode console (no guest to proxy,
+so Nova answers 501) and the OSC 7.0.0 `volume backup show <name>` client bug
+(fixed client-side in 7.3.0). One case id per line; blank lines and everything
+after `#` are ignored, so every entry carries its reason.
+
+Both gates read the same file:
+
+- `coverage.sh` (the PR gate) fails when any recorded `known-failing` case is
+  **not** listed. A listed case that now passes produces a stale-baseline
+  warning, not a failure.
+- `run.sh --strict` (the nightly) has the same semantics: skip and new
+  known-failing fail; baseline entries do not.
+
+When a genuine divergence is fixed, **remove its baseline entry** (and, if the
+suite probe self-heals, convert it to a plain assertion). The stale warning will
+remind you. A product divergence is not a baseline entry — it is a bug to fix or
+a tracked issue.
 
 ## Tiers
 
@@ -69,7 +91,7 @@ assert_jq '[.[] | select((.Name // .name) == "default")] | length' 1
 t_end                              # close + record the case
 
 t_fail "reason"                    # mark the current case failed (repeatable)
-t_known_failure "reason"           # tracked, does not fail the run
+t_known_failure "reason"           # tracked; must also be in the baseline
 t_skip "reason"                    # recorded as skipped (fails the gate)
 ```
 
@@ -84,7 +106,9 @@ t_skip "reason"                    # recorded as skipped (fails the gate)
 3. **One manifest file per service**, owned by that service's suite; ids in the
    suite must match ids in the manifest exactly.
 4. **Known failures** are recorded in the suite with `t_known_failure`, never
-   by deleting the case — and every one needs a reason string.
+   by deleting the case — and every one needs a reason string *and* a matching
+   entry in `baseline/known_failures.txt`. A known-failing case absent from the
+   baseline fails both gates; remove the entry when the divergence is fixed.
 5. **Output shape matters**: assert the fields the CLI surfaces, not just the
    exit code. Note OSC 7 emits display-cased keys for `list` commands
    (`ID`, `Name`) but raw lowercase API fields for `create`/`show` —
@@ -96,7 +120,7 @@ t_skip "reason"                    # recorded as skipped (fails the gate)
 ./test/cli/bin/run.sh                     # everything (fixtures + all suites + teardown)
 ./test/cli/bin/run.sh --suite keystone    # one suite, no teardown (dev iteration)
 ./test/cli/bin/run.sh --fast              # PR subset (everything except workflows)
-./test/cli/bin/run.sh --strict            # known-failing/skip also fail the run (nightly)
+./test/cli/bin/run.sh --strict            # nightly: skip + new known-failing fail
 ./test/cli/bin/run.sh --no-cleanup        # keep fixtures and created resources
 bash suites/keystone.sh                   # standalone; results under results/standalone/
 ./test/cli/bin/coverage.sh                # gate against results/results.json
@@ -106,7 +130,8 @@ python3 -m unittest discover -s test/cli -p 'test_*.py' -v  # harness regression
 
 Environment: the standard `OS_*` variables (defaults match a local stub-mode
 deployment: `http://localhost:35357/v3`, `admin`/`secret`), plus `OPENSTACK_CLI`,
-`OSC_TIMEOUT` (default 30s), `NO_COLOR`.
+`OSC_TIMEOUT` (default 30s), `NO_COLOR`, and `CLI_BASELINE_FILE` (override the
+known-failure ledger; used by the harness self-tests).
 
 If no server is at `OS_AUTH_URL` and docker is available, `run.sh` starts
 `deployments/docker-compose.binary-test.yml` — the runtime image with this
@@ -119,8 +144,9 @@ CI runs the binary natively instead (artifact download + PostgreSQL service).
 - `results/results.json` — aggregate + per-case records (latest full run)
 - `results/results.junit.xml` — JUnit XML for CI tooling
 - `results/standalone/` — per-run records for standalone suite invocations
-- Exit code: 0 iff no case failed (known-failing/skipped do not fail the run;
-  the coverage gate handles those)
+- Exit code: 0 iff no case failed (known-failing and skipped do not fail the
+  run; the coverage gate and `--strict` evaluate known-failing against the
+  baseline)
 
 ## Adding a case
 
