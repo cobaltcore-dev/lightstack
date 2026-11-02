@@ -1,8 +1,8 @@
 # What's Left? - Lightstack Status Overview
 
-**Date**: April 2026
-**Version**: v0.6.0
-**Current Coverage**: 104% (342/330 endpoints) ✅
+**Date**: October 2026
+**Version**: Unreleased (post-v0.6.1)
+**Current Coverage**: ~335 functional operations vs the 330-endpoint baseline (see [blueprint.md](blueprint.md)); the old "104% (342/330)" figure counted raw routes and is superseded
 
 > **SPEC-009 (2026-06-22): single-node real mode implemented + host-validated.** The
 > real-mode workstreams of lightstack#52 Part A — VM disk (WS-0), startup network
@@ -61,7 +61,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 
 ## TL;DR
 
-**Nothing critical is left.** Lightstack has exceeded the OpenStack baseline by 12 endpoints. All remaining work is optional enterprise features with low demand.
+**Nothing critical is left.** Coverage stands at ~335 functional operations against the 330-endpoint baseline (394 raw routes — see [blueprint.md](blueprint.md)). All remaining work is optional enterprise features with low demand.
 
 ---
 
@@ -75,7 +75,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 - Cinder Volume Actions ✅
 
 **🟡 MEDIUM Priority** - All important operational features
-- Nova Console Access (VNC, SPICE, RDP, Serial) ✅
+- Nova Console Access (VNC in real mode, Serial via CLI; SPICE/RDP refused by design) ✅
 - Nova Tenant Usage & Availability Zones ✅
 - Keystone Domain Management ✅
 - Keystone Credential Management ✅
@@ -178,7 +178,7 @@ See [SPEC-006](specs/006-v070-foundation/README.md) for full specification.
 
 ---
 
-## What Lightstack HAS That Exceeds Baseline (+12 endpoints)
+## What Lightstack HAS That Exceeds Baseline
 
 These are BONUS features beyond the 330 baseline:
 
@@ -190,7 +190,7 @@ These are BONUS features beyond the 330 baseline:
 6. **Service Catalog CRUD** (8 endpoints) - Dynamic service registration
 7. **Domain Management** (6 endpoints) - Multi-domain support
 
-Total: **52 endpoints** in "bonus" category, but 12 net over baseline
+Total: **52 endpoints** in "bonus" category — see [blueprint.md](blueprint.md) for the reconciled coverage arithmetic (raw vs functional counts).
 
 ---
 
@@ -205,12 +205,14 @@ Total: **52 endpoints** in "bonus" category, but 12 net over baseline
 | Images | ✅ 100% | Upload, download, metadata, import workflow |
 | Authentication | ✅ 100% | Users, projects, domains, roles, tokens |
 | Multi-Tenancy | ✅ 100% | Project isolation, RBAC, quotas |
-| Horizon Dashboard | ⚠️ Usable | APIs served; **UI usable** for resource management, open gaps F1/F10/F11/F13/F18 (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`) |
+| Horizon Dashboard | ⚠️ Usable | APIs served; **UI usable** for resource management, remaining open gap F18 — F10/F11 fixed by SPEC-024/#546 (see `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`) |
 | Performance | ✅ Optimized | Pagination, indexes, <3s queries |
 | Testing | ✅ Comprehensive | 65+ tests (contract + integration) |
 | Documentation | ✅ Complete | Deployment guides, API docs |
 
-**Verdict**: **PRODUCTION READY** ✅
+**Verdict**: feature-complete for the covered surface — see
+[the comprehensive review report](review/comprehensive-review-report-2026-10-12.md)
+for the issues that must be fixed before the v0.7.0 release.
 
 ---
 
@@ -268,8 +270,8 @@ Here are features that would be more valuable than the "optional" list:
 
 **What's Left?**: Nothing critical. Only optional enterprise features.
 
-**Coverage**: 104% (342/330 endpoints)
+**Coverage**: ~335 functional operations vs the 330-endpoint baseline ([blueprint.md](blueprint.md))
 
-**Status**: Production ready for private cloud deployments ✅
+**Status**: feature-complete for the covered surface — see [the comprehensive review report](review/comprehensive-review-report-2026-10-12.md) for the issues that must be fixed before the v0.7.0 release
 
 **Next Steps**: Focus on stability, documentation, and real-world testing rather than implementing low-demand features.

@@ -8,11 +8,16 @@ Lightstack runs as a single binary serving all OpenStack services, making it str
 - kubectl configured for your cluster
 - Helm 3.x (for Helm deployment)
 - PostgreSQL 18+ (external or in-cluster)
-- Container image: `ghcr.io/cobaltcore-dev/lightstack:0.6.0`
+- A container image in a registry your cluster can pull. **No image is published yet** — build and push one first:
+  ```bash
+  docker build -t <registry>/lightstack:<tag> -f build/package/Dockerfile .
+  docker push <registry>/lightstack:<tag>
+  ```
+  (See [QUICKSTART.md Path D](QUICKSTART.md#path-d--helm-chart-kubernetes) for the containerized flow; once the v0.7.0 release pipeline runs, published images will appear under `ghcr.io/cobaltcore-dev/lightstack`.)
 
 ## Architecture
 
-Lightstack deploys as a single pod running 6 HTTP servers on different ports:
+Lightstack deploys as a single pod running 7 HTTP listeners on different ports:
 
 | Service | Port | Purpose |
 |---------|------|---------|
@@ -21,6 +26,7 @@ Lightstack deploys as a single pod running 6 HTTP servers on different ports:
 | Neutron | 9696 | Networking |
 | Cinder | 8776 | Block storage |
 | Glance | 9292 | Images |
+| Placement | 8778 | Allocation (stub) |
 | Metadata | 8775 | EC2-compatible metadata |
 
 All state lives in PostgreSQL. The pod itself is stateless, which makes horizontal scaling and rolling updates straightforward.
@@ -64,7 +70,7 @@ openssl rand -hex 32
 
 ### ConfigMap
 
-The ConfigMap carries the full `lightstack.yaml` configuration. The database password and JWT secret are injected at runtime via environment variables (the application reads `LIGHTSTACK_DB_URL` and `LIGHTSTACK_JWT_SECRET` when present, overriding the config file values).
+The ConfigMap carries the full `lightstack.yaml` configuration. The database URL and JWT secret are injected at runtime via environment variables (the application reads `LIGHTSTACK_DB_URL` and `LIGHTSTACK_JWT_SECRET` when present, overriding the config file values) — so the ConfigMap itself contains **neither**: Kubernetes expands `$(VAR)` only in container `env:` values, never in ConfigMap data, and the Lightstack loader performs no `${...}` expansion either, so anything left in the file is used verbatim.
 
 ```yaml
 apiVersion: v1
@@ -75,7 +81,7 @@ metadata:
 data:
   lightstack.yaml: |
     database:
-      url: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
+      # No url: here — LIGHTSTACK_DB_URL supplies it (see the Deployment env)
       max_connections: 50
       min_connections: 2
       max_conn_lifetime: 1h
@@ -84,10 +90,13 @@ data:
 
     keystone:
       port: 35357
-      jwt_secret: "overridden-by-env"
+      # No jwt_secret: here — LIGHTSTACK_JWT_SECRET supplies it
       token_ttl: 24h
       admin_user: admin
-      admin_password: secret
+      # Substitute a real value before applying (or wire a Secret + env into
+      # your own rendering) — the well-known default must not reach a real
+      # deployment.
+      admin_password: "CHANGE_ME_before_applying"
 
     compute:
       node_id: auto
@@ -138,11 +147,11 @@ Key settings to adjust before deploying:
 
 | Setting | Description |
 |---------|-------------|
-| `database.url` | Point to your PostgreSQL instance |
+| `LIGHTSTACK_DB_URL` (Deployment env) | Point at your PostgreSQL instance — the ConfigMap carries no `database.url`; the Deployment's env builds the DSN from the secret-backed `DB_PASSWORD` |
 | `nova.libvirt_mode` | `stub` (dev) or `real` (Linux with KVM) |
 | `neutron.networking_mode` | `stub` (dev) or `iptables` (Linux with privileges) |
 | `cinder.storage_mode` | `stub`, `local`, `rbd`, or `local,rbd` |
-| `glance.storage_mode` | `stub`, `local`, `rbd`, `s3`, or hybrid |
+| `glance.storage_mode` | `stub`, `local`, `s3`, or `local,s3` (`rbd`/`local,rbd` accepted but RBD ops are unimplemented placeholders) |
 | `server.cors_allowed_origins` | Your actual Horizon URL(s) |
 
 ### Deployment
@@ -170,27 +179,34 @@ spec:
       labels:
         app: lightstack
       annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "35357"
-        prometheus.io/path: "/metrics"
+        # NOTE: no /metrics endpoint exists yet — Lightstack exposes no
+        # Prometheus scrape target as of v0.6.x (planned; see
+        # OPERATIONS.md "Monitoring"). These annotations are left as the
+        # shape a future deployment will take, but a Prometheus server
+        # scraping them today gets nothing.
+        prometheus.io/scrape: "false"
     spec:
       # Run migrations as an init container so the main container
       # only starts once the schema is current.
       initContainers:
         - name: migrate
-          image: ghcr.io/cobaltcore-dev/lightstack:0.6.0
+          image: <registry>/lightstack:<tag>   # built and pushed in Prerequisites
           command: ["/app/lightstack-migrate", "up"]
           env:
-            - name: LIGHTSTACK_DB_URL
-              value: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
+            # DB_PASSWORD must be defined before LIGHTSTACK_DB_URL: Kubernetes
+            # expands $(VAR) references in dependent env vars in definition
+            # order, so the reverse order leaves the literal "$(DB_PASSWORD)"
+            # in the DSN.
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: lightstack-secrets
                   key: db-password
+            - name: LIGHTSTACK_DB_URL
+              value: "postgres://lightstack:$(DB_PASSWORD)@postgres.lightstack.svc.cluster.local:5432/lightstack?sslmode=disable"
       containers:
         - name: lightstack
-          image: ghcr.io/cobaltcore-dev/lightstack:0.6.0
+          image: <registry>/lightstack:<tag>   # built and pushed in Prerequisites
           # Override the default CMD to skip the built-in migration step
           # (init container already ran it).
           command: ["/app/lightstack", "--config", "/app/config/lightstack.yaml"]
@@ -209,6 +225,9 @@ spec:
               protocol: TCP
             - name: glance
               containerPort: 9292
+              protocol: TCP
+            - name: placement
+              containerPort: 8778
               protocol: TCP
             - name: metadata
               containerPort: 8775
@@ -295,7 +314,7 @@ volumes:
       claimName: lightstack-storage
 ```
 
-Note that `ReadWriteOnce` limits you to a single replica when using local storage. For multi-replica deployments, use `rbd` or `s3` storage backends.
+Note that `ReadWriteOnce` limits you to a single replica when using local storage. For multi-replica deployments, use shared backends: Glance `s3` (e.g. Ceph RGW — Glance `rbd` is an unimplemented placeholder) and Cinder `rbd` (Cinder has no `s3` mode).
 
 ### Service
 
@@ -332,6 +351,10 @@ spec:
       port: 9292
       targetPort: glance
       protocol: TCP
+    - name: placement
+      port: 8778
+      targetPort: placement
+      protocol: TCP
     - name: metadata
       port: 8775
       targetPort: metadata
@@ -364,7 +387,7 @@ Both probes hit the same endpoint:
 - **Liveness**: `GET /v3` on port 35357 (Keystone version endpoint)
 - **Readiness**: `GET /v3` on port 35357
 
-If Keystone responds, the process is up and all six services are running — they share the same binary and start together. A non-200 response or connection failure signals that the pod should be restarted (liveness) or removed from load balancing (readiness).
+If Keystone responds, the process is up and all seven listeners are running — they share the same binary and start together. A non-200 response or connection failure signals that the pod should be restarted (liveness) or removed from load balancing (readiness).
 
 ---
 
@@ -529,17 +552,19 @@ With multiple replicas each holding up to 50 database connections, connection co
 
 ## Monitoring
 
-The Deployment manifest above includes Prometheus scrape annotations. Standard metrics to watch:
+Lightstack exposes **no `/metrics` endpoint and no Prometheus listener as of v0.6.x** — the platform-level health surface today is the per-service health endpoints the liveness and readiness probes use (see [OPERATIONS.md "Monitoring"](OPERATIONS.md)). Prometheus integration is planned; the scrape annotations and `ServiceMonitor` below are the shape a future deployment will take, kept here so the rollout is a config flip rather than a redesign. Until an `/metrics` endpoint ships, a scraping Prometheus receives nothing.
 
-| Metric | Alert threshold | Notes |
+Operational signals available today:
+
+| Signal | Alert threshold | Notes |
 |--------|----------------|-------|
 | Pod restarts | > 2 in 5 min | Points to crash loop — check liveness probe |
 | Readiness probe failures | Any sustained | Pod receiving traffic but not responding |
 | PostgreSQL connection errors | Any | Database availability problem |
-| HTTP 5xx rate | > 1% of requests | Application errors |
-| Request latency p99 | > 2s | Performance degradation |
+| HTTP 5xx rate (via your ingress) | > 1% of requests | Application errors |
+| Request latency p99 (via your ingress) | > 2s | Performance degradation |
 
-Add a `ServiceMonitor` if you use the Prometheus Operator:
+Once metrics exist, a Prometheus Operator `ServiceMonitor` would look like:
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1
@@ -559,76 +584,44 @@ spec:
 
 ---
 
-## Helm Chart (Planned)
+## Helm Chart
 
-A full Helm chart is planned for a future release. When available it will live at `deployments/helm/lightstack/` and expose the following `values.yaml` structure:
+The chart is **available now** at [`charts/lightstack`](../charts/lightstack/README.md)
+(not `deployments/helm/` — ignore older references). It renders the configmap from a
+real `values.yaml` schema (`values.schema.json`, `additionalProperties: false`), so
+only the documented keys are accepted:
 
 ```yaml
-# Intended values.yaml structure (not yet available)
 image:
-  repository: ghcr.io/cobaltcore-dev/lightstack
-  tag: "0.6.0"
-  pullPolicy: IfNotPresent
+  repository: ghcr.io/your-org/lightstack   # REQUIRED — no default
+  tag: "<tag>"
 
 replicaCount: 2
 
-service:
-  type: ClusterIP
-
-ingress:
-  enabled: false
-  className: nginx
-  host: openstack.example.com
-
-config:
-  nova:
-    libvirtMode: stub
-  neutron:
-    networkingMode: stub
-  cinder:
-    storageMode: local
-  glance:
-    storageMode: local
-  server:
-    corsAllowedOrigins:
-      - "https://horizon.example.com"
+database:
+  url: "postgres://user:pass@host:5432/lightstack?sslmode=disable"  # REQUIRED
 
 secrets:
-  jwtSecret: ""      # Required — set via --set or external secret
-  dbPassword: ""     # Required — set via --set or external secret
+  jwtSecret: ""      # REQUIRED — no insecure default
+  adminPassword: ""  # REQUIRED — no deployment runs with admin/secret
 
-database:
-  url: ""            # Full DSN, overrides individual fields
-
-storage:
-  enabled: true
-  size: 50Gi
-  storageClass: standard
-
-resources:
-  requests:
-    cpu: 250m
-    memory: 256Mi
-  limits:
-    cpu: "2"
-    memory: 1Gi
-
-autoscaling:
-  enabled: false
-  minReplicas: 2
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 1
-
-cache:
-  enabled: false
-  redisUrl: ""
+nova:
+  libvirtMode: stub          # stub | real
+neutron:
+  networkingMode: stub       # stub | iptables | ebpf
+cinder:
+  storageMode: local         # stub | local | rbd | local,rbd
+glance:
+  storageMode: local         # stub | local | rbd | s3 | local,rbd | local,s3 (rbd ops unimplemented)
 ```
 
-Until the chart is published, use the manifests in this guide directly or wrap them with Kustomize.
+```bash
+helm install lightstack ./charts/lightstack -f my-values.yaml
+```
+
+Full key reference, probes, drain handling and the host-state teardown jobs:
+[charts/lightstack/README.md](../charts/lightstack/README.md). The manifests in this
+guide remain useful for understanding what the chart renders.
 
 ---
 
@@ -656,7 +649,7 @@ Do not put the JWT secret or database password in a ConfigMap. Options beyond na
 
 For `cinder.storage_mode: local` or `glance.storage_mode: local`:
 - Use a PVC backed by a block storage class, not `emptyDir`
-- `ReadWriteOnce` limits you to a single pod — use `rbd` or `s3` backends for multi-replica deployments
+- `ReadWriteOnce` limits you to a single pod — for multi-replica deployments use shared backends: Glance `s3` (e.g. Ceph RGW; Glance `rbd` is an unimplemented placeholder) and Cinder `rbd` (Cinder has no `s3` mode)
 
 For `rbd` mode, provide Ceph credentials and `ceph.conf` via a separate Secret and mount them at `/etc/ceph/`.
 
@@ -668,7 +661,7 @@ For `s3` mode, set `glance.s3_bucket`, `glance.s3_region`, and optionally `glanc
 
 ### JWT secret rotation
 
-The JWT secret is stateless — all tokens signed with the old secret become invalid immediately when the secret changes. Plan a maintenance window or implement a grace period using two active secrets if zero-downtime rotation is required.
+The JWT secret is stateless — all tokens signed with the old secret become invalid immediately when the secret changes. There is exactly one active secret (no dual-secret grace mechanism), so rotation requires a maintenance window: clients re-authenticate after the change.
 
 ### CORS
 

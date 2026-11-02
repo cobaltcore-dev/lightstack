@@ -1,8 +1,8 @@
 # Horizon Dashboard Deployment Guide
 
-**Lightstack Version**: v0.5.0+
-**Last Updated**: 2026-03-13
-**Status**: Production Ready
+**Lightstack Version**: Unreleased (post-v0.6.1)
+**Last Updated**: 2026-10-12
+**Status**: Feature-complete for the covered surface; see [the comprehensive review report](review/comprehensive-review-report-2026-10-12.md) for the issues that must be fixed before the v0.7.0 release
 
 ## Overview
 
@@ -16,7 +16,7 @@ This guide provides step-by-step instructions for deploying OpenStack Horizon da
 
 ## Prerequisites
 
-- Lightstack v0.5.0 or higher running
+- Lightstack Unreleased (post-v0.6.1) or higher running
 - Docker and Docker Compose installed
 - Network connectivity between Horizon and Lightstack services
 - 2GB RAM minimum for Horizon container
@@ -51,14 +51,14 @@ SECRET_KEY = 'CHANGE-THIS-IN-PRODUCTION-' + os.urandom(32).hex()
 # OpenStack Backend Configuration
 OPENSTACK_HOST = "lightstack"  # Docker service name (or IP if not using Docker)
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
-OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"  # matches the seeded role (admin/member/reader)
 
 # API Version Configuration (matches Lightstack)
 OPENSTACK_API_VERSIONS = {
     "identity": 3,      # Keystone v3
     "image": 2,         # Glance v2
     "volume": 3,        # Cinder v3
-    "compute": 2.1,     # Nova v2.1
+    "compute": 2,       # integer 2 — Horizon rejects 2.1 here
 }
 
 # Keystone v3 Configuration
@@ -130,14 +130,16 @@ CACHES = {
 
 #### Step 3: Create Docker Compose Configuration
 
-Create `docker-compose.yml`:
+Create `docker-compose.yml` (a new file in this directory — not the Lightstack repo's
+`deployments/docker-compose.yml`; for Lightstack + Horizon in one stack the repo also ships
+`deployments/docker-compose-horizon.yml`):
 
 ```yaml
 version: '3.8'
 
 services:
   horizon:
-    image: quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
+    image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
     container_name: lightstack-horizon
     hostname: horizon
     ports:
@@ -236,7 +238,7 @@ http://localhost/dashboard
 **Login Credentials**:
 - Domain: `Default`
 - User Name: `admin`
-- Password: `secret`
+- Password: the password configured for your Lightstack admin (`LIGHTSTACK_ADMIN_PASSWORD` on the Horizon compose stack)
 
 ### Option 2: Development/Testing Setup
 
@@ -247,7 +249,7 @@ version: '3.8'
 
 services:
   horizon:
-    image: quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
+    image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
     container_name: lightstack-horizon-dev
     ports:
       - "8080:80"
@@ -276,11 +278,11 @@ docker network ls | grep lightstack
 ```
 
 Common network names:
-- `deployments_lightstack-network` (deployments/docker-compose.yml)
-- `lightstack_default` (root docker-compose.yml)
+- `deployments_lightstack-network` (when the repo's `deployments/docker-compose.yml` is run with `-f` from the repo root)
+- `deployments_lightstack-network` (plain compose run from inside `deployments/` — same prefixed name as from the repo root)
 - Custom name specified in your Lightstack compose file
 
-Update `docker-compose.yml` accordingly:
+Update the network name in your `docker-compose.yml` accordingly:
 
 ```yaml
 networks:
@@ -336,7 +338,7 @@ docker exec lightstack-horizon curl -s http://lightstack:35357/v3 | jq
 ### 2. Login Test
 
 1. Navigate to `http://localhost/dashboard`
-2. Enter credentials (Domain: Default, User: admin, Password: secret)
+2. Enter credentials (Domain: Default, User: admin, Password: the admin password configured for your Lightstack)
 3. Verify successful login to Overview page
 
 ### 3. Feature Testing
@@ -349,8 +351,8 @@ Test key Horizon features:
 # - Click "Launch Instance"; give it a name, then pick an image (Source), a flavor and
 #   a network (create one under Network > Networks first if the project has none)
 # - Verify the instance is listed and reaches Active
-# - The wizard's default "Create New Volume: Yes" boots from the image without creating
-#   a volume (finding F16, see the compatibility report)
+# - The wizard's default "Create New Volume: Yes" creates a volume from the image and
+#   boots from it (finding F16, fixed — SPEC-020 FR-025)
 
 # Network Topology
 # - Navigate to Network > Network Topology
@@ -455,7 +457,7 @@ docker exec lightstack-horizon ping -c 3 lightstack
    ```bash
    export OS_AUTH_URL=http://localhost:35357/v3
    export OS_USERNAME=admin
-   export OS_PASSWORD=secret
+   export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set the Lightstack admin password}"
    export OS_PROJECT_NAME=default
    export OS_USER_DOMAIN_NAME=Default
    export OS_PROJECT_DOMAIN_NAME=Default
@@ -653,7 +655,7 @@ Install custom Horizon panels:
 
 ```bash
 # Create Dockerfile
-FROM quay.io/openstack.kolla/horizon:2023.2-ubuntu-jammy
+FROM quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble
 RUN pip install horizon-custom-panel
 COPY panel-config.py /etc/openstack-dashboard/enabled/
 ```

@@ -1,7 +1,7 @@
 # Keystone Authentication Flow with Horizon
 
-**Last Updated**: 2026-03-13
-**lightstack Version**: 1.0.0+
+**Last Updated**: 2026-10-12
+**lightstack Version**: Unreleased (post-v0.6.1)
 
 ## Overview
 
@@ -359,6 +359,17 @@ The service catalog tells Horizon where to find each OpenStack service (Nova, Ne
           "interface": "public",
           "region": "RegionOne",
           "url": "http://lightstack-host:9292/v2"
+        }
+      ]
+    },
+    {
+      "type": "placement",
+      "name": "placement",
+      "endpoints": [
+        {
+          "interface": "public",
+          "region": "RegionOne",
+          "url": "http://lightstack-host:8778"
         }
       ]
     }
@@ -790,6 +801,6 @@ func generateToken(user User, project Project, roles []string) (string, error) {
 
 ---
 
-**Version**: 1.0.0
-**Last Updated**: 2026-03-13
+**Version**: Unreleased (post-v0.6.1)
+**Last Updated**: 2026-10-12
 **Authors**: Lightstack Development Team

@@ -46,7 +46,8 @@ The generated runtime SPDX artifact replaces this export as the release inventor
 | Go 1.26.2 standard-library advisories | Toolchain affects every binary | Pin Go 1.26.8 in modules, CI, builder image, and test container |
 | GPL and other linter-only dependencies in the root module | Development-only, not shipped | Move the pinned linter graph to `tools/go.mod` |
 | Vulnerable transitive modules in the pinned linter graph | Development-only but executed in CI | Upgrade the affected modules and scan the linter command with `govulncheck` |
-| GO-2026-6603, -6605, -6607, -6608, -6610, -6611, -6612, -6613, -6617 in the Go 1.26.8 standard library, published 2026-10-08 | Reachable; toolchain affects every binary | Pin Go 1.27.2, the current release, in modules, CI, builder image, test container, and the single-node deploy script |
+| GO-2026-6603, -6605, -6607, -6608, -6610, -6611, -6612, -6613, -6617 in the Go 1.26.8 standard library, published 2026-10-08 | Reachable; toolchain affects every binary | Upgrade the toolchain in modules, CI, builder image, test container, and the single-node deploy script; current pin is Go 1.27.3 |
+| GO-2026-6809 in `crypto/x509`, detected by CI on 2026-10-30 | Reachable through the HTTP server; Go 1.27.2 trusts compromised intermediate certificates | Pin Go 1.27.3 throughout the build and test toolchain; keep vulnerability scanning enabled |
 | GO-2026-6603, -6610, -6611, -6612, -6617 in `x/net`, published 2026-10-08 | Reachable through gin's HTTP/2 support | Upgrade transitively from 0.57.0 to 0.60.0; `x/crypto`, `x/sys`, `x/sync`, and `x/text` move to its minimums |
 
 ## Triage procedure

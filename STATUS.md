@@ -1,5 +1,12 @@
 # Lightstack Project Status Report
 
+> **⚠️ Stale snapshot (2026-04-07, v0.6.0).** The figures below predate SPEC-009 → SPEC-027
+> (real-mode single node, noVNC console tokens, tenant scoping, Neutron fidelity, quota
+> enforcement, the lightstack rename, pool injection). For current numbers see
+> [README.md](README.md), [CHANGELOG.md](CHANGELOG.md) (Unreleased) and
+> [docs/blueprint.md](docs/blueprint.md); migrations now run to 073 and Placement is
+> implemented as a stub.
+
 **Generated**: April 7, 2026
 **Version**: v0.6.0
 **Overall Coverage**: 104% (342/330 endpoints)

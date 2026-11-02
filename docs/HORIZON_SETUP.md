@@ -18,7 +18,7 @@ Lightstack serves the APIs the OpenStack Horizon dashboard consumes (its UI is *
 
 | Component | Version | Requirement |
 |-----------|---------|-------------|
-| Lightstack | v0.5.0+ | Required |
+| Lightstack | Unreleased (post-v0.6.1) | Required |
 | OpenStack | Flamingo 2025.2+ | Required |
 | Horizon | Flamingo 2025.2+ | Required |
 | Earlier Versions | Zed, Yoga, etc. | **NOT SUPPORTED** |
@@ -38,6 +38,9 @@ Deploy Lightstack and Horizon together using `docker-compose-horizon.yml`:
 
 ```bash
 cd lightstack/deployments
+# Both secrets are required — the stack renders no insecure defaults
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
@@ -45,8 +48,9 @@ docker compose -f docker-compose-horizon.yml up -d
 - PostgreSQL 18 database
 - Lightstack services (Keystone, Nova, Neutron, Cinder, Glance)
 - Horizon Flamingo 2025.2
-- noVNC console proxy
 - Memcached (for Django sessions)
+
+(No console proxy in this stub stack — the noVNC proxy is chart/real-mode only.)
 
 **Access**: http://localhost/dashboard
 
@@ -60,6 +64,9 @@ Deploy Horizon separately to existing Lightstack installation:
 
 ```bash
 cd lightstack/deployments
+# Both secrets are required — the stack renders no insecure defaults
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d horizon
 ```
 
@@ -176,15 +183,17 @@ CUSTOM_WELCOME_MESSAGE = "Welcome to lightstack - Lightweight OpenStack"
 
 ---
 
-## Default Credentials
+## Credentials
 
 ```text
 Domain: Default
 Username: admin
-Password: secret
+Password: the LIGHTSTACK_ADMIN_PASSWORD you exported before starting the stack
 ```
 
-**⚠️ Change these credentials in production!**
+There is no default password — the stack requires a real
+`LIGHTSTACK_ADMIN_PASSWORD` and the secret guard refuses the public
+`admin`/`secret` pair.
 
 ---
 
@@ -196,7 +205,7 @@ Open http://localhost/dashboard (or your configured URL)
 
 ### Step 2: Login
 
-Use default credentials or your configured credentials.
+Use the credentials you configured when starting the stack (see Credentials above).
 
 ### Step 3: Test Functionality
 
@@ -292,8 +301,12 @@ docker exec lightstack date
 
 **Symptoms**: VNC console button doesn't work or shows blank screen
 
-**Causes**:
-- noVNC proxy not running
+**Expected on the stub compose stack**: it ships no console proxy at all. The noVNC
+proxy is deployed by the Helm chart in real mode; its tokens are managed with
+`lightstack console-tokens list|purge`. `openstack console log show <server>` still
+works.
+
+**On a real-mode deployment**, check:
 - Incorrect `nova.console_proxy_base_url` in `lightstack.yaml` — it must be an origin the
   BROWSER can reach (Horizon has no proxy setting of its own; Lightstack returns the full URL)
 - No console token issued — check with `lightstack console-tokens list`
@@ -301,11 +314,8 @@ docker exec lightstack date
 
 **Fix**:
 ```bash
-# Verify noVNC proxy is running
-docker ps | grep novnc
-
-# Test noVNC endpoint
-curl http://localhost:6080
+# List issued console tokens (real mode)
+lightstack console-tokens list
 
 # Check Nova console configuration (an ORIGIN — scheme://host:port, no path)
 grep console_proxy_base_url config/lightstack.yaml
@@ -341,8 +351,6 @@ openstack project delete my-project
 
 **Resolution**: This is a Horizon packaging issue, not a Lightstack API issue. The Keystone `/v3/projects` API endpoint works perfectly.
 
-**Documentation**: [HORIZON_PROJECTS_ISSUE.md](HORIZON_PROJECTS_ISSUE.md)
-
 ---
 
 ## Performance Considerations
@@ -354,8 +362,9 @@ Horizon makes many API calls per page load. Ensure Lightstack has sufficient dat
 ```yaml
 # config/lightstack.yaml
 database:
-  max_open_conns: 50  # Increase for high Horizon traffic
-  max_idle_conns: 10
+  max_connections: 50  # Increase for high Horizon traffic
+  min_connections: 10
+  # Also available: max_conn_lifetime, max_conn_idle_time, health_check_period
 ```
 
 ---
@@ -452,7 +461,7 @@ keystone:
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Command cheatsheet
 
 **Support**:
-- API compatibility: broad. **UI workflows**: network, volume and instance create work; the noVNC console and a few other gaps remain — see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
+- API compatibility: broad. **UI workflows**: network, volume and instance create work; the noVNC console is absent from the stub stack (it works in real mode, #534) — open UI gaps are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 - Known issues: Identity projects page 404 (Horizon bug, not lightstack)
 - Primary interfaces: OpenStack CLI, API, SDK
 - Web UI: Optional Horizon dashboard

@@ -871,6 +871,9 @@ DISABLED_PANELS = ['stacks']
 
 **Setup**:
 ```bash
+# Both secrets are required — the stack renders no insecure defaults
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f deployments/docker-compose-horizon.yml up -d
 ```
 

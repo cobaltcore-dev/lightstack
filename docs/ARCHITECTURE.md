@@ -23,10 +23,14 @@ Lightstack is built on three core principles:
 │  │  Keystone    │  │     Nova     │  │   Neutron    │      │
 │  │   :35357     │  │    :8774     │  │    :9696     │      │
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
-│  ┌──────────────┐  ┌──────────────┐                        │
-│  │   Cinder     │  │    Glance    │                        │
-│  │   :8776      │  │    :9292     │                        │
-│  └──────────────┘  └──────────────┘                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │   Cinder     │  │    Glance    │  │  Placement   │      │
+│  │   :8776      │  │    :9292     │  │:8778 (stub)  │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│  ┌──────────────┐                                            │
+│  │  Metadata    │  (EC2-style, no auth)                      │
+│  │   :8775      │                                            │
+│  └──────────────┘                                            │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │           Common Layer                                │  │
@@ -96,7 +100,7 @@ Lightstack is built on three core principles:
 
 **Key Design Decisions:**
 - **Namespace isolation**: Per-project network namespaces
-- **No VXLAN in v1**: Single-node deployment uses bridges only
+- **VXLAN overlay (opt-in)**: Multi-node deployments use VXLAN tunnels (`neutron.vxlan_enabled`, see [VXLAN_IMPLEMENTATION.md](VXLAN_IMPLEMENTATION.md)); single-node deployment uses bridges only
 - **iptables security groups**: Simple, proven, no eBPF complexity in v1
 - **dnsmasq for DHCP**: Standard, well-tested DHCP server
 
@@ -113,7 +117,7 @@ Lightstack is built on three core principles:
 - Direct RBD operations (create, delete, snapshot)
 
 **Key Design Decisions:**
-- **Ceph-only**: No local storage backend in v1
+- **Multiple backends**: `stub`, `local`, `rbd`, or `local,rbd` (local plus Ceph RBD)
 - **1-second timeout**: Fast failure if Ceph unavailable
 - **Synchronous operations**: Volume creation completes before API returns
 
@@ -122,16 +126,16 @@ Lightstack is built on three core principles:
 **Responsibilities:**
 - Image metadata management
 - Image upload/download
-- Image storage (Ceph RBD backed)
+- Image storage (local filesystem or S3-compatible object storage, e.g. Ceph RGW)
 - Public/private image visibility
 
 **Technology:**
-- `github.com/ceph/go-ceph` - Ceph RBD integration
+- S3-compatible object storage (AWS SDK) and local filesystem backends
 - Streaming uploads/downloads
 
 **Key Design Decisions:**
-- **Ceph-backed storage**: Images stored as RBD snapshots
-- **Metadata in PostgreSQL**: Fast queries, RBD only for data
+- **Local and S3 backends**: Images are stored on the local filesystem or in an S3-compatible object store (Ceph RGW, MinIO); `rbd`/`local,rbd` are accepted config values but the RBD operations are unimplemented placeholders
+- **Metadata in PostgreSQL**: Fast queries, storage backend only for image data
 - **Streaming transfers**: No full image buffering in memory
 
 ## Data Flow
@@ -178,7 +182,7 @@ Lightstack is built on three core principles:
 
 ### Rate Limiting Architecture
 
-Lightstack implements two-tier rate limiting as Gin middleware (see [ADR-002](adr/ADR-002-rate-limiting-architecture.md)):
+Rate limiting is **designed but not yet implemented**. [ADR-002](adr/ADR-002-rate-limiting-architecture.md) is Accepted and specifies two-tier rate limiting as Gin middleware, and a `rate_limiting` block exists in `lightstack.yaml`, but no middleware code ships yet — the config block is currently dead config with no effect. The design:
 
 ```
   REQUEST
@@ -202,13 +206,11 @@ Lightstack implements two-tier rate limiting as Gin middleware (see [ADR-002](ad
   +-- overflow: allow traffic (degrade open)
 ```
 
-**Technology**: `golang.org/x/time/rate` (Go standard library)
-
-**Key Design Decisions:**
+**Key Design Decisions (per ADR-002, planned):**
 - **Two-tier, not per-endpoint**: IP-based for unauthenticated auth endpoints (`POST /v3/auth/tokens`), project-based for all authenticated endpoints
 - **In-process, not Redis**: Single-binary architecture avoids external dependencies
 - **Degrade open**: When entry cap (10K) is exceeded, new IPs/projects are allowed through rather than blocked
-- **Configurable**: Enable/disable and adjust rates via `rate_limiting` block in `lightstack.yaml`
+- **Configurable**: Enable/disable and adjust rates via `rate_limiting` block in `lightstack.yaml` — dead config until the middleware is implemented
 
 ### Dependency Injection Pattern
 
@@ -250,9 +252,6 @@ Full request path through Lightstack middleware stack:
     |
     v
   CORS Middleware (configurable origins)
-    |
-    v
-  Rate Limit Middleware (IP or project-based)
     |
     v
   Auth Middleware (JWT validation, extracts user/project/roles)
@@ -321,7 +320,7 @@ Key indexes for performance:
 
 ### Connection Pooling
 
-- **PostgreSQL**: 20 connections default (configurable)
+- **PostgreSQL**: 20 connections binary default (the shipped config sets 50)
 - **libvirt**: Connection pooling with max 10 connections
 - **Ceph**: Connection per operation (stateless)
 
@@ -356,7 +355,7 @@ Key indexes for performance:
     Ceph Cluster
 ```
 
-### Multi-Node (v2 - Future)
+### Multi-Node (VXLAN compute implemented, opt-in; HA control plane future)
 
 ```
 ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
@@ -429,11 +428,9 @@ Key indexes for performance:
 
 ### v2.0 (Multi-node)
 
-- VXLAN overlay networks
 - Floating IPs (external network access)
 - Live migration
-- Placement API (resource scheduling)
-- eBPF security groups (kernel-space filtering)
+- eBPF security groups (kernel-space filtering — experimental, see [EBPF_STATUS.md](EBPF_STATUS.md))
 
 ### v3.0 (Production)
 

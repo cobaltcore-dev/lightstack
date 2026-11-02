@@ -54,7 +54,7 @@ The script will ask you to configure:
 4. **Gateway** - Network gateway (auto-detected)
 5. **DNS Servers** - DNS server addresses (default: 8.8.8.8,8.8.4.4)
 6. **PostgreSQL Password** - Database password (auto-generated if not provided)
-7. **Storage Paths** - Paths for volumes, images, instances (defaults provided)
+7. **State Root** - Node-local state root for volumes, images, instances (default: /var/lib/lightstack)
 8. **Horizon Deployment** - Deploy Horizon dashboard? (default: Yes)
 
 **Example Session**:
@@ -226,6 +226,42 @@ netplan apply
 
 ---
 
+## deploy-turnkey.sh
+
+**Purpose**: One-command turnkey deployment of Lightstack + Horizon + KVM on a dedicated host
+
+Deploys all 5 core services in real KVM mode, the Horizon dashboard (Flamingo 2025.2) with noVNC,
+PostgreSQL 18, and a `br-ext` network bridge for VM external connectivity. Configuration comes
+entirely from the environment (`LIGHTSTACK_HOST_IP`, `LIGHTSTACK_NETWORK_IFACE`,
+`LIGHTSTACK_GATEWAY`, …) — there are no host-specific defaults.
+
+**Warning**: this is a development/lab deployment, not a hardened production one. It rewrites
+`/etc/netplan` and moves the host IP onto the new `br-ext` bridge — run it only on a host you
+intend to dedicate to Lightstack. On failure it rolls back what it changed.
+
+```bash
+sudo LIGHTSTACK_HOST_IP=10.2.199.101 LIGHTSTACK_NETWORK_IFACE=ens19 LIGHTSTACK_GATEWAY=10.2.199.254 \
+    ./scripts/deploy-turnkey.sh
+```
+
+---
+
+## migrate-legacy-state.sh
+
+**Purpose**: One-time migration of a pre-rename install's node-local state into the current state root
+
+The product rename moved the default node-local state root, so an upgraded binary stops seeing the
+image bases, volume files, instance overlays, cloud-init ISOs and dnsmasq state a pre-rename install
+left behind. This script moves them, re-owns them to the service account, and removes the legacy
+iptables chains. Dry-run by default (reports what it would do); pass `--apply` to actually move
+anything.
+
+```bash
+sudo ./scripts/migrate-legacy-state.sh --apply
+```
+
+---
+
 ## upgrade-lightstack.sh
 
 **Purpose**: Safely upgrade Lightstack to the latest version with automatic backup and rollback capability
@@ -338,7 +374,7 @@ $ sudo ./scripts/upgrade-lightstack.sh
 ╚═══════════════════════════════════════════════════════════╝
 
 [INFO] lightstack installation found at /opt/lightstack
-[INFO] Current version: v0.5.0 (commit: c75f9dd)
+[INFO] Current version: v0.5.0 (commit: c75f9dd)   # example output from an older install
 [INFO] lightstack service is running
 
 [INFO] Starting upgrade process...
@@ -467,7 +503,7 @@ openstack token issue
 3. **Service won't start**:
    - Check logs: `journalctl -u lightstack.service -n 100`
    - Verify configuration: `cat /opt/lightstack/config/lightstack.yaml`
-   - Check port availability: `netstat -tulpn | grep -E '35357|8774|9696|8776|9292'`
+   - Check port availability: `netstat -tulpn | grep -E '35357|8774|9696|8776|9292|8775'` (8775 = metadata; Placement 8778 is a stub)
 
 4. **API not responding**:
    - Wait longer (services may need 30+ seconds to start)
@@ -504,7 +540,7 @@ if sudo /opt/lightstack/scripts/upgrade-lightstack.sh --version "$NEW_VERSION"; 
   echo "Upgrade successful"
 
   # Run smoke tests
-  /opt/lightstack/test/smoke_test.sh
+  openstack token issue
 
 else
   echo "Upgrade failed, rollback performed"
@@ -519,9 +555,9 @@ fi
 
 ---
 
-## Future Scripts
+## Script Ideas (not implemented)
 
-Planned deployment scripts:
+Ideas under consideration — these scripts do **not** exist yet:
 
 - `deploy-multi-node.sh` - Multi-node cluster deployment
 - `deploy-ha-cluster.sh` - High availability cluster setup
@@ -531,4 +567,4 @@ Planned deployment scripts:
 
 ---
 
-**Last Updated**: March 17, 2026
+**Last Updated**: October 12, 2026

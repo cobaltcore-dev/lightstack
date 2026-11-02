@@ -3,10 +3,10 @@
 **📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
 
 
-**lightstack Version**: v0.5.0+
+**lightstack Version**: Unreleased (post-v0.6.1)
 **OpenStack Release**: Flamingo (2025.2)
-**Last Updated**: 2026-03-13
-**Status**: Production Ready
+**Last Updated**: 2026-10-12
+**Status**: Feature-complete for the covered surface; see [the comprehensive review report](review/comprehensive-review-report-2026-10-12.md) for the issues that must be fixed before the v0.7.0 release
 
 ## Overview
 
@@ -17,7 +17,11 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 - **PostgreSQL 18**: Database backend
 - **lightstack Services**: All five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance)
 - **Horizon Dashboard**: OpenStack Flamingo (2025.2) web interface
-- **noVNC Proxy**: VNC console access for instances
+- **memcached**: Horizon session cache
+
+> This is the **stub-mode** stack: no real VMs and **no console proxy** — the noVNC
+> proxy is deployed by the Helm chart in real mode. Console access from the CLI
+> (`openstack console log show`) still works.
 
 ### Architecture
 
@@ -33,16 +37,20 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 │                          ▲                                   │
 │                          │                                   │
 │                  ┌───────┴────────┐                         │
-│                  │  noVNC Proxy   │                         │
-│                  │     :6080      │                         │
+│                  │   memcached    │                         │
+│                  │     :11211     │                         │
 │                  └────────────────┘                         │
 └─────────────────────────────────────────────────────────────┘
-         │              │              │              │
-    Port 5432      Port 35357    Port 80         Port 6080
-                   (+ 8774,      (HTTP)          (noVNC)
+         │              │              │
+   (internal —     Port 35357    Port 80
+    not exposed)   (+ 8774,      (HTTP)
                     9696, 8776,
                     9292, 8775)
 ```
+
+> PostgreSQL (`:5432`) is network-internal in this stack — the compose file
+> never publishes it to the host; only the Lightstack API ports and Horizon's
+> port 80 are exposed.
 
 ## Prerequisites
 
@@ -52,14 +60,14 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 - **Docker Compose** 2.0+
 - **Available Ports**:
   - 80 (HTTP - Horizon dashboard)
-  - 5432 (PostgreSQL)
-  - 6080 (noVNC)
   - 35357 (Keystone)
   - 8774 (Nova)
   - 8775 (Metadata)
   - 8776 (Cinder)
   - 9292 (Glance)
   - 9696 (Neutron)
+
+  (PostgreSQL runs network-internal — no host port needed.)
 - **System Resources**:
   - 4GB RAM minimum (8GB recommended)
   - 20GB disk space minimum
@@ -68,10 +76,10 @@ This guide provides a complete, unified deployment of Lightstack and OpenStack H
 ### Platform Support
 
 - ✅ **Linux x86_64 (AMD64)**: Full support (all services)
-- ⚠️ **Linux ARM64**: Lightstack works natively; Horizon/noVNC run via emulation (slower)
+- ⚠️ **Linux ARM64**: Lightstack works natively; Horizon runs via emulation (slower)
 - ✅ **macOS Intel**: Full support (Docker Desktop with Rosetta)
-- ⚠️ **macOS Apple Silicon (ARM64)**: Lightstack works natively; Horizon/noVNC require emulation
-  - **Note**: Horizon and noVNC are x86_64 images and will run under emulation
+- ⚠️ **macOS Apple Silicon (ARM64)**: Lightstack works natively; Horizon requires emulation
+  - **Note**: Horizon is an x86_64 image and will run under emulation
   - Lightstack itself is built as ARM64 and runs natively
   - For ARM64-only environments, use API-only deployment (see Alternative Deployment Options below)
 - ⚠️ **Windows**: WSL2 required
@@ -101,11 +109,16 @@ cat horizon-config/local_settings
 - Database: PostgreSQL on port 5432
 - Lightstack Mode: Stub (no real VMs, suitable for testing)
 - Horizon: Flamingo (2025.2) on port 80
-- Default Credentials: admin/secret
+- Credentials: admin / the `LIGHTSTACK_ADMIN_PASSWORD` you set below
 
 ### Step 3: Start All Services
 
+The compose file **requires both** a JWT secret and a bootstrap admin password — it
+refuses to start without them:
+
 ```bash
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
@@ -114,8 +127,8 @@ docker compose -f docker-compose-horizon.yml up -d
 [+] Running 5/5
  ✔ Network lightstack-horizon-network    Created
  ✔ Container lightstack-postgres         Started
+ ✔ Container lightstack-memcached        Started
  ✔ Container lightstack                  Started
- ✔ Container lightstack-novnc            Started
  ✔ Container lightstack-horizon          Started
 ```
 
@@ -143,7 +156,7 @@ http://localhost/dashboard
 **Login Credentials**:
 - Domain: `Default`
 - User Name: `admin`
-- Password: `secret`
+- Password: the `LIGHTSTACK_ADMIN_PASSWORD` you exported in Step 3
 
 🎉 **You're done!** You now have a fully functional OpenStack environment with web UI.
 
@@ -160,7 +173,7 @@ docker compose -f docker-compose.yml up -d
 # Access via OpenStack CLI
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=secret  # API-only dev stack public default (local testing only)
 export OS_PROJECT_NAME=default
 export OS_DOMAIN_NAME=Default
 openstack token issue
@@ -179,23 +192,25 @@ For x86_64 systems or when performance is critical, the unified deployment (`doc
 You can customize the deployment by setting environment variables before starting:
 
 ```bash
-# Database configuration
-export LIGHTSTACK_DB_PASSWORD=your-secure-password
-export LIGHTSTACK_DB_NAME=lightstack
-export LIGHTSTACK_DB_USER=lightstack
+# Database configuration — read by docker-compose-horizon.yml: the POSTGRES_*
+# variables initialise the postgres container (initdb on an empty volume) and
+# are interpolated into the lightstack container's LIGHTSTACK_DB_URL.
+# The lightstack binary itself only reads the full LIGHTSTACK_DB_URL string.
+export POSTGRES_PASSWORD=your-secure-password
+export POSTGRES_DB=lightstack
+export POSTGRES_USER=lightstack
 
-# JWT secret for lightstack authentication
+# JWT secret for lightstack authentication (required by docker-compose-horizon.yml)
 export LIGHTSTACK_JWT_SECRET=your-secure-jwt-secret-here
 
-# lightstack modes
-export LIGHTSTACK_NOVA_MODE=stub      # or 'real' for actual VMs (Linux only)
-export LIGHTSTACK_NEUTRON_MODE=stub   # or 'iptables' for real networking
-export LIGHTSTACK_CINDER_MODE=local   # or 'rbd', 's3'
-export LIGHTSTACK_GLANCE_MODE=local   # or 'rbd', 's3'
+# Bootstrap admin password (required by docker-compose-horizon.yml — no default)
+export LIGHTSTACK_ADMIN_PASSWORD=your-secure-admin-password-here
 
 # Horizon configuration
 export HORIZON_SECRET_KEY=your-horizon-secret-key
 ```
+
+Service modes (stub/real, storage backends) are **not** controlled by environment variables — they are set in `config/lightstack.yaml` (`nova.libvirt_mode`, `neutron.networking_mode`, `cinder.storage_mode`, `glance.storage_mode`); mount a custom copy as shown below.
 
 ### Production Configuration
 
@@ -213,21 +228,24 @@ services:
 
   lightstack:
     environment:
-      - LIGHTSTACK_DATABASE_URL=postgres://lightstack:CHANGE_THIS_PASSWORD@postgres:5432/lightstack?sslmode=disable
+      - LIGHTSTACK_DB_URL=postgres://lightstack:CHANGE_THIS_PASSWORD@postgres:5432/lightstack?sslmode=disable
 ```
 
-**JWT Secret** - Edit `docker-compose-horizon.yml`:
+**JWT Secret and Admin Password** - Pass both through the environment (the compose
+file requires them with `:?`):
 
 ```yaml
 services:
   lightstack:
     environment:
-      - LIGHTSTACK_KEYSTONE_JWT_SECRET=GENERATE_SECURE_RANDOM_STRING_HERE
+      - LIGHTSTACK_JWT_SECRET=GENERATE_SECURE_RANDOM_STRING_HERE
+      - LIGHTSTACK_ADMIN_PASSWORD=GENERATE_SECURE_ADMIN_PASSWORD_HERE
 ```
 
-Generate a secure JWT secret:
+Generate secure values:
 ```bash
-openssl rand -hex 32
+openssl rand -base64 32   # JWT secret
+openssl rand -base64 24   # bootstrap admin password
 ```
 
 **Horizon Secret Key** - Edit `horizon-config/local_settings`:
@@ -269,17 +287,24 @@ CSRF_COOKIE_SECURE = True
 
 #### 3. Real Mode (Linux Only)
 
-For production with actual VMs:
+For production with actual VMs, set the modes in `lightstack.yaml` and mount it into the container (there are no environment variables for these settings):
 
 ```yaml
+# config/lightstack.yaml
+nova:
+  libvirt_mode: real        # "stub" or "real"
+neutron:
+  networking_mode: iptables  # "stub", "iptables", or "ebpf"
+```
+
+```yaml
+# docker-compose-horizon.yml
 services:
   lightstack:
-    environment:
-      - LIGHTSTACK_NOVA_LIBVIRT_MODE=real
-      - LIGHTSTACK_NEUTRON_NETWORKING_MODE=iptables
-    privileged: true  # Required for networking
     volumes:
+      - ../config/lightstack.yaml:/app/config/lightstack.yaml:ro
       - /var/run/libvirt:/var/run/libvirt   # the socket's directory: survives a re-created socket
+    privileged: true  # Required for networking
 ```
 
 **Prerequisites**:
@@ -288,16 +313,24 @@ services:
 
 ### Storage Backends
 
+Storage modes are configured in `config/lightstack.yaml` (`cinder.storage_mode`, `glance.storage_mode`), not via environment variables. Mount your adjusted `lightstack.yaml` into the lightstack container as shown in [Real Mode](#3-real-mode-linux-only).
+
 #### Local Storage (Default)
 
 Suitable for development and small deployments:
 
 ```yaml
+# config/lightstack.yaml
+cinder:
+  storage_mode: local  # "stub", "local", "rbd", or "local,rbd"
+glance:
+  storage_mode: local  # "stub", "local", "s3", or "local,s3"
+```
+
+```yaml
+# docker-compose-horizon.yml
 services:
   lightstack:
-    environment:
-      - LIGHTSTACK_CINDER_STORAGE_MODE=local
-      - LIGHTSTACK_GLANCE_STORAGE_MODE=local
     volumes:
       - lightstack-images:/var/lib/lightstack/images
       - lightstack-volumes:/var/lib/lightstack/volumes
@@ -305,41 +338,53 @@ services:
 
 #### Ceph RBD Storage
 
-For production with Ceph cluster:
+For production with a Ceph cluster, use Cinder RBD. Cinder supports `rbd` and `local,rbd` (`cinder.storage_mode`); Glance accepts `rbd`/`local,rbd` values but its RBD operations are **unimplemented placeholders** — do not use RBD for Glance. For shared image storage, prefer Glance S3 backed by Ceph RGW (see below) together with Cinder RBD:
 
 ```yaml
+# config/lightstack.yaml
+cinder:
+  storage_mode: rbd
+  ceph_pool: volumes
+  ceph_conf: /etc/ceph/ceph.conf
+```
+
+```yaml
+# docker-compose-horizon.yml
 services:
   lightstack:
-    environment:
-      - LIGHTSTACK_CINDER_STORAGE_MODE=rbd
-      - LIGHTSTACK_GLANCE_STORAGE_MODE=rbd
-      - LIGHTSTACK_CEPH_CONF=/etc/ceph/ceph.conf
-      - LIGHTSTACK_CEPH_POOL_VOLUMES=lightstack-volumes
-      - LIGHTSTACK_CEPH_POOL_IMAGES=lightstack-images
     volumes:
       - /etc/ceph:/etc/ceph:ro
 ```
 
-#### S3 Storage
+#### S3 Storage (Glance)
 
-For AWS S3 or MinIO:
+For AWS S3, MinIO, or Ceph RGW — Glance only (Cinder has no S3 backend):
 
 ```yaml
+# docker-compose-horizon.yml
 services:
   lightstack:
     environment:
-      - LIGHTSTACK_CINDER_STORAGE_MODE=s3
-      - LIGHTSTACK_GLANCE_STORAGE_MODE=s3
-      - LIGHTSTACK_S3_ENDPOINT=https://s3.amazonaws.com
-      - LIGHTSTACK_S3_ACCESS_KEY=your-access-key
-      - LIGHTSTACK_S3_SECRET_KEY=your-secret-key
-      - LIGHTSTACK_S3_BUCKET_VOLUMES=lightstack-volumes
-      - LIGHTSTACK_S3_BUCKET_IMAGES=lightstack-images
+      - LIGHTSTACK_GLANCE_S3_ENDPOINT=https://s3.amazonaws.com
+      - LIGHTSTACK_GLANCE_S3_BUCKET=lightstack-images
+      - LIGHTSTACK_GLANCE_S3_REGION=us-east-1
+      # Credentials are read by the AWS SDK default chain:
+      - AWS_ACCESS_KEY_ID=your-access-key
+      - AWS_SECRET_ACCESS_KEY=your-secret-key
+```
+
+```yaml
+# config/lightstack.yaml
+glance:
+  storage_mode: s3  # or "local,s3"
 ```
 
 ## Operations
 
 ### Starting Services
+
+Both `LIGHTSTACK_JWT_SECRET` and `LIGHTSTACK_ADMIN_PASSWORD` must be set first
+(see [Step 3](#step-3-start-all-services)).
 
 ```bash
 # Start all services
@@ -440,7 +485,7 @@ pip install python-openstackclient
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set LIGHTSTACK_ADMIN_PASSWORD first}"
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
@@ -450,7 +495,7 @@ cat > ~/lightstack-openrc.sh <<'EOF'
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set LIGHTSTACK_ADMIN_PASSWORD first}"
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
@@ -516,7 +561,7 @@ curl -s http://localhost:9292/ | jq
 ### 3. Horizon Dashboard
 
 1. Open http://localhost/dashboard
-2. Login with admin/secret
+2. Login with admin / the `LIGHTSTACK_ADMIN_PASSWORD` you set when starting the stack
 3. Check "Overview" page loads
 4. Verify "Compute > Instances" shows empty list
 5. Click "Launch Instance" to test wizard
@@ -563,7 +608,7 @@ openstack network delete test-net
 
 #### ARM64 (Apple Silicon, ARM Servers)
 
-**Symptom**: Horizon or noVNC containers restart repeatedly
+**Symptom**: Horizon container restarts repeatedly
 
 **Diagnosis**:
 ```bash
@@ -571,7 +616,7 @@ docker compose -f docker-compose-horizon.yml ps
 # Look for "platform (linux/amd64) does not match" warnings
 ```
 
-**Explanation**: Horizon (OpenStack Kolla) and noVNC are x86_64 images. On ARM64 systems, Docker runs them via emulation (QEMU). This works but may be slower and less stable.
+**Explanation**: Horizon (OpenStack Kolla) is an x86_64 image. On ARM64 systems, Docker runs it via emulation (QEMU). This works but may be slower and less stable.
 
 **Solutions**:
 1. **Continue with emulation** (works but slower):
@@ -586,8 +631,8 @@ docker compose -f docker-compose-horizon.yml ps
    ```
 
 3. **Use native ARM64 Horizon** (future):
-   - Track: https://github.com/cobaltcore-dev/lightstack/issues/XXX
    - Custom ARM64 Horizon build in development
+   - Track progress in the [issue tracker](https://github.com/cobaltcore-dev/lightstack/issues)
 
 **Verification**:
 ```bash
@@ -670,31 +715,14 @@ docker exec lightstack-horizon ping -c 3 lightstack
 
 ### VNC Console Doesn't Work
 
-**Symptom**: Console tab shows "Unable to connect"
+**Expected in this stack**: the compose stack is stub mode and ships **no console
+proxy** — the Horizon console tab cannot connect to a guest. The noVNC proxy is
+deployed by the Helm chart in real mode (see
+[KUBERNETES_DEPLOYMENT.md](KUBERNETES_DEPLOYMENT.md)); its tokens are managed with
+`lightstack console-tokens list|purge`.
 
-**Diagnosis**:
-```bash
-# Check noVNC is running
-docker compose -f docker-compose-horizon.yml ps novnc
-curl -I http://localhost:6080
-
-# Check lightstack can reach noVNC
-docker exec lightstack curl -I http://novnc:6080
-```
-
-**Solutions**:
-
-1. **Verify noVNC container**:
-   ```bash
-   docker compose -f docker-compose-horizon.yml logs novnc
-   docker compose -f docker-compose-horizon.yml restart novnc
-   ```
-
-2. **Check port mapping**:
-   ```bash
-   docker ps | grep novnc
-   # Should show: 0.0.0.0:6080->6080/tcp
-   ```
+**What still works**: `openstack console log show <server>` returns the (stub)
+serial console log.
 
 ### Horizon Performance Issues
 
@@ -718,24 +746,11 @@ docker exec lightstack curl -I http://novnc:6080
    docker stats --no-stream
    ```
 
-3. **Enable memcached** (add to docker-compose-horizon.yml):
-   ```yaml
-   services:
-     memcached:
-       image: memcached:alpine
-       container_name: lightstack-memcached
-       networks:
-         - lightstack-network
-   ```
-
-   Update horizon-config/local_settings:
-   ```python
-   CACHES = {
-       'default': {
-           'BACKEND': 'django.core.cache.backends.memcached.PyMemcacheCache',
-           'LOCATION': 'memcached:11211',
-       }
-   }
+3. **Memcached is already enabled**: the stack ships a `lightstack-memcached`
+   service (`memcached:1.6-alpine`) on the `lightstack-horizon-network`, and
+   Horizon's `local_settings` is configured to use it. Verify it is healthy:
+   ```bash
+   docker compose -f deployments/docker-compose-horizon.yml ps memcached
    ```
 
 ### Database Issues
@@ -805,7 +820,7 @@ docker compose -f docker-compose-horizon.yml up -d horizon
 Lightstack automatically runs migrations on startup. To manually run migrations:
 
 ```bash
-docker exec lightstack /app/lightstack migrate
+docker exec lightstack /app/lightstack-migrate up
 ```
 
 ## Backup and Restore
@@ -878,8 +893,9 @@ docker inspect lightstack --format='{{.HostConfig.NanoCpus}}'
 ### Application Metrics
 
 ```bash
-# lightstack metrics endpoint (if enabled)
-curl http://localhost:9090/metrics
+# lightstack metrics endpoint (planned, not yet implemented — no
+# Prometheus listener exists as of v0.6.x; see OPERATIONS.md "Monitoring")
+# curl http://localhost:9090/metrics
 
 # Database connections
 docker exec lightstack-postgres psql -U lightstack -c \
@@ -921,7 +937,8 @@ chmod +x health-check.sh
 ## Production Deployment Checklist
 
 - [ ] Change default passwords (postgres, admin user)
-- [ ] Generate secure JWT secret
+- [ ] Generate secure JWT secret (`LIGHTSTACK_JWT_SECRET`)
+- [ ] Generate secure bootstrap admin password (`LIGHTSTACK_ADMIN_PASSWORD`)
 - [ ] Generate secure Horizon SECRET_KEY
 - [ ] Enable HTTPS with valid certificates
 - [ ] Configure ALLOWED_HOSTS in Horizon
@@ -947,7 +964,7 @@ Use an existing PostgreSQL instance:
 services:
   lightstack:
     environment:
-      - LIGHTSTACK_DATABASE_URL=postgres://user:pass@external-db.example.com:5432/lightstack?sslmode=require
+      - LIGHTSTACK_DB_URL=postgres://user:pass@external-db.example.com:5432/lightstack?sslmode=require
 
 # Remove postgres service
 ```
@@ -975,7 +992,7 @@ Configure load balancer:
 
 ### Container Orchestration
 
-For Kubernetes deployment, see separate guide: `docs/KUBERNETES_DEPLOYMENT.md` (coming soon)
+For Kubernetes deployment, see separate guide: [`docs/KUBERNETES_DEPLOYMENT.md`](KUBERNETES_DEPLOYMENT.md)
 
 ## Support and Resources
 
@@ -990,16 +1007,16 @@ For Kubernetes deployment, see separate guide: `docs/KUBERNETES_DEPLOYMENT.md` (
 A: Yes, with proper security hardening (HTTPS, secure passwords, resource limits).
 
 **Q: Does this work on Apple Silicon (M1/M2)?**
-A: Yes, containers run via Rosetta emulation. Native ARM64 support coming soon.
+A: Yes — lightstack runs natively on ARM64; the Horizon (x86_64 Kolla) container runs under QEMU emulation, which works but is slower. For API/CLI/SDK work, the API-only stack (`deployments/docker-compose.yml`) has no x86_64-only components. See [MULTIARCH.md](MULTIARCH.md).
 
 **Q: Can I run real VMs?**
-A: Yes, on Linux with libvirt/KVM. Set LIGHTSTACK_NOVA_LIBVIRT_MODE=real.
+A: Yes, on Linux with libvirt/KVM. Set `nova.libvirt_mode: real` in `config/lightstack.yaml` (and `neutron.networking_mode` for real networking).
 
 **Q: How do I add more users?**
 A: Use OpenStack CLI or Horizon's Identity panel to create users.
 
 **Q: Can I integrate with Active Directory?**
-A: Yes, configure Keystone LDAP backend (see Lightstack docs).
+A: No — identity is PostgreSQL-backed and managed via the Identity API or Horizon. The domain-config endpoint returns an empty LDAP stub; no LDAP backend is implemented.
 
 **Q: What's the difference between stub and real mode?**
 A: Stub mode returns fake data (for testing). Real mode creates actual VMs and networks.
@@ -1013,4 +1030,4 @@ This deployment configuration is part of the Lightstack project and is licensed 
 
 ---
 
-**Last Updated**: 2026-03-13 | **lightstack Version**: v0.5.0 | **Horizon Version**: Flamingo (2025.2)
+**Last Updated**: 2026-10-12 | **lightstack Version**: Unreleased (post-v0.6.1) | **Horizon Version**: Flamingo (2025.2)

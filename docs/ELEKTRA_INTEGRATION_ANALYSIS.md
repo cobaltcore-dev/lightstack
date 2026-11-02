@@ -413,7 +413,7 @@ From Elektra's README:
 
 **Translation**: Elektra requires a non-vanilla OpenStack environment (SAP's customized stack).
 
-**lightstack's Position**: Lightstack **IS** a vanilla OpenStack implementation (104% API compatible with standard OpenStack).
+**lightstack's Position**: Lightstack **IS** a vanilla OpenStack implementation (API-compatible with the five core OpenStack services; ~335 functional operations vs the 330-endpoint baseline).
 
 **Logical Conclusion**: Elektra explicitly states it doesn't work with clouds like lightstack.
 
@@ -444,7 +444,7 @@ endpoint: "https://limes-3.#{current_region}.cloud.sap"
 
 ### 7.1 Why Horizon Is the Right Choice
 
-✅ **100% Compatible**: Already working perfectly with Lightstack (proven in testing)
+✅ **Compatible**: usable for resource management against Lightstack (verified in testing; open UI gaps listed in the compatibility report)
 
 ✅ **Zero Integration Effort**: HORIZON_INTEGRATION.md documents complete integration
 
@@ -517,7 +517,7 @@ Use Horizon for:
 - Security groups
 - Floating IP management
 
-**Rationale**: 100% compatible, zero effort, production-ready.
+**Rationale**: compatible for resource management, integration complete (see the compatibility report for the open UI gaps).
 
 ### 8.2 Custom UI for lightstack-Specific Features (Optional)
 
@@ -564,11 +564,11 @@ If Lightstack will run **alongside** SAP infrastructure:
 
 **CONTINUE with Horizon** because:
 
-1. ✅ **100% Compatible**: Already working perfectly with Lightstack
+1. ✅ **Compatible**: usable for resource management against Lightstack
 2. ✅ **Zero Effort**: Integration complete (HORIZON_INTEGRATION.md)
 3. ✅ **Standard OpenStack**: No vendor lock-in
 4. ✅ **Full Functionality**: All Lightstack features accessible
-5. ✅ **Production-Ready**: Documented, tested, deployed
+5. ✅ **Production-Ready**: Documented, tested, deployment paths exercised
 
 ### 9.2 Summary Table
 
@@ -576,7 +576,7 @@ If Lightstack will run **alongside** SAP infrastructure:
 |----------|-------------------|------------------|
 | Time to Production | 8-11 months | ✅ 0 (already done) |
 | Integration Effort | Very High | ✅ None |
-| Compatibility with Lightstack | ❌ Incompatible | ✅ 100% |
+| Compatibility with Lightstack | ❌ Incompatible | ✅ Usable for resource management |
 | Maintenance Burden | ❌ High | ✅ Low |
 | Feature Coverage | ⚠️ Partial (no Limes) | ✅ Full |
 | Risk Level | ❌ CRITICAL | ✅ ZERO |
@@ -619,8 +619,8 @@ If Lightstack will run **alongside** SAP infrastructure:
 - [docs/QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Command reference
 
 **Related Lightstack Documentation**:
-- [docs/API_COVERAGE_REPORT.md](API_COVERAGE_REPORT.md) - 104% API coverage (342/330 endpoints)
-- [REMAINING_WORK.md](../REMAINING_WORK.md) - Sprint 66 Horizon integration results
+- [docs/blueprint.md](blueprint.md) - API coverage: ~335 functional operations vs the 330-endpoint baseline (authoritative)
+- [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) - current browser-level integration status
 
 **OpenStack Horizon**:
 - Official docs: https://docs.openstack.org/horizon/latest/

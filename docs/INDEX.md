@@ -70,11 +70,11 @@ Choose your deployment strategy based on your use case.
 
 Lightstack serves the OpenStack APIs Horizon consumes, and the **dashboard is usable for resource
 management** — networks, volumes and instances can be created from the UI in stub and real mode (#532,
-#533). The open UI gaps, starting with the noVNC console, are listed in the report (findings F1–F18).
+#533). The noVNC console works in real mode (#534); F10/F11 were fixed by SPEC-024/#546 (Horizon re-pass outstanding), leaving domain switching (F18) as the open UI gap — see the report (findings F1–F18).
 
 - **[Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)** ⭐ **NEW** - Browser-level verification: dashboard **usable** for resource management after #532/#533 (F1–F18)
 - **[HORIZON_FULL_COMPATIBILITY_REPORT](HORIZON_FULL_COMPATIBILITY_REPORT.md)** - SUPERSEDED (API-endpoint coverage only; see the report above for UI verdicts)
-  - API endpoint coverage (342/330), microversions, auth flow
+  - API endpoint coverage (functional operations; see [blueprint.md](blueprint.md) for the reconciled count), microversions, auth flow
   - Per-page API dependency matrix
   - Performance benchmarks and optimization
   - Troubleshooting guide
@@ -116,7 +116,7 @@ Understand lightstack's design, implementation, and OpenStack compatibility.
 - **[KEYSTONE_AUTH_FLOW](KEYSTONE_AUTH_FLOW.md)** - JWT authentication flow
 
 #### API Compatibility
-- **[BLUEPRINT](blueprint.md)** ⭐ **AUTHORITATIVE** - Lightstack ↔ OpenStack compatibility blueprint: service map, ~330 functional operations (counting rule stated), per-service matrix, storage backends, sync-architecture trade-offs, Terraform coverage, sci-in-a-box surface, and known gaps. Pinned to OpenStack 2025.2 (Flamingo).
+- **[BLUEPRINT](blueprint.md)** ⭐ **AUTHORITATIVE** - Lightstack ↔ OpenStack compatibility blueprint: service map, ~335 functional operations (counting rule stated), per-service matrix, storage backends, sync-architecture trade-offs, Terraform coverage, sci-in-a-box surface, and known gaps. Pinned to OpenStack 2025.2 (Flamingo).
 - **[compatibility/OPENSTACK_COMPATIBILITY_REPORT](compatibility/OPENSTACK_COMPATIBILITY_REPORT.md)** - Deep per-endpoint analysis + contract-test results (BLUEPRINT's appendix)
 - **[API](API.md)** - Quick-start auth / catalog examples
 - **[API_COVERAGE_REPORT](API_COVERAGE_REPORT.md)** - ⚠️ Superseded: older "104% (342/330)" count; see BLUEPRINT for the reconciled figure
@@ -127,7 +127,7 @@ Understand lightstack's design, implementation, and OpenStack compatibility.
   - [ADR-001](adr/ADR-001-database-dependency-injection.md) - Database dependency injection approach
   - [ADR-002](adr/ADR-002-rate-limiting-architecture.md) - Rate limiting architecture
 
-**Key Stats**: Lightstack implements ~330 functional operations across the 5 core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance). See [BLUEPRINT](blueprint.md) for the counting rule and per-service breakdown.
+**Key Stats**: Lightstack implements ~335 functional operations across the 5 core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance). See [BLUEPRINT](blueprint.md) for the counting rule and per-service breakdown.
 
 ---
 
@@ -149,13 +149,14 @@ Test reports, strategies, and code quality reviews.
 - **[testing/E2E_CI_TESTING_STRATEGY](testing/E2E_CI_TESTING_STRATEGY.md)** - E2E and CI pipeline strategy
 
 #### Contract Test Reports
-- **[testing/CONTRACT_TESTS_FINAL](testing/CONTRACT_TESTS_FINAL.md)** - Final results: 95.7% passing (223/233)
-- **[testing/CONTRACT_TEST_RESULTS](testing/CONTRACT_TEST_RESULTS.md)** - Results snapshot: 90.2% (258/286)
-- **[testing/CONTRACT_TESTS_FINAL_REPORT](testing/CONTRACT_TESTS_FINAL_REPORT.md)** - Detailed execution report
+- **[testing/CONTRACT_TESTS_FINAL](testing/CONTRACT_TESTS_FINAL.md)** - Historical snapshot (2026-03-30): 95.7% passing (223/233); the contract suite is a soft CI gate (85% floor)
+- **[testing/CONTRACT_TEST_RESULTS](testing/CONTRACT_TEST_RESULTS.md)** - Historical snapshot: 90.2% (258/286)
+- **[testing/CONTRACT_TESTS_FINAL_REPORT](testing/CONTRACT_TESTS_FINAL_REPORT.md)** - Historical execution report
 - **[testing/TEST_FAILURES_ANALYSIS](testing/TEST_FAILURES_ANALYSIS.md)** - Root cause analysis of remaining failures
 
 #### Code Reviews
 - **[review/full-repo-review-report](review/full-repo-review-report.md)** - Full codebase review (42 findings, April 2026)
+- **[review/comprehensive-review-report-2026-10-12](review/comprehensive-review-report-2026-10-12.md)** ⭐ **NEW** - Full review at HEAD e909227: security (JWT/revocation), concurrency (shutdown races), release readiness (version stamping, tag/chart drift), top-10 action list
 
 #### Compatibility
 - **[compatibility/OPENSTACK_COMPATIBILITY_REPORT](compatibility/OPENSTACK_COMPATIBILITY_REPORT.md)** - OpenStack 2025.2 compatibility analysis
@@ -302,8 +303,8 @@ Analysis of dashboard compatibility and integration options.
 **lightstack Project**:
 - GitHub: https://github.com/cobaltcore-dev/lightstack
 - License: Apache 2.0
-- Current Version: v0.6.0 (Production Ready)
-- API Coverage: ~329 functional operations across 5 core services (see [BLUEPRINT](blueprint.md))
+- Current Version: Unreleased (post-v0.6.1; see [CHANGELOG.md](../CHANGELOG.md))
+- API Coverage: ~335 functional operations across 5 core services (see [BLUEPRINT](blueprint.md))
 
 ---
 
@@ -325,6 +326,6 @@ Analysis of dashboard compatibility and integration options.
 
 ---
 
-**Last Updated**: April 2026
-**Total Documentation Files**: 40
+**Last Updated**: October 2026
+**Documentation Files**: 37 top-level guides in `docs/` (plus review reports and per-component deep-dives in subdirectories — 323 markdown files in total)
 **Coverage**: Getting Started, Installation, Configuration, Operations, Architecture, API Reference, Testing, Code Quality

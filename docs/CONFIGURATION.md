@@ -38,12 +38,10 @@ Lightstack can be configured through:
 
 ### Location
 
-**Default locations** (checked in order):
-1. `./lightstack.yaml` (current directory)
-2. `/etc/lightstack/lightstack.yaml` (system-wide)
-3. `~/.lightstack/lightstack.yaml` (user-specific)
+The binary reads exactly one config file: the `--config` flag, which defaults to
+`config/lightstack.yaml` (relative to the working directory). There is no search
+path — the file is not looked up in `/etc` or the home directory:
 
-**Specify custom location:**
 ```bash
 lightstack --config /path/to/custom.yaml
 ```
@@ -61,17 +59,20 @@ state_path: /var/lib/lightstack
 # Database connection
 database:
   url: "postgres://lightstack:secret@localhost/lightstack?sslmode=disable"
-  max_connections: 20
-  max_idle: 5
-  conn_max_lifetime: 1h
+  max_connections: 50
+  min_connections: 2
+  max_conn_lifetime: 1h
+  max_conn_idle_time: 10m
+  health_check_period: 30s
 
 # Keystone (Identity Service)
 keystone:
   port: 35357
-  jwt_secret: "change-me-in-production"
+  jwt_secret: "<generate: openssl rand -base64 32>"       # required; public defaults refused
   token_ttl: 24h
   admin_user: admin
-  admin_password: secret
+  admin_password: "<generate: openssl rand -base64 24>"    # required; public defaults refused
+  rgw_compat_tenant_ids: false  # Ceph RGW (Swift) tenant-id compatibility
 
 # Compute node configuration
 compute:
@@ -86,6 +87,10 @@ nova:
   libvirt_uri: "qemu:///system"
   default_flavor: m1.small
   libvirt_mode: stub         # "stub" or "real"
+  console_proxy_base_url: "" # noVNC proxy origin (scheme://host:port, no path)
+  console_token_ttl: 10m     # how long an issued console link stays usable
+  console_reconcile_interval: 30s  # expired console-token reaping
+  shutdown_timeout: 30s      # guest OS shutdown grace before a forced power-off
 
 # Neutron (Network Service)
 neutron:
@@ -113,15 +118,28 @@ glance:
   port: 9292
   ceph_pool: images
   ceph_conf: /etc/ceph/ceph.conf
-  storage_mode: local        # "stub", "local", "rbd", "s3", etc.
+  storage_mode: local        # "stub", "local", "s3", "local,s3"; "rbd"/"local,rbd"
+                             # are accepted but RBD ops are unimplemented placeholders
   s3_bucket: ""              # S3 bucket name (for S3 storage)
   s3_region: us-east-1       # S3 region
   s3_endpoint: ""            # Custom S3 endpoint (MinIO, Ceph RGW)
+
+# Metadata service (EC2-style, no auth)
+metadata:
+  bind_address: "0.0.0.0:8775"
+  trust_instance_header: false  # test stacks only — never where real guests reach it
 
 # Logging
 logging:
   level: info                # debug, info, warn, error
   format: json               # json, text
+
+# Redis cache (off by default)
+cache:
+  enabled: false
+  redis_url: "redis://localhost:6379/0"
+  key_prefix: "lightstack:"
+  default_ttl: 1h
 ```
 
 ---
@@ -131,15 +149,17 @@ logging:
 > **Correction (SPEC-008).** Earlier versions of this page documented a generic
 > `lightstack_<SECTION>_<KEY>` convention (e.g. `LIGHTSTACK_DATABASE_URL`, `LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD`,
 > `LIGHTSTACK_NOVA_LIBVIRT_MODE`). **The binary does not implement that layer** — those variables
-> are silently ignored. Everything else (admin password, service modes, VXLAN, cache,
-> logging, ports, …) takes effect **only from the YAML config file** passed via `--config`.
+> are silently ignored. Everything else (service modes, VXLAN, cache, logging, ports, …)
+> takes effect **only from the YAML config file** passed via `--config`.
 
-The binary honors exactly **fourteen** environment variables:
+The binary honors exactly **sixteen** environment variables:
 
 | Variable | Overrides / controls | Where it is read |
 |----------|----------------------|------------------|
 | `LIGHTSTACK_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_ADMIN_PASSWORD` | `keystone.admin_password` (the bootstrap admin's password; refused when left at a well-known default — see the S2 secret guard) | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET` | **Test/dev-only escape hatch** (`1`/`true`): opts out of the secret guard that refuses well-known JWT secrets and admin passwords. Never set on anything reachable by an untrusted network — it is not for production. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` in OpenStack's dash-free form in the `/v3/auth/tokens` responses; `/v3/s3tokens` already uses that historical form. The EC2 mint accepts dash-free or alternate UUID encodings as input and stores the canonical database id. Enabling the flag therefore unifies Swift with the existing S3 tenant namespace without re-keying S3 data. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host — a **fallback**, see below | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
 | `LIGHTSTACK_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
@@ -155,7 +175,8 @@ The binary honors exactly **fourteen** environment variables:
 
 ```bash
 export LIGHTSTACK_DB_URL="postgres://user:pass@host/db?sslmode=disable"
-export LIGHTSTACK_JWT_SECRET="your-secret-here"
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 export LIGHTSTACK_ENDPOINT_HOST="lightstack.example.com"
 export LIGHTSTACK_ENDPOINT_SCHEME="https"   # only when TLS is terminated in front of lightstack
 ```
@@ -248,8 +269,9 @@ services:
     environment:
       LIGHTSTACK_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
       LIGHTSTACK_JWT_SECRET: "${JWT_SECRET}"
+      LIGHTSTACK_ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
     volumes:
-      # everything else (service modes, admin password, logging, ...) comes from the file:
+      # remaining settings (service modes, logging, ...) come from the file:
       - ./config/lightstack.yaml:/app/config/lightstack.yaml:ro
 ```
 
@@ -262,9 +284,11 @@ services:
 ```yaml
 database:
   url: "postgres://user:password@host:port/database?sslmode=disable"
-  max_connections: 20        # Maximum open connections
-  max_idle: 5                # Maximum idle connections
-  conn_max_lifetime: 1h      # Connection maximum lifetime
+  max_connections: 50        # Maximum connections
+  min_connections: 2         # Minimum idle connections
+  max_conn_lifetime: 1h      # Connection maximum lifetime
+  max_conn_idle_time: 10m    # Maximum idle time
+  health_check_period: 30s   # Pool health check period
 ```
 
 ### Connection String Format
@@ -295,10 +319,15 @@ postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable&connect_t
 
 ```yaml
 database:
-  max_connections: 20        # Default: 20
-  max_idle: 5                # Default: 5
-  conn_max_lifetime: 1h      # Default: 1 hour
+  max_connections: 50        # binary default: 20 (shipped config: 50)
+  min_connections: 2         # default: 2
+  max_conn_lifetime: 1h      # binary default: 1h (shipped config: 1h)
+  max_conn_idle_time: 10m    # binary default: 15m (shipped config: 10m)
+  health_check_period: 30s   # binary default: 1m (shipped config: 30s)
 ```
+
+Values shown are what the shipped `config/lightstack.yaml` sets; when a key is
+missing or zero, the binary falls back to the defaults noted above.
 
 **Guidelines:**
 - **Small deployments:** 10-20 connections
@@ -316,10 +345,10 @@ database:
 ```yaml
 keystone:
   port: 35357                        # API port
-  jwt_secret: "change-me-in-production"  # JWT signing secret
+  jwt_secret: "<openssl rand -base64 32>"        # JWT signing secret (required)
   token_ttl: 24h                     # Token lifetime
   admin_user: admin                  # Admin username (first-boot seed)
-  admin_password: secret             # Admin password (first-boot seed) — CHANGE for exposed deployments
+  admin_password: "<openssl rand -base64 24>"    # Bootstrap admin password (required)
 ```
 
 **Admin bootstrap (first-boot seed):** `admin_password` is applied at startup only
@@ -327,9 +356,13 @@ when the admin account is absent or still carries the well-known default `secret
 once changed it is never overwritten on later starts (rotate via the Identity API,
 e.g. `openstack user password set`, not config). Setting `admin_user` to a name
 other than `admin` provisions that user with the admin role and **disables** the
-seeded `admin` account. When `admin_password` is unset entirely, Lightstack boots with the
-default credential and logs a `WARN` — the Helm chart is responsible for requiring a
-password at install time.
+seeded `admin` account.
+
+The startup secret guard refuses an empty or well-known `jwt_secret` **and**
+`admin_password` — including the public `secret` default — so a config that omits
+either does not boot (isolated dev/test stacks opt out with
+`LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1`). The Helm chart requires both at
+install time.
 
 `admin_user` is a **first-boot identity**, not a managed one:
 - If `admin_user` names an account that **already exists**, that account is granted
@@ -432,7 +465,7 @@ Lightstack. Without a retention age the table would only grow. Records belonging
 that still exists are never reclaimed, whatever their age. A non-positive value is
 clamped to the default, since `0` would mean reclaiming everything immediately.
 
-All three are **config-file only**. The binary honours exactly four environment variables
+All three are **config-file only**. The binary honours exactly sixteen environment variables
 (see [Environment Variables](#environment-variables)), so these must arrive through the
 `lightstack.yaml` you pass to `--config` — in Helm, through the rendered Secret. The chart
 exposes them as `nova.stateReconcileInterval`, `nova.shutdownTimeout` and
@@ -498,9 +531,9 @@ glance:
 **storage_mode options:**
 - `stub` - Mock storage (no actual images)
 - `local` - Local filesystem
-- `rbd` - Ceph RBD
-- `s3` - S3-compatible storage
-- `local,rbd` - Hybrid (local + Ceph)
+- `rbd` - Ceph RBD — **accepted but unimplemented placeholder**: no RBD operations exist for Glance
+- `s3` - S3-compatible storage (Ceph RGW, MinIO, AWS)
+- `local,rbd` - Hybrid (local + Ceph; the RBD half is an unimplemented placeholder)
 - `local,s3` - Hybrid (local + S3)
 
 > `rbd,s3` is **not supported** for Glance and is rejected at startup: the Glance RBD
@@ -518,7 +551,7 @@ glance:
 
 **Environment variables for S3 credentials** (read implicitly by the AWS SDK's
 standard config chain — they are not `LIGHTSTACK_`-prefixed and are not part of
-the thirteen Lightstack configuration variables):
+the sixteen Lightstack configuration variables):
 ```bash
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
@@ -532,8 +565,8 @@ export AWS_SECRET_ACCESS_KEY="your-secret-key"
 
 ```yaml
 keystone:
-  jwt_secret: "change-me-in-production"  # CRITICAL: Change this!
-  token_ttl: 24h                         # Token lifetime
+  jwt_secret: "<openssl rand -base64 32>"  # CRITICAL: unique per deployment
+  token_ttl: 24h                           # Token lifetime
 ```
 
 **Best practices:**
@@ -554,17 +587,14 @@ head -c 32 /dev/urandom | base64
 uuidgen | sha256sum | cut -d' ' -f1
 ```
 
-### Default Credentials
+### Bootstrap Admin Credentials
 
-```yaml
-keystone:
-  admin_user: admin
-  admin_password: secret
-```
+The seed data creates `admin` in project `default`. No usable password ships:
+`config/lightstack.yaml` may carry the public `secret` placeholder, but the startup
+guard refuses it (and an empty value), so set a real one before first start.
 
-**⚠️ CRITICAL: Change these in production!**
-
-**Change via the config file** (there is no env override for these — see
+**Set it in the config file, or via `LIGHTSTACK_ADMIN_PASSWORD`** (the admin
+password has an environment override — see
 [Environment Variables](#environment-variables)):
 ```yaml
 keystone:
@@ -573,7 +603,9 @@ keystone:
 ```
 The configured password is a **first-boot seed** (SPEC-007): applied only while the
 account still carries the default; rotate afterwards via the Identity API
-(`openstack user password set`), not by changing config.
+(`openstack user password set`), not by changing config. The startup guard refuses
+the public `secret` default and an empty/omitted value; the Helm chart requires
+`secrets.adminPassword`.
 
 ### Database Security
 
@@ -624,19 +656,18 @@ glance:
 - Fast I/O (SSD recommended)
 - Regular backups
 
-### Ceph RBD Storage
+### Ceph RBD Storage (Cinder)
 
 ```yaml
 cinder:
   storage_mode: rbd
   ceph_pool: volumes
   ceph_conf: /etc/ceph/ceph.conf
-
-glance:
-  storage_mode: rbd
-  ceph_pool: images
-  ceph_conf: /etc/ceph/ceph.conf
 ```
+
+> **Glance has no working RBD backend.** `glance.storage_mode: rbd` (and `local,rbd`) is
+> an accepted-but-unimplemented placeholder. For shared image storage on Ceph, use the
+> S3 API via Ceph RGW instead (`storage_mode: s3`, `s3_endpoint` pointed at your RGW).
 
 **Prerequisites:**
 ```bash
@@ -682,11 +713,11 @@ glance:
 
 ```yaml
 glance:
-  storage_mode: local,rbd  # Try local first, fallback to Ceph
+  storage_mode: local,s3  # Try local first, fallback to S3 (e.g. Ceph RGW)
 ```
 
 **Use cases:**
-- Fast local cache + reliable Ceph backup
+- Fast local cache + reliable object-storage backup
 - Gradual migration between storage backends
 - Cost optimization (local SSD + slower network storage)
 
@@ -811,8 +842,9 @@ compute:
 ```yaml
 database:
   max_connections: 50          # Increase for high load
-  max_idle: 10
-  conn_max_lifetime: 30m       # Shorter for frequent schema changes
+  min_connections: 2
+  max_conn_lifetime: 30m       # Shorter for frequent schema changes
+  max_conn_idle_time: 10m
 ```
 
 **DHCP lease time:**
@@ -823,12 +855,14 @@ neutron:
 
 ### Resource Limits
 
-**Default quotas** (set in database):
+**Default quotas** (set in database — quotas are stored row-per-resource in the
+`quotas` table, migration `007`):
 ```sql
-UPDATE projects SET quota_instances = 100 WHERE name = 'production';
-UPDATE projects SET quota_cores = 200 WHERE name = 'production';
-UPDATE projects SET quota_ram = 204800 WHERE name = 'production';
+UPDATE quotas SET hard_limit = 100 WHERE project_id = '<uuid>' AND resource = 'instances';
+UPDATE quotas SET hard_limit = 200 WHERE project_id = '<uuid>' AND resource = 'cores';
+UPDATE quotas SET hard_limit = 204800 WHERE project_id = '<uuid>' AND resource = 'ram';
 ```
+(Prefer the API: `openstack quota set <project> --instances 100 --cores 200 --ram 204800`.)
 
 ### Multi-Tenant Isolation
 
@@ -844,13 +878,19 @@ neutron:
 
 ## Rate Limiting Configuration
 
-Lightstack supports two-tier rate limiting to protect against brute-force attacks and resource exhaustion.
-See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural details.
+> ⚠️ **Not yet implemented.** Rate limiting is designed in
+> [ADR-002](adr/ADR-002-rate-limiting-architecture.md) (Accepted), but no middleware code
+> exists yet: the `rate_limiting` block below is **dead config** and currently has **no
+> effect**. Treat this section as a description of the planned behaviour.
+
+Two-tier rate limiting is planned to protect against brute-force attacks and resource
+exhaustion. See [ADR-002](adr/ADR-002-rate-limiting-architecture.md) for architectural
+details.
 
 ### Configuration
 
 ```yaml
-# Rate limiting (v0.7.0+)
+# Rate limiting (planned — not yet implemented, see ADR-002)
 rate_limiting:
   enabled: false              # Set to true to enable rate limiting
   auth_rate: 20               # Requests per minute per IP (unauthenticated endpoints)
@@ -871,7 +911,7 @@ rate_limiting:
 | `max_entries` | int | `10000` | Max concurrent tracked IPs/projects |
 | `overflow_policy` | string | `allow` | Behavior when max_entries exceeded |
 
-### How It Works
+### How It Works (planned)
 
 1. **Unauthenticated requests** (e.g., `POST /v3/auth/tokens`): Limited by the client's address,
    meaning the TCP peer. Forwarding headers such as `X-Forwarded-For` are not believed: every
@@ -907,12 +947,13 @@ When rate limiting triggers, Lightstack logs at WARN level:
 
 ### Validate Configuration
 
-```bash
-# Check config syntax
-lightstack --config /path/to/lightstack.yaml --validate
+The server takes only two flags — `--config` (path to the config file) and
+`--migrations` (path to the migrations directory). There is no `--validate` flag;
+configuration errors are reported at startup. (The `cleanup` subcommand separately
+accepts `--dry-run`.)
 
-# Dry-run (validate without starting)
-lightstack --config /path/to/lightstack.yaml --dry-run
+```bash
+lightstack --config /path/to/lightstack.yaml
 ```
 
 ### Common Issues
@@ -965,15 +1006,31 @@ logging:
 
 ### Production Setup (Single-Node)
 
+Note on secrets: **the config file does no environment-variable interpolation**
+— a literal `${JWT_SECRET}` in the YAML is used verbatim as the secret. Inject
+secrets through the environment variables the loader applies *over* the file —
+`LIGHTSTACK_DB_URL`, `LIGHTSTACK_JWT_SECRET` and `LIGHTSTACK_ADMIN_PASSWORD` — or
+put the admin password in the file itself:
+
+```bash
+export DB_PASSWORD="..."
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+```
+
 ```yaml
 database:
-  url: "postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+  # The URL itself comes from LIGHTSTACK_DB_URL (shown under the file) —
+  # the file performs no ${...} expansion.
   max_connections: 50
 
 keystone:
-  jwt_secret: "${JWT_SECRET}"  # From environment
+  # Set via LIGHTSTACK_JWT_SECRET, not through the file:
+  #   export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
   token_ttl: 24h
-  admin_password: "${ADMIN_PASSWORD}"
+  # Set via LIGHTSTACK_ADMIN_PASSWORD, or write a real value here before
+  # deploying (substitute before the file reaches the host):
+  admin_password: "CHANGE_ME_before_deploying"
 
 nova:
   libvirt_mode: real
@@ -988,26 +1045,37 @@ cinder:
   ceph_pool: volumes
 
 glance:
-  storage_mode: rbd
-  ceph_pool: images
+  storage_mode: s3            # Glance RBD is unimplemented — use S3/Ceph RGW
+  s3_bucket: images
+  s3_endpoint: "https://rgw.example.com"
 
 logging:
   level: info
   format: json
 ```
 
+```bash
+# The database URL is provided through the environment, overriding the file:
+export LIGHTSTACK_DB_URL="postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+```
+
 ### Production Setup (Multi-Node)
 
 ```yaml
+# Secrets via environment (the file performs no ${...} expansion):
+#   export LIGHTSTACK_DB_URL="postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+#   export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+
 database:
-  url: "postgres://lightstack:${DB_PASSWORD}@db.internal:5432/lightstack?sslmode=require"
+  max_connections: 50
 
 compute:
   tunnel_ip: auto
   vxlan_port: 4789
 
 keystone:
-  jwt_secret: "${JWT_SECRET}"
+  # Set via LIGHTSTACK_JWT_SECRET, not through the file:
+  #   export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
 
 nova:
   libvirt_mode: real
@@ -1022,7 +1090,8 @@ cinder:
   storage_mode: rbd
 
 glance:
-  storage_mode: rbd
+  storage_mode: s3        # shared image storage via Ceph RGW (Glance RBD is unimplemented)
+  s3_bucket: images
 
 logging:
   level: info

@@ -6,13 +6,15 @@
 ## Quick Start
 
 ```bash
-# Start everything
+# Start everything (both secrets are required — no insecure defaults render)
 cd lightstack/deployments
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 
 # Access Horizon
 open http://localhost/dashboard
-# Login: Domain=Default, User=admin, Password=secret
+# Login: Domain=Default, User=admin, Password=$LIGHTSTACK_ADMIN_PASSWORD
 
 # Check status
 docker compose -f docker-compose-horizon.yml ps
@@ -40,6 +42,11 @@ docker compose -f docker-compose-horizon.yml logs --tail 100 # Last 100 lines
 docker exec -it lightstack /bin/sh                    # lightstack container
 docker exec -it lightstack-horizon /bin/bash          # Horizon container
 docker exec -it lightstack-postgres psql -U lightstack       # Database
+
+# Lightstack CLI subcommands (binary on the host, or /app/lightstack in the container)
+lightstack healthcheck --ready                        # Health probe (--live for liveness)
+lightstack cleanup --dry-run                          # Preview cleanup of orphaned state
+lightstack console-tokens list                        # noVNC console tokens (also: purge)
 ```
 
 ## Service Ports
@@ -52,18 +59,19 @@ docker exec -it lightstack-postgres psql -U lightstack       # Database
 | Neutron | 9696 | http://localhost:9696/ |
 | Cinder | 8776 | http://localhost:8776/ |
 | Glance | 9292 | http://localhost:9292/ |
+| Placement (stub) | 8778 | in-process only — not published by the compose stacks |
 | Metadata | 8775 | http://localhost:8775/ |
-| noVNC | 6080 | http://localhost:6080/ |
+| noVNC console | — | not in the compose stacks; the proxy is chart/real-mode only (`console-tokens` manages its tokens) |
 | PostgreSQL | 5432 | localhost:5432 |
 
 ## OpenStack CLI Setup
 
 ```bash
-# Export environment
+# Export environment (the admin password you set when starting the stack)
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set LIGHTSTACK_ADMIN_PASSWORD (see Quick Start above)}"
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
@@ -156,20 +164,19 @@ tar czf config-backup-$(date +%Y%m%d).tar.gz docker-compose-horizon.yml horizon-
 cat backup-20260313.sql | docker exec -i lightstack-postgres psql -U lightstack lightstack
 ```
 
-## Default Credentials
+## Credentials
 
 - **Horizon URL**: http://localhost/dashboard
 - **Domain**: Default
 - **Username**: admin
-- **Password**: secret
+- **Password**: the `LIGHTSTACK_ADMIN_PASSWORD` you exported before `up -d` (no default — the guard refuses admin/secret)
 - **Project**: default
-
-⚠️ **Change these in production!**
 
 ## Production Checklist
 
 - [ ] Change postgres password
-- [ ] Generate secure JWT secret
+- [ ] Generate secure JWT secret (`LIGHTSTACK_JWT_SECRET`)
+- [ ] Generate secure bootstrap admin password (`LIGHTSTACK_ADMIN_PASSWORD`)
 - [ ] Generate secure Horizon SECRET_KEY
 - [ ] Enable HTTPS
 - [ ] Configure ALLOWED_HOSTS

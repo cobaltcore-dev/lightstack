@@ -1,8 +1,12 @@
 # Lightstack Development Roadmap
 
+> **⚠️ Superseded (kept for history).** This roadmap's Phase 1 direction — splitting into
+> "8+ independent services" — contradicts the single-binary strategy the project settled
+> on (see [README.md](README.md) and [STATUS.md](STATUS.md)). Do not plan from this file.
+
 **Version**: 1.2
 **Last Updated**: 2026-04-07
-**Status**: Active
+**Status**: Superseded
 
 ## Executive Summary
 
@@ -19,7 +23,7 @@ Lightstack is transforming from a working proof-of-concept into a production-rea
 
 ### Core Principles
 
-**PRIORITY ZERO**: [SPEC-000: 100% Terraform Compatibility](./specs/000-terraform-compatibility/README.md) - Non-negotiable requirement that supersedes all other work.
+**PRIORITY ZERO**: SPEC-000: 100% Terraform Compatibility - Non-negotiable requirement that supersedes all other work. (Historical link removed — see `docs/specs/000-api-compliance/` for the compliance spec that exists.)
 
 1. **100% Terraform Compatibility**: Existing `openstack_*` Terraform resources work unchanged
 2. **100% UI/CLI Compatibility**: Horizon dashboard and OpenStack CLI indistinguishable from OpenStack
@@ -728,12 +732,12 @@ Phase 1 ──┐
 
 ### Specifications
 
-- [SPEC-000: Terraform Compatibility Framework](./specs/000-terraform-compatibility/README.md) - **PRIORITY ZERO**
-- [SPEC-001: Modular Architecture](./specs/001-modular-architecture/README.md)
-- [SPEC-002: Authentication Enhancement](./specs/002-authentication-enhancement/README.md)
-- [SPEC-003: Barbican](./specs/003-barbican/README.md)
-- [SPEC-004: Designate](./specs/004-designate/README.md)
-- [SPEC-005: Octavia](./specs/005-octavia/README.md)
+- SPEC-000: Terraform Compatibility Framework - **PRIORITY ZERO** (historical link removed — see `docs/specs/000-api-compliance/`)
+- [SPEC-001: Modular Architecture](docs/specs/001-modular-architecture/README.md)
+- [SPEC-002: Authentication Enhancement](docs/specs/002-authentication-enhancement/README.md)
+- [SPEC-003: Barbican](docs/specs/003-barbican/README.md)
+- [SPEC-004: Designate](docs/specs/004-designate/README.md)
+- [SPEC-005: Octavia](docs/specs/005-octavia/README.md)
 
 ### Constitution Reference
 

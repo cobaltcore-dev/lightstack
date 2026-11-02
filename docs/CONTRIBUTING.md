@@ -32,7 +32,7 @@ This project follows a standard code of conduct:
 ### Prerequisites
 
 **Required:**
-- Go 1.26 or higher
+- Go 1.27 or higher
 - PostgreSQL 18 or higher
 - Git
 
@@ -72,7 +72,7 @@ docker run -d --name lightstack-postgres \
   -e POSTGRES_DB=lightstack \
   -e POSTGRES_USER=lightstack \
   -e POSTGRES_PASSWORD=secret \
-  -p 5432:5432 postgres:18.3
+  -p 5432:5432 postgres:18.4-alpine
 
 # Or use your local PostgreSQL instance
 ```
@@ -80,8 +80,12 @@ docker run -d --name lightstack-postgres \
 ### 3. Run Migrations
 
 ```bash
-make migrate-up
+make migrate
 ```
+
+(`make migrate` shells out to the golang-migrate CLI — run `make install-tools`
+once first if you have not. `make run` also auto-applies migrations at startup,
+so this step is optional for local development.)
 
 ### 4. Build and Run
 
@@ -104,8 +108,8 @@ export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
-export OS_USER_DOMAIN_NAME=default
-export OS_PROJECT_DOMAIN_NAME=default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
 
 openstack token issue
 ```

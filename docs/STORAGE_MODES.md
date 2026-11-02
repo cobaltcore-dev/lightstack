@@ -16,11 +16,11 @@ Lightstack supports multiple storage backends for both Cinder (block storage) an
 ### Glance Storage Modes
 - **stub**: Simulated storage (no actual storage operations)
 - **local**: Local raw files (`/var/lib/lightstack/images/`)
-- **rbd**: Ceph RBD images (shared storage cluster)
+- **rbd**: Ceph RBD images — accepted but an **unimplemented placeholder** (RBD operations for Glance are not implemented; see below)
 - **s3**: S3-compatible object storage (AWS S3, MinIO, Ceph RGW)
-- **local,rbd**: Hybrid mode (local cache + RBD backing)
+- **local,rbd**: Hybrid mode (local cache + RBD backing) — the RBD half is an unimplemented placeholder
 - **local,s3**: Hybrid mode (local cache + S3 backing)
-- ~~**rbd,s3**~~: **not supported** — rejected at startup (Glance has no RBD backend; see below)
+- ~~**rbd,s3**~~: **not supported** — rejected at startup (Glance has no working RBD backend; see below)
 
 > **Ceph RGW (S3) is validated** (SPEC-014). In `s3` mode, image transfers stream
 > to completion (no total-op timeout), HTTPS with an internal CA is supported, and
@@ -101,11 +101,11 @@ ls -lh /var/lib/lightstack/volumes/
 ### 3. RBD Mode (Ceph)
 
 **Use Case**: Production multi-node clusters
-**Behavior**: Stores volumes/images in Ceph RBD
+**Behavior**: Stores volumes in Ceph RBD — **Cinder only**. Glance accepts `rbd`/`local,rbd` modes, but its RBD operations are unimplemented placeholders; use `s3`/`local,s3` for Glance images.
 
 ```yaml
 storage_mode: rbd
-ceph_pool: volumes  # or images
+ceph_pool: volumes
 ceph_conf: /etc/ceph/ceph.conf
 ```
 
@@ -366,8 +366,9 @@ cinder:
   storage_mode: rbd
   ceph_pool: volumes
 glance:
-  storage_mode: rbd
-  ceph_pool: images
+  storage_mode: s3   # Glance RBD is an unimplemented placeholder; use S3 (Ceph RGW works)
+  s3_bucket: images
+  s3_endpoint: http://rgw.ceph.local:7480
 ```
 
 **Characteristics**:
@@ -520,7 +521,7 @@ sudo install -d -o "$USER" -g "$USER" -m 755 /var/lib/lightstack
 ### 3. Production
 
 - **Single-node**: `local` for Cinder, `local,s3` for Glance
-- **Multi-node**: `rbd` for both (requires Ceph)
+- **Multi-node**: `rbd` for Cinder, `s3` (e.g. Ceph RGW) for Glance (requires Ceph; Glance `rbd` is a placeholder)
 - **Cloud**: `local` + `s3` for Glance
 
 ### 4. Disaster Recovery

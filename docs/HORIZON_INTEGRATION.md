@@ -1,21 +1,21 @@
 # lightstack-Horizon Integration Guide
 
-**Date**: March 17, 2026
-**Version**: Lightstack v1.0 + Horizon Flamingo 2025.2
-**Status**: ⚠️ The Horizon dashboard is **usable for resource management**; its open UI gaps (the noVNC console and others) are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
+**Date**: October 12, 2026
+**Version**: Lightstack Unreleased (post-v0.6.1) + Horizon Flamingo 2025.2
+**Status**: ⚠️ The Horizon dashboard is **usable for resource management**; the remaining open UI gap is domain switching (F18) — see the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md)
 
 ## Executive Summary
 
-Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon renders against it without modifications, patches or workarounds. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). Open UI gaps: the noVNC console (F1), standalone port create in real mode (F10), router gateways (F11), project create (F13) and domain switching (F18). See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
+Lightstack serves the APIs OpenStack Horizon (Flamingo 2025.2) consumes, and Horizon renders against it without modifications, patches or workarounds. **The dashboard is usable for resource management**: creating a network with a subnet, creating a volume and launching an instance all work from the UI, verified in stub and real mode (#532, #533). The noVNC console works in real mode (#534, SPEC-021) — it is absent from the stub compose stacks, which ship no console proxy. Standalone port create in real mode (F10) and router gateways (F11) were fixed by SPEC-024/#546 (Horizon re-pass outstanding); the remaining open UI gap is domain switching (F18). See the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
 
 ### Key Features
 
-- ✅ **342/330 endpoints** implemented (104% coverage)
+- ✅ **~335 functional operations** implemented vs the 330-endpoint baseline ([blueprint.md](blueprint.md))
 - ✅ **JWT-based authentication** with service catalog
 - ✅ **Multi-tenant isolation** enforced at database level
 - ✅ **Microversion support** (Nova 2.1-2.90, Cinder 3.0-3.71)
 - ✅ **Zero modifications required** in Horizon
-- ✅ **Production-ready** deployment
+- ✅ **Production-trackable** deployment (see the [review report](review/comprehensive-review-report-2026-10-12.md) for open release blockers)
 
 ---
 
@@ -107,14 +107,19 @@ X-Auth-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 ### Endpoint Coverage
 
-| Service | Endpoints | Coverage |
-|---------|-----------|----------|
-| **Keystone** (Identity) | 61 | 100% ✅ |
-| **Nova** (Compute) | 72 | 100% ✅ |
-| **Neutron** (Network) | 98 | 100% ✅ |
-| **Cinder** (Block Storage) | 73 | 100% ✅ |
-| **Glance** (Image) | 38 | 100% ✅ |
-| **Total** | **342** | **104%** ✅ |
+| Service | Raw routes (incl. aliases/discovery) |
+|---------|-----------|
+| **Keystone** (Identity) | 66 |
+| **Nova** (Compute) | 74 |
+| **Neutron** (Network) | 100 |
+| **Cinder** (Block Storage) | 116 |
+| **Glance** (Image) | 38 |
+| **Total** | **394** |
+
+> Coverage is ~335 functional operations against the 330-endpoint baseline —
+> see [blueprint.md](blueprint.md) (the counting authority; its table explains
+> the per-service deductions for discovery routes and aliases) and
+> [API_COVERAGE_REPORT.md](API_COVERAGE_REPORT.md) for the earlier, superseded count.
 
 ### Microversions
 
@@ -237,33 +242,27 @@ database:
   url: "postgres://lightstack:PASSWORD@localhost:5432/lightstack?sslmode=disable"
 
 keystone:
-  host: "0.0.0.0"
   port: 35357
   jwt_secret: "CHANGE-ME-IN-PRODUCTION"  # MUST change
   token_ttl: 24h
 
 nova:
-  host: "0.0.0.0"
   port: 8774
   libvirt_mode: real  # real for KVM, stub for development
   libvirt_uri: "qemu:///system"
   console_proxy_base_url: "http://10.2.199.101:6080"   # origin only, no path
 
 neutron:
-  host: "0.0.0.0"
   port: 9696
   networking_mode: iptables  # iptables for real, stub for development
-  external_bridge: "br-ext"
 
 cinder:
-  host: "0.0.0.0"
   port: 8776
-  storage_mode: local  # local, rbd, s3, or hybrid
+  storage_mode: local  # stub, local, rbd, or local,rbd
 
 glance:
-  host: "0.0.0.0"
   port: 9292
-  storage_mode: local
+  storage_mode: local  # stub, local, s3, or local,s3 (rbd is an unimplemented placeholder)
 ```
 
 ### Horizon Configuration
@@ -443,7 +442,7 @@ go test ./test/contract/... -v -count=1
 Lightstack serves the API surface OpenStack Horizon consumes: endpoints, authentication flows and response formats follow the OpenStack specifications, and Horizon needs no modifications to talk to it. Since #532 and #533 the dashboard is usable for resource management as well; the remaining UI gaps are listed in the [Horizon Compatibility Report](compatibility/HORIZON_COMPATIBILITY_REPORT.md) (findings F1–F18).
 
 **Key Strengths**:
-- Complete endpoint coverage (342/330 = 104%)
+- Complete endpoint coverage (~335 functional operations vs the 330-endpoint baseline, [blueprint.md](blueprint.md))
 - JWT authentication with service catalog
 - Multi-tenant project isolation
 - Microversion support

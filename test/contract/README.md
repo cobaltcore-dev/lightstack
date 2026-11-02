@@ -19,7 +19,7 @@ Contract tests ensure **100% API compatibility** with OpenStack:
 4. **Implement endpoint** in `internal/{service}/handlers.go`
 5. **Run test** → Confirm GREEN (passes)
 6. **Run full suite** → All tests still pass
-7. **Update GAP_ANALYSIS.md** → Mark endpoint as ✅
+7. **Record the result** → note the run in the PR; the dated report under `docs/testing/` is a historical snapshot, not a live status document
 
 ## Running Contract Tests
 
@@ -29,7 +29,8 @@ Lightstack must be running:
 
 ```bash
 # Start lightstack with Docker Compose
-docker compose up -d
+# (path is relative to the repo root)
+docker compose -f deployments/docker-compose.yml up -d
 
 # Or run directly
 make run
@@ -44,9 +45,9 @@ source ~/.lightstack-env
 # Or set manually
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=secret  # plain dev stack public default (local testing only)
 export OS_PROJECT_NAME=default
-export OS_USER_DOMAIN_NAME=default
+export OS_USER_DOMAIN_NAME=Default
 ```
 
 ### Run All Contract Tests
@@ -68,13 +69,16 @@ go test ./test/contract/keystone -run TestKeystoneCreateUser_Contract -v
 
 ### CI Integration
 
-Contract tests are part of the CI pipeline:
+Contract tests run in CI as a **soft gate**: the job requires only an **85% pass
+rate**, not 100%, so a handful of known-failing edge cases does not block a PR. The
+live, per-command conformance gate is the separate OpenStack CLI conformance suite,
+not this package.
 
 ```yaml
-# .github/workflows/contract-tests.yml
+# .github/workflows/ci.yml
 - name: Run Contract Tests
   run: |
-    docker compose up -d
+    docker compose -f deployments/docker-compose.yml up -d
     sleep 5  # Wait for lightstack to start
     go test ./test/contract/... -v
 ```
@@ -132,14 +136,17 @@ func TestKeystoneCreateUser_Contract(t *testing.T) {
 - **Cinder**: `github.com/gophercloud/gophercloud/openstack/blockstorage/v3/{volumes,snapshots}`
 - **Glance**: `github.com/gophercloud/gophercloud/openstack/imageservice/v2/{images,members}`
 
-## Test Coverage Goals
+## Test Coverage Status
 
-- **Phase 1** (Weeks 1-8): 60+ contract tests (33% → 52% endpoint coverage)
-- **Phase 2** (Weeks 9-16): 75+ contract tests (52% → 70% endpoint coverage)
-- **Phase 3** (Weeks 17-24): 80+ contract tests (70% → 85% endpoint coverage)
-- **Phase 4** (Weeks 25-32): 30+ contract tests (85% → 95%+ endpoint coverage)
+The contract suite is a **soft gate** in CI with an **85% pass-rate floor**; it is not
+the live conformance gate. Per-command status comes from the separate CLI conformance
+suite.
 
-**Total**: 245+ contract tests for 95%+ OpenStack API compliance.
+The last frozen contract run was **223 of 233 tests passing (95.7%) on 2026-03-30**.
+Treat that number as a historical snapshot, not the current pass rate:
+
+- **Snapshot**: [docs/testing/CONTRACT_TESTS_FINAL.md](../../docs/testing/CONTRACT_TESTS_FINAL.md) (2026-03-30, historical)
+- **Coverage**: ~335 functional operations vs the 330-endpoint OpenStack baseline (see [docs/blueprint.md](../../docs/blueprint.md))
 
 ## Validation Gates
 
@@ -181,5 +188,4 @@ Timeline per endpoint: ~2 hours (write test 30min, confirm RED 2min, review 10mi
 
 - OpenStack API Reference: https://docs.openstack.org/api-ref/
 - Gophercloud Documentation: https://github.com/gophercloud/gophercloud
-- SPEC-000 Compliance: `/Users/I761222/git/lightstack/specs/000-compliance/SPEC.md`
-- Implementation Plan: `/Users/I761222/git/lightstack/DEVELOPMENT_PLAN_SUMMARY.md`
+- SPEC-000 Compliance: [docs/specs/000-api-compliance/README.md](../../docs/specs/000-api-compliance/README.md)

@@ -604,13 +604,11 @@ database:
   url: "postgres://lightstack:lightstack-password@192.168.10.10:5432/lightstack?sslmode=disable"  # VIP from HAProxy
 
 keystone:
-  host: "0.0.0.0"
   port: 35357
   jwt_secret: "PRODUCTION-SECRET-MIN-32-CHARS-CHANGE-THIS-IMMEDIATELY"
   token_ttl: 24h
 
 nova:
-  host: "0.0.0.0"
   port: 8774
   libvirt_mode: real
   libvirt_uri: "qemu+tcp://compute1/system"  # Will be load-balanced
@@ -621,41 +619,33 @@ nova:
   console_enabled: false
 
 neutron:
-  host: "0.0.0.0"
   port: 9696
   networking_mode: iptables
   vxlan_enabled: true  # IMPORTANT: Enable for multi-node
-  vxlan_local_ip: "192.168.20.11"  # Tunnel network IP (change per node)
 
 cinder:
-  host: "0.0.0.0"
   port: 8776
   storage_mode: rbd  # IMPORTANT: Use Ceph RBD
-  rbd_pool: volumes
-  rbd_user: lightstack
-  rbd_ceph_conf: /etc/ceph/ceph.conf
+  ceph_pool: volumes
+  ceph_conf: /etc/ceph/ceph.conf
 
 glance:
-  host: "0.0.0.0"
   port: 9292
-  storage_mode: rbd  # IMPORTANT: Use Ceph RBD
-  rbd_pool: images
-  rbd_user: lightstack
-  rbd_ceph_conf: /etc/ceph/ceph.conf
+  storage_mode: s3  # IMPORTANT: Shared image storage via Ceph RGW (S3 API) — Glance RBD is unimplemented
+  s3_bucket: images
+  s3_endpoint: "http://192.168.10.31:7480"  # Ceph RGW endpoint
 
 metadata:
-  host: "0.0.0.0"
-  port: 8775
+  bind_address: "0.0.0.0:8775"
 
 compute:
-  registry_enabled: true  # IMPORTANT: Enable for multi-node
   node_id: "controller1"  # Change per node
-  node_name: "controller1"
-  tunnel_ip: "192.168.20.11"  # Change per node
+  tunnel_ip: "192.168.20.11"  # Change per node (VXLAN tunnel IP)
 EOF
 
-# Run migrations (only on controller1)
-./bin/lightstack migrate --config config/lightstack.yaml
+# Run migrations (only on controller1) — there is no `lightstack migrate` subcommand
+./bin/lightstack-migrate up --config config/lightstack.yaml
+# or simply: make migrate
 
 # Create systemd service
 sudo tee /etc/systemd/system/lightstack.service <<EOF
@@ -862,14 +852,12 @@ sudo certbot --haproxy -d lightstack-api.example.com
 
 ### Step 8: Monitoring and Logging
 
-**Deploy Prometheus + Grafana**:
+**Deploy Prometheus + Grafana** — the repository ships no monitoring compose file; create `deployments/monitoring/docker-compose.yml` with the following contents, then:
 
 ```bash
 # On separate monitoring node or controller1
 docker compose -f deployments/monitoring/docker-compose.yml up -d
 ```
-
-**Contents of `deployments/monitoring/docker-compose.yml`**:
 
 ```yaml
 version: '3.8'
@@ -917,6 +905,9 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
+  # NOTE: Lightstack itself exposes no /metrics endpoint as of v0.6.x — the
+  # lightstack-controllers job below is the planned shape and will scrape
+  # nothing until that ships. Node and C exporters work today.
   - job_name: 'lightstack-controllers'
     static_configs:
       - targets:
@@ -1153,7 +1144,7 @@ sudo ceph osd reweight osd.1 0.9
 
 ## Conclusion
 
-This scaling guide provides a production-ready Lightstack deployment with:
+This scaling guide provides a deployment pattern for a multi-node Lightstack with:
 - ✅ High Availability (2-3 controllers)
 - ✅ Horizontal Scaling (N compute nodes)
 - ✅ Shared Storage (Ceph RBD)
@@ -1172,5 +1163,5 @@ This scaling guide provides a production-ready Lightstack deployment with:
 ---
 
 **Document Version**: 1.0
-**Last Updated**: March 17, 2026
+**Last Updated**: October 12, 2026
 **Tested On**: Ubuntu 24.04 LTS (3-node cluster)

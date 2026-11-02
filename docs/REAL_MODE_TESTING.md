@@ -111,8 +111,8 @@ export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=secret
 export OS_PROJECT_NAME=default
-export OS_USER_DOMAIN_NAME=default
-export OS_PROJECT_DOMAIN_NAME=default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
 
 # Create server
 openstack server create \
@@ -213,32 +213,19 @@ virsh list --all  # Should be gone
 
 ## Known Limitations (Current Implementation)
 
-### Real Mode v1:
-1. ❌ **No network attachment yet** (Phase 2.1)
-   - VMs created without network interfaces
-   - TAP devices not created
-   - No bridge attachment
+Networking (including VXLAN multi-node), block storage (volume attach, volume-from-image,
+boot-from-volume, delete-on-termination), the EC2 metadata service with cloud-init user_data
+and config-drive (SPEC-009), and noVNC console access with revocable tokens (SPEC-021) are
+all implemented and validated in real mode. Remaining limits:
 
-2. ❌ **No volume attachment yet** (Phase 2.2)
-   - Root disk is ephemeral
-   - Cinder volumes not attached
-   - No RBD backing
+1. ⚠️ **No live migration orchestration**
+   - Migrate/evacuate are API-level operations; running VMs are not moved between hypervisors
 
-3. ❌ **No cloud-init data injection** (Phase 2.3)
-   - Metadata service not implemented
-   - User-data not passed
-   - SSH keys not injected
+2. ⚠️ **eBPF security groups are experimental**
+   - Until the eBPF loader is fully wired, eBPF mode starts without the XDP filter
+     (see [EBPF_STATUS.md](EBPF_STATUS.md))
 
-4. ❌ **No console access** (Phase 2.4)
-   - VNC not configured
-   - Serial console not exposed
-   - No graphics
-
-### These Will Be Addressed In:
-- **Phase 2.1**: Network integration (TAP devices, bridges)
-- **Phase 2.2**: Storage integration (Cinder volumes, RBD)
-- **Phase 2.3**: Cloud-init and metadata service
-- **Phase 2.4**: Console and VNC access
+See [WHATS_LEFT.md](WHATS_LEFT.md) for the full status overview.
 
 ## Testing on macOS (Alternative)
 
@@ -378,7 +365,5 @@ For **development and testing**, stub mode provides perfect OpenStack CLI compat
 
 ---
 
-**Tested On:** macOS (libvirt not available - expected)
-**Ready For:** Linux with KVM (production deployment)
-**Status:** ✅ Implementation complete, awaiting Linux testing
-**Date:** 2026-03-06
+**Tested On:** Linux with KVM/libvirt — validated 2026-06-22 (see the header banner)
+**Status:** ✅ Validated on Linux + libvirt/KVM

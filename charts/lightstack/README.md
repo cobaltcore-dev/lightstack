@@ -118,7 +118,7 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | `neutron.networkingMode` | `stub` | all | `stub` / `iptables` / `ebpf` |
 | `neutron.securityGroupMode` | `stub` | all | `stub` / `iptables` / `ebpf` |
 | `cinder.storageMode` | `stub` | all | `stub` / `local` / `rbd` / `local,rbd` |
-| `glance.storageMode` | `stub` | all | `stub` / `local` / `rbd` / `s3` / hybrids |
+| `glance.storageMode` | `stub` | all | `stub` / `local` / `s3` / `local,s3` (`rbd`/`local,rbd` accepted but RBD ops are unimplemented placeholders) |
 
 ### Real mode (privileged; single-node host-validated — SPEC-009)
 | Key | Default | Mode | Purpose |
@@ -159,7 +159,7 @@ volumes (attach, volume-from-image, boot-from-volume).
 |-----|---------|------|---------|
 | `cache.enabled` | `false` | all | opt-in Redis cache |
 | `cache.redisUrl` | `""` | all | **single shared** Redis in multi-node (FR-006a) |
-| `dataRetentionPolicy` | `retain` | all | only `retain` is active; the `delete` purge is deferred to issue #53 |
+| `dataRetentionPolicy` | `retain` | all | both implemented: `retain` keeps all state; `delete` runs the irreversible purge below |
 | `logging.level` / `logging.format` | `info` / `json` | all | structured logs (FR-013a) |
 | `resources` / `nodeSelector` / `tolerations` / `affinity` | `{}`/… | all | pod scheduling |
 

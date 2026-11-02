@@ -1,535 +1,263 @@
-# Quick Start Guide
+# Quickstart — Installing lightstack
 
-**📚 Complete Documentation**: See **[INDEX.md](INDEX.md)** for full documentation index with learning paths.
+Get a working OpenStack-compatible cloud (Keystone, Nova, Neutron, Cinder, Glance —
+plus a Placement stub and the EC2 metadata service) in one binary or one container.
 
-Get Lightstack running and create your first VM in **5 minutes**.
+**Time to first VM:** ~10 minutes with Docker.
+
+---
+
+## Choose your install path
+
+| Path | Use case | Time | Guide |
+|------|----------|------|-------|
+| **A. Docker Compose** (stub mode) | Evaluation, API/CLI/SDK testing, CI | ~5 min | this page |
+| **B. Docker Compose + Horizon** | Browser dashboard demo | ~10 min | this page |
+| **C. Binary from source** | Development, macOS | ~10 min | this page |
+| **D. Helm chart (Kubernetes)** | Cluster deployment | — | [KUBERNETES_DEPLOYMENT.md](KUBERNETES_DEPLOYMENT.md) |
+| **E. Single node with real KVM** | Production demo / POC with real VMs | 15–20 min | [SINGLE_NODE_DEPLOYMENT.md](SINGLE_NODE_DEPLOYMENT.md) |
+
+All paths default to **stub mode** (unless stated otherwise): resources are tracked in
+PostgreSQL, no real VMs/networks are created. Stub mode is safe on any OS, including
+macOS and non-Linux hosts. See [NETWORKING_MODES.md](NETWORKING_MODES.md) and
+[STORAGE_MODES.md](STORAGE_MODES.md) for real-mode configuration.
 
 ---
 
 ## Prerequisites
 
-- Docker and Docker Compose V2 installed
-- 4GB+ RAM available
-- Basic familiarity with terminal/CLI
-
----
-
-## Step 1: Start Lightstack (30 seconds)
+- **Docker** (with Compose v2) — for paths A and B
+- **Go 1.27+** — for path C only
+- **OpenStack CLI** (optional but recommended):
 
 ```bash
-cd /path/to/lightstack
-docker compose up -d
-```
-
-**Expected output:**
-```
-[+] Running 2/2
- ✔ Container lightstack-postgres  Started
- ✔ Container lightstack           Started
-```
-
-Wait for services to be healthy (~30 seconds):
-```bash
-docker compose ps
-```
-
-**Should show:**
-```
-NAME           STATUS
-lightstack            Up (healthy)
-lightstack-postgres   Up (healthy)
+# macOS / Linux
+brew install pipx && pipx install python-openstackclient
+# or with pip
+pip install python-openstackclient
 ```
 
 ---
 
-## Step 2: Install OpenStack CLI (1 minute)
+## Path A — Docker Compose (recommended for evaluation)
+
+### 1. Clone and start
 
 ```bash
-# macOS
-brew install pipx
-pipx install python-openstackclient
-
-# Ubuntu/Debian
-apt install pipx
-pipx install python-openstackclient
-
-# Verify
-openstack --version
+git clone https://github.com/cobaltcore-dev/lightstack.git
+cd lightstack
+docker compose -f deployments/docker-compose.yml up -d
 ```
 
----
+> **Note:** the compose file lives in `deployments/` — run the command from the repo
+> root with `-f deployments/docker-compose.yml` (or `cd deployments` first).
 
-## Step 3: Configure Environment (10 seconds)
+> **Security note:** this evaluation stack also publishes port **8775** — the
+> EC2-style metadata service, which serves **unauthenticated** responses and
+> trusts an instance-identifying header (a test-only setting). On a shared
+> host, do not expose 8775 beyond localhost.
+
+Three containers start:
+
+```
+$ docker compose -f deployments/docker-compose.yml ps
+NAME                 STATUS
+lightstack           Up (healthy)
+lightstack-postgres  Up (healthy)
+lightstack-redis     Up (healthy)
+```
+
+- `postgres:18.4-alpine` — state database
+- `redis:7-alpine` — optional cache
+- `lightstack` — all services in one container (built from `build/package/Dockerfile`)
+
+### 2. Configure your OpenStack client
 
 ```bash
-# Create environment file
-cat > ~/.lightstack-env << 'EOF'
-export OS_AUTH_URL=http://localhost:5001/v3
+export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
-export OS_PROJECT_DOMAIN_NAME=Default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=secret  # Path A dev stack public default (local testing only)
 export OS_USER_DOMAIN_NAME=Default
-export OS_IDENTITY_API_VERSION=3
-EOF
-
-# Load it
-source ~/.lightstack-env
+export OS_PROJECT_DOMAIN_NAME=Default
 ```
 
----
+> The domain names are **case-sensitive**: `Default`, not `default`.
 
-## Step 4: Verify Installation (30 seconds)
+### 3. Verify
 
 ```bash
-# Test authentication
 openstack token issue
+openstack service list
 ```
 
-**Expected output:**
-```
-+------------+------------------+
-| Field      | Value            |
-+------------+------------------+
-| expires    | 2026-03-08...    |
-| id         | eyJhbGc...       |
-| project_id | 00000000-...     |
-| user_id    | 00000000-...     |
-+------------+------------------+
-```
+You should get a token and a catalog listing the five core services plus Placement.
+
+### 4. Launch your first (stub) VM
 
 ```bash
-# List available flavors
-openstack flavor list
+# Create a network with a subnet
+openstack network create my-net
+openstack subnet create --network my-net --subnet-range 10.0.0.0/24 my-subnet
+
+# Download and upload a test image
+curl -LO https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img
+openstack image create --file cirros-0.6.2-x86_64-disk.img --disk-format qcow2 cirros
+
+# Boot
+openstack server create --flavor m1.small --image cirros --network my-net test-vm
+openstack server show test-vm -f json | jq -r '.status'
 ```
 
-**Expected output:**
-```
-+--------------------------------------+-----------+-------+------+-----------+-------+
-| ID                                   | Name      |   RAM | Disk | Ephemeral | VCPUs |
-+--------------------------------------+-----------+-------+------+-----------+-------+
-| 00000000-0000-0000-0000-000000000010 | m1.tiny   |   512 |    1 |         0 |     1 |
-| 00000000-0000-0000-0000-000000000011 | m1.small  |  2048 |   20 |         0 |     1 |
-| 00000000-0000-0000-0000-000000000012 | m1.medium |  4096 |   40 |         0 |     2 |
-| 00000000-0000-0000-0000-000000000013 | m1.large  |  8192 |   80 |         0 |     4 |
-| 00000000-0000-0000-0000-000000000014 | m1.xlarge | 16384 |  160 |         0 |     8 |
-+--------------------------------------+-----------+-------+------+-----------+-------+
+### 5. Stop / clean up
+
+```bash
+docker compose -f deployments/docker-compose.yml down          # keep data
+docker compose -f deployments/docker-compose.yml down -v       # wipe data too
 ```
 
 ---
 
-## Step 5: Create Network (30 seconds)
+## Path B — Docker Compose with the Horizon dashboard
+
+Adds the OpenStack Horizon web UI (Flamingo 2025.2). This compose file **requires
+both** a JWT secret and a bootstrap admin password before it will start:
 
 ```bash
-# Create a private network
-openstack network create my-network
-
-# Create a subnet
-openstack subnet create \
-  --network my-network \
-  --subnet-range 192.168.1.0/24 \
-  my-subnet
-
-# Verify
-openstack network list
+cd lightstack
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+docker compose -f deployments/docker-compose-horizon.yml up -d
 ```
+
+Open **http://localhost/dashboard** and log in with:
+
+- **Domain:** `Default`
+- **User:** `admin`
+- **Password:** `$LIGHTSTACK_ADMIN_PASSWORD` (the value you generated above)
+
+Creating networks, volumes and instances from the dashboard works (verified in stub
+and real mode). Known open gaps are tracked in
+[compatibility/HORIZON_COMPATIBILITY_REPORT.md](compatibility/HORIZON_COMPATIBILITY_REPORT.md).
+
+Details: [UNIFIED_DEPLOYMENT.md](UNIFIED_DEPLOYMENT.md) ·
+[HORIZON_DEPLOYMENT.md](HORIZON_DEPLOYMENT.md)
 
 ---
 
-## Step 6: Add a Boot Image (1 minute)
-
-Lightstack ships with no images, so upload the tiny CirrOS test image before booting a VM.
+## Path C — Binary from source
 
 ```bash
-# Download CirrOS (~20 MB cloud test image)
-curl -L -o /tmp/cirros-0.6.2-x86_64-disk.img \
-  https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img
+git clone https://github.com/cobaltcore-dev/lightstack.git
+cd lightstack
 
-# Upload it to Glance
-openstack image create \
-  --disk-format qcow2 \
-  --container-format bare \
-  --public \
-  --file /tmp/cirros-0.6.2-x86_64-disk.img \
-  cirros
+# Start PostgreSQL (18) and apply migrations
+make db-up
+make migrate   # shells out to the golang-migrate CLI — make install-tools once
+               # if it is missing; make run also auto-applies at startup
 
-# Verify the image is ACTIVE
-openstack image list
+# Build and run (config/lightstack.yaml is used by default)
+make run
 ```
 
-**Expected output:**
-```
-+--------------------------------------+--------+--------+
-| ID                                   | Name   | Status |
-+--------------------------------------+--------+--------+
-| 67224b52-ed49-4b2f-8e59-13911e420948 | cirros | active |
-+--------------------------------------+--------+--------+
-```
+The binary is `bin/lightstack`. It starts seven HTTP servers on localhost:
+
+| Port | Service |
+|------|---------|
+| 35357 | Keystone (Identity) |
+| 8774 | Nova (Compute) |
+| 9696 | Neutron (Network) |
+| 8776 | Cinder (Block Storage) |
+| 9292 | Glance (Image) |
+| 8778 | Placement (stub) |
+| 8775 | Metadata (EC2-style, no auth) |
+
+Then configure the OpenStack client as in Path A step 2 and verify with
+`openstack token issue`.
+
+For development with hot reload: `make dev`. Full build/test/lint commands:
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-## Step 7: Create Your First VM (1 minute)
+## Path D — Helm chart (Kubernetes)
+
+The chart lives in [`charts/lightstack`](../charts/lightstack/README.md). It requires a
+container image you supply (there is no default by design):
 
 ```bash
-# Create a VM
-openstack server create \
-  --flavor m1.small \
-  --image cirros \
-  --network my-network \
-  my-first-vm
+helm install lightstack ./charts/lightstack \
+  --set image.repository=<your-registry>/lightstack \
+  --set image.tag=<tag> \
+  --set database.url="postgres://user:pass@host:5432/lightstack?sslmode=disable" \
+  --set secrets.adminPassword=$(openssl rand -base64 16) \
+  --set secrets.jwtSecret=$(openssl rand -base64 32)
 ```
 
-**Expected output:**
-```
-+-----------------------------+--------------------------------------------------+
-| Field                       | Value                                            |
-+-----------------------------+--------------------------------------------------+
-| id                          | d5490d6d-a79c-4f37-9f9b-c926c3e66c6f            |
-| name                        | my-first-vm                                      |
-| status                      | ACTIVE                                           |
-| OS-EXT-STS:power_state      | Running                                          |
-| flavor                      | m1.small (1 vCPU, 2048 MB RAM, 20 GB Disk)      |
-| image                       | cirros                                           |
-| created                     | 2026-03-07T21:47:31Z                             |
-+-----------------------------+--------------------------------------------------+
-```
+> The chart fails fast at install time if `database.url`, `secrets.jwtSecret` or
+> `secrets.adminPassword` are missing — there are no insecure defaults. This stub-mode
+> stack has no console proxy; the noVNC proxy is deployed by the chart in real mode.
 
-```bash
-# List all VMs
-openstack server list
-```
-
-**Expected output:**
-```
-+--------------------------------------+-------------+--------+----------+--------+-----------+
-| ID                                   | Name        | Status | Networks | Image  | Flavor    |
-+--------------------------------------+-------------+--------+----------+--------+-----------+
-| d5490d6d-a79c-4f37-9f9b-c926c3e66c6f | my-first-vm | ACTIVE | N/A      | cirros | m1.small  |
-+--------------------------------------+-------------+--------+----------+--------+-----------+
-```
+The chart runs readiness/liveness probes, drain handling and (optional) host-state
+teardown jobs. See [KUBERNETES_DEPLOYMENT.md](KUBERNETES_DEPLOYMENT.md) and the
+[chart README](../charts/lightstack/README.md).
 
 ---
 
-## Step 8: Inspect Your VM (30 seconds)
+## Path E — Single node with real KVM (real VMs)
+
+For a production-style demo with actual virtual machines on one Linux host
+(Ubuntu 24.04/22.04 or Debian 12, 16GB+ RAM, VT-x/AMD-V):
 
 ```bash
-# Get detailed VM information
-openstack server show my-first-vm
-
-# Check resource quotas
-openstack quota show --compute
+wget https://raw.githubusercontent.com/cobaltcore-dev/lightstack/main/scripts/deploy-single-node.sh
+chmod +x deploy-single-node.sh
+sudo ./deploy-single-node.sh
 ```
 
-**Quota output:**
-```
-+-----------------------------+-------+
-| Resource                    | Limit |
-+-----------------------------+-------+
-| instances                   |    10 |
-| instances_used              |     1 |
-| cores                       |    20 |
-| cores_used                  |     1 |
-| ram                         | 51200 |
-| ram_used                    |  2048 |
-+-----------------------------+-------+
-```
+Installs lightstack with real libvirt/KVM, PostgreSQL, a network bridge, the Horizon
+dashboard and noVNC. Guide: [SINGLE_NODE_DEPLOYMENT.md](SINGLE_NODE_DEPLOYMENT.md) ·
+script reference: [scripts/README.md](../scripts/README.md).
 
 ---
 
-## Step 9: Create More Resources (2 minutes)
-
-### Create Multiple VMs
-
-```bash
-# Create a web server tier (2 small VMs)
-openstack server create \
-  --flavor m1.small \
-  --image cirros \
-  --network my-network \
-  web-server-1
-
-openstack server create \
-  --flavor m1.small \
-  --image cirros \
-  --network my-network \
-  web-server-2
-
-# Create a database server (larger flavor)
-openstack server create \
-  --flavor m1.medium \
-  --image cirros \
-  --network my-network \
-  db-server
-
-# List all servers
-openstack server list
-```
-
-### Create a Volume
-
-```bash
-# Create a 10GB volume
-openstack volume create --size 10 data-volume
-
-# List volumes
-openstack volume list
-
-# Attach volume to VM
-openstack server add volume my-first-vm data-volume
-```
-
----
-
-## Common Operations
-
-### VM Lifecycle
-
-```bash
-# Stop a VM
-openstack server stop my-first-vm
-
-# Start a VM
-openstack server start my-first-vm
-
-# Reboot a VM
-openstack server reboot my-first-vm
-
-# Delete a VM
-openstack server delete my-first-vm
-```
-
-### Resource Management
-
-```bash
-# List all resources
-openstack server list        # VMs
-openstack network list       # Networks
-openstack volume list        # Volumes
-openstack flavor list        # Available VM sizes
-openstack image list         # Available images
-
-# Show details
-openstack server show <vm-name>
-openstack network show <network-name>
-openstack volume show <volume-name>
-```
-
-### Check System Status
-
-```bash
-# View container logs
-docker compose logs lightstack --tail=50
-
-# Check health
-docker compose ps
-
-# View database
-docker exec lightstack-postgres psql -U lightstack -d lightstack -c "SELECT COUNT(*) FROM instances;"
-```
-
----
-
-## Stopping and Restarting
-
-### Stop Lightstack
-
-```bash
-docker compose down
-```
-
-**Note:** This preserves all data (VMs, networks, volumes) in the PostgreSQL database.
-
-### Restart Lightstack
-
-```bash
-docker compose up -d
-```
-
-All your resources will still be there:
-```bash
-source ~/.lightstack-env
-openstack server list
-```
-
-### Clean Start (Delete All Data)
-
-```bash
-# WARNING: This deletes everything!
-docker compose down -v
-docker compose up -d
-```
-
----
-
-## Troubleshooting
-
-### Authentication Fails
-
-**Symptom:** `invalid credentials (HTTP 401)`
-
-**Solution:**
-```bash
-# Verify environment is loaded
-echo $OS_AUTH_URL
-
-# Reload environment
-source ~/.lightstack-env
-
-# Check lightstack is running
-docker compose ps
-```
-
-### Port Already in Use
-
-**Symptom:** `Bind for 0.0.0.0:5001 failed: port is already allocated`
-
-**Solution:**
-```bash
-# Find what's using the port
-lsof -i:5001
-
-# Stop the conflicting service or change lightstack port in docker-compose.yml
-```
-
-### Services Not Healthy
-
-**Symptom:** `lightstack   Up 2 minutes (unhealthy)`
-
-**Solution:**
-```bash
-# Check logs
-docker compose logs lightstack --tail=50
-
-# Common fix: Wait 10 more seconds for database
-docker compose ps
-
-# Restart if needed
-docker compose restart lightstack
-```
-
-### OpenStack CLI Not Found
-
-**Symptom:** `command not found: openstack`
-
-**Solution:**
-```bash
-# Install with pipx
-pipx install python-openstackclient
-
-# Ensure pipx bin is in PATH
-pipx ensurepath
-
-# Restart terminal or run:
-source ~/.bashrc   # or ~/.zshrc
-```
-
----
-
-## Quick Reference
-
-### Essential Commands
-
-```bash
-# Environment
-source ~/.lightstack-env                    # Load credentials
-
-# Authentication
-openstack token issue                # Get auth token
-
-# VMs
-openstack server create --flavor m1.small --image cirros --network <net> <name>
-openstack server list                # List VMs
-openstack server show <name>         # VM details
-openstack server delete <name>       # Delete VM
-
-# Networks
-openstack network create <name>      # Create network
-openstack network list               # List networks
-
-# Volumes
-openstack volume create --size 10 <name>  # Create volume
-openstack volume list                     # List volumes
-openstack server add volume <vm> <vol>    # Attach volume
-
-# Quotas
-openstack quota show --compute       # Show resource limits
-```
-
-### Service Ports
-
-| Service | Port | URL |
-|---------|------|-----|
-| Keystone (Identity) | 5001 | http://localhost:5001/v3 |
-| Nova (Compute) | 8774 | http://localhost:8774/v2.1 |
-| Neutron (Network) | 9696 | http://localhost:9696/v2.0 |
-| Cinder (Volumes) | 8776 | http://localhost:8776/v3 |
-| Glance (Images) | 9292 | http://localhost:9292 |
-| Metadata | 8775 | http://localhost:8775 |
-
-### Default Credentials
-
-```
-Domain:   Default
-Username: admin
-Password: secret
-Project:  default
-```
-
-⚠️ **Change these in production!**
-
----
-
-## What's Next?
-
-### Learn More
-
-- **[Installation Guide](INSTALLATION.md)** - Detailed setup options (Docker, binary)
-- **[Configuration Guide](CONFIGURATION.md)** - Customize your deployment
-- **[Operations Guide](OPERATIONS.md)** - Production deployment and management
-- **[API Reference](API.md)** - Complete API documentation
-
-### Try Advanced Features
-
-```bash
-# Create a 3-tier application
-openstack network create app-network
-
-# Web tier (2 instances)
-openstack server create --flavor m1.small --image cirros --network app-network web-1
-openstack server create --flavor m1.small --image cirros --network app-network web-2
-
-# App tier (2 instances)
-openstack server create --flavor m1.medium --image cirros --network app-network app-1
-openstack server create --flavor m1.medium --image cirros --network app-network app-2
-
-# Database tier (with storage)
-openstack volume create --size 50 db-volume
-openstack server create --flavor m1.large --image cirros --network app-network --volume db-volume db-1
-
-# View deployment
-openstack server list
-openstack network list
-openstack volume list
-```
-
----
-
-## Success!
-
-You now have a fully functional OpenStack-compatible cloud running locally! 🎉
-
-**What you've accomplished:**
-- ✅ Deployed Lightstack in Docker containers
-- ✅ Configured OpenStack CLI
-- ✅ Created virtual machines
-- ✅ Created networks and volumes
-- ✅ Managed resource quotas
-
-**Your Lightstack cloud can:**
-- Create and manage virtual machines
-- Provision isolated networks
-- Attach persistent block storage
-- Track resource usage and quotas
-- Support multiple tenants (projects)
-
-**Ready for production?** See [OPERATIONS.md](OPERATIONS.md) for deployment best practices.
+## Default credentials
+
+All install paths seed the same admin identity (`admin`, project `default`, domain
+`Default`), but the password depends on the path:
+
+- **Path A (plain Docker dev stack):** `admin` / `secret` — the public default, opted
+  into by `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET` for local testing only.
+- **Path B (Horizon stack):** `admin` / `$LIGHTSTACK_ADMIN_PASSWORD` — required, no default.
+- **Helm:** `admin` / `secrets.adminPassword` — required, no default.
+- **Single-node script:** generated and saved in `/root/.lightstack-env`.
+
+> **⚠️ Change any seeded password before exposing a deployment.** Also replace the JWT
+> secret — anyone who knows it can forge admin tokens. In Docker, set
+> `LIGHTSTACK_JWT_SECRET` and `LIGHTSTACK_ADMIN_PASSWORD` in your environment or in
+> `deployments/.env` (Compose V2 resolves `.env` from the compose file's directory):
+> `cp .env.example deployments/.env`. In the Helm chart, set `secrets.jwtSecret` and
+> `secrets.adminPassword` (both required, no defaults). The plain dev stack may keep its
+> public defaults only because it sets the opt-out explicitly.
+
+## Troubleshooting quick hits
+
+| Symptom | Fix |
+|---|---|
+| `openstack token issue` → connection refused | Services not up yet; wait for `docker compose ps` to show `(healthy)`. Check you're using port **35357**, not 5000/5001. |
+| `The resource could not be found` (404) on auth | Wrong `OS_AUTH_URL` path — it must end in `/v3`. |
+| Authentication fails | Domain names are case-sensitive: `OS_USER_DOMAIN_NAME=Default`. |
+| Compose build fails | Run from the repo root with `-f deployments/docker-compose.yml`. |
+| Port already in use | Something else holds 35357/8774/9696/8776/9292/8775 (plus 5432/6379 for the stack's postgres/redis) — stop it or edit the port mapping. |
+
+More: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
+## Where to go next
+
+- **Command cheat sheet** — [QUICK_REFERENCE.md](QUICK_REFERENCE.md)
+- **All configuration options** — [CONFIGURATION.md](CONFIGURATION.md)
+- **Real mode (KVM, networking, storage)** — [REAL_LIBVIRT_MODE.md](REAL_LIBVIRT_MODE.md),
+  [NETWORKING_MODES.md](NETWORKING_MODES.md), [STORAGE_MODES.md](STORAGE_MODES.md)
+- **Upgrading an existing install** — [UPGRADING.md](UPGRADING.md)
+- **Day-to-day operations** — [OPERATIONS.md](OPERATIONS.md)
+- **Full documentation index** — [INDEX.md](INDEX.md)
