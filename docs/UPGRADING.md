@@ -1,5 +1,44 @@
 # Upgrading Lightstack
 
+## Upgrading 0.6.x to 0.7.0: supply an admin password
+
+0.7.0 refuses to start when `keystone.admin_password` is empty or one of the
+well-known values (`secret`, or the placeholders published in the guides). A config
+written by the 0.6.x deploy scripts has no `keystone.admin_password` key at all, and
+`scripts/upgrade-lightstack.sh` used to preserve the config verbatim — so upgrading
+such a node stops at startup with:
+
+```text
+Failed to load config: keystone.admin_password is empty or a well-known default — refusing to start. Set keystone.admin_password in the config file (or the LIGHTSTACK_ADMIN_PASSWORD environment variable) to a random value (it seeds the bootstrap admin account). For isolated development or test environments only, LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 opts out of this check
+```
+
+Either route fixes it:
+
+1. **In the config file** — add the key under `keystone:`:
+
+   ```yaml
+   keystone:
+     # ... existing keys ...
+     admin_password: "<output of: openssl rand -base64 24>"
+   ```
+
+2. **In the service environment** — set `LIGHTSTACK_ADMIN_PASSWORD` (for example in
+   `/etc/lightstack/lightstack.env`, mode `0600`, referenced by the unit's
+   `EnvironmentFile=`). A non-empty value overrides `keystone.admin_password` from
+   the file, which is useful when the config is mounted read-only.
+
+Then restart the service. Adding the password is safe even if the admin password was
+already rotated through the Identity API: `BootstrapAdmin` seeds the configured value
+only when the admin account is absent or still carries the public `secret` default.
+Once the password is non-default it is never overwritten, so the config value is a
+first-boot fallback, not a reconcile.
+
+`scripts/upgrade-lightstack.sh` now performs route 1 automatically: it detects a
+missing `keystone.admin_password`, saves the previous config beside it
+(`lightstack.yaml.bak.<timestamp>.<pid>`), inserts a generated URL-safe password
+from `openssl rand -base64 24`, and continues. It does not print the value; read it
+from the config if the account was still on the default.
+
 ## Upgrading an install created under the previous product name
 
 Lightstack was renamed (`cobaltcore-dev/cloud-storage#575`). The rename moved the

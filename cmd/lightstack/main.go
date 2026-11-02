@@ -42,7 +42,16 @@ import (
 var (
 	configPath     = flag.String("config", "config/lightstack.yaml", "Path to configuration file")
 	migrationsPath = flag.String("migrations", "migrations", "Path to migrations directory")
+	printVersion   = flag.Bool("version", false, "Print the build version and exit")
 )
+
+// Version identifies the running build in the field: it is stamped at build
+// time by the Makefile, the Dockerfile and the release workflow via
+// `-ldflags "-X main.Version=<version>"`, and defaults to "dev" otherwise.
+// R1 of docs/review/comprehensive-review-report-2026-10-12.md: without this
+// variable the ldflags injection silently did nothing, making every shipped
+// binary unidentifiable.
+var Version = "dev"
 
 func main() {
 	// Subcommand dispatch: `lightstack cleanup` runs the SPEC-010 teardown and exits,
@@ -58,6 +67,15 @@ func main() {
 		os.Exit(runHealthcheck(os.Args[2:]))
 	}
 
+	// `lightstack migrate` applies pending database migrations and exits. The
+	// deploy and upgrade scripts call exactly this (scripts/deploy-single-node.sh,
+	// scripts/upgrade-lightstack.sh) — before it existed, the "migrate"
+	// positional fell through to flag parsing and silently started the server
+	// instead of migrating.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		os.Exit(runMigrate(os.Args[2:]))
+	}
+
 	// `lightstack console-tokens list|purge` inspects and revokes noVNC console tokens
 	// (SPEC-021). The projection files under /var/lib/lightstack/console-tokens are
 	// readable by hand, but they carry no expiry or ownership — both live in the
@@ -67,6 +85,15 @@ func main() {
 	}
 
 	flag.Parse()
+
+	// `lightstack --version` reports the stamped build version and exits, so a
+	// node in the field can be identified without its deployment metadata.
+	if *printVersion {
+		fmt.Println(Version)
+		return
+	}
+
+	log.Printf("lightstack %s starting", Version)
 
 	// Load configuration
 	cfg, err := loadConfig(*configPath)
@@ -454,15 +481,90 @@ func main() {
 	log.Println("Lightstack stopped")
 }
 
-// runCleanup executes the `lightstack cleanup` subcommand: the SPEC-010 release teardown
-// (issue #53). Exit codes: 0 success, 1 a required class could not be purged
-// (fail-closed — the blocking pre-delete hook then aborts uninstall), 2 usage or
-// config error.
-// loadConfig loads the config and applies state_path as the node-local root. Every
-// entry point goes through here — the server, cleanup and console-tokens — so a
-// subcommand can never act on a different root than the server it serves.
+// runMigrate executes the `lightstack migrate` subcommand: apply pending
+// database migrations and exit, without starting the server — the entry point
+// the deploy and upgrade scripts use. `--dry-run` reports pending migrations
+// on stdout (printing "No migrations to run" when the schema is current, the
+// exact string scripts/upgrade-lightstack.sh greps for). Exit codes: 0
+// success or nothing to do, 1 migration or status failure, 2 usage or config
+// error.
+func runMigrate(args []string) int {
+	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	cfgPath := fs.String("config", "config/lightstack.yaml", "Path to configuration file")
+	migrationsDir := fs.String("migrations", "migrations", "Path to migrations directory")
+	dryRun := fs.Bool("dry-run", false, "Report pending migrations without applying them")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	// Go's flag parsing stops at the first positional, so
+	// `migrate up --config X --dry-run` would silently run a REAL migration
+	// against the DEFAULT config with the flags dropped (round-2 review F5).
+	// Reject positionals instead; the sibling tool's `lightstack-migrate up`
+	// style has no equivalent here.
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "migrate: unexpected argument %q (flags only — no subcommand; see `lightstack migrate --help`)\n", fs.Arg(0))
+		return 2
+	}
+
+	cfg, err := loadConfigForCLI(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "migrate: failed to load config: %v\n", err)
+		return 2
+	}
+	middleware.InitLogger(&cfg.Logging)
+
+	if *dryRun {
+		status, err := database.GetMigrationStatus(cfg.Database.URL, *migrationsDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
+			return 1
+		}
+		if status.Dirty {
+			fmt.Fprintln(os.Stderr, "migrate: database is dirty; manual intervention required")
+			return 1
+		}
+		latest, err := database.LatestSourceMigrationVersion(*migrationsDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
+			return 1
+		}
+		if status.Version >= latest {
+			fmt.Println("No migrations to run")
+			return 0
+		}
+		fmt.Printf("%d pending migration(s) (current %d, latest %d)\n", latest-status.Version, status.Version, latest)
+		return 0
+	}
+
+	if err := database.MigrateUp(cfg.Database.URL, *migrationsDir); err != nil {
+		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// loadConfig loads the config and applies state_path as the node-local root.
+// The server goes through here — the guarded path, since it signs and
+// validates tokens. Every subcommand goes through loadConfigForCLI, which
+// applies the same root so it can never act on a different root than the
+// server it serves.
 func loadConfig(path string) (*common.Config, error) {
 	cfg, err := common.LoadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	paths.SetBase(cfg.StatePath)
+	return cfg, nil
+}
+
+// loadConfigForCLI is loadConfig without the secret guard: the CLI
+// subcommands (cleanup, console-tokens, migrate) neither sign nor validate
+// tokens (see common.LoadConfigForCLI).
+func loadConfigForCLI(path string) (*common.Config, error) {
+	cfg, err := common.LoadConfigForCLI(path)
 	if err != nil {
 		return nil, err
 	}
@@ -538,7 +640,7 @@ func runConsoleTokens(args []string) int {
 		return console.RunCLI(context.Background(), nil, rest, os.Stdout, os.Stderr)
 	}
 
-	cfg, err := loadConfig(*cfgPath)
+	cfg, err := loadConfigForCLI(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "console-tokens: failed to load config: %v\n", err)
 		return 2
@@ -563,6 +665,10 @@ func runConsoleTokens(args []string) int {
 	return console.RunCLI(ctx, store, rest, os.Stdout, os.Stderr)
 }
 
+// runCleanup executes the `lightstack cleanup` subcommand: the SPEC-010 release teardown
+// (issue #53). Exit codes: 0 success, 1 a required class could not be purged
+// (fail-closed — the blocking pre-delete hook then aborts uninstall), 2 usage or
+// config error.
 func runCleanup(args []string) {
 	fs := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config/lightstack.yaml", "Path to configuration file")
@@ -574,7 +680,7 @@ func runCleanup(args []string) {
 		os.Exit(2)
 	}
 
-	cfg, err := loadConfig(*cfgPath)
+	cfg, err := loadConfigForCLI(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cleanup: failed to load config: %v\n", err)
 		os.Exit(2)

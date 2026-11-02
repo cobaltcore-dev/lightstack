@@ -1,4 +1,4 @@
-.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui
+.PHONY: build build-with-ebpf run test test-contract test-integration test-multi-tenant test-performance test-errors test-all lint chart-test test-endpoint-migration test-compose-identity clean dev fmt install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui install-ebpf-tools help
 
 # Build variables
 BINARY_NAME=lightstack
@@ -34,7 +34,12 @@ build-with-ebpf: build-ebpf build
 # Run the application
 run: build
 	@echo "Starting lightstack..."
-	./$(BUILD_DIR)/$(BINARY_NAME) --config config/lightstack.yaml --migrations migrations
+	# The dev escape hatch: the shipped config carries the well-known default
+	# JWT secret, which the binary refuses without this (review S2). `make run`
+	# is a local-development target only — production deployments set a real
+	# keystone.jwt_secret (or LIGHTSTACK_JWT_SECRET) and never set this.
+	LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1 \
+		./$(BUILD_DIR)/$(BINARY_NAME) --config config/lightstack.yaml --migrations migrations
 
 # Install dependencies
 install-deps:

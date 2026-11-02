@@ -16,7 +16,7 @@ TOTAL=0
 
 LIGHTSTACK_URL="http://localhost:35357"
 ADMIN_USER="admin"
-ADMIN_PASSWORD="secret"
+ADMIN_PASSWORD="${OS_PASSWORD:-${LIGHTSTACK_ADMIN_PASSWORD:-secret}}"
 PROJECT_NAME="default"
 
 print_test() {
@@ -471,7 +471,7 @@ main() {
         echo "Next steps:"
         echo "  1. Deploy Horizon with Docker: docker-compose up horizon"
         echo "  2. Access http://localhost/dashboard"
-        echo "  3. Login with admin/secret"
+        echo "  3. Login with admin/$ADMIN_PASSWORD"
         echo "  4. Test all UI interactions"
         exit 0
     else

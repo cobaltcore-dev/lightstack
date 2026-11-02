@@ -3,6 +3,8 @@ package database
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -26,6 +28,36 @@ func CreateMigrator(dbURL, migrationsPath string) (*migrate.Migrate, error) {
 		return nil, fmt.Errorf("failed to create migrator: %w", err)
 	}
 	return m, nil
+}
+
+// LatestSourceMigrationVersion returns the highest migration version present
+// in migrationsPath, read from the <version>_<name>.up.sql file names — the
+// `lightstack migrate --dry-run` backing. Files that do not match the naming
+// scheme are ignored, matching the file source driver's behavior.
+func LatestSourceMigrationVersion(migrationsPath string) (uint, error) {
+	entries, err := os.ReadDir(migrationsPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read migrations directory: %w", err)
+	}
+	var latest uint
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".up.sql") {
+			continue
+		}
+		underscore := strings.IndexByte(name, '_')
+		if underscore <= 0 {
+			continue
+		}
+		version, err := strconv.ParseUint(name[:underscore], 10, 32)
+		if err != nil {
+			continue
+		}
+		if uint(version) > latest {
+			latest = uint(version)
+		}
+	}
+	return latest, nil
 }
 
 // GetMigrationStatus returns current migration version and dirty state

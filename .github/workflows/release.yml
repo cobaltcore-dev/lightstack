@@ -1,0 +1,240 @@
+# Release pipeline — triggered by pushing a v* tag.
+#
+# Produces, from the tagged commit and nothing else:
+#   1. linux/amd64 + linux/arm64 binaries (CGO_ENABLED=0 — the Ceph RBD backend
+#      sits behind the `ceph` build tag, so cross-compilation needs no cgo)
+#   2. a multi-arch container image pushed to ghcr.io
+#   3. a GitHub Release with the binaries and their checksums
+#   4. the Helm chart published as an OCI artifact (appVersion = the bare
+#      release version, no leading "v" — same as the image tag)
+#
+# Version stamping contract (review R1): the tag is injected with
+# `-ldflags "-X main.Version=<tag>"` and round-tripped through
+# `lightstack --version` before anything is published.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# A re-pushed tag must not run two release pipelines in parallel — but a
+# cancellation can also kill an in-flight publish between steps (e.g. after
+# the image push, before the chart push), leaving exactly the partial state
+# this pipeline warns about. Queue instead of cancelling.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege: the test gate only needs to read the repo; only the
+# publishing job needs to write releases and packages.
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.27.3'
+  # Pinned to the same versions as CI (see the helm-check job in ci.yml). The
+  # release must not let a runner-preinstalled Helm/plugin decide what gets
+  # published.
+  HELM_VERSION: 'v3.22.1'
+  HELM_UNITTEST_VERSION: 'v1.2.1'
+
+jobs:
+  test:
+    name: Test gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Parity with the CI unit job (ci.yml): the same postgres service and
+    # LIGHTSTACK_TEST_DB_URL, so DB-backed unit tests run instead of
+    # silently t.Skip()-ing — this gate is the only test executed on a tag
+    # push (ci.yml triggers on branches, not tags), so it must not be weaker
+    # than what protected the branch the tag was cut from. -race likewise.
+    services:
+      postgres:
+        image: postgres:18.3-alpine
+        env:
+          POSTGRES_USER: lightstack
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: lightstack_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightstack -d lightstack_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run unit tests with race detector
+        run: |
+          mapfile -t packages < <(go list ./... | grep -v '/test/contract')
+          go test -race "${packages[@]}"
+        env:
+          LIGHTSTACK_TEST_DB_URL: postgres://lightstack:secret@localhost:5432/lightstack_test?sslmode=disable
+
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Compute image tag
+        # Container tags and the chart's appVersion carry the bare version
+        # (0.7.0) — matching Chart.yaml's appVersion and therefore the
+        # image.tag the in-repo chart defaults to. The binary itself reports
+        # the full tag (v0.7.0), consistent with `git describe` stamps.
+        run: echo "IMAGE_TAG=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Verify chart version is consistent with the release tag
+        # Fail before anything is built or published when the chart would ship
+        # the wrong image tag: appVersion is rendered into the chart, so it has
+        # to be this release's bare version (`v0.7.0` and `0.7.0` are the same
+        # version — IMAGE_TAG already has the leading `v` stripped).
+        #
+        # Chart.yaml `version` is the OCI tag, and OCI tags are immutable. The
+        # policy is therefore: bump `version` in Chart.yaml for every chart
+        # change. The publish step below makes a re-run safe by skipping (with
+        # a warning) when that version already exists, instead of failing after
+        # the image push and draft release have already happened.
+        run: |
+          APP_VERSION="$(awk '/^appVersion:/ {print $2}' charts/lightstack/Chart.yaml | tr -d '"' | sed 's/^v//')"
+          if [ "$APP_VERSION" != "${IMAGE_TAG#v}" ]; then
+            echo "::error::charts/lightstack/Chart.yaml appVersion '${APP_VERSION}' does not match release '${IMAGE_TAG}'"
+            exit 1
+          fi
+          echo "Chart appVersion ${APP_VERSION} matches the release tag."
+
+      - name: Install pinned Helm and helm-unittest
+        # Installed into an isolated plugin directory, so a preinstalled Helm 4
+        # or plugin on the runner cannot win. No cluster is needed: the next
+        # step only lints, renders and unit-tests the charts.
+        run: |
+          export HELM_PLUGINS="$RUNNER_TEMP/helm-plugins"
+          echo "HELM_PLUGINS=$HELM_PLUGINS" >> "$GITHUB_ENV"
+          curl -fsSL -o "$RUNNER_TEMP/get-helm-3" \
+            https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          bash "$RUNNER_TEMP/get-helm-3" --version "$HELM_VERSION"
+          helm plugin install https://github.com/helm-unittest/helm-unittest \
+            --version "$HELM_UNITTEST_VERSION"
+          helm version --short
+
+      - name: Validate Helm charts before publishing
+        # The same validation CI runs on every PR (the helm-check job): lint,
+        # render and unit-test both charts. Chart validation needs no image, so
+        # it runs before the build and the irreversible GHCR push/draft release
+        # — a chart that CI would reject stops the release while it is still
+        # possible to fix it, rather than leaving a partial release behind.
+        run: make chart-test
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for GOOS_GOARCH in linux/amd64 linux/arm64; do
+            GOOS="${GOOS_GOARCH%/*}"
+            GOARCH="${GOOS_GOARCH#*/}"
+            env CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath \
+              -ldflags "-s -w -X main.Version=${VERSION}" \
+              -o "dist/lightstack-${VERSION}-${GOOS}-${GOARCH}" ./cmd/lightstack
+            env CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags "-s -w" \
+              -o "dist/lightstack-migrate-${VERSION}-${GOOS}-${GOARCH}" ./cmd/lightstack-migrate
+          done
+
+      - name: Verify version stamping
+        # R1 regression guard: the Makefile used to inject -X main.Version
+        # into a variable that did not exist, which Go silently ignored.
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          BINARY="./dist/lightstack-${VERSION}-linux-amd64"
+          GOT="$("$BINARY" --version)"
+          if [ "$GOT" != "$VERSION" ]; then
+            echo "::error::--version reported '${GOT}', expected '${VERSION}'"
+            exit 1
+          fi
+
+      - name: Checksums
+        run: cd dist && sha256sum -- * > "checksums-${GITHUB_REF_NAME}.txt"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/package/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # IMAGE_TAG is the bare version (no leading "v") — the same value
+          # the in-repo chart's appVersion defaults image.tag to, so a
+          # repo-direct `helm install` pulls an image that actually exists.
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          # Scoped globs: the binary patterns carry the tag so a bare
+          # `dist/lightstack-*` (which would also absorb the chart tarball if
+          # the publish step ever moved above this one) is avoided. The
+          # migrate tool needs its own pattern — its files are prefixed
+          # lightstack-migrate-<tag>-, which the main pattern does not match.
+          # The checksums glob is not tag-scoped, but checksums- files are the
+          # only things it can match.
+          files: |
+            dist/lightstack-${{ github.ref_name }}-*-*
+            dist/lightstack-migrate-${{ github.ref_name }}-*-*
+            dist/checksums-*
+
+      - name: Publish Helm chart
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Chart.yaml `version` is the chart's OCI tag and is bumped per chart
+          # change in the repo; `appVersion` is the bare release version (no
+          # leading "v"), verified against IMAGE_TAG above. OCI tags are
+          # immutable: if this chart version already exists (a re-run of the
+          # same tag, or a chart change that forgot the bump), skip the push
+          # with a warning instead of failing after the image and draft release
+          # were created.
+          CHART_VERSION="$(awk '/^version:/ {print $2}' charts/lightstack/Chart.yaml)"
+          CHART_REF="oci://ghcr.io/${{ github.repository_owner }}/charts/lightstack:${CHART_VERSION}"
+          echo "${GHCR_TOKEN}" | helm registry login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
+          if helm show chart "$CHART_REF" >/dev/null 2>&1; then
+            echo "::warning::${CHART_REF} already exists; skipping chart push (OCI tags are immutable). Bump charts/lightstack/Chart.yaml version before the next release."
+            exit 0
+          fi
+          helm package charts/lightstack --app-version "${IMAGE_TAG}" -d dist/
+          helm push "dist/lightstack-${CHART_VERSION}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts"
+          # Note: the chart lands in the org-level `charts` OCI namespace
+          # (ghcr.io/<owner>/charts/lightstack), not the repo-scoped image
+          # namespace — the GITHUB_TOKEN's packages:write covers it as long
+          # as the org allows this repo to write org packages.

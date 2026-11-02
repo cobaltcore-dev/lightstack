@@ -37,6 +37,13 @@ services:
     environment:
       LIGHTSTACK_DB_URL: "postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable"
       LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
+      # Dev-only escape hatch: the binary refuses the well-known default
+      # secret above unless this is set (review S2). This stack is for local
+      # stub-mode development — NEVER set it where real guests or foreign
+      # clients reach the services: pass a real LIGHTSTACK_JWT_SECRET instead.
+      # Defaults ON for dev but is overridable: when you pass a real
+      # LIGHTSTACK_JWT_SECRET, set this to false/0 to re-arm the guard.
+      LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET: "${LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET:-true}"
     volumes:
       # For libvirt access (if running on same host)
       - /var/run/libvirt:/var/run/libvirt:ro

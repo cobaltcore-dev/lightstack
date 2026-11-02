@@ -95,9 +95,11 @@ print("DSN=%s" % dsn)
 }
 
 render() {
-    # docker-compose-horizon.yml declares LIGHTSTACK_JWT_SECRET as mandatory; supply a value
-    # so rendering does not fail for an unrelated reason.
+    # docker-compose-horizon.yml declares LIGHTSTACK_JWT_SECRET and
+    # LIGHTSTACK_ADMIN_PASSWORD as mandatory; supply values so rendering
+    # does not fail for an unrelated reason.
     LIGHTSTACK_JWT_SECRET="${LIGHTSTACK_JWT_SECRET:-render-only}" \
+        LIGHTSTACK_ADMIN_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:-render-only}" \
         timeout 120 docker compose -f "$1" config 2>/dev/null
 }
 

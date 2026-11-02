@@ -51,6 +51,10 @@ services:
     environment:
       - LIGHTSTACK_DB_URL=postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable
       - LIGHTSTACK_JWT_SECRET=${LIGHTSTACK_JWT_SECRET:?LIGHTSTACK_JWT_SECRET must be set}
+      # The bootstrap admin password: the image's canned config ships the
+      # public admin/secret default, which the secret guard refuses. Provide
+      # a real one (openssl rand -base64 24).
+      - LIGHTSTACK_ADMIN_PASSWORD=${LIGHTSTACK_ADMIN_PASSWORD:?LIGHTSTACK_ADMIN_PASSWORD must be set}
       - LIGHTSTACK_ENDPOINT_HOST=lightstack
     volumes:
       - lightstack-data:/var/lib/lightstack
@@ -83,9 +87,10 @@ services:
       - KOLLA_CONFIG_STRATEGY=COPY_ALWAYS
       # Django signs CSRF tokens with this; apache runs processes=3, so every worker must get
       # the SAME value, or a token minted by one worker is rejected by the others. A labelled lab
-      # default (as with POSTGRES_PASSWORD above, and the chart's horizon.secretKey) keeps every
-      # caller of this file working — scripts/start_validation.sh, README, QUICK_REFERENCE and
-      # UNIFIED_DEPLOYMENT all drive it without exporting anything. Override beyond a lab.
+      # default (as with POSTGRES_PASSWORD above, and the chart's horizon.secretKey) keeps the
+      # Horizon side of the stack renderable with nothing exported. The lightstack side is
+      # different: LIGHTSTACK_JWT_SECRET and LIGHTSTACK_ADMIN_PASSWORD are required (:?)
+      # — its guard refuses the public defaults. Override the SECRET_KEY beyond a lab.
       - SECRET_KEY=${HORIZON_SECRET_KEY:-lightstack-horizon-lab-only-change-me}
       # local_settings defaults DEBUG to False; the dev stack opts in so a 500 shows a traceback.
       - HORIZON_DEBUG=${HORIZON_DEBUG:-True}

@@ -1,5 +1,7 @@
 # Binaries
 bin/
+# Release workflow output (binaries, checksums, packaged chart)
+dist/
 *.exe
 *.dll
 *.so

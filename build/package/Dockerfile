@@ -1,9 +1,14 @@
 # Multi-stage build for Lightstack - Multi-architecture support
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS builder
 
 # Build arguments for cross-compilation
 ARG TARGETOS
 ARG TARGETARCH
+# Version stamp for the binary. Declared HERE, in the builder stage: an ARG
+# only visible in a later stage is invisible to this stage's RUN, and Docker
+# silently expands it to empty — the image would then carry an unidentifiable
+# binary (-X main.Version= with an empty value), the exact failure R1 fixed.
+ARG VERSION=dev
 
 # Install build dependencies
 RUN apk add --no-cache git make
@@ -20,7 +25,7 @@ COPY . .
 
 # Build the binary for target architecture
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-w -s" -o lightstack ./cmd/lightstack
+    go build -ldflags="-w -s -X main.Version=${VERSION}" -o lightstack ./cmd/lightstack
 
 # Build the migration tool for target architecture
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
@@ -95,5 +100,13 @@ LABEL org.opencontainers.image.title="Lightstack" \
     org.opencontainers.image.revision=$VCS_REF \
     org.opencontainers.image.version=$VERSION
 
-# Run migrations and start Lightstack
+# Run migrations and start Lightstack.
+#
+# Note on the secret guard (S2): the server refuses the canned config's
+# well-known defaults — both the JWT secret and the bootstrap admin password
+# ("admin"/"secret", which is public and authenticates as the admin directly).
+# A bare `docker run` of this image therefore needs LIGHTSTACK_JWT_SECRET and
+# LIGHTSTACK_ADMIN_PASSWORD set (or LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1
+# for an isolated dev container). lightstack-migrate above is exempt — it
+# never signs or validates a token.
 CMD ["/bin/sh", "-c", "/app/lightstack-migrate up && /app/lightstack --config /app/config/lightstack.yaml"]

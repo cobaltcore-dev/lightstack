@@ -1,8 +1,13 @@
 version: '3.8'
 
+# Manual helper: a container on the Horizon stack's network with the
+# OpenStack CLI preconfigured. Pair with deployments/docker-compose-horizon.yml
+# (docker compose -f deployments/docker-compose-horizon.yml up -d first) and
+# pass the same admin password that stack got:
+#   OS_PASSWORD="$(...)" docker compose -f deployments/docker-compose.test.yml run --rm test-runner
 services:
   test-runner:
-    image: golang:1.27.2
+    image: golang:1.27.3
     container_name: lightstack-test-runner
     working_dir: /workspace
     volumes:
@@ -12,7 +17,7 @@ services:
     environment:
       OS_AUTH_URL: "http://lightstack:35357/v3"
       OS_USERNAME: "admin"
-      OS_PASSWORD: "secret"
+      OS_PASSWORD: "${OS_PASSWORD:?OS_PASSWORD must match the horizon stack's LIGHTSTACK_ADMIN_PASSWORD}"
       OS_PROJECT_NAME: "default"
       OS_USER_DOMAIN_NAME: "Default"
       OS_PROJECT_DOMAIN_NAME: "Default"

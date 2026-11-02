@@ -65,6 +65,14 @@ services:
       LIGHTSTACK_REDIS_URL: "redis://redis:6379/0"
       LIGHTSTACK_CACHE_ENABLED: "true"
       LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
+      # The binary refuses the well-known default secret above unless this is
+      # set (review S2). This is the stub-mode development stack — no real
+      # guests, tokens never leave the host — so the escape hatch is
+      # acceptable here. NEVER set it where real guests or foreign clients
+      # reach the services: pass a real LIGHTSTACK_JWT_SECRET instead.
+      # Defaults ON for dev but is overridable: when you pass a real
+      # LIGHTSTACK_JWT_SECRET, set this to false/0 to re-arm the guard.
+      LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET: "${LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET:-true}"
       LIGHTSTACK_ENDPOINT_HOST: "localhost" # Use localhost for service catalog URLs (accessible from host)
       # Why this exists: tests run outside any guest, so they name the instance they ask
       # the metadata service about with the X-Instance-ID header (test/contract/ws4_*,

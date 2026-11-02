@@ -4,7 +4,13 @@
 
 set +e  # Don't exit on error during detachment
 
-# Start Lightstack, capture PID immediately, then disown
+# The canned config/lightstack.yaml ships the public well-known secrets the
+# guard refuses; this helper targets isolated test runs, so arm the documented
+# hatch (same policy as `make run` and the dev compose stacks).
+export LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET="${LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET:-1}"
+
+# Start Lightstack, capture PID immediately, then disown. ("serve" is not a
+# subcommand — it is an ignored positional; kept for compatibility.)
 ./bin/lightstack serve </dev/null >/tmp/lightstack.log 2>&1 &
 LIGHTSTACK_PID=$!
 disown

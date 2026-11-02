@@ -175,12 +175,15 @@ sudo ./deploy-single-node.sh
 git clone https://github.com/cobaltcore-dev/lightstack.git
 cd lightstack/deployments
 
-# 2. Start all services (lightstack + Horizon + PostgreSQL + noVNC)
+# 2. Start all services (lightstack + Horizon + PostgreSQL + noVNC).
+#    Both secrets are required — the stack renders no insecure defaults.
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 
 # 3. Access Horizon Dashboard
 open http://localhost/dashboard
-# Login: Domain=Default, User=admin, Password=secret
+# Login: Domain=Default, User=admin, Password=$LIGHTSTACK_ADMIN_PASSWORD
 ```
 
 **What's included**:
@@ -274,7 +277,7 @@ SESSION_TIMEOUT = 14400  # 4 hours (matches lightstack token TTL)
 CONSOLE_TYPE = 'VNC'  # a Horizon CONSOLES key; 'novnc' is not one, and fails without calling Nova
 ```
 
-**Login Credentials**: Domain=Default, User=admin, Password=secret
+**Login Credentials**: Domain=Default, User=admin, Password=the LIGHTSTACK_ADMIN_PASSWORD you set when starting the stack
 
 ### 📖 Installation & Deployment
 
@@ -387,15 +390,16 @@ make fmt
 make lint
 ```
 
-## Default Credentials
+## Credentials
 
-The seed data creates:
+The seed data creates the `admin` user and `default` project. The admin password is
+the value you set in `keystone.admin_password` (or `LIGHTSTACK_ADMIN_PASSWORD`) before
+starting the services; there is no usable public default. The deploy scripts generate
+one and save it in `/root/.lightstack-env`.
 
 - **User:** `admin`
-- **Password:** `secret`
+- **Password:** the password you configured
 - **Project:** `default`
-
-**⚠️ Change these in production!**
 
 ## 📊 Project Status
 

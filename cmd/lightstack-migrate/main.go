@@ -26,8 +26,11 @@ func main() {
 	// failure and never returns a non-nil error here in practice.
 	_ = flag.CommandLine.Parse(os.Args[2:])
 
-	// Load configuration
-	cfg, err := common.LoadConfig(*configPath)
+	// Load configuration. The migration tool never signs or validates a token
+	// (it reads database.url and logging only), so it loads without the
+	// server's JWT-secret guard — shipped deployment paths run it against the
+	// canned config before any secret is wired in (see LoadConfigForMigration).
+	cfg, err := common.LoadConfigForMigration(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)

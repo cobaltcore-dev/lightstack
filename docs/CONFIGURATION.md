@@ -71,7 +71,7 @@ keystone:
   jwt_secret: "change-me-in-production"
   token_ttl: 24h
   admin_user: admin
-  admin_password: secret
+  admin_password: "<generate with: openssl rand -base64 24>"
 
 # Compute node configuration
 compute:
@@ -131,15 +131,17 @@ logging:
 > **Correction (SPEC-008).** Earlier versions of this page documented a generic
 > `lightstack_<SECTION>_<KEY>` convention (e.g. `LIGHTSTACK_DATABASE_URL`, `LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD`,
 > `LIGHTSTACK_NOVA_LIBVIRT_MODE`). **The binary does not implement that layer** — those variables
-> are silently ignored. Everything else (admin password, service modes, VXLAN, cache,
+> are silently ignored. Everything else (service modes, VXLAN, cache,
 > logging, ports, …) takes effect **only from the YAML config file** passed via `--config`.
 
-The binary honors exactly **fourteen** environment variables:
+The binary honors the following environment variables:
 
 | Variable | Overrides / controls | Where it is read |
 |----------|----------------------|------------------|
 | `LIGHTSTACK_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_ADMIN_PASSWORD` | `keystone.admin_password` (the bootstrap admin's password; refused when left at a well-known default — see the S2 secret guard) | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET` | **Test/dev-only escape hatch** (`1`/`true`): opts out of the secret guard that refuses well-known JWT secrets and admin passwords. Never set on anything reachable by an untrusted network. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` in OpenStack's dash-free form in the `/v3/auth/tokens` responses; `/v3/s3tokens` already uses that historical form. The EC2 mint accepts dash-free or alternate UUID encodings as input and stores the canonical database id. Enabling the flag therefore unifies Swift with the existing S3 tenant namespace without re-keying S3 data. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host — a **fallback**, see below | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
 | `LIGHTSTACK_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
@@ -319,7 +321,7 @@ keystone:
   jwt_secret: "change-me-in-production"  # JWT signing secret
   token_ttl: 24h                     # Token lifetime
   admin_user: admin                  # Admin username (first-boot seed)
-  admin_password: secret             # Admin password (first-boot seed) — CHANGE for exposed deployments
+  admin_password: "<generate a strong password>"  # Admin password (first-boot seed) — required; empty/well-known values are refused
 ```
 
 **Admin bootstrap (first-boot seed):** `admin_password` is applied at startup only
@@ -327,9 +329,9 @@ when the admin account is absent or still carries the well-known default `secret
 once changed it is never overwritten on later starts (rotate via the Identity API,
 e.g. `openstack user password set`, not config). Setting `admin_user` to a name
 other than `admin` provisions that user with the admin role and **disables** the
-seeded `admin` account. When `admin_password` is unset entirely, Lightstack boots with the
-default credential and logs a `WARN` — the Helm chart is responsible for requiring a
-password at install time.
+seeded `admin` account. An empty or well-known `admin_password` (including `secret`)
+is refused at startup; set it in the file or through `LIGHTSTACK_ADMIN_PASSWORD`.
+The Helm chart also requires it at install time.
 
 `admin_user` is a **first-boot identity**, not a managed one:
 - If `admin_user` names an account that **already exists**, that account is granted
@@ -554,17 +556,19 @@ head -c 32 /dev/urandom | base64
 uuidgen | sha256sum | cut -d' ' -f1
 ```
 
-### Default Credentials
+### Admin Credentials
 
 ```yaml
 keystone:
   admin_user: admin
-  admin_password: secret
+  admin_password: "<generate a strong password>"
 ```
 
-**⚠️ CRITICAL: Change these in production!**
+**⚠️ There is no usable default: an empty or well-known admin password is refused
+at startup.**
 
-**Change via the config file** (there is no env override for these — see
+**Change via the config file** (the admin password also has an environment
+override, `LIGHTSTACK_ADMIN_PASSWORD` — see
 [Environment Variables](#environment-variables)):
 ```yaml
 keystone:

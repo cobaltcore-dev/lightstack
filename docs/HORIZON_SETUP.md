@@ -38,6 +38,9 @@ Deploy Lightstack and Horizon together using `docker-compose-horizon.yml`:
 
 ```bash
 cd lightstack/deployments
+# Both secrets are required — the stack renders no insecure defaults
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
@@ -176,15 +179,17 @@ CUSTOM_WELCOME_MESSAGE = "Welcome to lightstack - Lightweight OpenStack"
 
 ---
 
-## Default Credentials
+## Credentials
 
 ```text
 Domain: Default
 Username: admin
-Password: secret
+Password: the LIGHTSTACK_ADMIN_PASSWORD you exported before starting the stack
 ```
 
-**⚠️ Change these credentials in production!**
+There is no default password — the stack requires a real
+`LIGHTSTACK_ADMIN_PASSWORD` and the secret guard refuses the public
+`admin`/`secret` pair.
 
 ---
 
@@ -196,7 +201,7 @@ Open http://localhost/dashboard (or your configured URL)
 
 ### Step 2: Login
 
-Use default credentials or your configured credentials.
+Use the credentials you configured when starting the stack (see Credentials below).
 
 ### Step 3: Test Functionality
 

@@ -8,6 +8,8 @@
 .git/
 .gitignore
 bin/
+# Release workflow output — built fresh inside the image, never from context
+dist/
 *.exe
 *.test
 *.out

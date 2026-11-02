@@ -25,7 +25,7 @@ FAILED=0
 
 LIGHTSTACK_URL="http://localhost:35357"
 ADMIN_USER="admin"
-ADMIN_PASSWORD="secret"
+ADMIN_PASSWORD="${OS_PASSWORD:-${LIGHTSTACK_ADMIN_PASSWORD:-secret}}"
 PROJECT_NAME="default"
 
 print_test() {

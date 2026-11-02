@@ -8,13 +8,15 @@ import (
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
-// loadConfig is where every entry point — the server, cleanup and console-tokens —
-// turns state_path into the node-local root. A subcommand that skipped it would act on
-// the default root while the server used the configured one: cleanup would purge the
-// wrong directory, console-tokens would list and purge nothing.
+// loadConfig and loadConfigForCLI are where the entry points — the server via
+// the former, the CLI subcommands via the latter — turn state_path into the
+// node-local root. A subcommand that skipped it would act on the default root
+// while the server used the configured one: cleanup would purge the wrong
+// directory, console-tokens would list and purge nothing.
 func TestLoadConfigAppliesStatePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "lightstack.yaml")
-	if err := os.WriteFile(path, []byte("state_path: /data/lightstack\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(
+		"state_path: /data/lightstack\nkeystone:\n  jwt_secret: test-secret-not-a-default\n  admin_password: test-admin-password-not-a-default\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { paths.SetBase(paths.DefaultBase) })

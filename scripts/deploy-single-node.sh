@@ -172,6 +172,13 @@ get_configuration() {
     JWT_SECRET=$(openssl rand -base64 32)
     log_info "Generated JWT secret for Keystone"
 
+    # Bootstrap admin password — the seeded admin account (migrations/002)
+    # starts with the public default; the secret guard refuses to boot on it,
+    # so the deploy generates a real one. Passed through to the config file,
+    # the CLI environment file and the summary below.
+    ADMIN_PASSWORD=$(openssl rand -base64 24)
+    log_info "Generated bootstrap admin password"
+
     # Node-local state root: images, volumes, instances, cloud-init, dhcp and console
     # tokens all live under it (the binary's state_path, which refuses anything else).
     read -p "Enter node-local state root [/var/lib/lightstack]: " STORAGE_DIR
@@ -470,8 +477,8 @@ build_lightstack() {
     log_info "Building Lightstack binary..."
 
     # Use the same patched toolchain as CI and the release image.
-    local go_version="1.27.2"
-    local go_sha256="ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
+    local go_version="1.27.3"
+    local go_sha256="65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
     local installed_go=""
     if command -v go &> /dev/null; then
         installed_go=$(go env GOVERSION 2>/dev/null || true)
@@ -539,6 +546,8 @@ keystone:
   port: 35357
   jwt_secret: "$JWT_SECRET"
   token_ttl: 24h
+  admin_user: admin
+  admin_password: "$ADMIN_PASSWORD"
 
 nova:
   host: "0.0.0.0"
@@ -831,11 +840,13 @@ create_env_file() {
 export OS_AUTH_URL=http://$HOST_IP:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=$ADMIN_PASSWORD
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 EOF
+
+    chmod 600 /root/.lightstack-env
 
     # Add to .bashrc
     if ! grep -q ".lightstack-env" /root/.bashrc; then
@@ -911,7 +922,7 @@ show_completion() {
         echo "  Horizon Dashboard:    http://$HOST_IP"
         echo "    - Domain:   Default"
         echo "    - Username: admin"
-        echo "    - Password: secret"
+        echo "    - Password: $ADMIN_PASSWORD"
         echo ""
     fi
 

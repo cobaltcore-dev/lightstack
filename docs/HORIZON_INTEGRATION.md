@@ -332,7 +332,7 @@ network:
 **Problem**: "Invalid credentials" on login
 
 **Solutions**:
-1. Verify default credentials: `admin` / `secret` / `Default`
+1. Verify the credentials you configured: `admin` / `LIGHTSTACK_ADMIN_PASSWORD` / `Default`
 2. Check user exists: `sudo -u postgres psql lightstack -c "SELECT name FROM users;"`
 3. Verify JWT secret consistency in config
 
@@ -417,7 +417,7 @@ openstack network list
 ```
 
 **Horizon Dashboard**:
-1. Login: http://10.2.199.101/dashboard (admin/secret/Default)
+1. Login: http://10.2.199.101/dashboard (admin / the `LIGHTSTACK_ADMIN_PASSWORD` you set / Default)
 2. Create network: Project → Network → Networks → Create
 3. Launch instance: Project → Compute → Instances → Launch
 4. Access console: Click instance → Console tab

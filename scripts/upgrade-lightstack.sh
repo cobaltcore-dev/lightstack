@@ -223,6 +223,62 @@ EOF
     log_info "Kept last 5 backups, removed older ones"
 }
 
+# 0.7.0's secret guard refuses an empty or well-known keystone.admin_password.
+# Configs written by the 0.6.x deploy scripts contain no admin_password key at
+# all, and this script preserves the config verbatim, so generate one before the
+# service starts. BootstrapAdmin uses it only to seed an admin account that is
+# absent or still carries the public `secret` default; a password already
+# rotated through the Identity API is never overwritten.
+ensure_admin_password() {
+    if grep -Eq '^[[:space:]]*admin_password[[:space:]]*:' "$CONFIG_FILE"; then
+        log_info "keystone.admin_password is present in $CONFIG_FILE"
+        return
+    fi
+
+    if ! command -v openssl &> /dev/null; then
+        log_error "openssl not found — cannot generate a keystone.admin_password"
+        log_error "Add keystone.admin_password to $CONFIG_FILE or export"
+        log_error "LIGHTSTACK_ADMIN_PASSWORD in the service environment, then re-run."
+        exit 1
+    fi
+
+    local password backup tmp
+    # URL/newline-safe: command substitution drops the trailing newline, and
+    # translating +/ keeps the value usable in a URL/query string as well.
+    password="$(openssl rand -base64 24 | tr -d '\n' | tr '/+' '_-')"
+    backup="${CONFIG_FILE}.bak.$(date +%Y%m%d-%H%M%S).$$"
+    cp -a "$CONFIG_FILE" "$backup"
+    tmp="$(mktemp "${CONFIG_FILE}.tmp.XXXXXX")"
+
+    # Insert directly under the top-level keystone: key, preserving every other
+    # line and the file's own indentation.
+    if ! awk -v password="$password" '
+        BEGIN { inserted = 0 }
+        /^[[:space:]]*keystone:[[:space:]]*$/ && !inserted {
+            print
+            match($0, /^[[:space:]]*/)
+            indent = substr($0, 1, RLENGTH) "  "
+            print indent "admin_password: \"" password "\""
+            inserted = 1
+            next
+        }
+        { print }
+        END { exit inserted ? 0 : 1 }
+    ' "$CONFIG_FILE" > "$tmp"; then
+        rm -f "$tmp"
+        log_error "Could not find a keystone: block in $CONFIG_FILE"
+        log_error "Add keystone.admin_password manually (previous config: $backup), then re-run."
+        exit 1
+    fi
+
+    chmod --reference="$CONFIG_FILE" "$tmp"
+    mv -f "$tmp" "$CONFIG_FILE"
+
+    log_success "Generated keystone.admin_password and added it to $CONFIG_FILE"
+    log_info "Previous configuration saved as $backup"
+    log_info "The generated value is a first-boot seed only; an already-rotated admin password is left untouched."
+}
+
 # Stop Lightstack service
 stop_service() {
     if [ "$SERVICE_RUNNING" = true ]; then
@@ -560,6 +616,10 @@ main() {
 
     # Create backup before any changes
     create_backup
+
+    # 0.7.0 refuses to start without a real keystone.admin_password. Configs
+    # from 0.6.x have no such key; inject one before the service is touched.
+    ensure_admin_password
 
     # Stop service
     stop_service

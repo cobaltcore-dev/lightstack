@@ -64,6 +64,11 @@ services:
     environment:
       LIGHTSTACK_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
       LIGHTSTACK_JWT_SECRET: "rgwtest-secret"
+      # Isolated CI fixture: the image's canned config ships the public
+      # admin/secret bootstrap credential, which the secret guard refuses —
+      # same opt-in the plain dev stacks use. The test scripts authenticate
+      # with that public credential deliberately.
+      LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET: "true"
       # Glance -> Ceph RGW (S3). Credentials are env-only; match the demo user above.
       LIGHTSTACK_GLANCE_STORAGE_MODE: "s3"
       LIGHTSTACK_GLANCE_S3_ENDPOINT: "http://rgw:8080"

@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 🚀 Release Engineering
+- **Version stamping** (review R1, `docs/review/comprehensive-review-report-2026-10-12.md`):
+  `main.Version` now exists and is injected via `-ldflags "-X main.Version=..."` by
+  the Makefile, the Dockerfile (`VERSION` build-arg) and the release workflow;
+  `lightstack --version` prints it and it is logged at startup. Previously the
+  ldflags injection targeted a nonexistent variable and was silently ignored —
+  every shipped binary was unidentifiable.
+- **Release pipeline** (`.github/workflows/release.yml`, review R3): pushing a `v*`
+  tag runs the test gate, builds linux/amd64 + linux/arm64 binaries (CGO-free) with
+  checksums and a `--version` round-trip check, pushes the multi-arch image to
+  `ghcr.io` (tagged with the bare version — `0.7.0` — matching the chart's
+  `appVersion` and the `image.tag` default), creates a draft GitHub Release and
+  publishes the Helm chart as an OCI artifact with `appVersion` pinned to the
+  release version. The charts are linted, rendered and unit-tested (`make
+  chart-test`, the same gate CI runs on PRs) before `helm push` — a published
+  chart cannot be unpublished.
+- **`lightstack migrate` subcommand** (review round follow-up): applies pending
+  database migrations and exits, with `--dry-run` reporting pending ones
+  ("No migrations to run" when current). `scripts/deploy-single-node.sh` and
+  `scripts/upgrade-lightstack.sh` have always called it — previously the
+  positional fell through to flag parsing and started the server instead of
+  migrating.
+- **Chart version** 0.3.0 → 0.4.0 (appVersion 0.7.0, matching the target release).
+
+### ⚠️ Breaking Changes
+- **0.6.x → 0.7.0 needs an admin password.** `keystone.admin_password` may no
+  longer be empty or a well-known default (`secret` included), and configs
+  written by the 0.6.x deploy scripts contain no such key. Add it (or export
+  `LIGHTSTACK_ADMIN_PASSWORD` in the service environment) before upgrading;
+  `scripts/upgrade-lightstack.sh` now injects a generated one, after backing up
+  the config, when the key is missing. See [docs/UPGRADING.md](docs/UPGRADING.md).
+
+### 🔒 Security
+- **Refuse well-known/empty JWT secrets at startup** (review S2): the defaults
+  shipped in `config/lightstack.yaml` and `.env.example` are public, and with
+  stateless tokens knowing one is enough to mint an admin token. `LoadConfig` now
+  refuses them — case-insensitively and ignoring surrounding whitespace, so the
+  uppercase spelling in `deployments/README-KVM.md` is caught too (that example
+  now generates a per-deployment secret instead). It also refuses a well-known
+  or empty `keystone.admin_password` — unconditionally: migrations/002 seeds an
+  enabled `admin` account with bcrypt(`secret`) in every deployment, so a config
+  that omits the field boots with the public credential live. A
+  `LIGHTSTACK_ADMIN_PASSWORD` environment override (mirroring
+  `LIGHTSTACK_JWT_SECRET`) lets `docker run` inject the real password without
+  mounting a config.
+  `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1` is the documented
+  escape hatch for isolated dev/test stacks (the plain docker-compose dev stacks
+  and `make run` opt in explicitly; the Horizon stack now requires a real
+  `LIGHTSTACK_ADMIN_PASSWORD` alongside its JWT secret, and the Helm chart
+  already fails fast on both). `lightstack-migrate` and the operational CLI
+  subcommands (`cleanup`, `console-tokens`, `migrate`) are exempt — they never
+  sign or validate a token, and the image entrypoint and the documented
+  Kubernetes init container run migrations against the canned config before any
+  secret is wired in.
+  Consequently a bare `docker run` of the image now requires `LIGHTSTACK_JWT_SECRET`
+  (fail-closed by design; see the comment above the Dockerfile `CMD`).
+- **Horizon default role** corrected: `OPENSTACK_KEYSTONE_DEFAULT_ROLE` is `member`
+  (matches the seeded admin/member/reader roles) — was `_member_`, which matches
+  nothing in the seed.
+
+---
+
 ## [0.6.1] - 2026-04-22
 
 ### 📋 v0.7.0 Planning & Specifications

@@ -574,11 +574,12 @@ sudo systemctl status lightstack.service
 # Check Horizon
 docker ps | grep horizon
 
-# Test OpenStack CLI
+# Test OpenStack CLI (the deploy script generates the admin password and
+# writes the full environment to /root/.lightstack-env)
 export OS_AUTH_URL=http://192.168.1.100:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="$(sed -n 's/^export OS_PASSWORD=//p' /root/.lightstack-env)"
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 
@@ -735,7 +736,7 @@ openstack keypair list
    - URL: `http://192.168.1.100` (replace with your host IP)
    - Domain: `Default`
    - Username: `admin`
-   - Password: `secret`
+   - Password: the generated admin password (printed by the deploy script, saved in `/root/.lightstack-env`)
 
 2. **Launch Instance**:
    - Navigate: Project → Compute → Instances
@@ -1159,8 +1160,8 @@ docker compose up -d
 - Horizon config: `/opt/horizon/local_settings.py`
 - Systemd service: `/etc/systemd/system/lightstack.service`
 
-**Default Credentials**:
-- OpenStack admin: `admin` / `secret`
+**Credentials**:
+- OpenStack admin: `admin` / (the generated password in `/root/.lightstack-env`)
 - PostgreSQL: `lightstack` / (password from config)
 - CirrOS VM: `cirros` / `gocubsgo`
 

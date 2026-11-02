@@ -17,6 +17,10 @@ fail() { echo -e "   ${RED}✗ FAIL${NC}${1:+ - $1}"; FAILED=$((FAILED + 1)); }
 # Host running Lightstack. Defaults to localhost so this works against the docker-compose stack;
 # override for a remote host, e.g. LIGHTSTACK_HOST=10.2.199.101 (SPEC-018 T032).
 LIGHTSTACK_HOST="${LIGHTSTACK_HOST:-localhost}"
+# Admin credential: the hatch-armed dev stacks keep the seeded admin/secret;
+# the horizon stack requires a real LIGHTSTACK_ADMIN_PASSWORD (BootstrapAdmin
+# replaces the seeded hash with it), so prefer OS_PASSWORD / that variable.
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-${OS_PASSWORD:-${LIGHTSTACK_ADMIN_PASSWORD:-secret}}}"
 
 echo "Testing critical Horizon endpoints..."
 echo ""
@@ -29,7 +33,7 @@ TOKEN=$(curl -s -X POST http://${LIGHTSTACK_HOST}:35357/v3/auth/tokens \
       "identity": {
         "methods": ["password"],
         "password": {
-          "user": {"name": "admin", "domain": {"name": "Default"}, "password": "secret"}
+          "user": {"name": "admin", "domain": {"name": "Default"}, "password": "'"${ADMIN_PASSWORD:-${LIGHTSTACK_ADMIN_PASSWORD:-secret}}"'"}
         }
       },
       "scope": {"project": {"name": "default", "domain": {"name": "Default"}}}
@@ -43,7 +47,7 @@ AUTH_TOKEN=$(curl -s -i -X POST http://${LIGHTSTACK_HOST}:35357/v3/auth/tokens \
       "identity": {
         "methods": ["password"],
         "password": {
-          "user": {"name": "admin", "domain": {"name": "Default"}, "password": "secret"}
+          "user": {"name": "admin", "domain": {"name": "Default"}, "password": "'"${ADMIN_PASSWORD:-${LIGHTSTACK_ADMIN_PASSWORD:-secret}}"'"}
         }
       },
       "scope": {"project": {"name": "default", "domain": {"name": "Default"}}}
@@ -62,7 +66,7 @@ PROJECT_ID=$(curl -s -X POST http://${LIGHTSTACK_HOST}:35357/v3/auth/tokens \
       "identity": {
         "methods": ["password"],
         "password": {
-          "user": {"name": "admin", "domain": {"name": "Default"}, "password": "secret"}
+          "user": {"name": "admin", "domain": {"name": "Default"}, "password": "'"${ADMIN_PASSWORD:-${LIGHTSTACK_ADMIN_PASSWORD:-secret}}"'"}
         }
       },
       "scope": {"project": {"name": "default", "domain": {"name": "Default"}}}
