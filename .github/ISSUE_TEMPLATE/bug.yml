@@ -1,0 +1,108 @@
+name: Bug report
+description: Report a deviation from upstream OpenStack API behavior or a lightstack defect
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for taking the time to file a bug. Per [SPEC-000](docs/specs/000-api-compliance),
+        OpenStack API compliance is priority zero: every bug report should be anchored in what
+        upstream OpenStack actually does. If you can cite the upstream API reference (or the
+        source service) for the expected behavior, triage gets much faster.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Bug summary
+      description: One or two sentences. What is broken, and which OpenStack API does it deviate from?
+      placeholder: >
+        POST /v2.1/{tenant_id}/servers returns 500 instead of 202 when block_device_mapping_v2
+        references a non-existent volume; upstream Nova returns a 400 with a structured fault.
+    validations:
+      required: true
+  - type: dropdown
+    id: service
+    attributes:
+      label: Affected service
+      options:
+        - Keystone (35357)
+        - Nova (8774)
+        - Neutron (9696)
+        - Cinder (8776)
+        - Glance (9292)
+        - Placement
+        - Metadata
+        - Cross-service
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: endpoint
+    attributes:
+      label: API endpoint and HTTP method
+      description: The exact route you called, including the version prefix.
+      placeholder: "POST /v2.1/{tenant_id}/servers"
+    validations:
+      required: true
+  - type: input
+    id: microversion
+    attributes:
+      label: Microversion (if applicable)
+      description: Nova 2.1–2.90, Cinder 3.0–3.71. Leave empty if the API is not versioned.
+      placeholder: "X-OpenStack-Nova-API-Version: 2.90"
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Reproduction steps
+      description: What you did, in order. Include the client you used (openstack CLI, Terraform provider, Horizon, gophercloud, raw curl).
+      placeholder: |
+        1. Authenticate as a non-admin tenant user
+        2. Create a server with ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: curl-repro
+    attributes:
+      label: curl reproduction (optional)
+      description: A self-contained request we can replay against a running lightstack. Redact tokens and secrets.
+      render: shell
+      placeholder: |
+        curl -si -X POST http://localhost:8774/v2.1/$TENANT/servers \
+          -H "X-Auth-Token: $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{...}'
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior (upstream OpenStack reference)
+      description: >
+        What upstream OpenStack does here — status code, response body, error semantics. Cite the
+        docs.openstack.org API reference, the gophercloud contract, or the upstream service source.
+        Compliance with upstream is priority zero (SPEC-000), so this is the anchor for the fix.
+      placeholder: >
+        https://docs.openstack.org/api-ref/compute/... — upstream returns 202 with the server
+        representation and sets the OS-EXT-STS:task_state to 'scheduling'; a missing image ref yields
+        400 itemNotFound fault.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Status code, response body, and/or panic log you got from lightstack.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: Relevant lightstack log output or panic stack trace. Wrap long output in a code block; redact tokens.
+      render: text
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: >
+        lightstack version/release you deployed (see `CHANGELOG.md`), deployment mode (stub / real), storage mode,
+        networking mode — see docs/STORAGE_MODES.md and docs/NETWORKING_MODES.md.
+      placeholder: "lightstack v0.x.y, real mode, storage=ceph-rgw, networking=vxlan"
