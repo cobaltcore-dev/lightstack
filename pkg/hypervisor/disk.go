@@ -30,6 +30,35 @@ func EnsureInstanceDir(instanceID string) error {
 	return os.MkdirAll(InstanceDir(instanceID), 0o755)
 }
 
+// PrepareInstanceDir creates the per-instance directory and, in real mode, makes it owned
+// by the user libvirt runs QEMU as (cached from capabilities at startup). QEMU opens each
+// guest's serial console.log — the <log file> chardev — itself, so the directory must be
+// writable by that user. Older libvirt opened that log as root in the daemon, which masked
+// the gap; the modular virtqemud does not, so a root-owned directory makes the domain fail
+// to start ("console.log: Permission denied"). Lightstack keeps write access to stage the
+// overlay because root is exempt from the directory's mode. Stub mode — or real mode before
+// capabilities have been read — just creates the directory. Idempotent.
+func (m *VMManager) PrepareInstanceDir(instanceID string) error {
+	dir := InstanceDir(instanceID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if m.mode != "real" {
+		return nil
+	}
+	owner := m.qemuOwner.Load()
+	if owner == nil {
+		// Capabilities were never read (startup prep failed); guest starts are already
+		// refused by consoleDirReady, so creating the directory without the chown is
+		// harmless — it never gets used.
+		return nil
+	}
+	if err := os.Chown(dir, owner.uid, owner.gid); err != nil {
+		return fmt.Errorf("making instance dir %s QEMU's (%d:%d): %w", dir, owner.uid, owner.gid, err)
+	}
+	return nil
+}
+
 // RemoveInstanceDir removes an instance's per-instance disk directory and its
 // contents (the overlay). Best-effort: a missing directory is not an error, so
 // it is safe to call in stub mode where no overlay was ever staged.

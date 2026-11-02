@@ -1231,7 +1231,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// boot-from-volume skips StageOverlay, so create the per-instance
 				// directory the serial console.log lives in — otherwise libvirt
 				// fails to start the domain (SPEC-009 WS-5).
-				if err := hypervisor.EnsureInstanceDir(instanceID); err != nil {
+				if err := svc.vmManager.PrepareInstanceDir(instanceID); err != nil {
 					log.Error().Err(err).Str("instance_id", instanceID).Msg("boot-from-volume: failed to create instance dir")
 					if _, dbErr := svc.pool.Exec(svc.ctx,
 						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
@@ -1290,6 +1290,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 							}
 							return
 						}
+					}
+					if dirErr := svc.vmManager.PrepareInstanceDir(instanceID); dirErr != nil {
+						log.Error().Err(dirErr).Str("instance_id", instanceID).Msg("Failed to prepare per-instance directory")
+						svc.markInstanceError(instanceID, "the per-instance directory could not be prepared")
+						return
 					}
 					overlay, stageErr := hypervisor.StageOverlay(instanceID, storage.LocalImagePath(imageUUID))
 					if stageErr != nil {

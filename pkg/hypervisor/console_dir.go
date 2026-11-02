@@ -27,6 +27,13 @@ type consoleDirState struct {
 	err error
 }
 
+// dacOwner is the uid:gid libvirt runs QEMU as (its DAC base label). Cached on the
+// VMManager so per-instance directories can be chowned to it without re-reading libvirt
+// capabilities on every guest create.
+type dacOwner struct {
+	uid, gid int
+}
+
 // PrepareConsoleSocketDir makes dir the guests' console socket directory: owned by the
 // uid:gid libvirt runs QEMU as, which it reports in its capabilities, with mode 0750.
 // QEMU can then create and remove its socket there, the kvm group can read it, and
@@ -51,6 +58,9 @@ func (m *VMManager) prepareConsoleSocketDir(ctx context.Context, dir string) err
 	if err != nil {
 		return err
 	}
+	// Cache QEMU's owner so each guest's per-instance directory can be chowned to it on
+	// create (PrepareInstanceDir), without re-reading capabilities every time.
+	m.qemuOwner.Store(&dacOwner{uid: uid, gid: gid})
 	return ensureOwnedDir(dir, uid, gid)
 }
 

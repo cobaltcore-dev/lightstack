@@ -59,6 +59,12 @@ type VMManager struct {
 	// consoleDir is whether the console socket directory is QEMU's yet (SPEC-021
 	// FR-017a); nil until PrepareConsoleSocketDir has run. Every real start needs it.
 	consoleDir atomic.Pointer[consoleDirState]
+
+	// qemuOwner is the uid:gid libvirt runs QEMU as (its DAC base label), cached when
+	// PrepareConsoleSocketDir reads capabilities at startup. Per-instance directories are
+	// chowned to it so QEMU can create each guest's serial console.log (the <log file>
+	// chardev it opens itself); nil until capabilities have been read.
+	qemuOwner atomic.Pointer[dacOwner]
 }
 
 // stubVM represents a simulated VM in stub mode
