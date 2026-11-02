@@ -238,7 +238,7 @@ http://localhost/dashboard
 **Login Credentials**:
 - Domain: `Default`
 - User Name: `admin`
-- Password: `secret`
+- Password: the password configured for your Lightstack admin (`LIGHTSTACK_ADMIN_PASSWORD` on the Horizon compose stack)
 
 ### Option 2: Development/Testing Setup
 
@@ -338,7 +338,7 @@ docker exec lightstack-horizon curl -s http://lightstack:35357/v3 | jq
 ### 2. Login Test
 
 1. Navigate to `http://localhost/dashboard`
-2. Enter credentials (Domain: Default, User: admin, Password: secret)
+2. Enter credentials (Domain: Default, User: admin, Password: the admin password configured for your Lightstack)
 3. Verify successful login to Overview page
 
 ### 3. Feature Testing
@@ -457,7 +457,7 @@ docker exec lightstack-horizon ping -c 3 lightstack
    ```bash
    export OS_AUTH_URL=http://localhost:35357/v3
    export OS_USERNAME=admin
-   export OS_PASSWORD=secret
+   export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set the Lightstack admin password}"
    export OS_PROJECT_NAME=default
    export OS_USER_DOMAIN_NAME=Default
    export OS_PROJECT_DOMAIN_NAME=Default

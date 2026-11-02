@@ -181,14 +181,15 @@ sudo ./deploy-single-node.sh
 git clone https://github.com/cobaltcore-dev/lightstack.git
 cd lightstack/deployments
 
-# 2. Start all services (lightstack + Horizon + PostgreSQL)
-#    (this compose file refuses to start without a JWT secret)
-export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)
+# 2. Start all services (lightstack + Horizon + PostgreSQL).
+#    Both secrets are required — the stack renders no insecure defaults.
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 
 # 3. Access Horizon Dashboard
 open http://localhost/dashboard
-# Login: Domain=Default, User=admin, Password=secret
+# Login: Domain=Default, User=admin, Password=$LIGHTSTACK_ADMIN_PASSWORD
 ```
 
 **What's included**:
@@ -220,7 +221,7 @@ brew install pipx && pipx install python-openstackclient
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=secret  # plain dev stack public default (local testing only)
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 
@@ -289,7 +290,7 @@ SESSION_TIMEOUT = 14400  # 4 hours (deliberately shorter than lightstack's 24h t
 CONSOLE_TYPE = 'VNC'  # a Horizon CONSOLES key; 'novnc' is not one, and fails without calling Nova
 ```
 
-**Login Credentials**: Domain=Default, User=admin, Password=secret
+**Login Credentials**: Domain=Default, User=admin, Password=the `LIGHTSTACK_ADMIN_PASSWORD` you set when starting the stack
 
 ### 📖 Installation & Deployment
 
@@ -418,13 +419,16 @@ See `docs/OPERATIONS.md` and `docs/UPGRADING.md` for day-to-day management.
 
 ## Default Credentials
 
-The seed data creates:
+All install paths seed the same admin identity (`admin`, project `default`), but the
+password depends on the path:
 
-- **User:** `admin`
-- **Password:** `secret`
-- **Project:** `default`
+- **Horizon compose:** the `LIGHTSTACK_ADMIN_PASSWORD` you exported — required, no default.
+- **Helm:** `secrets.adminPassword` — required, no default.
+- **Single-node script:** generated and written to `/root/.lightstack-env`.
+- **Plain Docker dev stack (API-only):** the public `admin` / `secret` default, opted into
+  by `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET` for local testing only. Never expose it.
 
-**⚠️ Change these in production!**
+**⚠️ Change any seeded password before exposing a deployment.**
 
 ## 📊 Project Status
 
@@ -448,9 +452,8 @@ The seed data creates:
 
 ### Testing & Validation
 
-- ✅ **Contract Tests**: **223/233 passing (95.7%)** - Using gophercloud SDK (OpenStack Go client), as of 2026-03-30
-  - Keystone: 55/55 (100%)
-  - Full report: [CONTRACT_TESTS_FINAL.md](docs/testing/CONTRACT_TESTS_FINAL.md)
+- ✅ **Contract Tests**: soft gate in CI with an **85% pass-rate floor** (gophercloud SDK, OpenStack Go client). The last frozen snapshot was 223/233 (95.7%) on 2026-03-30 — historical, not current. The live conformance gate is the separate CLI conformance suite.
+  - Historical snapshot: [CONTRACT_TESTS_FINAL.md](docs/testing/CONTRACT_TESTS_FINAL.md)
 - ✅ **TDD Methodology**: All endpoints developed test-first (RED → GREEN → REFACTOR)
 - ✅ **20+ Integration Tests**: Bash scripts with OpenStack CLI validation
 - ✅ **Schema Validation**: OpenStack API spec compliance
@@ -589,8 +592,8 @@ Contributions welcome! See `docs/CONTRIBUTING.md` for guidelines.
 - **[eBPF Status](docs/EBPF_STATUS.md)** - eBPF security groups (experimental)
 
 ### Testing & Validation
-- **[Contract Tests](test/contract/README.md)** - 223/233 passing (95.7%) using gophercloud SDK
-  - Full results: [CONTRACT_TESTS_FINAL.md](docs/testing/CONTRACT_TESTS_FINAL.md)
+- **[Contract Tests](test/contract/README.md)** - soft gate with an 85% CI floor; the 2026-03-30 223/233 result is a historical snapshot
+  - Historical snapshot: [CONTRACT_TESTS_FINAL.md](docs/testing/CONTRACT_TESTS_FINAL.md)
 - **[Integration Tests](test/)** - 20+ bash scripts for workflow validation
 - **[E2E & CI Strategy](docs/testing/E2E_CI_TESTING_STRATEGY.md)** - Comprehensive testing and automation plan
 
@@ -610,5 +613,5 @@ Apache License 2.0 - See [LICENSE](LICENSE)
 ---
 
 **Status**: Unreleased (post-v0.6.1) | **Coverage**: ~335 functional operations vs 330-endpoint baseline | **Horizon**: usable for resource management
-**Tests**: ✅ 223/233 Contract Tests PASS (95.7%, 2026-03-30)
+**Tests**: ✅ Contract suite is a soft gate (85% CI floor); CLI conformance is the live gate (last contract snapshot: 223/233, 2026-03-30)
 **Updated**: October 12, 2026

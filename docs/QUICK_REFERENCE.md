@@ -6,14 +6,15 @@
 ## Quick Start
 
 ```bash
-# Start everything (requires LIGHTSTACK_JWT_SECRET to be set)
+# Start everything (both secrets are required — no insecure defaults render)
 cd lightstack/deployments
-export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 
 # Access Horizon
 open http://localhost/dashboard
-# Login: Domain=Default, User=admin, Password=secret
+# Login: Domain=Default, User=admin, Password=$LIGHTSTACK_ADMIN_PASSWORD
 
 # Check status
 docker compose -f docker-compose-horizon.yml ps
@@ -66,11 +67,11 @@ lightstack console-tokens list                        # noVNC console tokens (al
 ## OpenStack CLI Setup
 
 ```bash
-# Export environment
+# Export environment (the admin password you set when starting the stack)
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set LIGHTSTACK_ADMIN_PASSWORD (see Quick Start above)}"
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
@@ -163,20 +164,19 @@ tar czf config-backup-$(date +%Y%m%d).tar.gz docker-compose-horizon.yml horizon-
 cat backup-20260313.sql | docker exec -i lightstack-postgres psql -U lightstack lightstack
 ```
 
-## Default Credentials
+## Credentials
 
 - **Horizon URL**: http://localhost/dashboard
 - **Domain**: Default
 - **Username**: admin
-- **Password**: secret
+- **Password**: the `LIGHTSTACK_ADMIN_PASSWORD` you exported before `up -d` (no default — the guard refuses admin/secret)
 - **Project**: default
-
-⚠️ **Change these in production!**
 
 ## Production Checklist
 
 - [ ] Change postgres password
-- [ ] Generate secure JWT secret
+- [ ] Generate secure JWT secret (`LIGHTSTACK_JWT_SECRET`)
+- [ ] Generate secure bootstrap admin password (`LIGHTSTACK_ADMIN_PASSWORD`)
 - [ ] Generate secure Horizon SECRET_KEY
 - [ ] Enable HTTPS
 - [ ] Configure ALLOWED_HOSTS

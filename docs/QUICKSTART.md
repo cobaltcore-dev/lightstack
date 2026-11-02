@@ -77,7 +77,7 @@ lightstack-redis     Up (healthy)
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=secret  # Path A dev stack public default (local testing only)
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 ```
@@ -120,12 +120,13 @@ docker compose -f deployments/docker-compose.yml down -v       # wipe data too
 
 ## Path B — Docker Compose with the Horizon dashboard
 
-Adds the OpenStack Horizon web UI (Flamingo 2025.2). This compose file **requires**
-a JWT secret to be set before it will start:
+Adds the OpenStack Horizon web UI (Flamingo 2025.2). This compose file **requires
+both** a JWT secret and a bootstrap admin password before it will start:
 
 ```bash
 cd lightstack
-export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f deployments/docker-compose-horizon.yml up -d
 ```
 
@@ -133,7 +134,7 @@ Open **http://localhost/dashboard** and log in with:
 
 - **Domain:** `Default`
 - **User:** `admin`
-- **Password:** `secret`
+- **Password:** `$LIGHTSTACK_ADMIN_PASSWORD` (the value you generated above)
 
 Creating networks, volumes and instances from the dashboard works (verified in stub
 and real mode). Known open gaps are tracked in
@@ -222,14 +223,22 @@ script reference: [scripts/README.md](../scripts/README.md).
 
 ## Default credentials
 
-All install paths seed the same identity:
+All install paths seed the same admin identity (`admin`, project `default`, domain
+`Default`), but the password depends on the path:
 
-- **User:** `admin` — **Password:** `secret` — **Project:** `default` — **Domain:** `Default`
+- **Path A (plain Docker dev stack):** `admin` / `secret` — the public default, opted
+  into by `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET` for local testing only.
+- **Path B (Horizon stack):** `admin` / `$LIGHTSTACK_ADMIN_PASSWORD` — required, no default.
+- **Helm:** `admin` / `secrets.adminPassword` — required, no default.
+- **Single-node script:** generated and saved in `/root/.lightstack-env`.
 
-> **⚠️ Change these before exposing any deployment.** Also replace the default JWT
-> secret (`change-me-in-production`) — anyone who knows it can forge admin tokens.
-> In Docker, set `LIGHTSTACK_JWT_SECRET` in your environment or `.env` file (see
-> `.env.example`); in the Helm chart, `secrets.jwtSecret` (required, no default).
+> **⚠️ Change any seeded password before exposing a deployment.** Also replace the JWT
+> secret — anyone who knows it can forge admin tokens. In Docker, set
+> `LIGHTSTACK_JWT_SECRET` and `LIGHTSTACK_ADMIN_PASSWORD` in your environment or in
+> `deployments/.env` (Compose V2 resolves `.env` from the compose file's directory):
+> `cp .env.example deployments/.env`. In the Helm chart, set `secrets.jwtSecret` and
+> `secrets.adminPassword` (both required, no defaults). The plain dev stack may keep its
+> public defaults only because it sets the opt-out explicitly.
 
 ## Troubleshooting quick hits
 

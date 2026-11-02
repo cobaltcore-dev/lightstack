@@ -19,7 +19,7 @@ Contract tests ensure **100% API compatibility** with OpenStack:
 4. **Implement endpoint** in `internal/{service}/handlers.go`
 5. **Run test** → Confirm GREEN (passes)
 6. **Run full suite** → All tests still pass
-7. **Update test status docs** → record coverage in [docs/testing/CONTRACT_TESTS_FINAL.md](../../docs/testing/CONTRACT_TESTS_FINAL.md)
+7. **Record the result** → note the run in the PR; the dated report under `docs/testing/` is a historical snapshot, not a live status document
 
 ## Running Contract Tests
 
@@ -45,7 +45,7 @@ source ~/.lightstack-env
 # Or set manually
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=secret  # plain dev stack public default (local testing only)
 export OS_PROJECT_NAME=default
 export OS_USER_DOMAIN_NAME=Default
 ```
@@ -69,7 +69,10 @@ go test ./test/contract/keystone -run TestKeystoneCreateUser_Contract -v
 
 ### CI Integration
 
-Contract tests are part of the CI pipeline:
+Contract tests run in CI as a **soft gate**: the job requires only an **85% pass
+rate**, not 100%, so a handful of known-failing edge cases does not block a PR. The
+live, per-command conformance gate is the separate OpenStack CLI conformance suite,
+not this package.
 
 ```yaml
 # .github/workflows/ci.yml
@@ -135,10 +138,15 @@ func TestKeystoneCreateUser_Contract(t *testing.T) {
 
 ## Test Coverage Status
 
-- **Current**: 223 of 233 contract tests passing (95.7%) as of 2026-03-30
-- **Coverage**: ~335 functional operations vs the 330-endpoint OpenStack baseline (see [docs/blueprint.md](../../docs/blueprint.md))
+The contract suite is a **soft gate** in CI with an **85% pass-rate floor**; it is not
+the live conformance gate. Per-command status comes from the separate CLI conformance
+suite.
 
-Full results and analysis: [docs/testing/CONTRACT_TESTS_FINAL.md](../../docs/testing/CONTRACT_TESTS_FINAL.md)
+The last frozen contract run was **223 of 233 tests passing (95.7%) on 2026-03-30**.
+Treat that number as a historical snapshot, not the current pass rate:
+
+- **Snapshot**: [docs/testing/CONTRACT_TESTS_FINAL.md](../../docs/testing/CONTRACT_TESTS_FINAL.md) (2026-03-30, historical)
+- **Coverage**: ~335 functional operations vs the 330-endpoint OpenStack baseline (see [docs/blueprint.md](../../docs/blueprint.md))
 
 ## Validation Gates
 

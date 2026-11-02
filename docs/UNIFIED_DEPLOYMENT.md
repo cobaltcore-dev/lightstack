@@ -109,14 +109,16 @@ cat horizon-config/local_settings
 - Database: PostgreSQL on port 5432
 - Lightstack Mode: Stub (no real VMs, suitable for testing)
 - Horizon: Flamingo (2025.2) on port 80
-- Default Credentials: admin/secret
+- Credentials: admin / the `LIGHTSTACK_ADMIN_PASSWORD` you set below
 
 ### Step 3: Start All Services
 
-The compose file **requires** a JWT secret — it refuses to start without one:
+The compose file **requires both** a JWT secret and a bootstrap admin password — it
+refuses to start without them:
 
 ```bash
-export LIGHTSTACK_JWT_SECRET=$(openssl rand -base64 32)
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 docker compose -f docker-compose-horizon.yml up -d
 ```
 
@@ -154,7 +156,7 @@ http://localhost/dashboard
 **Login Credentials**:
 - Domain: `Default`
 - User Name: `admin`
-- Password: `secret`
+- Password: the `LIGHTSTACK_ADMIN_PASSWORD` you exported in Step 3
 
 🎉 **You're done!** You now have a fully functional OpenStack environment with web UI.
 
@@ -171,7 +173,7 @@ docker compose -f docker-compose.yml up -d
 # Access via OpenStack CLI
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD=secret  # API-only dev stack public default (local testing only)
 export OS_PROJECT_NAME=default
 export OS_DOMAIN_NAME=Default
 openstack token issue
@@ -201,6 +203,9 @@ export POSTGRES_USER=lightstack
 # JWT secret for lightstack authentication (required by docker-compose-horizon.yml)
 export LIGHTSTACK_JWT_SECRET=your-secure-jwt-secret-here
 
+# Bootstrap admin password (required by docker-compose-horizon.yml — no default)
+export LIGHTSTACK_ADMIN_PASSWORD=your-secure-admin-password-here
+
 # Horizon configuration
 export HORIZON_SECRET_KEY=your-horizon-secret-key
 ```
@@ -226,18 +231,21 @@ services:
       - LIGHTSTACK_DB_URL=postgres://lightstack:CHANGE_THIS_PASSWORD@postgres:5432/lightstack?sslmode=disable
 ```
 
-**JWT Secret** - Edit `docker-compose-horizon.yml`:
+**JWT Secret and Admin Password** - Pass both through the environment (the compose
+file requires them with `:?`):
 
 ```yaml
 services:
   lightstack:
     environment:
       - LIGHTSTACK_JWT_SECRET=GENERATE_SECURE_RANDOM_STRING_HERE
+      - LIGHTSTACK_ADMIN_PASSWORD=GENERATE_SECURE_ADMIN_PASSWORD_HERE
 ```
 
-Generate a secure JWT secret:
+Generate secure values:
 ```bash
-openssl rand -hex 32
+openssl rand -base64 32   # JWT secret
+openssl rand -base64 24   # bootstrap admin password
 ```
 
 **Horizon Secret Key** - Edit `horizon-config/local_settings`:
@@ -375,6 +383,9 @@ glance:
 
 ### Starting Services
 
+Both `LIGHTSTACK_JWT_SECRET` and `LIGHTSTACK_ADMIN_PASSWORD` must be set first
+(see [Step 3](#step-3-start-all-services)).
+
 ```bash
 # Start all services
 docker compose -f docker-compose-horizon.yml up -d
@@ -474,7 +485,7 @@ pip install python-openstackclient
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set LIGHTSTACK_ADMIN_PASSWORD first}"
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
@@ -484,7 +495,7 @@ cat > ~/lightstack-openrc.sh <<'EOF'
 export OS_AUTH_URL=http://localhost:35357/v3
 export OS_PROJECT_NAME=default
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set LIGHTSTACK_ADMIN_PASSWORD first}"
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
@@ -550,7 +561,7 @@ curl -s http://localhost:9292/ | jq
 ### 3. Horizon Dashboard
 
 1. Open http://localhost/dashboard
-2. Login with admin/secret
+2. Login with admin / the `LIGHTSTACK_ADMIN_PASSWORD` you set when starting the stack
 3. Check "Overview" page loads
 4. Verify "Compute > Instances" shows empty list
 5. Click "Launch Instance" to test wizard
@@ -926,7 +937,8 @@ chmod +x health-check.sh
 ## Production Deployment Checklist
 
 - [ ] Change default passwords (postgres, admin user)
-- [ ] Generate secure JWT secret
+- [ ] Generate secure JWT secret (`LIGHTSTACK_JWT_SECRET`)
+- [ ] Generate secure bootstrap admin password (`LIGHTSTACK_ADMIN_PASSWORD`)
 - [ ] Generate secure Horizon SECRET_KEY
 - [ ] Enable HTTPS with valid certificates
 - [ ] Configure ALLOWED_HOSTS in Horizon

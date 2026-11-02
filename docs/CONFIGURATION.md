@@ -68,10 +68,10 @@ database:
 # Keystone (Identity Service)
 keystone:
   port: 35357
-  jwt_secret: "change-me-in-production"
+  jwt_secret: "<generate: openssl rand -base64 32>"       # required; public defaults refused
   token_ttl: 24h
   admin_user: admin
-  admin_password: secret
+  admin_password: "<generate: openssl rand -base64 24>"    # required; public defaults refused
   rgw_compat_tenant_ids: false  # Ceph RGW (Swift) tenant-id compatibility
 
 # Compute node configuration
@@ -149,15 +149,17 @@ cache:
 > **Correction (SPEC-008).** Earlier versions of this page documented a generic
 > `lightstack_<SECTION>_<KEY>` convention (e.g. `LIGHTSTACK_DATABASE_URL`, `LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD`,
 > `LIGHTSTACK_NOVA_LIBVIRT_MODE`). **The binary does not implement that layer** — those variables
-> are silently ignored. Everything else (admin password, service modes, VXLAN, cache,
-> logging, ports, …) takes effect **only from the YAML config file** passed via `--config`.
+> are silently ignored. Everything else (service modes, VXLAN, cache, logging, ports, …)
+> takes effect **only from the YAML config file** passed via `--config`.
 
-The binary honors exactly **fourteen** environment variables:
+The binary honors exactly **sixteen** environment variables:
 
 | Variable | Overrides / controls | Where it is read |
 |----------|----------------------|------------------|
 | `LIGHTSTACK_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_ADMIN_PASSWORD` | `keystone.admin_password` (the bootstrap admin's password; refused when left at a well-known default — see the S2 secret guard) | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET` | **Test/dev-only escape hatch** (`1`/`true`): opts out of the secret guard that refuses well-known JWT secrets and admin passwords. Never set on anything reachable by an untrusted network — it is not for production. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` in OpenStack's dash-free form in the `/v3/auth/tokens` responses; `/v3/s3tokens` already uses that historical form. The EC2 mint accepts dash-free or alternate UUID encodings as input and stores the canonical database id. Enabling the flag therefore unifies Swift with the existing S3 tenant namespace without re-keying S3 data. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host — a **fallback**, see below | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
 | `LIGHTSTACK_ENDPOINT_SCHEME` | advertised URL scheme: `http` (default) or `https` | request time (`internal/common/scheme.go`) |
@@ -173,7 +175,8 @@ The binary honors exactly **fourteen** environment variables:
 
 ```bash
 export LIGHTSTACK_DB_URL="postgres://user:pass@host/db?sslmode=disable"
-export LIGHTSTACK_JWT_SECRET="your-secret-here"
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 export LIGHTSTACK_ENDPOINT_HOST="lightstack.example.com"
 export LIGHTSTACK_ENDPOINT_SCHEME="https"   # only when TLS is terminated in front of lightstack
 ```
@@ -266,8 +269,9 @@ services:
     environment:
       LIGHTSTACK_DB_URL: "postgres://lightstack:secret@postgres:5432/lightstack?sslmode=disable"
       LIGHTSTACK_JWT_SECRET: "${JWT_SECRET}"
+      LIGHTSTACK_ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
     volumes:
-      # everything else (service modes, admin password, logging, ...) comes from the file:
+      # remaining settings (service modes, logging, ...) come from the file:
       - ./config/lightstack.yaml:/app/config/lightstack.yaml:ro
 ```
 
@@ -341,10 +345,10 @@ missing or zero, the binary falls back to the defaults noted above.
 ```yaml
 keystone:
   port: 35357                        # API port
-  jwt_secret: "change-me-in-production"  # JWT signing secret
+  jwt_secret: "<openssl rand -base64 32>"        # JWT signing secret (required)
   token_ttl: 24h                     # Token lifetime
   admin_user: admin                  # Admin username (first-boot seed)
-  admin_password: secret             # Admin password (first-boot seed) — CHANGE for exposed deployments
+  admin_password: "<openssl rand -base64 24>"    # Bootstrap admin password (required)
 ```
 
 **Admin bootstrap (first-boot seed):** `admin_password` is applied at startup only
@@ -352,9 +356,13 @@ when the admin account is absent or still carries the well-known default `secret
 once changed it is never overwritten on later starts (rotate via the Identity API,
 e.g. `openstack user password set`, not config). Setting `admin_user` to a name
 other than `admin` provisions that user with the admin role and **disables** the
-seeded `admin` account. When `admin_password` is unset entirely, Lightstack boots with the
-default credential and logs a `WARN` — the Helm chart is responsible for requiring a
-password at install time.
+seeded `admin` account.
+
+The startup secret guard refuses an empty or well-known `jwt_secret` **and**
+`admin_password` — including the public `secret` default — so a config that omits
+either does not boot (isolated dev/test stacks opt out with
+`LIGHTSTACK_ALLOW_INSECURE_DEFAULT_SECRET=1`). The Helm chart requires both at
+install time.
 
 `admin_user` is a **first-boot identity**, not a managed one:
 - If `admin_user` names an account that **already exists**, that account is granted
@@ -457,7 +465,7 @@ Lightstack. Without a retention age the table would only grow. Records belonging
 that still exists are never reclaimed, whatever their age. A non-positive value is
 clamped to the default, since `0` would mean reclaiming everything immediately.
 
-All three are **config-file only**. The binary honours exactly fourteen environment variables
+All three are **config-file only**. The binary honours exactly sixteen environment variables
 (see [Environment Variables](#environment-variables)), so these must arrive through the
 `lightstack.yaml` you pass to `--config` — in Helm, through the rendered Secret. The chart
 exposes them as `nova.stateReconcileInterval`, `nova.shutdownTimeout` and
@@ -543,7 +551,7 @@ glance:
 
 **Environment variables for S3 credentials** (read implicitly by the AWS SDK's
 standard config chain — they are not `LIGHTSTACK_`-prefixed and are not part of
-the fourteen Lightstack configuration variables):
+the sixteen Lightstack configuration variables):
 ```bash
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
@@ -557,8 +565,8 @@ export AWS_SECRET_ACCESS_KEY="your-secret-key"
 
 ```yaml
 keystone:
-  jwt_secret: "change-me-in-production"  # CRITICAL: Change this!
-  token_ttl: 24h                         # Token lifetime
+  jwt_secret: "<openssl rand -base64 32>"  # CRITICAL: unique per deployment
+  token_ttl: 24h                           # Token lifetime
 ```
 
 **Best practices:**
@@ -579,17 +587,14 @@ head -c 32 /dev/urandom | base64
 uuidgen | sha256sum | cut -d' ' -f1
 ```
 
-### Default Credentials
+### Bootstrap Admin Credentials
 
-```yaml
-keystone:
-  admin_user: admin
-  admin_password: secret
-```
+The seed data creates `admin` in project `default`. No usable password ships:
+`config/lightstack.yaml` may carry the public `secret` placeholder, but the startup
+guard refuses it (and an empty value), so set a real one before first start.
 
-**⚠️ CRITICAL: Change these in production!**
-
-**Change via the config file** (there is no env override for these — see
+**Set it in the config file, or via `LIGHTSTACK_ADMIN_PASSWORD`** (the admin
+password has an environment override — see
 [Environment Variables](#environment-variables)):
 ```yaml
 keystone:
@@ -598,7 +603,9 @@ keystone:
 ```
 The configured password is a **first-boot seed** (SPEC-007): applied only while the
 account still carries the default; rotate afterwards via the Identity API
-(`openstack user password set`), not by changing config.
+(`openstack user password set`), not by changing config. The startup guard refuses
+the public `secret` default and an empty/omitted value; the Helm chart requires
+`secrets.adminPassword`.
 
 ### Database Security
 
@@ -1002,11 +1009,13 @@ logging:
 Note on secrets: **the config file does no environment-variable interpolation**
 — a literal `${JWT_SECRET}` in the YAML is used verbatim as the secret. Inject
 secrets through the environment variables the loader applies *over* the file —
-`LIGHTSTACK_DB_URL` and `LIGHTSTACK_JWT_SECRET` — and put the admin password in
-the file itself:
+`LIGHTSTACK_DB_URL`, `LIGHTSTACK_JWT_SECRET` and `LIGHTSTACK_ADMIN_PASSWORD` — or
+put the admin password in the file itself:
 
 ```bash
-export DB_PASSWORD="..."; export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export DB_PASSWORD="..."
+export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
+export LIGHTSTACK_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 ```
 
 ```yaml
@@ -1019,8 +1028,8 @@ keystone:
   # Set via LIGHTSTACK_JWT_SECRET, not through the file:
   #   export LIGHTSTACK_JWT_SECRET="$(openssl rand -base64 32)"
   token_ttl: 24h
-  # No environment override: write a real value here before deploying
-  # (substitute before the file reaches the host):
+  # Set via LIGHTSTACK_ADMIN_PASSWORD, or write a real value here before
+  # deploying (substitute before the file reaches the host):
   admin_password: "CHANGE_ME_before_deploying"
 
 nova:

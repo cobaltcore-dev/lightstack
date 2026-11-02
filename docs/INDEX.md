@@ -149,9 +149,9 @@ Test reports, strategies, and code quality reviews.
 - **[testing/E2E_CI_TESTING_STRATEGY](testing/E2E_CI_TESTING_STRATEGY.md)** - E2E and CI pipeline strategy
 
 #### Contract Test Reports
-- **[testing/CONTRACT_TESTS_FINAL](testing/CONTRACT_TESTS_FINAL.md)** - Final results: 95.7% passing (223/233)
-- **[testing/CONTRACT_TEST_RESULTS](testing/CONTRACT_TEST_RESULTS.md)** - Results snapshot: 90.2% (258/286)
-- **[testing/CONTRACT_TESTS_FINAL_REPORT](testing/CONTRACT_TESTS_FINAL_REPORT.md)** - Detailed execution report
+- **[testing/CONTRACT_TESTS_FINAL](testing/CONTRACT_TESTS_FINAL.md)** - Historical snapshot (2026-03-30): 95.7% passing (223/233); the contract suite is a soft CI gate (85% floor)
+- **[testing/CONTRACT_TEST_RESULTS](testing/CONTRACT_TEST_RESULTS.md)** - Historical snapshot: 90.2% (258/286)
+- **[testing/CONTRACT_TESTS_FINAL_REPORT](testing/CONTRACT_TESTS_FINAL_REPORT.md)** - Historical execution report
 - **[testing/TEST_FAILURES_ANALYSIS](testing/TEST_FAILURES_ANALYSIS.md)** - Root cause analysis of remaining failures
 
 #### Code Reviews

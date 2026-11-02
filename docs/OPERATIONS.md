@@ -366,8 +366,13 @@ docker exec lightstack /app/lightstack-migrate status
 docker exec lightstack /app/lightstack-migrate up
 
 # Rollback last migration (if needed)
-docker exec lightstack /app/lightstack-migrate down
+echo yes | docker exec -i lightstack /app/lightstack-migrate down
 ```
+
+> **`down` and `reset` prompt interactively** (and `goto`/`force` too); `up` does not.
+> Redirecting an answer into stdin — `echo yes | ...` for `down`, `echo RESET | ...` for
+> `reset` — is required when running non-interactively, otherwise the prompt reads EOF
+> and the command exits having done nothing.
 
 > ⚠️ **Rolling back requires care.** Some migrations were edited in place after shipping
 > (e.g. `065`, the console-token columns, and `071`, the placement catalog rows), so a

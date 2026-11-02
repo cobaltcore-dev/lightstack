@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 All changes since v0.6.1 (SPEC-009 through SPEC-027). Migrations now run
-to **073** (from 055).
+to **073** (from 059).
 
 ### ⚡ Real-Mode Single Node (SPEC-009)
 - **Per-instance qcow2 overlay** over a raw base image, node-local data under `/var/lib/lightstack`
@@ -626,17 +626,23 @@ This is the first production-ready release of lightstack, featuring complete Ope
 
 ---
 
-## [Unreleased]
+## Historical notes (superseded)
 
-### Planned for v2.0
+> **Historical, not a current roadmap.** This block preserves the original v1.0.0-era
+> "planned for v2.0" list. Several entries have since shipped: Placement is served as a
+> stub on `:8778`, multi-node VXLAN networking exists, floating IPs and router L3
+> forwarding work, and external networks are supported. See the [Unreleased](#unreleased)
+> section and [ROADMAP.md](ROADMAP.md) for current status.
 
-- Multi-node support with VXLAN overlay networks
-- Floating IPs and external network access
-- Router L3 forwarding (NAT, static routes)
-- eBPF-based security groups (kernel-space filtering)
+### Original v2.0 plan (superseded)
+
+- Multi-node support with VXLAN overlay networks — **shipped**
+- Floating IPs and external network access — **shipped**
+- Router L3 forwarding (NAT, static routes) — **shipped**
+- eBPF-based security groups (kernel-space filtering) — experimental; see [docs/EBPF_STATUS.md](docs/EBPF_STATUS.md)
 - Live migration support
 - High availability (multi-node control plane)
-- Placement API (resource scheduling)
+- Placement API (resource scheduling) — **shipped as a stub**
 - Heat orchestration templates
 
 ---
