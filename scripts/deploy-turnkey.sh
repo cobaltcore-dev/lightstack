@@ -626,7 +626,10 @@ generate_config() {
     else
         record STATE_CONFIG
     fi
-    mkdir -p "$CONFIG_DIR"
+    # The config holds real secrets (admin password, JWT secret, DB password).
+    # Keep both the directory and the file private to root: the Lightstack
+    # container reads them through a read-only bind mount as its own process.
+    install -d -m 700 "$CONFIG_DIR"
 
     # Lightstack main configuration
     cat > "$CONFIG_DIR/lightstack.yaml" <<EOF
@@ -679,6 +682,8 @@ compute:
   node_name: "$(hostname)"
   tunnel_ip: "$HOST_IP"
 EOF
+
+    chmod 600 "$CONFIG_DIR/lightstack.yaml"
 
     # Copy Horizon configuration from repo and modify for host networking
     if [ ! -d "$REPO_DIR/deployments/horizon-config" ]; then
@@ -901,6 +906,8 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 export OS_IDENTITY_API_VERSION=3
 EOF
+
+    chmod 600 /root/.lightstack-env
 
     # Add to bashrc if not already there
     if ! grep -q "source /root/.lightstack-env" /root/.bashrc; then

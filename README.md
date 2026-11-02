@@ -390,15 +390,16 @@ make fmt
 make lint
 ```
 
-## Default Credentials
+## Credentials
 
-The seed data creates:
+The seed data creates the `admin` user and `default` project. The admin password is
+the value you set in `keystone.admin_password` (or `LIGHTSTACK_ADMIN_PASSWORD`) before
+starting the services; there is no usable public default. The deploy scripts generate
+one and save it in `/root/.lightstack-env`.
 
 - **User:** `admin`
-- **Password:** `secret`
+- **Password:** the password you configured
 - **Project:** `default`
-
-**⚠️ Change these in production!**
 
 ## 📊 Project Status
 

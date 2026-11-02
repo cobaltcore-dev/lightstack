@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migrating.
 - **Chart version** 0.3.0 → 0.4.0 (appVersion 0.7.0, matching the target release).
 
+### ⚠️ Breaking Changes
+- **0.6.x → 0.7.0 needs an admin password.** `keystone.admin_password` may no
+  longer be empty or a well-known default (`secret` included), and configs
+  written by the 0.6.x deploy scripts contain no such key. Add it (or export
+  `LIGHTSTACK_ADMIN_PASSWORD` in the service environment) before upgrading;
+  `scripts/upgrade-lightstack.sh` now injects a generated one, after backing up
+  the config, when the key is missing. See [docs/UPGRADING.md](docs/UPGRADING.md).
+
 ### 🔒 Security
 - **Refuse well-known/empty JWT secrets at startup** (review S2): the defaults
   shipped in `config/lightstack.yaml` and `.env.example` are public, and with

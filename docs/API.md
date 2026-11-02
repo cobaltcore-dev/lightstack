@@ -126,7 +126,7 @@ pip install python-openstackclient
 # Set environment variables
 export OS_AUTH_URL=http://localhost:5000/v3
 export OS_USERNAME=admin
-export OS_PASSWORD=secret
+export OS_PASSWORD="${LIGHTSTACK_ADMIN_PASSWORD:?set LIGHTSTACK_ADMIN_PASSWORD}"
 export OS_PROJECT_NAME=default
 export OS_USER_DOMAIN_NAME=default
 export OS_PROJECT_DOMAIN_NAME=default
@@ -232,10 +232,10 @@ After project-scoped authentication, the token response includes a service catal
 }
 ```
 
-## Default Credentials
+## Credentials
 
 - **Username:** `admin`
-- **Password:** `secret`
+- **Password:** the value of `LIGHTSTACK_ADMIN_PASSWORD` (or `keystone.admin_password`); no public default
 - **Project:** `default`
 - **Roles:** `admin`, `member`, `reader`
 

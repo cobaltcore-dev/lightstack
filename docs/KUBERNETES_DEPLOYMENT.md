@@ -42,7 +42,7 @@ metadata:
 
 ### Secret
 
-Sensitive values (database password, JWT secret) belong in a Secret, not a ConfigMap.
+Sensitive values (database password, JWT secret, admin password) belong in a Secret, not a ConfigMap.
 
 ```yaml
 apiVersion: v1
@@ -53,6 +53,7 @@ metadata:
 type: Opaque
 stringData:
   jwt-secret: "replace-with-a-random-256-bit-value"
+  admin-password: "replace-with-a-random-admin-password"
   db-password: "replace-with-your-db-password"
 ```
 
@@ -87,7 +88,7 @@ data:
       jwt_secret: "overridden-by-env"
       token_ttl: 24h
       admin_user: admin
-      admin_password: secret
+      admin_password: "replace-with-a-random-admin-password"
 
     compute:
       node_id: auto

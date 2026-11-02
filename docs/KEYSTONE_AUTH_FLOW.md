@@ -55,7 +55,7 @@ Step 1: User Login
 ──────────────────
 User enters credentials in Horizon:
   - Username: admin
-  - Password: secret
+  - Password: the configured admin password
   - Domain: Default
   - Project: default (optional for scoped token)
 
