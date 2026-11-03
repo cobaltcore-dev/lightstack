@@ -114,6 +114,17 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/schemas/images", svc.GetImagesSchema)
 	r.GET("/schemas/member", svc.GetMemberSchema)
 	r.GET("/schemas/members", svc.GetMembersSchema)
+	// Metadefs schema documents (Horizon Create Image loads /schemas/metadefs/namespace).
+	r.GET("/schemas/metadefs/namespace", svc.GetMetadefNamespaceSchema)
+	r.GET("/schemas/metadefs/namespaces", svc.GetMetadefNamespacesSchema)
+	r.GET("/schemas/metadefs/resource_type", svc.GetMetadefResourceTypeSchema)
+	r.GET("/schemas/metadefs/resource_types", svc.GetMetadefResourceTypesSchema)
+	r.GET("/schemas/metadefs/object", svc.GetMetadefObjectSchema)
+	r.GET("/schemas/metadefs/objects", svc.GetMetadefObjectsSchema)
+	r.GET("/schemas/metadefs/property", svc.GetMetadefPropertySchema)
+	r.GET("/schemas/metadefs/properties", svc.GetMetadefPropertiesSchema)
+	r.GET("/schemas/metadefs/tag", svc.GetMetadefTagSchema)
+	r.GET("/schemas/metadefs/tags", svc.GetMetadefTagsSchema)
 
 	// Tasks and import
 	r.POST("/tasks", svc.CreateTask)
