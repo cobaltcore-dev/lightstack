@@ -51,7 +51,7 @@ SECRET_KEY = 'CHANGE-THIS-IN-PRODUCTION-' + os.urandom(32).hex()
 # OpenStack Backend Configuration
 OPENSTACK_HOST = "lightstack"  # Docker service name (or IP if not using Docker)
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
-OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"
 
 # API Version Configuration (matches Lightstack)
 OPENSTACK_API_VERSIONS = {
