@@ -319,3 +319,168 @@ func (svc *Service) ListMetadefResourceTypes(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"resource_types": resourceTypes})
 }
+
+// --- Metadefs schema documents (GET /v2/schemas/metadefs/*) ---
+//
+// Upstream Glance serves these static JSON schemas; Horizon's Angular "Create Image"
+// modal loads /v2/schemas/metadefs/namespace before it renders. Without the route it
+// 404s, the modal's response handler reads `.data` off undefined (TypeError), and the
+// create fails with "Unable to retrieve namespace / project / create image". These are
+// fixed documents, so they need no database and no auth-specific state. Each plural
+// path answers the collection schema wrapping its singular document, as upstream's
+// glance/api/v2/schemas.py does.
+
+// GetMetadefNamespaceSchema handles GET /v2/schemas/metadefs/namespace.
+func (svc *Service) GetMetadefNamespaceSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefNamespaceSchema())
+}
+
+// GetMetadefNamespacesSchema handles GET /v2/schemas/metadefs/namespaces.
+func (svc *Service) GetMetadefNamespacesSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefCollectionSchema("namespaces", metadefNamespaceSchema()))
+}
+
+// GetMetadefResourceTypeSchema handles GET /v2/schemas/metadefs/resource_type.
+func (svc *Service) GetMetadefResourceTypeSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefResourceTypeSchema())
+}
+
+// GetMetadefResourceTypesSchema handles GET /v2/schemas/metadefs/resource_types.
+func (svc *Service) GetMetadefResourceTypesSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefCollectionSchema("resource_type_associations", metadefResourceTypeSchema()))
+}
+
+// GetMetadefObjectSchema handles GET /v2/schemas/metadefs/object.
+func (svc *Service) GetMetadefObjectSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefObjectSchema())
+}
+
+// GetMetadefObjectsSchema handles GET /v2/schemas/metadefs/objects.
+func (svc *Service) GetMetadefObjectsSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefCollectionSchema("objects", metadefObjectSchema()))
+}
+
+// GetMetadefPropertySchema handles GET /v2/schemas/metadefs/property.
+func (svc *Service) GetMetadefPropertySchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefPropertySchema())
+}
+
+// GetMetadefPropertiesSchema handles GET /v2/schemas/metadefs/properties. Upstream
+// keys a namespace's properties by name (DictCollectionSchema), so the collection is
+// an object of property schemas rather than an array.
+func (svc *Service) GetMetadefPropertiesSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefCollectionEnvelope("properties",
+		gin.H{"type": "object", "additionalProperties": metadefPropertySchema()}))
+}
+
+// GetMetadefTagSchema handles GET /v2/schemas/metadefs/tag.
+func (svc *Service) GetMetadefTagSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefTagSchema())
+}
+
+// GetMetadefTagsSchema handles GET /v2/schemas/metadefs/tags.
+func (svc *Service) GetMetadefTagsSchema(c *gin.Context) {
+	c.JSON(http.StatusOK, metadefCollectionSchema("tags", metadefTagSchema()))
+}
+
+// metadefCollectionSchema wraps an item schema as upstream's CollectionSchema.raw()
+// (glance/schema.py) does: the items as an array under the collection's name.
+func metadefCollectionSchema(name string, item gin.H) gin.H {
+	return metadefCollectionEnvelope(name, gin.H{"type": "array", "items": item})
+}
+
+// metadefCollectionEnvelope is the document both upstream collection kinds share: the
+// members under the collection's name, plus the paging fields and their links.
+func metadefCollectionEnvelope(name string, members gin.H) gin.H {
+	return gin.H{
+		"name": name,
+		"properties": gin.H{
+			name:     members,
+			"first":  gin.H{"type": "string"},
+			"next":   gin.H{"type": "string"},
+			"schema": gin.H{"type": "string"},
+		},
+		"links": []gin.H{
+			{"rel": "first", "href": "{first}"},
+			{"rel": "next", "href": "{next}"},
+			{"rel": "describedby", "href": "{schema}"},
+		},
+	}
+}
+
+func metadefNamespaceSchema() gin.H {
+	return gin.H{
+		"name":                 "namespace",
+		"additionalProperties": false,
+		"properties": gin.H{
+			"namespace":                  gin.H{"type": "string", "description": "The unique namespace text."},
+			"display_name":               gin.H{"type": "string", "description": "The user friendly name for the namespace."},
+			"description":                gin.H{"type": "string", "description": "Provides a user friendly description of the namespace."},
+			"visibility":                 gin.H{"type": "string", "enum": []string{"public", "private"}, "description": "Scope of namespace accessibility."},
+			"protected":                  gin.H{"type": "boolean", "description": "If true, namespace will not be deletable."},
+			"owner":                      gin.H{"type": "string", "description": "Owner of the namespace."},
+			"created_at":                 gin.H{"type": "string", "format": "date-time"},
+			"updated_at":                 gin.H{"type": "string", "format": "date-time"},
+			"self":                       gin.H{"type": "string"},
+			"schema":                     gin.H{"type": "string"},
+			"resource_type_associations": gin.H{"type": "array"},
+			"properties":                 gin.H{"type": "object"},
+			"objects":                    gin.H{"type": "array"},
+			"tags":                       gin.H{"type": "array"},
+		},
+	}
+}
+
+func metadefResourceTypeSchema() gin.H {
+	return gin.H{
+		"name": "resource_type_association",
+		"properties": gin.H{
+			"name":              gin.H{"type": "string"},
+			"prefix":            gin.H{"type": "string"},
+			"properties_target": gin.H{"type": "string"},
+			"created_at":        gin.H{"type": "string", "format": "date-time"},
+			"updated_at":        gin.H{"type": "string", "format": "date-time"},
+		},
+	}
+}
+
+func metadefObjectSchema() gin.H {
+	return gin.H{
+		"name": "object",
+		"properties": gin.H{
+			"name":        gin.H{"type": "string"},
+			"description": gin.H{"type": "string"},
+			"required":    gin.H{"type": "array"},
+			"properties":  gin.H{"type": "object"},
+			"schema":      gin.H{"type": "string"},
+			"self":        gin.H{"type": "string"},
+			"created_at":  gin.H{"type": "string", "format": "date-time"},
+			"updated_at":  gin.H{"type": "string", "format": "date-time"},
+		},
+	}
+}
+
+func metadefPropertySchema() gin.H {
+	return gin.H{
+		"name": "property",
+		"properties": gin.H{
+			"name":        gin.H{"type": "string"},
+			"title":       gin.H{"type": "string"},
+			"type":        gin.H{"type": "string"},
+			"description": gin.H{"type": "string"},
+			"default":     gin.H{"type": "string"},
+			"enum":        gin.H{"type": "array"},
+		},
+	}
+}
+
+func metadefTagSchema() gin.H {
+	return gin.H{
+		"name": "tag",
+		"properties": gin.H{
+			"name":       gin.H{"type": "string"},
+			"created_at": gin.H{"type": "string", "format": "date-time"},
+			"updated_at": gin.H{"type": "string", "format": "date-time"},
+		},
+	}
+}
