@@ -256,7 +256,7 @@ HORIZON_CONFIG = {
 }
 
 # Disable features not supported by Lightstack stub mode
-HORIZON_IMAGES_UPLOAD_MODE = 'direct'
+HORIZON_IMAGES_UPLOAD_MODE = 'legacy'
 
 # ==========================================
 # Policy Configuration
