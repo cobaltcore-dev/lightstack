@@ -1619,11 +1619,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		} else {
 			entry["key_name"] = nil
 		}
-		if imageID.Valid {
-			entry["image"] = gin.H{"id": imageID.String}
-		} else {
-			entry["image"] = ""
-		}
+		entry["image"] = serverImageField(imageID)
 		if launchedAt.Valid {
 			entry["OS-SRV-USG:launched_at"] = launchedAt.Time.Format(time.RFC3339)
 		} else {
@@ -1867,6 +1863,18 @@ func addressEntry(addr, kind string) gin.H {
 }
 
 // GetServer returns details for a single server
+// serverImageField renders a server response's "image" member: an {id} object for an
+// image-booted server, and "" for a boot-from-volume server (image_id NULL), matching
+// upstream Nova. The key must ALWAYS be present — Horizon reads server.image
+// unconditionally (instance detail view), and a missing key makes novaclient raise
+// AttributeError. Shared by the list and single-server handlers so they cannot drift.
+func serverImageField(imageID sql.NullString) any {
+	if imageID.Valid {
+		return gin.H{"id": imageID.String}
+	}
+	return ""
+}
+
 func (svc *Service) GetServer(c *gin.Context) {
 	// Owner-or-administrator: an administrator may show any project's server
 	// (SPEC-023 FR-004). The lookup below is then keyed on the resolved id and
@@ -1929,9 +1937,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 	if flavorID.Valid {
 		response["flavor"] = gin.H{"id": flavorID.String}
 	}
-	if imageID.Valid {
-		response["image"] = gin.H{"id": imageID.String}
-	}
+	response["image"] = serverImageField(imageID)
 
 	// key_name: always present; null when the instance has no keypair (FR-001).
 	if keyName.Valid {
