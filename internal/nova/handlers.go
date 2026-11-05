@@ -1862,7 +1862,6 @@ func addressEntry(addr, kind string) gin.H {
 	}
 }
 
-// GetServer returns details for a single server
 // serverImageField renders a server response's "image" member: an {id} object for an
 // image-booted server, and "" for a boot-from-volume server (image_id NULL), matching
 // upstream Nova. The key must ALWAYS be present — Horizon reads server.image
@@ -1875,6 +1874,7 @@ func serverImageField(imageID sql.NullString) any {
 	return ""
 }
 
+// GetServer returns details for a single server
 func (svc *Service) GetServer(c *gin.Context) {
 	// Owner-or-administrator: an administrator may show any project's server
 	// (SPEC-023 FR-004). The lookup below is then keyed on the resolved id and
