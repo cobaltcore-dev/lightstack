@@ -316,8 +316,10 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var links []gin.H
-	var networks []gin.H
+	links := []gin.H{}
+	networks := []gin.H{}
+	services := []gin.H{}
+	seenDNS := map[string]bool{}
 
 	linkID := 0
 	currentPort := ""
@@ -349,21 +351,44 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 			continue
 		}
 
-		// Create network config
+		// Match Nova metadata for each address family, with a distinct network ID
+		// even when several addresses share one link.
+		addressType := "ipv4"
+		if addr := net.ParseIP(ip); addr != nil && addr.To4() == nil {
+			addressType = "ipv6"
+		}
 		netConfig := gin.H{
-			"id":         fmt.Sprintf("network%d", linkID-1),
+			"id":         fmt.Sprintf("network%d", len(networks)),
 			"link":       fmt.Sprintf("tap%d", linkID-1),
-			"type":       "ipv4",
+			"type":       addressType,
+			"network_id": networkID,
 			"ip_address": ip,
 			"netmask":    cidrToNetmask(cidr), // Convert /24 → "255.255.255.0"
+			"routes":     []gin.H{},
+			"services":   []gin.H{},
 		}
 
 		if gateway != "" {
 			netConfig["gateway"] = gateway
+			zero := "0.0.0.0"
+			if addressType == "ipv6" {
+				zero = "::"
+			}
+			netConfig["routes"] = []gin.H{{"network": zero, "netmask": zero, "gateway": gateway}}
 		}
 
 		if len(dnsServers) > 0 {
 			netConfig["dns_nameservers"] = dnsServers
+			dnsServices := make([]gin.H, 0, len(dnsServers))
+			for _, dns := range dnsServers {
+				entry := gin.H{"type": "dns", "address": dns}
+				dnsServices = append(dnsServices, entry)
+				if !seenDNS[dns] {
+					services = append(services, entry)
+					seenDNS[dns] = true
+				}
+			}
+			netConfig["services"] = dnsServices
 		}
 
 		networks = append(networks, netConfig)
@@ -380,7 +405,7 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"links":    links,
 		"networks": networks,
-		"services": []gin.H{},
+		"services": services,
 	})
 }
 
@@ -716,6 +741,5 @@ func cidrToNetmask(cidr string) string {
 		}
 		return cidr
 	}
-	mask := ipNet.Mask
-	return fmt.Sprintf("%d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3])
+	return net.IP(ipNet.Mask).String()
 }

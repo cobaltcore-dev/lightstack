@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"math"
 	"net/http"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -23,7 +24,7 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 			Name      string `json:"name" binding:"required"`
 			RAM       int    `json:"ram" binding:"required"`
 			VCPUs     int    `json:"vcpus" binding:"required"`
-			Disk      int    `json:"disk" binding:"required"`
+			Disk      *int   `json:"disk" binding:"required"`
 			Ephemeral int    `json:"OS-FLV-EXT-DATA:ephemeral"`
 			IsPublic  *bool  `json:"os-flavor-access:is_public"`
 		} `json:"flavor" binding:"required"`
@@ -34,24 +35,22 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 		return
 	}
 
-	// Validate input ranges. Upper bounds are sanity caps (review 2026-10-13
-	// L-4), not policy: without them a typo (MB vs GB, or a negative sign
-	// flip) schedules absurd values that only surface at boot time. 1 TiB of
-	// RAM, 4096 vCPUs and 1 PiB of disk comfortably exceed any real flavor.
-	if req.Flavor.RAM < 0 || req.Flavor.RAM > 1<<20 {
-		common.SendError(c, common.NewBadRequestError("RAM must be between 0 and 1048576 MB"))
+	// Flamingo's flavor schema uses signed 32-bit values. RAM/vCPUs must be
+	// positive; zero root disk is valid for a server booted from a volume.
+	if req.Flavor.RAM < 1 || req.Flavor.RAM > math.MaxInt32 {
+		common.SendError(c, common.NewBadRequestError("RAM must be between 1 and 2147483647 MB"))
 		return
 	}
-	if req.Flavor.VCPUs < 0 || req.Flavor.VCPUs > 4096 {
-		common.SendError(c, common.NewBadRequestError("VCPUs must be between 0 and 4096"))
+	if req.Flavor.VCPUs < 1 || req.Flavor.VCPUs > math.MaxInt32 {
+		common.SendError(c, common.NewBadRequestError("VCPUs must be between 1 and 2147483647"))
 		return
 	}
-	if req.Flavor.Disk < 0 || req.Flavor.Disk > 1<<20 {
-		common.SendError(c, common.NewBadRequestError("Disk must be between 0 and 1048576 GB"))
+	if *req.Flavor.Disk < 0 || *req.Flavor.Disk > math.MaxInt32 {
+		common.SendError(c, common.NewBadRequestError("Disk must be between 0 and 2147483647 GB"))
 		return
 	}
-	if req.Flavor.Ephemeral < 0 || req.Flavor.Ephemeral > 1<<20 {
-		common.SendError(c, common.NewBadRequestError("Ephemeral disk must be between 0 and 1048576 GB"))
+	if req.Flavor.Ephemeral < 0 || req.Flavor.Ephemeral > math.MaxInt32 {
+		common.SendError(c, common.NewBadRequestError("Ephemeral disk must be between 0 and 2147483647 GB"))
 		return
 	}
 
@@ -67,7 +66,7 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 	_, err := svc.pool.Exec(ctx,
 		`INSERT INTO flavors (id, name, vcpus, ram_mb, disk_gb, is_public)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		flavorID, req.Flavor.Name, req.Flavor.VCPUs, req.Flavor.RAM, req.Flavor.Disk, isPublic,
+		flavorID, req.Flavor.Name, req.Flavor.VCPUs, req.Flavor.RAM, *req.Flavor.Disk, isPublic,
 	)
 	if err != nil {
 		// Check for unique constraint violation (duplicate name)
@@ -91,7 +90,7 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 			"name":                       req.Flavor.Name,
 			"vcpus":                      req.Flavor.VCPUs,
 			"ram":                        req.Flavor.RAM,
-			"disk":                       req.Flavor.Disk,
+			"disk":                       *req.Flavor.Disk,
 			"OS-FLV-EXT-DATA:ephemeral":  req.Flavor.Ephemeral,
 			"OS-FLV-DISABLED:disabled":   false,
 			"os-flavor-access:is_public": isPublic,

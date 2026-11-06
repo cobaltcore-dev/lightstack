@@ -38,8 +38,16 @@ func TestNetworkDataJSONServesPortAddresses(t *testing.T) {
 	}
 
 	portID := uuid.NewString()
+	var subnetV6 string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO subnets (name, network_id, project_id, cidr, gateway_ip, dns_nameservers)
+		 VALUES ('md-sub-v6', $1, $2, '2001:db8::/64', '2001:db8::1', ARRAY['2001:4860:4860::8888']) RETURNING id::text`,
+		networkID, seededProjectID).Scan(&subnetV6); err != nil {
+		t.Fatal(err)
+	}
 	fixed := `[{"subnet_id":"` + subnetID + `","ip_address":"192.168.42.77"},` +
-		`{"subnet_id":"` + subnetID + `","ip_address":"192.168.42.78"}]`
+		`{"subnet_id":"` + subnetID + `","ip_address":"192.168.42.78"},` +
+		`{"subnet_id":"` + subnetV6 + `","ip_address":"2001:db8::77"}]`
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, status, fixed_ips)
 		 VALUES ($1, 'md-port', $2, $3, $4, 'compute:nova', '52:54:00:0a:0b:0c', 'ACTIVE', $5::jsonb)`,
@@ -61,30 +69,78 @@ func TestNetworkDataJSONServesPortAddresses(t *testing.T) {
 		} `json:"links"`
 		Networks []struct {
 			ID         string   `json:"id"`
+			Type       string   `json:"type"`
+			NetworkID  string   `json:"network_id"`
 			Link       string   `json:"link"`
 			IPAddress  string   `json:"ip_address"`
 			Netmask    string   `json:"netmask"`
 			Gateway    string   `json:"gateway"`
 			DNSServers []string `json:"dns_nameservers"`
+			Routes     []struct {
+				Network string `json:"network"`
+				Netmask string `json:"netmask"`
+				Gateway string `json:"gateway"`
+			} `json:"routes"`
+			Services []struct {
+				Type    string `json:"type"`
+				Address string `json:"address"`
+			} `json:"services"`
 		} `json:"networks"`
+		Services []struct {
+			Type    string `json:"type"`
+			Address string `json:"address"`
+		} `json:"services"`
 	}
 	if err := json.Unmarshal([]byte(body), &doc); err != nil {
 		t.Fatalf("network_data.json is not JSON: %v (%s)", err, body)
 	}
 
-	// One port with two addresses: one interface, two network entries.
+	// One dual-stack port with three addresses: one interface, three networks.
 	if len(doc.Links) != 1 {
 		t.Errorf("links = %d; want 1 (one link per port, not per address): %s", len(doc.Links), body)
 	}
 	if len(doc.Links) == 1 && doc.Links[0].EthernetMACAddress != "52:54:00:0a:0b:0c" {
 		t.Errorf("link mac = %q; want the port's", doc.Links[0].EthernetMACAddress)
 	}
-	if len(doc.Networks) != 2 {
-		t.Fatalf("networks = %d; want 2 (one per address): %s", len(doc.Networks), body)
+	if len(doc.Networks) != 3 {
+		t.Fatalf("networks = %d; want 3 (one per address): %s", len(doc.Networks), body)
 	}
 	ips := map[string]bool{}
+	networkIDs := map[string]bool{}
 	for _, n := range doc.Networks {
+		if networkIDs[n.ID] {
+			t.Errorf("duplicate network id %q", n.ID)
+		}
+		networkIDs[n.ID] = true
+		if len(doc.Links) == 1 && n.Link != doc.Links[0].ID {
+			t.Errorf("network link %q does not reference its port", n.Link)
+		}
 		ips[n.IPAddress] = true
+		zero := "0.0.0.0"
+		if n.Type == "ipv6" {
+			zero = "::"
+		}
+		if len(n.Routes) != 1 || n.Routes[0].Network != zero || n.Routes[0].Netmask != zero || n.Routes[0].Gateway != n.Gateway {
+			t.Errorf("invalid default route for %s: %+v", n.IPAddress, n.Routes)
+		}
+		if len(n.Services) != 1 || n.Services[0].Type != "dns" || len(n.DNSServers) != 1 || n.Services[0].Address != n.DNSServers[0] {
+			t.Errorf("invalid DNS services for %s: %+v", n.IPAddress, n.Services)
+		}
+		if n.NetworkID != networkID {
+			t.Errorf("network_id=%q; want %q", n.NetworkID, networkID)
+		}
+		if n.IPAddress == "2001:db8::77" {
+			if n.Type != "ipv6" || n.Netmask != "ffff:ffff:ffff:ffff::" || n.Gateway != "2001:db8::1" {
+				t.Errorf("invalid IPv6 metadata: %+v", n)
+			}
+			if len(n.DNSServers) != 1 || n.DNSServers[0] != "2001:4860:4860::8888" {
+				t.Errorf("invalid IPv6 DNS: %v", n.DNSServers)
+			}
+			continue
+		}
+		if n.Type != "ipv4" {
+			t.Errorf("IPv4 type=%q", n.Type)
+		}
 		if n.Netmask != "255.255.255.0" {
 			t.Errorf("network %s: netmask = %q; want 255.255.255.0", n.IPAddress, n.Netmask)
 		}
@@ -97,6 +153,9 @@ func TestNetworkDataJSONServesPortAddresses(t *testing.T) {
 	}
 	if !ips["192.168.42.77"] || !ips["192.168.42.78"] {
 		t.Errorf("networks missing the port's addresses: %s", body)
+	}
+	if len(doc.Services) != 2 {
+		t.Errorf("services must contain both DNS servers once: %+v", doc.Services)
 	}
 }
 
@@ -145,5 +204,8 @@ func TestNetworkDataJSONToleratesNullFixedIPs(t *testing.T) {
 	}
 	if len(doc.Networks) != 0 {
 		t.Errorf("networks = %d; an address-less port contributes none: %s", len(doc.Networks), body)
+	}
+	if doc.Networks == nil {
+		t.Errorf("networks must be an empty array, not null: %s", body)
 	}
 }
