@@ -43,7 +43,7 @@ func TestPrepareInstanceDirOwnsDirInRealMode(t *testing.T) {
 }
 
 // The owner PrepareInstanceDir gives the per-instance directory is the one libvirt
-// reports for QEMU in its capabilities, read once at startup by PrepareConsoleSocketDir.
+// reports for QEMU in its capabilities, read by the console socket directory's preparation.
 // Without that hand-over the directory keeps this process's owner, and with an
 // unprivileged QEMU every guest fails to start on its console.log.
 func TestPrepareInstanceDirTakesOwnerFromCapabilities(t *testing.T) {
@@ -54,8 +54,8 @@ func TestPrepareInstanceDirTakesOwnerFromCapabilities(t *testing.T) {
 	uid, gid := otherOwner(t)
 	label := fmt.Sprintf("<baselabel type='kvm'>+%d:+%d</baselabel>", uid, gid)
 	m := newConnectedManagerWith(t, &fakeLibvirtd{caps: capsWith(dacModel(label))})
-	if err := m.PrepareConsoleSocketDir(t.Context(), paths.ConsoleSocketDir()); err != nil {
-		t.Fatalf("PrepareConsoleSocketDir: %v", err)
+	if err := m.prepareShared(t.Context()); err != nil {
+		t.Fatalf("prepareShared: %v", err)
 	}
 
 	if err := m.PrepareInstanceDir("iid"); err != nil {

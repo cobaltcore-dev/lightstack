@@ -25,16 +25,16 @@ nova:
 
 ### Result:
 ```
-WARNING: Failed to initialize hypervisor: 
-  failed to connect to libvirt: 
-  failed to dial libvirt socket: 
-  dial unix /var/run/libvirt/libvirt-sock: connect: no such file or directory
+Hypervisor started in real mode; connecting to libvirt in the background
+{"level":"warn","error":"no libvirt socket: neither /var/run/libvirt/virtqemud-sock nor /var/run/libvirt/libvirt-sock exists","next_attempt_in":1000,"message":"libvirt connection attempt failed; retrying in the background"}
 ```
 
 ### Behavior:
-✅ **Graceful degradation** - Lightstack started successfully
-✅ **Services available** - All 5 services running
-⚠️ **VM operations disabled** - Nova will return "hypervisor not available"
+✅ **Startup does not wait on libvirt** - all services start, and Lightstack keeps retrying in
+the background (1 s attempts, 1-5 s apart), connecting once a socket appears
+⚠️ **Not Ready** - `/readyz` answers `503 hypervisor unavailable` until libvirt has answered once
+⚠️ **No guest is faked** - a server create ends `ERROR` with the fault "the hypervisor is not
+ready to start guests"; a server action answers `500`
 
 ## Real Mode Requirements
 
@@ -53,8 +53,9 @@ WARNING: Failed to initialize hypervisor:
 
 3. **libvirt socket** available
    ```bash
-   ls -la /var/run/libvirt/libvirt-sock
-   # Should exist and be accessible
+   ls -la /var/run/libvirt/virtqemud-sock /var/run/libvirt/libvirt-sock
+   # One should exist and be accessible: virtqemud-sock with the modular daemons,
+   # libvirt-sock with libvirtd
    ```
 
 4. **User permissions**
@@ -159,13 +160,14 @@ virsh list --all  # Should be gone
 ```
 1. lightstack starts with libvirt_mode: real
    ↓
-2. VMManager.connectLibvirt() called
+2. hypervisor.StartVMManager() returns at once; a background loop connects
    ↓
-3. Dial Unix socket: /var/run/libvirt/libvirt-sock
+3. Each attempt dials /var/run/libvirt/virtqemud-sock if it exists, else
+   /var/run/libvirt/libvirt-sock (or the socket libvirt_uri names)
    ↓
-4. Connect to libvirt daemon via go-libvirt
+4. Connect to libvirt daemon via go-libvirt, dial and handshake bounded at 1 second
    ↓
-5. Connection established (2-second timeout)
+5. Connection established; on failure or a lost connection, retried 1-5 s apart
 ```
 
 ### VM Creation Flow (Real Mode):

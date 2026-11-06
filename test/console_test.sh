@@ -12,15 +12,16 @@
 # resolve, stay with their instance and are revoked.
 #
 # Usage:  ./test/console_test.sh
-# Env:    KEYSTONE_URL, NOVA_URL
+# Env:    KEYSTONE_URL, NOVA_URL, GLANCE_URL
 
 set -euo pipefail
 
 KEYSTONE_URL="${KEYSTONE_URL:-http://localhost:35357}"
 NOVA_URL="${NOVA_URL:-http://localhost:8774}"
+GLANCE_URL="${GLANCE_URL:-http://localhost:9292}"
 
-# The instance below has no image, which real mode boots to ERROR with no libvirt
-# domain, so in real mode it could never get a console.
+# The instance below boots from a few placeholder bytes, not a disk image. Real mode
+# cannot turn that into a running guest, so in real mode it could never get a console.
 if [ "${LIGHTSTACK_MODE:-stub}" != "stub" ]; then
     echo "console_test.sh is stub-only; for real mode run ./test/console_access_test.sh" >&2
     exit 2
@@ -51,11 +52,25 @@ echo "✓ authenticated"
 # Installed before the instance exists so an early failure still cleans up; both the
 # rm and the DELETE tolerate a half-finished run.
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"; [ -n "${INSTANCE_ID:-}" ] && curl -s -X DELETE "$NOVA_URL/v2.1/servers/$INSTANCE_ID" -H "X-Auth-Token: $TOKEN" >/dev/null 2>&1 || true' EXIT
+trap 'rm -rf "$TMP"; [ -n "${INSTANCE_ID:-}" ] && curl -s -X DELETE "$NOVA_URL/v2.1/servers/$INSTANCE_ID" -H "X-Auth-Token: $TOKEN" >/dev/null 2>&1 || true; [ -n "${IMAGE_ID:-}" ] && curl -s -X DELETE "$GLANCE_URL/v2/images/$IMAGE_ID" -H "X-Auth-Token: $TOKEN" >/dev/null 2>&1 || true' EXIT
+
+# The image the instance boots from: a create must name its boot source.
+IMAGE_ID=$(curl -s -X POST "$GLANCE_URL/v2/images" \
+    -H "X-Auth-Token: $TOKEN" -H "Content-Type: application/json" \
+    -d '{"name":"spec021-console-image","disk_format":"raw","container_format":"bare"}' \
+    | jq -r '.id')
+
+if [ -z "$IMAGE_ID" ] || [ "$IMAGE_ID" = "null" ]; then
+    echo "✗ failed to create the test image"
+    exit 1
+fi
+curl -s -o /dev/null -X PUT "$GLANCE_URL/v2/images/$IMAGE_ID/file" \
+    -H "X-Auth-Token: $TOKEN" -H "Content-Type: application/octet-stream" \
+    --data-binary "lightstack test image"
 
 INSTANCE_ID=$(curl -s -X POST "$NOVA_URL/v2.1/servers" \
     -H "X-Auth-Token: $TOKEN" -H "Content-Type: application/json" \
-    -d '{"server":{"name":"spec021-console-vm","flavorRef":"00000000-0000-0000-0000-000000000010"}}' \
+    -d '{"server":{"name":"spec021-console-vm","flavorRef":"00000000-0000-0000-0000-000000000010","imageRef":"'"$IMAGE_ID"'"}}' \
     | jq -r '.server.id')
 
 if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then

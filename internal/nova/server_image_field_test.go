@@ -76,8 +76,9 @@ func TestServerResponsesCarryImage(t *testing.T) {
 	}
 }
 
-// createImageFieldServer creates a server in the seeded project, booted from imageRef
-// when it is not empty, and returns its id. The row is removed when the test ends.
+// createImageFieldServer creates a server in the seeded project and returns its id: booted
+// from imageRef when it is not empty, else from a volume — the boot source that leaves a
+// server without an image. The row is removed when the test ends.
 func createImageFieldServer(t *testing.T, r *gin.Engine, imageRef string) string {
 	t.Helper()
 	name := "imgfield-" + uuid.New().String()[:8]
@@ -85,6 +86,11 @@ func createImageFieldServer(t *testing.T, r *gin.Engine, imageRef string) string
 	server := map[string]any{"name": name, "flavorRef": "m1.small"}
 	if imageRef != "" {
 		server["imageRef"] = imageRef
+	} else {
+		server["block_device_mapping_v2"] = []map[string]any{{
+			"uuid": seedBootableVolume(t, name), "boot_index": 0,
+			"source_type": "volume", "destination_type": "volume",
+		}}
 	}
 	req, err := json.Marshal(map[string]any{"server": server})
 	if err != nil {

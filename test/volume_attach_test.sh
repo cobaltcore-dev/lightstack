@@ -57,6 +57,11 @@ cleanup() {
             -H "X-Auth-Token: $TOKEN" > /dev/null 2>&1 || true
     fi
 
+    if [ -n "$IMAGE_ID" ]; then
+        curl -s -X DELETE "http://localhost:9292/v2/images/$IMAGE_ID" \
+            -H "X-Auth-Token: $TOKEN" > /dev/null 2>&1 || true
+    fi
+
     if [ -n "$VOLUME_ID" ]; then
         curl -s -X DELETE "http://localhost:8776/v3/$PROJECT_ID/volumes/$VOLUME_ID" \
             -H "X-Auth-Token: $TOKEN" > /dev/null 2>&1 || true
@@ -171,6 +176,24 @@ fi
 
 log_success "Using flavor: $FLAVOR_ID"
 
+# Create the image the instance boots from: a create must name its boot source.
+IMAGE_ID=$(curl -s -X POST "http://localhost:9292/v2/images" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "test-volume-image", "disk_format": "raw", "container_format": "bare"}' | jq -r '.id')
+
+if [ -z "$IMAGE_ID" ] || [ "$IMAGE_ID" == "null" ]; then
+    log_error "Failed to create image"
+    exit 1
+fi
+
+curl -s -o /dev/null -X PUT "http://localhost:9292/v2/images/$IMAGE_ID/file" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "lightstack test image"
+
+log_info "Using image: $IMAGE_ID"
+
 # Create instance (without volume)
 log_test "Create test instance"
 INSTANCE_RESPONSE=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
@@ -180,6 +203,7 @@ INSTANCE_RESPONSE=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
         \"server\": {
             \"name\": \"test-volume-instance\",
             \"flavorRef\": \"$FLAVOR_ID\",
+            \"imageRef\": \"$IMAGE_ID\",
             \"networks\": [{\"uuid\": \"$NETWORK_ID\"}]
         }
     }")

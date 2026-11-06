@@ -24,7 +24,7 @@ Lightstack exposes three **unauthenticated** endpoints on the identity port (353
 
 | Path | Purpose | Behavior |
 |------|---------|----------|
-| `GET /readyz` | readiness | `200` only when the database is reachable **and** all HTTP listeners are bound; `503` + a short reason (e.g. `database unavailable`) otherwise. |
+| `GET /readyz` | readiness | `200` only when the database is reachable **and** all HTTP listeners are bound; `503` + a short reason (e.g. `database unavailable`) otherwise. In real mode it also waits until the console socket directory has been prepared once, which takes the host's libvirt answering (`hypervisor unavailable` until then); later libvirt outages do not affect it, and a host where it never succeeds is restarted by the startup probe. |
 | `GET /livez` | liveness | `200` while the process is up; **never** touches the database — a DB outage must not restart the pod. |
 | `GET\|HEAD /healthcheck` | OpenStack/oslo alias | alias of `/readyz`; content-negotiates `text/plain` (default) and `application/json`. |
 
@@ -134,8 +134,8 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | Key | Default | Mode | Purpose |
 |-----|---------|------|---------|
 | `realMode.enabled` | `false` | real | gate privileged pod + host mounts |
-| `realMode.privileged` / `hostNetwork` | `false` | real | host-level access |
-| `realMode.libvirtSocketPath` | `/var/run/libvirt/libvirt-sock` | real | host libvirtd socket; pods mount its directory (hostPath), so a re-created socket stays reachable |
+| `realMode.privileged` / `hostNetwork` | `false` | real | host-level access; host networking also renders `dnsPolicy: ClusterFirstWithHostNet` on the Lightstack pod and the purge Job, so in-cluster Service names (`<service>.<namespace>.svc`) resolve |
+| `realMode.libvirtSocketPath` | `/var/run/libvirt/libvirt-sock` | real | host libvirt socket; pods mount its directory (hostPath), so a re-created socket stays reachable. The default lets the binary choose `virtqemud-sock`, else `libvirt-sock`; any other value is also the socket it dials. With `secrets.existingSecret`, your own config's `nova.libvirt_uri` must name the same socket — absolute |
 | `realMode.hostStoragePath` | `/var/lib/lightstack` | real | node-local VM/volume/image data (hostPath); mounted at the same path and passed to the binary as `state_path` — absolute |
 | `realMode.legacyStatePath` | `""` | real | pre-rename root to migrate into `hostStoragePath` once; empty renders nothing ([UPGRADING](../../docs/UPGRADING.md)) |
 | `realMode.floatingIpPool` | `""` | real | operator pool routed to nodes (FR-009c) |
@@ -239,6 +239,10 @@ The purge is blocking and fail-closed — if it cannot complete, `helm uninstall
 
 - **Irreversible on the node.** `delete` destroys the node's local VM disks / images / volumes / ISOs. The external **database is operator-owned and is NOT touched** (read-only for enumeration) — a pristine redeploy requires the operator to provide a clean database.
 - **Operator-owned, NOT purged:** networked backends (Ceph RBD / S3). Reclaim those yourself if desired.
+- **One attempt to reach libvirt.** In real mode the purge dials libvirt once, bounded at 1 second, and
+  fails closed when that is missed. A socket-activated daemon that had exited is started by the attempt
+  itself and may miss the bound: `helm uninstall` then aborts, and the purge Job's log names the socket
+  it tried. Run `helm uninstall` again — the daemon is up by then.
 - **Escape hatch:** `helm uninstall lightstack --no-hooks` removes the release *without* purging (e.g. the
   hosting node is gone). You are then responsible for any orphaned host state.
 - **Single-node only** today; multi-node DaemonSet host purge is tracked in issue #52.
