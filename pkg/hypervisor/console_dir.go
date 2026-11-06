@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
+	"github.com/rs/zerolog/log"
 )
 
 // ErrConsoleSocketDirNotReady refuses a guest start while the console socket directory
@@ -20,13 +21,6 @@ import (
 // libvirt, so starts are refused before libvirt is asked (FR-017a).
 var ErrConsoleSocketDirNotReady = errors.New("console socket directory not ready")
 
-// consoleDirState is the outcome of PrepareConsoleSocketDir: the directory, and why it
-// is not ready (nil once it is).
-type consoleDirState struct {
-	dir string
-	err error
-}
-
 // dacOwner is the uid:gid libvirt runs QEMU as (its DAC base label). Cached on the
 // VMManager so per-instance directories can be chowned to it without re-reading libvirt
 // capabilities on every guest create.
@@ -35,47 +29,99 @@ type dacOwner struct {
 }
 
 // PrepareConsoleSocketDir makes dir the guests' console socket directory: owned by the
-// uid:gid libvirt runs QEMU as, which it reports in its capabilities, with mode 0750.
-// QEMU can then create and remove its socket there, the kvm group can read it, and
-// nobody else gets in. The outcome is recorded, and every start is refused until it
-// succeeds. Called at real-mode startup, right after connecting.
+// uid:gid libvirt runs QEMU as, which it reports in its capabilities, with mode 0750. QEMU can
+// then create and remove its socket there, the kvm group can read it, and nobody else gets in.
+//
+// A caller arriving while an attempt runs takes that attempt's result. The first success is
+// never withdrawn: a later attempt that fails changes nothing in effect, and one that succeeds
+// replaces QEMU's user (SPEC-031 FR-015). Guest starts are refused until one has succeeded.
 func (m *VMManager) PrepareConsoleSocketDir(ctx context.Context, dir string) error {
-	err := m.prepareConsoleSocketDir(ctx, dir)
-	m.consoleDir.Store(&consoleDirState{dir: dir, err: err})
+	m.consoleDirPath.Store(&dir)
+	return m.prepareShared(ctx, dir)
+}
+
+// prepareShared runs one preparation attempt, or joins the one in flight (single-flight).
+func (m *VMManager) prepareShared(ctx context.Context, dir string) error {
+	_, err, _ := m.prepGroup.Do(dir, func() (any, error) {
+		return nil, m.prepareConsoleSocketDir(ctx, dir)
+	})
 	return err
 }
 
+// prepareConsoleSocketDir is one attempt, logged: the first failure at ERROR with its cause,
+// later ones at DEBUG, the first success at INFO naming the directory and QEMU's user, a redo
+// at DEBUG unless QEMU's user changed (SPEC-031 FR-017a).
 func (m *VMManager) prepareConsoleSocketDir(ctx context.Context, dir string) error {
-	conn := m.conn.Load()
-	if conn == nil {
-		return errors.New("not connected to libvirt")
-	}
-	caps, err := withDeadline(ctx, conn.ConnectGetCapabilities)
+	uid, gid, err := m.attemptPrepare(ctx, dir)
 	if err != nil {
-		return fmt.Errorf("reading libvirt capabilities: %w", err)
-	}
-	uid, gid, err := qemuDACOwner(caps)
-	if err != nil {
+		if !m.prepared.Load() && m.prepFailureLogged.CompareAndSwap(false, true) {
+			log.Error().Err(err).Str("dir", dir).
+				Msg("console socket directory not ready; guest starts are refused until it is")
+		} else {
+			log.Debug().Err(err).Str("dir", dir).Msg("console socket directory preparation failed")
+		}
 		return err
 	}
-	// Cache QEMU's owner so each guest's per-instance directory can be chowned to it on
-	// create (PrepareInstanceDir), without re-reading capabilities every time.
-	m.qemuOwner.Store(&dacOwner{uid: uid, gid: gid})
-	return ensureOwnedDir(dir, uid, gid)
-}
-
-// consoleDirReady reports whether guests may start: nil once PrepareConsoleSocketDir has
-// succeeded, otherwise ErrConsoleSocketDirNotReady naming the directory and the cause.
-func (m *VMManager) consoleDirReady() error {
-	s := m.consoleDir.Load()
-	if s == nil {
-		return fmt.Errorf("%w: %s has not been prepared", ErrConsoleSocketDirNotReady, paths.ConsoleSocketDir())
-	}
-	if s.err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrConsoleSocketDirNotReady, s.dir, s.err)
+	owner := fmt.Sprintf("%d:%d", uid, gid)
+	prev := m.qemuOwner.Swap(&dacOwner{uid: uid, gid: gid})
+	switch wasPrepared := m.prepared.Swap(true); {
+	case !wasPrepared:
+		log.Info().Str("dir", dir).Str("qemu_user", owner).Msg("console socket directory ready; guests can start")
+	case prev == nil || prev.uid != uid || prev.gid != gid:
+		log.Info().Str("dir", dir).Str("qemu_user", owner).Msg("console socket directory prepared again for QEMU's new user")
+	default:
+		log.Debug().Str("dir", dir).Str("qemu_user", owner).Msg("console socket directory checked again after a reconnect")
 	}
 	return nil
 }
+
+// attemptPrepare reads QEMU's user from libvirt's capabilities, under the 1-second bound, and
+// makes dir that user's. It changes no state: the caller records a success.
+func (m *VMManager) attemptPrepare(ctx context.Context, dir string) (uid, gid int, err error) {
+	conn := m.conn.Load()
+	if conn == nil {
+		return 0, 0, errors.New("not connected to libvirt")
+	}
+	caps, err := withDeadline(ctx, conn.ConnectGetCapabilities)
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading libvirt capabilities: %w", err)
+	}
+	if uid, gid, err = qemuDACOwner(caps); err != nil {
+		return 0, 0, err
+	}
+	if err := ensureOwnedDir(dir, uid, gid); err != nil {
+		return 0, 0, err
+	}
+	return uid, gid, nil
+}
+
+// ensurePrepared lets a guest start go ahead once the console socket directory is QEMU's. If
+// it is not yet, the start makes one attempt — or takes the result of the one in flight —
+// bounded at 1 second, and is refused with ErrConsoleSocketDirNotReady naming the directory
+// and the cause when that fails (SPEC-031 FR-013, FR-016).
+func (m *VMManager) ensurePrepared(ctx context.Context) error {
+	if m.prepared.Load() {
+		return nil
+	}
+	dir := m.consoleSocketDir()
+	if err := m.prepareShared(ctx, dir); err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrConsoleSocketDirNotReady, dir, err)
+	}
+	return nil
+}
+
+// consoleSocketDir is the directory this manager prepares: the one it was given, else the
+// state path's.
+func (m *VMManager) consoleSocketDir() string {
+	if p := m.consoleDirPath.Load(); p != nil && *p != "" {
+		return *p
+	}
+	return paths.ConsoleSocketDir()
+}
+
+// ConsoleDirPrepared reports whether the console socket directory has been prepared at least
+// once — what real-mode readiness waits for (SPEC-031 FR-017). Once true, it stays true.
+func (m *VMManager) ConsoleDirPrepared() bool { return m.prepared.Load() }
 
 // capabilitiesSecModels is the slice of libvirt's capabilities document that names the
 // security models and the labels guests run under (docs/formatcaps.rst).

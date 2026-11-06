@@ -1,44 +1,53 @@
 <!--
 SYNC IMPACT REPORT — constitution amendment
 ===========================================
-Version change: 1.3.0 → 1.4.0 (MINOR — a material change to one limit of a permitted exception)
+Version change: 1.4.0 → 1.5.0 (MINOR — one new permitted exception; one article's rule restated to
+its original intent, ruling out a runtime reading)
 
 Modified principles:
-  - II. Synchronous Operations — title and rules unchanged. The fourth limit of "Permitted
-    exception — reservation around external work" changes: the node that made a reservation
-    corrects it at startup or by a periodic pass once its owner has stopped (was: once, at
-    startup), and the partial result is reclaimed when the resource is deleted (was: by the
-    correction). The correction stays a stateless pass that accepts no work. The exception's
-    rationale gains the reason.
+  - III. Fail-Fast Design — title and rules unchanged. Adds "Permitted exception — re-establishing a
+    dependency in the background": a loop that restores the process's own connection to a
+    dependency, or completes a one-time preparation that depends on it, within four limits. Records
+    the libvirt reconnect loop shipped with 6ed30f7 (2026-09-24), which no spec or plan had recorded.
+  - IV. Multi-Mode Architecture — title unchanged. "Mode detection: … or `svc.vmManager == nil`" and
+    "Default to stub mode when dependencies unavailable" become Mode selection, Mode detection and
+    No runtime fallback: an unset mode defaults to stub; a configured real mode never falls back to
+    stub at runtime. Gains a rationale.
 
 Changed sections:
-  - Technology Constraints → Forbidden Patterns: the async-worker exemption names the correction of
-    interrupted reservations at startup and by a periodic pass.
-  - Amendment Log: entry for v1.4.0.
+  - Technology Constraints → Forbidden Patterns: the async-worker exemption names re-establishing a
+    dependency in the background (Article III).
+  - Amendment Log: entry for v1.5.0.
 
-Added sections: none.
+Added sections: none (the exception is a subsection of Article III).
 Removed sections: none.
+
+Scope check (Article IV, "No runtime fallback"): the only runtime fallback to stub in the code is
+Nova's hypervisor — a failed `InitHypervisor` leaves `svc.vmManager` nil and `server create` takes the
+stub branch (`internal/nova/handlers.go:1363-1371`), which SPEC-031 removes. Neutron, Cinder and
+Glance default to stub only when their mode is unset (`cmd/lightstack/main.go:147-151, 170-174,
+241-245, 264-268`), and a Glance init failure is already fatal (`main.go:285`). No other code becomes
+a violation.
 
 Template deferral check (templates are never edited — report only):
   - ✅ $HOME/.specify/templates/plan-template.md — Constitution Check still defers
     ("[Gates determined based on constitution file]", line 34).
   - ✅ $HOME/.specify/templates/spec-template.md — no principle references.
-  - ✅ $HOME/.specify/templates/tasks-template.md — no principle references.
-  - ✅ $HOME/.claude/commands/*.md — no reference to Article II's exceptions, to reservations or to
-    the startup correction, and no CLAUDE.md-only guidance.
+  - ✅ $HOME/.specify/templates/tasks-template.md — no reference to Articles III or IV; its test
+    sections ("Write these tests FIRST") leave room for Test-First tasks.
+  - ✅ $HOME/.claude/commands/*.md (11 files) — no reference to Article III's retry rule, Article IV's
+    fallback rule, `vmManager`, or a stub fallback.
 
 Runtime guidance updated in the repo:
-  - docs/specs/028-sqlite-database-layer/plan.md — the Constitution Check cites v1.4.0 and states
-    the amended fourth limit; the post-design re-check names the two background loops added in
-    review (the reservation owners' heartbeat and the periodic sweep) and both API changes (FR-035a,
-    FR-036a); the project structure lists v1.4.0.
-  - docs/UPGRADING.md ("Volumes interrupted by a restart") — interrupted reservations turn `error`
-    at the next start or by the periodic pass, and keep their backing until they are deleted.
+  - CLAUDE.md — the "Nova stub mode" check and the "Mode Detection" idiom no longer treat a nil
+    `svc.vmManager` as stub mode; "Nova real mode" states that it never falls back to stub.
+  - docs/specs/031-realmode-dns-libvirt-fixes/plan.md and research.md — the Constitution Check cites
+    v1.5.0 as ratified; R13 records the ratified text and its two refinements of the draft.
 
 Follow-up TODOs:
   - ⚠ CLAUDE.md "The Nine Articles (Constitution)" and .claude/memory/constitution.md (v1.0,
-    "Library-First" …) still describe a different, generic document (flagged since v1.2.0;
-    unchanged here — needs a decision).
+    "Library-First" …) still describe a different, generic document (flagged since v1.2.0; unchanged
+    here — needs a decision).
   - ⚠ README.md:587 and docs/API_COVERAGE_REPORT.md:127 quote 35 MB as historical measurements; left
     as recorded (carried from v1.3.0).
 -->
@@ -155,14 +164,45 @@ it is bounded:
 once; with an unbounded one, a stuck writer would hang every request. Five seconds is far above the
 milliseconds a write transaction takes once no transaction spans external work (Article II).
 
+**Permitted exception — re-establishing a dependency in the background** (added in v1.5.0). A
+background loop that restores the process's own connection to an external dependency, or completes a
+one-time preparation that depends on it, does not violate this principle when all of the following
+hold:
+
+- No request waits on the loop. While the dependency is unreachable or the preparation incomplete, a
+  request that needs it fails at once, as it would without the loop. The request may make at most one
+  attempt of its own — or wait for one already running — within the dependency's bound.
+- Every attempt, the loop's and a request's, is bounded as the dependency's calls are: 1 second for
+  libvirt.
+- The pause between the loop's attempts is capped — 1 to 5 seconds for libvirt — and the loop stops
+  when the process does.
+- The loop carries no queue, no job records and no per-request state, and accepts no work from a
+  request.
+
+**Rationale**: the libvirt reconnect loop shipped with `6ed30f7` (2026-09-24) — without it a libvirtd
+restart left real mode dead until the pod was restarted by hand — contradicted "Never: retry loops,
+exponential backoff", and no spec or plan recorded it. SPEC-031 extends it to the first connection and
+to the console socket directory preparation, which real-mode readiness waits for: a retry driven only
+by guest starts would deadlock, since no guest start reaches a pod that is not Ready. What the article
+protects is unchanged: a request still gets immediate feedback.
+
 ### IV. Multi-Mode Architecture
 Every service supports stub mode (development) and real mode (production).
 - **Stub mode**: Returns fake data, no external dependencies, safe on macOS
 - **Real mode**: Full implementation with libvirt/Ceph/iptables, requires Linux
-- Mode detection: Check `svc.libvirtMode == "stub"` or `svc.vmManager == nil`
-- Default to stub mode when dependencies unavailable
+- **Mode selection**: the configuration chooses the mode; an unset mode defaults to stub
+- **Mode detection**: check the configured mode (`svc.libvirtMode == "stub"`,
+  `svc.networkingMode == "stub"`). A nil `svc.vmManager` means no hypervisor was wired in (stub-mode
+  tests); it never stands for real mode
+- **No runtime fallback**: a configured real mode never falls back to stub. An unreachable dependency
+  is an outage — the operations that need it fail as they do when it is lost later — never fake data
 
 **Requirement**: All features must work in stub mode for development/testing without Linux.
+
+**Rationale** (v1.5.0): read at runtime, "default to stub mode when dependencies unavailable" was how a
+real-mode deployment whose libvirt was unreachable at startup reported servers `ACTIVE` with no guest
+behind them, while the console path already treated the same state as an outage (SPEC-031). Stub mode
+stays the default when no mode is configured, which is what the rule was for.
 
 ### V. Project Isolation
 All resources scoped by `project_id` from JWT token.
@@ -231,7 +271,8 @@ undocumented divergence does not merely go unfixed; it silently bounds the value
 - **No message queues**: RabbitMQ, Kafka, Redis streams
 - **No async workers**: Celery, background job processors, or any loop an API response waits on
   (stateless reconciliation loops and the correction of interrupted reservations — at startup and by
-  a periodic pass — are permitted; see Article II)
+  a periodic pass — are permitted, see Article II; so is re-establishing a dependency in the
+  background, see Article III)
 - **No state machines**: Conductor-style workflows
 - **No service discovery**: Consul, etcd (services on fixed ports)
 - **No container orchestration required**: Runs standalone or in Docker Compose
@@ -292,6 +333,29 @@ Amendments require:
 - Migration plan for existing deployments
 
 ## Amendment Log
+
+### v1.5.0 — 2026-11-06 — re-establishing a dependency in the background (Article III); no runtime fallback to stub (Article IV)
+
+**Rationale**: SPEC-031 (cloud-storage#630) found two places where the text no longer described the
+product, or would have forbidden its fix:
+
+- Article III forbids "retry loops, exponential backoff", yet `main` has re-dialed libvirt in the
+  background with a 1-to-5-second backoff since `6ed30f7` (2026-09-24), and no spec or plan recorded
+  it. SPEC-031 needs the same loop for the first connection and for the console socket directory
+  preparation, because real-mode readiness waits for that preparation and no guest start can reach a
+  pod that is not Ready.
+- Article IV's "default to stub mode when dependencies unavailable", read at runtime, is exactly how a
+  real-mode deployment with an unreachable libvirt reported servers `ACTIVE` with no guest behind
+  them. SPEC-031 FR-019 removes that path.
+
+**Scope**: an exception with four limits, as v1.1.0 and v1.3.0 added theirs: no request waits on the
+loop, every attempt keeps the dependency's bound, the pause is capped, and the loop takes no work.
+Article IV is restated to its original intent — stub when no mode is configured — and its runtime
+reading is ruled out. Neither change relaxes what a request experiences.
+
+**Migration plan**: none for the constitution itself. The reconnect loop has already shipped. SPEC-031
+ships the first-connection and preparation retries and ends the runtime fallback; its
+`docs/UPGRADING.md` notes (FR-024) cover what an existing real-mode deployment will notice.
 
 ### v1.4.0 — 2026-11-04 — correcting interrupted reservations: a periodic pass, reclaim on delete (Article II)
 
@@ -370,4 +434,4 @@ forbidden, and the synchronous-operations rule for API operations is unchanged.
 **Migration plan**: none required. No behaviour changes. One shipped component stops being a deviation,
 and SPEC-025's compute state reconciler and action-history reclamation are permitted on the same terms.
 
-**Version**: 1.4.0 | **Ratified**: 2026-03-13 | **Last Amended**: 2026-11-04
+**Version**: 1.5.0 | **Ratified**: 2026-03-13 | **Last Amended**: 2026-11-06

@@ -192,8 +192,8 @@ docker logs lightstack 2>&1 | grep DEBUG
 
 3. **Check file permissions**:
    ```bash
-   # libvirt socket
-   ls -la /var/run/libvirt/libvirt-sock
+   # libvirt socket: virtqemud-sock where the modular daemons run, else libvirt-sock
+   ls -la /var/run/libvirt/virtqemud-sock /var/run/libvirt/libvirt-sock
    
    # Image directory
    ls -la /var/lib/lightstack/images/

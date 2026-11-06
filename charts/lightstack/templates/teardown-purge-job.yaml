@@ -35,6 +35,9 @@ spec:
       {{- end }}
       {{- if and .Values.realMode.enabled .Values.realMode.hostNetwork }}
       hostNetwork: true
+      # The purge reads the database, which may be an in-cluster Service: resolve through the
+      # cluster DNS, as the workload does (see lightstack.podSpec).
+      dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
       containers:
         - name: purge

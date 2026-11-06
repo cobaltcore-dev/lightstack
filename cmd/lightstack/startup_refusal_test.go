@@ -215,3 +215,35 @@ func TestMissingSQLiteFile(t *testing.T) {
 		})
 	}
 }
+
+// TestUnsupportedLibvirtURIRefused pins SPEC-031 FR-009: in real mode, a libvirt_uri Lightstack
+// cannot honour stops every entry point that loads the configuration, naming the value and the
+// forms it accepts, before the database is opened. lightstack-migrate never reads libvirt.
+func TestUnsupportedLibvirtURIRefused(t *testing.T) {
+	const uri = "qemu+tcp://h/system"
+	for _, ep := range entryPoints {
+		if ep.name == "lightstack-migrate" {
+			continue
+		}
+		t.Run(ep.name, func(t *testing.T) {
+			watch := filepath.Join(t.TempDir(), "watch")
+			// Real mode allows a state_path of 50 characters at most; t.TempDir's are longer.
+			state, err := os.MkdirTemp("", "ls")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(state) })
+			extra := fmt.Sprintf("state_path: %q\nnova:\n  libvirt_mode: real\n  libvirt_uri: %q\n", state, uri)
+			out := run(t, ep, "sqlite://"+filepath.Join(watch, "db", "x.db"), extra, nil)
+			if out.code != ep.exit {
+				t.Errorf("exit code = %d; want %d. stderr: %s", out.code, ep.exit, out.stderr)
+			}
+			if !strings.Contains(out.stderr, uri) || !strings.Contains(out.stderr, "accepted") {
+				t.Errorf("stderr does not name %s and the accepted forms:\n%s", uri, out.stderr)
+			}
+			if _, err := os.Stat(watch); !os.IsNotExist(err) {
+				t.Errorf("the refusal created %s (stat: %v); it must come at configuration load, before the database is opened", watch, err)
+			}
+		})
+	}
+}

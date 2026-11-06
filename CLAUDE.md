@@ -238,7 +238,7 @@ Safe for macOS and non-Linux systems. No external dependencies required.
 
 **Nova stub mode**:
 - Returns fake VM instances, no actual VMs created
-- Check: `svc.libvirtMode == "stub"` or `svc.vmManager == nil`
+- Check: `svc.libvirtMode == "stub"`. A nil `svc.vmManager` means no hypervisor was wired in (stub-mode tests) — never real mode
 - VMs tracked in database only
 
 **Neutron stub mode**:
@@ -256,6 +256,7 @@ Requires Linux with appropriate dependencies.
 - Requires libvirt + KVM on Linux
 - Creates actual VMs via `github.com/digitalocean/go-libvirt`
 - XML templates in `pkg/hypervisor/xml_template.go`
+- Never falls back to stub (Constitution IV, v1.5.0): an unreachable libvirt is an outage, so the operations that need it fail, never return fake data
 
 **Neutron real mode** (`networking_mode: iptables` or `ebpf`):
 - Requires Linux with network namespaces
@@ -396,8 +397,9 @@ if errors.Is(err, database.ErrNoRows) { /* not found — on either backend */ }
 
 ### Mode Detection
 ```go
-// Nova: Check libvirtMode or vmManager
-if svc.libvirtMode == "stub" || svc.vmManager == nil {
+// Nova: check the configured mode. A nil vmManager means no hypervisor was wired in
+// (stub-mode tests); real mode never falls back to stub (Constitution IV, v1.5.0).
+if svc.libvirtMode == "stub" {
     // Stub mode: return fake data
 }
 
@@ -488,6 +490,8 @@ if requestedVersion == "" {
 - node-local hostPath SQLite directory at `<realMode.hostStoragePath>/db` (`lightstack.db` + `-wal` + `-shm`), **no PVC**. External PostgreSQL unchanged. **No schema change, no migration, no persisted data owned by the chart.** (029-sqlite-chart-compose)
 - Go 1.27.3 (module pins `go 1.26`; Constitution requires 1.26+). Markdown docs. (030-sqlite-backup-restore)
 - the operator's SQLite database file and a sibling `backups/` directory under the node storage root (`state_path` / `realMode.hostStoragePath`, default `/var/lib/lightstack`). **No schema change, no migration, no persisted data owned by the chart.** PostgreSQL is untouched except the backend-neutral ceiling check. (030-sqlite-backup-restore)
+- Go 1.27.3 (the module pins `go 1.26`; the constitution requires 1.26+). Helm 3.12+ chart templates (Go `text/template` + Sprig), JSON Schema draft-07. Markdown. + `digitalocean/go-libvirt` at the pinned `v0.0.0-20260609165003-6254771e63a8` (`socket.Dialer`, `ConnectToURI`, `Disconnected()`); `gin`; `internal/health`; helm-unittest. **No new module.** (031-realmode-dns-libvirt-fixes)
+- nothing new. No database schema change, no migration. Node-local ownership only: `<state_path>/console-sockets` (as today) and `<state_path>/instances/<id>` (now ensured before every launch). (031-realmode-dns-libvirt-fixes)
 
 ## Recent Changes
 - 028-sqlite-database-layer: plan — SQLite as a second backend behind a backend-neutral `internal/database` contract whose method sets mirror pgx's, so the 736 call sites change types only. PostgreSQL passes SQL through untouched; SQLite translates casts, `= ANY($n)`, `FOR UPDATE` and the console expiry, registers `now()`/`gen_random_uuid()`/no-op advisory locks, and converts times, JSON, lists and `[]byte` (a STRICT TEXT column refuses BLOBs). Ten rewrite sites, the same for both backends; `name ~` stays a database match (`REGEXP` on SQLite), as upstream's. Cinder creates reserve a `creating` row and build the backing outside any transaction (+ a per-node startup sweep); Nova gains a binding quota recheck under an advisory lock and answers **403** instead of 413 (with FR-036a's 400s, the two API changes). Probe-verified: deferred read-then-write hits `SQLITE_BUSY_SNAPSHOT` (517) → immediate transactions expected (SPEC-028 plan)

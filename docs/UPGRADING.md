@@ -602,3 +602,33 @@ it could not read the database and purged only what it found on the node: the re
 host networking stayed behind. Now it removes them, as it does for a release with `database.url`.
 Without the URL, `lightstack cleanup` — which now refuses an empty one — would fail the hook and
 stop the uninstall.
+
+## Real mode: the libvirt socket, readiness and cluster DNS
+
+Four things an existing real-mode release meets:
+
+- **A `libvirt_uri` Lightstack cannot honour stops startup.** Lightstack only ever dials the libvirt
+  on its own node: `qemu:///system` (the default) or `qemu+unix:///system`, either with
+  `?socket=<absolute path>`, or an absolute socket path. Anything else — `qemu:///session`,
+  `qemu+tcp://`, `qemu+ssh://`, a relative path — used to be dialed as a file name and failed as a
+  missing socket. The server, `lightstack cleanup` and `lightstack console-tokens` now refuse it at
+  configuration load, naming the value and the accepted forms. With the default, Lightstack chooses
+  the socket on every connection attempt: `virtqemud-sock` where the modular daemons run, else
+  `libvirt-sock` ([CONFIGURATION](CONFIGURATION.md)).
+- **A pod that cannot prepare the console socket directory is no longer Ready.** Before, it was
+  Ready and refused every guest start. Lightstack now connects to libvirt in the background and
+  prepares the directory after every connection; until the first preparation succeeds, `/readyz`
+  answers `503 hypervisor unavailable`, and on a single node the Service has no endpoint. A host
+  where libvirt never answers is restarted by the startup probe (30 × 5 s by default) and ends in
+  `CrashLoopBackOff`, with the cause at the top of each start's log, so `helm install --wait` fails.
+  Once prepared, later libvirt outages do not affect readiness. Docker Compose and bare metal are
+  not gated: their healthchecks probe `GET /v3`.
+- **Host-networked pods resolve through the cluster DNS.** With `realMode.hostNetwork: true` the
+  chart now renders `dnsPolicy: ClusterFirstWithHostNet` on the Lightstack pod and the purge Job,
+  so in-cluster Service names (`<service>.<namespace>.svc`) resolve. A name only the node's own
+  resolver answers — an `/etc/hosts` entry, a zone only the node's resolver serves — must now be
+  reachable through the cluster DNS, for example through a CoreDNS forward or stub domain.
+- **The host workarounds can go.** A `libvirt-sock` symlink to `virtqemud-sock`, enabling
+  `virtproxyd.socket` so that `libvirt-sock` exists, and warming libvirt before Lightstack starts
+  (`virsh capabilities`) are no longer needed: Lightstack finds `virtqemud-sock` itself, bounds each
+  attempt at 1 second, and retries the preparation until libvirt answers.

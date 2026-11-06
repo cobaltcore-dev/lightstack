@@ -32,6 +32,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/placement"
 	"github.com/cobaltcore-dev/lightstack/internal/teardown"
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
+	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
@@ -104,10 +105,6 @@ func main() {
 
 	log.Printf("Database connection established (pool: max=%d, min=%d)", poolConfig.MaxConns, poolConfig.MinConns)
 
-	// Health checker for the Kubernetes probes (SPEC-013): readiness gates on the
-	// database being reachable + all listeners bound; liveness is dependency-free.
-	healthChecker := health.New(zlog.Logger, health.DatabaseCheck(pool))
-
 	// Run migrations
 	log.Println("Running database migrations...")
 	if err := database.MigrateUp(cfg.Database.URL, *migrationsPath); err != nil {
@@ -151,21 +148,27 @@ func main() {
 	}
 	novaService := nova.NewService(pool, cfg.Nova.LibvirtURI, libvirtMode, cacheInstance)
 
-	// Initialize hypervisor
-	if err := novaService.InitHypervisor(); err != nil {
+	// Initialize the hypervisor. In real mode the connection to libvirt is made in the
+	// background, and the console socket directory every domain names (SPEC-021 FR-017a) is
+	// prepared after every connection, so startup never waits on libvirt (SPEC-031). The only
+	// error left is a libvirt_uri Lightstack cannot honour, which configuration load refuses
+	// first; either way it is fatal, because real mode never runs without a hypervisor
+	// (Constitution IV).
+	if err := novaService.InitHypervisor(paths.ConsoleSocketDir()); err != nil {
+		if libvirtMode == "real" {
+			log.Fatalf("Failed to initialize hypervisor: %v", err)
+		}
 		log.Printf("WARNING: Failed to initialize hypervisor: %v", err)
-		log.Printf("Nova will run in %s mode", libvirtMode)
+	} else if libvirtMode == "real" {
+		log.Printf("Hypervisor started in real mode; connecting to libvirt in the background")
 	} else {
 		log.Printf("Hypervisor initialized successfully in %s mode", libvirtMode)
-		if libvirtMode == "real" {
-			// Before any guest can start: every domain names its console socket in this
-			// directory, which libvirt does not prepare (SPEC-021 FR-017a). On failure the
-			// hypervisor refuses guest starts and says why; every other service keeps running.
-			if err := novaService.PrepareConsoleSocketDir(ctx, paths.ConsoleSocketDir()); err != nil {
-				log.Printf("ERROR: console socket directory not ready, guest starts are refused until it is: %v", err)
-			}
-		}
 	}
+
+	// Health checker for the Kubernetes probes (SPEC-013): readiness gates on the database
+	// being reachable and all listeners bound, and in real mode on the hypervisor being able
+	// to start guests (SPEC-031 FR-017); liveness is dependency-free.
+	healthChecker := health.New(zlog.Logger, readinessChecks(pool, novaService, libvirtMode)...)
 
 	// Set default networking mode if not specified
 	networkingMode := cfg.Neutron.NetworkingMode
@@ -494,6 +497,14 @@ func loadConfig(path string) (*common.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Real mode dials libvirt, so a libvirt_uri it cannot honour stops every entry point here,
+	// before anything is opened, naming the value and the accepted forms (SPEC-031 FR-009).
+	// Stub mode never dials libvirt and does not check it.
+	if cfg.Nova.LibvirtMode == "real" {
+		if _, err := hypervisor.ParseLibvirtURI(cfg.Nova.LibvirtURI); err != nil {
+			return nil, err
+		}
+	}
 	paths.SetBase(cfg.StatePath)
 	return cfg, nil
 }
@@ -617,6 +628,17 @@ func checkDatabaseConfig(cfg *common.Config, server bool) error {
 		return errors.New("database.url selects sqlite, but neutron.vxlan_enabled is true; SQLite serves a single node only")
 	}
 	return nil
+}
+
+// readinessChecks are what readiness gates on besides the listeners: the database, and in real
+// mode the hypervisor, until it has prepared the console socket directory once (SPEC-031
+// FR-017). Stub mode's readiness is unchanged.
+func readinessChecks(pool database.DB, novaSvc *nova.Service, libvirtMode string) []health.Check {
+	checks := []health.Check{health.DatabaseCheck(pool)}
+	if libvirtMode == "real" {
+		checks = append(checks, health.Check{Name: "hypervisor", Probe: novaSvc.HypervisorReady})
+	}
+	return checks
 }
 
 // logDatabaseReady writes the line that says which database the server runs on

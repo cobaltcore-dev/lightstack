@@ -73,6 +73,28 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "hostStoragePath|does not match pattern|schema"
+  # SPEC-031 FR-006: the socket path is mounted by its directory and handed to the binary,
+  # which accepts only an absolute path; the pattern moves that failure to `helm install`.
+  - it: rejects a relative libvirtSocketPath (pattern)
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: x
+      secrets.adminPassword: x
+      database.url: postgres://lightstack@db/lightstack
+      realMode.libvirtSocketPath: libvirt-sock
+    asserts:
+      - failedTemplate:
+          errorPattern: "libvirtSocketPath|does not match pattern|schema"
+  - it: rejects an empty libvirtSocketPath (pattern)
+    set:
+      image.repository: ghcr.io/lightstack/lightstack
+      secrets.jwtSecret: x
+      secrets.adminPassword: x
+      database.url: postgres://lightstack@db/lightstack
+      realMode.libvirtSocketPath: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "libvirtSocketPath|does not match pattern|schema"
   - it: rejects a console proxy image digest that is not a sha256 digest (pattern)
     # The template renders repository@digest, so a tag here yields a reference the
     # runtime cannot pull.

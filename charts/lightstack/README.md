@@ -24,7 +24,7 @@ Lightstack exposes three **unauthenticated** endpoints on the identity port (353
 
 | Path | Purpose | Behavior |
 |------|---------|----------|
-| `GET /readyz` | readiness | `200` only when the database is reachable **and** all HTTP listeners are bound; `503` + a short reason (e.g. `database unavailable`) otherwise. |
+| `GET /readyz` | readiness | `200` only when the database is reachable **and** all HTTP listeners are bound; `503` + a short reason (e.g. `database unavailable`) otherwise. In real mode it also waits until the console socket directory has been prepared once, which takes the host's libvirt answering (`hypervisor unavailable` until then); later libvirt outages do not affect it, and a host where it never succeeds is restarted by the startup probe. |
 | `GET /livez` | liveness | `200` while the process is up; **never** touches the database — a DB outage must not restart the pod. |
 | `GET\|HEAD /healthcheck` | OpenStack/oslo alias | alias of `/readyz`; content-negotiates `text/plain` (default) and `application/json`. |
 
@@ -134,8 +134,8 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | Key | Default | Mode | Purpose |
 |-----|---------|------|---------|
 | `realMode.enabled` | `false` | real | gate privileged pod + host mounts |
-| `realMode.privileged` / `hostNetwork` | `false` | real | host-level access |
-| `realMode.libvirtSocketPath` | `/var/run/libvirt/libvirt-sock` | real | host libvirtd socket; pods mount its directory (hostPath), so a re-created socket stays reachable |
+| `realMode.privileged` / `hostNetwork` | `false` | real | host-level access; host networking also renders `dnsPolicy: ClusterFirstWithHostNet` on the Lightstack pod and the purge Job, so in-cluster Service names (`<service>.<namespace>.svc`) resolve |
+| `realMode.libvirtSocketPath` | `/var/run/libvirt/libvirt-sock` | real | host libvirt socket; pods mount its directory (hostPath), so a re-created socket stays reachable. The default lets the binary choose `virtqemud-sock`, else `libvirt-sock`; any other value is also the socket it dials. With `secrets.existingSecret`, your own config's `nova.libvirt_uri` must name the same socket — absolute |
 | `realMode.hostStoragePath` | `/var/lib/lightstack` | real | node-local VM/volume/image data (hostPath); mounted at the same path and passed to the binary as `state_path` — absolute |
 | `realMode.legacyStatePath` | `""` | real | pre-rename root to migrate into `hostStoragePath` once; empty renders nothing ([UPGRADING](../../docs/UPGRADING.md)) |
 | `realMode.floatingIpPool` | `""` | real | operator pool routed to nodes (FR-009c) |

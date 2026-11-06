@@ -9,6 +9,7 @@ const rebootTestUUID = "11111111-2222-3333-4444-555555555555"
 
 func rebootAgainst(t *testing.T, f *fakeLibvirtd, hard bool) []uint32 {
 	t.Helper()
+	useTempBase(t)
 	m := newConnectedManager(t, &pipeDialer{fake: f})
 	defer m.Close()
 	if err := m.RebootVM(t.Context(), rebootTestUUID, hard); err != nil {

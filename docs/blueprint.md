@@ -525,8 +525,9 @@ Keystone-first, then discovered from the service catalog.
 
 **Health signal (SPEC-013 / #475).** Lightstack exposes three unauthenticated endpoints on the identity listener
 (`:35357`): `GET /livez` (liveness — process only, never touches the DB), `GET /readyz` (readiness — `200`
-only when all listeners are bound, the DB `Ping` succeeds, and the pod isn't draining; `503` with a short
-curated reason otherwise, bounded to <1 s), and `GET|HEAD /healthcheck` (an OpenStack-compatible,
+only when all listeners are bound, the DB `Ping` succeeds, and the pod isn't draining, and in real mode
+once the console socket directory has been prepared, which takes the host's libvirt answering once
+(SPEC-031); `503` with a short curated reason otherwise, bounded to <1 s), and `GET|HEAD /healthcheck` (an OpenStack-compatible,
 content-negotiated alias of `/readyz`). The **machine-readable signal sci-in-a-box consumes is the
 Kubernetes Pod `Ready` condition** (the aggregate of the readiness probe and its roll-ups) — *not* a bespoke
 Lightstack status protocol. The chart wires `liveness`/`readiness`/`startup` probes accordingly.

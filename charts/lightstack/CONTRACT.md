@@ -91,13 +91,17 @@ kubectl -n lightstack get pods -l app.kubernetes.io/name=lightstack \
 A **Ready** release's API is genuinely serving: the pod readiness probe is `GET /readyz` on the
 identity port — DB-gated, so readiness is `true` only when the database is reachable and all listeners
 are up (it returns `503` otherwise), and the Pod `Ready` condition is the machine-readable signal to
-consume (not a custom status protocol). `--wait` blocks until ready or the timeout; on timeout/failure
+consume (not a custom status protocol). In real mode readiness also waits until the console socket
+directory has been prepared once, which takes the host's libvirt answering (`503 hypervisor
+unavailable` until then); later libvirt outages do not affect it. A host where it never succeeds is
+restarted by the startup probe, ending in `CrashLoopBackOff` with the cause at the top of each start's
+log, so the release becomes **Failed**. `--wait` blocks until ready or the timeout; on timeout/failure
 Helm exits non-zero and `.info.status` becomes `failed`.
 
 > The health endpoints (`/readyz`, `/livez`, the OpenStack `/healthcheck` alias) are **unauthenticated**
 > and served on the identity port. If you expose the identity port externally, restrict these paths at
 > your load balancer / Ingress (per OpenStack guidance). They expose only a coarse status + a short
-> reason (e.g. `database unavailable`) — never error detail. There is no Lightstack metrics endpoint; scrape
+> reason (e.g. `database unavailable`, `hypervisor unavailable`) — never error detail. There is no Lightstack metrics endpoint; scrape
 > the Pod `Ready` condition via `kube-state-metrics`.
 
 ## 3. Endpoints

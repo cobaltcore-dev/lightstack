@@ -361,7 +361,7 @@ sudo -u postgres psql lightstack -c "UPDATE endpoints SET url = REPLACE(url, 'ht
 **Solutions**:
 1. Verify real mode: `grep libvirt_mode /opt/lightstack/config/lightstack.yaml`
 2. Check privileged mode: `docker inspect lightstack | jq '.[].HostConfig.Privileged'`
-3. Fix libvirt socket permissions: `sudo chmod 666 /var/run/libvirt/libvirt-sock`
+3. Fix libvirt socket permissions: `sudo chmod 666 /var/run/libvirt/virtqemud-sock` with the modular daemons, `/var/run/libvirt/libvirt-sock` with `libvirtd`
 4. Verify namespaces: `docker exec lightstack ip netns list`
 
 **Problem**: VMs have no network connectivity

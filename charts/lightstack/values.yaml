@@ -137,9 +137,14 @@ extraEnv: []
 realMode:
   enabled: false
   privileged: false
+  # -- Host networking. Renders dnsPolicy: ClusterFirstWithHostNet on the Lightstack pod and
+  #    the purge Job, so in-cluster Service names (database, RGW, Redis) still resolve.
   hostNetwork: false
-  # -- Host libvirtd socket. Pods mount the directory that holds it, not the socket
-  #    itself, so a libvirtd that re-creates its socket stays reachable.
+  # -- Host libvirt socket. Pods mount the directory that holds it, not the socket
+  #    itself, so a daemon that re-creates its socket stays reachable. The default lets the
+  #    binary choose: virtqemud-sock where the modular daemons run, else libvirt-sock. Any
+  #    other value is also the socket the binary dials. With secrets.existingSecret the chart
+  #    renders no config: name the same socket in your own nova.libvirt_uri. Absolute.
   libvirtSocketPath: /var/run/libvirt/libvirt-sock
   # -- Node-local data root. Mounted at the same path inside the pod and passed to the
   #    binary as state_path — the two must match, because libvirtd on the host opens the
@@ -279,14 +284,16 @@ logging:
 #    port: /readyz (DB-gated readiness), /livez (process-up liveness), and the
 #    OpenStack /healthcheck alias. Paths are fixed — tune timing/thresholds only.
 #    Defaults: ~150s startup grace, ~30s readiness-failure detection, ~60s
-#    liveness-failure restart.
+#    liveness-failure restart. In real mode /readyz also waits until the console
+#    socket directory has been prepared once, which takes the host's libvirt
+#    answering; a host where it never does is restarted by the startup probe.
 probes:
-  startup:                      # gates on /readyz; tolerates a slow DB connect at boot
+  startup:                      # gates on /readyz; tolerates a slow DB connect (real mode: a slow libvirt) at boot
     enabled: true
     periodSeconds: 5
     timeoutSeconds: 2
     failureThreshold: 30        # 30 × 5s ≈ 150s boot grace before CrashLoopBackOff
-  readiness:                    # gates Service traffic on /readyz (DB reachable + listeners up)
+  readiness:                    # gates Service traffic on /readyz (DB reachable + listeners up; real mode: libvirt answered once)
     enabled: true
     periodSeconds: 10
     timeoutSeconds: 2

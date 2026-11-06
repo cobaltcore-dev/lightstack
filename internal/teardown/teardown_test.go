@@ -3,12 +3,16 @@ package teardown
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
@@ -347,5 +351,72 @@ func TestPurgeKeepsBackups(t *testing.T) {
 	}
 	if _, err := os.Stat(backup); err != nil {
 		t.Errorf("the purge removed a backup: %v", err)
+	}
+}
+
+// runWithLibvirtAt runs the purge in real mode against the libvirt socket at path, failing the
+// test if it has not returned within 5 seconds.
+func runWithLibvirtAt(t *testing.T, path string) (time.Duration, error) {
+	t.Helper()
+	cfg := &common.Config{}
+	cfg.Nova.LibvirtMode = "real"
+	cfg.Nova.LibvirtURI = path
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- Run(context.Background(), cfg, Options{DryRun: true}) }()
+	select {
+	case err := <-done:
+		return time.Since(start), err
+	case <-time.After(5 * time.Second):
+		t.Fatal("the purge is still waiting on libvirt after 5s")
+		return 0, nil
+	}
+}
+
+// SPEC-031 FR-020a: the purge makes one connection attempt and fails closed — at once when the
+// socket is missing, within the 1-second bound when nothing answers — and never waits for
+// libvirt to come back.
+func TestCleanupFailsAtOnceWithoutLibvirtSocket(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing", "libvirt-sock")
+	elapsed, err := runWithLibvirtAt(t, missing)
+	if err == nil {
+		t.Fatal("the purge succeeded with no libvirt socket")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error %q does not name %s", err, missing)
+	}
+	if elapsed > time.Second {
+		t.Errorf("failed after %s; want at once", elapsed)
+	}
+}
+
+func TestCleanupBoundsASilentDaemon(t *testing.T) {
+	dir, err := os.MkdirTemp("", "lsock") // short: a unix socket path must fit sun_path
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "libvirt-sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() { // accept and never answer
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _, _ = io.Copy(io.Discard, c) }()
+		}
+	}()
+
+	elapsed, err := runWithLibvirtAt(t, sock)
+	if err == nil {
+		t.Fatal("the purge succeeded against a daemon that never answers")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("failed after %s; want within about 1s", elapsed)
 	}
 }

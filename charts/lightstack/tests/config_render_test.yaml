@@ -91,3 +91,32 @@ tests:
       - matchRegex:
           path: stringData["lightstack.yaml"]
           pattern: '(?m)^  console_enabled: false$'
+  # SPEC-031 FR-004: a non-default libvirt socket is the one the binary dials, not only the one
+  # the pod mounts. The default leaves the choice to the binary — virtqemud-sock, else
+  # libvirt-sock — so the default render does not change.
+  - it: hands a non-default libvirt socket to the binary as libvirt_uri
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+      realMode.libvirtSocketPath: /run/libvirt/virtqemud-sock
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  libvirt_uri: "/run/libvirt/virtqemud-sock"$'
+  - it: leaves the socket choice to the binary by default
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  libvirt_uri: "qemu:///system"$'
+  - it: leaves the socket choice to the binary when the default socket is set explicitly
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      realMode.enabled: true
+      realMode.libvirtSocketPath: /var/run/libvirt/libvirt-sock
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  libvirt_uri: "qemu:///system"$'

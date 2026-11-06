@@ -98,8 +98,9 @@ virsh version
 # List default network
 virsh net-list --all
 
-# Check libvirt socket
-ls -la /var/run/libvirt/libvirt-sock
+# Check libvirt socket: Lightstack dials virtqemud-sock where the modular daemons run,
+# else libvirt-sock (libvirtd); one of them must exist
+ls -la /var/run/libvirt/virtqemud-sock /var/run/libvirt/libvirt-sock
 
 # Test connection
 virsh --connect qemu:///system list --all
@@ -573,8 +574,8 @@ sudo systemctl status libvirtd
 # Start if not running
 sudo systemctl start libvirtd
 
-# Check socket permissions
-ls -la /var/run/libvirt/libvirt-sock
+# Check socket permissions (virtqemud-sock with the modular daemons, libvirt-sock with libvirtd)
+ls -la /var/run/libvirt/virtqemud-sock /var/run/libvirt/libvirt-sock
 
 # Add user to libvirt group
 sudo usermod -aG libvirt $USER
