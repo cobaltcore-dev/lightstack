@@ -3,11 +3,38 @@ package neutron
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestAllocateFreeIPFindsLastAddress(t *testing.T) {
+	requireDB(t)
+	networkID, subnetID := seedN4Subnet(t, "192.168.249.0/24", "192.168.249.1")
+	for i := 2; i < 254; i++ {
+		seedN4Port(t, networkID, subnetID, fmt.Sprintf("192.168.249.%d", i))
+	}
+	for range 10 {
+		ip, err := AllocateFreeIP(t.Context(), testPool, subnetID, "192.168.249.0/24")
+		if err != nil || ip != "192.168.249.254" {
+			t.Fatalf("last address: ip=%q err=%v; want 192.168.249.254", ip, err)
+		}
+	}
+}
+
+func TestIPAvailableCanonicalIPv6(t *testing.T) {
+	requireDB(t)
+	networkID, subnetID := seedN4Subnet(t, "2001:db8::/64", "2001:0db8:0:0:0:0:0:1")
+	seedN4Port(t, networkID, subnetID, "2001:0db8:0:0:0:0:0:2")
+	for _, ip := range []string{"2001:db8::1", "2001:db8::2", "2001:DB8::2"} {
+		available, err := IPAvailable(t.Context(), testPool, subnetID, ip)
+		if err != nil || available {
+			t.Errorf("IPAvailable(%s)=%v, %v; want occupied", ip, available, err)
+		}
+	}
+}
 
 // seedN4Subnet inserts a network + subnet and returns their ids.
 func seedN4Subnet(t *testing.T, cidr, gateway string) (networkID, subnetID string) {

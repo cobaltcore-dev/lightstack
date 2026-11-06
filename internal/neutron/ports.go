@@ -10,8 +10,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -84,28 +84,12 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		req.Port.NetworkID,
 	).Scan(&subnetID, &cidr)
 
-	// Non-nil even when the network has no subnet: marshalling a nil slice
-	// produces JSON `null`, and ports.fixed_ips must always be an array so
-	// every jsonb_array_elements reader can unpack it. A legacy row may still
-	// hold `null`; readers guard on jsonb_typeof for those.
-	fixedIPs := []map[string]any{}
-	if err == nil {
-		// Allocate an address no other port in the subnet holds (N-4).
-		allocatedIP, allocErr := AllocateFreeIP(c.Request.Context(), svc.pool, subnetID, cidr)
-		if allocErr != nil {
-			log.Warn().Err(allocErr).Str("subnet_id", subnetID).Msg("port create: address allocation failed")
-			common.SendError(c, common.NewConflictError("no IP address available in the network's subnet"))
-			return
-		}
-		fixedIPs = []map[string]any{
-			{
-				"subnet_id":  subnetID,
-				"ip_address": allocatedIP,
-			},
-		}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		log.Error().Err(err).Msg("port create: subnet lookup failed")
+		common.SendError(c, common.NewInternalServerError("failed to look up subnet"))
+		return
 	}
-
-	fixedIPsJSON, _ := json.Marshal(fixedIPs)
+	fixedIPs := []map[string]any{}
 
 	// Create the TAP where the bridge is — the namespace Lightstack runs in. CreateTAPDevice no longer takes
 	// a namespace at all, so this placement is now a property of the API rather than of the call.
@@ -145,15 +129,33 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+		if subnetID != "" {
+			cidr, err = LockSubnet(c.Request.Context(), tx, subnetID)
+			if err != nil {
+				return err
+			}
+			ip, err := AllocateFreeIP(c.Request.Context(), tx, subnetID, cidr)
+			if err != nil {
+				return err
+			}
+			fixedIPs = append(fixedIPs, map[string]any{"subnet_id": subnetID, "ip_address": ip})
+		}
+		fixedIPsJSON, _ := json.Marshal(fixedIPs)
+		_, err = tx.Exec(c.Request.Context(), `
 		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, portID, req.Port.Name, req.Port.NetworkID, projectID, sql.NullString{String: req.Port.DeviceID, Valid: req.Port.DeviceID != ""},
-		sql.NullString{String: req.Port.DeviceOwner, Valid: req.Port.DeviceOwner != ""}, macAddress, adminStateUp, "ACTIVE", fixedIPsJSON, now, now)
-
+			sql.NullString{String: req.Port.DeviceOwner, Valid: req.Port.DeviceOwner != ""}, macAddress, adminStateUp, "ACTIVE", fixedIPsJSON, now, now)
+		return err
+	})
 	if err != nil {
-		log.Error().Err(err).Str("operation", "create_port").Msg("database error")
 		_ = svc.tapManager.DeleteTAPDevice(tapName)
+		if errors.Is(err, ErrNoAvailableIP) {
+			common.SendError(c, common.NewConflictError("no IP address available in the network's subnet"))
+			return
+		}
+		log.Error().Err(err).Str("operation", "create_port").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create port"))
 		return
 	}
@@ -706,9 +708,25 @@ func allocateIP(cidr string) string {
 	return incrementIP(ipNet.IP, uint(offset)).String()
 }
 
-// usedSubnetAddresses returns every address held by a port in the subnet
-// (lower-cased), plus the subnet's own gateway when set.
-func usedSubnetAddresses(ctx context.Context, pool *pgxpool.Pool, subnetID string) (map[string]bool, error) {
+type subnetQuerier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+// ErrNoAvailableIP distinguishes exhaustion from a database failure.
+var ErrNoAvailableIP = errors.New("no IP address available in the subnet")
+
+// LockSubnet serializes allocation and insertion across Neutron and Nova. Hold
+// this transaction until the port's fixed_ips have been inserted.
+func LockSubnet(ctx context.Context, tx pgx.Tx, subnetID string) (string, error) {
+	var cidr string
+	err := tx.QueryRow(ctx, "SELECT cidr FROM subnets WHERE id = $1 FOR NO KEY UPDATE", subnetID).Scan(&cidr)
+	return cidr, err
+}
+
+// usedSubnetAddresses includes port addresses and the gateway, canonicalized so
+// compressed/expanded IPv6 spellings refer to the same address.
+func usedSubnetAddresses(ctx context.Context, pool subnetQuerier, subnetID string) (map[string]bool, error) {
 	used := map[string]bool{}
 	rows, err := pool.Query(ctx, `
 		SELECT fx->>'ip_address'
@@ -726,8 +744,8 @@ func usedSubnetAddresses(ctx context.Context, pool *pgxpool.Pool, subnetID strin
 		if err := rows.Scan(&ip); err != nil {
 			return nil, fmt.Errorf("scanning a used address: %w", err)
 		}
-		if ip != "" {
-			used[strings.ToLower(ip)] = true
+		if addr := net.ParseIP(ip); addr != nil {
+			used[addr.String()] = true
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -737,9 +755,11 @@ func usedSubnetAddresses(ctx context.Context, pool *pgxpool.Pool, subnetID strin
 	// The gateway belongs to the subnet, not to any port.
 	var gateway sql.NullString
 	if err := pool.QueryRow(ctx,
-		"SELECT gateway_ip FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err == nil &&
-		gateway.Valid && gateway.String != "" {
-		used[strings.ToLower(gateway.String)] = true
+		"SELECT gateway_ip FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err != nil {
+		return nil, fmt.Errorf("reading the subnet's gateway: %w", err)
+	}
+	if addr := net.ParseIP(gateway.String); addr != nil {
+		used[addr.String()] = true
 	}
 	return used, nil
 }
@@ -749,12 +769,16 @@ func usedSubnetAddresses(ctx context.Context, pool *pgxpool.Pool, subnetID strin
 // accepts a caller-specified fixed_ip and must refuse one another port holds —
 // the explicit side of the N-4 collision rule the allocator covers for
 // generated addresses.
-func IPAvailable(ctx context.Context, pool *pgxpool.Pool, subnetID, ip string) (bool, error) {
+func IPAvailable(ctx context.Context, pool subnetQuerier, subnetID, ip string) (bool, error) {
+	addr := net.ParseIP(ip)
+	if addr == nil {
+		return false, fmt.Errorf("invalid IP address %q", ip)
+	}
 	used, err := usedSubnetAddresses(ctx, pool, subnetID)
 	if err != nil {
 		return false, err
 	}
-	return !used[strings.ToLower(ip)], nil
+	return !used[addr.String()], nil
 }
 
 // AllocateFreeIP picks a random usable address in the subnet that no port in
@@ -770,30 +794,43 @@ func IPAvailable(ctx context.Context, pool *pgxpool.Pool, subnetID, ip string) (
 // over one subnet is how they hand out the same address (round 2 of this
 // review).
 //
-// The check-then-use is not a lock: two simultaneous allocations can still
-// race for the last free address. It collapses the collision space from
-// "every existing port" to "the same instant", which for port creation — a
-// user- or boot-paced operation — is the practical fix; a DB-level exclusion
-// on the JSONB elements would be the complete one.
-func AllocateFreeIP(ctx context.Context, pool *pgxpool.Pool, subnetID, cidr string) (string, error) {
+// Writers must LockSubnet and insert the port in the same transaction.
+func AllocateFreeIP(ctx context.Context, pool subnetQuerier, subnetID, cidr string) (string, error) {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return "", fmt.Errorf("invalid subnet CIDR: %w", err)
+	}
 	used, err := usedSubnetAddresses(ctx, pool, subnetID)
 	if err != nil {
 		return "", err
 	}
 
-	// Random candidates until one is free. A hundred attempts covers any
-	// realistically dense subnet well before it is full; a subnet that is full
-	// is an error, not an infinite loop.
+	// Random candidates make sparse subnets cheap. Dense subnets get a complete
+	// search below, so the last free address is never missed by chance.
 	for range 100 {
 		candidate := allocateIP(cidr)
 		if candidate == "" {
 			return "", fmt.Errorf("subnet %s has no usable addresses", subnetID)
 		}
-		if !used[strings.ToLower(candidate)] {
+		if !used[candidate] {
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("no free address in subnet %s", subnetID)
+	// At most len(used)+1 candidates are visited, even on a huge IPv6 range.
+	candidate := prefix.Masked().Addr()
+	if (candidate.Is4() && prefix.Bits() < 31) || (candidate.Is6() && prefix.Bits() < 128) {
+		candidate = candidate.Next()
+	}
+	for candidate.IsValid() && prefix.Contains(candidate) {
+		if candidate.Is4() && prefix.Bits() < 31 && !prefix.Contains(candidate.Next()) {
+			break // IPv4 broadcast address
+		}
+		if !used[candidate.String()] {
+			return candidate.String(), nil
+		}
+		candidate = candidate.Next()
+	}
+	return "", fmt.Errorf("%w: %s", ErrNoAvailableIP, subnetID)
 }
 
 // Security Groups implementation
@@ -1628,23 +1665,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		return nil, fmt.Errorf("looking up a subnet for network %s: %w", networkID, err)
 	}
 
-	// Allocate an IP no other port in the subnet holds (review 2026-10-13
-	// N-4): the old random pick collided at birthday-problem rates, giving two
-	// ports — two MACs — the same address. Tenant-visible wording so the
-	// server's fault says what the tenant can do about it (a full or broken
-	// subnet), matching the no-subnet case above.
-	allocatedIP, allocErr := AllocateFreeIP(ctx, svc.pool, subnetID, cidr)
-	if allocErr != nil {
-		return nil, &tenantVisibleError{msg: fmt.Sprintf("failed to allocate a free IP from subnet %s", subnetID)}
-	}
-
-	fixedIPs := []map[string]any{
-		{
-			"subnet_id":  subnetID,
-			"ip_address": allocatedIP,
-		},
-	}
-	fixedIPsJSON, _ := json.Marshal(fixedIPs)
+	var allocatedIP string
 
 	// The security groups the instance was created with, so rules apply to the
 	// VM's north-south traffic (SPEC-009 WS-3 / T034). port_security_groups is what
@@ -1708,6 +1729,19 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// which keeps the API and the dataplane in agreement.
 	now := time.Now()
 	if err := database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
+		cidr, err = LockSubnet(ctx, tx, subnetID)
+		if err != nil {
+			return err
+		}
+		allocatedIP, err = AllocateFreeIP(ctx, tx, subnetID, cidr)
+		if errors.Is(err, ErrNoAvailableIP) {
+			return &tenantVisibleError{msg: fmt.Sprintf("failed to allocate a free IP from subnet %s", subnetID)}
+		}
+		if err != nil {
+			return err
+		}
+		fixedIPsJSON, _ := json.Marshal([]map[string]any{{"subnet_id": subnetID, "ip_address": allocatedIP}})
+
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)

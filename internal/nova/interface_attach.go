@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -169,42 +170,47 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 				common.SendError(c, common.NewBadRequestError("fixed_ip is not a valid address in the network's subnet"))
 				return
 			}
-			available, availErr := neutron.IPAvailable(c.Request.Context(), svc.pool, subnetID, fixedIP)
-			if availErr != nil {
-				log.Error().Err(availErr).Str("operation", "attach_interface").Msg("IP availability check failed")
-				common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
-				return
-			}
-			if !available {
-				common.SendError(c, common.NewConflictError("IP address already allocated in the subnet"))
-				return
-			}
-		} else {
-			// The same collision-free allocator every other port-creation path
-			// uses (review 2026-10-13 N-4): this path used to run its own
-			// next-free scan, and two allocators over one subnet is how they
-			// hand out the same address.
-			fixedIP, err = neutron.AllocateFreeIP(c.Request.Context(), svc.pool, subnetID, cidr)
-			if err != nil {
-				log.Error().Err(err).Str("operation", "allocate_ip").Msg("IP allocation error")
-				common.SendError(c, common.NewConflictError("no IP address available in the network's subnet"))
-				return
-			}
+			fixedIP = ip.String()
 		}
 
-		// Create port. The fixed_ips entry carries the SUBNET's id, not the
-		// network's (round 2 of this review): everything that resolves a port's
-		// addressing — the metadata service's network_data.json, DHCP, the
-		// collision check above — joins on the subnet id and silently missed
-		// these ports when it held a network id.
-		fixedIPsJSON := fmt.Sprintf(`[{"ip_address": "%s", "subnet_id": "%s"}]`, fixedIP, subnetID)
-		fixedIPEntries = []gin.H{{"ip_address": fixedIP, "subnet_id": subnetID}}
-		_, err = svc.pool.Exec(c.Request.Context(), `
-			INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
-		`, portID, networkID, projectID, fmt.Sprintf("port-%s", portID[:8]), macAddress, fixedIPsJSON, instanceID, "compute:nova", "ACTIVE", time.Now(), time.Now())
-
+		// Allocate/check and insert while holding the subnet lock shared with
+		// Neutron's port-create and server-boot paths.
+		err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+			cidr, err = neutron.LockSubnet(c.Request.Context(), tx, subnetID)
+			if err != nil {
+				return err
+			}
+			if fixedIP != "" {
+				available, err := neutron.IPAvailable(c.Request.Context(), tx, subnetID, fixedIP)
+				if err != nil {
+					return err
+				}
+				if !available {
+					return neutron.ErrNoAvailableIP
+				}
+			} else {
+				fixedIP, err = neutron.AllocateFreeIP(c.Request.Context(), tx, subnetID, cidr)
+				if err != nil {
+					return err
+				}
+			}
+			fixedIPEntries = []gin.H{{"ip_address": fixedIP, "subnet_id": subnetID}}
+			fixedIPsJSON, _ := json.Marshal(fixedIPEntries)
+			_, err = tx.Exec(c.Request.Context(), `
+				INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+			`, portID, networkID, projectID, fmt.Sprintf("port-%s", portID[:8]), macAddress, fixedIPsJSON, instanceID, "compute:nova", "ACTIVE", time.Now(), time.Now())
+			return err
+		})
 		if err != nil {
+			if errors.Is(err, neutron.ErrNoAvailableIP) {
+				message := "no IP address available in the network's subnet"
+				if req.InterfaceAttachment.FixedIP != "" {
+					message = "IP address already allocated in the subnet"
+				}
+				common.SendError(c, common.NewConflictError(message))
+				return
+			}
 			log.Error().Err(err).Str("operation", "create_port").Msg("database error")
 			common.SendError(c, common.NewInternalServerError("failed to create port"))
 			return

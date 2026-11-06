@@ -130,6 +130,14 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 	attachmentID := uuid.NewString()
 	var now time.Time
 	err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+		// Different volumes attached to one server must reserve distinct devices.
+		// Lock the instance before the volume, and use this transaction for every
+		// query: acquiring another pool connection here can deadlock a full pool.
+		if err := tx.QueryRow(c.Request.Context(),
+			"SELECT COALESCE(libvirt_domain_id, '') FROM instances WHERE id = $1 FOR NO KEY UPDATE",
+			instanceID).Scan(&libvirtDomainID); err != nil {
+			return err
+		}
 		var volumeStatus string
 		var attachedToInstance any
 		if err := tx.QueryRow(c.Request.Context(),
@@ -154,7 +162,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		// Auto-assign device if not provided
 		device = req.VolumeAttachment.Device
 		if device == "" {
-			device, err = svc.getNextAvailableDevice(c.Request.Context(), instanceID)
+			device, err = getNextAvailableDevice(c.Request.Context(), tx, instanceID)
 			if err != nil {
 				return fmt.Errorf("device assignment: %w", err)
 			}
@@ -471,9 +479,9 @@ func attachedVolumes(vols []gin.H) []gin.H {
 }
 
 // getNextAvailableDevice finds the next available device name (vdb, vdc, etc.)
-func (svc *Service) getNextAvailableDevice(ctx context.Context, instanceID string) (string, error) {
+func getNextAvailableDevice(ctx context.Context, tx pgx.Tx, instanceID string) (string, error) {
 	// Query existing devices
-	rows, err := svc.pool.Query(ctx,
+	rows, err := tx.Query(ctx,
 		"SELECT device FROM volume_attachments WHERE instance_id = $1",
 		instanceID,
 	)
@@ -486,8 +494,7 @@ func (svc *Service) getNextAvailableDevice(ctx context.Context, instanceID strin
 	for rows.Next() {
 		var device string
 		if err := rows.Scan(&device); err != nil {
-			log.Warn().Err(err).Str("operation", "getNextAvailableDevice").Msg("failed to scan row")
-			continue
+			return "", fmt.Errorf("scan volume device: %w", err)
 		}
 		usedDevices[device] = true
 	}
