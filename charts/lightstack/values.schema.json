@@ -223,8 +223,8 @@
       "properties": {
         "enabled": { "type": "boolean", "description": "Gate privileged pod + host mounts." },
         "privileged": { "type": "boolean", "description": "Run the pod privileged." },
-        "hostNetwork": { "type": "boolean", "description": "Use host networking." },
-        "libvirtSocketPath": { "type": "string", "description": "Host libvirtd socket. Pods mount the directory that holds it (hostPath), so a re-created socket stays reachable." },
+        "hostNetwork": { "type": "boolean", "description": "Use host networking. Renders dnsPolicy: ClusterFirstWithHostNet on the Lightstack pod and the purge Job, so in-cluster Service names resolve." },
+        "libvirtSocketPath": { "type": "string", "pattern": "^/.+", "description": "Host libvirt socket. Pods mount the directory that holds it (hostPath), so a re-created socket stays reachable. The default lets the binary choose virtqemud-sock, else libvirt-sock, in that directory; any other value is also the socket the binary dials. With secrets.existingSecret the chart renders no config, so the operator's own nova.libvirt_uri must name the same socket. Absolute." },
         "hostStoragePath": { "type": "string", "pattern": "^/.+", "description": "Node-local data root (hostPath), mounted at the same path in the pod and passed to the binary as state_path. Absolute: libvirtd on the host opens the paths Lightstack writes into the domain XML." },
         "legacyStatePath": { "type": "string", "description": "Pre-rename node-local root to migrate into hostStoragePath once; empty disables." },
         "floatingIpPool": { "type": "string", "description": "Operator pool routed to nodes (FR-009c)." }
@@ -386,12 +386,12 @@
     "probes": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Kubernetes health probes (SPEC-013), unauthenticated on the identity port: /readyz (DB-gated readiness), /livez (process-up liveness), and the OpenStack /healthcheck alias. Paths are fixed; tune timing/thresholds only.",
+      "description": "Kubernetes health probes (SPEC-013), unauthenticated on the identity port: /readyz (DB-gated readiness), /livez (process-up liveness), and the OpenStack /healthcheck alias. Paths are fixed; tune timing/thresholds only. In real mode /readyz also waits until the console socket directory has been prepared once, which takes the host's libvirt answering.",
       "properties": {
         "startup": {
           "type": "object",
           "additionalProperties": false,
-          "description": "startupProbe -> /readyz. failureThreshold x periodSeconds is the slow-DB-connect boot grace before CrashLoopBackOff.",
+          "description": "startupProbe -> /readyz. failureThreshold x periodSeconds is the boot grace before CrashLoopBackOff: a slow DB connect, and in real mode the host's libvirt answering once. A host where libvirt never answers is restarted.",
           "properties": {
             "enabled": { "type": "boolean" },
             "periodSeconds": { "type": "integer", "minimum": 1 },
@@ -402,7 +402,7 @@
         "readiness": {
           "type": "object",
           "additionalProperties": false,
-          "description": "readinessProbe -> /readyz. Failure removes the pod from the Service (no restart).",
+          "description": "readinessProbe -> /readyz. Failure removes the pod from the Service (no restart). In real mode it passes only once the console socket directory has been prepared; later libvirt outages do not fail it.",
           "properties": {
             "enabled": { "type": "boolean" },
             "periodSeconds": { "type": "integer", "minimum": 1 },

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -124,6 +125,17 @@ func serversBody(t *testing.T, body string) []map[string]any {
 func createServerAs(t *testing.T, r *gin.Engine, projectID, userID, bodyJSON string) (int, string) {
 	t.Helper()
 	return doReq(r, http.MethodPost, "/v2.1/servers", bodyJSON, testAuthHdr(projectID, userID))
+}
+
+// withImage gives a server-create body the boot source every create must name: an imageRef to
+// an image seeded for projectID and removed when the test ends.
+func withImage(t *testing.T, projectID, bodyJSON string) string {
+	t.Helper()
+	const head = `{"server":{`
+	if !strings.HasPrefix(bodyJSON, head) {
+		t.Fatalf("withImage: the body does not start with %s: %s", head, bodyJSON)
+	}
+	return fmt.Sprintf(`%s"imageRef":%q,%s`, head, seedImageFor(t, projectID), bodyJSON[len(head):])
 }
 
 // instanceCount returns how many instances exist with the given name in a project.

@@ -22,7 +22,7 @@ func TestVMManagerReconnectsWhenLibvirtdGoesAway(t *testing.T) {
 	})
 }
 
-// Close is a deliberate disconnect. The reconnect loop has to stop before it, or it
+// Close is a deliberate disconnect. The connection loop has to stop before it, or it
 // would treat the shutdown as a lost connection and dial again.
 func TestVMManagerCloseDoesNotReconnect(t *testing.T) {
 	d := &pipeDialer{}

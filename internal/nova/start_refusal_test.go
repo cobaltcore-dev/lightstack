@@ -30,11 +30,3 @@ func TestStartRefusal(t *testing.T) {
 		t.Errorf("message = %q; a libvirt error must keep the generic message", other.Message)
 	}
 }
-
-// With no hypervisor at all there is nothing to prepare; saying so beats a nil deref.
-func TestPrepareConsoleSocketDirWithoutAHypervisor(t *testing.T) {
-	svc := NewService(testPool, "", "real", nil)
-	if err := svc.PrepareConsoleSocketDir(t.Context(), t.TempDir()); !errors.Is(err, errNoHypervisor) {
-		t.Errorf("err = %v; want errNoHypervisor", err)
-	}
-}

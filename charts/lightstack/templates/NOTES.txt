@@ -22,6 +22,11 @@ Verify the deployment:
   # The Pod reports Ready only once GET /readyz passes — database reachable + all
   # listeners bound (SPEC-013). Gate automation on the native Pod Ready condition:
   #   kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=180s
+  {{- if .Values.realMode.enabled }}
+  # Real mode: /readyz also waits until the console socket directory has been prepared
+  # once, which takes the host's libvirt answering. A host where it never does is
+  # restarted by the startup probe; the cause heads each start's log.
+  {{- end }}
 
 Authenticate (port-forward example):
   kubectl port-forward svc/{{ include "lightstack.fullname" . }} 35357:35357

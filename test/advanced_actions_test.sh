@@ -17,6 +17,24 @@ TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
 
 echo "✓ Got auth token"
 
+# Create the image the instance boots from: a create must name its boot source.
+IMAGE_ID=$(curl -s -X POST "http://localhost:9292/v2/images" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "test-advanced-actions-image", "disk_format": "raw", "container_format": "bare"}' | jq -r '.id')
+
+if [ -z "$IMAGE_ID" ] || [ "$IMAGE_ID" == "null" ]; then
+    echo "✗ Failed to create image"
+    exit 1
+fi
+
+curl -s -o /dev/null -X PUT "http://localhost:9292/v2/images/$IMAGE_ID/file" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "lightstack test image"
+
+echo "✓ Created image: $IMAGE_ID"
+
 # Create instance
 INSTANCE_ID=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
     -H "X-Auth-Token: $TOKEN" \
@@ -24,7 +42,8 @@ INSTANCE_ID=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
     -d '{
         "server": {
             "name": "test-advanced-actions-vm",
-            "flavorRef": "00000000-0000-0000-0000-000000000010"
+            "flavorRef": "00000000-0000-0000-0000-000000000010",
+            "imageRef": "'"$IMAGE_ID"'"
         }
     }' | jq -r '.server.id')
 
@@ -141,6 +160,9 @@ fi
 echo ""
 echo "Cleaning up..."
 curl -s -X DELETE "http://localhost:8774/v2.1/servers/$INSTANCE_ID" \
+    -H "X-Auth-Token: $TOKEN" > /dev/null
+
+curl -s -X DELETE "http://localhost:9292/v2/images/$IMAGE_ID" \
     -H "X-Auth-Token: $TOKEN" > /dev/null
 
 echo "✓ Cleanup complete"

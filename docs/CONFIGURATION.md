@@ -433,11 +433,18 @@ nova:
   libvirt_mode: stub                 # "stub" or "real"
 ```
 
-**libvirt_uri options:**
-- `qemu:///system` - System-wide QEMU/KVM (requires root)
-- `qemu:///session` - User session QEMU/KVM
-- `qemu+tcp://host/system` - Remote libvirt over TCP
-- `qemu+ssh://user@host/system` - Remote libvirt over SSH
+**libvirt_uri** names the local libvirt socket Lightstack dials. Read in real mode only:
+- `qemu:///system` (the default; empty and `qemu+unix:///system` mean the same) - Lightstack chooses
+  the socket on every connection attempt: `/var/run/libvirt/virtqemud-sock` where the modular
+  daemons run, else `/var/run/libvirt/libvirt-sock` (the monolithic `libvirtd`, or `virtproxyd`).
+- `qemu:///system?socket=/path/to/sock` or `qemu+unix:///system?socket=/path/to/sock` - that
+  socket, exactly.
+- `/path/to/sock` - an absolute socket path: that socket, exactly.
+
+Anything else - a session URI, another driver, a remote host or transport (`qemu+tcp://`,
+`qemu+ssh://`, ...), a relative path, any other parameter - stops real-mode startup, and the
+`cleanup` and `console-tokens` commands, with an error naming the value and these forms.
+Lightstack only ever dials the libvirt on its own node.
 
 **libvirt_mode:**
 - `stub` - Mock libvirt (for testing, no actual VMs)

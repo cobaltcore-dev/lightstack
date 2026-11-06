@@ -35,6 +35,22 @@ fi
 echo "Token obtained"
 echo ""
 
+# The image the test servers boot from: a create must name its boot source.
+IMAGE_ID=$(curl -s -X POST "http://localhost:9292/v2/images" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"perf-test-image","disk_format":"raw","container_format":"bare"}' \
+    | jq -r '.id')
+
+if [ -z "$IMAGE_ID" ] || [ "$IMAGE_ID" == "null" ]; then
+    echo -e "${RED}Failed to create the test image${NC}"
+    exit 1
+fi
+curl -s -o /dev/null -X PUT "http://localhost:9292/v2/images/$IMAGE_ID/file" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary "lightstack test image"
+
 # Test 1: Token issue performance
 echo -e "${CYAN}=== Test 1: Token Issue Performance ===${NC}"
 echo "Measuring token creation latency..."
@@ -72,7 +88,7 @@ for i in {1..20}; do
     SERVER_ID=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
         -H "X-Auth-Token: $TOKEN" \
         -H "Content-Type: application/json" \
-        -d '{"server":{"name":"perf-test-server-'$i'","flavorRef":"m1.tiny"}}' \
+        -d '{"server":{"name":"perf-test-server-'$i'","flavorRef":"m1.tiny","imageRef":"'$IMAGE_ID'"}}' \
         | jq -r '.server.id')
     if [ -n "$SERVER_ID" ] && [ "$SERVER_ID" != "null" ]; then
         SERVER_IDS+=($SERVER_ID)
@@ -115,7 +131,7 @@ for i in $(seq 1 $CONCURRENT_REQUESTS); do
         curl -s -X POST "http://localhost:8774/v2.1/servers" \
             -H "X-Auth-Token: $TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"server":{"name":"concurrent-test-'$i'","flavorRef":"m1.tiny"}}' > /dev/null
+            -d '{"server":{"name":"concurrent-test-'$i'","flavorRef":"m1.tiny","imageRef":"'$IMAGE_ID'"}}' > /dev/null
     ) &
     PIDS+=($!)
 done
@@ -266,6 +282,10 @@ curl -s -X GET "http://localhost:8774/v2.1/servers" \
             -H "X-Auth-Token: $TOKEN" 2>/dev/null || true
     fi
 done
+
+# Delete the test image
+curl -s -o /dev/null -X DELETE "http://localhost:9292/v2/images/$IMAGE_ID" \
+    -H "X-Auth-Token: $TOKEN" 2>/dev/null || true
 
 # Delete networks
 curl -s -X GET "http://localhost:9696/v2.0/networks" \

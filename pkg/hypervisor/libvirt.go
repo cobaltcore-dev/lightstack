@@ -4,15 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	libvirt "github.com/digitalocean/go-libvirt"
 	"github.com/digitalocean/go-libvirt/socket"
-	"github.com/digitalocean/go-libvirt/socket/dialers"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/singleflight"
 )
 
 // ErrDomainNotFound reports that the hypervisor has no guest with the given id.
@@ -25,6 +26,11 @@ import (
 //
 // Compare with errors.Is; both the stub and real paths wrap it.
 var ErrDomainNotFound = errors.New("hypervisor: domain not found")
+
+// errNotConnected is a libvirt call made while there is no connection: before the first one
+// opens, or while a lost one is re-established. Such a call fails at once; the connection loop
+// reports the outage itself (stayConnected, redial).
+var errNotConnected = errors.New("not connected to libvirt")
 
 // VMState represents the state of a virtual machine
 type VMState string
@@ -45,23 +51,40 @@ type VMManager struct {
 	libvirtURI string
 	mode       string // "stub" or "real"
 	// The current libvirt connection: replaced, never reopened in place, when it
-	// drops (see keepConnected).
+	// drops (see stayConnected). Nil until the first connection opens.
 	conn    atomic.Pointer[libvirt.Libvirt]
 	mu      sync.Mutex
 	stubVMs map[string]*stubVM // For stub mode
 
-	// The reconnect loop (real mode only): closing done stops it, and stopped is
+	// prepares is whether the connection loop prepares the console socket directory after
+	// every connection. The server's manager does (StartVMManager); a one-shot manager
+	// (NewVMManager, for the uninstall purge) starts no guests and prepares nothing.
+	prepares bool
+
+	// The connection loop (real mode only): closing done stops it, and stopped is
 	// closed once it has returned.
 	done      chan struct{}
 	stopped   chan struct{}
 	closeOnce sync.Once
 
-	// consoleDir is whether the console socket directory is QEMU's yet (SPEC-021
-	// FR-017a); nil until PrepareConsoleSocketDir has run. Every real start needs it.
-	consoleDir atomic.Pointer[consoleDirState]
+	// prepared is whether the console socket directory has been made QEMU's (SPEC-021
+	// FR-017a) at least once. Set by the first success and never cleared (SPEC-031
+	// FR-015): every real guest start needs it, and real-mode readiness waits for it.
+	prepared atomic.Bool
+	// prepFailureLogged is whether a failed preparation has been logged at ERROR. Later
+	// failures go to DEBUG, so a long outage does not flood the log (SPEC-031 FR-017a).
+	prepFailureLogged atomic.Bool
+	// prepGroup lets a caller arriving while a preparation attempt runs take that attempt's
+	// result instead of following it with one of its own: one bounded wait, never two
+	// (Constitution Article III, v1.5.0; SPEC-031 FR-013, FR-016).
+	prepGroup singleflight.Group
+	// capsReading is set while a capabilities read is unanswered. A read that misses its
+	// 1-second bound runs on until libvirt answers or the connection drops; preparation
+	// attempts made meanwhile fail at once rather than send another (attemptPrepare).
+	capsReading atomic.Bool
 
-	// qemuOwner is the uid:gid libvirt runs QEMU as (its DAC base label), cached when
-	// PrepareConsoleSocketDir reads capabilities at startup. Per-instance directories are
+	// qemuOwner is the uid:gid libvirt runs QEMU as (its DAC base label), cached by each
+	// successful preparation of the console socket directory. Per-instance directories are
 	// chowned to it so QEMU can create each guest's serial console.log (the <log file>
 	// chardev it opens itself); nil until capabilities have been read.
 	qemuOwner atomic.Pointer[dacOwner]
@@ -94,22 +117,42 @@ func NewVMManager(libvirtURI, mode string) (*VMManager, error) {
 	return mgr, nil
 }
 
-// connectLibvirt establishes a connection to libvirt
-func (m *VMManager) connectLibvirt() error {
-	socketPath := "/var/run/libvirt/libvirt-sock"
-	// Allow override via configured URI: strip scheme to get socket path
-	if m.libvirtURI != "" && m.libvirtURI != "qemu:///system" {
-		// For custom URIs (e.g. qemu+unix:///path), use the path component
-		// For remote URIs use TCP — not supported in this implementation
-		if len(m.libvirtURI) > 0 {
-			socketPath = m.libvirtURI
-		}
+// StartVMManager is NewVMManager for the server. In real mode it returns at once, with the
+// connection to libvirt still to be made: a background loop dials — each attempt bounded at
+// connectAttemptTimeout, the pause between failures growing from reconnectBackoffMin to
+// reconnectBackoffMax — and after every connection, the first and each reconnect, prepares
+// the console socket directory for guests (prepareShared). Startup never waits on libvirt;
+// until it answers, every libvirt call fails as it does during a lost connection.
+//
+// A libvirt_uri Lightstack cannot honour is the one error (ParseLibvirtURI). Stub mode reads
+// no URI and starts nothing.
+func StartVMManager(libvirtURI, mode string) (*VMManager, error) {
+	mgr := &VMManager{
+		libvirtURI: libvirtURI,
+		mode:       mode,
+		stubVMs:    make(map[string]*stubVM),
+		prepares:   true,
 	}
+	if mode != "real" {
+		return mgr, nil
+	}
+	target, err := ParseLibvirtURI(libvirtURI)
+	if err != nil {
+		return nil, err
+	}
+	mgr.start(newSocketDialer(target, libvirtRunDir, connectAttemptTimeout), reconnectBackoffMin, reconnectBackoffMax)
+	return mgr, nil
+}
 
-	return m.connect(dialers.NewLocal(
-		dialers.WithSocket(socketPath),
-		dialers.WithLocalTimeout(2*time.Second),
-	), reconnectBackoffMin, reconnectBackoffMax)
+// connectLibvirt opens the connection nova.libvirt_uri names (ParseLibvirtURI): the socket
+// it gives, or the automatic choice between the modular QEMU daemon's socket and libvirtd's,
+// made again on every reconnect.
+func (m *VMManager) connectLibvirt() error {
+	target, err := ParseLibvirtURI(m.libvirtURI)
+	if err != nil {
+		return err
+	}
+	return m.connect(newSocketDialer(target, libvirtRunDir, connectAttemptTimeout), reconnectBackoffMin, reconnectBackoffMax)
 }
 
 const (
@@ -119,76 +162,220 @@ const (
 	reconnectBackoffMin = time.Second
 	reconnectBackoffMax = 5 * time.Second
 
-	// How long Close waits for the reconnect loop, which may be inside a Connect to an
+	// How long Close waits for the connection loop, which may be inside a Connect to an
 	// unresponsive libvirtd. Leaving it behind beats hanging shutdown.
 	closeWait = 5 * time.Second
+
+	// connectAttemptTimeout bounds one connection attempt, dial and handshake together
+	// (Constitution Article III: libvirt connection failures, 1 second).
+	connectAttemptTimeout = time.Second
 )
 
-// connect opens the libvirt connection through dialer and keeps it open.
-func (m *VMManager) connect(dialer socket.Dialer, minWait, maxWait time.Duration) error {
-	l, err := dial(dialer)
+// libvirtDialer is what the connection code needs of a dialer: go-libvirt's socket.Dialer, and
+// the socket it dialed last, for log lines and errors.
+type libvirtDialer interface {
+	socket.Dialer
+	Dialed() string
+}
+
+// connect opens the libvirt connection through dialer once, bounded, then keeps it open as
+// StartVMManager's loop does. This is NewVMManager's contract, for a caller that cannot go on
+// without libvirt: the uninstall purge fails closed when this fails.
+func (m *VMManager) connect(dialer libvirtDialer, minWait, maxWait time.Duration) error {
+	l, err := dialWithin(dialer, connectAttemptTimeout)
 	if err != nil {
 		return err
 	}
-
+	log.Info().Str("socket", dialer.Dialed()).Msg("connected to libvirt")
 	m.conn.Store(l)
+	m.start(dialer, minWait, maxWait)
+	return nil
+}
+
+// start runs the connection loop in the background until Close.
+func (m *VMManager) start(dialer libvirtDialer, minWait, maxWait time.Duration) {
 	m.done = make(chan struct{})
 	m.stopped = make(chan struct{})
-	go m.keepConnected(dialer, minWait, maxWait)
-	return nil
+	go m.stayConnected(dialer, minWait, maxWait)
 }
 
 // dial opens a new libvirt connection through dialer.
 func dial(dialer socket.Dialer) (*libvirt.Libvirt, error) {
 	l := libvirt.NewWithDialer(dialer)
 	if err := l.Connect(); err != nil {
-		return nil, fmt.Errorf("failed to connect to libvirt: %w", err)
+		return nil, err
 	}
 	return l, nil
 }
 
-// keepConnected replaces the libvirt connection whenever it drops. A libvirtd restart —
-// a package upgrade, a crash — closes it, and nothing else would ever open it again:
-// the pod stays up, /livez checks only the database, and every libvirt call fails
-// until Lightstack itself restarts.
-//
-// It runs in the background so that no caller waits on a dial: while the connection
-// is down, calls fail fast as before, and they succeed again within one backoff step
-// of libvirtd returning. A replacement is published only once it is open. Reopening
-// the dropped connection in place would race every call still holding it: go-libvirt
-// reads a socket's connection state without the lock its Connect writes it under.
-func (m *VMManager) keepConnected(dialer socket.Dialer, minWait, maxWait time.Duration) {
-	defer close(m.stopped)
-	for {
-		select {
-		case <-m.done:
-			return
-		case <-m.conn.Load().Disconnected():
+// dialResult is what one dial attempt ends with.
+type dialResult struct {
+	l   *libvirt.Libvirt
+	err error
+}
+
+// dialWithin is dial bounded by timeout. go-libvirt puts no deadline on its handshake, so a
+// daemon that accepts the connection and never answers would hold the attempt forever.
+func dialWithin(dialer libvirtDialer, timeout time.Duration) (*libvirt.Libvirt, error) {
+	attempt := &dialAttempt{dialer: dialer}
+	ch := make(chan dialResult, 1)
+	go func() {
+		l, err := dial(attempt)
+		ch <- dialResult{l, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.l, r.err
+	case <-time.After(timeout):
+	}
+	abandonDial(attempt, ch)
+	return nil, fmt.Errorf("libvirt at %s did not answer within %s", dialer.Dialed(), timeout)
+}
+
+// abandonDial gives up on an attempt that outlived its bound (dialAttempt.abandon), and
+// disconnects a connection whose handshake completed just as the bound ran out, since the
+// caller no longer takes it.
+func abandonDial(attempt *dialAttempt, ch <-chan dialResult) {
+	attempt.abandon()
+	go func() {
+		if r := <-ch; r.err == nil {
+			_ = r.l.Disconnect()
 		}
-		log.Warn().Msg("libvirt connection lost; reconnecting")
-		l, ok := m.redial(dialer, minWait, maxWait)
+	}()
+}
+
+// dialAttempt is one bounded attempt's view of a dialer. It keeps the connection the attempt
+// opened, so that giving the attempt up closes it. Giving up is recorded on the attempt, not the
+// dialer, so a connection that opens only afterwards is closed as well: nothing else would ever
+// close it, and with a daemon that never answers, its handshake would wait forever.
+type dialAttempt struct {
+	dialer socket.Dialer
+
+	mu        sync.Mutex
+	conn      net.Conn
+	abandoned bool
+}
+
+// Dial opens the attempt's connection, or closes it again if the attempt was given up meanwhile.
+func (a *dialAttempt) Dial() (net.Conn, error) {
+	conn, err := a.dialer.Dial()
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.abandoned {
+		_ = conn.Close()
+		return nil, errors.New("connection attempt abandoned")
+	}
+	a.conn = conn
+	return conn, nil
+}
+
+// abandon gives the attempt up. It closes the connection the attempt opened — go-libvirt has no
+// deadline on its handshake, and closing the connection under it is what makes a hung handshake
+// return — and has Dial close one that opens later.
+func (a *dialAttempt) abandon() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.abandoned = true
+	if a.conn != nil {
+		_ = a.conn.Close()
+	}
+}
+
+// stayConnected keeps a libvirt connection open for as long as the manager runs: it dials
+// until a connection opens, prepares the console socket directory for it, waits for it to
+// drop, and starts again. A libvirtd restart — a package upgrade, a crash — closes the
+// connection, and nothing else would ever open it again: the pod stays up, /livez checks only
+// the database, and every libvirt call fails until Lightstack itself restarts.
+//
+// It runs in the background so that no caller waits on a dial: while the connection is down,
+// calls fail fast, and they succeed again within one backoff step of libvirtd returning. A
+// replacement is published only once it is open. Reopening the dropped connection in place
+// would race every call still holding it: go-libvirt reads a socket's connection state without
+// the lock its Connect writes it under.
+func (m *VMManager) stayConnected(dialer libvirtDialer, minWait, maxWait time.Duration) {
+	var prep sync.WaitGroup
+	defer func() {
+		prep.Wait()
+		close(m.stopped)
+	}()
+	firstWait := time.Duration(0) // the first connection is attempted at once
+	for {
+		if conn := m.conn.Load(); conn != nil {
+			if !m.untilLost(conn, &prep, minWait, maxWait) {
+				return
+			}
+			firstWait = minWait
+		}
+		l, ok := m.redial(dialer, firstWait, minWait, maxWait)
 		if !ok {
 			return
 		}
 		m.conn.Store(l)
-		log.Info().Msg("libvirt connection re-established")
+		log.Info().Str("socket", dialer.Dialed()).Msg("connected to libvirt")
 	}
 }
 
-// redial dials with capped exponential backoff until a connection opens. It reports
-// false when the manager is closed first.
-func (m *VMManager) redial(dialer socket.Dialer, minWait, maxWait time.Duration) (*libvirt.Libvirt, bool) {
+// untilLost prepares the console socket directory for conn in the background, when this
+// manager prepares, and waits for conn to drop. It reports false when the manager closes first.
+func (m *VMManager) untilLost(conn *libvirt.Libvirt, prep *sync.WaitGroup, minWait, maxWait time.Duration) bool {
+	if m.prepares {
+		prep.Go(func() { m.afterConnect(conn, minWait, maxWait) })
+	}
+	select {
+	case <-m.done:
+		return false
+	case <-conn.Disconnected():
+	}
+	log.Warn().Msg("libvirt connection lost; reconnecting")
+	return true
+}
+
+// afterConnect prepares the console socket directory for a new connection — guests cannot
+// start until it is QEMU's (SPEC-021 FR-017a) — retrying, the pause doubling from minWait up
+// to maxWait, until an attempt succeeds. It runs after every connection, even when an earlier
+// success is in effect, so a change of QEMU's user made while libvirt was down is picked up
+// (SPEC-031 FR-015). It stops when the connection drops, since the next one starts it again,
+// or when the manager closes. Each attempt logs its own outcome (prepareConsoleSocketDir).
+func (m *VMManager) afterConnect(conn *libvirt.Libvirt, minWait, maxWait time.Duration) {
 	for wait := minWait; ; wait = min(2*wait, maxWait) {
+		if m.prepareShared(context.Background()) == nil {
+			return
+		}
+		select {
+		case <-m.done:
+			return
+		case <-conn.Disconnected():
+			return
+		case <-time.After(wait):
+		}
+	}
+}
+
+// redial dials until a connection opens: first after firstWait, then with the pause doubling
+// from minWait up to maxWait. Each attempt is bounded (dialWithin). The first failure is
+// logged at WARN, naming the socket or sockets tried; later ones at DEBUG. It reports false
+// when the manager is closed first.
+func (m *VMManager) redial(dialer libvirtDialer, firstWait, minWait, maxWait time.Duration) (*libvirt.Libvirt, bool) {
+	wait, next := firstWait, min(max(2*firstWait, minWait), maxWait)
+	for failures := 0; ; failures++ {
 		select {
 		case <-m.done:
 			return nil, false
 		case <-time.After(wait):
 		}
-		l, err := dial(dialer)
+		l, err := dialWithin(dialer, connectAttemptTimeout)
 		if err == nil {
 			return l, true
 		}
-		log.Debug().Err(err).Dur("next_attempt_in", min(2*wait, maxWait)).Msg("libvirt reconnect failed")
+		if failures == 0 {
+			log.Warn().Err(err).Dur("next_attempt_in", next).Msg("libvirt connection attempt failed; retrying in the background")
+		} else {
+			log.Debug().Err(err).Dur("next_attempt_in", next).Msg("libvirt connection attempt failed")
+		}
+		wait, next = next, min(2*next, maxWait)
 	}
 }
 
@@ -221,12 +408,12 @@ func (m *VMManager) createVMStub(xml string) (string, error) {
 func (m *VMManager) createVMReal(ctx context.Context, xml string) (string, error) {
 	// The domain names its console socket in a directory libvirt does not prepare;
 	// refuse here rather than fail inside libvirt (SPEC-021 FR-017a).
-	if err := m.consoleDirReady(); err != nil {
+	if err := m.ensurePrepared(ctx); err != nil {
 		return "", err
 	}
 	conn := m.conn.Load()
 	if conn == nil {
-		return "", fmt.Errorf("not connected to libvirt")
+		return "", errNotConnected
 	}
 
 	// Define the domain
@@ -235,16 +422,24 @@ func (m *VMManager) createVMReal(ctx context.Context, xml string) (string, error
 		return "", fmt.Errorf("failed to define domain: %w", err)
 	}
 
+	// Get the UUID string (domain.UUID is already a [16]byte)
+	vmUUID := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		domain.UUID[0:4], domain.UUID[4:6], domain.UUID[6:8], domain.UUID[8:10], domain.UUID[10:16])
+
+	// QEMU opens the guest's console.log in the instance's directory itself, so the directory
+	// must be QEMU's before the guest starts (SPEC-031 FR-014). The domain UUID is the
+	// instance ID.
+	if err := m.PrepareInstanceDir(vmUUID); err != nil {
+		_ = conn.DomainUndefine(domain)
+		return "", err
+	}
+
 	// Start the domain
 	if err := conn.DomainCreate(domain); err != nil {
 		// Try to undefine on failure
 		_ = conn.DomainUndefine(domain)
 		return "", fmt.Errorf("failed to start domain: %w", err)
 	}
-
-	// Get the UUID string (domain.UUID is already a [16]byte)
-	vmUUID := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		domain.UUID[0:4], domain.UUID[4:6], domain.UUID[6:8], domain.UUID[8:10], domain.UUID[10:16])
 
 	return vmUUID, nil
 }
@@ -272,21 +467,9 @@ func (m *VMManager) deleteVMStub(vmUUID string) error {
 
 // deleteVMReal deletes a real VM via libvirt
 func (m *VMManager) deleteVMReal(ctx context.Context, vmUUID string) error {
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	// Parse UUID
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
-	}
-
-	// Lookup domain
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+		return err
 	}
 
 	// Get domain state
@@ -340,19 +523,9 @@ func (m *VMManager) rebootVMStub(vmUUID string) error {
 
 // rebootVMReal reboots a real VM via libvirt
 func (m *VMManager) rebootVMReal(ctx context.Context, vmUUID string) error {
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
-	}
-
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+		return err
 	}
 
 	if err := conn.DomainReboot(domain, 0); err != nil {
@@ -370,22 +543,18 @@ func (m *VMManager) rebootVMReal(ctx context.Context, vmUUID string) error {
 func (m *VMManager) hardRebootVMReal(vmUUID string) error {
 	// The domain names its console socket in a directory libvirt does not prepare;
 	// refuse here rather than fail inside libvirt (SPEC-021 FR-017a).
-	if err := m.consoleDirReady(); err != nil {
+	if err := m.ensurePrepared(context.Background()); err != nil {
 		return err
 	}
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
+		return err
 	}
-
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+	// The instance's directory is made QEMU's once the guest is known to exist, and before it
+	// is powered off, so a failure here never leaves it off and unable to start (SPEC-031
+	// FR-014).
+	if err := m.PrepareInstanceDir(vmUUID); err != nil {
+		return err
 	}
 
 	// Active, not merely running: a paused or suspended guest has a qemu process too,
@@ -452,19 +621,9 @@ func (m *VMManager) stopVMStub(vmUUID string) error {
 // shape as upstream's libvirt driver, which gives the guest shutdown_timeout seconds
 // and then powers it off.
 func (m *VMManager) stopVMReal(ctx context.Context, vmUUID string, grace time.Duration) error {
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
-	}
-
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+		return err
 	}
 
 	readState := func() (VMState, error) {
@@ -532,22 +691,12 @@ func (m *VMManager) startVMStub(vmUUID string) error {
 func (m *VMManager) startVMReal(ctx context.Context, vmUUID string) error {
 	// The domain names its console socket in a directory libvirt does not prepare;
 	// refuse here rather than fail inside libvirt (SPEC-021 FR-017a).
-	if err := m.consoleDirReady(); err != nil {
+	if err := m.ensurePrepared(ctx); err != nil {
 		return err
 	}
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
-	}
-
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+		return err
 	}
 
 	// Already up: DomainCreate errors on an active domain, and the requested end state
@@ -559,6 +708,10 @@ func (m *VMManager) startVMReal(ctx context.Context, vmUUID string) error {
 		return nil
 	}
 
+	// QEMU opens the guest's console.log in the instance's directory itself (SPEC-031 FR-014).
+	if err := m.PrepareInstanceDir(vmUUID); err != nil {
+		return err
+	}
 	if err := conn.DomainCreate(domain); err != nil {
 		return fmt.Errorf("failed to start domain: %w", err)
 	}
@@ -589,19 +742,9 @@ func (m *VMManager) getVMStateStub(vmUUID string) (string, int, error) {
 
 // getVMStateReal returns real VM state via libvirt
 func (m *VMManager) getVMStateReal(ctx context.Context, vmUUID string) (string, int, error) {
-	conn := m.conn.Load()
-	if conn == nil {
-		return string(VMStateNoState), 0, fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return string(VMStateNoState), 0, fmt.Errorf("invalid UUID: %w", err)
-	}
-
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return string(VMStateNoState), 0, wrapLookupErr(err)
+		return string(VMStateNoState), 0, err
 	}
 
 	state, _, err := conn.DomainGetState(domain, 0)
@@ -638,19 +781,9 @@ func (m *VMManager) attachDeviceStub(vmUUID, deviceXML string) error {
 
 // attachDeviceReal attaches a device to a real VM via libvirt
 func (m *VMManager) attachDeviceReal(ctx context.Context, vmUUID, deviceXML string) error {
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
-	}
-
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+		return err
 	}
 
 	// Attach device (libvirt flags: 0 for default, 1 for persistent, 2 for live)
@@ -685,19 +818,9 @@ func (m *VMManager) detachDeviceStub(vmUUID, deviceXML string) error {
 
 // detachDeviceReal detaches a device from a real VM via libvirt
 func (m *VMManager) detachDeviceReal(ctx context.Context, vmUUID, deviceXML string) error {
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
-	}
-
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+		return err
 	}
 
 	// Detach device (libvirt flags: 0 for default, 1 for persistent, 2 for live)
@@ -734,19 +857,9 @@ func (m *VMManager) suspendVMStub(vmUUID string) error {
 
 // suspendVMReal suspends a real VM via libvirt
 func (m *VMManager) suspendVMReal(ctx context.Context, vmUUID string) error {
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
-	}
-
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+		return err
 	}
 
 	// Suspend domain (saves to disk)
@@ -784,25 +897,19 @@ func (m *VMManager) resumeVMStub(vmUUID string) error {
 func (m *VMManager) resumeVMReal(ctx context.Context, vmUUID string) error {
 	// The domain names its console socket in a directory libvirt does not prepare;
 	// refuse here rather than fail inside libvirt (SPEC-021 FR-017a).
-	if err := m.consoleDirReady(); err != nil {
+	if err := m.ensurePrepared(ctx); err != nil {
 		return err
 	}
-	conn := m.conn.Load()
-	if conn == nil {
-		return fmt.Errorf("not connected to libvirt")
-	}
-
-	uuidBytes, err := parseUUID(vmUUID)
+	conn, domain, err := m.lookupDomain(vmUUID)
 	if err != nil {
-		return fmt.Errorf("invalid UUID: %w", err)
+		return err
 	}
 
-	domain, err := conn.DomainLookupByUUID(uuidBytes)
-	if err != nil {
-		return wrapLookupErr(err)
+	// Resume domain (starts from managed save). QEMU opens the guest's console.log in the
+	// instance's directory itself (SPEC-031 FR-014).
+	if err := m.PrepareInstanceDir(vmUUID); err != nil {
+		return err
 	}
-
-	// Resume domain (starts from managed save)
 	if err := conn.DomainCreate(domain); err != nil {
 		return fmt.Errorf("failed to resume domain: %w", err)
 	}
@@ -810,7 +917,7 @@ func (m *VMManager) resumeVMReal(ctx context.Context, vmUUID string) error {
 	return nil
 }
 
-// Close stops the reconnect loop, then closes the libvirt connection. In that order: a
+// Close stops the connection loop, then closes the libvirt connection. In that order: a
 // loop still running would take the deliberate disconnect for a lost connection and
 // dial again. Safe to call more than once.
 func (m *VMManager) Close() {
@@ -826,6 +933,25 @@ func (m *VMManager) Close() {
 			_ = conn.Disconnect()
 		}
 	})
+}
+
+// lookupDomain finds the guest vmUUID names on the current connection. It fails with
+// errNotConnected without one, "invalid UUID" for an id that is not one, and ErrDomainNotFound
+// for a guest libvirt does not have (wrapLookupErr).
+func (m *VMManager) lookupDomain(vmUUID string) (*libvirt.Libvirt, libvirt.Domain, error) {
+	conn := m.conn.Load()
+	if conn == nil {
+		return nil, libvirt.Domain{}, errNotConnected
+	}
+	uuidBytes, err := parseUUID(vmUUID)
+	if err != nil {
+		return nil, libvirt.Domain{}, fmt.Errorf("invalid UUID: %w", err)
+	}
+	domain, err := conn.DomainLookupByUUID(uuidBytes)
+	if err != nil {
+		return nil, libvirt.Domain{}, wrapLookupErr(err)
+	}
+	return conn, domain, nil
 }
 
 // wrapLookupErr classifies a domain lookup failure.

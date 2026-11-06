@@ -93,6 +93,7 @@ func TestAdminOnlyResetState_Contract(t *testing.T) {
 		// The seeded m1.tiny, by id — the same reference every other server
 		// action test uses. "1" and a name are not resolvable here.
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err, "Failed to create test server")
 	defer servers.Delete(adminClient, server.ID)
@@ -168,6 +169,7 @@ func TestAdminOnlyEvacuate_Contract(t *testing.T) {
 	server, err := servers.Create(adminClient, servers.CreateOpts{
 		Name:      "evacuate-test-server",
 		FlavorRef: "00000000-0000-0000-0000-000000000010",
+		ImageRef:  testImageID(t),
 	}).Extract()
 	require.NoError(t, err)
 	defer servers.Delete(adminClient, server.ID)
