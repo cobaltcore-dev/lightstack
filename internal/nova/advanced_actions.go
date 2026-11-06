@@ -93,16 +93,7 @@ func (svc *Service) SuspendInstance(c *gin.Context, instanceID, projectID string
 			defer cancel()
 
 			if err := svc.vmManager.SuspendVM(ctx, libvirtDomainID); err != nil {
-				// On failure, revert to ERROR state. If the rollback
-				// itself fails, log it — the instance row will then
-				// disagree with libvirt and require operator attention.
-				dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
-				defer dbCancel()
-				if _, dbErr := svc.pool.Exec(dbCtx,
-					"UPDATE instances SET status = $1, task_state = $2 WHERE id = $3",
-					"ERROR", "", instanceID); dbErr != nil {
-					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after suspend failure")
-				}
+				svc.markActionFailed(instanceID, "suspend", err)
 			}
 		}()
 	}
@@ -166,25 +157,28 @@ func (svc *Service) ResumeInstance(c *gin.Context, instanceID, projectID string)
 			defer cancel()
 
 			if err := svc.vmManager.ResumeVM(ctx, libvirtDomainID); err != nil {
-				// The cause has to reach the log: this runs after the 202, so it is the
-				// only place it can name, e.g., a console socket directory that is not
-				// ready (FR-017a).
-				log.Error().Err(err).Str("instance_id", instanceID).Msg("resume failed in libvirt")
-				// On failure, revert to ERROR state. If the rollback
-				// itself fails, log it — the instance row will then
-				// disagree with libvirt and require operator attention.
-				dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
-				defer dbCancel()
-				if _, dbErr := svc.pool.Exec(dbCtx,
-					"UPDATE instances SET status = $1, task_state = $2 WHERE id = $3",
-					"ERROR", "", instanceID); dbErr != nil {
-					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after resume failure")
-				}
+				svc.markActionFailed(instanceID, "resume", err)
 			}
 		}()
 	}
 
 	c.Status(http.StatusAccepted)
+}
+
+// markActionFailed records an action that libvirt failed after its 202 — suspend, resume,
+// shelve: the cause in the log, the only place it can still be named (e.g. a console socket
+// directory that is not ready, FR-017a), and the server in ERROR, so the record never claims a
+// state the guest is not in. A failed rollback is logged too: the record then disagrees with
+// libvirt and needs an operator.
+func (svc *Service) markActionFailed(instanceID, action string, err error) {
+	log.Error().Err(err).Str("instance_id", instanceID).Msg(action + " failed in libvirt")
+	ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
+	defer cancel()
+	if _, dbErr := svc.pool.Exec(ctx,
+		"UPDATE instances SET status = $1, task_state = $2 WHERE id = $3",
+		"ERROR", "", instanceID); dbErr != nil {
+		log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after " + action + " failure")
+	}
 }
 
 // Shelve shelves an instance (shutdown and save disk image)
@@ -262,8 +256,10 @@ func (svc *Service) ShelveInstance(c *gin.Context, instanceID, projectID string)
 			ctx, cancel := context.WithTimeout(svc.ctx, grace+common.LifecycleResponseSlack)
 			defer cancel()
 
-			// Stop VM
-			_ = svc.vmManager.StopVM(ctx, libvirtDomainID, grace)
+			// A guest that could not be stopped is not shelved.
+			if err := svc.vmManager.StopVM(ctx, libvirtDomainID, grace); err != nil {
+				svc.markActionFailed(instanceID, "shelve", err)
+			}
 			// In real mode, would also snapshot disk and delete instance
 		}()
 	}

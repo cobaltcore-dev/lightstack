@@ -223,9 +223,10 @@ func (svc *Service) revokeConsoleTokens(c *gin.Context, instanceID, reason strin
 	return true
 }
 
-// errNoHypervisor is real mode without a hypervisor: InitHypervisor failed at startup
-// (libvirt unreachable) and Lightstack carried on. An outage, not stub mode.
-var errNoHypervisor = errors.New("hypervisor not initialized: libvirt was unreachable when Lightstack started")
+// errNoHypervisor is a compute service with no hypervisor wired in. A real-mode server always
+// has one — it stops when InitHypervisor fails (SPEC-031 FR-019) — so only a service built
+// without InitHypervisor, as tests build them, gets here. Never stub behaviour.
+var errNoHypervisor = errors.New("no hypervisor wired in")
 
 // consoleSocket reads the guest's live console socket from the hypervisor, with the
 // domain ID of the run it serves.

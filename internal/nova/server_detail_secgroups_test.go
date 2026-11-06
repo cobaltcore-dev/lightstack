@@ -23,7 +23,7 @@ func TestServerDetail_SecurityGroups_RoundTrip(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-sg1","flavorRef":"m1.small","security_groups":[{"name":"default"}]}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-sg1","flavorRef":"m1.small","security_groups":[{"name":"default"}]}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create: code=%d body=%s; want 202", code, body)
 	}
@@ -62,7 +62,7 @@ func TestServerDetail_SecurityGroups_DefaultWhenNone(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-sgnone","flavorRef":"m1.small"}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-sgnone","flavorRef":"m1.small"}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create: code=%d body=%s", code, body)
 	}
@@ -85,7 +85,7 @@ func TestServerDetail_SecurityGroups_Multiple(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-sgmulti","flavorRef":"m1.small","security_groups":[{"name":"default"},{"name":"spec017-sg2"}]}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-sgmulti","flavorRef":"m1.small","security_groups":[{"name":"default"},{"name":"spec017-sg2"}]}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create: code=%d body=%s", code, body)
 	}
@@ -108,7 +108,7 @@ func TestServerDetail_SecurityGroups_OrphanDropped(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-sgorph","flavorRef":"m1.small","security_groups":[{"name":"spec017-sgorphan"}]}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-sgorph","flavorRef":"m1.small","security_groups":[{"name":"spec017-sgorphan"}]}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create: code=%d body=%s", code, body)
 	}
@@ -139,7 +139,7 @@ func TestCreateServer_UnknownSecurityGroup_400(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-sgbad","flavorRef":"m1.small","security_groups":[{"name":"spec017-nope"}]}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-sgbad","flavorRef":"m1.small","security_groups":[{"name":"spec017-nope"}]}}`))
 	if code != http.StatusBadRequest {
 		t.Fatalf("create with unknown SG: code=%d body=%s; want 400", code, body)
 	}
@@ -161,7 +161,7 @@ func TestCreateServer_EnsureDefault_FreshProject(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, freshProjectID, seededUserID,
-		`{"server":{"name":"spec017-fresh","flavorRef":"m1.small","security_groups":[{"name":"default"}]}}`)
+		withImage(t, freshProjectID, `{"server":{"name":"spec017-fresh","flavorRef":"m1.small","security_groups":[{"name":"default"}]}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create in fresh project: code=%d body=%s; want 202 (ensure default)", code, body)
 	}
@@ -193,7 +193,7 @@ func TestCreateServer_ImplicitDefault_FreshProject(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, freshProjectID, seededUserID,
-		`{"server":{"name":"spec017-implicit","flavorRef":"m1.small"}}`)
+		withImage(t, freshProjectID, `{"server":{"name":"spec017-implicit","flavorRef":"m1.small"}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("implicit create in fresh project: code=%d body=%s; want 202", code, body)
 	}
@@ -222,7 +222,7 @@ func TestCreateServer_EmptySecurityGroupName_400(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-sgempty","flavorRef":"m1.small","security_groups":[{"name":""}]}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-sgempty","flavorRef":"m1.small","security_groups":[{"name":""}]}}`))
 	if code != http.StatusBadRequest {
 		t.Fatalf("create with empty SG name: code=%d body=%s; want 400", code, body)
 	}
@@ -238,7 +238,7 @@ func TestCreateServer_NamelessSecurityGroupItem_Ignored(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-sgnameless","flavorRef":"m1.small","security_groups":[{}]}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-sgnameless","flavorRef":"m1.small","security_groups":[{}]}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create with nameless SG item: code=%d body=%s; want 202", code, body)
 	}

@@ -613,7 +613,7 @@ nova:
   host: "0.0.0.0"
   port: 8774
   libvirt_mode: real
-  libvirt_uri: "qemu+tcp://compute1/system"  # Will be load-balanced
+  libvirt_uri: "qemu:///system"  # each node dials its own local libvirt
   # The noVNC console is single-node only in v1 (SPEC-021): each node's token projection
   # and guest console sockets are node-local. With this, console requests answer 400
   # "Unavailable console type novnc" instead of a URL that leads nowhere;

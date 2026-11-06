@@ -155,9 +155,9 @@ func TestConsoleStubModeReturns501(t *testing.T) {
 	}
 }
 
-// Real mode whose hypervisor never came up — InitHypervisor failed at startup and main
-// carried on with no manager — is an outage, not stub mode: 500, and no claim that
-// there is no guest to display. The token sweep gets the same answer.
+// Real mode with no hypervisor wired in — what main used to carry on with after a failed
+// InitHypervisor; it now stops instead — is an outage, not stub mode: 500, and no claim
+// that there is no guest to display. The token sweep gets the same answer.
 func TestConsoleWithoutAHypervisorIsAnOutage(t *testing.T) {
 	requireDB(t)
 	r, _ := newConsoleTestRouter(t, "real") // no manager, as after a failed InitHypervisor

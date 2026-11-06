@@ -1,9 +1,10 @@
 // Package health provides Lightstack's thin, honest readiness and liveness signals.
 //
 // Readiness is gated on the database being reachable AND all HTTP listeners
-// being bound; liveness is dependency-free (process up). It also exposes an
-// OpenStack/oslo-compatible /healthcheck alias of readiness. The endpoints are
-// unauthenticated and served on the identity listener only. See
+// being bound — and, in real mode, on the hypervisor having prepared the console
+// socket directory once (SPEC-031); liveness is dependency-free (process up). It
+// also exposes an OpenStack/oslo-compatible /healthcheck alias of readiness. The
+// endpoints are unauthenticated and served on the identity listener only. See
 // docs/specs/013-readiness-liveness-probes/.
 package health
 
@@ -36,7 +37,8 @@ type Check struct {
 	Probe func(ctx context.Context) error
 }
 
-// DatabaseCheck is the sole readiness-gating check (FR-001, Q1). It wraps the
+// DatabaseCheck gates readiness in every mode (FR-001, Q1); real mode adds the
+// hypervisor check (cmd/lightstack, readinessChecks; SPEC-031 FR-017). It wraps the
 // existing database.HealthCheck — a Ping on the given pool, i.e. a live query
 // round-trip (a `SELECT 1` on SQLite), not a TCP-only probe (Q7).
 func DatabaseCheck(pool database.DB) Check {
@@ -67,7 +69,8 @@ type Checker struct {
 	prevReady bool
 }
 
-// New builds a Checker over the given gating checks (typically DatabaseCheck()).
+// New builds a Checker over the given gating checks: DatabaseCheck(), and in real mode
+// the hypervisor check.
 func New(logger zerolog.Logger, checks ...Check) *Checker {
 	return &Checker{checks: checks, timeout: defaultCheckTimeout, logger: logger}
 }
@@ -95,7 +98,7 @@ func (c *Checker) Ready(ctx context.Context) Result {
 		return c.record(Result{Reason: "starting"})
 	}
 
-	// Run the gating checks (today just the database) concurrently, each under
+	// Run the gating checks concurrently, each under
 	// its own bounded context — a Check.Probe must return when ctx is done.
 	var (
 		mu     sync.Mutex

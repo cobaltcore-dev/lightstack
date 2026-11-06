@@ -122,17 +122,23 @@ func countServersNamed(t *testing.T, name string) int {
 }
 
 // seededImageID seeds an active image the seeded project owns and removes it when the test
-// ends. Always its own, and private: taking whatever active image the database held raced
-// every package that creates or deletes images — another project's private image cannot be
-// booted, one deleted mid-test is gone — and a public image leaks into other tests' exact
-// listings.
+// ends.
 func seededImageID(t *testing.T) string {
+	t.Helper()
+	return seedImageFor(t, seededProjectID)
+}
+
+// seedImageFor seeds an active image projectID owns and removes it when the test ends. Always
+// its own, and private: taking whatever active image the database held raced every package
+// that creates or deletes images — another project's private image cannot be booted, one
+// deleted mid-test is gone — and a public image leaks into other tests' exact listings.
+func seedImageFor(t *testing.T, projectID string) string {
 	t.Helper()
 	var id string
 	if err := testPool.QueryRow(t.Context(),
 		`INSERT INTO images (name, project_id, status, visibility, disk_format, container_format)
 		 VALUES ('fr025-img', $1, 'active', 'private', 'qcow2', 'bare') RETURNING id::text`,
-		seededProjectID).Scan(&id); err != nil {
+		projectID).Scan(&id); err != nil {
 		t.Fatalf("seeding an image: %v", err)
 	}
 	t.Cleanup(func() {
