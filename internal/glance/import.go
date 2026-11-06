@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 )
 
 // StageImageData stages image data before import
@@ -28,7 +29,8 @@ func (svc *Service) StageImageData(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		log.Error().Err(err).Str("image_id", imageID).Msg("image staging database error")
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to stage image data"})
 		return
 	}
 
@@ -38,11 +40,10 @@ func (svc *Service) StageImageData(c *gin.Context) {
 		return
 	}
 
-	// Read staged data (in real implementation, would save to staging area).
-	// Bounded like the upload path (review 2026-10-13 M-3): ReadAll on a raw
-	// request body is an unbounded memory allocation.
+	// Consume staging data with bounded memory. The staging backend is currently
+	// a stub, so only its byte count is retained; the upload cap can be 10 GiB.
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(maxImageUploadBytes))
-	stagedData, err := io.ReadAll(c.Request.Body)
+	stagedSize, err := io.Copy(io.Discard, c.Request.Body)
 	if err != nil {
 		// Over the cap is 413, upstream's answer to image_size_cap (round 2
 		// of this review — it used to read as a 400 read failure).
@@ -56,20 +57,21 @@ func (svc *Service) StageImageData(c *gin.Context) {
 	}
 
 	// Update image status to uploading
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	result, err := svc.pool.Exec(c.Request.Context(), `
 		UPDATE images
 		SET status = $1, size_bytes = $2, updated_at = $3
-		WHERE id = $4
-	`, "uploading", len(stagedData), time.Now(), imageID)
+		WHERE id = $4 AND status = 'queued'
+	`, "uploading", stagedSize, time.Now(), imageID)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		log.Error().Err(err).Str("image_id", imageID).Msg("image staging database error")
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to stage image data"})
 		return
 	}
-
-	// In stub mode, data is discarded
-	// In real mode, would save to staging location
-	_ = stagedData
+	if result.RowsAffected() == 0 {
+		c.JSON(http.StatusConflict, gin.H{"message": "Image is not in queued state"})
+		return
+	}
 
 	c.Status(http.StatusNoContent)
 }
