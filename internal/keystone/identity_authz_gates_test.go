@@ -105,6 +105,25 @@ func TestIdentitySelfServiceStillWorks(t *testing.T) {
 	})
 	member := map[string]string{"X-Test-Roles": "member", "X-Test-User": created.User.ID}
 
+	for _, alias := range []string{strings.ToUpper(created.User.ID), strings.ReplaceAll(created.User.ID, "-", "")} {
+		for _, tc := range []struct{ method, suffix, body string }{
+			{"GET", "", ""},
+			{"GET", "/application_credentials", ""},
+			{"PATCH", "", `{"user":{"email":"self@example.com"}}`},
+		} {
+			req := httptest.NewRequest(tc.method, "/v3/users/"+alias+tc.suffix, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			for k, v := range member {
+				req.Header.Set(k, v)
+			}
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("self %s %s: %d %s", tc.method, alias+tc.suffix, w.Code, w.Body.String())
+			}
+		}
+	}
+
 	doPatch := func(body string) int {
 		req := httptest.NewRequest("PATCH", "/v3/users/"+created.User.ID, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")

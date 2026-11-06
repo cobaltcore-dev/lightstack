@@ -40,3 +40,14 @@ func denyIfMalformedID(c *gin.Context, kind, id string) bool {
 	}
 	return false
 }
+
+// sameUser compares UUID values, including the compact IDs used by RGW tokens.
+// Invalid or missing caller IDs must never authorize self-service.
+func sameUser(caller, target string) bool {
+	callerID, err := uuid.Parse(caller)
+	if err != nil {
+		return false
+	}
+	targetID, err := uuid.Parse(target)
+	return err == nil && callerID == targetID
+}

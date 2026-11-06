@@ -1353,7 +1353,7 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 	// admin's — or disable any account, because this handler (unlike
 	// ChangePassword) never asked for the original password.
 	isAdmin := common.HasRole(c, common.RoleAdmin)
-	if c.GetString("user_id") != userID && !isAdmin {
+	if !sameUser(c.GetString("user_id"), userID) && !isAdmin {
 		common.SendError(c, common.NewForbiddenError("cannot update another user"))
 		return
 	}
@@ -1518,7 +1518,7 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 
 	// Users may only change their own password; admins may change any user's password
 	callerID := c.GetString("user_id")
-	if callerID != userID && !common.HasRole(c, common.RoleAdmin) {
+	if !sameUser(callerID, userID) && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("cannot change another user's password"))
 		return
 	}

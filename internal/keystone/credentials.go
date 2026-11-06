@@ -82,7 +82,7 @@ func (svc *Service) CreateCredential(c *gin.Context) {
 	// Self-or-admin (review 2026-10-13 C-3): a credential's blob is the
 	// recoverable secret consumed by S3/EC2 signature auth — minting one for
 	// another user (with a known secret) would defeat that auth.
-	if c.GetString("user_id") != req.Credential.UserID && !common.HasRole(c, common.RoleAdmin) {
+	if !sameUser(c.GetString("user_id"), req.Credential.UserID) && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("cannot create credentials for another user"))
 		return
 	}
@@ -137,7 +137,7 @@ func (svc *Service) credentialOwnerOrViewer(c *gin.Context, credID string) bool 
 		common.SendError(c, common.NewInternalServerError("failed to query credential"))
 		return false
 	}
-	if c.GetString("user_id") != owner && !common.HasRole(c, common.RoleAdmin) {
+	if !sameUser(c.GetString("user_id"), owner) && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("cannot manage another user's credentials"))
 		return false
 	}
