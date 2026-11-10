@@ -333,9 +333,13 @@ func TestStateReconcilerVerdictYieldsToANewerWrite(t *testing.T) {
 	// A verdict formed before a concurrent write that kept the status: refused.
 	raced, _ := seedLifecycleInstance(t, mgr, "spec025-reconcile-raced")
 	cand := snapshot(raced)
+	var racedAt time.Time
+	if err := testPool.QueryRow(ctx, `SELECT updated_at FROM instances WHERE id = $1`, raced).Scan(&racedAt); err != nil {
+		t.Fatalf("reading updated_at: %v", err)
+	}
 	if _, err := testPool.Exec(ctx,
-		`UPDATE instances SET status = 'ACTIVE', power_state = 1, updated_at = updated_at + interval '1 second' WHERE id = $1`,
-		raced); err != nil {
+		`UPDATE instances SET status = 'ACTIVE', power_state = 1, updated_at = $2 WHERE id = $1`,
+		raced, racedAt.Add(time.Second)); err != nil {
 		t.Fatalf("concurrent start: %v", err)
 	}
 	applied, err := r.applyVerdict(ctx, cand, "SHUTOFF", 4)

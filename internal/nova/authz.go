@@ -3,11 +3,11 @@ package nova
 import (
 	"errors"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -35,13 +35,13 @@ import (
 //     would make destroying the wrong tenant's server a typo away. An
 //     administrator addressing another project's instance must use its id.
 //
-// Returns pgx.ErrNoRows for both "absent" and "someone else's", so callers
+// Returns database.ErrNoRows for both "absent" and "someone else's", so callers
 // answer 404 either way: a 403 would confirm the instance exists.
 //
 // A malformed reference — neither a UUID nor a name that exists — is also
-// pgx.ErrNoRows rather than a Postgres cast error, because the id comparison is
+// database.ErrNoRows rather than a Postgres cast error, because the id comparison is
 // done as text.
-func targetInstance(c *gin.Context, pool *pgxpool.Pool, ref string) (id, owner string, err error) {
+func targetInstance(c *gin.Context, pool database.DB, ref string) (id, owner string, err error) {
 	// An administrator addressing a well-formed id may reach any project, and an
 	// id match wins. When no server has that id, the reference may still be a name
 	// in the administrator's own project, so it falls through to the lookup every
@@ -54,7 +54,7 @@ func targetInstance(c *gin.Context, pool *pgxpool.Pool, ref string) (id, owner s
 				"SELECT id::text, project_id::text FROM instances WHERE id = $1",
 				parsed.String(),
 			).Scan(&id, &owner)
-			if !errors.Is(err, pgx.ErrNoRows) {
+			if !errors.Is(err, database.ErrNoRows) {
 				return id, owner, err
 			}
 		}
@@ -64,7 +64,7 @@ func targetInstance(c *gin.Context, pool *pgxpool.Pool, ref string) (id, owner s
 	// empty project would fail the uuid cast and surface as a 500, not a 404.
 	callerProject := c.GetString("project_id")
 	if callerProject == "" {
-		return "", "", pgx.ErrNoRows
+		return "", "", database.ErrNoRows
 	}
 	// An id match wins, so a server named after another's id cannot shadow it —
 	// the same rule as the security-group lookup in CreateServer.
@@ -86,9 +86,9 @@ func targetInstance(c *gin.Context, pool *pgxpool.Pool, ref string) (id, owner s
 // The 404 is deliberate and applies to both "absent" and "someone else's": a 403
 // would confirm the instance exists. A database failure is reported as 500,
 // because that is not an authorization answer and must not be mistaken for one.
-func resolveServerOr404(c *gin.Context, pool *pgxpool.Pool, ref string) (id, owner string, ok bool) {
+func resolveServerOr404(c *gin.Context, pool database.DB, ref string) (id, owner string, ok bool) {
 	id, owner, err := targetInstance(c, pool, ref)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		denyCrossTenant(c, pool, ref)
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return "", "", false
@@ -150,7 +150,7 @@ func requireAdmin(c *gin.Context, operation string) bool {
 // resolveServerOr404, including the migration and console paths, except the
 // action-history read, which calls it once its deleted-server fallback has also
 // failed. Add a kind parameter when a second kind actually exists, not before.
-func denyCrossTenant(c *gin.Context, pool *pgxpool.Pool, ref string) {
+func denyCrossTenant(c *gin.Context, pool database.DB, ref string) {
 	id, err := uuid.Parse(ref)
 	if err != nil {
 		return
@@ -187,7 +187,7 @@ func denyCrossTenant(c *gin.Context, pool *pgxpool.Pool, ref string) {
 //
 // Failures are logged and swallowed: the history is an audit convenience, and
 // losing an entry must not fail the operation that succeeded.
-func recordInstanceAction(c *gin.Context, pool *pgxpool.Pool, instanceID, project, action string) {
+func recordInstanceAction(c *gin.Context, pool database.DB, instanceID, project, action string) {
 	if instanceID == "" || project == "" {
 		return
 	}

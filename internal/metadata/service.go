@@ -3,6 +3,7 @@ package metadata
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -11,10 +12,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -23,7 +24,7 @@ type Service struct {
 	// In production, this would run on 169.254.169.254
 	// For testing, it runs on localhost:8775
 	bindAddr string
-	pool     *pgxpool.Pool
+	pool     database.DB
 
 	// trustInstanceHeader believes X-Instance-ID from any caller
 	// (metadata.trust_instance_header). Test stacks only.
@@ -31,7 +32,7 @@ type Service struct {
 }
 
 // NewService creates a new metadata service
-func NewService(pool *pgxpool.Pool, bindAddr string) *Service {
+func NewService(pool database.DB, bindAddr string) *Service {
 	return &Service{
 		bindAddr: bindAddr,
 		pool:     pool,
@@ -110,19 +111,87 @@ func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
 		// model (bridges share the gateway IP), so it is deferred to multi-node v2
 		// (#504), where per-tenant network namespaces + network-scoped metadata
 		// identity belong.
-		var instanceID string
-		err := svc.pool.QueryRow(c.Request.Context(),
-			`SELECT device_id FROM ports
-			 WHERE device_id IS NOT NULL AND fixed_ips @> $1::jsonb
-			 LIMIT 1`,
-			fmt.Sprintf(`[{"ip_address":%q}]`, peer),
-		).Scan(&instanceID)
-		if err == nil && instanceID != "" {
+		//
+		// The text search only narrows the ports down to those whose fixed_ips mention
+		// the address as a whole JSON string; the address itself is compared below.
+		instanceID, err := svc.instanceHolding(c.Request.Context(), peer)
+		if err != nil {
+			return "", err // a database failure is a 500, not "no such instance"
+		}
+		if instanceID != "" {
 			return instanceID, nil
 		}
 	}
 
-	return "", fmt.Errorf("cannot determine instance ID from request")
+	return "", errUnidentified
+}
+
+// errUnidentified: the caller could not be matched to an instance — a 404, as opposed to a
+// database failure while looking it up, which is a 500.
+var errUnidentified = errors.New("cannot determine instance ID from request")
+
+// writeIdentifyError answers an instanceFromRequest failure: 404 for a caller that cannot be
+// identified, 500 for a database error. plain selects the empty-body text form the EC2
+// endpoints use rather than the JSON error envelope.
+func writeIdentifyError(c *gin.Context, err error, plain bool) {
+	if errors.Is(err, errUnidentified) {
+		if plain {
+			c.String(http.StatusNotFound, "")
+		} else {
+			common.SendError(c, common.NewNotFoundError("instance"))
+		}
+		return
+	}
+	log.Warn().Err(err).Msg("metadata: identifying the instance failed")
+	if plain {
+		c.String(http.StatusInternalServerError, "")
+	} else {
+		common.SendError(c, common.NewInternalServerError("failed to identify the instance"))
+	}
+}
+
+// instanceHolding returns the instance whose port holds ip as a fixed IP, or "" when none
+// does. A database failure is returned as an error, so the caller answers 500 rather than a
+// 404 that tells the guest it has no instance.
+//
+// The port must belong to the same project as the instance it names. A port's device_id
+// is caller-settable (PUT /v2.0/ports/{id}), so without the join a tenant could point
+// their own port at another project's instance and read its metadata and user-data; the
+// join drops that row, because the port carries the caller's project, not the victim's.
+// Two different instances holding one address is ambiguous and resolves to "" (upstream's
+// metadata agent answers only when exactly one port matches).
+func (svc *Service) instanceHolding(ctx context.Context, ip string) (string, error) {
+	rows, err := svc.pool.Query(ctx,
+		`SELECT p.device_id, p.fixed_ips FROM ports p
+		 JOIN instances i ON i.id = p.device_id AND i.project_id = p.project_id
+		 WHERE p.fixed_ips::text LIKE '%' || $1 || '%'`,
+		strconv.Quote(ip))
+	if err != nil {
+		return "", fmt.Errorf("looking up the instance holding %s: %w", ip, err)
+	}
+	defer rows.Close()
+	holder := ""
+	for rows.Next() {
+		var deviceID string
+		var fixedIPs common.FixedIPs
+		if err := rows.Scan(&deviceID, &fixedIPs); err != nil {
+			// A single undecodable row must not hide a later exact match: log and skip it.
+			log.Warn().Err(err).Str("ip", ip).Msg("metadata: reading a port failed; skipping it")
+			continue
+		}
+		if deviceID == "" || !fixedIPs.Holds(ip) {
+			continue
+		}
+		if holder != "" && holder != deviceID {
+			log.Warn().Str("ip", ip).Msg("metadata: address held by more than one instance; not identifying")
+			return "", nil
+		}
+		holder = deviceID
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("looking up the instance holding %s: %w", ip, err)
+	}
+	return holder, nil
 }
 
 // trustsInstanceHeader reports whether a request from peer may name its instance with
@@ -139,7 +208,7 @@ func (svc *Service) trustsInstanceHeader(peer string) bool {
 func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
-		common.SendError(c, common.NewNotFoundError("instance"))
+		writeIdentifyError(c, err, false)
 		return
 	}
 
@@ -152,7 +221,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 		WHERE id = $1
 	`, instanceID).Scan(&uuid, &name, &hostname, &projectID, &userID, &keyName)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -251,7 +320,7 @@ func (svc *Service) GetMetaDataJSON(c *gin.Context) {
 func (svc *Service) GetUserData(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
-		c.String(http.StatusNotFound, "")
+		writeIdentifyError(c, err, true)
 		return
 	}
 
@@ -262,7 +331,7 @@ func (svc *Service) GetUserData(c *gin.Context) {
 		WHERE instance_id = $1
 	`, instanceID).Scan(&userData)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		// No user-data is not an error, just return empty
 		c.String(http.StatusOK, "")
 		return
@@ -280,125 +349,168 @@ func (svc *Service) GetUserData(c *gin.Context) {
 func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
-		common.SendError(c, common.NewNotFoundError("instance"))
+		writeIdentifyError(c, err, false)
 		return
 	}
 
-	// Query the instance's ports and, through each port's fixed_ips JSONB,
-	// its addresses and subnets (review 2026-10-13 N-7: this used to select
-	// `p.fixed_ip`, a column that does not exist — ports store `fixed_ips` as
-	// a JSONB array — so every request failed and network_data.json answered
-	// 500, and cloud-init fell back to DHCP or configured nothing).
-	//
-	// One row per (port, address): a link per port (one MAC, one interface),
-	// a network per address. The lateral is LEFT so a port with no address
-	// still yields its link; subnets resolve by the address's own subnet_id,
-	// not by the network, so a network with several subnets no longer fans a
-	// single port into duplicate rows.
-	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT p.id, p.mac_address, COALESCE(fx->>'ip_address', ''), p.network_id, n.name,
-		       COALESCE(s.cidr, ''), COALESCE(s.gateway_ip, ''),
-		       COALESCE(s.dns_nameservers, ARRAY[]::text[])
+	// Read each port once, then decode fixed_ips and resolve the referenced subnets.
+	// Doing this in Go keeps JSON array traversal and text-array decoding portable
+	// between PostgreSQL and SQLite, while preserving one link per port and one
+	// network entry per fixed address.
+	portRows, err := svc.pool.Query(c.Request.Context(), `
+		SELECT p.id::text, p.mac_address, p.fixed_ips, p.network_id::text
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
-		LEFT JOIN LATERAL jsonb_array_elements(
-			CASE WHEN jsonb_typeof(p.fixed_ips) = 'array' THEN p.fixed_ips ELSE '[]'::jsonb END
-		) fx ON true
-		LEFT JOIN subnets s ON fx->>'subnet_id' IS NOT NULL AND s.id::text = fx->>'subnet_id'
-		WHERE p.device_id = $1
+		WHERE p.device_id::text = $1
 		ORDER BY p.created_at, p.id
 	`, instanceID)
-
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_network_data_json").Str("instance_id", instanceID).Msg("failed to query instance ports")
 		common.SendError(c, common.NewInternalServerError("failed to get network data"))
 		return
 	}
-	defer rows.Close()
+	type networkDataPort struct {
+		id, mac, networkID string
+		fixedIPsJSON       []byte
+	}
+	ports := []networkDataPort{}
+	networkIDs := []string{}
+	seenNetworkIDs := map[string]bool{}
+	for portRows.Next() {
+		var port networkDataPort
+		if err := portRows.Scan(&port.id, &port.mac, &port.fixedIPsJSON, &port.networkID); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to scan network data port")
+			portRows.Close()
+			common.SendError(c, common.NewInternalServerError("failed to get network data"))
+			return
+		}
+		ports = append(ports, port)
+		if !seenNetworkIDs[port.networkID] {
+			seenNetworkIDs[port.networkID] = true
+			networkIDs = append(networkIDs, port.networkID)
+		}
+	}
+	if err := portRows.Err(); err != nil {
+		portRows.Close()
+		log.Error().Err(err).Msg("network data port rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to get network data"))
+		return
+	}
+	portRows.Close()
+
+	type networkDataSubnet struct {
+		cidr, gateway string
+		dnsServers    []string
+	}
+	subnets := map[string]networkDataSubnet{}
+	if len(networkIDs) > 0 {
+		subnetRows, err := svc.pool.Query(c.Request.Context(), `
+			SELECT id::text, cidr, COALESCE(gateway_ip, ''), dns_nameservers
+			FROM subnets WHERE network_id::text = ANY($1::text[])
+			ORDER BY network_id, id
+		`, networkIDs)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to query network data subnets")
+			common.SendError(c, common.NewInternalServerError("failed to get network data"))
+			return
+		}
+		for subnetRows.Next() {
+			var id, cidr, gateway string
+			var dnsValue any
+			if err := subnetRows.Scan(&id, &cidr, &gateway, &dnsValue); err != nil {
+				subnetRows.Close()
+				log.Error().Err(err).Msg("failed to scan network data subnet")
+				common.SendError(c, common.NewInternalServerError("failed to get network data"))
+				return
+			}
+			dnsServers, err := decodeNetworkDataDNS(dnsValue)
+			if err != nil {
+				subnetRows.Close()
+				log.Error().Err(err).Str("subnet_id", id).Msg("failed to decode subnet DNS nameservers")
+				common.SendError(c, common.NewInternalServerError("failed to get network data"))
+				return
+			}
+			subnets[id] = networkDataSubnet{cidr: cidr, gateway: gateway, dnsServers: dnsServers}
+		}
+		if err := subnetRows.Err(); err != nil {
+			subnetRows.Close()
+			log.Error().Err(err).Msg("network data subnet rows iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to get network data"))
+			return
+		}
+		subnetRows.Close()
+	}
 
 	links := []gin.H{}
 	networks := []gin.H{}
 	services := []gin.H{}
 	seenDNS := map[string]bool{}
+	for linkID, port := range ports {
+		linkName := fmt.Sprintf("tap%d", linkID)
+		links = append(links, gin.H{
+			"id":                   linkName,
+			"type":                 "bridge",
+			"ethernet_mac_address": port.mac,
+			"mtu":                  1500,
+		})
 
-	linkID := 0
-	currentPort := ""
-	for rows.Next() {
-		var portID, mac, ip, networkID, networkName, cidr, gateway string
-		var dnsServers []string
-
-		if err := rows.Scan(&portID, &mac, &ip, &networkID, &networkName, &cidr, &gateway, &dnsServers); err != nil {
-			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to scan network data row")
-			common.SendError(c, common.NewInternalServerError("failed to get network data"))
-			return
+		var fixedIPs []struct {
+			IPAddress string `json:"ip_address"`
+			SubnetID  string `json:"subnet_id"`
 		}
-
-		// One link per port, not per row: a port with two addresses is still
-		// one interface with one MAC.
-		if portID != currentPort {
-			currentPort = portID
-			links = append(links, gin.H{
-				"id":                   fmt.Sprintf("tap%d", linkID),
-				"type":                 "bridge",
-				"ethernet_mac_address": mac,
-				"mtu":                  1500,
-			})
-			linkID++
-		}
-
-		// An address-less port contributes its link and nothing else.
-		if ip == "" {
-			continue
-		}
-
-		// Match Nova metadata for each address family, with a distinct network ID
-		// even when several addresses share one link.
-		addressType := "ipv4"
-		if addr := net.ParseIP(ip); addr != nil && addr.To4() == nil {
-			addressType = "ipv6"
-		}
-		netConfig := gin.H{
-			"id":         fmt.Sprintf("network%d", len(networks)),
-			"link":       fmt.Sprintf("tap%d", linkID-1),
-			"type":       addressType,
-			"network_id": networkID,
-			"ip_address": ip,
-			"netmask":    cidrToNetmask(cidr), // Convert /24 → "255.255.255.0"
-			"routes":     []gin.H{},
-			"services":   []gin.H{},
-		}
-
-		if gateway != "" {
-			netConfig["gateway"] = gateway
-			zero := "0.0.0.0"
-			if addressType == "ipv6" {
-				zero = "::"
+		if len(strings.TrimSpace(string(port.fixedIPsJSON))) > 0 {
+			if err := json.Unmarshal(port.fixedIPsJSON, &fixedIPs); err != nil {
+				log.Error().Err(err).Str("port_id", port.id).Msg("failed to decode port fixed addresses")
+				common.SendError(c, common.NewInternalServerError("failed to get network data"))
+				return
 			}
-			netConfig["routes"] = []gin.H{{"network": zero, "netmask": zero, "gateway": gateway}}
 		}
+		for _, fixedIP := range fixedIPs {
+			ip := fixedIP.IPAddress
+			if ip == "" {
+				continue
+			}
+			subnet := subnets[fixedIP.SubnetID]
 
-		if len(dnsServers) > 0 {
-			netConfig["dns_nameservers"] = dnsServers
-			dnsServices := make([]gin.H, 0, len(dnsServers))
-			for _, dns := range dnsServers {
-				entry := gin.H{"type": "dns", "address": dns}
-				dnsServices = append(dnsServices, entry)
-				if !seenDNS[dns] {
-					services = append(services, entry)
-					seenDNS[dns] = true
+			// Match Nova metadata for each address family, with a distinct network ID
+			// even when several addresses share one link.
+			addressType := "ipv4"
+			if addr := net.ParseIP(ip); addr != nil && addr.To4() == nil {
+				addressType = "ipv6"
+			}
+			netConfig := gin.H{
+				"id":         fmt.Sprintf("network%d", len(networks)),
+				"link":       linkName,
+				"type":       addressType,
+				"network_id": port.networkID,
+				"ip_address": ip,
+				"netmask":    cidrToNetmask(subnet.cidr),
+				"routes":     []gin.H{},
+				"services":   []gin.H{},
+			}
+			if subnet.gateway != "" {
+				netConfig["gateway"] = subnet.gateway
+				zero := "0.0.0.0"
+				if addressType == "ipv6" {
+					zero = "::"
 				}
+				netConfig["routes"] = []gin.H{{"network": zero, "netmask": zero, "gateway": subnet.gateway}}
 			}
-			netConfig["services"] = dnsServices
+			if len(subnet.dnsServers) > 0 {
+				netConfig["dns_nameservers"] = subnet.dnsServers
+				dnsServices := make([]gin.H, 0, len(subnet.dnsServers))
+				for _, dns := range subnet.dnsServers {
+					entry := gin.H{"type": "dns", "address": dns}
+					dnsServices = append(dnsServices, entry)
+					if !seenDNS[dns] {
+						services = append(services, entry)
+						seenDNS[dns] = true
+					}
+				}
+				netConfig["services"] = dnsServices
+			}
+			networks = append(networks, netConfig)
 		}
-
-		networks = append(networks, netConfig)
-	}
-	// Fail rather than serve a partial network_data.json: a missing interface would
-	// leave the guest misconfigured, and cloud-init retries on error.
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("network data rows iteration error")
-		common.SendError(c, common.NewInternalServerError("failed to get network data"))
-		return
 	}
 
 	// Return network_data.json structure
@@ -407,6 +519,36 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		"networks": networks,
 		"services": services,
 	})
+}
+
+// decodeNetworkDataDNS accepts PostgreSQL text[] values and SQLite JSON text.
+func decodeNetworkDataDNS(value any) ([]string, error) {
+	switch v := value.(type) {
+	case nil:
+		return []string{}, nil
+	case []string:
+		return v, nil
+	case []byte:
+		var values []string
+		if err := json.Unmarshal(v, &values); err != nil {
+			return nil, fmt.Errorf("decode DNS nameservers: %w", err)
+		}
+		if values == nil {
+			values = []string{}
+		}
+		return values, nil
+	case string:
+		var values []string
+		if err := json.Unmarshal([]byte(v), &values); err != nil {
+			return nil, fmt.Errorf("decode DNS nameservers: %w", err)
+		}
+		if values == nil {
+			values = []string{}
+		}
+		return values, nil
+	default:
+		return nil, fmt.Errorf("unsupported DNS nameserver value %T", value)
+	}
 }
 
 // GetVendorDataJSON returns vendor-specific data (usually empty)
@@ -652,7 +794,7 @@ func ec2PublicKey(r ec2Request, sub string) {
 func (svc *Service) GetEC2MetaData(c *gin.Context) {
 	instanceID, err := svc.instanceFromRequest(c)
 	if err != nil {
-		c.String(http.StatusNotFound, "")
+		writeIdentifyError(c, err, true)
 		return
 	}
 	r := ec2Request{svc: svc, c: c, instanceID: instanceID}

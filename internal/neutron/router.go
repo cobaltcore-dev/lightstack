@@ -12,12 +12,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
@@ -278,7 +278,7 @@ func (svc *Service) GetRouter(c *gin.Context) {
 	`, routerID, projectID).Scan(&r.ID, &r.Name, &r.ProjectID, &r.AdminStateUp, &r.Status,
 		&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("router"))
 		return
 	}
@@ -483,7 +483,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		req.SubnetID,
 	).Scan(&subnetID, &networkID, &cidr, &gatewayIP)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
 		return
 	}
@@ -604,7 +604,7 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 		  AND ($3 = '' OR ri.port_id::text = $3)
 		LIMIT 1
 	`, id, req.SubnetID, req.PortID).Scan(&portID, &subnetID, &cidr)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("router interface"))
 		return
 	}
@@ -712,7 +712,7 @@ func (svc *Service) resolveOwnRouter(c *gin.Context, routerID, projectID string)
 	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id::text FROM routers WHERE id::text = $1 AND project_id = $2", routerID, projectID,
 	).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("router"))
 		return "", false
 	}
@@ -809,14 +809,10 @@ func (svc *Service) withdrawRouterEgressSNAT(ctx context.Context, routerID strin
 	if svc.mode == "stub" {
 		return
 	}
-	rows, err := svc.pool.Query(ctx, `
+	// cidr is NOT NULL, so queryStrings dropping empty values removes nothing real.
+	cidrs, err := queryStrings(ctx, svc.pool, `
 		SELECT s.cidr FROM router_interfaces ri JOIN subnets s ON s.id = ri.subnet_id WHERE ri.router_id = $1`,
 		routerID)
-	if err != nil {
-		log.Warn().Err(err).Str("router_id", routerID).Msg("egress SNAT: router ranges unreadable; nothing withdrawn")
-		return
-	}
-	cidrs, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		log.Warn().Err(err).Str("router_id", routerID).Msg("egress SNAT: router ranges unreadable; nothing withdrawn")
 		return
@@ -837,7 +833,7 @@ func (svc *Service) withdrawRouterEgressSNAT(ctx context.Context, routerID strin
 //
 // It takes the id rather than the gateway blob so the floating-IP caller, which has a plain string,
 // does not have to wrap it in a throwaway map (branch review 2026-08-13, SRC-7).
-func requireExternalNetwork(c *gin.Context, pool *pgxpool.Pool, networkID, use string) bool {
+func requireExternalNetwork(c *gin.Context, pool database.DB, networkID, use string) bool {
 	if networkID == "" {
 		common.SendError(c, common.NewBadRequestError("a network_id is required to name "+use))
 		return false
@@ -861,7 +857,7 @@ func requireExternalNetwork(c *gin.Context, pool *pgxpool.Pool, networkID, use s
 		SELECT external FROM networks
 		WHERE id::text = $1 AND (project_id = $2 OR shared = true OR external = true)`,
 		networkID, c.GetString("project_id")).Scan(&external)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
 		return false
 	}

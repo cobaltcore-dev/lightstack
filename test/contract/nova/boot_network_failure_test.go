@@ -181,6 +181,14 @@ func createPrivateNetwork(t *testing.T, provider *gophercloud.ProviderClient, na
 // this run's own, so an interrupted run's leftovers cannot collide with them.
 func memberOfAFreshProject(t *testing.T, adminProvider *gophercloud.ProviderClient) string {
 	t.Helper()
+	member, _ := freshProjectMember(t, adminProvider)
+	return member.TokenID
+}
+
+// freshProjectMember is memberOfAFreshProject returning the member's authenticated
+// provider and the project's id.
+func freshProjectMember(t *testing.T, adminProvider *gophercloud.ProviderClient) (*gophercloud.ProviderClient, string) {
+	t.Helper()
 	identity, err := openstack.NewIdentityV3(adminProvider, gophercloud.EndpointOpts{})
 	require.NoError(t, err)
 	suffix := uuid.NewString()[:8]
@@ -213,5 +221,5 @@ func memberOfAFreshProject(t *testing.T, adminProvider *gophercloud.ProviderClie
 		TenantID: project.ID, DomainName: domainName,
 	})
 	require.NoError(t, err, "authenticating as the member")
-	return member.TokenID
+	return member, project.ID
 }

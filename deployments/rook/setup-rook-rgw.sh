@@ -45,7 +45,7 @@ KS_ADMIN_USER="${LIGHTSTACK_KEYSTONE_ADMIN_USER:-admin}"
 KS_ADMIN_PASSWORD="${LIGHTSTACK_KEYSTONE_ADMIN_PASSWORD:-secret}"
 KS_ADMIN_PROJECT="${LIGHTSTACK_KEYSTONE_ADMIN_PROJECT:-default}"
 KS_ADMIN_DOMAIN="${LIGHTSTACK_KEYSTONE_ADMIN_DOMAIN:-Default}"
-KS_ROLES="${LIGHTSTACK_KEYSTONE_ACCEPTED_ROLES:-admin,member,reader,_member_}"
+KS_ROLES="${LIGHTSTACK_KEYSTONE_ACCEPTED_ROLES:-admin,member,reader}"
 
 CTX="$PROFILE"                          # minikube names the context after the profile
 K="kubectl --context $CTX -n $NS"       # every op is pinned to the rook profile,

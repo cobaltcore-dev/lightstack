@@ -1,0 +1,46 @@
+# helm-unittest specs for the reservation node name (SPEC-028 FR-033). A volume or snapshot
+# create records the node that reserved it, and at startup Lightstack sweeps only the
+# interrupted reservations recorded under its own name. Without host networking — the
+# default, in real mode too — the pod's host name is the pod's name, which changes whenever
+# the pod is recreated, so the chart names the node instead.
+suite: reservation node name
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+tests:
+  - it: names the node in single-node stub mode
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+  - it: names the node in real mode without host networking
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+  - it: names each node in multi-node mode
+    template: templates/daemonset.yaml
+    set:
+      deploymentMode: multi-node
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LIGHTSTACK_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName

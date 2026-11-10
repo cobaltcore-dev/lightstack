@@ -52,7 +52,7 @@ When working on this project, adopt the **deadpan minimalist** persona:
 
 ## Project Overview
 
-Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It provides a single ~35MB binary that implements all five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) with 100% Terraform compatibility.
+Lightstack is a lightweight OpenStack implementation in Go, inspired by K3s. It provides a single small binary that implements all five core OpenStack services (Keystone, Nova, Neutron, Cinder, Glance) with 100% Terraform compatibility.
 
 **Core Philosophy:**
 - **Terraform Compatibility First**: Users can use existing Terraform OpenStack provider scripts unchanged
@@ -118,8 +118,8 @@ go test ./internal/nova/...   # Test specific package
 # Start PostgreSQL (Docker)
 make db-up                    # Starts postgres:18.3 container
 
-# Run migrations
-make migrate                  # Applies all pending migrations
+# Run migrations (DB_URL selects the backend: postgres://… or sqlite:///abs/path)
+make migrate                  # lightstack-migrate up; golang-migrate's migrate CLI cannot read the folder
 
 # Stop PostgreSQL
 make db-down                  # Stops and removes container
@@ -135,7 +135,7 @@ make fmt                      # Runs go fmt
 make lint                     # Runs golangci-lint
 
 # Install development tools
-make install-tools            # Installs air, golangci-lint, migrate
+make install-tools            # Installs air, golangci-lint
 ```
 
 ## Architecture Overview
@@ -151,7 +151,7 @@ Lightstack runs as a single process (`cmd/lightstack/main.go`) that starts six H
 - **Metadata** (8775): EC2-compatible metadata service (no auth)
 
 Each service is initialized in `main.go` with its configuration and shares:
-- **Database connection pool**: Centralized PostgreSQL access
+- **Database**: one `database.DB` — a PostgreSQL pool, or one SQLite file on a single node
 - **Auth middleware**: Shared JWT token validation via `keystone.AuthService`
 - **Logging middleware**: Structured JSON logging
 
@@ -227,7 +227,9 @@ pkg/                        # Public/reusable packages
 - Use `common.HasRole` / `common.RoleAdmin` for the role check and `nova.targetInstance` for the
   server lookup; do not re-implement either.
 
-**Dependency Injection Pattern**: Every database-using service receives the process's one `*pgxpool.Pool` as the first parameter of its constructor, for example `nova.NewService(pool, libvirtURI, libvirtMode, cache)` in `internal/nova/handlers.go`. Handlers query through it with `svc.pool.Query(ctx, ...)`. Package-level helpers take the pool as a parameter, e.g. `database.WithTx(ctx, pool, fn)`. There is no process-wide handle. Tests hand services a pool of their own (see `internal/keystone/pool_injection_test.go`). See ADR-001.
+**Dependency Injection Pattern**: Every database-using service receives the process's one `database.DB` as the first parameter of its constructor, for example `nova.NewService(pool, libvirtURI, libvirtMode, cache)` in `internal/nova/handlers.go`. Handlers query through it with `svc.pool.Query(ctx, ...)`. Package-level helpers take it as a parameter, e.g. `database.WithTx(ctx, pool, fn)`. There is no process-wide handle. Tests hand services a database of their own (see `internal/keystone/pool_injection_test.go`). See ADR-001 and ADR-003.
+
+**Two database backends** (SPEC-028, ADR-003): `database.DB` is an interface over the method set the code calls on pgx, with a PostgreSQL implementation (pgxpool, unchanged) and a SQLite one (`modernc.org/sqlite`, pure Go). `database.url`'s scheme picks one at startup — `postgres://…` or `sqlite:///absolute/path`; SQLite serves a single node only (VXLAN is refused). Write SQL in PostgreSQL syntax from the set `internal/database`'s package documentation lists; SQLite translates casts, `= ANY($n)`, `LIMIT NULL`, `FOR UPDATE` and `~`, and `TestSQLConstructs` fails the build on anything only PostgreSQL runs (jsonb operators, `ARRAY_AGG`, `DISTINCT ON`, `CURRENT_TIMESTAMP`, …). Never hold a transaction across storage, libvirt, network or HTTP work: on SQLite one transaction holds the whole file. Volume and snapshot creates reserve their row, do the backing work outside, then finalise.
 
 ## Operating Modes
 
@@ -267,7 +269,7 @@ Requires Linux with appropriate dependencies.
 
 ## Database Schema
 
-PostgreSQL with 15 tables. Key tables:
+72 tables, the same on PostgreSQL and SQLite (`TestSchemaParity` proves it). Key tables:
 
 - **users**: User credentials (bcrypt hashed passwords)
 - **projects**: Projects/tenants
@@ -280,7 +282,7 @@ PostgreSQL with 15 tables. Key tables:
 - **keypairs**: SSH public keys
 - **compute_nodes**: Multi-node registry for VXLAN coordination
 
-Migrations in `migrations/` directory, applied via `golang-migrate/migrate`.
+Migrations live in `migrations/`, one folder for both backends: each reads it through a view where `.postgres`/`.sqlite` files are that backend's own and replace the plain file of their number, and SQLite starts at a generated baseline (073). The server applies them at startup; `lightstack-migrate` and `make migrate` by hand. An edited migration never reaches a database that already ran it — golang-migrate records only the version — so a deployed schema changes through a new version. Rules and conventions: `migrations/README.md`.
 
 ## Testing Guidelines
 
@@ -311,6 +313,7 @@ openstack server delete test-vm
 - Integration tests require Lightstack to be running: `docker compose up -d` or `make run`
 - Tests use environment variables from `.env` or `~/.lightstack-env`
 - Quick validation: `./test/quick_test.sh` (runs in ~30 seconds)
+- Database-backed unit tests run on the backend `LIGHTSTACK_TEST_DB_URL` selects: `postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable` (`make db-up`) or `sqlite:///tmp/ls-test/t.db` (each package gets a fresh file of its own beside it). CI runs both
 
 ### Test-First Development (Constitution Article III)
 When implementing new features:
@@ -327,7 +330,7 @@ This is **NON-NEGOTIABLE** per the project constitution.
 Configuration loaded from `config/lightstack.yaml` (or via `--config` flag).
 
 **Critical settings:**
-- `database.url`: PostgreSQL connection string
+- `database.url`: `postgres://…` (PostgreSQL) or `sqlite:///absolute/path/lightstack.db` (single-node SQLite)
 - `keystone.jwt_secret`: MUST change in production (security critical)
 - `nova.libvirt_mode`: `stub` (dev) or `real` (prod)
 - `neutron.networking_mode`: `stub`, `iptables`, or `ebpf`
@@ -380,12 +383,15 @@ return common.HandleError(c, err)
 
 ### Database Queries
 ```go
-// Always use context, the service's injected pool, and prepared statements
+// Always use context, the service's injected database.DB, and placeholders
 ctx := c.Request.Context()
 err := svc.pool.QueryRow(ctx,
     "SELECT id FROM instances WHERE project_id = $1",
     projectID,
 ).Scan(&instanceID)
+if errors.Is(err, database.ErrNoRows) { /* not found — on either backend */ }
+// Bind times as time.Time, JSON as maps/structs, lists as []string; classify failures with
+// database.IsUniqueViolation and friends, never by driver error codes.
 ```
 
 ### Mode Detection
@@ -436,7 +442,7 @@ if requestedVersion == "" {
 
 **"Failed to connect to libvirt"**: Use stub mode on macOS or ensure libvirt is running on Linux
 **"Network namespace not found"**: Requires root/sudo on Linux, use stub mode otherwise
-**"Database connection failed"**: Check PostgreSQL is running and connection string is correct
+**"Database connection failed"**: Check PostgreSQL is running and connection string is correct; for SQLite, that the path is absolute and its directory writable
 **"Token validation failed"**: Ensure `jwt_secret` matches between Keystone and other services
 
 ## Active Technologies
@@ -476,8 +482,15 @@ if requestedVersion == "" {
 - External PostgreSQL. **Two** reversible migrations: `067_instance_fault` (`instances.fault_code`/`fault_message`/`fault_created`, nullable — makes a failed boot readable as upstream's `fault` object) and `068_instance_actions_time_index` (index on `instance_actions(start_time)` for the retention sweep). Two new `NovaConfig` settings: `state_reconcile_interval` (30s) and `instance_action_retention` (90d). (025-nova-gaps-client-discovery)
 - Go 1.26 (module targets 1.21+) + `gin-gonic/gin` (HTTP), `jackc/pgx/v5` + `pgxpool` (PostgreSQL), `google/uuid`. **No new modules.** One new shared helper: a `406 Not Acceptable` constructor in `internal/common/errors.go` (the product has none). (025-followup)
 - External PostgreSQL. **No schema change, no migration** — every fix is behavioural. One existing column gains a reader: `snapshots.size_gb`, so the `gigabytes` quota counts volume **and** snapshot size as upstream does. (025-followup)
+- Go 1.27.3 + gin, `jackc/pgx/v5` + pgxpool (PostgreSQL implementation, unchanged), **new module `modernc.org/sqlite` v1.60.1** (pure Go, SQLite 3.53.4), golang-migrate v4.19.1 `database/sqlite` + `source/iofs` (028-sqlite-database-layer)
+- PostgreSQL (unchanged) **or** one SQLite file chosen by the `database.url` scheme (`sqlite:///abs/path`, WAL, `synchronous=FULL`, 0600). One `migrations/` folder read through a per-backend view; SQLite starts at a generated `073_baseline.sqlite`; migration `074_reservation_node` (`volumes`/`snapshots.reserved_by`) on both (028-sqlite-database-layer)
+- Helm 3.12+ chart (Go `text/template` + Sprig); JSON Schema **draft-07** (`values.schema.json`); Go 1.27.3 for the one `internal/teardown` change; Markdown docs. (029-sqlite-chart-compose)
+- node-local hostPath SQLite directory at `<realMode.hostStoragePath>/db` (`lightstack.db` + `-wal` + `-shm`), **no PVC**. External PostgreSQL unchanged. **No schema change, no migration, no persisted data owned by the chart.** (029-sqlite-chart-compose)
+- Go 1.27.3 (module pins `go 1.26`; Constitution requires 1.26+). Markdown docs. (030-sqlite-backup-restore)
+- the operator's SQLite database file and a sibling `backups/` directory under the node storage root (`state_path` / `realMode.hostStoragePath`, default `/var/lib/lightstack`). **No schema change, no migration, no persisted data owned by the chart.** PostgreSQL is untouched except the backend-neutral ceiling check. (030-sqlite-backup-restore)
 
 ## Recent Changes
+- 028-sqlite-database-layer: plan — SQLite as a second backend behind a backend-neutral `internal/database` contract whose method sets mirror pgx's, so the 736 call sites change types only. PostgreSQL passes SQL through untouched; SQLite translates casts, `= ANY($n)`, `FOR UPDATE` and the console expiry, registers `now()`/`gen_random_uuid()`/no-op advisory locks, and converts times, JSON, lists and `[]byte` (a STRICT TEXT column refuses BLOBs). Ten rewrite sites, the same for both backends; `name ~` stays a database match (`REGEXP` on SQLite), as upstream's. Cinder creates reserve a `creating` row and build the backing outside any transaction (+ a per-node startup sweep); Nova gains a binding quota recheck under an advisory lock and answers **403** instead of 413 (with FR-036a's 400s, the two API changes). Probe-verified: deferred read-then-write hits `SQLITE_BUSY_SNAPSHOT` (517) → immediate transactions expected (SPEC-028 plan)
 - 025-followup: plan — SPEC-025's seven follow-ups (F1–F4, F6–F8), a pseudo-ticket on the same branch, **no new issue**. Same dominant finding as its parent: the shared thing exists and a caller bypasses it (`common.SQLFilter` + identity's filter pattern, `nova.CheckQuota`'s tx+row-lock, `common.BaseURL`'s host precedence, one already-shared quota resolution behind three views). Planning re-derived FR-019 from the code and found **eight** quota call sites across four files where the spec named two — three `INSERT INTO volumes` outside the shared provisioning routine, plus snapshots/backups/extend. Research (Context7, available again) turned up three things clarify could not know: `host` is **role-split** upstream so F7's refusal diverges two-sidedly, image-patch refusals are **403** not 400, and a request with **no** microversion header resolves to upstream's *minimum* where Lightstack uses its *maximum* — a third Article I deviation, pre-existing, which caps US6 to clients that negotiate explicitly. No migration, no new setting; cost sits in negative tests (every defect answers 2xx today) (SPEC-025-followup plan)
 - 025-nova-gaps-client-discovery: plan — ten defects in two families (discovery self-links + compute answers that look successful). Dominant finding: **the right shape already exists and one caller ignores it** — `common.BaseURL` (5 services bypass it), `nova.targetInstance` (the action table already passes the resolved id; 17 handlers discard it and re-read the raw param), two accepted reconcilers to copy, and both halves of boot-from-volume. So: broad but shallow, **no new Go modules**, 2 small reversible migrations. Genuinely new: the self-heal of a missing libvirt guest (rebuildable from stored state — the blocker is that the `VMSpec` assembly is inline in a goroutine) and an upstream `fault` field. **B12's root cause stays open on purpose** — the chosen fix is correct whatever it turns out to be (SPEC-025 plan)
 - 024-neutron-api-fidelity-realmode: plan — six Neutron defects (B6/B9/B10/B11/F10/F11). B10 is **one** change, not 244: every error path already funnels through `common.SendError`, so marking the Neutron route group converts handlers, auth middleware, panic recovery, unrouted-404 and 405 together. F10 = TAP moves to the **root** namespace (bridge, dnsmasq and SNAT are already there) + stub attach stops trusting a process-local map. B11 = honour a named project for admins, `400` otherwise (upstream `neutron_lib` rule, deliberately unlike #549's compute refusal). F11 = migration `066` + external as a **third** visibility disjunct (not requiring `shared`), with pre-existing gateways grandfathered (SPEC-024 plan)

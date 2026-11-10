@@ -34,20 +34,24 @@ func TestListingsAreNotCappedByDefault(t *testing.T) {
 			t.Fatalf("seed %d %s: %v", count, what, err)
 		}
 	}
-	seed("networks", `INSERT INTO networks (name, project_id, network_type)
-		SELECT 'page-' || g, $1, 'vxlan' FROM generate_series(1, $2::int) AS g`, project, count)
-	seed("subnets", `INSERT INTO subnets (name, network_id, project_id, cidr, gateway_ip, ip_version,
+	// series counts g from 1 to the placeholder's value, a row source both backends have.
+	series := func(n string) string {
+		return `WITH RECURSIVE seq(g) AS (SELECT 1 UNION ALL SELECT g + 1 FROM seq WHERE g < ` + n + `::int) `
+	}
+	seed("networks", series("$2")+`INSERT INTO networks (name, project_id, network_type)
+		SELECT 'page-' || g, $1, 'vxlan' FROM seq`, project, count)
+	seed("subnets", series("$3")+`INSERT INTO subnets (name, network_id, project_id, cidr, gateway_ip, ip_version,
 		                                  enable_dhcp, dns_nameservers, created_at, updated_at)
 		SELECT 'page-' || g, $1, $2, '10.' || (g / 256) || '.' || (g % 256) || '.0/24',
-		       '10.' || (g / 256) || '.' || (g % 256) || '.1', 4, false, '{}', NOW(), NOW()
-		FROM generate_series(1, $3::int) AS g`, netID, project, count)
-	seed("ports", `INSERT INTO ports (name, network_id, project_id, mac_address)
-		SELECT 'page-' || g, $1, $2, 'fa:16:3e:00:00:01' FROM generate_series(1, $3::int) AS g`,
+		       '10.' || (g / 256) || '.' || (g % 256) || '.1', 4, false, $4::text[], NOW(), NOW()
+		FROM seq`, netID, project, count, []string{})
+	seed("ports", series("$3")+`INSERT INTO ports (name, network_id, project_id, mac_address)
+		SELECT 'page-' || g, $1, $2, 'fa:16:3e:00:00:01' FROM seq`,
 		netID, project, count)
-	seed("routers", `INSERT INTO routers (name, project_id)
-		SELECT 'page-' || g, $1 FROM generate_series(1, $2::int) AS g`, project, count)
-	seed("floating IPs", `INSERT INTO floating_ips (project_id, floating_network_id, floating_ip_address)
-		SELECT $1, $2, '198.18.' || (g / 256) || '.' || (g % 256) FROM generate_series(1, $3::int) AS g`,
+	seed("routers", series("$2")+`INSERT INTO routers (name, project_id)
+		SELECT 'page-' || g, $1 FROM seq`, project, count)
+	seed("floating IPs", series("$3")+`INSERT INTO floating_ips (project_id, floating_network_id, floating_ip_address)
+		SELECT $1, $2, '198.18.' || (g / 256) || '.' || (g % 256) FROM seq`,
 		project, netID, count)
 
 	r := newNeutronTestRouter()

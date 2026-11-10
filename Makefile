@@ -1,4 +1,4 @@
-.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui
+.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity test-compose-kvm clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui
 
 # Build variables
 BINARY_NAME=lightstack
@@ -58,7 +58,8 @@ test-contract:
 	@echo "Checking Lightstack is running..."
 	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: Lightstack not running. Run 'docker compose -f deployments/docker-compose.yml up -d' or 'make run' first." && exit 1)
 	@echo "Running gophercloud contract tests..."
-	go test -v ./test/contract/... -timeout 5m
+	LIGHTSTACK_DB_URL="$${LIGHTSTACK_DB_URL:-postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable}" \
+		go test -v ./test/contract/... -timeout 5m
 
 # Run integration tests (requires Lightstack to be running)
 test-integration:
@@ -115,6 +116,14 @@ test-compose-identity:
 	@echo "Running Compose database-identity tests..."
 	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' not found." && exit 1)
 	@bash test/compose_db_identity_test.sh
+
+# Check that the KVM Compose stack mounts the whole state root at the same path inside and out,
+# with the root, the config directory and the database URL overridable, so one file runs either
+# backend (SPEC-028). Renders the stack with `compose config`; nothing is started.
+test-compose-kvm:
+	@echo "Running KVM Compose stack tests..."
+	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' not found." && exit 1)
+	@bash test/compose_kvm_state_test.sh
 
 # Run Helm chart tests (helm lint + template + unittest; no cluster or running Lightstack needed)
 chart-test:
@@ -191,10 +200,11 @@ bench-quick:
 	@echo "Database benchmarks:"
 	@go test -bench=BenchmarkDatabase -benchmem -benchtime=5s ./test/benchmark/ || echo "Skipped (PostgreSQL not available)"
 
-# Run database migrations manually
+# Run database migrations manually, on the backend DB_URL selects (postgres:// or sqlite:///…).
+# Through lightstack-migrate: golang-migrate's migrate CLI cannot read the folder's per-backend views.
 migrate:
 	@echo "Running migrations..."
-	migrate -path migrations -database "$(DB_URL)" up
+	LIGHTSTACK_DB_URL="$(DB_URL)" go run ./cmd/lightstack-migrate up -migrations migrations
 
 # Start PostgreSQL in Docker (for development)
 db-up:
@@ -237,7 +247,6 @@ $(GOLANGCI_LINT): tools/go.mod tools/go.sum
 install-tools: $(GOLANGCI_LINT)
 	@echo "Installing development tools..."
 	go install github.com/air-verse/air@latest
-	go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 	@echo "Checking Helm CLI..."
 	@if command -v helm >/dev/null 2>&1; then \
 		echo "  helm present: $$(helm version --short)"; \

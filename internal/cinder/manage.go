@@ -1,13 +1,15 @@
 package cinder
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -49,7 +51,7 @@ func (svc *Service) ManageVolume(c *gin.Context) {
 	// Importing an unmanaged backing store adds a volume to the project, so it consumes
 	// quota exactly as a create does (SPEC-025-followup FR-019). A third of the four
 	// volume-adding routes, and one the spec did not know about.
-	err := withVolumeQuota(c.Request.Context(), svc.pool, projectID, sizeGB, func(tx pgx.Tx) error {
+	err := withVolumeQuota(c.Request.Context(), svc.pool, projectID, sizeGB, func(tx database.Tx) error {
 		_, ierr := tx.Exec(c.Request.Context(), `
 		INSERT INTO volumes (id, name, size_gb, status, project_id, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -140,6 +142,12 @@ func (svc *Service) UnmanageVolume(c *gin.Context, volumeID string) {
 		common.SendError(c, common.NewBadRequestError("cannot unmanage volume in use"))
 		return
 	}
+	// A volume still being created is not the caller's to remove (FR-036a): deleting its
+	// row mid-create cancels another request's in-flight create and strands its backing.
+	if status == "creating" {
+		common.SendError(c, common.NewBadRequestError("Invalid volume: Volume status must be available or error or error_restoring or error_extending or error_managing and must not be migrating, attached, belong to a group, have snapshots, awaiting a transfer, or be disassociated from snapshots after volume transfer."))
+		return
+	}
 
 	// Remove from database (in real implementation, would leave on backend)
 	_, err = svc.pool.Exec(c.Request.Context(),
@@ -183,14 +191,31 @@ func (svc *Service) ManageSnapshot(c *gin.Context) {
 		return
 	}
 
-	// Verify volume exists
-	var volumeExists bool
-	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT EXISTS(SELECT 1 FROM volumes WHERE id = $1 AND project_id = $2)
-	`, req.Snapshot.VolumeID, projectID).Scan(&volumeExists)
-
-	if err != nil || !volumeExists {
+	// A malformed volume id is a volume that does not exist — 404, as upstream and the SQLite
+	// backend (TEXT ids) answer — not the PostgreSQL 22P02 the raw lookup would surface as a 500.
+	if _, err := uuid.Parse(req.Snapshot.VolumeID); err != nil {
 		common.SendError(c, common.NewNotFoundError("volume"))
+		return
+	}
+	// Verify the volume exists and read its status.
+	var volumeStatus string
+	err := svc.pool.QueryRow(c.Request.Context(),
+		`SELECT status FROM volumes WHERE id = $1 AND project_id = $2`,
+		req.Snapshot.VolumeID, projectID).Scan(&volumeStatus)
+	if errors.Is(err, database.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("volume"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "manage_snapshot").Msg("failed to look up the volume")
+		common.SendError(c, common.NewInternalServerError("failed to manage snapshot"))
+		return
+	}
+	// A snapshot cannot be imported for a volume whose own backing is still being created
+	// (FR-036a).
+	if volumeStatus == "creating" {
+		common.SendError(c, common.NewBadRequestError(
+			fmt.Sprintf("Invalid volume: Volume %s status must be available, but current status is: creating.", req.Snapshot.VolumeID)))
 		return
 	}
 
@@ -210,11 +235,11 @@ func (svc *Service) ManageSnapshot(c *gin.Context) {
 	// than trusted: every enumeration of these sites so far has been short by one.
 	err = withCinderQuota(c.Request.Context(), svc.pool, projectID,
 		[]quotaWant{{"snapshots", 1}, {"gigabytes", sizeGB}},
-		func(tx pgx.Tx) error {
+		func(tx database.Tx) error {
 			_, ierr := tx.Exec(c.Request.Context(), `
-		INSERT INTO snapshots (id, name, volume_id, size_gb, status, project_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, snapshotID, req.Snapshot.Name, req.Snapshot.VolumeID, sizeGB, "available", projectID, time.Now(), time.Now())
+		INSERT INTO snapshots (id, name, volume_id, size_gb, status, project_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, snapshotID, req.Snapshot.Name, req.Snapshot.VolumeID, sizeGB, "available", projectID, time.Now())
 			return ierr
 		})
 

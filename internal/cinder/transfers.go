@@ -13,7 +13,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -80,7 +79,7 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 		req.Transfer.VolumeID, projectID,
 	).Scan(&volumeStatus)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -108,7 +107,7 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 	// The volume enters awaiting-transfer in the transaction that records the transfer, and only
 	// from available: the check above can race a concurrent create, and this conditional update is
 	// what lets one of them through.
-	err = database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
+	err = database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
 		tag, uerr := tx.Exec(ctx,
 			`UPDATE volumes SET status = $1, updated_at = $2 WHERE id = $3 AND project_id = $4 AND status = 'available'`,
 			statusAwaitingTransfer, now, req.Transfer.VolumeID, projectID)
@@ -125,7 +124,7 @@ func (svc *Service) CreateVolumeTransfer(c *gin.Context) {
 		if serr == nil {
 			return &snapshotNotAvailableError{snapshotID: notReady}
 		}
-		if !errors.Is(serr, pgx.ErrNoRows) {
+		if !errors.Is(serr, database.ErrNoRows) {
 			return fmt.Errorf("checking the volume's snapshots: %w", serr)
 		}
 		if _, ierr := tx.Exec(ctx, `
@@ -228,7 +227,7 @@ func (svc *Service) GetVolumeTransfer(c *gin.Context) {
 		WHERE id = $1 AND source_project_id = $2 AND accepted = false
 	`, transferID, projectID).Scan(&volumeID, &name, &createdAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("transfer"))
 		return
 	}
@@ -257,7 +256,7 @@ func (svc *Service) DeleteVolumeTransfer(c *gin.Context) {
 	// upstream's transfer_destroy. Only out of awaiting-transfer: a volume an administrator has
 	// already taken out of it keeps its status, and the transfer still goes.
 	ctx := c.Request.Context()
-	err := database.WithTx(ctx, svc.pool, func(tx pgx.Tx) error {
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
 		var volumeID string
 		if derr := tx.QueryRow(ctx,
 			"DELETE FROM volume_transfers WHERE id = $1 AND source_project_id = $2 AND accepted = false RETURNING volume_id::text",
@@ -270,7 +269,7 @@ func (svc *Service) DeleteVolumeTransfer(c *gin.Context) {
 			time.Now(), volumeID, statusAwaitingTransfer)
 		return uerr
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("transfer"))
 		return
 	}
@@ -309,7 +308,7 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 		WHERE id = $1 AND accepted = false
 	`, transferID).Scan(&volumeID, &name, &storedAuthKey, &sourceProjectID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("transfer"))
 		return
 	}
@@ -376,7 +375,7 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 			{"volumes", 1},
 			{"snapshots", snapCount},
 			{"gigabytes", transferSize + snapGB},
-		}, func(tx pgx.Tx) error {
+		}, func(tx database.Tx) error {
 			return acceptTransferWrite(c, tx, transferID, volumeID, projectID, userID, transferSize, snapCount)
 		})
 	}
@@ -414,7 +413,7 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 
 // acceptTransferWrite moves the volume, its snapshots and the transfer row to the accepting project,
 // inside the quota transaction AcceptVolumeTransfer opened.
-func acceptTransferWrite(c *gin.Context, tx pgx.Tx, transferID, volumeID, projectID, userID string, transferSize, snapCount int) error {
+func acceptTransferWrite(c *gin.Context, tx database.Tx, transferID, volumeID, projectID, userID string, transferSize, snapCount int) error {
 	ctx := c.Request.Context()
 	var size int
 	err := tx.QueryRow(ctx, `
@@ -424,7 +423,7 @@ func acceptTransferWrite(c *gin.Context, tx pgx.Tx, transferID, volumeID, projec
 		RETURNING size_gb`,
 		projectID, userID, time.Now(), volumeID, statusAwaitingTransfer,
 	).Scan(&size)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return errVolumeNotAwaitingTransfer
 	}
 	if err != nil {

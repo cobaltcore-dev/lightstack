@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -8,7 +9,9 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 )
 
 // serverFilter accumulates the predicates a server listing runs under, together
@@ -66,18 +69,28 @@ func (f *serverFilter) limitOffset(limit, offset int) string {
 // is correct at the point it is written rather than patched afterwards.
 func newServerFilter(c *gin.Context, alias string) *serverFilter {
 	f := &serverFilter{}
-	if common.QueryFlag(c, "all_tenants") && common.HasRole(c, common.RoleAdmin) {
+	project, all := listScope(c)
+	if all {
 		return f
 	}
 	// An unscoped token names no project, so it owns no server. Bound as "" the
 	// empty project would fail the uuid cast and the listing would answer 500.
-	project := c.GetString("project_id")
 	if project == "" {
 		f.Cond("FALSE")
 		return f
 	}
 	f.Eq(alias+"project_id", project)
 	return f
+}
+
+// listScope is the project a server listing is confined to: every project for an
+// administrator who opted in with all_tenants (all), otherwise the caller's own — ""
+// for an unscoped token, which owns no server.
+func listScope(c *gin.Context) (project string, all bool) {
+	if common.QueryFlag(c, "all_tenants") && common.HasRole(c, common.RoleAdmin) {
+		return "", true
+	}
+	return c.GetString("project_id"), false
 }
 
 // Server-listing query filters (SPEC-025-followup US1, FR-001 – FR-009).
@@ -158,14 +171,14 @@ func supportedListFilters(c *gin.Context) []string {
 // Predicates themselves are ANDed, so their relative order does not affect the result;
 // only the placeholder numbering follows the call sequence, and args are appended with
 // their placeholders.
-func (f *serverFilter) applyQueryFilters(c *gin.Context, alias string) *common.OpenStackError {
+func (f *serverFilter) applyQueryFilters(c *gin.Context, db database.DB, alias string) *common.OpenStackError {
 	if c == nil || c.Request == nil {
 		return nil
 	}
 	if err := f.refuseUnrecordable(c); err != nil {
 		return err
 	}
-	if err := f.applyRegexFilters(c, alias); err != nil {
+	if err := f.applyRegexFilters(c, db, alias); err != nil {
 		return err
 	}
 	if err := f.applyScalarFilters(c, alias); err != nil {
@@ -191,17 +204,20 @@ func (f *serverFilter) refuseUnrecordable(c *gin.Context) *common.OpenStackError
 
 // applyRegexFilters handles the two filters upstream matches as regular expressions.
 //
-// Both are validated in Go before reaching PostgreSQL: an invalid pattern is a client
-// error, where an unguarded one becomes `invalid regular expression` from the driver and
-// surfaces as a 500 (FR-008). Go's RE2 and PostgreSQL's POSIX syntax are not identical, so
-// a pattern valid in one and not the other is refused rather than run — the conservative
-// direction. `name` is checked first, so a request with two bad patterns is told about the
-// same one it always was.
-func (f *serverFilter) applyRegexFilters(c *gin.Context, alias string) *common.OpenStackError {
+// Both are validated in Go first: an invalid pattern is a client error, where an unguarded
+// one becomes `invalid regular expression` from the driver and surfaces as a 500 (FR-008).
+// Go's RE2 and PostgreSQL's POSIX syntax are not identical, so a pattern valid in one and
+// not the other is refused rather than run — the conservative direction. `name` is checked
+// first, so a request with two bad patterns is told about the same one it always was.
+func (f *serverFilter) applyRegexFilters(c *gin.Context, db database.DB, alias string) *common.OpenStackError {
 	// name is a REGULAR EXPRESSION over the display name, which is upstream's semantics
 	// ("exact and regex matching") — not equality and not a substring match (FR-003a). A
 	// substring match would return rows a regex would not, which is the same class of
 	// wrong-but-plausible answer being fixed here.
+	//
+	// The database matches it, as upstream's does (nova/db/main/api.py): PostgreSQL with
+	// its own regular expressions, SQLite with the application's. An escape the two
+	// dialects read differently follows the backend.
 	if v := c.Query("name"); v != "" {
 		if _, err := regexp.Compile(v); err != nil {
 			return common.NewInvalidValueError("name", v, "a valid regular expression")
@@ -209,44 +225,81 @@ func (f *serverFilter) applyRegexFilters(c *gin.Context, alias string) *common.O
 		f.Cond(alias + "name ~ " + f.Arg(v))
 	}
 
-	// ip matches a server's FIXED addresses, which live in ports.fixed_ips as JSONB
-	// (FR-003b). Expressible only as a subquery — there is no column — which is why it was
-	// refused until US7's batched ports query proved the join shape out.
-	//
+	// ip matches a server's FIXED addresses, which live in ports.fixed_ips (FR-003b).
 	// Matched as a regular expression as upstream does, so `?ip=^10\.0\.` narrows to a
-	// subnet. jsonb_array_elements unpacks the array because containment (`@>`) can only
-	// test equality, and equality here would be a quieter divergence than refusing the
-	// filter outright was.
+	// subnet — and, as upstream does, here rather than in the database
+	// (nova/compute/api.py): the ports in the listing's scope are read, each address is
+	// matched in Go, and the servers holding a match become an id predicate.
 	if v := c.Query("ip"); v != "" {
-		if _, err := regexp.Compile(v); err != nil {
+		re, err := regexp.Compile(v)
+		if err != nil {
 			return common.NewInvalidValueError("ip", v, "a valid regular expression")
 		}
-		// Both outer columns are QUALIFIED, and they have to be: `ports` has an `id` AND a
-		// `project_id` of its own, so an unqualified name inside this correlated subquery
-		// binds to the port's rather than the instance's. The subquery would then compare a
-		// row to itself — for `id` it matches nothing and the filter silently returns an
-		// empty list; for `project_id` it is a tautology and the predicate does nothing at
-		// all. The first was caught by the POSITIVE case of the ip test; the second has no
-		// direction a same-project fixture could see.
-		//
-		// The project pairing is the same one instanceAddressMap states as a join
-		// condition, for the same reason it gives: a port whose project disagrees with its
-		// instance's must not contribute an address to that instance. `ports.device_id` has
-		// no foreign key (migration 001) and CreatePort takes it from the request body
-		// unvalidated, so such a port is reachable — and without this predicate `?ip=X`
-		// returned a server whose own address map did not contain X. Two readers of one
-		// relation have to select on the same basis or the listing and the detail view
-		// disagree, which is what US7 exists to prevent.
-		outerID, outerProject := alias+"id", alias+"project_id"
-		if alias == "" {
-			outerID, outerProject = "instances.id", "instances.project_id"
+		ids, err := serversWithFixedIP(c.Request.Context(), db, c, re)
+		if err != nil {
+			log.Error().Err(err).Str("operation", "list_servers").Msg("resolving the ip filter failed")
+			return common.NewInternalServerError("failed to list servers")
 		}
-		f.Cond("EXISTS (SELECT 1 FROM ports p, jsonb_array_elements(" +
-			"CASE WHEN jsonb_typeof(p.fixed_ips) = 'array' THEN p.fixed_ips ELSE '[]'::jsonb END" +
-			") e WHERE p.device_id = " + outerID + " AND p.project_id = " + outerProject +
-			" AND e->>'ip_address' ~ " + f.Arg(v) + ")")
+		f.Cond(alias + "id = ANY(" + f.Arg(ids) + "::uuid[])")
 	}
 	return nil
+}
+
+// serversWithFixedIP returns the servers in the listing's scope with a port holding a
+// fixed address re matches.
+//
+// A port counts for a server only when the two belong to the same project — the pairing
+// instanceAddressMap states as a join condition, for the same reason it gives:
+// `ports.device_id` has no foreign key (migration 001) and CreatePort takes it from the
+// request body unvalidated, so a port whose project disagrees with its instance's is
+// reachable. Without the pairing `?ip=X` returned a server whose own address map did not
+// contain X. Two readers of one relation have to select on the same basis or the listing
+// and the detail view disagree, which is what US7 exists to prevent.
+func serversWithFixedIP(ctx context.Context, db database.DB, c *gin.Context, re *regexp.Regexp) ([]string, error) {
+	project, all := listScope(c)
+	if !all && project == "" {
+		return []string{}, nil
+	}
+	rows, err := portFixedIPs(ctx, db, project, all)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return serversMatching(rows, re)
+}
+
+// portFixedIPs queries each server id with its port's fixed_ips, scoped to project unless all is
+// set. A server's port counts only when the two share a project (ports.device_id is unvalidated).
+func portFixedIPs(ctx context.Context, db database.DB, project string, all bool) (database.Rows, error) {
+	q := `SELECT i.id::text, p.fixed_ips
+		FROM instances i
+		JOIN ports p ON p.device_id = i.id AND p.project_id = i.project_id`
+	var args []any
+	if !all {
+		q += ` WHERE i.project_id = $1`
+		args = append(args, project)
+	}
+	return db.Query(ctx, q, args...)
+}
+
+// serversMatching returns the distinct server ids holding a fixed address that matches re.
+func serversMatching(rows database.Rows, re *regexp.Regexp) ([]string, error) {
+	ids := []string{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var id string
+		var fixedIPs common.FixedIPs
+		if err := rows.Scan(&id, &fixedIPs); err != nil {
+			return nil, err
+		}
+		for _, ip := range fixedIPs {
+			if !seen[id] && re.MatchString(ip.IPAddress) {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, rows.Err()
 }
 
 // applyScalarFilters handles the filters that compare a single column to a single value.

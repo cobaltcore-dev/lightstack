@@ -321,8 +321,8 @@ func TestRevokeExpiredMakesProgressAroundAnUnremovableProjection(t *testing.T) {
 	const poisoned = "bad/token"
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO console_auth_tokens (token, instance_id, project_id, socket, domain_id, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute')`,
-		poisoned, inst, proj, testSocket, testDomainID,
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		poisoned, inst, proj, testSocket, testDomainID, time.Now().Add(-time.Minute),
 	); err != nil {
 		t.Fatalf("seeding the poisoned row: %v", err)
 	}

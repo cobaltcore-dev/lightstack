@@ -137,6 +137,16 @@ docker compose up -d
  ✔ Container lightstack                Started (healthy)
 ```
 
+#### Alternative: SQLite backend (no PostgreSQL)
+
+The default `docker-compose.yml` runs PostgreSQL. To run Lightstack on a single SQLite file instead — no PostgreSQL container — use the SQLite variant:
+
+```bash
+docker compose -f deployments/docker-compose-sqlite.yml up -d
+```
+
+It drops the `postgres` service and sets `LIGHTSTACK_DB_URL=sqlite:///var/lib/lightstack/db/lightstack.db`. The whole node-local state root `/var/lib/lightstack` lives on the named volume `lightstack_state` — the SQLite database (and its `-wal`/`-shm` sidecar files) under `db/`, plus the local Glance images and Cinder volumes the stack writes in local mode — so active records and their backing persist together across `down`/`up`. The backend is chosen by the URL scheme alone — no other change is needed. SQLite needs working POSIX file locks, so keep the state root on a **local filesystem**: a Docker named volume is local by default; do not back it with NFS or CephFS, whose locking can corrupt the database.
+
 ### Step 4: Verify Deployment
 
 ```bash
@@ -385,7 +395,7 @@ docker exec -it lightstack /bin/sh
 # PostgreSQL container
 docker exec -it lightstack-postgres psql -U lightstack -d lightstack
 
-# Run migrations manually
+# Run migrations manually (the image also runs this before every start; either backend)
 docker exec lightstack /app/lightstack-migrate up
 
 # Check migration status
@@ -411,6 +421,112 @@ docker exec lightstack-postgres pg_dump -U lightstack lightstack > backup.sql
 # Restore database
 cat backup.sql | docker exec -i lightstack-postgres psql -U lightstack lightstack
 ```
+
+### Running on SQLite (single node)
+
+A single node can run without the PostgreSQL container: point the database at a file on a volume
+of its own, so it outlives the container.
+
+```yaml
+services:
+  lightstack:
+    environment:
+      LIGHTSTACK_DB_URL: "sqlite:///var/lib/lightstack/db/lightstack.db"
+      LIGHTSTACK_NODE_NAME: "node-a"   # stable across container recreation
+    volumes:
+      - lightstack-db:/var/lib/lightstack/db
+volumes:
+  lightstack-db:
+    name: lightstack-db   # un-prefixed, so the live backup below mounts this volume, not a project-prefixed one
+```
+
+Drop the `postgres` service and the `depends_on` entry that waits for it. `lightstack-migrate`
+creates and migrates the file on the first start; the `database ready` log line names it.
+`neutron.vxlan_enabled` must stay off. Back the database up with `lightstack-migrate backup`, never
+by copying the files while Lightstack runs ([Backup and restore on SQLite](#backup-and-restore-on-sqlite)).
+
+The KVM stack (`deployments/docker-compose-kvm.yml`) needs no edit: it mounts the whole state root
+at the same path, so `LIGHTSTACK_DB_URL=sqlite:///var/lib/lightstack/db/lightstack.db` in the
+environment of `docker compose` — or that URL as `database.url` in its config — selects SQLite.
+It ships a stable `LIGHTSTACK_NODE_NAME` (overridable per host) so block-storage recovery survives a
+container recreation: on Docker the container's hostname defaults to its container id and changes when
+the container is recreated, which would otherwise hide a predecessor's unfinished creates from the
+startup sweep ([README-KVM.md](../deployments/README-KVM.md)).
+
+### Backup and restore on SQLite
+
+These procedures are for the **real-mode** stack, `deployments/docker-compose-kvm.yml`, which mounts the
+whole state root (`/var/lib/lightstack` by default) from the host at the same path. Backups go to
+`<state_path>/backups`, so they land on the host. Stub-mode SQLite stacks such as
+`docker-compose-sqlite.yml` keep only `db/` on a volume and are not backed up. On PostgreSQL use
+`pg_dump` ([Database Management](#database-management)); `backup` and `check` refuse a PostgreSQL URL
+and say so.
+
+```bash
+KVM="docker compose -f deployments/docker-compose-kvm.yml"
+CFG=/opt/lightstack/config/lightstack.yaml       # the stack's config path; flags go before a file name
+```
+
+**Take a backup** while Lightstack runs. `lightstack-migrate backup` copies the database consistently
+from inside it:
+
+```bash
+$KVM exec lightstack /app/lightstack-migrate backup -config $CFG
+# ✅ Backup written to /var/lib/lightstack/backups/lightstack-20261028T143000Z.db
+```
+
+The backup is one file (no `-wal`/`-shm`), `0600` in a `0750` directory, named after its UTC time, and
+an existing file is never overwritten — pass a name to choose one. It is on the host's disk: copy it
+off the host. Nothing prunes old backups.
+
+**Check integrity**, also while running. It exits non-zero and lists the problems on a damaged
+database, and refuses one that holds no Lightstack schema (an empty file passes SQLite's own check),
+one that lacks any table, index or column its schema version requires (it lists them), and one an
+interrupted migration left marked dirty:
+
+```bash
+$KVM exec lightstack /app/lightstack-migrate check -config $CFG
+```
+
+**Restore.** Delete `lightstack.db-wal` and `lightstack.db-shm` before putting the backup in place:
+left there, SQLite replays the old write-ahead log onto the restored file and brings back the data
+written after the backup.
+
+```bash
+$KVM stop lightstack
+$KVM run --rm --entrypoint sh lightstack
+```
+
+In that container (same mounts and environment as the service):
+
+```sh
+S=/var/lib/lightstack                            # state_path
+rm -f $S/db/lightstack.db-wal $S/db/lightstack.db-shm
+cp $S/backups/lightstack-20261028T143000Z.db $S/db/lightstack.db
+chmod 600 $S/db/lightstack.db
+/app/lightstack-migrate check -config /opt/lightstack/config/lightstack.yaml
+exit
+```
+
+```bash
+$KVM start lightstack
+```
+
+A backup from an older Lightstack is migrated forward on start; one from a **newer** Lightstack is
+refused (`the database is at migration version N, but this Lightstack knows versions up to M`).
+
+**Recovery.** Restore the latest backup that passes `check`; what was written after it is lost.
+Without a usable backup, salvage with the `sqlite3` shell's `.recover`. The image ships no `sqlite3`,
+and Debian's and Ubuntu's builds cannot run `.recover` (`no such table: sqlite_dbpage`), so stop
+Lightstack, copy `lightstack.db` with its `-wal` and `-shm` (one database, three files) into one
+directory, and use Alpine's:
+
+```bash
+docker run --rm -v "$PWD":/w docker.io/library/alpine:3.24 sh -c 'umask 077 && apk add -q sqlite && sqlite3 /w/lightstack.db ".recover" | sqlite3 /w/recovered.db && chown "$(stat -c %u:%g /w/lightstack.db)" /w/recovered.db'
+```
+
+The result is best effort: restore `recovered.db` with the steps above, whose `check` refuses a file
+that holds no Lightstack schema, or only part of it, and lists what is missing.
 
 ### Update Lightstack
 

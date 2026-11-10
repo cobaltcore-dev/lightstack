@@ -3,19 +3,17 @@ package cinder
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // testDBAvailable is true when LIGHTSTACK_TEST_DB_URL is set and migrated; DB-backed cinder
@@ -25,45 +23,34 @@ var testDBAvailable bool
 
 // testPool is this package's test pool: opened by TestMain when LIGHTSTACK_TEST_DB_URL
 // is set, and handed to the services the tests construct (SPEC-027).
-var testPool *pgxpool.Pool
+var testPool database.DB
 
 func TestMain(m *testing.M) {
-	if dbURL := os.Getenv("LIGHTSTACK_TEST_DB_URL"); dbURL != "" {
-		ctx := context.Background()
-		var err error
-		if testPool, err = database.Connect(ctx, dbURL, &database.PoolConfig{
-			MaxConns: 5, MinConns: 1, MaxConnLifetime: time.Hour,
-			MaxConnIdleTime: 15 * time.Minute, HealthCheckPeriod: time.Minute,
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but connecting failed: %v\n", err)
-			os.Exit(1)
-		}
-		// TestDeleteVolumeSnapshotCountError_DB renames `snapshots` away to induce a
-		// query error. An interrupted run (SIGINT, -timeout) skips its t.Cleanup and
-		// leaves the table renamed; the test database is shared, so heal that here
-		// before anything else runs against it.
-		if _, err := testPool.Exec(ctx, `DO $$
+	// Skip DB-backed tests only when no test DB is configured. A configured database
+	// that cannot be opened or migrated fails the run instead (dbtest.Open), so a broken
+	// test database in CI fails the job rather than quietly hiding the DB-backed tests.
+	testPool, testDBAvailable = dbtest.Open("../../migrations", dbtest.Before(healSnapshotsRename))
+	code := m.Run()
+	dbtest.Close(testPool)
+	os.Exit(code)
+}
+
+// healSnapshotsRename repairs what an interrupted TestDeleteVolumeSnapshotCountError_DB
+// leaves behind: it renames `snapshots` away to induce a query error, and a run killed
+// (SIGINT, -timeout) before its t.Cleanup leaves the table renamed. The test database
+// is shared, so heal that before anything else runs against it. PostgreSQL only: a
+// SQLite test database is a fresh file per run.
+func healSnapshotsRename(db database.DB) error {
+	if db.Backend() != database.Postgres {
+		return nil
+	}
+	_, err := db.Exec(context.Background(), `DO $$
 BEGIN
 	IF to_regclass('public.snapshots_faultinject') IS NOT NULL AND to_regclass('public.snapshots') IS NULL THEN
 		ALTER TABLE snapshots_faultinject RENAME TO snapshots;
 	END IF;
-END $$;`); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to heal a leftover snapshots rename: %v\n", err)
-			testPool.Close()
-			os.Exit(1)
-		}
-		if err := database.MigrateUp(dbURL, "../../migrations"); err != nil {
-			fmt.Fprintf(os.Stderr, "LIGHTSTACK_TEST_DB_URL is set but migrations failed: %v\n", err)
-			testPool.Close()
-			os.Exit(1)
-		}
-		testDBAvailable = true
-	}
-	code := m.Run()
-	if testDBAvailable {
-		testPool.Close()
-	}
-	os.Exit(code)
+END $$;`)
+	return err
 }
 
 func requireDB(t *testing.T) {
@@ -82,6 +69,14 @@ const (
 // newCinderTestRouter wires the real Cinder routes behind a stub auth middleware that
 // sets project_id/user_id/roles from X-Test-* headers.
 func newCinderTestRouter() *gin.Engine {
+	return cinderRouter(NewService(testPool, "stub", "", "", testNodeName))
+}
+
+// testNodeName is the node name the tests' services reserve rows under.
+const testNodeName = "cinder-test-node"
+
+// cinderRouter serves svc's routes behind the X-Test-* stub auth.
+func cinderRouter(svc *Service) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -95,16 +90,23 @@ func newCinderTestRouter() *gin.Engine {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	NewService(testPool, "stub", "", "").RegisterRoutes(&r.RouterGroup)
+	svc.RegisterRoutes(&r.RouterGroup)
 	return r
 }
 
 func doReq(r *gin.Engine, method, path, body string, headers map[string]string) (int, string) {
+	return doReqCtx(context.Background(), r, method, path, body, headers)
+}
+
+// doReqCtx is doReq with a caller-supplied request context. Tests that make a table
+// unavailable (dbtest.Unavailable) pass a deadline so a statement blocked on PostgreSQL's
+// ACCESS EXCLUSIVE lock fails rather than waiting indefinitely.
+func doReqCtx(ctx context.Context, r *gin.Engine, method, path, body string, headers map[string]string) (int, string) {
 	var rdr io.Reader
 	if body != "" {
 		rdr = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(method, path, rdr)
+	req := httptest.NewRequest(method, path, rdr).WithContext(ctx)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}

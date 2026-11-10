@@ -32,8 +32,8 @@ func TestNetworkDataJSONServesPortAddresses(t *testing.T) {
 	var subnetID string
 	if err := testPool.QueryRow(ctx,
 		`INSERT INTO subnets (name, network_id, project_id, cidr, gateway_ip, dns_nameservers)
-		 VALUES ('md-sub', $1, $2, '192.168.42.0/24', '192.168.42.1', ARRAY['1.1.1.1']) RETURNING id::text`,
-		networkID, seededProjectID).Scan(&subnetID); err != nil {
+		 VALUES ('md-sub', $1, $2, '192.168.42.0/24', '192.168.42.1', $3) RETURNING id::text`,
+		networkID, seededProjectID, []string{"1.1.1.1"}).Scan(&subnetID); err != nil {
 		t.Fatalf("seed subnet: %v", err)
 	}
 
@@ -41,8 +41,8 @@ func TestNetworkDataJSONServesPortAddresses(t *testing.T) {
 	var subnetV6 string
 	if err := testPool.QueryRow(ctx,
 		`INSERT INTO subnets (name, network_id, project_id, cidr, gateway_ip, dns_nameservers)
-		 VALUES ('md-sub-v6', $1, $2, '2001:db8::/64', '2001:db8::1', ARRAY['2001:4860:4860::8888']) RETURNING id::text`,
-		networkID, seededProjectID).Scan(&subnetV6); err != nil {
+		 VALUES ('md-sub-v6', $1, $2, '2001:db8::/64', '2001:db8::1', $3) RETURNING id::text`,
+		networkID, seededProjectID, []string{"2001:4860:4860::8888"}).Scan(&subnetV6); err != nil {
 		t.Fatal(err)
 	}
 	fixed := `[{"subnet_id":"` + subnetID + `","ip_address":"192.168.42.77"},` +

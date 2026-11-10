@@ -9,7 +9,9 @@ spec:
   # Real mode pins one replica (privileged + hostNetwork + host ports cannot overlap);
   # stub mode may scale (all state in the DB). FR-003b.
   replicas: {{ if .Values.realMode.enabled }}1{{ else }}{{ .Values.replicaCount }}{{ end }}
-  {{- if .Values.realMode.enabled }}
+  {{- if or .Values.realMode.enabled (include "lightstack.sqliteEnabled" .) }}
+  # Real mode, or SQLite on a single node-local file: the old pod must release the
+  # database/host before the new one starts (no two writers). SPEC-029 FR-007.
   strategy:
     type: Recreate
   {{- end }}

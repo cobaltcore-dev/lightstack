@@ -50,7 +50,7 @@ func GenerateVMXML(spec VMSpec) string {
   <vcpu placement='static'>%d</vcpu>
 
   <os>
-    <type arch='x86_64' machine='pc-i440fx-2.12'>hvm</type>
+    <type arch='x86_64' machine='pc'>hvm</type>
     <boot dev='hd'/>
   </os>
 

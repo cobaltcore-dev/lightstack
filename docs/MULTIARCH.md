@@ -112,7 +112,7 @@ COPY --from=builder /build/lightstack /app/lightstack
 │  Runtime Stage                          │
 │  - Runs on: $TARGETARCH                 │
 │  - Contains compiled binary             │
-│  - Small (~50MB)                        │
+│  - Small                                │
 └─────────────────────────────────────────┘
 ```
 

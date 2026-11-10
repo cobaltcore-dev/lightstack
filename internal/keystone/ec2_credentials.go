@@ -7,10 +7,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -46,33 +47,41 @@ func ec2CredentialView(userID, tenantID, access, secret string) gin.H {
 	}
 }
 
-// denyIfNotSelfOrAdmin writes a 403 and returns true when the caller is neither
-// the target user nor an admin. The EC2-credential API returns the secret, so
-// every handler must be owner-or-admin only — otherwise any authenticated tenant
-// could read or mint another user's S3 credential and reach that tenant's RGW
-// namespace (SPEC-014 FR-007; mirrors the self-or-admin check in ChangePassword).
-func denyIfNotSelfOrAdmin(c *gin.Context, userID string) bool {
+// denyIfNotSelfOrAdmin writes a 403/404 and returns denied=true when the caller is
+// neither the target user nor an admin, or when the id is malformed. The EC2-credential
+// API returns the secret, so every handler must be owner-or-admin only — otherwise any
+// authenticated tenant could read or mint another user's S3 credential and reach that
+// tenant's RGW namespace (SPEC-014 FR-007; mirrors the self-or-admin check in
+// ChangePassword). On success it returns the id in canonical form, so the caller's
+// queries match on SQLite's text ids.
+func denyIfNotSelfOrAdmin(c *gin.Context, userID string) (string, bool) {
+	// Canonicalise a well-formed id up front so the self-check compares like with like
+	// (the token's user_id is canonical) and the caller's query matches on SQLite's text
+	// ids. A malformed id is left as-is: it cannot match the caller's own id, so an
+	// unauthorised caller still gets 403 before the 404 below (#515).
+	if parsed, err := uuid.Parse(userID); err == nil {
+		userID = parsed.String()
+	}
 	if !sameUser(c.GetString("user_id"), userID) && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("cannot manage another user's EC2 credentials"))
-		return true
+		return "", true
 	}
 	// Authorization passed; the path id must still be a well-formed user id or no
 	// such user exists (cloud-storage#515). Checked after authz so a 403 always
 	// precedes this 404 (FR-009), and so a malformed id never reaches the query.
 	if uuid.Validate(userID) != nil {
 		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
-		return true
+		return "", true
 	}
-	return false
+	return userID, false
 }
 
 // CreateEC2Credential mints a long-lived, project-scoped S3 access/secret pair
 // for a user (OpenStack EC2-credentials API; SPEC-014 FR-005).
 // POST /v3/users/:id/credentials/OS-EC2
 func (svc *Service) CreateEC2Credential(c *gin.Context) {
-	userID := c.Param("id")
-
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, c.Param("id"))
+	if denied {
 		return
 	}
 	isAdmin := common.HasRole(c, common.RoleAdmin)
@@ -152,8 +161,8 @@ func (svc *Service) CreateEC2Credential(c *gin.Context) {
 // ListEC2Credentials lists a user's EC2 credentials.
 // GET /v3/users/:id/credentials/OS-EC2
 func (svc *Service) ListEC2Credentials(c *gin.Context) {
-	userID := c.Param("id")
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, c.Param("id"))
+	if denied {
 		return
 	}
 	rows, err := svc.pool.Query(c.Request.Context(),
@@ -195,9 +204,9 @@ func (svc *Service) ListEC2Credentials(c *gin.Context) {
 // GetEC2Credential returns one EC2 credential by access key.
 // GET /v3/users/:id/credentials/OS-EC2/:access
 func (svc *Service) GetEC2Credential(c *gin.Context) {
-	userID := c.Param("id")
+	userID, denied := denyIfNotSelfOrAdmin(c, c.Param("id"))
 	access := c.Param("access")
-	if denyIfNotSelfOrAdmin(c, userID) {
+	if denied {
 		return
 	}
 
@@ -206,7 +215,7 @@ func (svc *Service) GetEC2Credential(c *gin.Context) {
 	err := svc.pool.QueryRow(c.Request.Context(),
 		`SELECT project_id, blob FROM credentials WHERE user_id = $1 AND access_key = $2 AND type = 'ec2'`,
 		userID, access).Scan(&projectID, &blob)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("credential"))
 		return
 	}
@@ -228,9 +237,9 @@ func (svc *Service) GetEC2Credential(c *gin.Context) {
 // DeleteEC2Credential revokes an EC2 credential (deletes the row).
 // DELETE /v3/users/:id/credentials/OS-EC2/:access
 func (svc *Service) DeleteEC2Credential(c *gin.Context) {
-	userID := c.Param("id")
+	userID, denied := denyIfNotSelfOrAdmin(c, c.Param("id"))
 	access := c.Param("access")
-	if denyIfNotSelfOrAdmin(c, userID) {
+	if denied {
 		return
 	}
 

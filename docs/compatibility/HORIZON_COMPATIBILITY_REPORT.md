@@ -25,8 +25,8 @@ API/CLI worked for every workflow exercised, except F6 (fixed by #532), F13 (fix
 > ungrounded "100% compatible" claim**, and that refutation stands: the claim was never grounded in a
 > browser-level check, and the nine findings are what grounding it actually cost.
 
-**18 findings total**: F1–F9 from this pass (#482), F10–F16 added by the #533 pass, F17–F18 by the 2026-09-22
-re-test. F10–F16 keep the numbers they were published under
+**20 findings total**: F1–F9 from this pass (#482), F10–F16 added by the #533 pass, F17–F18 by the 2026-09-22
+re-test, F19–F20 by the 2026-11-03 host-OS pass (`feature/host-os`). F10–F16 keep the numbers they were published under
 ([cloud-storage#536](https://github.com/cobaltcore-dev/cloud-storage/issues/536) and its sub-issues; #537,
 where several were first filed, was closed as superseded); the 2026-09-22 re-test filed its two on the
 #482 branch as `F10`/`F11`, which collide with those, so they are **renumbered F17/F18 here**.
@@ -512,8 +512,9 @@ was no drift to inherit); **F16** was a limitation of the F7 fix and is fixed.
 - **Verified — API (2026-08-07, stub stack built from `feature/545`)**: `POST /v3/projects --domain default`
   → **`201`**; `GET /v3/auth/projects` — the call that populates Horizon's project switcher — returns **both**
   projects; re-scoping a token to the second returns **`201`** with `token.project.name` set to it.
-- **Still unverified — UI**: creating a project *through the Identity panel* has not been exercised; that
-  needs a Horizon pass. Nothing else waits on it — project switching was demonstrated in the browser on
+- **UI — blocked by F19 until 2026-11-03**: creating a project *through the Identity panel* could not be
+  exercised before then: the Create Project modal never opened, for a reason of our own making (`_member_` as
+  Horizon's default role, F19), not a Lightstack API fault. Re-verification is listed under F19. Nothing else waits on it — project switching was demonstrated in the browser on
   2026-09-22 (acceptance table), and F2's residual (Overview widget across a switch) is a pending re-run
   rather than a blocked check.
 
@@ -616,6 +617,63 @@ it carries a fix here without a separate change._
   is nothing a domain-scoped token could authorize. Not on `main` and not re-tested here.
 - **Tracked**: [cloud-storage#549](https://github.com/cobaltcore-dev/cloud-storage/issues/549)
 
+## Findings from the 2026-11-03 host-OS pass (F19–F20)
+
+Found while walking the Horizon UI lifecycle (`docs/HOST_TESTING_OPENSUSE.md`, C7b) on k3s, real mode.
+F19 is a defect in Lightstack's own dashboard configuration; F20 is the API gap it had been hiding.
+
+### F19 — Horizon's default role (`_member_`) names a role Lightstack never seeds (major) — _config-level, mode-independent (found real, 2026-11-03)_ — ✅ **FIXED in-pass (config)**
+- **Cause**: both `local_settings` copies (`deployments/horizon-config/local_settings:65` and its generated
+  chart copy) set `OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"`, since `16cfb26` (2026-03-13). Lightstack seeds
+  `admin`/`member`/`reader` (`migrations/002_seed_data.up.sql:20-24`, a week older) and no migration has ever
+  seeded `_member_`, the legacy member role older Keystone releases created. Horizon resolves the setting
+  against an unfiltered `GET /v3/roles`, by id or name, once per process (`openstack_dashboard/api/keystone.py`,
+  `get_default_role`), and caches the miss. Upstream Horizon's own default is `member`
+  (`openstack_dashboard/defaults.py`); so was the first Horizon config in this repo (`7b15418`, 2026-03-07) and
+  so are the five other copies in the tree. The value was wrong from the day it was written, and no runbook had
+  driven Create Project, Manage Members or Create User through the browser (018 scoped the Identity panels out).
+- **Symptom 1 — the modal never opens**: Identity → Projects → **Create Project** (and **Manage Members** /
+  **Manage Groups** on an existing project) bounce silently: the button clicks, the page re-renders, no modal.
+  The members step's `__init__` raises `Could not find default role "_member_" in Keystone`, which Horizon folds
+  into "Unable to retrieve user list" and a redirect to the list (`identity/projects/workflows.py`,
+  `UpdateProjectMembersAction`). Access-log tell: `GET /dashboard/identity/create` → **`200`** with
+  `X-Horizon-Location: /dashboard/identity/` and a `messages` `Set-Cookie`; decode that cookie (strip the
+  leading `.`, urlsafe-base64, zlib) and the text is in it. This is why F13's UI path stayed unverified: the
+  request never reached Lightstack.
+- **Symptom 2 — silent, and the worse one**: Identity → Users → **Create User** preselects its Role from the
+  same setting (`identity/users/views.py`, `CreateView.get_initial`: `role_id = getattr(default_role, "id",
+  None)`) and sorts the choices by **id**. With nothing resolved, the dropdown landed on `admin` (`…0003`, the
+  lowest seeded id), so a user created through the dashboard with a primary project was granted **admin**
+  unless the operator changed the field. Nothing reported it. Derived from the 2025.2 source and the seeded
+  ids; not reproduced in a browser.
+- **Fix**: `member` in `deployments/horizon-config/local_settings`, then `make horizon-chart-sync` (both
+  copies; `make horizon-chart-check` and `helm unittest charts/horizon` green). A SPEC-020 **FR-018a**
+  correction — a misconfiguration in Lightstack's own deployment artifacts, justified against upstream,
+  compensating for no missing API — the second after F14's `CSRF_COOKIE_HTTPONLY`. `docs/HORIZON_DEPLOYMENT.md`
+  corrected with it; the RGW fixtures' accepted-roles lists dropped the dead `_member_`
+  (`docs/OBJECT_STORAGE_S3.md` never had it). Horizon caches the resolved role per process, so the pod must
+  restart: the chart's `checksum/config` annotation rolls it on `helm upgrade`; the compose stack needs its
+  `horizon` container recreated.
+- **Status**: fix applied and synced 2026-11-03. Browser re-verification is the next C7b run: (1) Create
+  Project opens and creates the project; (2) Manage Members → add `admin` as `member` → Save; (3) Create User
+  shows `member` preselected. (2) arms F20 the moment a Keystone group exists.
+
+### F20 — Group role assignments on a project are unrouted (low) — _code-level (2026-11-03)_ — ❌ **open**
+- **Cause**: `internal/keystone/handlers.go` routes group CRUD and `/groups/:id/users/:user_id` only. There is
+  no `PUT`/`GET`/`DELETE /v3/projects/{p}/groups/{g}/roles[/{r}]`, and `GET /v3/role_assignments` emits `user`
+  entries only. SPEC-023 (`spec.md:290`) puts group-based role assignments out of scope, so this is a documented
+  non-feature rather than a regression.
+- **Impact**: masked until F19, because the modal never opened. Horizon's project workflows run a groups step.
+  Create Project calls `add_group_role` only for groups the operator ticks; **Manage Members → Save** on an
+  existing project calls `group_list(…, project=…)`, which runs `roles_for_group` →
+  `GET /v3/projects/{p}/groups/{g}/roles` for **every group in the domain** → `404` → "Failed to modify project
+  groups", *after* the member changes were already applied. Nothing seeds a group, so a stock install never
+  hits it; the first `POST /v3/groups` arms it. Derived from the 2025.2 source and the route table, not
+  exercised.
+- **Workaround**: grant roles to users, not groups; do not create Keystone groups on a deployment managed
+  through Horizon.
+- **Tracked**: no ticket yet.
+
 ## Notes & scope
 
 - RBD / block Ceph out of scope (v1); real Ceph = RGW/S3 only.
@@ -642,7 +700,9 @@ CLI. This is the exact backend chain the stub pass could not exercise, and it pa
 open and is fixed by #534 (SPEC-021): the Console tab renders the live guest. Outside that set, the #533
 pass's own **F10–F12 and F15** stay open, as does **F18** (domain-scoped tokens, #549) — **F13** is fixed
 here by #545; **F17** — Horizon's security-group proxy 500-ing because the list omits
-`security_group_rules` — is fixed here, as root 2 of F7.
+`security_group_rules` — is fixed here, as root 2 of F7. The 2026-11-03 host-OS pass added **F19** — the
+dashboard's default role named a role that never existed, a configuration defect of our own, fixed in-pass —
+and **F20** (group role assignments unrouted, open, low).
 
 **Superseded — what didn't work at the time of writing (2026-07-23).** Every create/write workflow through the
 UI failed: no Create-Network button (F3), a dead Create-Volume modal (F8), the Volumes list **500**-ing once a

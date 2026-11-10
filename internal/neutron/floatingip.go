@@ -11,11 +11,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -180,7 +181,7 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 		req.FloatingIP.FloatingNetworkID,
 	).Scan(&subnetCIDR)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		// No subnet exists - use default external IP pool (RFC 5737 TEST-NET-1)
 		subnetCIDR = "192.0.2.0/24"
 	} else if err != nil {
@@ -356,7 +357,7 @@ func (svc *Service) GetFloatingIP(c *gin.Context) {
 	`, floatingIPID, projectID).Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
 		&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
 		return
 	}
@@ -424,7 +425,7 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 		floatingIPID, projectID,
 	).Scan(&currentFloatingIP, &currentFixedIP, &currentPortID, &currentRouterID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
 		return
 	}
@@ -581,7 +582,7 @@ func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 		floatingIPID, projectID,
 	).Scan(&floatingIP, &fixedIP, &portID, &routerID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
 		return
 	}

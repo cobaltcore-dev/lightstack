@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -46,7 +46,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		instanceID, projectID,
 	).Scan(&libvirtDomainID, &status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
 		return
 	}
@@ -77,8 +77,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		// free port has NULL there — so it is read COALESCE'd rather than
 		// scanned into a plain string (round 3 of this review): that scan
 		// fails on NULL, and the error used to be dropped, leaving the attach
-		// "correct" only because pgx fills earlier columns before the failed
-		// one. Any real database error on this lookup surfaced the same way:
+		// "correct" only because a failed Scan invalidates the lookup, even if some earlier columns were read. Any real database error on this lookup surfaced the same way:
 		// a bogus 200 with an empty net_id and MAC.
 		var deviceID string
 		var fixedIPsJSON []byte
@@ -87,7 +86,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			portID, projectID,
 		).Scan(&networkID, &fixedIPsJSON, &macAddress, &deviceID)
 
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("port"))
 			return
 		}
@@ -145,7 +144,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			networkID,
 		).Scan(&subnetID, &cidr)
 
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewBadRequestError("network has no subnet"))
 			return
 		}
@@ -175,7 +174,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 
 		// Allocate/check and insert while holding the subnet lock shared with
 		// Neutron's port-create and server-boot paths.
-		err = database.WithTx(c.Request.Context(), svc.pool, func(tx pgx.Tx) error {
+		err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 			cidr, err = neutron.LockSubnet(c.Request.Context(), tx, subnetID)
 			if err != nil {
 				return err
@@ -321,7 +320,7 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 		portID,
 	).Scan(&attachedInstanceID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
 		return
 	}
@@ -444,4 +443,53 @@ func generateMACAddress() string {
 	// Use OpenStack's OUI prefix: fa:16:3e
 	return fmt.Sprintf("fa:16:3e:%02x:%02x:%02x",
 		uuid.New()[0], uuid.New()[1], uuid.New()[2])
+}
+
+// allocateNextIP allocates the next available IP from a subnet
+func allocateNextIP(ctx context.Context, pool database.DB, networkID, cidr string) (string, error) {
+	// Simple allocation: get last used IP and increment
+	// In production, would use proper IPAM
+	var fixedIPsJSON []byte
+	err := pool.QueryRow(ctx,
+		"SELECT fixed_ips FROM ports WHERE network_id = $1 ORDER BY created_at DESC LIMIT 1",
+		networkID,
+	).Scan(&fixedIPsJSON)
+
+	if errors.Is(err, database.ErrNoRows) {
+		// First allocation, use .10
+		baseIP := cidr[:len(cidr)-3] // Remove /24
+		return baseIP + "10", nil
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	// For simplicity, parse JSON and increment
+	// In production, would use proper IPAM library
+	var ips []map[string]any
+	if err := json.Unmarshal(fixedIPsJSON, &ips); err != nil {
+		// Fallback to simple allocation
+		baseIP := cidr[:len(cidr)-3]
+		return baseIP + "11", nil
+	}
+
+	if len(ips) == 0 {
+		baseIP := cidr[:len(cidr)-3]
+		return baseIP + "10", nil
+	}
+
+	lastIP := ips[0]["ip_address"].(string)
+
+	// Increment last octet
+	var a, b, c, d int
+	if _, err := fmt.Sscanf(lastIP, "%d.%d.%d.%d", &a, &b, &c, &d); err != nil {
+		return "", fmt.Errorf("malformed IP %q in subnet allocation table: %w", lastIP, err)
+	}
+	d++
+	if d > 254 {
+		return "", fmt.Errorf("subnet exhausted")
+	}
+
+	return fmt.Sprintf("%d.%d.%d.%d", a, b, c, d), nil
 }

@@ -9,8 +9,9 @@ import (
 	"net"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -315,10 +316,12 @@ func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
 // applyDHCPForNetwork derives it, from the network's first DHCP-enabled subnet.
 func (svc *Service) desiredRedirectsNow(ctx context.Context, pass map[string]string) (map[string]string, error) {
 	rows, err := svc.pool.Query(ctx, `
-		SELECT DISTINCT ON (network_id) network_id::text, cidr, gateway_ip
-		FROM subnets
-		WHERE enable_dhcp = true
-		ORDER BY network_id, created_at, id`)
+		SELECT network_id::text, cidr, gateway_ip
+		FROM (SELECT network_id, cidr, gateway_ip,
+		             ROW_NUMBER() OVER (PARTITION BY network_id ORDER BY created_at, id) AS position
+		        FROM subnets
+		       WHERE enable_dhcp = true) AS dhcp_subnets
+		WHERE position = 1`)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +377,7 @@ func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, r
 		SELECT cidr, gateway_ip, dns_nameservers FROM subnets
 		WHERE network_id = $1 AND enable_dhcp = true
 		ORDER BY created_at, id LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return "", "", nil // no DHCP-enabled subnet for this network — nothing to do
 	}
 	if err != nil {

@@ -7,14 +7,15 @@ import (
 	"os"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // NodeRegistry manages compute node registration and heartbeats
 type NodeRegistry struct {
-	pool              *pgxpool.Pool
+	pool              database.DB
 	nodeID            string
 	hostname          string
 	tunnelIP          string
@@ -24,7 +25,7 @@ type NodeRegistry struct {
 }
 
 // NewNodeRegistry creates a new node registry
-func NewNodeRegistry(pool *pgxpool.Pool, nodeID, tunnelIP string, heartbeatInterval time.Duration) (*NodeRegistry, error) {
+func NewNodeRegistry(pool database.DB, nodeID, tunnelIP string, heartbeatInterval time.Duration) (*NodeRegistry, error) {
 	// Auto-generate node ID if not provided
 	if nodeID == "" || nodeID == "auto" {
 		nodeID = uuid.New().String()

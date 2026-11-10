@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // newIdentityTestRouter wires the real RegisterRoutes with a stub auth middleware
@@ -20,7 +21,7 @@ func newIdentityTestRouter() *gin.Engine {
 
 // newIdentityTestRouterOn is newIdentityTestRouter over a caller-chosen pool, for
 // tests that need the database to fail rather than answer.
-func newIdentityTestRouterOn(pool *pgxpool.Pool) *gin.Engine {
+func newIdentityTestRouterOn(pool database.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	NewService(pool, nil, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {

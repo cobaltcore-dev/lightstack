@@ -212,31 +212,65 @@ Lightstack implements two-tier rate limiting as Gin middleware (see [ADR-002](ad
 
 ### Dependency Injection Pattern
 
-Services receive their database connection pool through constructors rather than importing a global variable (see [ADR-001](adr/ADR-001-database-dependency-injection.md)):
+Services receive their database through constructors rather than importing a global variable
+(see [ADR-001](adr/ADR-001-database-dependency-injection.md) and
+[ADR-003](adr/ADR-003-pluggable-database-backend.md)):
 
 ```
   main.go
     |
-    +-- database.Connect(ctx, url, cfg) -> pool *pgxpool.Pool   (defer pool.Close())
+    +-- database.Open(ctx, url, opts) -> db database.DB   (defer db.Close())
+    +-- database.MigrateUp(url, migrationsPath)
     |
-    +-- health.DatabaseCheck(pool)
-    +-- keystone.BootstrapAdmin(ctx, pool, cfg.Keystone)
-    +-- keystone.NewAuthService(pool, jwtSecret, ttl, cache)
-    +-- keystone.NewService(pool, authService, cache)
-    +-- nova.NewService(pool, libvirtURI, mode, cache)
-    +-- neutron.NewService(pool, mode, cache)
-    +-- neutron.NewVXLANCoordinator(pool, vxlanManager, nodeRegistry, ...)
-    +-- compute.NewNodeRegistry(pool, nodeID, tunnelIP, heartbeat)
-    +-- cinder.NewService(pool, mode, cephPool, cephConf)
-    +-- glance.NewService(pool, mode, cephPool, cephConf, s3opts, cache)
-    +-- metadata.NewService(pool, bindAddr)
+    +-- health.DatabaseCheck(db)
+    +-- keystone.BootstrapAdmin(ctx, db, cfg.Keystone)
+    +-- keystone.NewAuthService(db, jwtSecret, ttl, cache)
+    +-- keystone.NewService(db, authService, cache)
+    +-- nova.NewService(db, libvirtURI, mode, cache)
+    +-- neutron.NewService(db, mode, cache)
+    +-- neutron.NewVXLANCoordinator(db, vxlanManager, nodeRegistry, ...)
+    +-- compute.NewNodeRegistry(db, nodeID, tunnelIP, heartbeat)
+    +-- cinder.NewService(db, mode, cephPool, cephConf, nodeName)
+    |     +-- SweepInterruptedReservations(ctx)   (before the listeners open)
+    +-- glance.NewService(db, mode, cephPool, cephConf, s3opts, cache)
+    +-- metadata.NewService(db, bindAddr)
 ```
 
 **Key Design Decisions:**
-- **Direct pool, not interface**: `*pgxpool.Pool` passed directly rather than through an abstract interface
-- **Same pool, all services**: DI is for testability and explicit dependencies, not service isolation
-- **WithTx()**: Transaction helper accepts pool parameter: `WithTx(ctx, pool, fn)`
-- **Helpers**: Package-level functions that query take the pool as a parameter; the cleanup job opens and closes a pool of its own
+- **One contract, two backends**: `database.DB` is an interface over the method set the code calls
+  on pgx — `Query`, `QueryRow`, `Exec`, `Begin` — with a PostgreSQL implementation (pgxpool,
+  unchanged) and a SQLite implementation (`modernc.org/sqlite`, pure Go). The URL's scheme picks one
+  at startup; services never ask which.
+- **Same database, all services**: DI is for testability and explicit dependencies, not service isolation
+- **WithTx()**: Transaction helper takes the database: `WithTx(ctx, db, fn)`
+- **Helpers**: Package-level functions that query take the database as a parameter; the cleanup
+  job opens and closes one of its own
+
+### Database Backends
+
+| | PostgreSQL | SQLite |
+|---|---|---|
+| `database.url` | `postgres://…` | `sqlite:///absolute/path/lightstack.db` |
+| Deployment | single or multi-node | single node (VXLAN refused) |
+| Driver | pgx / pgxpool | `modernc.org/sqlite` through `database/sql` |
+| Concurrency | row and advisory locks | one writer; transactions begin `IMMEDIATE`, 5 s busy wait |
+| SQL | as written | translated on the way in (casts, `= ANY`, `FOR UPDATE`, …) |
+
+Callers write PostgreSQL syntax once; `internal/database`'s package documentation lists what both
+backends run, and `TestSQLConstructs` fails the build on anything else. Ids, timestamps, JSON and
+lists are text on SQLite, bound and scanned through the same Go types as on PostgreSQL.
+
+**Migrations**: one `migrations/` folder serves both. Each backend reads it through a view —
+`.postgres`/`.sqlite` files are used by that backend only and replace the plain file of their
+number, and SQLite starts at a baseline generated from PostgreSQL's schema at 073
+([migrations/README.md](../migrations/README.md)). `TestSchemaParity` compares the two schemas.
+
+**No transaction around external work**: volume and snapshot creates reserve their row
+(`creating`, under the node's name), create the backing store outside any transaction, then
+finalise. At startup each node sets the reservations it left behind to `error`; as upstream Cinder
+does, it leaves their backing for the delete of the errored volume or snapshot. On SQLite, where
+one transaction holds the whole file, this is what keeps an image copy from stopping every
+project's writes.
 
 ### Request Lifecycle
 
@@ -261,7 +295,7 @@ Full request path through Lightstack middleware stack:
   Handler (service method on struct with injected pool)
     |
     v
-  svc.pool.Query(ctx, ...) -> PostgreSQL
+  svc.pool.Query(ctx, ...) -> PostgreSQL or SQLite
     |
     v
   Response (structured error format via common.SendError on failure)

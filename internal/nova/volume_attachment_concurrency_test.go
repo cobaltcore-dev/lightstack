@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func seedAttachVolume(t *testing.T) string {
@@ -27,7 +28,7 @@ func seedAttachVolume(t *testing.T) string {
 	return id
 }
 
-func attachWithPool(ctx context.Context, pool *pgxpool.Pool, instanceID, volumeID string) *httptest.ResponseRecorder {
+func attachWithPool(ctx context.Context, pool database.DB, instanceID, volumeID string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
@@ -45,9 +46,9 @@ func attachWithPool(ctx context.Context, pool *pgxpool.Pool, instanceID, volumeI
 func TestAttachVolumeWithOneConnection(t *testing.T) {
 	requireDB(t)
 	instanceID, volumeID := seedConsoleInstance(t, seededProjectID), seedAttachVolume(t)
-	config := testPool.Config()
-	config.MaxConns, config.MinConns = 1, 0
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	pool, err := database.Open(t.Context(), dbtest.URL(), database.Options{
+		Pool: database.PoolConfig{MaxConns: 1},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

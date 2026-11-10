@@ -35,8 +35,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/rs/zerolog/log"
 )
 
@@ -58,14 +57,14 @@ type Record struct {
 // Store issues, resolves and revokes console tokens, keeping the projection
 // directory in step with the table.
 type Store struct {
-	pool *pgxpool.Pool
+	pool database.DB
 	dir  string
 	ttl  time.Duration
 }
 
 // NewStore returns a Store keeping its records in pool and writing its projection
 // into dir with the given token lifetime.
-func NewStore(pool *pgxpool.Pool, dir string, ttl time.Duration) *Store {
+func NewStore(pool database.DB, dir string, ttl time.Duration) *Store {
 	return &Store{pool: pool, dir: dir, ttl: ttl}
 }
 
@@ -162,7 +161,7 @@ func (s *Store) Resolve(ctx context.Context, token string) (*Record, error) {
 		token,
 	).Scan(&r.Token, &r.InstanceID, &r.ProjectID, &r.Socket, &r.DomainID, &r.CreatedAt, &r.ExpiresAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, ErrTokenNotFound
 	}
 	if err != nil {

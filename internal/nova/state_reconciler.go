@@ -277,7 +277,7 @@ func (r *StateReconciler) reclaimActionHistory(ctx context.Context) {
 
 	cutoff := time.Now().Add(-r.retention)
 	tag, err := r.svc.pool.Exec(ctx, `
-		DELETE FROM instance_actions a
+		DELETE FROM instance_actions AS a
 		 WHERE a.start_time < $1
 		   AND NOT EXISTS (SELECT 1 FROM instances i WHERE i.id = a.instance_id)`,
 		cutoff)
