@@ -183,7 +183,7 @@ func (svc *Service) CreateKeypair(c *gin.Context) {
 	`, userID, req.Keypair.Name, publicKey, fingerprint, now)
 
 	if err != nil {
-		if common.IsUniqueViolation(err) {
+		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("Keypair with this name already exists"))
 			return
 		}
