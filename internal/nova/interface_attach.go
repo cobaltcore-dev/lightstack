@@ -1,7 +1,6 @@
 package nova
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -443,53 +442,4 @@ func generateMACAddress() string {
 	// Use OpenStack's OUI prefix: fa:16:3e
 	return fmt.Sprintf("fa:16:3e:%02x:%02x:%02x",
 		uuid.New()[0], uuid.New()[1], uuid.New()[2])
-}
-
-// allocateNextIP allocates the next available IP from a subnet
-func allocateNextIP(ctx context.Context, pool database.DB, networkID, cidr string) (string, error) {
-	// Simple allocation: get last used IP and increment
-	// In production, would use proper IPAM
-	var fixedIPsJSON []byte
-	err := pool.QueryRow(ctx,
-		"SELECT fixed_ips FROM ports WHERE network_id = $1 ORDER BY created_at DESC LIMIT 1",
-		networkID,
-	).Scan(&fixedIPsJSON)
-
-	if errors.Is(err, database.ErrNoRows) {
-		// First allocation, use .10
-		baseIP := cidr[:len(cidr)-3] // Remove /24
-		return baseIP + "10", nil
-	}
-
-	if err != nil {
-		return "", err
-	}
-
-	// For simplicity, parse JSON and increment
-	// In production, would use proper IPAM library
-	var ips []map[string]any
-	if err := json.Unmarshal(fixedIPsJSON, &ips); err != nil {
-		// Fallback to simple allocation
-		baseIP := cidr[:len(cidr)-3]
-		return baseIP + "11", nil
-	}
-
-	if len(ips) == 0 {
-		baseIP := cidr[:len(cidr)-3]
-		return baseIP + "10", nil
-	}
-
-	lastIP := ips[0]["ip_address"].(string)
-
-	// Increment last octet
-	var a, b, c, d int
-	if _, err := fmt.Sscanf(lastIP, "%d.%d.%d.%d", &a, &b, &c, &d); err != nil {
-		return "", fmt.Errorf("malformed IP %q in subnet allocation table: %w", lastIP, err)
-	}
-	d++
-	if d > 254 {
-		return "", fmt.Errorf("subnet exhausted")
-	}
-
-	return fmt.Sprintf("%d.%d.%d.%d", a, b, c, d), nil
 }
