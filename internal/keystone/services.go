@@ -15,10 +15,10 @@ import (
 
 // ListServices returns all services in the catalog
 func (svc *Service) ListServices(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -71,10 +71,10 @@ func (svc *Service) ListServices(c *gin.Context) {
 
 // CreateService creates a new service in the catalog
 func (svc *Service) CreateService(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -129,10 +129,10 @@ func (svc *Service) CreateService(c *gin.Context) {
 func (svc *Service) GetService(c *gin.Context) {
 	serviceID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -178,10 +178,10 @@ func (svc *Service) GetService(c *gin.Context) {
 func (svc *Service) DeleteService(c *gin.Context) {
 	serviceID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -211,10 +211,10 @@ func (svc *Service) DeleteService(c *gin.Context) {
 func (svc *Service) UpdateService(c *gin.Context) {
 	serviceID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -304,10 +304,10 @@ func (svc *Service) UpdateService(c *gin.Context) {
 
 // ListEndpoints returns all endpoints in the catalog
 func (svc *Service) ListEndpoints(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -363,10 +363,10 @@ func (svc *Service) ListEndpoints(c *gin.Context) {
 
 // CreateEndpoint creates a new endpoint in the catalog
 func (svc *Service) CreateEndpoint(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -422,10 +422,10 @@ func (svc *Service) CreateEndpoint(c *gin.Context) {
 func (svc *Service) DeleteEndpoint(c *gin.Context) {
 	endpointID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).

@@ -62,7 +62,7 @@ type NeutronService interface {
 	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string, admin bool) (any, error)
 	// ReleaseInstancePorts is AllocatePortForInstance's rollback: it deletes the
 	// ports Neutron allocated for a boot that failed after allocating them
-	// (review 2026-10-13 N-6) — the port rows, their host plumbing and their
+	// — the port rows, their host plumbing and their
 	// DHCP reservations. Scoped to nova-owned ports; a tenant-created port the
 	// server was told to use is the tenant's, not the boot's.
 	ReleaseInstancePorts(ctx context.Context, instanceID string) error
@@ -1126,7 +1126,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			// Any failure from the first successful allocation onward (a later
 			// network, the boot volume, libvirt itself) leaves the earlier ports
 			// allocated for a server that will never run. Release them on the way
-			// out unless the boot completed (review 2026-10-13 N-6: they used to
+			// out unless the boot completed (: they used to
 			// leak — still listed by the API, leases still reserved).
 			defer func() {
 				if portsAllocated && !bootSucceeded && svc.neutronSvc != nil {
@@ -2150,7 +2150,7 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 		return
 	}
 
-	// The instance's ports, split by who owns them (review 2026-10-13 N-8):
+	// The instance's ports, split by who owns them:
 	//
 	// - Ports Neutron allocated for the boot (device_owner 'compute:nova') are
 	//   Nova's to delete. Without this they linger after the server is gone and
@@ -2963,7 +2963,7 @@ func (svc *Service) ListImagesDetail(c *gin.Context) {
 
 // ListHypervisors lists hypervisors (mock for Horizon)
 func (svc *Service) ListHypervisors(c *gin.Context) {
-	if !requireAdmin(c, "os-hypervisors:index") {
+	if !common.RequireAdmin(c, "os-hypervisors:index") {
 		return
 	}
 	c.JSON(200, gin.H{"hypervisors": []gin.H{
@@ -2989,7 +2989,7 @@ func (svc *Service) ListHypervisors(c *gin.Context) {
 
 // ListHypervisorsDetail lists hypervisors with details (mock for Horizon)
 func (svc *Service) ListHypervisorsDetail(c *gin.Context) {
-	if !requireAdmin(c, "os-hypervisors:detail") {
+	if !common.RequireAdmin(c, "os-hypervisors:detail") {
 		return
 	}
 	cpuInfoJSON := `{"arch":"x86_64","model":"Skylake-Server-IBRS","vendor":"Intel","features":[],"topology":{"cores":8,"threads":2,"sockets":1}}`
@@ -3018,7 +3018,7 @@ func (svc *Service) ListHypervisorsDetail(c *gin.Context) {
 
 // GetHypervisorStatistics returns aggregated hypervisor statistics (for Horizon)
 func (svc *Service) GetHypervisorStatistics(c *gin.Context) {
-	if !requireAdmin(c, "os-hypervisors:statistics") {
+	if !common.RequireAdmin(c, "os-hypervisors:statistics") {
 		return
 	}
 	// Count running instances. Scan failures degrade to zero (the stats
@@ -3266,7 +3266,7 @@ func (svc *Service) GetLimits(c *gin.Context) {
 
 // ListServices returns list of compute services
 func (svc *Service) ListServices(c *gin.Context) {
-	if !requireAdmin(c, "os-services:index") {
+	if !common.RequireAdmin(c, "os-services:index") {
 		return
 	}
 	// Format: "2006-01-02T15:04:05.000000" (without Z, microseconds)

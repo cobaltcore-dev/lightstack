@@ -11,11 +11,10 @@ import (
 
 // ListCachedImages lists images in the cache
 func (svc *Service) ListCachedImages(c *gin.Context) {
-	// Admin-only (review 2026-10-13 M-2): the cache is a per-node operator
+	// Admin-only: the cache is a per-node operator
 	// surface — upstream's cache_list policy. The rest of the cache handlers
 	// were gated in this review's first pass; the list was missed.
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+	if !common.RequireAdmin(c, "glance:ListCachedImages") {
 		return
 	}
 
@@ -69,14 +68,13 @@ func (svc *Service) ListCachedImages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"cached_images": cachedImages})
 }
 
-// PrefetchImage prefetches an image into the cache. Admin-only (review
-// 2026-10-13 M-2): cache management is an operator surface (upstream
+// PrefetchImage prefetches an image into the cache. Admin-only:
+// cache management is an operator surface (upstream
 // `admin_api`) — it moves shared disk state for every tenant.
 func (svc *Service) PrefetchImage(c *gin.Context) {
 	imageID := c.Param("id")
 
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("admin role required to manage the image cache"))
+	if !common.RequireAdmin(c, "glance:PrefetchImage") {
 		return
 	}
 
@@ -108,13 +106,11 @@ func (svc *Service) PrefetchImage(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// DeleteCachedImage removes an image from the cache. Admin-only (review
-// 2026-10-13 M-2).
+// DeleteCachedImage removes an image from the cache. Admin-only.
 func (svc *Service) DeleteCachedImage(c *gin.Context) {
 	imageID := c.Param("id")
 
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("admin role required to manage the image cache"))
+	if !common.RequireAdmin(c, "glance:DeleteCachedImage") {
 		return
 	}
 
@@ -138,12 +134,11 @@ func (svc *Service) DeleteCachedImage(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// ClearCache clears all cached images. Admin-only (review 2026-10-13 M-2):
+// ClearCache clears all cached images. Admin-only:
 // without the gate any member could flush the deployment-wide cache (DoS on
 // boot-time caching) with one request.
 func (svc *Service) ClearCache(c *gin.Context) {
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("admin role required to manage the image cache"))
+	if !common.RequireAdmin(c, "glance:ClearCache") {
 		return
 	}
 

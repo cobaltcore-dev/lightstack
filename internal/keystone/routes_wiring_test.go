@@ -54,7 +54,7 @@ func TestRegisterRoutesMiddlewareWiring(t *testing.T) {
 
 	// GET /domains/:id lives on `mgmt` so it can resolve the `default` alias
 	// (SPEC-022 FR-001a), and it is admin-only like the rest of the domain
-	// management surface (review 2026-10-13). A non-admin gets 403 before the
+	// management surface. A non-admin gets 403 before the
 	// resolver runs; an admin still gets the #515 verbatim 404 for any other
 	// non-identifier value, now produced in-handler.
 	w = httptest.NewRecorder()
@@ -82,7 +82,7 @@ func TestRegisterRoutesMiddlewareWiring(t *testing.T) {
 	}
 
 	// The domain write/config routes moved to `mgmt` with the admin gate
-	// (review 2026-10-13 C-2), so their malformed-id 404 is likewise produced
+	//, so their malformed-id 404 is likewise produced
 	// in-handler, after the authz decision — same shape, different producer.
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodPatch, "/v3/domains/not-a-uuid"},

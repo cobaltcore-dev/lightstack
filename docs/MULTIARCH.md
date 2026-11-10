@@ -76,7 +76,7 @@ The Dockerfile uses Docker's built-in multi-architecture support:
 
 ```dockerfile
 # Builder stage - runs on native architecture
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1-alpine3.24 AS builder
 
 # Build arguments automatically set by Docker
 ARG TARGETOS      # Target OS (linux)

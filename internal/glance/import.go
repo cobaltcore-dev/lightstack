@@ -43,7 +43,7 @@ func (svc *Service) StageImageData(c *gin.Context) {
 
 	// Consume staging data with bounded memory. The staging backend is currently
 	// a stub, so only its byte count is retained; the upload cap can be 10 GiB.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(maxImageUploadBytes))
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, svc.uploadCap)
 	stagedSize, err := io.Copy(io.Discard, c.Request.Body)
 	if err != nil {
 		// Over the cap is 413, upstream's answer to image_size_cap (round 2

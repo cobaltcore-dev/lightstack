@@ -136,22 +136,40 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		portID = uuid.New().String()
 		macAddress = generateMACAddress()
 
-		// Get subnet info for IP allocation
-		var subnetID, cidr string
-		err = svc.pool.QueryRow(c.Request.Context(),
-			"SELECT id, cidr FROM subnets WHERE network_id = $1 LIMIT 1",
-			networkID,
-		).Scan(&subnetID, &cidr)
-
-		if errors.Is(err, database.ErrNoRows) {
-			common.SendError(c, common.NewBadRequestError("network has no subnet"))
-			return
-		}
+		// Resolve the subnet containing an explicit address. Networks can have
+		// both IPv4 and IPv6 subnets, so an arbitrary first subnet can reject a
+		// valid address from the other family.
+		subnetRows, err := svc.pool.Query(c.Request.Context(),
+			"SELECT id, cidr FROM subnets WHERE network_id = $1 ORDER BY id", networkID)
 		if err != nil {
 			log.Error().Err(err).Str("operation", "allocate_ip").Msg("subnet lookup error")
 			common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
 			return
 		}
+		type subnetInfo struct{ id, cidr string }
+		var subnets []subnetInfo
+		for subnetRows.Next() {
+			var subnet subnetInfo
+			if err := subnetRows.Scan(&subnet.id, &subnet.cidr); err != nil {
+				subnetRows.Close()
+				log.Error().Err(err).Str("operation", "allocate_ip").Msg("subnet scan error")
+				common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
+				return
+			}
+			subnets = append(subnets, subnet)
+		}
+		rowsErr := subnetRows.Err()
+		subnetRows.Close()
+		if rowsErr != nil {
+			log.Error().Err(rowsErr).Str("operation", "allocate_ip").Msg("subnet iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
+			return
+		}
+		if len(subnets) == 0 {
+			common.SendError(c, common.NewBadRequestError("network has no subnet"))
+			return
+		}
+		subnetID, cidr := subnets[0].id, subnets[0].cidr
 
 		// Use provided fixed_ip or allocate one
 		if req.InterfaceAttachment.FixedIP != "" {
@@ -163,8 +181,20 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			// allocator covers for generated addresses. Parsing also keeps
 			// arbitrary strings out of the JSONB build below.
 			ip := net.ParseIP(fixedIP)
-			_, ipNet, cidrErr := net.ParseCIDR(cidr)
-			if ip == nil || cidrErr != nil || !ipNet.Contains(ip) {
+			if ip == nil {
+				common.SendError(c, common.NewBadRequestError("fixed_ip is not a valid address in the network's subnet"))
+				return
+			}
+			matchedSubnet := false
+			for _, subnet := range subnets {
+				_, ipNet, cidrErr := net.ParseCIDR(subnet.cidr)
+				if cidrErr == nil && ipNet.Contains(ip) {
+					subnetID, cidr = subnet.id, subnet.cidr
+					matchedSubnet = true
+					break
+				}
+			}
+			if !matchedSubnet {
 				common.SendError(c, common.NewBadRequestError("fixed_ip is not a valid address in the network's subnet"))
 				return
 			}
@@ -221,7 +251,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	// Attach the port to the instance. device_owner is stamped
 	// 'compute:nova' only on the port Nova itself just created — that stamp
 	// is the ownership discriminator server delete and the boot-failure
-	// rollback key on (review 2026-10-13 N-8): a tenant's port attached by id
+	// rollback key on: a tenant's port attached by id
 	// keeps its own device_owner, so deleting the server DETACHES it instead
 	// of destroying it — upstream's deallocate_for_instance skips ports it
 	// did not create for exactly this reason. The old blanket stamp is also

@@ -26,7 +26,7 @@ import (
 
 // ListAggregates lists all host aggregates
 func (svc *Service) ListAggregates(c *gin.Context) {
-	if !requireAdmin(c, "os-aggregates:index") {
+	if !common.RequireAdmin(c, "os-aggregates:index") {
 		return
 	}
 	rows, err := svc.pool.Query(c.Request.Context(), `
@@ -92,7 +92,7 @@ func (svc *Service) ListAggregates(c *gin.Context) {
 
 // CreateAggregate creates a new host aggregate
 func (svc *Service) CreateAggregate(c *gin.Context) {
-	if !requireAdmin(c, "os-aggregates:create") {
+	if !common.RequireAdmin(c, "os-aggregates:create") {
 		return
 	}
 	var req struct {
@@ -141,7 +141,7 @@ func (svc *Service) CreateAggregate(c *gin.Context) {
 
 // GetAggregate retrieves a specific host aggregate
 func (svc *Service) GetAggregate(c *gin.Context) {
-	if !requireAdmin(c, "os-aggregates:show") {
+	if !common.RequireAdmin(c, "os-aggregates:show") {
 		return
 	}
 	aggregateID := c.Param("id")
@@ -194,7 +194,7 @@ func (svc *Service) GetAggregate(c *gin.Context) {
 
 // UpdateAggregate updates a host aggregate
 func (svc *Service) UpdateAggregate(c *gin.Context) {
-	if !requireAdmin(c, "os-aggregates:update") {
+	if !common.RequireAdmin(c, "os-aggregates:update") {
 		return
 	}
 	aggregateID := c.Param("id")
@@ -256,7 +256,7 @@ func (svc *Service) UpdateAggregate(c *gin.Context) {
 
 // DeleteAggregate deletes a host aggregate
 func (svc *Service) DeleteAggregate(c *gin.Context) {
-	if !requireAdmin(c, "os-aggregates:delete") {
+	if !common.RequireAdmin(c, "os-aggregates:delete") {
 		return
 	}
 	aggregateID := c.Param("id")
@@ -285,7 +285,7 @@ func (svc *Service) AggregateAction(c *gin.Context) {
 	// Gated here rather than in the three sub-handlers below: a gate placed on
 	// the recognised actions only would leave the unknown-action branch — and any
 	// action added later — reachable by any tenant (SPEC-023 FR-008f).
-	if !requireAdmin(c, "os-aggregates:action") {
+	if !common.RequireAdmin(c, "os-aggregates:action") {
 		return
 	}
 

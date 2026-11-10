@@ -71,7 +71,6 @@ type VolumeAttachment struct {
 // answer with the right status instead of a generic 500. Mirrors cinder's
 // attachRefusal.
 type novaAttachRefusal struct {
-	status  int
 	message string
 }
 
@@ -152,7 +151,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 
 	// Verify volume exists and is available, create the attachment and flip
 	// the volume to in-use — all in one transaction with the volume row
-	// locked (review 2026-10-13 N-9): the old check-then-act let the loser of
+	// locked: the old check-then-act let the loser of
 	// a concurrent double-attach surface as a 500 from the UNIQUE constraint,
 	// and a failure between the INSERT and the UPDATE left the volume row
 	// inconsistent with its attachment. Mirrors cinder's attach CAS.
@@ -180,13 +179,12 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 			return err
 		}
 		if volumeStatus != "available" {
-			return &novaAttachRefusal{http.StatusBadRequest,
-				fmt.Sprintf("volume status is %s, must be available", volumeStatus)}
+			return &novaAttachRefusal{message: fmt.Sprintf("volume status is %s, must be available", volumeStatus)}
 		}
 		if attachedToInstance != nil {
 			// Upstream answers a re-attach with 400 (Invalid input /
 			// volume already attached), not 409 — round 2 of this review.
-			return &novaAttachRefusal{http.StatusBadRequest, "volume is already attached to an instance"}
+			return &novaAttachRefusal{message: "volume is already attached to an instance"}
 		}
 
 		// Auto-assign device if not provided. The instance lock above serializes
@@ -218,11 +216,7 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 	if err != nil {
 		var refusal *novaAttachRefusal
 		if errors.As(err, &refusal) {
-			if refusal.status == http.StatusConflict {
-				common.SendError(c, common.NewConflictError(refusal.message))
-			} else {
-				common.SendError(c, common.NewBadRequestError(refusal.message))
-			}
+			common.SendError(c, common.NewBadRequestError(refusal.message))
 			return
 		}
 		if errors.Is(err, errNovaVolumeNotFound) {
@@ -386,8 +380,8 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 		}
 	}
 
-	// Delete the attachment and release the volume in one transaction (review
-	// 2026-10-13 N-10): as two statements, a failure after the DELETE left the
+	// Delete the attachment and release the volume in one transaction. As two
+	// statements, a failure after the DELETE left the
 	// volume stranded in-use with no attachment row — unfixable through the
 	// API, since detach could no longer find the attachment to remove.
 	now := time.Now()

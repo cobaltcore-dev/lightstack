@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Review 2026-10-13 M-4: `shared` exposes a network to every tenant in the
+// A `shared` network is visible to every tenant in the
 // deployment, but CreateNetwork accepted it from anyone — a member could open
 // their network to every project (and every project's guests to it). It is an
 // operator decision, gated exactly like router:external on create: only

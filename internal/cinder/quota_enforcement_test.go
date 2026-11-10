@@ -529,8 +529,8 @@ func TestQuotaConcurrentCreates(t *testing.T) {
 // assertion is the one that matters, since it holds even if the HTTP codes race.
 
 // concurrentQuotaReqs fires n identical requests at once and reports how many were
-// accepted. admin marks the caller's role: os-volume-manage is admin-only (review
-// 2026-10-13 H-3) while still consuming the target project's quota, so its test
+// accepted. admin marks the caller's role: os-volume-manage requires an admin
+// while still consuming the target project's quota, so its test
 // drives the route as an administrator.
 func concurrentQuotaReqs(r *gin.Engine, n int, method, path, body string) []int {
 	return concurrentQuotaReqsAs(r, n, method, path, body, "member")
@@ -661,8 +661,8 @@ func TestQuotaConcurrentExtends(t *testing.T) {
 // and with it the old checkVolumeQuota: that helper ran the ceiling read, the count check
 // and the gigabytes check as three separate round trips under two separate lock
 // acquisitions, so its own three parts were not atomic with each other either.
-// The caller is an administrator because os-volume-manage is admin-only (review
-// 2026-10-13 H-3) — upstream's volume_admin_actions:manage — while the import still
+// The caller is an administrator because os-volume-manage requires the
+// upstream volume_admin_actions:manage policy while the import still
 // consumes the target project's quota.
 func TestQuotaConcurrentManagedVolumes(t *testing.T) {
 	requireDB(t)

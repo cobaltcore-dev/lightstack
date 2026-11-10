@@ -19,7 +19,7 @@ import (
 // by grouping instances and has no owner row of its own, which is how it came to
 // have no ownership check at all.
 func (svc *Service) ListTenantUsage(c *gin.Context) {
-	if !requireAdmin(c, "os-simple-tenant-usage:index") {
+	if !common.RequireAdmin(c, "os-simple-tenant-usage:index") {
 		return
 	}
 

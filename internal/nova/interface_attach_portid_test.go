@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Round 3 of the 2026-10-13 review, F1/F2/F3: the port_id path of
+// Regression coverage for F1/F2/F3: the port_id path of
 // os-interface.
 //
 // F1 — every free port has device_id NULL, and the lookup scanned it into a
@@ -200,6 +200,60 @@ func TestAttachInterfaceExplicitFixedIPIsValidated(t *testing.T) {
 	}
 	if !strings.Contains(body, `"ip_address": "10.250.0.99"`) && !strings.Contains(body, `"ip_address":"10.250.0.99"`) {
 		t.Errorf("response must report the requested address: %s", body)
+	}
+}
+
+func TestAttachInterfaceSelectsMatchingSubnetOnDualStackNetwork(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	r := newNovaTestRouter()
+	server, _ := seedAuthzFixtures(t)
+	member := map[string]string{"X-Test-Project": authzProjectA, "X-Test-User": seededUserID, "X-Test-Roles": "member"}
+	netID := uuid.NewString()
+	v4ID, v6ID := uuid.NewString(), uuid.NewString()
+	if v6ID < v4ID {
+		v4ID, v6ID = v6ID, v4ID
+	}
+	if _, err := testPool.Exec(ctx, "INSERT INTO networks (id, name, project_id, status, admin_state_up) VALUES ($1, 'review-dual-stack', $2, 'ACTIVE', true)", netID, authzProjectA); err != nil {
+		t.Fatalf("seed network: %v", err)
+	}
+	for _, subnet := range []struct{ id, name, cidr, gateway string }{
+		{v4ID, "review-dual-v4", "10.251.0.0/24", "10.251.0.1"},
+		{v6ID, "review-dual-v6", "2001:db8:251::/64", "2001:db8:251::1"},
+	} {
+		if _, err := testPool.Exec(ctx, "INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip) VALUES ($1, $2, $3, $4, $5, $6)", subnet.id, subnet.name, netID, authzProjectA, subnet.cidr, subnet.gateway); err != nil {
+			t.Fatalf("seed subnet %s: %v", subnet.id, err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM interface_attachments WHERE port_id IN (SELECT id FROM ports WHERE network_id = $1)", netID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM ports WHERE network_id = $1", netID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM subnets WHERE network_id = $1", netID)
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM networks WHERE id = $1", netID)
+	})
+
+	const requestedIP = "2001:db8:251::42"
+	bodyJSON, err := json.Marshal(map[string]any{"interfaceAttachment": map[string]string{"net_id": netID, "fixed_ip": requestedIP}})
+	if err != nil {
+		t.Fatalf("marshal interface attach request: %v", err)
+	}
+	body := string(bodyJSON)
+	if code, response := doReq(r, http.MethodPost, "/v2.1/servers/"+server+"/os-interface", body, member); code != http.StatusOK {
+		t.Fatalf("attach IPv6 address on dual-stack network: code=%d body=%s", code, response)
+	}
+	var fixedIPsJSON []byte
+	if err := testPool.QueryRow(ctx, "SELECT fixed_ips FROM ports WHERE network_id = $1 AND device_id = $2", netID, server).Scan(&fixedIPsJSON); err != nil {
+		t.Fatalf("read attached port addresses: %v", err)
+	}
+	var entries []struct {
+		SubnetID  string `json:"subnet_id"`
+		IPAddress string `json:"ip_address"`
+	}
+	if err := json.Unmarshal(fixedIPsJSON, &entries); err != nil {
+		t.Fatalf("decode fixed_ips %s: %v", fixedIPsJSON, err)
+	}
+	if len(entries) != 1 || entries[0].SubnetID != v6ID || entries[0].IPAddress != requestedIP {
+		t.Errorf("attached fixed_ips = %s; want subnet %s with address %s", fixedIPsJSON, v6ID, requestedIP)
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestOperatorSurfacesAdminOnly pins review 2026-10-13 H-3: volume types, QoS
+// TestOperatorSurfacesAdminOnly pins the admin gates on volume types, QoS
 // specs and the manage/unmanage surface shape storage for every tenant (and
 // manage addresses host-level backends). They were authentication-only — a
 // plain member could create volume types every tenant then booted from, add

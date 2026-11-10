@@ -8,8 +8,7 @@ import (
 	"testing"
 )
 
-// TestIdentityManagementAuthz_Gates pins the review-2026-10-13 fixes (C-1, C-2,
-// M-5): the identity management surface — user updates, role assignment,
+// TestIdentityManagementAuthz_Gates pins the identity management gates: user updates, role assignment,
 // project/role/group/domain/catalog management — must not honor a plain
 // member. Before the fix every one of these answered 2xx to any authenticated
 // caller, making PATCH /users/:id a passwordless account takeover and

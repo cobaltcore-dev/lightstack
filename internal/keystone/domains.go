@@ -17,10 +17,10 @@ import (
 // domain instead of the one they asked for (SPEC-022 FR-001a). Names are matched
 // exactly — upstream treats domain names as case-sensitive.
 func (svc *Service) ListDomains(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -76,10 +76,10 @@ func (svc *Service) ListDomains(c *gin.Context) {
 
 // CreateDomain handles POST /v3/domains
 func (svc *Service) CreateDomain(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -134,10 +134,10 @@ func (svc *Service) CreateDomain(c *gin.Context) {
 func (svc *Service) GetDomain(c *gin.Context) {
 	domainID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): domain records enumerate the
+	// Admin-only: domain records enumerate the
 	// deployment's trust structure. Checked before the alias resolution
 	// below, which doubles as this route's in-handler id validation (#515).
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -189,10 +189,10 @@ func (svc *Service) GetDomain(c *gin.Context) {
 func (svc *Service) UpdateDomain(c *gin.Context) {
 	domainID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -289,10 +289,10 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 func (svc *Service) DeleteDomain(c *gin.Context) {
 	domainID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -339,10 +339,10 @@ func (svc *Service) DeleteDomain(c *gin.Context) {
 func (svc *Service) GetDomainConfig(c *gin.Context) {
 	domainID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).

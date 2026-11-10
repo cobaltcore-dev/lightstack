@@ -51,7 +51,7 @@ func (svc *Service) CreateTask(c *gin.Context) {
 	})
 }
 
-// ListTasks handles GET /v2/tasks. Owner-scoped (review 2026-10-13 M-1): task
+// ListTasks handles GET /v2/tasks. Owner-scoped: task
 // input/result carry the caller's image references and endpoint URLs — a
 // member must see only their own tasks; an admin sees all.
 func (svc *Service) ListTasks(c *gin.Context) {
@@ -111,7 +111,7 @@ func (svc *Service) ListTasks(c *gin.Context) {
 	})
 }
 
-// GetTask handles GET /v2/tasks/:id. Owner-or-admin (review 2026-10-13 M-1):
+// GetTask handles GET /v2/tasks/:id. Owner-or-admin:
 // input/result/message are the caller's own task payload, not public data.
 func (svc *Service) GetTask(c *gin.Context) {
 	taskID := c.Param("id")
@@ -128,7 +128,7 @@ func (svc *Service) GetTask(c *gin.Context) {
 
 	if err != nil {
 		// Not found — and no internal error details in the response body
-		// (review 2026-10-13 M-1/L-2): err.Error() leaks driver internals.
+		// because err.Error() could leak driver internals.
 		c.JSON(http.StatusNotFound, gin.H{"message": "Task not found"})
 		return
 	}

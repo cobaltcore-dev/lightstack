@@ -13,10 +13,10 @@ import (
 
 // CreateFlavor handles POST /v2.1/flavors
 func (svc *Service) CreateFlavor(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// Admin-only: the flavor catalog is a shared,
 	// deployment-wide resource — members must not create, delete, or
 	// re-scope it (upstream: admin_api for all flavor management).
-	if !requireAdmin(c, "flavor-create") {
+	if !common.RequireAdmin(c, "flavor-create") {
 		return
 	}
 
@@ -103,10 +103,10 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 
 // DeleteFlavor handles DELETE /v2.1/flavors/:id
 func (svc *Service) DeleteFlavor(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// Admin-only: the flavor catalog is a shared,
 	// deployment-wide resource — members must not create, delete, or
 	// re-scope it (upstream: admin_api for all flavor management).
-	if !requireAdmin(c, "flavor-delete") {
+	if !common.RequireAdmin(c, "flavor-delete") {
 		return
 	}
 
@@ -173,10 +173,10 @@ func (svc *Service) GetFlavorExtraSpecs(c *gin.Context) {
 
 // CreateFlavorExtraSpecs handles POST /v2.1/flavors/:id/os-extra_specs
 func (svc *Service) CreateFlavorExtraSpecs(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// Admin-only: the flavor catalog is a shared,
 	// deployment-wide resource — members must not create, delete, or
 	// re-scope it (upstream: admin_api for all flavor management).
-	if !requireAdmin(c, "flavor-extra-specs-create") {
+	if !common.RequireAdmin(c, "flavor-extra-specs-create") {
 		return
 	}
 
@@ -230,10 +230,10 @@ func (svc *Service) GetFlavorExtraSpecKey(c *gin.Context) {
 
 // UpdateFlavorExtraSpecKey handles PUT /v2.1/flavors/:id/os-extra_specs/:key
 func (svc *Service) UpdateFlavorExtraSpecKey(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// Admin-only: the flavor catalog is a shared,
 	// deployment-wide resource — members must not create, delete, or
 	// re-scope it (upstream: admin_api for all flavor management).
-	if !requireAdmin(c, "flavor-extra-specs-update") {
+	if !common.RequireAdmin(c, "flavor-extra-specs-update") {
 		return
 	}
 
@@ -271,10 +271,10 @@ func (svc *Service) UpdateFlavorExtraSpecKey(c *gin.Context) {
 
 // DeleteFlavorExtraSpecKey handles DELETE /v2.1/flavors/:id/os-extra_specs/:key
 func (svc *Service) DeleteFlavorExtraSpecKey(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// Admin-only: the flavor catalog is a shared,
 	// deployment-wide resource — members must not create, delete, or
 	// re-scope it (upstream: admin_api for all flavor management).
-	if !requireAdmin(c, "flavor-extra-specs-delete") {
+	if !common.RequireAdmin(c, "flavor-extra-specs-delete") {
 		return
 	}
 
@@ -302,10 +302,10 @@ func (svc *Service) DeleteFlavorExtraSpecKey(c *gin.Context) {
 
 // FlavorAction handles POST /v2.1/flavors/:id/action
 func (svc *Service) FlavorAction(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// Admin-only: the flavor catalog is a shared,
 	// deployment-wide resource — members must not create, delete, or
 	// re-scope it (upstream: admin_api for all flavor management).
-	if !requireAdmin(c, "flavor-access-modify") {
+	if !common.RequireAdmin(c, "flavor-access-modify") {
 		return
 	}
 
@@ -375,10 +375,10 @@ func (svc *Service) FlavorAction(c *gin.Context) {
 
 // GetFlavorAccess handles GET /v2.1/flavors/:id/os-flavor-access
 func (svc *Service) GetFlavorAccess(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-2): the flavor catalog is a shared,
+	// Admin-only: the flavor catalog is a shared,
 	// deployment-wide resource — members must not create, delete, or
 	// re-scope it (upstream: admin_api for all flavor management).
-	if !requireAdmin(c, "flavor-access-list") {
+	if !common.RequireAdmin(c, "flavor-access-list") {
 		return
 	}
 

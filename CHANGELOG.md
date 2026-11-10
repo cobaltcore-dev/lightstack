@@ -10,24 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### 🔒 Security — identity & service authorization
-- **Keystone management surface authorized** (review 2026-10-13): the identity API was authentication-only, so any member could reset any user's password (including the admin's) via `PATCH /users/:id`, self-grant the admin role via role assignment, dump every tenant's recoverable EC2/S3 secret via the credentials API, mint application credentials for other users, and enumerate users/projects/roles/groups/domains/catalog. User/project/role/group/domain/service/endpoint management is now admin-only; user-scoped subresources are self-or-admin; PATCH of one's own password/enabled stays admin-only so ChangePassword keeps its original-password contract. Role assignment also 404s on nonexistent project/user/role ids instead of silently recording garbage.
-- **Glance image upload ownership** (H-1): uploading bytes to a public image was allowed for any project that could *see* it — image poisoning of an operator-staged base every tenant boots. Upload now follows the same owner-or-admin rule as delete (403 visible-but-foreign, 404 invisible).
-- **Glance tasks & cache** (M-1/M-2): tasks are owner-scoped and no longer echo internal errors; cache management (prefetch/evict/clear) is admin-only.
-- **Nova flavor catalog** (H-2): flavor create/delete, extra-specs and tenant-access grants are admin-only; flavor limits match Flamingo's signed 32-bit range, including zero root disk for boot-from-volume.
-- **Cinder operator surfaces** (H-3): volume types (incl. project-access grants), QoS specs and manage/unmanage are admin-only; volume-type reads stay open for tenants.
-- **Neutron shared networks** (M-4): `shared=true` on create is admin-only, like `router:external`.
+- **Keystone management surface authorized**: the identity API was authentication-only, so any member could reset any user's password (including the admin's) via `PATCH /users/:id`, self-grant the admin role via role assignment, dump every tenant's recoverable EC2/S3 secret via the credentials API, mint application credentials for other users, and enumerate users/projects/roles/groups/domains/catalog. User/project/role/group/domain/service/endpoint management is now admin-only; user-scoped subresources are self-or-admin; PATCH of one's own password/enabled stays admin-only so ChangePassword keeps its original-password contract. Role assignment also 404s on nonexistent project/user/role ids instead of silently recording garbage.
+- **Glance image upload ownership**: uploading bytes to a public image was allowed for any project that could *see* it — image poisoning of an operator-staged base every tenant boots. Upload now follows the same owner-or-admin rule as delete (403 visible-but-foreign, 404 invisible).
+- **Glance tasks & cache**: tasks are owner-scoped and no longer echo internal errors; cache management (prefetch/evict/clear) is admin-only.
+- **Nova flavor catalog**: flavor create/delete, extra-specs and tenant-access grants are admin-only; flavor limits match Flamingo's signed 32-bit range, including zero root disk for boot-from-volume.
+- **Nova deployment views**: `os-hypervisors` (index/detail/statistics), `os-services` and `os-console-auth-tokens` require the admin role because they expose deployment-wide state.
+- **Cinder operator surfaces**: volume types (incl. project-access grants), QoS specs and manage/unmanage are admin-only; volume-type reads stay open for tenants.
+- **Neutron shared networks**: `shared=true` on create is admin-only, like `router:external`.
 - **S3 credential scope and revocation**: editable credential blobs cannot override the recorded project, and S3/EC2 authentication refuses missing or revoked project roles and failed role lookups.
 - **Identity self-service UUIDs**: uppercase and compact UUIDs identify the same user for authorization, including credentials and profile updates.
-- **Volume-transfer auth keys** (L-1) are compared in constant time.
+- **Volume-transfer auth keys** are compared in constant time.
 
 ### 🐛 Correctness
-- **Glance checksums describe the stored bytes** (N-3): normalizing backends rewrite a qcow2 upload to a raw base, but the recorded checksum hashed the upload stream, so `EnsureLocalBase` failed on every node without the local base and boot-from-image errored. The checksum is now taken from the stored object; unreadable stored data or failed state writes fail the upload instead of returning success. Concurrent uploads atomically claim the queued image, and failed uploads reset it for retry.
-- **Neutron IP allocation is collision-free** (N-4): allocation drew purely at random, so ports in one subnet could land on the same address; allocation and insertion share a subnet lock across port creation, server boot and interface attach. Canonical IPv6 comparisons prevent duplicate spellings, a complete fallback finds the last free address, and tiny subnets (≤ /29) no longer panic `crypto/rand.Int`.
-- **Metadata `network_data.json` works** (N-7): the query selected a nonexistent `fixed_ip` column and answered 500 to every guest; it now resolves each port's JSONB addresses with their own subnets: one link per port, unique network IDs, correct IPv4/IPv6 masks, routes and DNS services, and empty arrays instead of null.
-- **Nova volume attach/detach are atomic** (N-9/N-10): single transactions keep attachments and volume state consistent. Attach serializes device assignment per server and uses the existing transaction connection, avoiding pool deadlock and device collisions.
-- **Nova boot port lifecycle** (N-6/N-8): a failed multi-network boot releases the ports it already allocated; server delete deletes only the ports Nova created and *detaches* tenant-created ports instead of destroying them.
-- **Keypair name races** (L-3) map the unique-constraint violation to the same 409 as the pre-check.
-- **Request bodies bounded** (M-3): glance upload/stage enforce the 10 GiB cap with bounded memory; staging accepts OpenStack's PUT method; imported SSH public keys are capped at 64 KiB.
+- **Glance checksums describe the stored bytes**: normalizing backends rewrite a qcow2 upload to a raw base, but the recorded checksum hashed the upload stream, so `EnsureLocalBase` failed on every node without the local base and boot-from-image errored. The checksum is now taken from the stored object; unreadable stored data or failed state writes fail the upload instead of returning success. Concurrent uploads atomically claim the queued image, and failed uploads reset it for retry.
+- **Neutron IP allocation is collision-free**: allocation drew purely at random, so ports in one subnet could land on the same address; allocation and insertion share a subnet lock across port creation, server boot and interface attach. Canonical IPv6 comparisons prevent duplicate spellings, a complete fallback finds the last free address, and tiny subnets (≤ /29) no longer panic `crypto/rand.Int`.
+- **Metadata `network_data.json` works**: the query selected a nonexistent `fixed_ip` column and answered 500 to every guest; it now resolves each port's JSONB addresses with their own subnets: one link per port, unique network IDs, correct IPv4/IPv6 masks, routes and DNS services, and empty arrays instead of null.
+- **Nova volume attach/detach are atomic**: single transactions keep attachments and volume state consistent. Attach serializes device assignment per server and uses the existing transaction connection, avoiding pool deadlock and device collisions.
+- **Nova boot port lifecycle**: a failed multi-network boot releases the ports it already allocated; server delete deletes only the ports Nova created and *detaches* tenant-created ports instead of destroying them.
+- **Keypair name races** map the unique-constraint violation to the same 409 as the pre-check.
+- **Request bodies bounded**: glance upload/stage enforce the 10 GiB cap with bounded memory; staging accepts OpenStack's PUT method; imported SSH public keys are capped at 64 KiB.
 
 ---
 
@@ -83,11 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 📊 Observability
 - **Zerolog migration**: Replace remaining `log.Printf` calls with structured `zerolog` logging (M-1)
-- **Scan error logging**: Add warnings for previously silent `rows.Scan` failures across all list handlers (M-4)
+- **Scan error logging**: Add warnings for previously silent `rows.Scan` failures across all list handlers
 - **Swallowed error propagation**: Log or propagate 15 instances of silently discarded errors (M-6)
 
 ### 🛠️ Utilities & Fixes
-- **Shared pagination helper**: `common.ParsePagination()` extracts duplicated limit/offset/marker parsing (M-3)
+- **Shared pagination helper**: `common.ParsePagination()` extracts duplicated limit/offset/marker parsing
 - **Version consistency**: Fix Placement (1.39→1.40) and Nova (2.79→2.90) version mismatches with constants (H-10, L-4)
 - **Quota queries**: `GetLimits` reads project quotas from database instead of hardcoded values (H-12)
 - **Flavor pagination**: Replace UUID-based cursor with `created_at` for deterministic ordering (M-10)
@@ -109,7 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Updated INDEX.md**: Add Testing & Quality section with links to all moved files
 
 ### Deferred to v0.7.0
-- Database dependency injection (H-3) — 665 call sites, needs dedicated design
+- Database dependency injection — 665 call sites, needs dedicated design
 - Rate limiting (H-6) — needs design spec for per-project limits
 - Re-enable CI linting (H-4) — needs lint error cleanup first
 

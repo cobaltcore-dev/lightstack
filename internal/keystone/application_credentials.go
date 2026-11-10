@@ -19,13 +19,12 @@ import (
 func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Self-or-admin (review 2026-10-13 H-4): credential metadata and role
+	// Self-or-admin: credential metadata and role
 	// lists are footprint information.
 	userID, denied := denyIfNotSelfOrAdmin(c, userID)
 	if denied {
 		return
 	}
-
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, user_id, project_id, name, description, expires_at, unrestricted, created_at
 		FROM application_credentials
@@ -109,14 +108,13 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Self-or-admin (review 2026-10-13 H-4): the 201 response hands back the
+	// Self-or-admin: the 201 response hands back the
 	// plaintext secret, and requested roles are stored verbatim — minting one
 	// for another user would be both secret disclosure and impersonation.
 	userID, denied := denyIfNotSelfOrAdmin(c, userID)
 	if denied {
 		return
 	}
-
 	var req struct {
 		ApplicationCredential struct {
 			Name         string           `json:"name" binding:"required"`
@@ -216,9 +214,12 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 	userID := c.Param("id")
 	credID := c.Param("cred_id")
 
-	// Self-or-admin (review 2026-10-13 H-4).
+	// Self-or-admin.
 	userID, denied := denyIfNotSelfOrAdmin(c, userID)
 	if denied {
+		return
+	}
+	if denyIfMalformedID(c, "Application Credential", credID) {
 		return
 	}
 
@@ -293,10 +294,13 @@ func (svc *Service) DeleteApplicationCredential(c *gin.Context) {
 	userID := c.Param("id")
 	credID := c.Param("cred_id")
 
-	// Self-or-admin (review 2026-10-13 H-4): deleting another user's
+	// Self-or-admin: deleting another user's
 	// credential is an availability attack on their automation.
 	userID, denied := denyIfNotSelfOrAdmin(c, userID)
 	if denied {
+		return
+	}
+	if denyIfMalformedID(c, "Application Credential", credID) {
 		return
 	}
 
@@ -343,7 +347,7 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 		return
 	}
 
-	// Owner-or-admin (review 2026-10-13 H-4): a foreign credential answers
+	// Owner-or-admin: a foreign credential answers
 	// 404 rather than 403 so the id-only lookup does not leak existence.
 	if userID != c.GetString("user_id") && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewIdentityNotFoundError("Application Credential", credID))

@@ -24,6 +24,47 @@ func TestAllocateFreeIPFindsLastAddress(t *testing.T) {
 	}
 }
 
+func TestReleaseInstancePortsPreservesTenantOwnedPorts(t *testing.T) {
+	requireDB(t)
+	networkID, _ := seedN4Subnet(t, "192.168.252.0/24", "192.168.252.1")
+	instanceID := uuid.NewString()
+	novaPortID, tenantPortID := uuid.NewString(), uuid.NewString()
+	for _, port := range []struct{ id, owner string }{
+		{novaPortID, "compute:nova"},
+		{tenantPortID, ""},
+	} {
+		if _, err := testPool.Exec(t.Context(), `
+			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, fixed_ips)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, '[]')
+		`, port.id, "release-"+port.id[:8], networkID, seededProjectID, instanceID, port.owner, "52:54:00:aa:bb:cc"); err != nil {
+			t.Fatalf("seed port %s: %v", port.id, err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), "DELETE FROM ports WHERE id IN ($1, $2)", novaPortID, tenantPortID)
+	})
+
+	svc := NewService(testPool, "stub", nil)
+	if err := svc.ReleaseInstancePorts(t.Context(), instanceID); err != nil {
+		t.Fatalf("ReleaseInstancePorts: %v", err)
+	}
+	for _, tc := range []struct {
+		id   string
+		want int
+	}{{novaPortID, 0}, {tenantPortID, 1}} {
+		var count int
+		if err := testPool.QueryRow(t.Context(), "SELECT count(*) FROM ports WHERE id = $1", tc.id).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != tc.want {
+			t.Errorf("port %s remains %d times; want %d", tc.id, count, tc.want)
+		}
+	}
+	if err := svc.ReleaseInstancePorts(t.Context(), instanceID); err != nil {
+		t.Errorf("second ReleaseInstancePorts call: %v", err)
+	}
+}
+
 func TestIPAvailableCanonicalIPv6(t *testing.T) {
 	requireDB(t)
 	networkID, subnetID := seedN4Subnet(t, "2001:db8::/64", "2001:0db8:0:0:0:0:0:1")
@@ -72,7 +113,7 @@ func seedN4Port(t *testing.T, networkID, subnetID, ip string) {
 	}
 }
 
-// TestAllocateFreeIPAvoidsUsedAddresses pins review 2026-10-13 N-4: allocation
+// TestAllocateFreeIPAvoidsUsedAddresses pins that allocation
 // used to be a purely random draw, so two ports in one subnet landed on the
 // same address at birthday-problem rates — two MACs claiming one IP. On a /28
 // with 12 of 14 candidates already held, the old code duplicated an address

@@ -275,8 +275,8 @@ func makeQcow2(t *testing.T, dir string) string {
 	return qcow
 }
 
-// TestStoredChecksumMatchesStoredBytesNotUploadBytes pins review 2026-10-13
-// N3: normalizing backends rewrite the upload (qcow2 → raw base), so the
+// TestStoredChecksumMatchesStoredBytesNotUploadBytes pins the stored-object
+// checksum behavior: normalizing backends rewrite the upload (qcow2 → raw base), so the
 // checksum recorded for an image must describe the STORED bytes — downloads
 // serve them and EnsureLocalBase verifies a lazily fetched base against the
 // recorded value on every boot. Hashing the upload stream instead made

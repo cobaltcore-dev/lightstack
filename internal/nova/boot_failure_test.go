@@ -81,7 +81,7 @@ func (f *fakeNeutron) NetworkUsableBy(_ context.Context, networkID, _ string, ad
 	return nil
 }
 
-// ReleaseInstancePorts records the rollback calls (review 2026-10-13 N-6) so a
+// ReleaseInstancePorts records the rollback calls so a
 // test can assert that a failed boot released the ports it had already
 // allocated.
 func (f *fakeNeutron) ReleaseInstancePorts(_ context.Context, instanceID string) error {
@@ -529,7 +529,7 @@ func TestFailedBootLeavesADeletableServer(t *testing.T) {
 	}
 }
 
-// Review 2026-10-13 N-6: a multi-network boot that fails on a later network used
+// A multi-network boot that fails on a later network used
 // to leak the ports already allocated for the earlier ones — rows the API kept
 // listing for a server that would never run, with leases still reserved. The
 // failure path must release what it allocated (the rollback is scoped to the

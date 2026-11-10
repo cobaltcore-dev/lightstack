@@ -14,7 +14,7 @@ import (
 
 // ListCredentials returns all credentials
 func (svc *Service) ListCredentials(c *gin.Context) {
-	// Review 2026-10-13 C-3: the generic credentials API returns the
+	// The generic credentials API returns the
 	// recoverable EC2/S3 secret blob, so it is scoped like the EC2 API —
 	// a non-admin sees only their own credentials; an admin sees all.
 	callerID := c.GetString("user_id")
@@ -80,7 +80,7 @@ func (svc *Service) CreateCredential(c *gin.Context) {
 		return
 	}
 
-	// Self-or-admin (review 2026-10-13 C-3): a credential's blob is the
+	// Self-or-admin: a credential's blob is the
 	// recoverable secret consumed by S3/EC2 signature auth — minting one for
 	// another user (with a known secret) would defeat that auth.
 	if !sameUser(c.GetString("user_id"), req.Credential.UserID) && !common.HasRole(c, common.RoleAdmin) {
@@ -122,7 +122,7 @@ func (svc *Service) CreateCredential(c *gin.Context) {
 }
 
 // credentialOwnerOrViewer enforces the owner-or-admin rule on a single
-// credential (review 2026-10-13 C-3): 404 when it does not exist, 403 when it
+// credential: 404 when it does not exist, 403 when it
 // belongs to another user and the caller is not admin.
 func (svc *Service) credentialOwnerOrViewer(c *gin.Context, credID string) bool {
 	var owner string

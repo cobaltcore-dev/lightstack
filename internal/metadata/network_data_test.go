@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Review 2026-10-13 N-7: GetNetworkDataJSON selected `p.fixed_ip`, a column
+// GetNetworkDataJSON selected `p.fixed_ip`, a column
 // that does not exist — ports store `fixed_ips` as a JSONB array — so the
 // query failed and every guest fetching network_data.json got a 500, leaving
 // cloud-init to fall back to DHCP or configure nothing. This pins the fixed

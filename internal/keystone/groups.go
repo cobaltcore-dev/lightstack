@@ -14,10 +14,10 @@ import (
 
 // ListGroups handles GET /v3/groups
 func (svc *Service) ListGroups(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -68,10 +68,10 @@ func (svc *Service) ListGroups(c *gin.Context) {
 
 // CreateGroup handles POST /v3/groups
 func (svc *Service) CreateGroup(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -139,10 +139,10 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 func (svc *Service) GetGroup(c *gin.Context) {
 	groupID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -183,10 +183,10 @@ func (svc *Service) GetGroup(c *gin.Context) {
 func (svc *Service) UpdateGroup(c *gin.Context) {
 	groupID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -257,10 +257,10 @@ func (svc *Service) UpdateGroup(c *gin.Context) {
 func (svc *Service) DeleteGroup(c *gin.Context) {
 	groupID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -291,10 +291,10 @@ func (svc *Service) DeleteGroup(c *gin.Context) {
 func (svc *Service) ListGroupUsers(c *gin.Context) {
 	groupID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -351,10 +351,10 @@ func (svc *Service) AddUserToGroup(c *gin.Context) {
 	groupID := c.Param("id")
 	userID := c.Param("user_id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -382,10 +382,10 @@ func (svc *Service) RemoveUserFromGroup(c *gin.Context) {
 	groupID := c.Param("id")
 	userID := c.Param("user_id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).

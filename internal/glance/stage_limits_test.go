@@ -30,10 +30,9 @@ func (r *stageReader) Read(p []byte) (int, error) {
 func TestStageImageStreamsWithinLimit(t *testing.T) {
 	requireDB(t)
 	const size = 8 << 20
-	origCap := maxImageUploadBytes
-	maxImageUploadBytes = size
-	t.Cleanup(func() { maxImageUploadBytes = origCap })
-	router := newGlanceTestRouter(t)
+	svc := newGlanceTestService(t)
+	svc.uploadCap = size
+	router := newGlanceTestRouterForService(t, svc)
 	for _, extra := range []int64{0, 1} {
 		id := uuid.NewString()
 		if _, err := testPool.Exec(t.Context(), `INSERT INTO images (id, name, project_id, status, visibility)

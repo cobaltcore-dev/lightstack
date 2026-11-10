@@ -45,7 +45,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	projectID := c.GetString("project_id")
 	portID := uuid.New().String()
-	tapName := "tap-" + portID[:8]
+	tapName := tapNameFor(portID)
 	macAddress := generateMAC()
 
 	adminStateUp := true
@@ -77,11 +77,11 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	}
 
 	// Get subnet to allocate IP
-	var subnetID, cidr string
+	var subnetID string
 	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, cidr FROM subnets WHERE network_id = $1 LIMIT 1",
+		"SELECT id FROM subnets WHERE network_id = $1 LIMIT 1",
 		req.Port.NetworkID,
-	).Scan(&subnetID, &cidr)
+	).Scan(&subnetID)
 
 	if err != nil && !errors.Is(err, database.ErrNoRows) {
 		log.Error().Err(err).Msg("port create: subnet lookup failed")
@@ -130,7 +130,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	now := time.Now()
 	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		if subnetID != "" {
-			cidr, err = LockSubnet(c.Request.Context(), tx, subnetID)
+			cidr, err := LockSubnet(c.Request.Context(), tx, subnetID)
 			if err != nil {
 				return err
 			}
@@ -141,7 +141,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 			fixedIPs = append(fixedIPs, map[string]any{"subnet_id": subnetID, "ip_address": ip})
 		}
 		fixedIPsJSON, _ := json.Marshal(fixedIPs)
-		_, err = tx.Exec(c.Request.Context(), `
+		_, err := tx.Exec(c.Request.Context(), `
 		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, portID, req.Port.Name, req.Port.NetworkID, projectID, sql.NullString{String: req.Port.DeviceID, Valid: req.Port.DeviceID != ""},
@@ -544,48 +544,7 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	}
 	portID = resolvedID
 
-	tapName := "tap-" + portID[:8]
-
-	// Detach XDP program if eBPF mode
-	if svc.sgManager != nil && svc.mode == "ebpf" {
-		if err := svc.sgManager.DetachFromInterface(tapName); err != nil {
-			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to detach XDP program from interface")
-		}
-
-		// Remove port from eBPF maps (need MAC address). A scan failure
-		// leaves macAddress empty, which skips the eBPF cleanup below —
-		// safe degradation; a leftover map entry will be reconciled on
-		// the next sync.
-		var macAddress string
-		if err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT mac_address FROM ports WHERE id = $1",
-			portID,
-		).Scan(&macAddress); err != nil {
-			log.Warn().Err(err).Str("port_id", portID).Msg("failed to resolve port MAC during teardown")
-		}
-
-		if macAddress != "" {
-			if mac, err := net.ParseMAC(macAddress); err == nil {
-				if err := svc.sgManager.RemoveSecurityGroupFromPort(portID, mac); err != nil {
-					log.Warn().Err(err).Str("port_id", portID).Str("mac", mac.String()).Msg("failed to remove security group from port")
-				}
-			}
-		}
-	}
-
-	// Delete TAP device from the DEFAULT namespace, where CreatePort put it (F10). Best-effort: a
-	// leftover TAP is hygiene, not correctness — the port row is about to be deleted.
-	if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
-		log.Warn().Err(err).Str("tap", tapName).Msg("failed to delete TAP device")
-	}
-
-	// Remove FDB entry if VXLAN is enabled
-	if svc.vxlanCoordinator != nil {
-		if err := svc.vxlanCoordinator.RemoveFDBEntry(c.Request.Context(), portID); err != nil {
-			// Log but don't fail
-			log.Warn().Err(err).Str("port_id", portID).Msg("failed to remove FDB entry")
-		}
-	}
+	svc.teardownPortHost(c.Request.Context(), portID)
 
 	// Delete from database. The row was resolved above, so this deletes by an id already known to
 	// exist and to belong to the caller.
@@ -795,7 +754,7 @@ func IPAvailable(ctx context.Context, pool subnetQuerier, subnetID, ip string) (
 }
 
 // AllocateFreeIP picks a random usable address in the subnet that no port in
-// it already holds (review 2026-10-13 N-4): allocateIP drew purely at random,
+// it already holds: allocateIP drew purely at random,
 // so two ports in one subnet landed on the same address at birthday-problem
 // rates — two MACs claiming one IP, dnsmasq handing it to one of them, and a
 // guest that could not reliably reach anything. The subnet's gateway (when
@@ -1707,7 +1666,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// error return after the TAP exists must release it, or a retried boot leaves an
 	// orphan tap-<id> on the host per attempt (mirrors CreatePort's rollbackPort).
 	// Deleting the TAP detaches it from the bridge; nothing else needs undoing.
-	tapName := "tap-" + portID[:8]
+	tapName := tapNameFor(portID)
 	releaseTAP := func(reason string) {
 		if svc.mode == "stub" {
 			return
@@ -1903,7 +1862,7 @@ func derefOr[T any](v *T, fallback T) T {
 // ReleaseInstancePorts deletes the ports Neutron allocated for an instance
 // (device_owner 'compute:nova'), with the same best-effort host cleanup
 // DeletePort does. It is the rollback for a boot that allocated ports and then
-// failed on a later network (review 2026-10-13 N-6): the loop used to
+// failed on a later network: the loop used to
 // markInstanceError and return with the earlier networks' ports still in the
 // database — rows the API still listed for a server that would never exist,
 // with leases still reserved, that only an operator could clean up.
@@ -1938,19 +1897,7 @@ func (svc *Service) ReleaseInstancePorts(ctx context.Context, instanceID string)
 	}
 
 	for _, r := range toRelease {
-		// TAP device, same placement and derivation as DeletePort.
-		if svc.mode != "stub" {
-			tapName := "tap-" + r.portID[:8]
-			if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
-				log.Warn().Err(err).Str("port_id", r.portID).Str("tap", tapName).
-					Msg("release: failed to delete TAP device")
-			}
-		}
-		if svc.vxlanCoordinator != nil {
-			if err := svc.vxlanCoordinator.RemoveFDBEntry(ctx, r.portID); err != nil {
-				log.Warn().Err(err).Str("port_id", r.portID).Msg("release: failed to remove FDB entry")
-			}
-		}
+		svc.teardownPortHost(ctx, r.portID)
 	}
 
 	if _, err := svc.pool.Exec(ctx, `
@@ -1968,4 +1915,41 @@ func (svc *Service) ReleaseInstancePorts(ctx context.Context, instanceID string)
 		}
 	}
 	return nil
+}
+
+func tapNameFor(portID string) string {
+	if len(portID) < 8 {
+		return "tap-" + portID
+	}
+	return "tap-" + portID[:8]
+}
+
+// teardownPortHost removes host-side state for a port. Rollback and DeletePort
+// use the same path so eBPF, TAP, and VXLAN cleanup cannot drift.
+func (svc *Service) teardownPortHost(ctx context.Context, portID string) {
+	tapName := tapNameFor(portID)
+	if svc.sgManager != nil && svc.mode == "ebpf" {
+		if err := svc.sgManager.DetachFromInterface(tapName); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to detach XDP program from interface")
+		}
+		var macAddress string
+		if err := svc.pool.QueryRow(ctx, "SELECT mac_address FROM ports WHERE id = $1", portID).Scan(&macAddress); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Msg("failed to resolve port MAC during teardown")
+		}
+		if macAddress != "" {
+			if mac, err := net.ParseMAC(macAddress); err == nil {
+				if err := svc.sgManager.RemoveSecurityGroupFromPort(portID, mac); err != nil {
+					log.Warn().Err(err).Str("port_id", portID).Str("mac", mac.String()).Msg("failed to remove security group from port")
+				}
+			}
+		}
+	}
+	if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
+		log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to delete TAP device")
+	}
+	if svc.vxlanCoordinator != nil {
+		if err := svc.vxlanCoordinator.RemoveFDBEntry(ctx, portID); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Msg("failed to remove FDB entry")
+		}
+	}
 }

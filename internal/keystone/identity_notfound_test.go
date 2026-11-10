@@ -14,7 +14,7 @@ import (
 // malformed OR a valid-but-unknown id returns the identical Keystone-verbatim
 // 404 ("Could not find <resource>: <id>."), while an existing id still 200s.
 // DB-backed (requireDB); routes are wired via the real RegisterRoutes. These
-// reads are admin/self-gated (review 2026-10-13), so the caller is admin —
+// reads are admin/self-gated, so the caller is admin —
 // the 404 shape is what this test pins, not who may see it.
 func TestIdentityNotFound_ReadPaths(t *testing.T) {
 	requireDB(t)

@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestUploadImageDataOwnership_DB pins review 2026-10-13 H-1: visibility is a
+// TestUploadImageDataOwnership_DB pins the rule that visibility is a
 // read grant, not a write grant. A public image staged by one project must not
 // accept bytes from another project's member — that was image poisoning: every
 // tenant booting the public base image would run the attacker's data. The
@@ -64,7 +64,7 @@ func TestUploadImageDataOwnership_DB(t *testing.T) {
 	}
 }
 
-// TestImageCacheManagementAdminOnly_DB pins review 2026-10-13 M-2: cache
+// TestImageCacheManagementAdminOnly_DB pins the rule that cache
 // mutation is an operator surface — a member flushing the deployment-wide
 // cache (ClearCache) or evicting entries is a denial of service on
 // boot-time caching.
@@ -106,10 +106,10 @@ func TestImageCacheManagementAdminOnly_DB(t *testing.T) {
 	}
 }
 
-// TestOverCapUploadAnswers413 pins the round-3 fix for the M-3 cap: a body
-// over maxImageUploadBytes must answer 413 (upstream's image_size_cap
-// semantics). The cap is a var so the test can lower it instead of streaming
-// 10 GiB; in stub mode the store's read surfaces http.MaxBytesError raw, and
+// TestOverCapUploadAnswers413 pins the upload cap: a body over the configured
+// limit must answer 413 (upstream's image_size_cap semantics). The per-service
+// cap lets the test avoid streaming 10 GiB; in stub mode the store's read
+// surfaces http.MaxBytesError raw, and
 // in local mode it is wrapped with %w — errors.As covers both.
 func TestOverCapUploadAnswers413(t *testing.T) {
 	requireDB(t)
@@ -123,11 +123,9 @@ func TestOverCapUploadAnswers413(t *testing.T) {
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM images WHERE id=$1", id) })
 
-	origCap := maxImageUploadBytes
-	maxImageUploadBytes = 8
-	t.Cleanup(func() { maxImageUploadBytes = origCap })
-
-	r := newGlanceTestRouter(t)
+	svc := newGlanceTestService(t)
+	svc.uploadCap = 8
+	r := newGlanceTestRouterForService(t, svc)
 	code, body := doReqBody(r, "PUT", "/images/"+id+"/file",
 		"this body is longer than eight bytes", hdr(seededProjectID, "member"))
 	if code != http.StatusRequestEntityTooLarge {

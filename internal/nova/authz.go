@@ -101,35 +101,6 @@ func resolveServerOr404(c *gin.Context, pool database.DB, ref string) (id, owner
 	return id, owner, true
 }
 
-// requireAdmin gates a surface that belongs to the DEPLOYMENT rather than to any
-// project — host aggregates and the deployment-wide migration list (SPEC-023
-// FR-008e, FR-008f). It reports whether the caller may proceed, sending the 403
-// itself so call sites stay one line.
-//
-// These are deliberately NOT owner-or-administrator. Their tables carry no
-// project_id, so there is no owner for the rule to fall back to; access is
-// administrative or nothing. That missing column is also how they came to be
-// ungated at all: every other handler in this package was written against a
-// table with a project_id, so a scoping predicate was the obvious thing to
-// write — here there was nothing obvious to write, and nothing was written.
-//
-// 403 rather than 404: unlike an instance, the existence of these surfaces is
-// not a secret (they are in the API's own version document), so there is nothing
-// to disclose by admitting they are there.
-func requireAdmin(c *gin.Context, operation string) bool {
-	if common.HasRole(c, common.RoleAdmin) {
-		return true
-	}
-	log.Warn().
-		Str("caller_project", c.GetString("project_id")).
-		Str("caller_user", c.GetString("user_id")).
-		Str("operation", operation).
-		Msg("refused operator-only compute operation")
-	common.SendError(c, common.NewForbiddenError(
-		"Policy doesn't allow "+operation+" to be performed. Admin role required."))
-	return false
-}
-
 // denyCrossTenant records a refused cross-tenant compute access, naming the
 // parties (SPEC-023 FR-007b).
 //

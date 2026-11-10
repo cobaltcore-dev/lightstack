@@ -9,15 +9,15 @@ import (
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
-// Review 2026-10-13 N-8: DeleteServer used a blanket
+// DeleteServer used a blanket
 // `DELETE FROM ports WHERE device_id = $1`, which destroyed ports the TENANT
 // created and attached (os-interface with port_id) along with the ones Nova
 // allocated for the boot. Upstream deletes only the ports it created and
 // detaches the rest — the tenant's port survives the server, parked DOWN with
 // no device, reusable or deletable by its owner.
 //
-// The tenant port is attached through the real os-interface flow (round 2 of
-// this review): the fix keys on device_owner='compute:nova' marking Nova's own
+// The tenant port is attached through the real os-interface flow: the fix
+// keys on device_owner='compute:nova' marking Nova's own
 // ports, and AttachInterface used to stamp that owner on a tenant's port too —
 // which would have made the discriminator, and this behaviour, unreachable.
 func TestDeleteServerDetachesTenantPortsButDeletesItsOwn(t *testing.T) {

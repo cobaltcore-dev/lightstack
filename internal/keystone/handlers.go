@@ -63,7 +63,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	val := mgmt.Group("")
 	val.Use(uuidParamMiddleware)
 
-	// Users. Authz (review 2026-10-13 C-1/M-5): reads and writes of the user
+	// Users. Authz: reads and writes of the user
 	// collection are admin-only; user-scoped subresources are self-or-admin.
 	// Routes with an authz check sit on `mgmt` and validate ids in-handler so
 	// 403 precedes the 404 (#515, asserted by TestIdentityAuthzPrecedence).
@@ -87,7 +87,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	mgmt.DELETE("/users/:id/credentials/OS-EC2/:access", svc.DeleteEC2Credential)
 
 	// Projects (role assignments must come before /projects/:id to avoid conflicts).
-	// Authz (review 2026-10-13 C-2/M-5): project management and role assignment
+	// Authz: project management and role assignment
 	// are admin-only — the assignment pair is the privilege-escalation primitive.
 	val.GET("/projects", svc.ListProjects)                                           // admin-only (in-handler)
 	val.POST("/projects", svc.CreateProject)                                         // admin-only (in-handler)
@@ -99,7 +99,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	mgmt.PATCH("/projects/:id", svc.UpdateProject)                                   // admin-only
 	mgmt.DELETE("/projects/:id", svc.DeleteProject)                                  // admin-only
 
-	// Groups — admin-only (review 2026-10-13 C-2).
+	// Groups — admin-only.
 	val.GET("/groups", svc.ListGroups)   // admin-only (in-handler)
 	val.POST("/groups", svc.CreateGroup) // admin-only (in-handler)
 	mgmt.GET("/groups/:id", svc.GetGroup)
@@ -109,14 +109,14 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	mgmt.PUT("/groups/:id/users/:user_id", svc.AddUserToGroup)
 	mgmt.DELETE("/groups/:id/users/:user_id", svc.RemoveUserFromGroup)
 
-	// Roles — admin-only (review 2026-10-13 C-2).
+	// Roles — admin-only.
 	val.GET("/roles", svc.ListRoles)   // admin-only (in-handler)
 	val.POST("/roles", svc.CreateRole) // admin-only (in-handler)
 	mgmt.GET("/roles/:id", svc.GetRole)
 	mgmt.PATCH("/roles/:id", svc.UpdateRole)
 	mgmt.DELETE("/roles/:id", svc.DeleteRole)
 
-	// Role Assignments — admin-only (review 2026-10-13 M-5).
+	// Role Assignments — admin-only.
 	val.GET("/role_assignments", svc.ListRoleAssignments) // admin-only (in-handler)
 
 	// Domains.
@@ -131,7 +131,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	// value on it still gets #515's verbatim 404, produced in-handler; and PATCH,
 	// DELETE and /config stay on `val`, where the middleware still answers.
 	//
-	// Domain management is admin-only (review 2026-10-13 C-2).
+	// Domain management is admin-only.
 	val.GET("/domains", svc.ListDomains)                 // admin-only (in-handler)
 	val.POST("/domains", svc.CreateDomain)               // admin-only (in-handler)
 	mgmt.GET("/domains/:id", svc.GetDomain)              // alias-aware (see above), admin-only
@@ -139,14 +139,14 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	mgmt.DELETE("/domains/:id", svc.DeleteDomain)        // admin-only
 	mgmt.GET("/domains/:id/config", svc.GetDomainConfig) // admin-only
 
-	// Services (catalog management) — admin-only (review 2026-10-13 C-2).
+	// Services (catalog management) — admin-only.
 	val.GET("/services", svc.ListServices)   // admin-only (in-handler)
 	val.POST("/services", svc.CreateService) // admin-only (in-handler)
 	mgmt.GET("/services/:id", svc.GetService)
 	mgmt.PATCH("/services/:id", svc.UpdateService)
 	mgmt.DELETE("/services/:id", svc.DeleteService)
 
-	// Endpoints — admin-only (review 2026-10-13 C-2).
+	// Endpoints — admin-only.
 	val.GET("/endpoints", svc.ListEndpoints)   // admin-only (in-handler)
 	val.POST("/endpoints", svc.CreateEndpoint) // admin-only (in-handler)
 	mgmt.DELETE("/endpoints/:id", svc.DeleteEndpoint)
@@ -397,9 +397,9 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 
 // ListUsers lists all users
 func (svc *Service) ListUsers(c *gin.Context) {
-	// Admin-only (review 2026-10-13 M-5): the user collection exposes every
+	// Admin-only: the user collection exposes every
 	// account's name, enabled state and domain — identity enumeration.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	var f listFilter
@@ -446,7 +446,7 @@ func (svc *Service) ListUsers(c *gin.Context) {
 func (svc *Service) GetUser(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Self-or-admin (review 2026-10-13 M-5): user records (name, email,
+	// Self-or-admin: user records (name, email,
 	// enabled) are only for the user itself or an admin.
 	userID, denied := denyIfNotSelfOrAdmin(c, userID)
 	if denied {
@@ -476,10 +476,10 @@ func (svc *Service) GetUser(c *gin.Context) {
 
 // ListProjects lists all projects
 func (svc *Service) ListProjects(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -557,10 +557,10 @@ func identityLink(c *gin.Context, collection, id string) gin.H {
 func (svc *Service) GetProject(c *gin.Context) {
 	projectID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -593,10 +593,10 @@ func (svc *Service) GetProject(c *gin.Context) {
 
 // CreateProject handles POST /v3/projects
 func (svc *Service) CreateProject(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -674,10 +674,10 @@ func (svc *Service) CreateProject(c *gin.Context) {
 func (svc *Service) UpdateProject(c *gin.Context) {
 	projectID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -752,10 +752,10 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 func (svc *Service) DeleteProject(c *gin.Context) {
 	projectID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -784,10 +784,10 @@ func (svc *Service) DeleteProject(c *gin.Context) {
 
 // ListRoles lists all roles
 func (svc *Service) ListRoles(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -830,10 +830,10 @@ func (svc *Service) ListRoles(c *gin.Context) {
 func (svc *Service) GetRole(c *gin.Context) {
 	roleID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -861,10 +861,10 @@ func (svc *Service) GetRole(c *gin.Context) {
 
 // CreateRole handles POST /v3/roles
 func (svc *Service) CreateRole(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -907,10 +907,10 @@ func (svc *Service) CreateRole(c *gin.Context) {
 func (svc *Service) UpdateRole(c *gin.Context) {
 	roleID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -963,10 +963,10 @@ func (svc *Service) UpdateRole(c *gin.Context) {
 func (svc *Service) DeleteRole(c *gin.Context) {
 	roleID := c.Param("id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -999,10 +999,10 @@ func (svc *Service) AssignRole(c *gin.Context) {
 	userID := c.Param("user_id")
 	roleID := c.Param("role_id")
 
-	// Admin-only (review 2026-10-13 C-2): role assignment is the privilege
+	// Admin-only: role assignment is the privilege
 	// escalation primitive — without this check any authenticated user could
 	// grant itself (or anyone) the admin role on any project.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -1011,22 +1011,29 @@ func (svc *Service) AssignRole(c *gin.Context) {
 		return
 	}
 
-	// The ids must name real rows: ON CONFLICT DO NOTHING would otherwise
-	// silently insert an assignment referencing nothing and answer 204.
-	for _, tc := range []struct{ kind, id string }{
-		{"project", projectID}, {"user", userID}, {"role", roleID},
+	// The foreign keys prevent dangling assignments; these lookups preserve
+	// Keystone's resource-specific 404 instead of leaking a database error.
+	var projectExists, userExists, roleExists bool
+	err := svc.pool.QueryRow(c.Request.Context(), `
+		SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1),
+		       EXISTS(SELECT 1 FROM users WHERE id = $2),
+		       EXISTS(SELECT 1 FROM roles WHERE id = $3)
+	`, projectID, userID, roleID).Scan(&projectExists, &userExists, &roleExists)
+	for _, tc := range []struct {
+		kind, id string
+		exists   bool
+	}{
+		{"project", projectID, projectExists},
+		{"user", userID, userExists},
+		{"role", roleID, roleExists},
 	} {
-		var exists bool
-		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT EXISTS(SELECT 1 FROM "+tc.kind+"s WHERE id = $1)", tc.id,
-		).Scan(&exists)
-		if existsOr404(c, err, exists, tc.kind, tc.id) {
+		if existsOr404(c, err, tc.exists, tc.kind, tc.id) {
 			return
 		}
 	}
 
 	// Insert role assignment (idempotent)
-	_, err := svc.pool.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		`INSERT INTO role_assignments (id, user_id, project_id, role_id, created_at)
 		 VALUES (gen_random_uuid(), $1, $2, $3, NOW())
 		 ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
@@ -1047,10 +1054,10 @@ func (svc *Service) UnassignRole(c *gin.Context) {
 	userID := c.Param("user_id")
 	roleID := c.Param("role_id")
 
-	// Admin-only (review 2026-10-13 C-2): revoking roles is the inverse
+	// Admin-only: revoking roles is the inverse
 	// escalation — any user could strip an admin's role and lock the
 	// deployment out.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	if denyIfMalformedID(c, "project", projectID) || denyIfMalformedID(c, "user", userID) ||
@@ -1082,10 +1089,10 @@ func (svc *Service) ListUserProjectRoles(c *gin.Context) {
 	projectID := c.Param("id")
 	userID := c.Param("user_id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -1139,10 +1146,10 @@ func (svc *Service) CheckRoleAssignment(c *gin.Context) {
 	userID := c.Param("user_id")
 	roleID := c.Param("role_id")
 
-	// Admin-only (review 2026-10-13 C-2): the identity management surface
+	// Admin-only: the identity management surface
 	// must not honor a plain member — this is the role/assignment/catalog
 	// authority.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
@@ -1175,9 +1182,9 @@ func (svc *Service) CheckRoleAssignment(c *gin.Context) {
 
 // ListRoleAssignments handles GET /v3/role_assignments
 func (svc *Service) ListRoleAssignments(c *gin.Context) {
-	// Admin-only (review 2026-10-13 C-2): role assignments grant authority and expose
+	// Admin-only: role assignments grant authority and expose
 	// the identity management surface.
-	if denyIfNotAdmin(c) {
+	if !common.RequireAdmin(c, "keystone:identity-management") {
 		return
 	}
 
@@ -1336,7 +1343,7 @@ func (svc *Service) CreateUser(c *gin.Context) {
 func (svc *Service) UpdateUser(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Self-or-admin (review 2026-10-13 C-1): without this check any
+	// Self-or-admin: without this check any
 	// authenticated caller could reset any user's password — including the
 	// admin's — or disable any account, because this handler (unlike
 	// ChangePassword) never asked for the original password.
@@ -1346,8 +1353,7 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 		return
 	}
 	// Authorization passed; validate the id after it so 403 precedes the 404 (#515).
-	if uuid.Validate(userID) != nil {
-		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
+	if denyIfMalformedID(c, "user", userID) {
 		return
 	}
 
@@ -1479,8 +1485,7 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 	}
 
 	// Authorization passed; validate the id after it so 403 precedes this 404 (#515).
-	if uuid.Validate(userID) != nil {
-		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
+	if denyIfMalformedID(c, "user", userID) {
 		return
 	}
 
@@ -1526,8 +1531,7 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 	}
 
 	// Authorization passed; validate the id after it so 403 precedes this 404 (#515).
-	if uuid.Validate(userID) != nil {
-		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
+	if denyIfMalformedID(c, "user", userID) {
 		return
 	}
 
@@ -1588,7 +1592,7 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 func (svc *Service) GetUserProjects(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Self-or-admin (review 2026-10-13 M-5): a user's project membership is
+	// Self-or-admin: a user's project membership is
 	// footprint information.
 	userID, denied := denyIfNotSelfOrAdmin(c, userID)
 	if denied {
@@ -1655,7 +1659,7 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 func (svc *Service) GetUserGroups(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Self-or-admin (review 2026-10-13 M-5).
+	// Self-or-admin.
 	userID, denied := denyIfNotSelfOrAdmin(c, userID)
 	if denied {
 		return

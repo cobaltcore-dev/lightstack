@@ -15,13 +15,12 @@ import (
 
 // ManageVolume handles POST /v3/os-volume-manage
 func (svc *Service) ManageVolume(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-3): volume types, QoS specs and the
+	// Admin-only: volume types, QoS specs and the
 	// manage/unmanage surface shape storage for every tenant and address
 	// host-level backends (upstream: volume_extension:* and
 	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
 	// the body is bound so a non-admin gets 403, not a 400.
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+	if !common.RequireAdmin(c, "cinder:ManageVolume") {
 		return
 	}
 
@@ -84,13 +83,12 @@ func (svc *Service) ManageVolume(c *gin.Context) {
 
 // ListManageableVolumes handles GET /v3/manageable_volumes
 func (svc *Service) ListManageableVolumes(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-3): volume types, QoS specs and the
+	// Admin-only: volume types, QoS specs and the
 	// manage/unmanage surface shape storage for every tenant and address
 	// host-level backends (upstream: volume_extension:* and
 	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
 	// the body is bound so a non-admin gets 403, not a 400.
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+	if !common.RequireAdmin(c, "cinder:ListManageableVolumes") {
 		return
 	}
 
@@ -110,13 +108,12 @@ func (svc *Service) ListManageableVolumes(c *gin.Context) {
 
 // UnmanageVolume handles volume action: os-unmanage
 func (svc *Service) UnmanageVolume(c *gin.Context, volumeID string) {
-	// Admin-only (review 2026-10-13 H-3): volume types, QoS specs and the
+	// Admin-only: volume types, QoS specs and the
 	// manage/unmanage surface shape storage for every tenant and address
 	// host-level backends (upstream: volume_extension:* and
 	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
 	// the body is bound so a non-admin gets 403, not a 400.
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+	if !common.RequireAdmin(c, "cinder:UnmanageVolume") {
 		return
 	}
 
@@ -166,12 +163,11 @@ func (svc *Service) UnmanageVolume(c *gin.Context, volumeID string) {
 
 // ManageSnapshot handles POST /v3/os-snapshot-manage
 func (svc *Service) ManageSnapshot(c *gin.Context) {
-	// Admin-only (review 2026-10-13 H-3): like os-volume-manage, this imports
+	// Admin-only: like os-volume-manage, this imports
 	// an operator's existing backing into the API — upstream gates it
 	// volume_admin_actions:snapshot_manage. Checked before the body is bound
 	// so a non-admin gets 403, not a 400.
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow this operation to be performed. Admin role required."))
+	if !common.RequireAdmin(c, "cinder:ManageSnapshot") {
 		return
 	}
 

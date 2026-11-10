@@ -613,7 +613,7 @@ func (s *ImageStore) uploadLocalToS3(ctx context.Context, imageID string) error 
 // Normalizing backends (local, local,rbd, local,s3) rewrite the upload — a
 // qcow2 becomes a raw base — so the checksum Glance advertises, downloads
 // serve and EnsureLocalBase verifies against must be taken from the stored
-// object, not from the client's upload stream (review 2026-10-13 N3: the
+// object, not from the client's upload stream (: the
 // stream hash made boot-from-image fail on any node without the local base,
 // because MD5(raw replica) never equals MD5(original qcow2)). For S3-only and
 // stub modes the stored bytes are the upload bytes, so the stream hash the

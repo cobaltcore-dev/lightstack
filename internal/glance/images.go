@@ -37,14 +37,10 @@ type Service struct {
 	s3Endpoint  string
 	imageStore  *storage.ImageStore
 	cache       *cache.Cache
+	uploadCap   int64
 }
 
-// maxImageUploadBytes bounds PUT /images/:id/file (review 2026-10-13 M-3):
-// without it an unbounded stream lands on disk (and, in local mode, is
-// qemu-img-normalized) until the host fills. 10 GiB, the same default as
-// upstream Glance's image_size_cap. A var, not a const, so tests can pin the
-// over-cap response without streaming 10 GiB.
-var maxImageUploadBytes = 10 << 30
+const defaultMaxImageUploadBytes int64 = 10 << 30
 
 // NewService creates a new Glance service.
 //
@@ -68,6 +64,7 @@ func NewService(pool database.DB, mode, cephPool, cephConf string, s3opts storag
 		s3Endpoint:  s3opts.Endpoint,
 		imageStore:  imageStore,
 		cache:       cacheInstance,
+		uploadCap:   defaultMaxImageUploadBytes,
 	}, nil
 }
 
@@ -965,7 +962,7 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	imageID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Ownership, not visibility (review 2026-10-13 H-1): seeing a public
+	// Ownership, not visibility: seeing a public
 	// image must not grant write access to its bytes — otherwise anyone
 	// could poison an operator-staged public base image that every tenant
 	// boots from. Same rule as delete (F6): owner or admin, 403 for a
@@ -994,10 +991,10 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 		return
 	}
 
-	// Bound the upload (review 2026-10-13 M-3): without a cap an unbounded
+	// Bound the upload: without a cap an unbounded
 	// stream lands on disk (and, in local mode, is normalized) until the
 	// host fills. Same default as upstream Glance's image_size_cap.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, int64(maxImageUploadBytes))
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, svc.uploadCap)
 
 	// Claim the queued image atomically: only one request may write its bytes.
 	claimed, err := svc.pool.Exec(c.Request.Context(),
@@ -1064,14 +1061,14 @@ func (svc *Service) activateUploadedImage(ctx context.Context, imageID string, s
 	if normalizedToRaw {
 		// The recorded checksum must describe the STORED bytes: downloads serve
 		// them, and EnsureLocalBase verifies a lazily fetched base against this
-		// value on every boot (review 2026-10-13 N3 — hashing the upload stream
+		// value on every boot — hashing the upload stream
 		// instead broke boot-from-image on any node without the local base,
 		// because MD5(raw replica) != MD5(original qcow2)).
-		if stored, csErr := svc.imageStore.StoredChecksum(ctx, imageID); csErr == nil {
-			checksum = stored
-		} else {
+		stored, csErr := svc.imageStore.StoredChecksum(ctx, imageID)
+		if csErr != nil {
 			return fmt.Errorf("hash stored image: %w", csErr)
 		}
+		checksum = stored
 	}
 	result, err := svc.pool.Exec(ctx,
 		`UPDATE images SET status = $1, size_bytes = $2,

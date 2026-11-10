@@ -21,16 +21,6 @@ import (
 // Such routes therefore sit on `mgmt` (no uuidParamMiddleware) and validate
 // their path ids with denyIfMalformedID below, after the authz decision.
 
-// denyIfNotAdmin writes a 403 and returns true unless the caller holds the
-// admin role.
-func denyIfNotAdmin(c *gin.Context) bool {
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("admin role required"))
-		return true
-	}
-	return false
-}
-
 // denyIfMalformedID writes the Keystone-verbatim 404 and returns true when id
 // is not a well-formed UUID. Call it after the authz check (see above).
 func denyIfMalformedID(c *gin.Context, kind, id string) bool {

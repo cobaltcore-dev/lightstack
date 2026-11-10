@@ -47,20 +47,33 @@ const (
 
 func newGlanceTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
+	return newGlanceTestRouterForService(t, newGlanceTestService(t))
+}
+
+func newGlanceTestService(t *testing.T) *Service {
+	t.Helper()
+	svc, err := NewService(testPool, "stub", "", "", storage.S3Options{}, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+func newGlanceTestRouterForService(t *testing.T, svc *Service) *gin.Engine {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		if p := c.GetHeader("X-Test-Project"); p != "" {
 			c.Set("project_id", p)
 		}
+		if userID := c.GetHeader("X-Test-User"); userID != "" {
+			c.Set("user_id", userID)
+		}
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))
 		}
 	})
-	svc, err := NewService(testPool, "stub", "", "", storage.S3Options{}, nil)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
 	svc.RegisterRoutes(&r.RouterGroup)
 	return r
 }
@@ -93,6 +106,10 @@ func imageExists(t *testing.T, id string) bool {
 
 func hdr(project, roles string) map[string]string {
 	return map[string]string{"X-Test-Project": project, "X-Test-Roles": roles}
+}
+
+func userHdr(userID, roles string) map[string]string {
+	return map[string]string{"X-Test-User": userID, "X-Test-Roles": roles}
 }
 
 // TestDeleteImageAuthz_DB exercises the F6 wiring against Postgres for a public image

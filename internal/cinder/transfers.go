@@ -318,7 +318,7 @@ func (svc *Service) AcceptVolumeTransfer(c *gin.Context) {
 		return
 	}
 
-	// Verify auth key. Constant-time (review 2026-10-13 L-1): a plain string
+	// Verify auth key. Constant-time: a plain string
 	// compare short-circuits on the first differing byte, and a transfer id is
 	// cheap to enumerate, so the key could be recovered byte-by-byte from
 	// response timing.
