@@ -46,8 +46,10 @@ func attachWithPool(ctx context.Context, pool database.DB, instanceID, volumeID 
 func TestAttachVolumeWithOneConnection(t *testing.T) {
 	requireDB(t)
 	instanceID, volumeID := seedConsoleInstance(t, seededProjectID), seedAttachVolume(t)
+	poolConfig := *database.DefaultPoolConfig()
+	poolConfig.MaxConns = 1
 	pool, err := database.Open(t.Context(), dbtest.URL(), database.Options{
-		Pool: database.PoolConfig{MaxConns: 1},
+		Pool: poolConfig,
 	})
 	if err != nil {
 		t.Fatal(err)

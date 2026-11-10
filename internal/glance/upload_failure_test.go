@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 )
 
@@ -14,13 +15,16 @@ func TestUploadFailsWhenStateCannotBeRecorded(t *testing.T) {
 	requireDB(t)
 	for _, status := range []string{"saving", "active"} {
 		t.Run(status, func(t *testing.T) {
+			dbtest.RequirePostgres(t)
 			id := seedPatchImage(t)
 			if _, err := testPool.Exec(t.Context(), "UPDATE images SET status='queued' WHERE id=$1", id); err != nil {
 				t.Fatal(err)
 			}
 			// A trigger injects a real write failure for only this image and state.
 			name := "reject_upload_" + strings.ReplaceAll(id, "-", "")
-			_, err := testPool.Exec(t.Context(), fmt.Sprintf(`
+			_, err := testPool.Exec(t.Context(), fmt.Sprintf(
+				//sqlcheck:postgres-only
+				`
 				CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
 				BEGIN
 				  IF NEW.id = '%s'::uuid AND NEW.status = '%s' THEN

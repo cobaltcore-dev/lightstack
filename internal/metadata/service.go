@@ -528,6 +528,19 @@ func decodeNetworkDataDNS(value any) ([]string, error) {
 		return []string{}, nil
 	case []string:
 		return v, nil
+	case []any:
+		values := make([]string, 0, len(v))
+		for i, item := range v {
+			switch s := item.(type) {
+			case string:
+				values = append(values, s)
+			case []byte:
+				values = append(values, string(s))
+			default:
+				return nil, fmt.Errorf("unsupported DNS nameserver value at index %d: %T", i, item)
+			}
+		}
+		return values, nil
 	case []byte:
 		var values []string
 		if err := json.Unmarshal(v, &values); err != nil {

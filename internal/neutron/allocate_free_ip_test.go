@@ -235,13 +235,17 @@ func TestCreatePortOnSubnetlessNetworkWritesEmptyArray(t *testing.T) {
 		t.Fatalf("create port on subnet-less network: code=%d body=%s; want 201", code, resp)
 	}
 
-	var typeof string
+	var fixedIPsJSON []byte
 	if err := testPool.QueryRow(ctx,
-		`SELECT jsonb_typeof(fixed_ips) FROM ports WHERE network_id = $1`, networkID).Scan(&typeof); err != nil {
+		`SELECT fixed_ips FROM ports WHERE network_id = $1`, networkID).Scan(&fixedIPsJSON); err != nil {
 		t.Fatalf("reading the created port's fixed_ips: %v", err)
 	}
-	if typeof != "array" {
-		t.Fatalf("fixed_ips is JSON %s; want an array so every reader can unpack it", typeof)
+	var fixedIPs []json.RawMessage
+	if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil {
+		t.Fatalf("decoding the created port's fixed_ips %s: %v", fixedIPsJSON, err)
+	}
+	if fixedIPs == nil || len(fixedIPs) != 0 {
+		t.Fatalf("fixed_ips is %s; want an empty JSON array so every reader can unpack it", fixedIPsJSON)
 	}
 }
 
