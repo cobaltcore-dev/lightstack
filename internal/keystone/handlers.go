@@ -53,7 +53,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 
 	// All management routes require authentication
 	mgmt := v3.Group("")
-	mgmt.Use(authMiddleware)
+	// Canonicalize well-formed UUID path params after authentication. This keeps
+	// uppercase and compact UUIDs usable on SQLite text columns while leaving
+	// malformed params untouched so in-handler authorization can still return
+	// 403 before its 404 validation.
+	mgmt.Use(authMiddleware, canonicalizeUUIDParams)
 
 	// Malformed UUID path ids (params named "id" or "*_id") get a Keystone-verbatim
 	// 404 before the handler, on every management route EXCEPT the authz-gated ones

@@ -42,6 +42,21 @@ func uuidParamMiddleware(c *gin.Context) {
 	// advances to the next handler on its own.
 }
 
+// canonicalizeUUIDParams normalizes only well-formed UUID path params. It is
+// installed after authentication on management routes whose handlers perform
+// authorization before rejecting malformed IDs.
+func canonicalizeUUIDParams(c *gin.Context) {
+	for i := range c.Params {
+		p := &c.Params[i]
+		if !isUUIDParam(p.Key) {
+			continue
+		}
+		if id, err := uuid.Parse(p.Value); err == nil {
+			p.Value = id.String()
+		}
+	}
+}
+
 // isUUIDParam reports whether a gin path-param name addresses a UUID id.
 func isUUIDParam(name string) bool {
 	return name == "id" || strings.HasSuffix(name, "_id")

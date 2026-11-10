@@ -242,3 +242,21 @@ func TestUUIDParamMiddlewareCanonicalisesID(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalizeUUIDParamsLeavesMalformedIDsForHandlers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Params = gin.Params{
+		{Key: "id", Value: "11111111111111111111111111111111"},
+		{Key: "cred_id", Value: "NOT-A-UUID"},
+		{Key: "access", Value: "legacy-access-key"},
+	}
+
+	canonicalizeUUIDParams(c)
+	want := []string{"11111111-1111-1111-1111-111111111111", "NOT-A-UUID", "legacy-access-key"}
+	for i, expected := range want {
+		if got := c.Params[i].Value; got != expected {
+			t.Errorf("param %s = %q, want %q", c.Params[i].Key, got, expected)
+		}
+	}
+}
