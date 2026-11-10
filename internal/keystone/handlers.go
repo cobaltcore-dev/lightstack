@@ -448,7 +448,8 @@ func (svc *Service) GetUser(c *gin.Context) {
 
 	// Self-or-admin (review 2026-10-13 M-5): user records (name, email,
 	// enabled) are only for the user itself or an admin.
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
 		return
 	}
 
@@ -1589,7 +1590,8 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 
 	// Self-or-admin (review 2026-10-13 M-5): a user's project membership is
 	// footprint information.
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
 		return
 	}
 
@@ -1654,7 +1656,8 @@ func (svc *Service) GetUserGroups(c *gin.Context) {
 	userID := c.Param("id")
 
 	// Self-or-admin (review 2026-10-13 M-5).
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
 		return
 	}
 

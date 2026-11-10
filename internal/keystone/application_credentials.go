@@ -21,7 +21,8 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 
 	// Self-or-admin (review 2026-10-13 H-4): credential metadata and role
 	// lists are footprint information.
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
 		return
 	}
 
@@ -111,7 +112,8 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 	// Self-or-admin (review 2026-10-13 H-4): the 201 response hands back the
 	// plaintext secret, and requested roles are stored verbatim — minting one
 	// for another user would be both secret disclosure and impersonation.
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
 		return
 	}
 
@@ -215,7 +217,8 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 	credID := c.Param("cred_id")
 
 	// Self-or-admin (review 2026-10-13 H-4).
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
 		return
 	}
 
@@ -292,7 +295,8 @@ func (svc *Service) DeleteApplicationCredential(c *gin.Context) {
 
 	// Self-or-admin (review 2026-10-13 H-4): deleting another user's
 	// credential is an availability attack on their automation.
-	if denyIfNotSelfOrAdmin(c, userID) {
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
 		return
 	}
 

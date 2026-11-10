@@ -441,7 +441,7 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/get-helm-3" \
             https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
           bash "$RUNNER_TEMP/get-helm-3" --version "$HELM_VERSION"
-          helm plugin install https://github.com/helm-unittest/helm-unittest --version "$HELM_UNITTEST_VERSION" --verify=false
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version "$HELM_UNITTEST_VERSION"
 
           helm version --short
 
