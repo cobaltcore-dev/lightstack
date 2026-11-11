@@ -1131,11 +1131,11 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 	}
 
 	// Verify instance exists
-	var sourceImageID string
+	var existingInstanceID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT image_id FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
-	).Scan(&sourceImageID)
+	).Scan(&existingInstanceID)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))

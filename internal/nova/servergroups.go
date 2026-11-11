@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -183,7 +184,7 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 	if err != nil {
 		// The migration 076 constraint makes the duplicate check race-safe:
 		// two concurrent creates both pass it, and exactly one insert wins.
-		if common.IsUniqueViolation(err) {
+		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewResourceInUseError("server group", "create",
 				"Server group "+req.ServerGroup.Name+" already exists."))
 			return

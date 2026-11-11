@@ -188,7 +188,7 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 		// application_credentials is UNIQUE(user_id, name); a duplicate name
 		// is the caller's conflict, not a server fault — upstream answers
 		// 409 (SPEC-028).
-		if common.IsUniqueViolation(err) {
+		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("application credential already exists"))
 			return
 		}

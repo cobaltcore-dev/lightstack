@@ -1239,7 +1239,7 @@ func volumeAttachments(ctx context.Context, pool database.DB, volumeIDs []string
 // metadata endpoint returns it, but the object itself answered {} however
 // much was set, so 'volume show' always reported empty properties
 // (SPEC-028).
-func volumeMetadataRows(ctx context.Context, pool *pgxpool.Pool, volumeIDs []string) (map[string]map[string]string, error) {
+func volumeMetadataRows(ctx context.Context, pool database.DB, volumeIDs []string) (map[string]map[string]string, error) {
 	result := make(map[string]map[string]string, len(volumeIDs))
 	if len(volumeIDs) == 0 {
 		return result, nil
@@ -1274,7 +1274,7 @@ func volumeMetadataRows(ctx context.Context, pool *pgxpool.Pool, volumeIDs []str
 // (SPEC-028): the metadata endpoint returned it, but the object itself
 // omitted the key entirely, and the pinned OSC 7 formatter crashes with
 // KeyError 'metadata' on a snapshot without one.
-func snapshotMetadataRows(ctx context.Context, pool *pgxpool.Pool, snapshotIDs []string) (map[string]map[string]string, error) {
+func snapshotMetadataRows(ctx context.Context, pool database.DB, snapshotIDs []string) (map[string]map[string]string, error) {
 	result := make(map[string]map[string]string, len(snapshotIDs))
 	if len(snapshotIDs) == 0 {
 		return result, nil

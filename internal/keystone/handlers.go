@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -835,7 +836,7 @@ func (svc *Service) CreateRole(c *gin.Context) {
 	if err != nil {
 		// roles.name is UNIQUE; a duplicate is the caller's conflict, not a
 		// server fault — upstream answers 409 (SPEC-028).
-		if common.IsUniqueViolation(err) {
+		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("role already exists"))
 			return
 		}

@@ -695,7 +695,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 				log.Warn().Err(derr).Str("port_id", portID).Msg("rollback: failed to unclaim router interface port")
 			}
 		}
-		if common.IsUniqueViolation(err) {
+		if database.IsUniqueViolation(err) {
 			// The constraint is the duplicate-interface backstop: the
 			// EXISTS check above can lose a race with a concurrent attach
 			// of the same (router, subnet). Answer the same 409 the check
