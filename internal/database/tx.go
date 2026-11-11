@@ -3,15 +3,12 @@ package database
 import (
 	"context"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// WithTx executes fn within a transaction on pool.
+// WithTx executes fn within a transaction on db.
 // If fn returns an error, the transaction is rolled back. Otherwise committed.
-func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
-	tx, err := pool.Begin(ctx)
+func WithTx(ctx context.Context, db DB, fn func(tx Tx) error) error {
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}

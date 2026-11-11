@@ -537,3 +537,68 @@ Migration 071 adds it on the next start; nothing to do. Where the catalog is cac
 
 On a single node placement schedules nothing: Lightstack's placement is a stub that reports no
 resource providers, so Horizon's tab shows an empty table rather than an error.
+
+## SQLite as a second database backend
+
+Lightstack can now run a single node on one embedded SQLite file instead of a PostgreSQL server
+(`database.url: sqlite:///absolute/path/lightstack.db`; [CONFIGURATION.md](CONFIGURATION.md#sqlite)).
+An existing PostgreSQL deployment keeps its database and changes nothing; there is no conversion
+between the two. What does change for every deployment:
+
+### Migrations
+
+- **`make migrate` runs `lightstack-migrate`.** golang-migrate's `migrate` CLI no longer reads the
+  folder: SQLite's files share version numbers with PostgreSQL's, so reading the folder through iofs
+  it refuses the collision (`duplicate migration file: 073_…`). `make install-tools` no longer
+  installs it. Scripts that called `migrate -path migrations -database … up` call
+  `lightstack-migrate up -config <lightstack.yaml> -migrations migrations` instead — it always reads
+  a config file (default `config/lightstack.yaml`, and it exits 1 when that is missing) even when
+  `LIGHTSTACK_DB_URL` supplies the URL; `status`, `down`, `reset`, `goto` and `force` work as before,
+  on either backend.
+- **Migration 074** adds a nullable `reserved_by` column to `volumes` and `snapshots`. It runs on the
+  next start, like every migration.
+- PostgreSQL can now migrate **down** through 001. The down files of `010`, `019`, `028` and `037`
+  dropped tables and columns an earlier migration owned and stopped the way down; they are
+  corrected. Nothing changes going up.
+
+### API answers
+
+| | before | after |
+|---|---|---|
+| server create over the instances, cores or RAM quota | `413 overLimit`, `Quota exceeded for resource: instances` | `403 forbidden`, `Quota exceeded for instances: Requested 1, but already used 10 of 10 instances`, as upstream |
+| server create whose new boot volume exceeds the block-storage quota | `413` naming the resource | `403`, `Quota exceeded for gigabytes: Requested …, but already used … of … gigabytes` |
+| two server creates racing for a project's last instance | both could be accepted | exactly one is accepted, the other gets the `403` |
+| `DELETE` of a volume still `creating`, or `os-extend` of one | not reachable — volumes were recorded `available` after their backing existed, never `creating` | `400` with upstream's message (the reservation now makes `creating` a real, reachable state) |
+| `DELETE` of a snapshot still `creating` | accepted (there was no status check); its backing already existed | `400` with upstream's message |
+| snapshot create | `202 creating`; `available` about 100 ms later | `202 creating`, unchanged; `available` already when the answer arrives |
+
+Block storage's own endpoints keep answering `413` for their quotas, as upstream's do. Horizon shows
+the compute quota refusal as an error message either way.
+
+### Volumes interrupted by a restart
+
+A volume or snapshot create now reserves its row (`creating`) before the backing store is touched
+and finalises it afterwards. A node that stops mid-create sets its own interrupted reservations to
+`error` when it runs again: at its next start, before it serves requests, or — if it restarted
+within about a minute of stopping, while the stopped process still looked alive — by a periodic
+pass about a minute after the start. They keep whatever backing they had: deleting the `error`
+volume or snapshot removes it, as upstream Cinder does, and is the clean-up. The node finds its own
+by name — `LIGHTSTACK_NODE_NAME`, or
+the host name when that is unset. The Helm chart sets `LIGHTSTACK_NODE_NAME` to the pod's node
+name, so a recreated pod finds them too. Elsewhere, where the host name changes across restarts (a
+container without host networking), set it yourself, or interrupted reservations stay `creating`
+until an administrator resets them with `os-reset_status`, as upstream operators do for a resource
+stuck in a transitional state: `POST /v3/{project}/volumes/{id}/action` for a volume and
+`POST /v3/{project}/snapshots/{id}/action` for a snapshot (the snapshot action is admin-only and
+new in this release — it is the only way to free a snapshot, and the volume holding it, when the
+reserving node never returns under the same name). Rows from before 074 carry no name and are never
+touched.
+
+### Helm chart: the purge reads the database from `database.existingSecret`
+
+With the database URL in `database.existingSecret`, the purge Job of `dataRetentionPolicy: delete`
+now receives it as `LIGHTSTACK_DB_URL`, as the Lightstack pods do. It used to run without a URL, so
+it could not read the database and purged only what it found on the node: the release's VMs and its
+host networking stayed behind. Now it removes them, as it does for a release with `database.url`.
+Without the URL, `lightstack cleanup` — which now refuses an empty one — would fail the hook and
+stop the uninstall.

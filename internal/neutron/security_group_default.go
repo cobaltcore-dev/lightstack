@@ -7,8 +7,6 @@ import (
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // EnsureDefaultSecurityGroup returns the id of the project's `default` security
@@ -35,16 +33,16 @@ import (
 // pkg/networking/northsouth.go, and pkg/networking/security_groups_ebpf.go), so
 // seeding one would open that port to the world for every project
 // (cloud-storage#528).
-func EnsureDefaultSecurityGroup(ctx context.Context, pool *pgxpool.Pool, projectID string) (string, error) {
+func EnsureDefaultSecurityGroup(ctx context.Context, pool database.DB, projectID string) (string, error) {
 	var sgID string
-	if err := database.WithTx(ctx, pool, func(tx pgx.Tx) error {
+	if err := database.WithTx(ctx, pool, func(tx database.Tx) error {
 		err := tx.QueryRow(ctx,
 			`INSERT INTO security_groups (id, name, project_id, description)
 			 VALUES ($1, 'default', $2, 'Default security group')
 			 ON CONFLICT (project_id, name) DO NOTHING
 			 RETURNING id`,
 			uuid.New().String(), projectID).Scan(&sgID)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			// Existing group: resolve its id and leave its rules alone.
 			if err := tx.QueryRow(ctx,
 				"SELECT id FROM security_groups WHERE name = 'default' AND project_id = $1",

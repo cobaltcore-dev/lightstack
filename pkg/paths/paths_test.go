@@ -1,6 +1,9 @@
 package paths
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestLayout pins the node-local hostPath layout under the default root. These exact
 // paths are what the chart mounts by default and what the host-validated real mode
@@ -16,6 +19,8 @@ func TestLayout(t *testing.T) {
 		{DHCPDir(), "/var/lib/lightstack/dhcp"},
 		{ConsoleTokenDir(), "/var/lib/lightstack/console-tokens"},
 		{ConsoleSocketDir(), "/var/lib/lightstack/console-sockets"},
+		{DBDir(), "/var/lib/lightstack/db"},
+		{BackupsDir(), "/var/lib/lightstack/backups"},
 		{ConsoleSocketPath("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"),
 			"/var/lib/lightstack/console-sockets/1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d.sock"},
 	}
@@ -23,6 +28,28 @@ func TestLayout(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("path = %q; want %q", c.got, c.want)
 		}
+	}
+}
+
+// WithinStorageTree reports the reserved storage tree a path nests in (so a SQLite database
+// is kept out of the trees teardown wipes), and "" for the db dir, a custom dir, or a path
+// outside the root. StorageTrees must list exactly the directories the teardown purge removes.
+func TestWithinStorageTree(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"/var/lib/lightstack/images/control/lightstack.db", "/var/lib/lightstack/images"},
+		{"/var/lib/lightstack/volumes/x/lightstack.db", "/var/lib/lightstack/volumes"},
+		{"/var/lib/lightstack/console-sockets/x.db", "/var/lib/lightstack/console-sockets"},
+		{"/var/lib/lightstack/db/lightstack.db", ""},     // the db dir is not a storage tree
+		{"/var/lib/lightstack/custom/lightstack.db", ""}, // a custom dir is allowed
+		{"/var/lib/lightstack/images-backup/x.db", ""},   // prefix-but-not-child must not match
+		{"/srv/elsewhere/lightstack.db", ""},             // outside the root
+	} {
+		if got := WithinStorageTree(tc.path); got != tc.want {
+			t.Errorf("WithinStorageTree(%q) = %q; want %q", tc.path, got, tc.want)
+		}
+	}
+	if len(StorageTrees()) != 7 {
+		t.Errorf("StorageTrees() has %d entries; want 7 (keep it in sync with the teardown purge)", len(StorageTrees()))
 	}
 }
 
@@ -42,11 +69,23 @@ func TestSetBaseMovesEveryDir(t *testing.T) {
 		{DHCPDir(), "/data/lightstack/dhcp"},
 		{ConsoleTokenDir(), "/data/lightstack/console-tokens"},
 		{ConsoleSocketDir(), "/data/lightstack/console-sockets"},
+		{DBDir(), "/data/lightstack/db"},
+		{BackupsDir(), "/data/lightstack/backups"},
 		{ConsoleSocketPath("x"), "/data/lightstack/console-sockets/x.sock"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
 			t.Errorf("path = %q; want %q", c.got, c.want)
 		}
+	}
+}
+
+// A backup's default name is its UTC timestamp, whatever the caller's zone, so backups
+// sort by age and two nodes in different zones name the same moment alike (SPEC-030 FR-002).
+func TestBackupPath(t *testing.T) {
+	berlin := time.FixedZone("CET", 3600)
+	at := time.Date(2026, 10, 28, 15, 30, 0, 0, berlin)
+	if got, want := BackupPath(at), "/var/lib/lightstack/backups/lightstack-20261028T143000Z.db"; got != want {
+		t.Errorf("BackupPath = %q; want %q", got, want)
 	}
 }

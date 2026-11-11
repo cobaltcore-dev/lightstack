@@ -1,13 +1,16 @@
 package contract_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/imageservice/v2/images"
@@ -156,6 +159,26 @@ func UploadTestImageData(t *testing.T, client *gophercloud.ServiceClient, imageI
 	require.NoError(t, err, "Failed to upload the test image's data")
 	resp.Body.Close()
 	require.Equal(t, http.StatusNoContent, resp.StatusCode, "uploading the test image's data")
+}
+
+// Seed runs one statement against the database the Lightstack under test runs on, for the
+// fixtures the API cannot create and their removal, and fails the test when it fails.
+// LIGHTSTACK_DB_URL names that database — the variable the server itself reads — so the
+// statement reaches the server's database on either backend; the test skips when it is
+// unset. It never creates a database: a missing SQLite file fails the test.
+func Seed(t *testing.T, sql string, args ...any) {
+	t.Helper()
+	url := os.Getenv("LIGHTSTACK_DB_URL")
+	if url == "" {
+		t.Skip("set LIGHTSTACK_DB_URL to the database of the Lightstack under test to seed fixtures")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, err := database.Open(ctx, url, database.Options{MustExist: true})
+	require.NoError(t, err, "open LIGHTSTACK_DB_URL")
+	defer db.Close()
+	_, err = db.Exec(ctx, sql, args...)
+	require.NoError(t, err, "seed the database of the Lightstack under test")
 }
 
 // getEnvOrDefault returns environment variable value or default if not set.

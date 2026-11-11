@@ -6,14 +6,24 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // guestGet issues a metadata request the way a guest's arrives: from its own address,
 // through the per-bridge DNAT, with whatever headers it chose to send.
 func guestGet(r *gin.Engine, path, peer string, headers map[string]string) (int, string) {
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	return guestGetCtx(context.Background(), r, path, peer, headers)
+}
+
+// guestGetCtx is guestGet with a caller-supplied request context, so a test that makes a
+// table unavailable (dbtest.Unavailable) can give the request a deadline — a statement
+// blocked on PostgreSQL's ACCESS EXCLUSIVE lock fails instead of waiting indefinitely.
+func guestGetCtx(ctx context.Context, r *gin.Engine, path, peer string, headers map[string]string) (int, string) {
+	req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 	req.RemoteAddr = peer + ":40000"
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -32,12 +42,83 @@ func seedGuest(t *testing.T, ip string) string {
 	ctx := context.Background()
 	var portID string
 	if err := testPool.QueryRow(ctx,
-		`INSERT INTO ports (device_id, device_owner, project_id, fixed_ips) VALUES ($1, 'compute:nova', $2, $3::jsonb) RETURNING id`,
-		id, seededProjectID, fmt.Sprintf(`[{"ip_address":%q}]`, ip)).Scan(&portID); err != nil {
+		`INSERT INTO ports (project_id, device_id, device_owner, fixed_ips) VALUES ($1, $2, 'compute:nova', $3::jsonb) RETURNING id`,
+		seededProjectID, id, fmt.Sprintf(`[{"ip_address":%q}]`, ip)).Scan(&portID); err != nil {
 		t.Fatalf("insert port: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM ports WHERE id=$1", portID) })
 	return id
+}
+
+// When two instances hold one address — distinct device_ids on two ports of the same
+// project — the lookup is ambiguous and identifies neither, so the request is 404 rather
+// than served one guest's data to the other (upstream answers only when exactly one port
+// matches).
+func TestAmbiguousAddressIdentifiesNoInstance_DB(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	const addr = "198.51.100.30"
+	a := seedInstance(t, nil)
+	b := seedInstance(t, nil)
+	for _, inst := range []string{a, b} {
+		var portID string
+		if err := testPool.QueryRow(ctx,
+			`INSERT INTO ports (project_id, device_id, device_owner, fixed_ips) VALUES ($1, $2, 'compute:nova', $3::jsonb) RETURNING id`,
+			seededProjectID, inst, fmt.Sprintf(`[{"ip_address":%q}]`, addr)).Scan(&portID); err != nil {
+			t.Fatalf("seed port for %s: %v", inst, err)
+		}
+		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM ports WHERE id = $1`, portID) })
+	}
+	code, body := guestGet(newMetadataTestRouter(), "/latest/meta-data/instance-id", addr, nil)
+	if code != http.StatusNotFound {
+		t.Errorf("two instances hold %s: got %d %q; want 404, not one of %s/%s", addr, code, body, ec2InstanceID(a), ec2InstanceID(b))
+	}
+}
+
+// A database failure while identifying a guest answers 500, not a 404 that tells the guest
+// it has no instance (SRC-22).
+func TestMetadataDatabaseErrorIs500_DB(t *testing.T) {
+	requireDB(t)
+	seedGuest(t, "198.51.100.40")
+	release := dbtest.Unavailable(t, testPool, "ports")
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	code, _ := guestGetCtx(ctx, newMetadataTestRouter(), "/latest/meta-data/instance-id", "198.51.100.40", nil)
+	if code != http.StatusInternalServerError {
+		t.Errorf("metadata lookup with ports unavailable = %d; want 500, not a 404", code)
+	}
+}
+
+// A guest cannot read another project's instance by pointing its own port's device_id at
+// that instance: a port's device_id is caller-settable, but the port carries the caller's
+// project, so the project-scoped join drops it.
+func TestGuestCannotClaimAnotherProjectsInstance_DB(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	victim := seedGuest(t, "198.51.100.20") // instance + port in the seeded project
+
+	attacker := uuid.NewString()
+	if _, err := testPool.Exec(ctx, `INSERT INTO projects (id, name) VALUES ($1, $2)`,
+		attacker, "md-attacker-"+attacker[:8]); err != nil {
+		t.Fatalf("seed attacker project: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM projects WHERE id=$1", attacker) })
+
+	var portID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO ports (project_id, device_id, device_owner, fixed_ips) VALUES ($1, $2, 'compute:nova', $3::jsonb) RETURNING id`,
+		attacker, victim, fmt.Sprintf(`[{"ip_address":%q}]`, "198.51.100.21")).Scan(&portID); err != nil {
+		t.Fatalf("seed attacker port: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM ports WHERE id=$1", portID) })
+
+	code, body := guestGet(newMetadataTestRouter(), "/latest/meta-data/instance-id", "198.51.100.21", nil)
+	if code != http.StatusNotFound {
+		t.Errorf("attacker at .21 pointing its port at the victim: got %d %q; want 404, not the victim's id (%q)",
+			code, body, ec2InstanceID(victim))
+	}
 }
 
 // A guest is identified by where its request came from. An X-Instance-ID header naming
@@ -99,5 +180,22 @@ func TestLocalIPv4IsTheCallersAddress_DB(t *testing.T) {
 		map[string]string{"X-Forwarded-For": "198.51.100.11"})
 	if code != http.StatusOK || body != "198.51.100.10" {
 		t.Errorf("got %d %q; want 200 %q", code, body, "198.51.100.10")
+	}
+}
+
+// A guest's address is matched whole: a port holding 198.51.100.50 does not answer for
+// 198.51.100.5, whichever order the ports were created in.
+func TestGuestAddressIsMatchedWhole_DB(t *testing.T) {
+	requireDB(t)
+	longer := seedGuest(t, "198.51.100.50")
+	r := newMetadataTestRouter()
+
+	if code, body := guestGet(r, "/latest/meta-data/instance-id", "198.51.100.5", nil); code != http.StatusNotFound {
+		t.Errorf("no port holds 198.51.100.5: got %d %q; want 404, not the instance holding 198.51.100.50 (%q)",
+			code, body, ec2InstanceID(longer))
+	}
+	self := seedGuest(t, "198.51.100.5")
+	if code, body := guestGet(r, "/latest/meta-data/instance-id", "198.51.100.5", nil); code != http.StatusOK || body != ec2InstanceID(self) {
+		t.Errorf("got %d %q; want 200 %q", code, body, ec2InstanceID(self))
 	}
 }

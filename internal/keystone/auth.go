@@ -16,8 +16,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -39,7 +37,7 @@ type TokenClaims struct {
 
 // AuthService handles authentication operations
 type AuthService struct {
-	pool             *pgxpool.Pool
+	pool             database.DB
 	jwtSecret        []byte
 	tokenTTL         time.Duration
 	cache            *cache.Cache
@@ -51,7 +49,7 @@ type AuthService struct {
 }
 
 // NewAuthService creates a new auth service
-func NewAuthService(pool *pgxpool.Pool, jwtSecret string, tokenTTL time.Duration, cacheInstance *cache.Cache) *AuthService {
+func NewAuthService(pool database.DB, jwtSecret string, tokenTTL time.Duration, cacheInstance *cache.Cache) *AuthService {
 	return &AuthService{
 		pool:      pool,
 		jwtSecret: []byte(jwtSecret),
@@ -260,7 +258,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		domainName,
 	).Scan(&domainID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, "", common.NewUnauthorizedError("invalid domain")
 	}
 	if err != nil {
@@ -274,7 +272,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		username, domainID,
 	).Scan(&user.ID, &user.Name, &user.PasswordHash, &user.Enabled, &user.DomainID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, "", common.NewUnauthorizedError("invalid credentials")
 	}
 	if err != nil {
@@ -301,11 +299,16 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		projectName := req.Auth.Scope.Project.Name
 		projectIDParam := req.Auth.Scope.Project.ID
 
-		// A non-UUID project id cannot name a project (projects.id is a UUID
-		// column): fail with the same 401 as a missing project instead of
-		// letting Postgres reject the parameter as a 500.
-		if projectIDParam != "" && uuid.Validate(projectIDParam) != nil {
-			return nil, "", common.NewUnauthorizedError("project not found")
+		// A non-UUID project id cannot name a project: fail with the same 401 as a
+		// missing project. A valid alternate spelling (no dashes, upper case,
+		// braces) — the dash-free one is what rgw_compat_tenant_ids advertises —
+		// is looked up in its canonical form, which is how ids are stored.
+		if projectIDParam != "" {
+			id, err := uuid.Parse(projectIDParam)
+			if err != nil {
+				return nil, "", common.NewUnauthorizedError("project not found")
+			}
+			projectIDParam = id.String()
 		}
 
 		// Fetch project (with domain filter)
@@ -323,7 +326,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		err := s.pool.QueryRow(ctx, query, params...).Scan(
 			&proj.ID, &proj.Name, &proj.Description, &proj.Enabled, &proj.DomainID,
 		)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, "", common.NewUnauthorizedError("project not found")
 		}
 		if err != nil {
@@ -479,7 +482,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest, r
 		claims.UserID,
 	).Scan(&user.ID, &user.Name, &user.PasswordHash, &user.Enabled, &user.DomainID)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		return nil, "", common.NewUnauthorizedError("user not found")
 	}
 	if err != nil {
@@ -503,10 +506,14 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest, r
 		projectName := req.Auth.Scope.Project.Name
 		projectIDParam := req.Auth.Scope.Project.ID
 
-		// Same non-UUID guard as the password path: a malformed id is a 401,
-		// not a 500 from Postgres's uuid parser.
-		if projectIDParam != "" && uuid.Validate(projectIDParam) != nil {
-			return nil, "", common.NewUnauthorizedError("project not found")
+		// Same guard as the password path: a malformed id is a 401, an alternate
+		// spelling is looked up in its canonical form.
+		if projectIDParam != "" {
+			id, err := uuid.Parse(projectIDParam)
+			if err != nil {
+				return nil, "", common.NewUnauthorizedError("project not found")
+			}
+			projectIDParam = id.String()
 		}
 
 		// Fetch project
@@ -524,7 +531,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest, r
 		err := s.pool.QueryRow(ctx, query, params...).Scan(
 			&proj.ID, &proj.Name, &proj.Description, &proj.Enabled, &proj.DomainID,
 		)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, database.ErrNoRows) {
 			return nil, "", common.NewUnauthorizedError("project not found")
 		}
 		if err != nil {
@@ -740,7 +747,7 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 		// deleted user — render no user (RGW's envelope parser requires
 		// one, so the token is dead for it).
 		log.Warn().Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Token user disabled; omitting user from validation response")
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, database.ErrNoRows):
 		log.Warn().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Token user not found; omitting user from validation response")
 	default:
 		log.Error().Err(err).Str("operation", "validate_token").Str("user_id", claims.UserID).Msg("Failed to query user; omitting user from validation response")
@@ -778,7 +785,7 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 			// scoped token without one: the correct outcome for a dead
 			// scope).
 			log.Warn().Str("operation", "validate_token").Str("project_id", claims.ProjectID).Msg("Token project disabled; omitting project from validation response")
-		case errors.Is(err, pgx.ErrNoRows):
+		case errors.Is(err, database.ErrNoRows):
 			// The token's project no longer exists: render no project — the
 			// closest safe shape (RGW's parser rejects a scoped token without
 			// a project, which is the correct outcome for a dead scope).
@@ -881,7 +888,7 @@ func (s *AuthService) CheckPassword(password, hash string) bool {
 // broke every command one step *before* the self-links that feature fixed were ever
 // fetched. Empty when a request carries no usable host, in which case the configured host
 // and then "localhost" apply, so an endpoint is always absolute and parseable (FR-032).
-func BuildServiceCatalog(pool *pgxpool.Pool, projectID, requestHost string, cacheInstance *cache.Cache, s3Endpoint string) []CatalogEntry {
+func BuildServiceCatalog(pool database.DB, projectID, requestHost string, cacheInstance *cache.Cache, s3Endpoint string) []CatalogEntry {
 	ctx := context.Background()
 	host := catalogHost(requestHost)
 

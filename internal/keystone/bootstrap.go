@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -36,7 +36,7 @@ const (
 // It is fail-soft: a missing password yields a WARN and the well-known default
 // stays live (the install-blocking gate is owned by the SPEC-008 chart, not the
 // binary — FR-006). Returns a non-nil error only on an actual database failure.
-func BootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, cfg common.KeystoneConfig) error {
+func BootstrapAdmin(ctx context.Context, pool database.DB, cfg common.KeystoneConfig) error {
 	password := strings.TrimSpace(cfg.AdminPassword)
 	adminUser := strings.TrimSpace(cfg.AdminUser)
 	if adminUser == "" {
@@ -62,12 +62,12 @@ func BootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, cfg common.Keystone
 // seedDefaultAdmin handles the default-name path: it operates on the seeded
 // `admin` row, applying the configured password only while that row still
 // carries the default credential.
-func seedDefaultAdmin(ctx context.Context, pool *pgxpool.Pool, password, hash string) error {
+func seedDefaultAdmin(ctx context.Context, pool database.DB, password, hash string) error {
 	var id, storedHash string
 	err := pool.QueryRow(ctx,
 		"SELECT id, password_hash FROM users WHERE name = $1", seededAdminName,
 	).Scan(&id, &storedHash)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		// Seeded admin missing (unexpected) — create it fully scoped.
 		return createAdmin(ctx, pool, seededAdminName, hash)
 	}
@@ -102,14 +102,14 @@ func seedDefaultAdmin(ctx context.Context, pool *pgxpool.Pool, password, hash st
 // As with the default path, an already-provisioned password is never
 // overwritten; when the configured password is not the one in effect it warns
 // so the no-op is visible.
-func seedCustomAdmin(ctx context.Context, pool *pgxpool.Pool, adminUser, password, hash string) error {
+func seedCustomAdmin(ctx context.Context, pool database.DB, adminUser, password, hash string) error {
 	var id, storedHash string
 	err := pool.QueryRow(ctx,
 		"SELECT id, password_hash FROM users WHERE name = $1", adminUser,
 	).Scan(&id, &storedHash)
 
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, database.ErrNoRows):
 		// New account → create with the configured password and admin scoping.
 		if err := createAdmin(ctx, pool, adminUser, hash); err != nil {
 			return err
@@ -142,7 +142,7 @@ func seedCustomAdmin(ctx context.Context, pool *pgxpool.Pool, adminUser, passwor
 // createAdmin inserts the named user in the Default domain (no-op if it already
 // exists — first-boot seed) and grants it the standard admin role on the
 // default project. All statements are idempotent and concurrency-safe.
-func createAdmin(ctx context.Context, pool *pgxpool.Pool, name, hash string) error {
+func createAdmin(ctx context.Context, pool database.DB, name, hash string) error {
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO users (name, password_hash, enabled, domain_id) VALUES ($1, $2, true, $3) ON CONFLICT (name) DO NOTHING",
 		name, hash, defaultDomainID,
@@ -159,7 +159,7 @@ func createAdmin(ctx context.Context, pool *pgxpool.Pool, name, hash string) err
 
 // grantAdminRole grants the standard admin role on the default project to the
 // given user. Idempotent and concurrency-safe.
-func grantAdminRole(ctx context.Context, pool *pgxpool.Pool, userID string) error {
+func grantAdminRole(ctx context.Context, pool database.DB, userID string) error {
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO role_assignments (user_id, project_id, role_id) VALUES ($1, $2, $3) ON CONFLICT (user_id, project_id, role_id) DO NOTHING",
 		userID, defaultProjectID, adminRoleID,

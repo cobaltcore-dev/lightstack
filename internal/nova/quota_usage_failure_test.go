@@ -6,24 +6,19 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
 )
 
-// serveWithTableLocked serves one request while another connection holds an exclusive lock on
-// table, so any statement touching it blocks until the request's deadline and fails — a
-// stand-in for a database that cannot answer. Statements on other tables still succeed, which
-// is what lets a test get past the project and limit lookups to the usage counts. Other
-// packages' statements on the table only wait for the lock; none of them is failed.
+// serveWithTableLocked serves one request while table is unavailable (dbtest.Unavailable), so
+// any statement touching it fails — a stand-in for a database that cannot answer. Statements on
+// other tables still succeed, which is what lets a test get past the project and limit lookups
+// to the usage counts.
 func serveWithTableLocked(t *testing.T, r http.Handler, table, method, path string, headers map[string]string) (int, string) {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := testPool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // only releases the lock
-	if _, err := tx.Exec(ctx, "LOCK TABLE "+table+" IN ACCESS EXCLUSIVE MODE"); err != nil {
-		t.Fatalf("lock %s: %v", table, err)
-	}
+	release := dbtest.Unavailable(t, testPool, table)
+	defer release()
 	reqCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	req := httptest.NewRequest(method, path, nil).WithContext(reqCtx)

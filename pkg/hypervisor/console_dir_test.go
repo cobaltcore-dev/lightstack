@@ -76,7 +76,8 @@ func statOwnerMode(t *testing.T, path string) (uid, gid int, mode os.FileMode) {
 
 // The socket directory is QEMU's and closed to everyone else (0750). A missing parent is
 // created traversable (0755), because QEMU must still reach its disks under the storage
-// root. An existing directory with a wider mode is corrected.
+// root. An existing directory with a wider mode is corrected, and one with another owner
+// becomes QEMU's.
 func TestEnsureOwnedDir(t *testing.T) {
 	uid, gid := os.Getuid(), os.Getgid() // chown to oneself needs no privilege
 
@@ -106,6 +107,22 @@ func TestEnsureOwnedDir(t *testing.T) {
 			t.Errorf("mode = %o; want 750", mode)
 		}
 	})
+
+	// The subtests above chown to this process's own owner, which a new directory already
+	// has; this one asks for an owner it does not have, so the chown is seen.
+	t.Run("existing and someone else's", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "console-sockets")
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		qemuUID, qemuGID := otherOwner(t)
+		if err := ensureOwnedDir(dir, qemuUID, qemuGID); err != nil {
+			t.Fatalf("ensureOwnedDir: %v", err)
+		}
+		if gotUID, gotGID, _ := statOwnerMode(t, dir); gotUID != qemuUID || gotGID != qemuGID {
+			t.Errorf("owner = %d:%d; want %d:%d", gotUID, gotGID, qemuUID, qemuGID)
+		}
+	})
 }
 
 // PrepareConsoleSocketDir reads QEMU's owner from libvirt and records the outcome:
@@ -124,6 +141,21 @@ func TestPrepareConsoleSocketDir(t *testing.T) {
 		}
 		if _, _, mode := statOwnerMode(t, dir); mode != 0o750 {
 			t.Errorf("mode = %o; want 750", mode)
+		}
+	})
+
+	// The label above names this process's own owner, which a new directory already has;
+	// this one names an owner it does not have, so the chown to it is seen.
+	t.Run("prepared for someone else", func(t *testing.T) {
+		uid, gid := otherOwner(t)
+		qemuLabel := fmt.Sprintf("<baselabel type='kvm'>+%d:+%d</baselabel>", uid, gid)
+		m := newConnectedManagerWith(t, &fakeLibvirtd{caps: capsWith(apparmorModel + dacModel(qemuLabel))})
+		dir := filepath.Join(t.TempDir(), "console-sockets")
+		if err := m.PrepareConsoleSocketDir(t.Context(), dir); err != nil {
+			t.Fatalf("PrepareConsoleSocketDir: %v", err)
+		}
+		if gotUID, gotGID, _ := statOwnerMode(t, dir); gotUID != uid || gotGID != gid {
+			t.Errorf("owner = %d:%d; want %d:%d", gotUID, gotGID, uid, gid)
 		}
 	})
 

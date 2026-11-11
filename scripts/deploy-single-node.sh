@@ -469,7 +469,7 @@ clone_lightstack() {
 build_lightstack() {
     log_info "Building Lightstack binary..."
 
-    # Use the same patched toolchain as CI and the release image.
+    # Checksum-pinned toolchain by design; CI and the release image track latest stable instead.
     local go_version="1.27.3"
     local go_sha256="65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
     local installed_go=""

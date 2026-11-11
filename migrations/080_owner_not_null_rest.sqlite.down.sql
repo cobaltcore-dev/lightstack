@@ -1,0 +1,6 @@
+DROP TRIGGER IF EXISTS networks_project_id_not_null_insert;
+DROP TRIGGER IF EXISTS networks_project_id_not_null_update;
+DROP TRIGGER IF EXISTS routers_project_id_not_null_insert;
+DROP TRIGGER IF EXISTS routers_project_id_not_null_update;
+DROP TRIGGER IF EXISTS floating_ips_project_id_not_null_insert;
+DROP TRIGGER IF EXISTS floating_ips_project_id_not_null_update;

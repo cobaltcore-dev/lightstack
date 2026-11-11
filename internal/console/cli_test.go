@@ -151,7 +151,7 @@ func TestCLIPurgeRemovesExpired(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 	if _, err := testPool.Exec(ctx,
-		"UPDATE console_auth_tokens SET expires_at = now() - interval '1 minute' WHERE token = $1", tok,
+		"UPDATE console_auth_tokens SET expires_at = $2 WHERE token = $1", tok, time.Now().Add(-time.Minute),
 	); err != nil {
 		t.Fatalf("backdating: %v", err)
 	}

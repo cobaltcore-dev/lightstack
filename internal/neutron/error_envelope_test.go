@@ -2,6 +2,7 @@ package neutron
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,8 +166,8 @@ func TestNeutronInUseNamesTheCondition(t *testing.T) {
 		{"router gateway", func(t *testing.T, networkID string) {
 			routerID := uuid.NewString()
 			mustExec(t, `INSERT INTO routers (id, name, project_id, external_gateway_info)
-				VALUES ($1, 'spec024-in-use', $2, jsonb_build_object('network_id', $3::text))`,
-				routerID, seededProjectID, networkID)
+				VALUES ($1, 'spec024-in-use', $2, $3::jsonb)`,
+				routerID, seededProjectID, fmt.Sprintf(`{"network_id":%q}`, networkID))
 			cleanupRows(t, "routers", routerID)
 		}},
 	} {

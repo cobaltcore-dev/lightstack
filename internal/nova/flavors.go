@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -57,7 +58,7 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 	)
 	if err != nil {
 		// Check for unique constraint violation (duplicate name)
-		if common.IsUniqueViolation(err) {
+		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("Flavor with name '"+req.Flavor.Name+"' already exists"))
 			return
 		}

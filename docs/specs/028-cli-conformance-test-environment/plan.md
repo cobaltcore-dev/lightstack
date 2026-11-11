@@ -297,8 +297,8 @@ remove its baseline entry — and if the suite probe self-heals, convert it to a
 
 ## 9. Merge dependencies
 
-- This PR claims **SPEC-028** and **migrations 074–078**. Open PRs #108/#109 also claim
-  SPEC-028/029 and migration 074; whichever merges second must renumber its spec directory and
-  migrations per the specs registry rule (never silently share numbers).
+- This PR claims **SPEC-028**. Main already uses migrations 074–075, so this PR's schema changes
+  use **migrations 076–080**. The overlapping SPEC-028/029 registry claims in #108/#109 still need
+  the merge order recorded; never silently share a spec number.
 - This specification is **plan.md-only** today (no `spec.md`/`tasks.md`). It needs those files or a
   documented plan-first carve-out before the registry can treat it as complete.

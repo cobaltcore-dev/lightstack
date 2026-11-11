@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // UpdateQuotaRequest represents a quota update request
@@ -298,7 +299,7 @@ func (svc *Service) GetQuotaSetDetail(c *gin.Context) {
 // countUsage runs a single-column COUNT. A failure is returned, never reported as zero: a
 // usage view that answers 0 when it could not count tells an operator the project consumes
 // nothing.
-func countUsage(ctx context.Context, pool *pgxpool.Pool, resource, query, arg string) (int, error) {
+func countUsage(ctx context.Context, pool database.DB, resource, query, arg string) (int, error) {
 	var n int
 	if err := pool.QueryRow(ctx, query, arg).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count %s usage: %w", resource, err)
@@ -370,7 +371,7 @@ var limitsOnlyDefaults = map[string]int{
 // It also reports which resources have a stored row, which GetQuotaSet needs to tell a
 // project-specific override apart from a code default — the rows are already in hand
 // here, so this costs no extra query.
-func resolveQuotaLimits(ctx context.Context, pool *pgxpool.Pool, projectID string) (map[string]int, map[string]struct{}, error) {
+func resolveQuotaLimits(ctx context.Context, pool database.DB, projectID string) (map[string]int, map[string]struct{}, error) {
 	limits := make(map[string]int, len(quotaDefaults)+len(limitsOnlyDefaults))
 	maps.Copy(limits, quotaDefaults)
 	maps.Copy(limits, limitsOnlyDefaults)
@@ -432,61 +433,123 @@ func usageQuery(resource string) (string, error) {
 	}
 }
 
-// CheckQuota checks if creating a resource would exceed quota.
-// The check runs inside a transaction with a row-level lock on the quotas row
-// to prevent TOCTOU races under concurrent requests.
-func CheckQuota(c *gin.Context, pool *pgxpool.Pool, resource string, requestedAmount int) error {
-	projectID := c.GetString("project_id")
-
-	uq, err := usageQuery(resource)
-	if err != nil {
-		return err
-	}
-
-	return database.WithTx(c.Request.Context(), pool, func(tx pgx.Tx) error {
-		// Lock the quota row for this project+resource for the duration of the transaction.
-		var limit int
-		lockErr := tx.QueryRow(c.Request.Context(), `
-			SELECT hard_limit FROM quotas WHERE project_id = $1 AND resource = $2 FOR UPDATE
-		`, projectID, resource).Scan(&limit)
-
-		if errors.Is(lockErr, pgx.ErrNoRows) {
-			def, ok := quotaDefaults[resource]
-			if !ok {
-				return fmt.Errorf("unknown quota resource: %s", resource)
-			}
-			limit = def
-		} else if lockErr != nil {
-			return lockErr
-		}
-
-		var usage int
-		if scanErr := tx.QueryRow(c.Request.Context(), uq, projectID).Scan(&usage); scanErr != nil {
-			log.Error().Err(scanErr).Str("resource", resource).Str("project_id", projectID).Msg("failed to scan quota usage")
-			return scanErr
-		}
-
-		if usage+requestedAmount > limit {
-			return &QuotaExceededError{
-				Resource:  resource,
-				Limit:     limit,
-				Usage:     usage,
-				Requested: requestedAmount,
-			}
-		}
-
-		return nil
+// checkQuota is the non-binding early refusal of a server create: it runs checkQuotaLocked
+// in a transaction of its own, before any boot volume is provisioned. It is one copy of the
+// rule with the binding check at instance insert (FR-035, research R14); the two differ only
+// in which transaction they run in. A create that passes here can still lose the binding
+// recheck's race, which is the one that counts.
+func checkQuota(ctx context.Context, pool database.DB, projectID string, wants []quotaRequest) error {
+	return database.WithTx(ctx, pool, func(tx database.Tx) error {
+		return checkQuotaLocked(ctx, tx, projectID, wants)
 	})
 }
 
-// QuotaExceededError represents a quota exceeded error
+// quotaOverage is one compute resource a create exceeded, and by how much.
+type quotaOverage struct {
+	resource               string
+	requested, used, limit int
+}
+
+// QuotaExceededError lists every compute quota a server create exceeded. Upstream names all
+// of them in one message, sorted, each field joined by ", " (nova/compute/utils.py
+// get_over_quota_detail); a single-resource refusal reads exactly as TooManyInstances.
 type QuotaExceededError struct {
-	Resource  string
-	Limit     int
-	Usage     int
-	Requested int
+	overs []quotaOverage
 }
 
 func (e *QuotaExceededError) Error() string {
 	return "Quota exceeded"
+}
+
+// resourceList is the exceeded resources, sorted and comma-joined, for logging.
+func (e *QuotaExceededError) resourceList() string {
+	res := make([]string, len(e.overs))
+	for i, o := range e.overs {
+		res[i] = o.resource
+	}
+	sort.Strings(res)
+	return strings.Join(res, ", ")
+}
+
+// forbidden is the answer to a create the quota refuses (FR-035a): 403 with upstream's
+// message, naming every exceeded resource.
+func (e *QuotaExceededError) forbidden() *common.OpenStackError {
+	overs := append([]quotaOverage(nil), e.overs...)
+	sort.Slice(overs, func(i, j int) bool { return overs[i].resource < overs[j].resource })
+	res := make([]string, len(overs))
+	req := make([]string, len(overs))
+	used := make([]string, len(overs))
+	lim := make([]string, len(overs))
+	for i, o := range overs {
+		res[i], req[i], used[i], lim[i] = o.resource, strconv.Itoa(o.requested), strconv.Itoa(o.used), strconv.Itoa(o.limit)
+	}
+	return common.NewForbiddenError(fmt.Sprintf("Quota exceeded for %s: Requested %s, but already used %s of %s %s",
+		strings.Join(res, ", "), strings.Join(req, ", "), strings.Join(used, ", "), strings.Join(lim, ", "), strings.Join(res, ", ")))
+}
+
+// overQuotaError is how compute answers a create a quota refuses: 403 with upstream's
+// message — TooManyInstances (nova/exception.py), raised as HTTPForbidden on create
+// (nova/api/openstack/compute/servers.py) — rather than 413 overLimit. It covers a boot
+// volume block storage refuses for its quota too: that is still a refused server create,
+// though block storage's own endpoints answer 413, as upstream's do.
+func overQuotaError(resource string, requested, used, limit int) *common.OpenStackError {
+	// per_volume_gigabytes is a per-request ceiling, not consumption: the "used … of …"
+	// template would read as headroom still free. Use Cinder's size-limit wording instead
+	// (VolumeSizeExceedsLimit), still a 403.
+	if resource == "per_volume_gigabytes" {
+		return common.NewForbiddenError(fmt.Sprintf(
+			"Requested volume size %dG is larger than maximum allowed limit %dG.", requested, limit))
+	}
+	return common.NewForbiddenError(fmt.Sprintf("Quota exceeded for %s: Requested %d, but already used %d of %d %s",
+		resource, requested, used, limit, resource))
+}
+
+// quotaRequest is one resource a request consumes, and how much of it. A slice of these
+// keeps the order in which a refusal names a resource stable.
+type quotaRequest struct {
+	resource string
+	amount   int
+}
+
+// checkQuotaLocked is the binding quota check of a server create (FR-035, research R14).
+// It runs in the transaction that inserts the instance, under the project's lock, so the
+// usage it reads cannot change before that insert commits: the early checks run in
+// transactions of their own, and two creates could both pass them.
+//
+// The lock is advisory, as block storage's is (lockCinderQuota): a project on the code
+// defaults has no quotas row a FOR UPDATE could lock, and that is the common case. On
+// SQLite the lock is a no-op, and immediate transactions serialise the check instead.
+func checkQuotaLocked(ctx context.Context, tx database.Tx, projectID string, wants []quotaRequest) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "nova_quota:"+projectID); err != nil {
+		return fmt.Errorf("locking the compute quota of project %s: %w", projectID, err)
+	}
+	var overs []quotaOverage
+	for _, w := range wants {
+		limit, ok := quotaDefaults[w.resource]
+		if !ok {
+			return fmt.Errorf("unknown quota resource: %s", w.resource)
+		}
+		err := tx.QueryRow(ctx, `SELECT hard_limit FROM quotas WHERE project_id = $1 AND resource = $2`,
+			projectID, w.resource).Scan(&limit)
+		if err != nil && !errors.Is(err, database.ErrNoRows) {
+			return fmt.Errorf("read the %s quota of project %s: %w", w.resource, projectID, err)
+		}
+		uq, err := usageQuery(w.resource)
+		if err != nil {
+			return err
+		}
+		var usage int
+		if err := tx.QueryRow(ctx, uq, projectID).Scan(&usage); err != nil {
+			return fmt.Errorf("count the %s usage of project %s: %w", w.resource, projectID, err)
+		}
+		// A negative limit is upstream's "unlimited" (nova/quota.py), as in Cinder. Every
+		// exceeded resource is collected so the refusal can name them all (upstream does).
+		if limit >= 0 && usage+w.amount > limit {
+			overs = append(overs, quotaOverage{resource: w.resource, requested: w.amount, used: usage, limit: limit})
+		}
+	}
+	if len(overs) > 0 {
+		return &QuotaExceededError{overs: overs}
+	}
+	return nil
 }

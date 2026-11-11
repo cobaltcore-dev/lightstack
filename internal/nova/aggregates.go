@@ -10,15 +10,17 @@ package nova
 // change something that was not theirs.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -176,7 +178,7 @@ func (svc *Service) GetAggregate(c *gin.Context) {
 		WHERE uuid = $1
 	`, aggregateID).Scan(&name, &availabilityZone, &metadata, &hosts, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("aggregate"))
 		return
 	}
@@ -361,7 +363,7 @@ func (svc *Service) AddHostToAggregate(c *gin.Context, aggregateID string, actio
 		aggregateID,
 	).Scan(&hosts)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("aggregate"))
 		return
 	}
@@ -417,7 +419,7 @@ func (svc *Service) RemoveHostFromAggregate(c *gin.Context, aggregateID string, 
 		aggregateID,
 	).Scan(&hosts)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("aggregate"))
 		return
 	}
@@ -458,6 +460,27 @@ func (svc *Service) RemoveHostFromAggregate(c *gin.Context, aggregateID string, 
 	svc.GetAggregate(c)
 }
 
+// mergeAggregateMetadata reads an aggregate's metadata under a row lock, merges updates into it and
+// writes it back, so updates racing for one aggregate keep every key.
+func mergeAggregateMetadata(ctx context.Context, tx database.Tx, aggregateID string, updates map[string]any) error {
+	var stored map[string]any
+	if err := tx.QueryRow(ctx,
+		"SELECT metadata FROM host_aggregates WHERE uuid = $1 FOR UPDATE", aggregateID,
+	).Scan(&stored); err != nil {
+		return err
+	}
+	if stored == nil {
+		stored = map[string]any{}
+	}
+	for k, v := range updates {
+		stored[k] = v
+	}
+	_, err := tx.Exec(ctx,
+		"UPDATE host_aggregates SET metadata = $1, updated_at = $2 WHERE uuid = $3",
+		stored, time.Now(), aggregateID)
+	return err
+}
+
 // SetAggregateMetadata sets metadata for an aggregate
 func (svc *Service) SetAggregateMetadata(c *gin.Context, aggregateID string, actionData any) {
 	actionMap, ok := actionData.(map[string]any)
@@ -484,13 +507,16 @@ func (svc *Service) SetAggregateMetadata(c *gin.Context, aggregateID string, act
 		return
 	}
 
-	// Update metadata (merge with existing)
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		UPDATE host_aggregates
-		SET metadata = metadata || $1::jsonb, updated_at = $2
-		WHERE uuid = $3
-	`, metadata, time.Now(), aggregateID)
-
+	// Merge into the stored metadata in one transaction, so updates racing for one aggregate
+	// keep every key.
+	ctx := c.Request.Context()
+	err = database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		return mergeAggregateMetadata(ctx, tx, aggregateID, metadata)
+	})
+	if errors.Is(err, database.ErrNoRows) {
+		common.SendError(c, common.NewNotFoundError("aggregate"))
+		return
+	}
 	if err != nil {
 		log.Error().Err(err).Str("operation", "set_aggregate_metadata").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to set aggregate metadata"))

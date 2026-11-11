@@ -3,14 +3,15 @@ package keystone
 import (
 	"errors"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
 // notFoundOr500 maps the error from an identity by-id statement to a response: a
-// real not-found (pgx.ErrNoRows) becomes Keystone's verbatim 404
+// real not-found (database.ErrNoRows) becomes Keystone's verbatim 404
 // ("Could not find <resource>: <id>."), while any other error is a genuine
 // backend fault and surfaces as 500 — never masked as 404 (cloud-storage#515,
 // FR-007/FR-010). It replaces both common.HandleDatabaseError call sites and the
@@ -18,7 +19,7 @@ import (
 // plain SELECTs and the `UPDATE ... RETURNING` used by the PATCH handlers alike,
 // since both report "no such id" as ErrNoRows.
 func notFoundOr500(c *gin.Context, err error, resource, id string) {
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewIdentityNotFoundError(resource, id))
 		return
 	}

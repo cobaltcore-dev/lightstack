@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os/exec"
 	"testing"
 
+	contract "github.com/cobaltcore-dev/lightstack/test/contract"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -152,15 +153,10 @@ func TestCinderManageSnapshot_Contract(t *testing.T) {
 func createDBVolume(t *testing.T, name string) string {
 	t.Helper()
 
-	cmd := `docker exec lightstack-postgres psql -U lightstack -d lightstack -c "INSERT INTO volumes (id, name, size_gb, status, project_id, created_at, updated_at) SELECT gen_random_uuid(), '` + name + `', 1, 'available', id, NOW(), NOW() FROM projects WHERE name='default' LIMIT 1 RETURNING id;" | grep -E '[a-f0-9]{8}-[a-f0-9]{4}' | tr -d ' '`
-
-	output, err := exec.Command("sh", "-c", cmd).Output()
-	if err != nil {
-		t.Fatalf("Failed to create volume: %v", err)
-	}
-
-	volumeID := string(output)
-	volumeID = volumeID[:len(volumeID)-1] // Remove trailing newline
-
+	volumeID := uuid.New().String()
+	contract.Seed(t,
+		`INSERT INTO volumes (id, name, size_gb, status, project_id, created_at, updated_at)
+		 VALUES ($1, $2, 1, 'available', (SELECT id FROM projects WHERE name = 'default' LIMIT 1), NOW(), NOW())`,
+		volumeID, name)
 	return volumeID
 }

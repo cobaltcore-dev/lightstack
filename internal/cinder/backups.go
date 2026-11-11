@@ -6,10 +6,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/database"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -103,7 +104,7 @@ func (svc *Service) CreateBackup(c *gin.Context) {
 		req.Backup.VolumeID, projectID,
 	).Scan(&volumeSize, &status)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("volume"))
 		return
 	}
@@ -115,6 +116,12 @@ func (svc *Service) CreateBackup(c *gin.Context) {
 	if refuseAwaitingTransfer(c, req.Backup.VolumeID, status) {
 		return
 	}
+	// The volume's backing is not there yet (FR-036a); upstream refuses a backup of it.
+	if status == "creating" {
+		common.SendError(c, common.NewBadRequestError(
+			`Invalid volume: Volume to be backed up must be available or in-use, but the current status is "creating".`))
+		return
+	}
 
 	// Backups consume their own count and their own gigabytes allowance
 	// (SPEC-025-followup FR-028a). Checked before the row is written, so a refusal leaves
@@ -124,7 +131,7 @@ func (svc *Service) CreateBackup(c *gin.Context) {
 
 	err = withCinderQuota(c.Request.Context(), svc.pool, projectID,
 		[]quotaWant{{"backups", 1}, {"backup_gigabytes", volumeSize}},
-		func(tx pgx.Tx) error {
+		func(tx database.Tx) error {
 			_, ierr := tx.Exec(c.Request.Context(), `
 		INSERT INTO volume_backups (id, project_id, volume_id, name, description, status, size_gb, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -185,7 +192,7 @@ func (svc *Service) GetBackup(c *gin.Context) {
 		WHERE id = $1 AND project_id = $2
 	`, backupID, projectID).Scan(&volumeID, &name, &description, &status, &sizeGB, &createdAt, &updatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("backup"))
 		return
 	}
@@ -274,7 +281,7 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 		backupID, projectID,
 	).Scan(&originalVolumeID, &sizeGB)
 
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("backup"))
 		return
 	}
@@ -319,7 +326,7 @@ func (svc *Service) RestoreBackup(c *gin.Context) {
 			volumeName = nameVal
 		}
 
-		err = withVolumeQuota(c.Request.Context(), svc.pool, projectID, sizeGB, func(tx pgx.Tx) error {
+		err = withVolumeQuota(c.Request.Context(), svc.pool, projectID, sizeGB, func(tx database.Tx) error {
 			_, ierr := tx.Exec(c.Request.Context(), `
 			INSERT INTO volumes (id, project_id, name, description, size_gb, status, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

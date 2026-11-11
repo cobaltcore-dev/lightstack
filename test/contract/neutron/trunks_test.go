@@ -3,10 +3,8 @@ package neutron_test
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"testing"
 
 	contract "github.com/cobaltcore-dev/lightstack/test/contract"
@@ -35,9 +33,10 @@ func createTrunkNetwork(t *testing.T, client *gophercloud.ServiceClient) string 
 func createDBPort(t *testing.T, networkID, name string) string {
 	t.Helper()
 	portID := uuid.New().String()
-	cmd := fmt.Sprintf(`docker exec lightstack-postgres psql -U lightstack -d lightstack -c "INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at) VALUES ('%s', '%s', '%s', (SELECT id FROM projects WHERE name='default' LIMIT 1), '00:00:00:00:00:00', true, 'ACTIVE', '[]', NOW(), NOW());"`, portID, name, networkID)
-	out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
-	require.NoError(t, err, "Failed to insert port: %s", out)
+	contract.Seed(t,
+		`INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
+		 VALUES ($1, $2, $3, (SELECT id FROM projects WHERE name = 'default' LIMIT 1), '00:00:00:00:00:00', true, 'ACTIVE', '[]', NOW(), NOW())`,
+		portID, name, networkID)
 	return portID
 }
 
@@ -112,7 +111,7 @@ func TestTrunkBasicCRUD(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	// Cleanup
-	exec.Command("sh", "-c", fmt.Sprintf(`docker exec lightstack-postgres psql -U lightstack -d lightstack -c "DELETE FROM ports WHERE id='%s';"`, portID)).Run()
+	contract.Seed(t, "DELETE FROM ports WHERE id = $1", portID)
 }
 
 // TestTrunkSubports tests adding subports
@@ -168,5 +167,5 @@ func TestTrunkSubports(t *testing.T) {
 
 	// Cleanup
 	http.NewRequest("DELETE", client.ServiceURL("trunks", trunkID), nil)
-	exec.Command("sh", "-c", fmt.Sprintf(`docker exec lightstack-postgres psql -U lightstack -d lightstack -c "DELETE FROM ports WHERE id IN ('%s', '%s');"`, parentPort, subPort)).Run()
+	contract.Seed(t, "DELETE FROM ports WHERE id IN ($1, $2)", parentPort, subPort)
 }

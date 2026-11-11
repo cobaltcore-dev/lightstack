@@ -16,7 +16,7 @@ With **104% API coverage (342/330 endpoints)**, lightstack delivers complete Ope
 ## 🎯 What is lightstack?
 
 Just as **K3s** is to Kubernetes, **lightstack** is to OpenStack:
-- **Lightweight**: Single ~35MB binary vs multi-GB Python distributions
+- **Lightweight**: Single small binary vs multi-GB Python distributions
 - **Fast**: Go-based synchronous architecture (10x faster than traditional OpenStack)
 - **Simple**: One process, one database, zero message queues
 - **Drop-in Compatible**: Use existing Terraform scripts and OpenStack CLI unchanged (Horizon's UI is API-compatible but **not** a drop-in for resource management — see the [compatibility report](docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md))
@@ -67,7 +67,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full list.
 **Migration Path**: Point your Terraform provider or OpenStack client to lightstack endpoints - no script changes required.
 
 ### Architecture
-- **Single Binary**: All services in one process (~35MB)
+- **Single Binary**: All services in one small process
 - **PostgreSQL 18+**: Unified state management (55 migrations, 35+ tables)
 - **Synchronous Architecture**: No RabbitMQ/message queues (10x faster)
 - **libvirt/KVM**: Real compute virtualization (stub mode for development)

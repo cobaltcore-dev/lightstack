@@ -1,0 +1,56 @@
+# helm-unittest specs for the reserved-variable guard (SPEC-029): the database backend and URL
+# are owned by database.url / database.existingSecret, which drive validation, the hostPath
+# mounts, startup and the teardown purge together. An override in extraEnv wins for the workload
+# container but not for the mounts or the purge Job (which does not inherit extraEnv), so it is
+# refused at render time. The guard lives in lightstack.validate, invoked from service.yaml, and
+# fires for every backend — the base values here are PostgreSQL.
+suite: extraEnv reserved database variables
+templates:
+  - templates/service.yaml
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+tests:
+  - it: refuses extraEnv that overrides LIGHTSTACK_DB_URL (literal)
+    set:
+      extraEnv:
+        - name: LIGHTSTACK_DB_URL
+          value: sqlite:///var/lib/lightstack/custom/lightstack.db
+    asserts:
+      - failedTemplate:
+          errorPattern: extraEnv must not set LIGHTSTACK_DB_URL
+
+  # A Secret-backed override is refused by name too — the chart rejects it however the value is
+  # supplied, so valueFrom.secretKeyRef cannot slip a URL past validation.
+  - it: refuses extraEnv that overrides LIGHTSTACK_DB_URL (valueFrom secretKeyRef)
+    set:
+      extraEnv:
+        - name: LIGHTSTACK_DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: some-secret
+              key: url
+    asserts:
+      - failedTemplate:
+          errorPattern: extraEnv must not set LIGHTSTACK_DB_URL
+
+  - it: refuses extraEnv that overrides LIGHTSTACK_DB_BACKEND
+    set:
+      extraEnv:
+        - name: LIGHTSTACK_DB_BACKEND
+          value: sqlite
+    asserts:
+      - failedTemplate:
+          errorPattern: extraEnv must not set LIGHTSTACK_DB_BACKEND
+
+  - it: accepts unrelated extraEnv entries
+    set:
+      extraEnv:
+        - name: AWS_ACCESS_KEY_ID
+          value: AKIAX
+        - name: AWS_SECRET_ACCESS_KEY
+          value: SEKRET
+    asserts:
+      - notFailedTemplate: {}

@@ -331,8 +331,8 @@ func insertSubnetOwnedBy(t *testing.T, networkID, owner, name, cidr string) stri
 	err := testPool.QueryRow(t.Context(),
 		`INSERT INTO subnets (name, network_id, project_id, cidr, gateway_ip, ip_version,
 		                      enable_dhcp, dns_nameservers, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, '10.0.0.1', 4, false, '{}', NOW(), NOW()) RETURNING id`,
-		name, networkID, owner, cidr,
+		 VALUES ($1, $2, $3, $4, '10.0.0.1', 4, false, $5, NOW(), NOW()) RETURNING id`,
+		name, networkID, owner, cidr, []string{},
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert subnet %q owned by %s: %v", name, owner, err)
@@ -543,8 +543,8 @@ func TestNullOwnerSubnetStaysReadable(t *testing.T) {
 	if err := testPool.QueryRow(t.Context(),
 		`INSERT INTO subnets (name, network_id, project_id, cidr, gateway_ip, ip_version,
 		                      enable_dhcp, dns_nameservers, created_at, updated_at)
-		 VALUES ('spec022-null-owner', $1, NULL, '10.95.0.0/24', '10.95.0.1', 4, false, '{}', NOW(), NOW())
-		 RETURNING id`, netA,
+		 VALUES ('spec022-null-owner', $1, NULL, '10.95.0.0/24', '10.95.0.1', 4, false, $2, NOW(), NOW())
+		 RETURNING id`, netA, []string{},
 	).Scan(&subnetID); err != nil {
 		t.Fatalf("insert a subnet with a NULL owner: %v", err)
 	}

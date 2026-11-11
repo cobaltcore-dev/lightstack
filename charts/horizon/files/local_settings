@@ -62,7 +62,7 @@ STATIC_URL = '/static/'
 # Lightstack Service Discovery
 OPENSTACK_HOST = os.environ.get("OPENSTACK_HOST", "lightstack")
 OPENSTACK_KEYSTONE_URL = "http://%s:35357/v3" % OPENSTACK_HOST
-OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"
+OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"
 
 # API Version Configuration (Lightstack Flamingo Compatible)
 OPENSTACK_API_VERSIONS = {
@@ -256,7 +256,7 @@ HORIZON_CONFIG = {
 }
 
 # Disable features not supported by Lightstack stub mode
-HORIZON_IMAGES_UPLOAD_MODE = 'direct'
+HORIZON_IMAGES_UPLOAD_MODE = 'legacy'
 
 # ==========================================
 # Policy Configuration

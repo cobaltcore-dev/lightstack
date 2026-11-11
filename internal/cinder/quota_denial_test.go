@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // Unit-level half of US3, separated from the HTTP-level tests deliberately: it names
@@ -29,7 +29,7 @@ func TestQuotaDenialIsRecorded(t *testing.T) {
 	// write it was asked to authorise. That is free here, and it is the property the whole
 	// helper exists for.
 	wrote := false
-	err := withVolumeQuota(context.Background(), testPool, quotaProject, 1, func(pgx.Tx) error {
+	err := withVolumeQuota(context.Background(), testPool, quotaProject, 1, func(database.Tx) error {
 		wrote = true
 		return nil
 	})

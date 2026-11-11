@@ -5,7 +5,11 @@
 // here (SPEC-009 WS-0/WS-2/WS-5).
 package paths
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 // DefaultBase is the node-local root used when state_path is not configured.
 const DefaultBase = "/var/lib/lightstack"
@@ -54,4 +58,38 @@ func ConsoleSocketDir() string { return filepath.Join(base, "console-sockets") }
 // hypervisor's domain ID (FR-014a).
 func ConsoleSocketPath(instanceID string) string {
 	return filepath.Join(ConsoleSocketDir(), instanceID+".sock")
+}
+
+// DBDir is where a SQLite database lives on the node (lightstack.db and its -wal and
+// -shm files). PostgreSQL deployments leave it empty.
+func DBDir() string { return filepath.Join(base, "db") }
+
+// StorageTrees are the node-local directories teardown removes wholesale (the
+// internal/teardown purge). A SQLite database must never live inside any of them: a failed
+// teardown removes these before it knows whether the run succeeded, so a database nested here
+// would be deleted with the tree and the retry would lose its inventory.
+func StorageTrees() []string {
+	return []string{ImagesDir(), VolumesDir(), InstancesDir(), CloudInitDir(), DHCPDir(), ConsoleTokenDir(), ConsoleSocketDir()}
+}
+
+// WithinStorageTree returns the reserved storage tree (from StorageTrees) that contains the
+// absolute, cleaned path, or "" if none does. A path equal to a tree counts as within it.
+func WithinStorageTree(path string) string {
+	for _, t := range StorageTrees() {
+		if path == t || strings.HasPrefix(path, t+string(filepath.Separator)) {
+			return t
+		}
+	}
+	return ""
+}
+
+// BackupsDir holds the database backups lightstack-migrate takes (SPEC-030). It is a sibling
+// of DBDir, not inside it: the uninstall purge removes db/ under dataRetentionPolicy: delete
+// and leaves this directory alone, so backups stay the operator's.
+func BackupsDir() string { return filepath.Join(base, "backups") }
+
+// BackupPath is the default name of a backup taken at t: its UTC timestamp, so backups sort by
+// age and a second backup in the same second is refused rather than overwriting the first.
+func BackupPath(t time.Time) string {
+	return filepath.Join(BackupsDir(), "lightstack-"+t.UTC().Format("20060102T150405Z")+".db")
 }

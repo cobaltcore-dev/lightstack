@@ -47,7 +47,10 @@ services:
       # by service name on the shared network.
       LIGHTSTACK_KEYSTONE_URL: "http://lightstack:35357"
     volumes:
-      - ./rgw-keystone-entrypoint.sh:/rgw-keystone-entrypoint.sh:ro
+      # `,z` relabels the bind-mounted script for SELinux-enforcing hosts (openSUSE/Fedora/RHEL)
+      # so the non-privileged rgw container can read+exec it; without it the entrypoint fails
+      # "Permission denied" (exit 126) and the stack stalls. Harmless where SELinux is off (CI).
+      - ./rgw-keystone-entrypoint.sh:/rgw-keystone-entrypoint.sh:ro,z
     ports:
       - "48080:8080" # RGW S3 (host access for the test driver)
     networks: [rgwtest]

@@ -134,11 +134,13 @@ logging:
 > are silently ignored. Everything else (admin password, service modes, VXLAN, cache,
 > logging, ports, …) takes effect **only from the YAML config file** passed via `--config`.
 
-The binary honors exactly **fourteen** environment variables:
+The binary honors exactly these environment variables:
 
 | Variable | Overrides / controls | Where it is read |
 |----------|----------------------|------------------|
-| `LIGHTSTACK_DB_URL` | `database.url` | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_DB_URL` | `database.url`: `postgres://…` or `sqlite:///absolute/path` (see [Database Configuration](#database-configuration)) | `internal/common/config.go` (`LoadConfig`) |
+| `LIGHTSTACK_DB_BACKEND` | the backend the deployment expects, `postgres` or `sqlite`. When set, a `database.url` that selects the other one is refused at startup | startup (`cmd/lightstack/main.go`, `cmd/lightstack-migrate`) |
+| `LIGHTSTACK_NODE_NAME` | the name this node reserves volumes and snapshots under while it creates them; the startup sweep resolves only its own. Defaults to the host name. Set it where the host name changes across restarts — a pod without host networking; the Helm chart sets it to the pod's node name | startup (`internal/common/nodename.go`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` in OpenStack's dash-free form in the `/v3/auth/tokens` responses; `/v3/s3tokens` already uses that historical form. The EC2 mint accepts dash-free or alternate UUID encodings as input and stores the canonical database id. Enabling the flag therefore unifies Swift with the existing S3 tenant namespace without re-keying S3 data. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host — a **fallback**, see below | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
@@ -257,17 +259,25 @@ services:
 
 ## Database Configuration
 
+Lightstack runs on PostgreSQL or, for a single node, on an embedded SQLite file. The scheme of
+`database.url` (or `LIGHTSTACK_DB_URL`) chooses the backend once, at startup:
+
+| `database.url` | Backend |
+|---|---|
+| `postgres://…`, `postgresql://…` — every form pgx accepts | PostgreSQL |
+| `sqlite:///absolute/path/lightstack.db` — an absolute path, no host, no query parameters | SQLite, single node |
+
+Anything else — an empty URL, a keyword/value string (`host=db user=…`), another scheme, a relative
+SQLite path — is refused at startup with a message naming what is accepted, before any file is
+created. `LIGHTSTACK_DB_BACKEND=postgres|sqlite`, when set, must name the backend the URL selects; a
+mismatch is refused too, the guard for a deployment configured for the wrong one.
+
 ### PostgreSQL Connection
 
 ```yaml
 database:
   url: "postgres://user:password@host:port/database?sslmode=disable"
-  max_connections: 20        # Maximum open connections
-  max_idle: 5                # Maximum idle connections
-  conn_max_lifetime: 1h      # Connection maximum lifetime
 ```
-
-### Connection String Format
 
 ```
 postgres://[user]:[password]@[host]:[port]/[database]?[parameters]
@@ -291,16 +301,75 @@ postgres://lightstack:secret@db.example.com:5432/lightstack?sslmode=require
 postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable&connect_timeout=10
 ```
 
+### Pool tuning (PostgreSQL)
+
+These keys size the PostgreSQL connection pool. Each is optional and falls back to the default below
+when unset or non-positive. They have no effect on SQLite, whose connection settings are fixed (see
+the SQLite section).
+
+```yaml
+database:
+  url: "postgres://…"
+  max_connections: 20        # maximum open connections (default 20)
+  min_connections: 2         # idle connections kept warm (default 2)
+  max_conn_lifetime: 1h      # recycle a connection after this age (default 1h)
+  max_conn_idle_time: 15m    # close a connection idle this long (default 15m)
+  health_check_period: 1m    # how often the pool checks connection health (default 1m)
+```
+
+### SQLite
+
+```yaml
+database:
+  url: "sqlite:///var/lib/lightstack/db/lightstack.db"
+```
+
+- **Path**: `<state_path>/db/lightstack.db` is the recommended place — node-local, beside the other
+  node-local state. The server creates the directory (`0750`) and the file (`0600`) on first start
+  and migrates it. Missing directories above it are created `0755`: QEMU must traverse the state
+  root. A database file, `-wal` or `-shm` file with group or other permissions is tightened to
+  `0600` at startup, with a `database file mode tightened` log line.
+- **Single node**: with `neutron.vxlan_enabled: true` the server refuses to start. Multi-node
+  deployments use PostgreSQL.
+- **Settings**: write-ahead logging, `synchronous=FULL`, a 5 s busy wait, foreign keys on, and
+  transactions that begin `IMMEDIATE`. They are fixed, not configurable, and read back at startup;
+  the `database ready` log line reports them.
+- **Entry points**: `lightstack cleanup` and `lightstack console-tokens` never create the database.
+  For a missing file, `console-tokens` exits 1 naming the path; `cleanup` warns naming it and does
+  its host-only cleanup, as for an unreachable PostgreSQL.
+- **Files**: `lightstack.db`, and beside it `lightstack.db-wal`, `lightstack.db-shm` and
+  `lightstack.db.migrate-lock`. Committed data can sit in the `-wal` file until a checkpoint, so
+  never copy `lightstack.db` alone. Back up with `lightstack-migrate backup` (a consistent copy while
+  Lightstack runs, to `<state_path>/backups`) and verify with `lightstack-migrate check`; restoring
+  means deleting `-wal` and `-shm` first ([KUBERNETES_DEPLOYMENT.md](KUBERNETES_DEPLOYMENT.md#backup-integrity-check-and-restore),
+  [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#backup-and-restore-on-sqlite)).
+
+The startup log line names the backend, where the database is (never with credentials), the schema
+version and the node name:
+
+```json
+{"level":"info","backend":"sqlite","location":"/var/lib/lightstack/db/lightstack.db","schema_version":74,"node":"node-a","journal_mode":"wal","synchronous":"full","foreign_keys":true,"busy_timeout_ms":5000,"txlock":"immediate","time":"2026-10-12T10:00:00Z","message":"database ready"}
+```
+
 ### Connection Pool Tuning
 
 ```yaml
 database:
   max_connections: 20        # Default: 20
-  max_idle: 5                # Default: 5
-  conn_max_lifetime: 1h      # Default: 1 hour
+  min_connections: 2         # Default: 2
+  max_conn_lifetime: 1h      # Default: 1 hour
+  max_conn_idle_time: 15m    # Default: 15 minutes
+  health_check_period: 1m    # Default: 1 minute; PostgreSQL only
 ```
 
-**Guidelines:**
+| Setting | PostgreSQL | SQLite |
+|---|---|---|
+| `max_connections` | pool size | open connections; SQLite still writes one transaction at a time |
+| `min_connections` | connections kept open | idle connections kept |
+| `max_conn_lifetime`, `max_conn_idle_time` | as named | as named |
+| `health_check_period` | pool health checks | not used |
+
+**Guidelines (PostgreSQL):**
 - **Small deployments:** 10-20 connections
 - **Medium deployments:** 20-50 connections
 - **Large deployments:** 50-100 connections

@@ -56,6 +56,8 @@ Define a `DB` interface with `QueryRow`, `Query`, `Exec`, `Begin` methods. Pass 
 
 **Rejected because**: Premature abstraction (Constitution Article VIII: Anti-Abstraction). The interface adds boilerplate to all 661 call sites without immediate benefit. Can be extracted later if mock-based testing becomes a priority.
 
+**Amended 2026-10-12 by [ADR-003](ADR-003-pluggable-database-backend.md)**: ADR-001 rejected the interface as premature — no immediate benefit; a second backend is that benefit. Services now receive `database.DB`, an interface over the method set the code already called on pgx; injection through constructors is unchanged.
+
 ### Per-service connection pools
 Each service gets its own pool with independent connection limits.
 

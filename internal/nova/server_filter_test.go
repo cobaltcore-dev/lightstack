@@ -192,7 +192,7 @@ func TestApplyQueryFiltersUnfilteredAddsNothing(t *testing.T) {
 			c := serverFilterCtx(tc.query, project, tc.admin)
 			f := newServerFilter(c, "")
 			before := f.Where()
-			if err := f.applyQueryFilters(c, ""); err != nil {
+			if err := f.applyQueryFilters(c, nil, ""); err != nil {
 				t.Fatalf("applyQueryFilters(%q) returned %v; an unfiltered request must not be refused", tc.query, err)
 			}
 			if got := f.Where(); got != before {
@@ -213,7 +213,7 @@ func TestApplyQueryFiltersRefusesUnrecordable(t *testing.T) {
 		t.Run(param, func(t *testing.T) {
 			c := serverFilterCtx(param+"=x", project, true)
 			f := newServerFilter(c, "")
-			err := f.applyQueryFilters(c, "")
+			err := f.applyQueryFilters(c, nil, "")
 			if err == nil {
 				t.Fatalf("?%s=x was accepted; FR-004 requires it be refused", param)
 			}

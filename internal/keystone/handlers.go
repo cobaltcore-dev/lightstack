@@ -4,26 +4,26 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
+
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
 
 // Service handles Keystone API endpoints
 type Service struct {
-	pool        *pgxpool.Pool
+	pool        database.DB
 	authService *AuthService
 	cache       *cache.Cache
 }
 
 // NewService creates a new Keystone service
-func NewService(pool *pgxpool.Pool, authService *AuthService, cacheInstance *cache.Cache) *Service {
+func NewService(pool database.DB, authService *AuthService, cacheInstance *cache.Cache) *Service {
 	return &Service{
 		pool:        pool,
 		authService: authService,
@@ -640,7 +640,7 @@ func (svc *Service) CreateProject(c *gin.Context) {
 		// a generic 500. Report the collision for what it is, the way CreateUser
 		// already does for users_name_key. Detected by SQLSTATE rather than by matching
 		// the error text (FR-004).
-		if common.IsUniqueViolation(err) {
+		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("project with name '"+req.Project.Name+"' already exists"))
 			return
 		}
@@ -701,7 +701,7 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 	// concurrent DELETE can make a successful PATCH look like a 404. RETURNING lists
 	// every column the response needs, because a partial PATCH must still echo the
 	// columns it did not touch (upstream Keystone returns the whole project). A miss
-	// is pgx.ErrNoRows, which notFoundOr500 maps to the verbatim 404.
+	// is database.ErrNoRows, which notFoundOr500 maps to the verbatim 404.
 	query := "UPDATE projects SET " + u.Assignments() +
 		" WHERE id = " + u.Arg(projectID) +
 		" RETURNING name, description, domain_id, enabled"
@@ -1042,23 +1042,14 @@ func (svc *Service) CheckRoleAssignment(c *gin.Context) {
 
 // ListRoleAssignments handles GET /v3/role_assignments
 func (svc *Service) ListRoleAssignments(c *gin.Context) {
-	// Parse query parameters
-	userID := c.Query("user.id")
-	projectID := c.Query("scope.project.id")
-	roleID := c.Query("role.id")
-
-	// Build dynamic query. The `WHERE 1=1` placeholder the conditions used to hang off is gone:
-	// SQLFilter renders the whole clause, or nothing at all when no filter was asked for.
-	var f common.SQLFilter
-	if userID != "" {
-		f.Eq("ra.user_id", userID)
-	}
-	if projectID != "" {
-		f.Eq("ra.project_id", projectID)
-	}
-	if roleID != "" {
-		f.Eq("ra.role_id", roleID)
-	}
+	// Build the WHERE from the id filters that are present. eqID canonicalises each id, so
+	// a dash-free or upper-case value matches on SQLite (ids are text) as it did on
+	// PostgreSQL's uuid columns, and a non-UUID matches nothing rather than 500ing — the
+	// same behaviour every other identity collection has (list_filters.go).
+	var f listFilter
+	f.eqID(c, "user.id", "ra.user_id")
+	f.eqID(c, "scope.project.id", "ra.project_id")
+	f.eqID(c, "role.id", "ra.role_id")
 
 	// include_names=true embeds entity names alongside the ids, the shape
 	// upstream returns and the one `role assignment list --names` (and
@@ -1217,7 +1208,7 @@ func (svc *Service) CreateUser(c *gin.Context) {
 	).Scan(&userID, &userName, &userEmail, &userDescription, &userEnabled, &userDomainID)
 
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") && strings.Contains(err.Error(), "users_name_key") {
+		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("user with name '"+req.User.Name+"' already exists"))
 			return
 		}
@@ -1305,7 +1296,7 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 	}
 
 	// Add updated_at timestamp
-	u.SetExpr("updated_at = CURRENT_TIMESTAMP")
+	u.SetExpr("updated_at = NOW()")
 
 	// Execute update
 	query := "UPDATE users SET " + u.Assignments() + " WHERE id = " + u.Arg(userID)
@@ -1354,6 +1345,12 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 func (svc *Service) DeleteUser(c *gin.Context) {
 	userID := c.Param("id")
 
+	// Canonicalise a well-formed id so the delete matches on SQLite's text ids; a
+	// malformed id is left for the uuid.Validate guard below to 404 after the authz check.
+	if parsed, err := uuid.Parse(userID); err == nil {
+		userID = parsed.String()
+	}
+
 	// Only admins may delete users
 	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("admin role required to delete users"))
@@ -1391,6 +1388,14 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 // ChangePassword changes a user's password (POST /v3/users/:id/password)
 func (svc *Service) ChangePassword(c *gin.Context) {
 	userID := c.Param("id")
+
+	// Canonicalise a well-formed id up front so the self-check compares like with like
+	// (the token's user_id is canonical) and the queries match on SQLite's text ids. A
+	// malformed id is left as-is: it can't match the caller's own id, so an unauthorised
+	// caller still gets 403 before the 404 below (#515).
+	if parsed, err := uuid.Parse(userID); err == nil {
+		userID = parsed.String()
+	}
 
 	// Users may only change their own password; admins may change any user's password
 	callerID := c.GetString("user_id")
@@ -1445,7 +1450,7 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 
 	// Update password
 	_, err = svc.pool.Exec(c.Request.Context(),
-		"UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+		"UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2",
 		string(hashedBytes), userID,
 	)
 
