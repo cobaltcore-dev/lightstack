@@ -1,7 +1,6 @@
 package neutron
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
