@@ -63,7 +63,7 @@ jobs:
     # SPEC-007 WS-2) run instead of skipping. Tests connect via LIGHTSTACK_TEST_DB_URL.
     services:
       postgres:
-        image: postgres:18.3-alpine
+        image: postgres:18.7-alpine
         env:
           POSTGRES_USER: lightstack
           POSTGRES_PASSWORD: secret
