@@ -169,6 +169,50 @@ func TestS3TokensDisabledProjectDenied(t *testing.T) {
 	assertMaskedS3Denial(t, postS3Tokens(t, signedS3TokensBody(access, secret)))
 }
 
+func TestS3TokensRevokedProjectRoleDenied(t *testing.T) {
+	access, secret := seedS3DisabledIdentity(t)
+	if _, err := testPool.Exec(t.Context(), "DELETE FROM role_assignments WHERE user_id=$1 AND project_id=$2", s3DisabledUserID, s3DisabledProjectID); err != nil {
+		t.Fatal(err)
+	}
+	assertMaskedS3Denial(t, postS3Tokens(t, signedS3TokensBody(access, secret)))
+}
+
+func TestCredentialBlobCannotChangeS3Project(t *testing.T) {
+	access, secret := seedS3DisabledIdentity(t)
+	var credentialID string
+	if err := testPool.QueryRow(t.Context(), "SELECT id FROM credentials WHERE access_key=$1", access).Scan(&credentialID); err != nil {
+		t.Fatal(err)
+	}
+	blob, _ := json.Marshal(ec2Blob{Access: access, Secret: secret, UserID: s3DisabledUserID, TenantID: rgwCompatProjectID})
+	body, _ := json.Marshal(map[string]any{"credential": map[string]any{"blob": string(blob)}})
+	req := httptest.NewRequest(http.MethodPatch, "/v3/credentials/"+credentialID, strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Test-User", s3DisabledUserID)
+	req.Header.Set("X-Test-Roles", "member")
+	w := httptest.NewRecorder()
+	newIdentityTestRouter().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update own blob: %d %s", w.Code, w.Body.String())
+	}
+	w = postS3Tokens(t, signedS3TokensBody(access, secret))
+	if w.Code != http.StatusOK {
+		t.Fatalf("authenticate original credential: %d %s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Token struct {
+			Project struct {
+				ID string `json:"id"`
+			} `json:"project"`
+		} `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Token.Project.ID != canonicalID(s3DisabledProjectID) {
+		t.Errorf("mutable blob changed scoped project to %q", result.Token.Project.ID)
+	}
+}
+
 // TestRenderS3TokenMissingIdentityDenied: a stale EC2 blob tenant (project
 // row gone while the credential survives) or a user row that vanished under
 // the credential must deny — not render an envelope with empty names.

@@ -14,6 +14,14 @@ import (
 func (svc *Service) VolumeTypeAction(c *gin.Context) {
 	typeID := c.Param("id")
 
+	// Admin-only: project access to a private volume
+	// type is a cross-tenant grant — without the check any member could add
+	// their project to (or strip another project from) any private type.
+	// Checked before the body is bound so a non-admin gets 403, not a 400.
+	if !common.RequireAdmin(c, "cinder:VolumeTypeAction") {
+		return
+	}
+
 	var req map[string]any
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))

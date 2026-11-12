@@ -93,6 +93,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      - name: Install qemu-img for image normalization tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-utils
+
       - name: Run unit tests with race detector
         run: go test -race -coverprofile=coverage.txt -covermode=atomic $(go list ./... | grep -v '/test/contract')
         env:

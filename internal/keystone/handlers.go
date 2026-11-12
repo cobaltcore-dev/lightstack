@@ -53,7 +53,11 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 
 	// All management routes require authentication
 	mgmt := v3.Group("")
-	mgmt.Use(authMiddleware)
+	// Canonicalize well-formed UUID path params after authentication. This keeps
+	// uppercase and compact UUIDs usable on SQLite text columns while leaving
+	// malformed params untouched so in-handler authorization can still return
+	// 403 before its 404 validation.
+	mgmt.Use(authMiddleware, canonicalizeUUIDParams)
 
 	// Malformed UUID path ids (params named "id" or "*_id") get a Keystone-verbatim
 	// 404 before the handler, on every management route EXCEPT the authz-gated ones
@@ -63,19 +67,22 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	val := mgmt.Group("")
 	val.Use(uuidParamMiddleware)
 
-	// Users
-	val.GET("/users", svc.ListUsers)
-	val.POST("/users", svc.CreateUser)
-	val.GET("/users/:id", svc.GetUser)
-	val.PATCH("/users/:id", svc.UpdateUser)
-	mgmt.DELETE("/users/:id", svc.DeleteUser)            // authz-gated (admin)
-	mgmt.POST("/users/:id/password", svc.ChangePassword) // authz-gated (self-or-admin)
-	val.GET("/users/:id/projects", svc.GetUserProjects)
-	val.GET("/users/:id/groups", svc.GetUserGroups)
-	val.POST("/users/:id/application_credentials", svc.CreateApplicationCredential)
-	val.GET("/users/:id/application_credentials", svc.ListApplicationCredentials)
-	val.GET("/users/:id/application_credentials/:cred_id", svc.GetApplicationCredential)
-	val.DELETE("/users/:id/application_credentials/:cred_id", svc.DeleteApplicationCredential)
+	// Users. Authz: reads and writes of the user
+	// collection are admin-only; user-scoped subresources are self-or-admin.
+	// Routes with an authz check sit on `mgmt` and validate ids in-handler so
+	// 403 precedes the 404 (#515, asserted by TestIdentityAuthzPrecedence).
+	val.GET("/users", svc.ListUsers)                                                            // admin-only (in-handler)
+	val.POST("/users", svc.CreateUser)                                                          // admin-only (in-handler)
+	mgmt.GET("/users/:id", svc.GetUser)                                                         // self-or-admin
+	mgmt.PATCH("/users/:id", svc.UpdateUser)                                                    // self-or-admin, admin-only fields
+	mgmt.DELETE("/users/:id", svc.DeleteUser)                                                   // authz-gated (admin)
+	mgmt.POST("/users/:id/password", svc.ChangePassword)                                        // authz-gated (self-or-admin)
+	mgmt.GET("/users/:id/projects", svc.GetUserProjects)                                        // self-or-admin
+	mgmt.GET("/users/:id/groups", svc.GetUserGroups)                                            // self-or-admin
+	mgmt.POST("/users/:id/application_credentials", svc.CreateApplicationCredential)            // self-or-admin
+	mgmt.GET("/users/:id/application_credentials", svc.ListApplicationCredentials)              // self-or-admin
+	mgmt.GET("/users/:id/application_credentials/:cred_id", svc.GetApplicationCredential)       // self-or-admin
+	mgmt.DELETE("/users/:id/application_credentials/:cred_id", svc.DeleteApplicationCredential) // self-or-admin
 	// EC2/S3 credentials — authz-gated (self-or-admin via denyIfNotSelfOrAdmin);
 	// the :id (user) is validated in-handler after that check (SPEC-014 FR-005).
 	mgmt.POST("/users/:id/credentials/OS-EC2", svc.CreateEC2Credential)
@@ -83,36 +90,38 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	mgmt.GET("/users/:id/credentials/OS-EC2/:access", svc.GetEC2Credential)
 	mgmt.DELETE("/users/:id/credentials/OS-EC2/:access", svc.DeleteEC2Credential)
 
-	// Projects (role assignments must come before /projects/:id to avoid conflicts)
-	val.GET("/projects", svc.ListProjects)
-	val.POST("/projects", svc.CreateProject)
-	val.PUT("/projects/:id/users/:user_id/roles/:role_id", svc.AssignRole)
-	val.DELETE("/projects/:id/users/:user_id/roles/:role_id", svc.UnassignRole)
-	val.GET("/projects/:id/users/:user_id/roles", svc.ListUserProjectRoles)
-	val.GET("/projects/:id/users/:user_id/roles/:role_id", svc.CheckRoleAssignment)
-	val.GET("/projects/:id", svc.GetProject)
-	val.PATCH("/projects/:id", svc.UpdateProject)
-	val.DELETE("/projects/:id", svc.DeleteProject)
+	// Projects (role assignments must come before /projects/:id to avoid conflicts).
+	// Authz: project management and role assignment
+	// are admin-only — the assignment pair is the privilege-escalation primitive.
+	val.GET("/projects", svc.ListProjects)                                           // admin-only (in-handler)
+	val.POST("/projects", svc.CreateProject)                                         // admin-only (in-handler)
+	mgmt.PUT("/projects/:id/users/:user_id/roles/:role_id", svc.AssignRole)          // admin-only
+	mgmt.DELETE("/projects/:id/users/:user_id/roles/:role_id", svc.UnassignRole)     // admin-only
+	mgmt.GET("/projects/:id/users/:user_id/roles", svc.ListUserProjectRoles)         // admin-only
+	mgmt.GET("/projects/:id/users/:user_id/roles/:role_id", svc.CheckRoleAssignment) // admin-only
+	mgmt.GET("/projects/:id", svc.GetProject)                                        // admin-only
+	mgmt.PATCH("/projects/:id", svc.UpdateProject)                                   // admin-only
+	mgmt.DELETE("/projects/:id", svc.DeleteProject)                                  // admin-only
 
-	// Groups
-	val.GET("/groups", svc.ListGroups)
-	val.POST("/groups", svc.CreateGroup)
-	val.GET("/groups/:id", svc.GetGroup)
-	val.PATCH("/groups/:id", svc.UpdateGroup)
-	val.DELETE("/groups/:id", svc.DeleteGroup)
-	val.GET("/groups/:id/users", svc.ListGroupUsers)
-	val.PUT("/groups/:id/users/:user_id", svc.AddUserToGroup)
-	val.DELETE("/groups/:id/users/:user_id", svc.RemoveUserFromGroup)
+	// Groups — admin-only.
+	val.GET("/groups", svc.ListGroups)   // admin-only (in-handler)
+	val.POST("/groups", svc.CreateGroup) // admin-only (in-handler)
+	mgmt.GET("/groups/:id", svc.GetGroup)
+	mgmt.PATCH("/groups/:id", svc.UpdateGroup)
+	mgmt.DELETE("/groups/:id", svc.DeleteGroup)
+	mgmt.GET("/groups/:id/users", svc.ListGroupUsers)
+	mgmt.PUT("/groups/:id/users/:user_id", svc.AddUserToGroup)
+	mgmt.DELETE("/groups/:id/users/:user_id", svc.RemoveUserFromGroup)
 
-	// Roles
-	val.GET("/roles", svc.ListRoles)
-	val.POST("/roles", svc.CreateRole)
-	val.GET("/roles/:id", svc.GetRole)
-	val.PATCH("/roles/:id", svc.UpdateRole)
-	val.DELETE("/roles/:id", svc.DeleteRole)
+	// Roles — admin-only.
+	val.GET("/roles", svc.ListRoles)   // admin-only (in-handler)
+	val.POST("/roles", svc.CreateRole) // admin-only (in-handler)
+	mgmt.GET("/roles/:id", svc.GetRole)
+	mgmt.PATCH("/roles/:id", svc.UpdateRole)
+	mgmt.DELETE("/roles/:id", svc.DeleteRole)
 
-	// Role Assignments
-	val.GET("/role_assignments", svc.ListRoleAssignments)
+	// Role Assignments — admin-only.
+	val.GET("/role_assignments", svc.ListRoleAssignments) // admin-only (in-handler)
 
 	// Domains.
 	//
@@ -125,24 +134,26 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.Handle
 	// The exception is one route, one method, one alias. Every other non-identifier
 	// value on it still gets #515's verbatim 404, produced in-handler; and PATCH,
 	// DELETE and /config stay on `val`, where the middleware still answers.
-	val.GET("/domains", svc.ListDomains)
-	val.POST("/domains", svc.CreateDomain)
-	mgmt.GET("/domains/:id", svc.GetDomain) // alias-aware (see above)
-	val.PATCH("/domains/:id", svc.UpdateDomain)
-	val.DELETE("/domains/:id", svc.DeleteDomain)
-	val.GET("/domains/:id/config", svc.GetDomainConfig)
+	//
+	// Domain management is admin-only.
+	val.GET("/domains", svc.ListDomains)                 // admin-only (in-handler)
+	val.POST("/domains", svc.CreateDomain)               // admin-only (in-handler)
+	mgmt.GET("/domains/:id", svc.GetDomain)              // alias-aware (see above), admin-only
+	mgmt.PATCH("/domains/:id", svc.UpdateDomain)         // admin-only
+	mgmt.DELETE("/domains/:id", svc.DeleteDomain)        // admin-only
+	mgmt.GET("/domains/:id/config", svc.GetDomainConfig) // admin-only
 
-	// Services (catalog management)
-	val.GET("/services", svc.ListServices)
-	val.POST("/services", svc.CreateService)
-	val.GET("/services/:id", svc.GetService)
-	val.PATCH("/services/:id", svc.UpdateService)
-	val.DELETE("/services/:id", svc.DeleteService)
+	// Services (catalog management) — admin-only.
+	val.GET("/services", svc.ListServices)   // admin-only (in-handler)
+	val.POST("/services", svc.CreateService) // admin-only (in-handler)
+	mgmt.GET("/services/:id", svc.GetService)
+	mgmt.PATCH("/services/:id", svc.UpdateService)
+	mgmt.DELETE("/services/:id", svc.DeleteService)
 
-	// Endpoints
-	val.GET("/endpoints", svc.ListEndpoints)
-	val.POST("/endpoints", svc.CreateEndpoint)
-	val.DELETE("/endpoints/:id", svc.DeleteEndpoint)
+	// Endpoints — admin-only.
+	val.GET("/endpoints", svc.ListEndpoints)   // admin-only (in-handler)
+	val.POST("/endpoints", svc.CreateEndpoint) // admin-only (in-handler)
+	mgmt.DELETE("/endpoints/:id", svc.DeleteEndpoint)
 
 	// Credentials
 	val.GET("/credentials", svc.ListCredentials)
@@ -390,6 +401,11 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 
 // ListUsers lists all users
 func (svc *Service) ListUsers(c *gin.Context) {
+	// Admin-only: the user collection exposes every
+	// account's name, enabled state and domain — identity enumeration.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
 	var f listFilter
 	f.eq(c, "name", "name")
 	f.eqDomain(c, "domain_id", "domain_id")
@@ -434,6 +450,13 @@ func (svc *Service) ListUsers(c *gin.Context) {
 func (svc *Service) GetUser(c *gin.Context) {
 	userID := c.Param("id")
 
+	// Self-or-admin: user records (name, email,
+	// enabled) are only for the user itself or an admin.
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
+		return
+	}
+
 	var id, name, domainID string
 	var enabled bool
 	err := svc.pool.QueryRow(c.Request.Context(),
@@ -457,6 +480,13 @@ func (svc *Service) GetUser(c *gin.Context) {
 
 // ListProjects lists all projects
 func (svc *Service) ListProjects(c *gin.Context) {
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+
 	var f listFilter
 	f.eq(c, "name", "name")
 	f.eqDomain(c, "domain_id", "domain_id")
@@ -531,6 +561,17 @@ func identityLink(c *gin.Context, collection, id string) gin.H {
 func (svc *Service) GetProject(c *gin.Context) {
 	projectID := c.Param("id")
 
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "project", projectID) {
+		return
+	}
+
 	var id, name string
 	var description, domainID sql.NullString // nullable, as in ListProjects
 	var enabled bool
@@ -556,6 +597,13 @@ func (svc *Service) GetProject(c *gin.Context) {
 
 // CreateProject handles POST /v3/projects
 func (svc *Service) CreateProject(c *gin.Context) {
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+
 	var req struct {
 		Project struct {
 			Name        string `json:"name" binding:"required"`
@@ -630,6 +678,17 @@ func (svc *Service) CreateProject(c *gin.Context) {
 func (svc *Service) UpdateProject(c *gin.Context) {
 	projectID := c.Param("id")
 
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "project", projectID) {
+		return
+	}
+
 	var req struct {
 		Project struct {
 			Name        *string `json:"name"`
@@ -697,6 +756,17 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 func (svc *Service) DeleteProject(c *gin.Context) {
 	projectID := c.Param("id")
 
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "project", projectID) {
+		return
+	}
+
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM projects WHERE id = $1",
 		projectID,
@@ -718,6 +788,13 @@ func (svc *Service) DeleteProject(c *gin.Context) {
 
 // ListRoles lists all roles
 func (svc *Service) ListRoles(c *gin.Context) {
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+
 	var f listFilter
 	f.eq(c, "name", "name")
 	rows, err := svc.pool.Query(c.Request.Context(),
@@ -757,6 +834,17 @@ func (svc *Service) ListRoles(c *gin.Context) {
 func (svc *Service) GetRole(c *gin.Context) {
 	roleID := c.Param("id")
 
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "role", roleID) {
+		return
+	}
+
 	var id, name string
 	err := svc.pool.QueryRow(c.Request.Context(),
 		"SELECT id, name FROM roles WHERE id = $1",
@@ -777,6 +865,13 @@ func (svc *Service) GetRole(c *gin.Context) {
 
 // CreateRole handles POST /v3/roles
 func (svc *Service) CreateRole(c *gin.Context) {
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+
 	var req struct {
 		Role struct {
 			Name     string `json:"name" binding:"required"`
@@ -815,6 +910,17 @@ func (svc *Service) CreateRole(c *gin.Context) {
 // UpdateRole handles PATCH /v3/roles/:id
 func (svc *Service) UpdateRole(c *gin.Context) {
 	roleID := c.Param("id")
+
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "role", roleID) {
+		return
+	}
 
 	var req struct {
 		Role struct {
@@ -861,6 +967,17 @@ func (svc *Service) UpdateRole(c *gin.Context) {
 func (svc *Service) DeleteRole(c *gin.Context) {
 	roleID := c.Param("id")
 
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "role", roleID) {
+		return
+	}
+
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM roles WHERE id = $1",
 		roleID,
@@ -886,8 +1003,41 @@ func (svc *Service) AssignRole(c *gin.Context) {
 	userID := c.Param("user_id")
 	roleID := c.Param("role_id")
 
+	// Admin-only: role assignment is the privilege
+	// escalation primitive — without this check any authenticated user could
+	// grant itself (or anyone) the admin role on any project.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "project", projectID) || denyIfMalformedID(c, "user", userID) ||
+		denyIfMalformedID(c, "role", roleID) {
+		return
+	}
+
+	// The foreign keys prevent dangling assignments; these lookups preserve
+	// Keystone's resource-specific 404 instead of leaking a database error.
+	var projectExists, userExists, roleExists bool
+	err := svc.pool.QueryRow(c.Request.Context(), `
+		SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1),
+		       EXISTS(SELECT 1 FROM users WHERE id = $2),
+		       EXISTS(SELECT 1 FROM roles WHERE id = $3)
+	`, projectID, userID, roleID).Scan(&projectExists, &userExists, &roleExists)
+	for _, tc := range []struct {
+		kind, id string
+		exists   bool
+	}{
+		{"project", projectID, projectExists},
+		{"user", userID, userExists},
+		{"role", roleID, roleExists},
+	} {
+		if existsOr404(c, err, tc.exists, tc.kind, tc.id) {
+			return
+		}
+	}
+
 	// Insert role assignment (idempotent)
-	_, err := svc.pool.Exec(c.Request.Context(),
+	_, err = svc.pool.Exec(c.Request.Context(),
 		`INSERT INTO role_assignments (id, user_id, project_id, role_id, created_at)
 		 VALUES (gen_random_uuid(), $1, $2, $3, NOW())
 		 ON CONFLICT (user_id, project_id, role_id) DO NOTHING`,
@@ -907,6 +1057,17 @@ func (svc *Service) UnassignRole(c *gin.Context) {
 	projectID := c.Param("id")
 	userID := c.Param("user_id")
 	roleID := c.Param("role_id")
+
+	// Admin-only: revoking roles is the inverse
+	// escalation — any user could strip an admin's role and lock the
+	// deployment out.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	if denyIfMalformedID(c, "project", projectID) || denyIfMalformedID(c, "user", userID) ||
+		denyIfMalformedID(c, "role", roleID) {
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM role_assignments WHERE user_id = $1 AND project_id = $2 AND role_id = $3",
@@ -931,6 +1092,17 @@ func (svc *Service) UnassignRole(c *gin.Context) {
 func (svc *Service) ListUserProjectRoles(c *gin.Context) {
 	projectID := c.Param("id")
 	userID := c.Param("user_id")
+
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "project", projectID) || denyIfMalformedID(c, "user", userID) {
+		return
+	}
 
 	rows, err := svc.pool.Query(c.Request.Context(),
 		`SELECT r.id, r.name
@@ -978,6 +1150,17 @@ func (svc *Service) CheckRoleAssignment(c *gin.Context) {
 	userID := c.Param("user_id")
 	roleID := c.Param("role_id")
 
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "project", projectID) || denyIfMalformedID(c, "user", userID) || denyIfMalformedID(c, "role", roleID) {
+		return
+	}
+
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
 		`SELECT EXISTS(
@@ -1003,10 +1186,13 @@ func (svc *Service) CheckRoleAssignment(c *gin.Context) {
 
 // ListRoleAssignments handles GET /v3/role_assignments
 func (svc *Service) ListRoleAssignments(c *gin.Context) {
-	// Build the WHERE from the id filters that are present. eqID canonicalises each id, so
-	// a dash-free or upper-case value matches on SQLite (ids are text) as it did on
-	// PostgreSQL's uuid columns, and a non-UUID matches nothing rather than 500ing — the
-	// same behaviour every other identity collection has (list_filters.go).
+	// Admin-only: role assignments grant authority and expose
+	// the identity management surface.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+
+	// Canonical UUID filters preserve alternate spellings on both database backends.
 	var f listFilter
 	f.eqID(c, "user.id", "ra.user_id")
 	f.eqID(c, "scope.project.id", "ra.project_id")
@@ -1161,6 +1347,20 @@ func (svc *Service) CreateUser(c *gin.Context) {
 func (svc *Service) UpdateUser(c *gin.Context) {
 	userID := c.Param("id")
 
+	// Self-or-admin: without this check any
+	// authenticated caller could reset any user's password — including the
+	// admin's — or disable any account, because this handler (unlike
+	// ChangePassword) never asked for the original password.
+	isAdmin := common.HasRole(c, common.RoleAdmin)
+	if !sameUser(c.GetString("user_id"), userID) && !isAdmin {
+		common.SendError(c, common.NewForbiddenError("cannot update another user"))
+		return
+	}
+	// Authorization passed; validate the id after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "user", userID) {
+		return
+	}
+
 	var req struct {
 		User struct {
 			Name        *string `json:"name"`
@@ -1173,6 +1373,15 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body: "+err.Error()))
+		return
+	}
+
+	// A non-admin may only edit their own profile fields. Setting a password
+	// without the original (ChangePassword's contract) or flipping `enabled`
+	// stays admin-only — otherwise this route would be a weaker password
+	// change and a self-enable.
+	if !isAdmin && (req.User.Password != nil || req.User.Enabled != nil) {
+		common.SendError(c, common.NewForbiddenError("admin role required to set password or enabled"))
 		return
 	}
 
@@ -1267,12 +1476,6 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 func (svc *Service) DeleteUser(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Canonicalise a well-formed id so the delete matches on SQLite's text ids; a
-	// malformed id is left for the uuid.Validate guard below to 404 after the authz check.
-	if parsed, err := uuid.Parse(userID); err == nil {
-		userID = parsed.String()
-	}
-
 	// Only admins may delete users
 	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("admin role required to delete users"))
@@ -1280,8 +1483,7 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 	}
 
 	// Authorization passed; validate the id after it so 403 precedes this 404 (#515).
-	if uuid.Validate(userID) != nil {
-		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
+	if denyIfMalformedID(c, "user", userID) {
 		return
 	}
 
@@ -1311,24 +1513,15 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 func (svc *Service) ChangePassword(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Canonicalise a well-formed id up front so the self-check compares like with like
-	// (the token's user_id is canonical) and the queries match on SQLite's text ids. A
-	// malformed id is left as-is: it can't match the caller's own id, so an unauthorised
-	// caller still gets 403 before the 404 below (#515).
-	if parsed, err := uuid.Parse(userID); err == nil {
-		userID = parsed.String()
-	}
-
 	// Users may only change their own password; admins may change any user's password
 	callerID := c.GetString("user_id")
-	if callerID != userID && !common.HasRole(c, common.RoleAdmin) {
+	if !sameUser(callerID, userID) && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("cannot change another user's password"))
 		return
 	}
 
 	// Authorization passed; validate the id after it so 403 precedes this 404 (#515).
-	if uuid.Validate(userID) != nil {
-		common.SendError(c, common.NewIdentityNotFoundError("user", userID))
+	if denyIfMalformedID(c, "user", userID) {
 		return
 	}
 
@@ -1389,6 +1582,13 @@ func (svc *Service) ChangePassword(c *gin.Context) {
 func (svc *Service) GetUserProjects(c *gin.Context) {
 	userID := c.Param("id")
 
+	// Self-or-admin: a user's project membership is
+	// footprint information.
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
+		return
+	}
+
 	// Check if user exists
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
@@ -1448,6 +1648,12 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 // GetUserGroups returns groups for a user (GET /v3/users/:id/groups)
 func (svc *Service) GetUserGroups(c *gin.Context) {
 	userID := c.Param("id")
+
+	// Self-or-admin.
+	userID, denied := denyIfNotSelfOrAdmin(c, userID)
+	if denied {
+		return
+	}
 
 	// Check if user exists
 	var exists bool

@@ -24,15 +24,23 @@ func TestRegisterRoutesMiddlewareWiring(t *testing.T) {
 	// cannot. Registering a management route on `v3` instead of `mgmt` is a one-token
 	// slip that would leave the resource readable without a token.
 	authCalls := 0
-	stubAuth := func(c *gin.Context) { authCalls++; c.Next() } // authenticated, no roles
+	stubAuth := func(c *gin.Context) { // authenticated; admin only via header
+		authCalls++
+		if c.GetHeader("X-Test-Admin") != "" {
+			c.Set("roles", []string{"admin"})
+		}
+		c.Next()
+	}
 	svc := NewService(testPool, nil, nil)
 	svc.RegisterRoutes(&r.RouterGroup, stubAuth)
 
 	// Non-gated route (on val): malformed id → middleware 404, handler never runs.
+	// (Credentials keep their :id on val: the id-only lookup 404s for foreign owners
+	// anyway, so the middleware 404 does not preempt an authz decision there.)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v3/projects/not-a-uuid", nil))
-	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "Could not find project: not-a-uuid.") {
-		t.Fatalf("GET /projects/not-a-uuid: code=%d body=%s; want 404 verbatim", w.Code, w.Body.String())
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v3/credentials/not-a-uuid", nil))
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "Could not find credential: not-a-uuid.") {
+		t.Fatalf("GET /credentials/not-a-uuid: code=%d body=%s; want 404 verbatim", w.Code, w.Body.String())
 	}
 
 	// Authz-gated route (on mgmt, NOT behind the uuid middleware): a non-admin
@@ -44,39 +52,55 @@ func TestRegisterRoutesMiddlewareWiring(t *testing.T) {
 		t.Fatalf("DELETE /users/not-a-uuid (non-admin): code=%d body=%s; want 403 (authz precedes)", w.Code, w.Body.String())
 	}
 
-	// GET /domains/:id also lives on mgmt, for a different reason: it must resolve
-	// the "default" alias, which the uuid middleware would reject before the handler
-	// ran (SPEC-022 FR-001a). The narrow exception is that one alias — every other
-	// non-identifier value still gets #515's verbatim 404, now produced in-handler.
-	// No database needed: this asserts the 404 shape, which precedes any query.
+	// GET /domains/:id lives on `mgmt` so it can resolve the `default` alias
+	// (SPEC-022 FR-001a), and it is admin-only like the rest of the domain
+	// management surface. A non-admin gets 403 before the
+	// resolver runs; an admin still gets the #515 verbatim 404 for any other
+	// non-identifier value, now produced in-handler.
 	w = httptest.NewRecorder()
 	authBefore := authCalls
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v3/domains/not-a-uuid", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("GET /domains/not-a-uuid (non-admin): code=%d body=%s; want 403 (admin-only)", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	adminReq := httptest.NewRequest(http.MethodGet, "/v3/domains/not-a-uuid", nil)
+	adminReq.Header.Set("X-Test-Admin", "1")
+	r.ServeHTTP(w, adminReq)
 	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "Could not find domain: not-a-uuid.") {
-		t.Fatalf("GET /domains/not-a-uuid: code=%d body=%s; want 404 verbatim from the handler", w.Code, w.Body.String())
+		t.Fatalf("GET /domains/not-a-uuid (admin): code=%d body=%s; want 404 verbatim from the handler", w.Code, w.Body.String())
 	}
 
 	// Moving the route off `val` must not have moved it off the authenticated tree as
 	// well: registered on the public `v3` group by mistake, it would answer the same
-	// 404 above while leaving every domain readable without a token. The status alone
-	// cannot see that, so assert the middleware ran. This piggybacks on the malformed
-	// id deliberately — resolveDomainRef answers it without a query, so the assertion
-	// needs no database (TestResolveDomainRefMalformedNeedsNoDatabase pins that).
+	// 403/404 above while leaving every domain readable without a token. The status
+	// alone cannot see that, so assert the middleware ran. This piggybacks on the
+	// malformed id deliberately — resolveDomainRef answers it without a query, so the
+	// assertion needs no database (TestResolveDomainRefMalformedNeedsNoDatabase pins that).
 	if authCalls == authBefore {
 		t.Fatal("GET /v3/domains/:id bypassed the auth middleware — it must be on mgmt, not the public v3 group")
 	}
 
-	// The sibling domain routes stay on val, so the middleware still answers for
-	// them — the exception is one route and one method, not the whole resource.
+	// The domain write/config routes moved to `mgmt` with the admin gate, so
+	// their malformed-id 404 is likewise produced in-handler, after the authz
+	// decision — same shape, different producer.
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodPatch, "/v3/domains/not-a-uuid"},
 		{http.MethodDelete, "/v3/domains/not-a-uuid"},
 		{http.MethodGet, "/v3/domains/not-a-uuid/config"},
 	} {
 		w = httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s %s (non-admin): code=%d body=%s; want 403 (admin-only)", tc.method, tc.path, w.Code, w.Body.String())
+		}
+		w = httptest.NewRecorder()
+		req = httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set("X-Test-Admin", "1")
+		r.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "Could not find domain: not-a-uuid.") {
-			t.Fatalf("%s %s: code=%d body=%s; want the middleware's 404", tc.method, tc.path, w.Code, w.Body.String())
+			t.Fatalf("%s %s (admin): code=%d body=%s; want the in-handler 404", tc.method, tc.path, w.Code, w.Body.String())
 		}
 	}
 }

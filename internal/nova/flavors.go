@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"math"
 	"net/http"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -12,12 +13,19 @@ import (
 
 // CreateFlavor handles POST /v2.1/flavors
 func (svc *Service) CreateFlavor(c *gin.Context) {
+	// Admin-only: the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !common.RequireAdmin(c, "flavor-create") {
+		return
+	}
+
 	var req struct {
 		Flavor struct {
 			Name      string `json:"name" binding:"required"`
 			RAM       int    `json:"ram" binding:"required"`
 			VCPUs     int    `json:"vcpus" binding:"required"`
-			Disk      int    `json:"disk" binding:"required"`
+			Disk      *int   `json:"disk" binding:"required"`
 			Ephemeral int    `json:"OS-FLV-EXT-DATA:ephemeral"`
 			IsPublic  *bool  `json:"os-flavor-access:is_public"`
 		} `json:"flavor" binding:"required"`
@@ -28,17 +36,22 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 		return
 	}
 
-	// Validate input ranges
-	if req.Flavor.RAM < 0 {
-		common.SendError(c, common.NewBadRequestError("RAM must be non-negative"))
+	// Flamingo's flavor schema uses signed 32-bit values. RAM/vCPUs must be
+	// positive; zero root disk is valid for a server booted from a volume.
+	if req.Flavor.RAM < 1 || req.Flavor.RAM > math.MaxInt32 {
+		common.SendError(c, common.NewBadRequestError("RAM must be between 1 and 2147483647 MB"))
 		return
 	}
-	if req.Flavor.VCPUs < 0 {
-		common.SendError(c, common.NewBadRequestError("VCPUs must be non-negative"))
+	if req.Flavor.VCPUs < 1 || req.Flavor.VCPUs > math.MaxInt32 {
+		common.SendError(c, common.NewBadRequestError("VCPUs must be between 1 and 2147483647"))
 		return
 	}
-	if req.Flavor.Disk < 0 {
-		common.SendError(c, common.NewBadRequestError("Disk must be non-negative"))
+	if *req.Flavor.Disk < 0 || *req.Flavor.Disk > math.MaxInt32 {
+		common.SendError(c, common.NewBadRequestError("Disk must be between 0 and 2147483647 GB"))
+		return
+	}
+	if req.Flavor.Ephemeral < 0 || req.Flavor.Ephemeral > math.MaxInt32 {
+		common.SendError(c, common.NewBadRequestError("Ephemeral disk must be between 0 and 2147483647 GB"))
 		return
 	}
 
@@ -54,7 +67,7 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 	_, err := svc.pool.Exec(ctx,
 		`INSERT INTO flavors (id, name, vcpus, ram_mb, disk_gb, is_public)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		flavorID, req.Flavor.Name, req.Flavor.VCPUs, req.Flavor.RAM, req.Flavor.Disk, isPublic,
+		flavorID, req.Flavor.Name, req.Flavor.VCPUs, req.Flavor.RAM, *req.Flavor.Disk, isPublic,
 	)
 	if err != nil {
 		// Check for unique constraint violation (duplicate name)
@@ -78,7 +91,7 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 			"name":                       req.Flavor.Name,
 			"vcpus":                      req.Flavor.VCPUs,
 			"ram":                        req.Flavor.RAM,
-			"disk":                       req.Flavor.Disk,
+			"disk":                       *req.Flavor.Disk,
 			"OS-FLV-EXT-DATA:ephemeral":  req.Flavor.Ephemeral,
 			"OS-FLV-DISABLED:disabled":   false,
 			"os-flavor-access:is_public": isPublic,
@@ -90,6 +103,13 @@ func (svc *Service) CreateFlavor(c *gin.Context) {
 
 // DeleteFlavor handles DELETE /v2.1/flavors/:id
 func (svc *Service) DeleteFlavor(c *gin.Context) {
+	// Admin-only: the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !common.RequireAdmin(c, "flavor-delete") {
+		return
+	}
+
 	flavorID := c.Param("id")
 	ctx := c.Request.Context()
 
@@ -153,6 +173,13 @@ func (svc *Service) GetFlavorExtraSpecs(c *gin.Context) {
 
 // CreateFlavorExtraSpecs handles POST /v2.1/flavors/:id/os-extra_specs
 func (svc *Service) CreateFlavorExtraSpecs(c *gin.Context) {
+	// Admin-only: the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !common.RequireAdmin(c, "flavor-extra-specs-create") {
+		return
+	}
+
 	flavorID := c.Param("id")
 
 	var req struct {
@@ -203,6 +230,13 @@ func (svc *Service) GetFlavorExtraSpecKey(c *gin.Context) {
 
 // UpdateFlavorExtraSpecKey handles PUT /v2.1/flavors/:id/os-extra_specs/:key
 func (svc *Service) UpdateFlavorExtraSpecKey(c *gin.Context) {
+	// Admin-only: the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !common.RequireAdmin(c, "flavor-extra-specs-update") {
+		return
+	}
+
 	flavorID := c.Param("id")
 	key := c.Param("key")
 
@@ -237,6 +271,13 @@ func (svc *Service) UpdateFlavorExtraSpecKey(c *gin.Context) {
 
 // DeleteFlavorExtraSpecKey handles DELETE /v2.1/flavors/:id/os-extra_specs/:key
 func (svc *Service) DeleteFlavorExtraSpecKey(c *gin.Context) {
+	// Admin-only: the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !common.RequireAdmin(c, "flavor-extra-specs-delete") {
+		return
+	}
+
 	flavorID := c.Param("id")
 	key := c.Param("key")
 
@@ -261,6 +302,13 @@ func (svc *Service) DeleteFlavorExtraSpecKey(c *gin.Context) {
 
 // FlavorAction handles POST /v2.1/flavors/:id/action
 func (svc *Service) FlavorAction(c *gin.Context) {
+	// Admin-only: the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !common.RequireAdmin(c, "flavor-access-modify") {
+		return
+	}
+
 	flavorID := c.Param("id")
 
 	var req map[string]any
@@ -327,6 +375,13 @@ func (svc *Service) FlavorAction(c *gin.Context) {
 
 // GetFlavorAccess handles GET /v2.1/flavors/:id/os-flavor-access
 func (svc *Service) GetFlavorAccess(c *gin.Context) {
+	// Admin-only: the flavor catalog is a shared,
+	// deployment-wide resource — members must not create, delete, or
+	// re-scope it (upstream: admin_api for all flavor management).
+	if !common.RequireAdmin(c, "flavor-access-list") {
+		return
+	}
+
 	flavorID := c.Param("id")
 
 	rows, err := svc.pool.Query(c.Request.Context(),

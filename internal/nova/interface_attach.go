@@ -1,16 +1,15 @@
 package nova
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
-
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -60,21 +59,39 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	var networkID string
 	var fixedIP string
 	var macAddress string
+	// fixedIPEntries is what the response reports as the attachment's
+	// fixed_ips: the port's actual entries (port_id path) or the one just
+	// allocated (net_id path). Empty means none — not a fabricated one.
+	var fixedIPEntries common.FixedIPs
+	// novaCreatedPort is true when this request had Nova create the port
+	// (net_id path); false when it attached a port the tenant already owned
+	// (port_id path). It decides the device_owner stamp below (N-8).
+	novaCreatedPort := false
 
 	// If port_id provided, use existing port
 	if req.InterfaceAttachment.PortID != "" {
 		portID = req.InterfaceAttachment.PortID
 
-		// Verify port exists and is available
+		// Verify port exists and is available. device_id is nullable — every
+		// free port has NULL there — so it is read COALESCE'd rather than
+		// scanned into a plain string (round 3 of this review): that scan
+		// fails on NULL, and the error used to be dropped, leaving the attach
+		// "correct" only because a failed Scan invalidates the lookup, even if some earlier columns were read. Any real database error on this lookup surfaced the same way:
+		// a bogus 200 with an empty net_id and MAC.
 		var deviceID string
-		var fixedIPsJSON []byte
+		var fixedIPs common.FixedIPs
 		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT network_id, fixed_ips, mac_address, device_id FROM ports WHERE id = $1 AND project_id = $2",
+			"SELECT network_id, fixed_ips, mac_address, COALESCE(device_id::text, '') FROM ports WHERE id = $1 AND project_id = $2",
 			portID, projectID,
-		).Scan(&networkID, &fixedIPsJSON, &macAddress, &deviceID)
+		).Scan(&networkID, &fixedIPs, &macAddress, &deviceID)
 
 		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("port"))
+			return
+		}
+		if err != nil {
+			log.Error().Err(err).Str("operation", "attach_interface").Str("port_id", portID).Msg("port lookup failed")
+			common.SendError(c, common.NewInternalServerError("database error"))
 			return
 		}
 
@@ -83,12 +100,16 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			return
 		}
 
-		// Parse fixed_ips from JSONB
-		// For simplicity, just extract first IP
-		fixedIP = "192.168.1.10" // Placeholder, would parse from fixedIPsJSON
+		// The port's actual fixed_ips, for the response and for nothing else:
+		// its addressing lives in the JSONB, and a hardcoded placeholder used
+		// to be reported instead (round 2 of this review). A port with no
+		// addresses reports an empty list, as upstream does — not a fabricated
+		// {"ip_address": ""}.
+		fixedIPEntries = fixedIPs
 	} else if req.InterfaceAttachment.NetID != "" {
 		// Create new port on the specified network
 		networkID = req.InterfaceAttachment.NetID
+		novaCreatedPort = true
 
 		// The rule booting applies (neutron.GuestMayAttach): the server's own networks and shared
 		// ones, and an unshared external network for administrators only — upstream applies
@@ -115,39 +136,109 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		portID = uuid.New().String()
 		macAddress = generateMACAddress()
 
-		// Get subnet info for IP allocation
-		var cidr string
-		err = svc.pool.QueryRow(c.Request.Context(),
-			"SELECT cidr FROM subnets WHERE network_id = $1 LIMIT 1",
-			networkID,
-		).Scan(&cidr)
-
-		if errors.Is(err, database.ErrNoRows) {
+		// Resolve the subnet containing an explicit address. Networks can have
+		// both IPv4 and IPv6 subnets, so an arbitrary first subnet can reject a
+		// valid address from the other family.
+		subnetRows, err := svc.pool.Query(c.Request.Context(),
+			"SELECT id, cidr FROM subnets WHERE network_id = $1 ORDER BY id", networkID)
+		if err != nil {
+			log.Error().Err(err).Str("operation", "allocate_ip").Msg("subnet lookup error")
+			common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
+			return
+		}
+		type subnetInfo struct{ id, cidr string }
+		var subnets []subnetInfo
+		for subnetRows.Next() {
+			var subnet subnetInfo
+			if err := subnetRows.Scan(&subnet.id, &subnet.cidr); err != nil {
+				subnetRows.Close()
+				log.Error().Err(err).Str("operation", "allocate_ip").Msg("subnet scan error")
+				common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
+				return
+			}
+			subnets = append(subnets, subnet)
+		}
+		rowsErr := subnetRows.Err()
+		subnetRows.Close()
+		if rowsErr != nil {
+			log.Error().Err(rowsErr).Str("operation", "allocate_ip").Msg("subnet iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
+			return
+		}
+		if len(subnets) == 0 {
 			common.SendError(c, common.NewBadRequestError("network has no subnet"))
 			return
 		}
+		subnetID, cidr := subnets[0].id, subnets[0].cidr
 
 		// Use provided fixed_ip or allocate one
 		if req.InterfaceAttachment.FixedIP != "" {
 			fixedIP = req.InterfaceAttachment.FixedIP
-		} else {
-			// Allocate next available IP from subnet
-			fixedIP, err = allocateNextIP(c.Request.Context(), svc.pool, networkID, cidr)
-			if err != nil {
-				log.Error().Err(err).Str("operation", "allocate_ip").Msg("IP allocation error")
-				common.SendError(c, common.NewInternalServerError("failed to allocate IP"))
+			// A caller-specified address is validated, not trusted (round 3
+			// of this review): it must parse and lie in the subnet (400), and
+			// no other port may hold it (409, upstream's "IP address already
+			// allocated") — the explicit side of the N-4 collision rule the
+			// allocator covers for generated addresses. Parsing also keeps
+			// arbitrary strings out of the JSONB build below.
+			ip := net.ParseIP(fixedIP)
+			if ip == nil {
+				common.SendError(c, common.NewBadRequestError("fixed_ip is not a valid address in the network's subnet"))
 				return
 			}
+			matchedSubnet := false
+			for _, subnet := range subnets {
+				_, ipNet, cidrErr := net.ParseCIDR(subnet.cidr)
+				if cidrErr == nil && ipNet.Contains(ip) {
+					subnetID, cidr = subnet.id, subnet.cidr
+					matchedSubnet = true
+					break
+				}
+			}
+			if !matchedSubnet {
+				common.SendError(c, common.NewBadRequestError("fixed_ip is not a valid address in the network's subnet"))
+				return
+			}
+			fixedIP = ip.String()
 		}
 
-		// Create port
-		fixedIPsJSON := fmt.Sprintf(`[{"ip_address": "%s", "subnet_id": "%s"}]`, fixedIP, networkID)
-		_, err = svc.pool.Exec(c.Request.Context(), `
-			INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
-		`, portID, networkID, projectID, fmt.Sprintf("port-%s", portID[:8]), macAddress, fixedIPsJSON, instanceID, "compute:nova", "ACTIVE", time.Now(), time.Now())
-
+		// Allocate/check and insert while holding the subnet lock shared with
+		// Neutron's port-create and server-boot paths.
+		err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+			cidr, err = neutron.LockSubnet(c.Request.Context(), tx, subnetID)
+			if err != nil {
+				return err
+			}
+			if fixedIP != "" {
+				available, err := neutron.IPAvailable(c.Request.Context(), tx, subnetID, fixedIP)
+				if err != nil {
+					return err
+				}
+				if !available {
+					return neutron.ErrNoAvailableIP
+				}
+			} else {
+				fixedIP, err = neutron.AllocateFreeIP(c.Request.Context(), tx, subnetID, cidr)
+				if err != nil {
+					return err
+				}
+			}
+			fixedIPEntries = common.FixedIPs{{IPAddress: fixedIP, SubnetID: subnetID}}
+			fixedIPsJSON, _ := json.Marshal(fixedIPEntries)
+			_, err = tx.Exec(c.Request.Context(), `
+				INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
+				VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+			`, portID, networkID, projectID, fmt.Sprintf("port-%s", portID[:8]), macAddress, fixedIPsJSON, instanceID, "compute:nova", "ACTIVE", time.Now(), time.Now())
+			return err
+		})
 		if err != nil {
+			if errors.Is(err, neutron.ErrNoAvailableIP) {
+				message := "no IP address available in the network's subnet"
+				if req.InterfaceAttachment.FixedIP != "" {
+					message = "IP address already allocated in the subnet"
+				}
+				common.SendError(c, common.NewConflictError(message))
+				return
+			}
 			log.Error().Err(err).Str("operation", "create_port").Msg("database error")
 			common.SendError(c, common.NewInternalServerError("failed to create port"))
 			return
@@ -157,12 +248,24 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		return
 	}
 
-	// Update port to attach to instance
+	// Attach the port to the instance. device_owner is stamped
+	// 'compute:nova' only on the port Nova itself just created — that stamp
+	// is the ownership discriminator server delete and the boot-failure
+	// rollback key on: a tenant's port attached by id
+	// keeps its own device_owner, so deleting the server DETACHES it instead
+	// of destroying it — upstream's deallocate_for_instance skips ports it
+	// did not create for exactly this reason. The old blanket stamp is also
+	// what made the tenant-port half of N-8 unreachable through the real
+	// attach flow (round 2 of this review).
+	var deviceOwner any
+	if novaCreatedPort {
+		deviceOwner = "compute:nova"
+	}
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		UPDATE ports
-		SET device_id = $1, device_owner = $2, status = $3, updated_at = $4
+		SET device_id = $1, device_owner = COALESCE($2, device_owner), status = $3, updated_at = $4
 		WHERE id = $5
-	`, instanceID, "compute:nova", "ACTIVE", time.Now(), portID)
+	`, instanceID, deviceOwner, "ACTIVE", time.Now(), portID)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_port_attach").Msg("database error")
@@ -190,12 +293,18 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	// an administrator's change in their own history (SPEC-023 FR-007a).
 	recordInstanceAction(c, svc.pool, instanceID, projectID, "attach_interface")
 
+	// The port's actual fixed_ips — entries with their subnet ids, or an
+	// empty list for a port with none (round 3 of this review: this used to
+	// fabricate exactly one {"ip_address": ""}).
+	if fixedIPEntries == nil {
+		fixedIPEntries = common.FixedIPs{}
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"interfaceAttachment": gin.H{
 			"id":         attachmentID,
 			"port_id":    portID,
 			"net_id":     networkID,
-			"fixed_ips":  []gin.H{{"ip_address": fixedIP}},
+			"fixed_ips":  fixedIPEntries,
 			"mac_addr":   macAddress,
 			"port_state": "ACTIVE",
 		},
@@ -210,15 +319,25 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 	}
 	portID := c.Param("port_id")
 
-	// Verify port is attached to this instance
+	// Verify port is attached to this instance. device_id is nullable — a
+	// detached port has NULL there — so it is read COALESCE'd rather than
+	// scanned into a plain string (same class as the attach-path fix in this
+	// review: that scan fails on NULL, the error was dropped, and the "not
+	// attached" answer below was right only by accident, with real database
+	// errors 409-ing as "not attached" instead of 500-ing).
 	var attachedInstanceID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT device_id FROM ports WHERE id = $1",
+		"SELECT COALESCE(device_id::text, '') FROM ports WHERE id = $1",
 		portID,
 	).Scan(&attachedInstanceID)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "detach_interface").Str("port_id", portID).Msg("port lookup failed")
+		common.SendError(c, common.NewInternalServerError("database error"))
 		return
 	}
 
@@ -285,10 +404,10 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 	var attachments []gin.H
 	for rows.Next() {
 		var id, portID, networkID, macAddress string
-		var fixedIPsJSON []byte
+		var fixedIPs common.FixedIPs
 		var portState *string
 
-		if err := rows.Scan(&id, &portID, &networkID, &fixedIPsJSON, &macAddress, &portState); err != nil {
+		if err := rows.Scan(&id, &portID, &networkID, &fixedIPs, &macAddress, &portState); err != nil {
 			log.Warn().Err(err).Str("operation", "ListInterfaceAttachments").Msg("failed to scan row")
 			continue
 		}
@@ -298,18 +417,19 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 			state = *portState
 		}
 
-		// Parse fixed_ips from JSONB
-		var fixedIPs []map[string]any
-		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err == nil && len(fixedIPs) > 0 {
-			attachments = append(attachments, gin.H{
-				"id":         id,
-				"port_id":    portID,
-				"net_id":     networkID,
-				"fixed_ips":  fixedIPs,
-				"mac_addr":   macAddress,
-				"port_state": state,
-			})
+		// An attachment with no addresses remains visible and reports an empty
+		// fixed_ips list, matching the attach response.
+		if fixedIPs == nil {
+			fixedIPs = common.FixedIPs{}
 		}
+		attachments = append(attachments, gin.H{
+			"id":         id,
+			"port_id":    portID,
+			"net_id":     networkID,
+			"fixed_ips":  fixedIPs,
+			"mac_addr":   macAddress,
+			"port_state": state,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
@@ -329,53 +449,4 @@ func generateMACAddress() string {
 	// Use OpenStack's OUI prefix: fa:16:3e
 	return fmt.Sprintf("fa:16:3e:%02x:%02x:%02x",
 		uuid.New()[0], uuid.New()[1], uuid.New()[2])
-}
-
-// allocateNextIP allocates the next available IP from a subnet
-func allocateNextIP(ctx context.Context, pool database.DB, networkID, cidr string) (string, error) {
-	// Simple allocation: get last used IP and increment
-	// In production, would use proper IPAM
-	var fixedIPsJSON []byte
-	err := pool.QueryRow(ctx,
-		"SELECT fixed_ips FROM ports WHERE network_id = $1 ORDER BY created_at DESC LIMIT 1",
-		networkID,
-	).Scan(&fixedIPsJSON)
-
-	if errors.Is(err, database.ErrNoRows) {
-		// First allocation, use .10
-		baseIP := cidr[:len(cidr)-3] // Remove /24
-		return baseIP + "10", nil
-	}
-
-	if err != nil {
-		return "", err
-	}
-
-	// For simplicity, parse JSON and increment
-	// In production, would use proper IPAM library
-	var ips []map[string]any
-	if err := json.Unmarshal(fixedIPsJSON, &ips); err != nil {
-		// Fallback to simple allocation
-		baseIP := cidr[:len(cidr)-3]
-		return baseIP + "11", nil
-	}
-
-	if len(ips) == 0 {
-		baseIP := cidr[:len(cidr)-3]
-		return baseIP + "10", nil
-	}
-
-	lastIP := ips[0]["ip_address"].(string)
-
-	// Increment last octet
-	var a, b, c, d int
-	if _, err := fmt.Sscanf(lastIP, "%d.%d.%d.%d", &a, &b, &c, &d); err != nil {
-		return "", fmt.Errorf("malformed IP %q in subnet allocation table: %w", lastIP, err)
-	}
-	d++
-	if d > 254 {
-		return "", fmt.Errorf("subnet exhausted")
-	}
-
-	return fmt.Sprintf("%d.%d.%d.%d", a, b, c, d), nil
 }

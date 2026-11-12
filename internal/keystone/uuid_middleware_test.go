@@ -216,13 +216,13 @@ func TestUUIDParamMiddlewareAbortsBeforeHandler(t *testing.T) {
 }
 
 // A well-formed but non-canonical id (dash-free, as rgw_compat_tenant_ids advertises, or
-// upper-case) is rewritten to canonical form, so the handler's id comparison matches on
-// SQLite, where ids are text.
+// upper-case) is canonicalized by the management middleware before validation, so the
+// handler's id comparison matches on SQLite, where ids are text.
 func TestUUIDParamMiddlewareCanonicalisesID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	g := r.Group("/v3")
-	g.Use(uuidParamMiddleware)
+	g.Use(canonicalizeUUIDParams, uuidParamMiddleware)
 
 	var seen string
 	g.GET("/projects/:id", func(c *gin.Context) {
@@ -239,6 +239,24 @@ func TestUUIDParamMiddlewareCanonicalisesID(t *testing.T) {
 		}
 		if seen != canonical {
 			t.Errorf("%s: handler saw %q; want the canonical %q", spelling, seen, canonical)
+		}
+	}
+}
+
+func TestCanonicalizeUUIDParamsLeavesMalformedIDsForHandlers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Params = gin.Params{
+		{Key: "id", Value: "11111111111111111111111111111111"},
+		{Key: "cred_id", Value: "NOT-A-UUID"},
+		{Key: "access", Value: "legacy-access-key"},
+	}
+
+	canonicalizeUUIDParams(c)
+	want := []string{"11111111-1111-1111-1111-111111111111", "NOT-A-UUID", "legacy-access-key"}
+	for i, expected := range want {
+		if got := c.Params[i].Value; got != expected {
+			t.Errorf("param %s = %q, want %q", c.Params[i].Key, got, expected)
 		}
 	}
 }

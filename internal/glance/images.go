@@ -37,7 +37,10 @@ type Service struct {
 	s3Endpoint  string
 	imageStore  *storage.ImageStore
 	cache       *cache.Cache
+	uploadCap   int64
 }
+
+const defaultMaxImageUploadBytes int64 = 10 << 30
 
 // NewService creates a new Glance service.
 //
@@ -61,6 +64,7 @@ func NewService(pool database.DB, mode, cephPool, cephConf string, s3opts storag
 		s3Endpoint:  s3opts.Endpoint,
 		imageStore:  imageStore,
 		cache:       cacheInstance,
+		uploadCap:   defaultMaxImageUploadBytes,
 	}, nil
 }
 
@@ -91,6 +95,7 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 
 	// Image import
 	r.POST("/images/:id/stage", svc.StageImageData)
+	r.PUT("/images/:id/stage", svc.StageImageData)
 	r.POST("/images/:id/import", svc.ImportImage)
 	r.GET("/images/:id/import", svc.GetImageImportInfo)
 
@@ -957,29 +962,65 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	imageID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Check if image exists and is in queued status
-	var status string
+	// Ownership, not visibility: seeing a public
+	// image must not grant write access to its bytes — otherwise anyone
+	// could poison an operator-staged public base image that every tenant
+	// boots from. Same rule as delete (F6): owner or admin, 403 for a
+	// visible-but-foreign image, 404 for an invisible one.
+	var uploadOwner sql.NullString
+	var uploadVisibility string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT status FROM images WHERE id = $1 AND (visibility = 'public' OR project_id = $2)",
-		imageID, projectID,
-	).Scan(&status)
-
+		"SELECT project_id, visibility FROM images WHERE id = $1",
+		imageID,
+	).Scan(&uploadOwner, &uploadVisibility)
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
-
-	if status != "queued" {
-		common.SendError(c, common.NewConflictError("image data already exists"))
+	if err != nil {
+		log.Error().Err(err).Str("operation", "upload_image_lookup").Str("image_id", imageID).Msg("failed to look up image")
+		common.SendError(c, common.NewInternalServerError("failed to upload image"))
+		return
+	}
+	switch imageDeleteAuthz(common.HasRole(c, common.RoleAdmin), uploadOwner, projectID, uploadVisibility) {
+	case http.StatusForbidden:
+		common.SendError(c, common.NewForbiddenError("not authorized to upload data to this image"))
+		return
+	case http.StatusNotFound:
+		common.SendError(c, common.NewNotFoundError("image"))
 		return
 	}
 
-	// Update status to saving
-	if _, err := svc.pool.Exec(c.Request.Context(),
-		"UPDATE images SET status = $1, updated_at = $2 WHERE id = $3",
-		"saving", time.Now(), imageID); err != nil {
-		log.Warn().Err(err).Str("image_id", imageID).Msg("failed to mark image as saving")
+	// Bound the upload: without a cap an unbounded
+	// stream lands on disk (and, in local mode, is normalized) until the
+	// host fills. Same default as upstream Glance's image_size_cap.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, svc.uploadCap)
+
+	// Claim the queued image atomically: only one request may write its bytes.
+	claimed, err := svc.pool.Exec(c.Request.Context(),
+		"UPDATE images SET status = 'saving', updated_at = $1 WHERE id = $2 AND status = 'queued'",
+		time.Now(), imageID)
+	if err != nil {
+		log.Error().Err(err).Str("image_id", imageID).Msg("failed to mark image as saving")
+		common.SendError(c, common.NewInternalServerError("failed to start image upload"))
+		return
 	}
+	if claimed.RowsAffected() == 0 {
+		common.SendError(c, common.NewConflictError("image data already exists"))
+		return
+	}
+	active := false
+	defer func() {
+		if active {
+			return
+		}
+		// A disconnected client must not leave the image permanently in saving.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), time.Second)
+		defer cancel()
+		if _, err := svc.pool.Exec(ctx, "UPDATE images SET status = 'queued' WHERE id = $1 AND status = 'saving'", imageID); err != nil {
+			log.Warn().Err(err).Str("image_id", imageID).Msg("rollback: failed to reset image upload")
+		}
+	}()
 
 	// Upload to storage, hashing the uploaded bytes so the image's checksum
 	// (MD5, Glance convention) is recorded — it lets a lazily fetched base be
@@ -987,32 +1028,60 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	hasher := md5.New() // #nosec G401 -- Glance checksum is MD5 (compatibility), not a security control
 	size, normalizedToRaw, err := svc.imageStore.UploadImage(c.Request.Context(), imageID, io.TeeReader(c.Request.Body, hasher))
 	if err != nil {
-		// Revert status to queued (best-effort; the upload error is the
-		// user-facing one)
-		if _, revertErr := svc.pool.Exec(c.Request.Context(),
-			"UPDATE images SET status = $1 WHERE id = $2",
-			"queued", imageID); revertErr != nil {
-			log.Warn().Err(revertErr).Str("image_id", imageID).Msg("rollback: failed to revert image status to queued after upload failure")
+		// Over the cap is 413 — upstream's answer to image_size_cap — not a
+		// storage failure (round 2 of this review: the MaxBytesReader error
+		// surfaced from the storage read as a 503).
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			common.SendError(c, common.NewRequestEntityTooLargeError("Image data exceeds the maximum upload size"))
+			return
 		}
 		log.Error().Err(err).Str("operation", "upload_image").Str("image_id", imageID).Msg("failed to upload image to storage")
 		common.SendError(c, common.NewServiceUnavailableError("failed to upload image"))
 		return
 	}
 
+	if err := svc.activateUploadedImage(c.Request.Context(), imageID, size, normalizedToRaw, hex.EncodeToString(hasher.Sum(nil))); err != nil {
+		log.Error().Err(err).Str("image_id", imageID).Msg("failed to finalize image upload")
+		common.SendError(c, common.NewServiceUnavailableError("failed to finalize image upload"))
+		return
+	}
+	active = true
+	c.Status(http.StatusNoContent)
+}
+
+// activateUploadedImage publishes only a stored object whose checksum and state
+// were recorded successfully. An unreadable normalized object must never fall
+// back to the original stream's checksum: those bytes can be different.
+func (svc *Service) activateUploadedImage(ctx context.Context, imageID string, size int64, normalizedToRaw bool, checksum string) error {
 	// Mark active and set size + checksum. Normalizing backends (local/RBD real
 	// mode) store a raw base, so disk_format becomes "raw" (SPEC-009 WS-0/FR-003);
 	// the S3 backend stores the bytes as-is, so its create-time disk_format is left
 	// untouched rather than mislabeled "raw" (SPEC-014).
-	checksum := hex.EncodeToString(hasher.Sum(nil))
-	if _, err := svc.pool.Exec(c.Request.Context(),
+	if normalizedToRaw {
+		// The recorded checksum must describe the STORED bytes: downloads serve
+		// them, and EnsureLocalBase verifies a lazily fetched base against this
+		// value on every boot — hashing the upload stream
+		// instead broke boot-from-image on any node without the local base,
+		// because MD5(raw replica) != MD5(original qcow2)).
+		stored, csErr := svc.imageStore.StoredChecksum(ctx, imageID)
+		if csErr != nil {
+			return fmt.Errorf("hash stored image: %w", csErr)
+		}
+		checksum = stored
+	}
+	result, err := svc.pool.Exec(ctx,
 		`UPDATE images SET status = $1, size_bytes = $2,
 			disk_format = CASE WHEN $3 THEN 'raw' ELSE disk_format END,
-			checksum = $4, updated_at = $5 WHERE id = $6`,
-		"active", size, normalizedToRaw, checksum, time.Now(), imageID); err != nil {
-		log.Error().Err(err).Str("image_id", imageID).Msg("failed to mark image as active after successful upload")
+			checksum = $4, updated_at = $5 WHERE id = $6 AND status = 'saving'`,
+		"active", size, normalizedToRaw, checksum, time.Now(), imageID)
+	if err != nil {
+		return fmt.Errorf("record active image: %w", err)
 	}
-
-	c.Status(http.StatusNoContent)
+	if result.RowsAffected() != 1 {
+		return errors.New("image is no longer in saving state")
+	}
+	return nil
 }
 
 // DownloadImageData downloads image data

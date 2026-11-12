@@ -15,6 +15,15 @@ import (
 
 // CreateVolumeType creates a new volume type
 func (svc *Service) CreateVolumeType(c *gin.Context) {
+	// Admin-only: volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.RequireAdmin(c, "cinder:CreateVolumeType") {
+		return
+	}
+
 	var req struct {
 		VolumeType struct {
 			Name        string  `json:"name" binding:"required"`
@@ -58,6 +67,15 @@ func (svc *Service) CreateVolumeType(c *gin.Context) {
 
 // UpdateVolumeType updates a volume type
 func (svc *Service) UpdateVolumeType(c *gin.Context) {
+	// Admin-only: volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.RequireAdmin(c, "cinder:UpdateVolumeType") {
+		return
+	}
+
 	typeID := c.Param("id")
 
 	var req struct {
@@ -121,6 +139,15 @@ func (svc *Service) UpdateVolumeType(c *gin.Context) {
 
 // DeleteVolumeType deletes a volume type
 func (svc *Service) DeleteVolumeType(c *gin.Context) {
+	// Admin-only: volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.RequireAdmin(c, "cinder:DeleteVolumeType") {
+		return
+	}
+
 	typeID := c.Param("id")
 
 	result, err := svc.pool.Exec(c.Request.Context(),
@@ -172,6 +199,15 @@ func (svc *Service) ListVolumeTypeExtraSpecs(c *gin.Context) {
 
 // CreateVolumeTypeExtraSpecs handles POST /v3/types/:id/extra_specs
 func (svc *Service) CreateVolumeTypeExtraSpecs(c *gin.Context) {
+	// Admin-only: volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.RequireAdmin(c, "cinder:CreateVolumeTypeExtraSpecs") {
+		return
+	}
+
 	typeID := c.Param("id")
 
 	var req struct {
@@ -235,6 +271,15 @@ func (svc *Service) GetVolumeTypeExtraSpecKey(c *gin.Context) {
 
 // UpdateVolumeTypeExtraSpecKey handles PUT /v3/types/:id/extra_specs/:key
 func (svc *Service) UpdateVolumeTypeExtraSpecKey(c *gin.Context) {
+	// Admin-only: volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.RequireAdmin(c, "cinder:UpdateVolumeTypeExtraSpecKey") {
+		return
+	}
+
 	typeID := c.Param("id")
 	key := c.Param("key")
 
@@ -297,6 +342,15 @@ func (svc *Service) UpdateVolumeTypeExtraSpecKey(c *gin.Context) {
 
 // DeleteVolumeTypeExtraSpecKey handles DELETE /v3/types/:id/extra_specs/:key
 func (svc *Service) DeleteVolumeTypeExtraSpecKey(c *gin.Context) {
+	// Admin-only: volume types, QoS specs and the
+	// manage/unmanage surface shape storage for every tenant and address
+	// host-level backends (upstream: volume_extension:* and
+	// volume_extension:volume_admin_actions:*, all admin_api). Checked before
+	// the body is bound so a non-admin gets 403, not a 400.
+	if !common.RequireAdmin(c, "cinder:DeleteVolumeTypeExtraSpecKey") {
+		return
+	}
+
 	typeID := c.Param("id")
 	key := c.Param("key")
 

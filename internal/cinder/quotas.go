@@ -178,8 +178,7 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 	// Admin-only: quota limits are an operator concern. Checked before the body is
 	// bound so a non-admin gets 403, not a request-validation 400 (SPEC-020 FR-020).
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow quota updates to be performed. Admin role required."))
+	if !common.RequireAdmin(c, "cinder:UpdateQuotaSet") {
 		return
 	}
 
@@ -255,8 +254,7 @@ func (svc *Service) UpdateQuotaSet(c *gin.Context) {
 // DeleteQuotaSet resets quotas to defaults for a project
 func (svc *Service) DeleteQuotaSet(c *gin.Context) {
 	// Admin-only, matching UpdateQuotaSet and upstream Cinder (SPEC-020 FR-020).
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow quota updates to be performed. Admin role required."))
+	if !common.RequireAdmin(c, "cinder:DeleteQuotaSet") {
 		return
 	}
 

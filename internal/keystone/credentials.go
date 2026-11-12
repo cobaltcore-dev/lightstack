@@ -14,11 +14,16 @@ import (
 
 // ListCredentials returns all credentials
 func (svc *Service) ListCredentials(c *gin.Context) {
+	// The generic credentials API returns the
+	// recoverable EC2/S3 secret blob, so it is scoped like the EC2 API —
+	// a non-admin sees only their own credentials; an admin sees all.
+	callerID := c.GetString("user_id")
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, user_id, project_id, type, blob, created_at
 		FROM credentials
+		WHERE user_id = $1 OR $2
 		ORDER BY created_at DESC
-	`)
+	`, callerID, common.HasRole(c, common.RoleAdmin))
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_credentials").Msg("Failed to query credentials")
 		common.SendError(c, common.NewInternalServerError("failed to query credentials"))
@@ -75,6 +80,14 @@ func (svc *Service) CreateCredential(c *gin.Context) {
 		return
 	}
 
+	// Self-or-admin: a credential's blob is the
+	// recoverable secret consumed by S3/EC2 signature auth — minting one for
+	// another user (with a known secret) would defeat that auth.
+	if !sameUser(c.GetString("user_id"), req.Credential.UserID) && !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("cannot create credentials for another user"))
+		return
+	}
+
 	credID := uuid.New()
 	now := time.Now()
 
@@ -108,9 +121,37 @@ func (svc *Service) CreateCredential(c *gin.Context) {
 	c.JSON(201, gin.H{"credential": credential})
 }
 
+// credentialOwnerOrViewer enforces the owner-or-admin rule on a single
+// credential: 404 when it does not exist, 403 when it
+// belongs to another user and the caller is not admin.
+func (svc *Service) credentialOwnerOrViewer(c *gin.Context, credID string) bool {
+	var owner string
+	err := svc.pool.QueryRow(c.Request.Context(),
+		"SELECT user_id FROM credentials WHERE id = $1", credID,
+	).Scan(&owner)
+	if errors.Is(err, database.ErrNoRows) {
+		common.SendError(c, common.NewIdentityNotFoundError("credential", credID))
+		return false
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "credential_owner").Str("cred_id", credID).Msg("Failed to query credential")
+		common.SendError(c, common.NewInternalServerError("failed to query credential"))
+		return false
+	}
+	if !sameUser(c.GetString("user_id"), owner) && !common.HasRole(c, common.RoleAdmin) {
+		common.SendError(c, common.NewForbiddenError("cannot manage another user's credentials"))
+		return false
+	}
+	return true
+}
+
 // GetCredential returns a specific credential by ID
 func (svc *Service) GetCredential(c *gin.Context) {
 	credID := c.Param("id")
+
+	if !svc.credentialOwnerOrViewer(c, credID) {
+		return
+	}
 
 	var id, userID, credType, blob string
 	var projectID *string
@@ -148,6 +189,10 @@ func (svc *Service) GetCredential(c *gin.Context) {
 // UpdateCredential updates a credential
 func (svc *Service) UpdateCredential(c *gin.Context) {
 	credID := c.Param("id")
+
+	if !svc.credentialOwnerOrViewer(c, credID) {
+		return
+	}
 
 	var req struct {
 		Credential map[string]any `json:"credential"`
@@ -192,6 +237,10 @@ func (svc *Service) UpdateCredential(c *gin.Context) {
 // DeleteCredential deletes a credential
 func (svc *Service) DeleteCredential(c *gin.Context) {
 	credID := c.Param("id")
+
+	if !svc.credentialOwnerOrViewer(c, credID) {
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(),
 		"DELETE FROM credentials WHERE id = $1",

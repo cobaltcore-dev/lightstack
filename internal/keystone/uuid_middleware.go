@@ -16,10 +16,10 @@ import (
 // faithful behavior, and validating up front avoids the `22P02` cast that would
 // otherwise surface as 500 (cloud-storage#515).
 //
-// A well-formed but non-canonical id — dash-free (the form rgw_compat_tenant_ids
-// advertises) or upper-case — is rewritten to canonical form in place, so the handler's
-// id comparison matches on SQLite, where ids are text, as it did on PostgreSQL's `uuid`
-// columns. uuid.Parse accepts exactly the forms uuid.Validate did.
+// Well-formed UUID params have already been canonicalized by the parent management
+// group's canonicalizeUUIDParams middleware, so this middleware only rejects malformed
+// values. That ordering keeps the id comparison compatible with SQLite's text columns
+// while preserving the same 404 behavior as PostgreSQL's `uuid` columns.
 //
 // It validates only params named "id" or "<something>_id"; the EC2 "access" key
 // and any other param pass through untouched (FR-005). It is registered only on
@@ -31,15 +31,29 @@ func uuidParamMiddleware(c *gin.Context) {
 		if !isUUIDParam(p.Key) {
 			continue
 		}
-		id, err := uuid.Parse(p.Value)
-		if err != nil {
+		if uuid.Validate(p.Value) != nil {
 			common.AbortWithError(c, common.NewIdentityNotFoundError(resourceNoun(c.FullPath(), p.Key), p.Value))
 			return
 		}
-		c.Params[i].Value = id.String()
 	}
 	// No c.Next() needed: when a middleware returns without aborting, gin's engine
 	// advances to the next handler on its own.
+}
+
+// canonicalizeUUIDParams normalizes only well-formed UUID path params. It is
+// installed after authentication on the management group, before uuidParamMiddleware
+// on its validation-only subgroup, so authorization-gated handlers can still reject
+// malformed IDs after their authorization check.
+func canonicalizeUUIDParams(c *gin.Context) {
+	for i := range c.Params {
+		p := &c.Params[i]
+		if !isUUIDParam(p.Key) {
+			continue
+		}
+		if id, err := uuid.Parse(p.Value); err == nil {
+			p.Value = id.String()
+		}
+	}
 }
 
 // isUUIDParam reports whether a gin path-param name addresses a UUID id.

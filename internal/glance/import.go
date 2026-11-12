@@ -9,6 +9,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 )
 
 // StageImageData stages image data before import
@@ -29,7 +30,8 @@ func (svc *Service) StageImageData(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		log.Error().Err(err).Str("image_id", imageID).Msg("image staging database error")
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to stage image data"})
 		return
 	}
 
@@ -39,28 +41,38 @@ func (svc *Service) StageImageData(c *gin.Context) {
 		return
 	}
 
-	// Read staged data (in real implementation, would save to staging area)
-	stagedData, err := io.ReadAll(c.Request.Body)
+	// Consume staging data with bounded memory. The staging backend is currently
+	// a stub, so only its byte count is retained; the upload cap can be 10 GiB.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, svc.uploadCap)
+	stagedSize, err := io.Copy(io.Discard, c.Request.Body)
 	if err != nil {
+		// Over the cap is 413, upstream's answer to image_size_cap (round 2
+		// of this review — it used to read as a 400 read failure).
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"message": "Image data exceeds the maximum upload size"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Failed to read image data"})
 		return
 	}
 
 	// Update image status to uploading
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	result, err := svc.pool.Exec(c.Request.Context(), `
 		UPDATE images
 		SET status = $1, size_bytes = $2, updated_at = $3
-		WHERE id = $4
-	`, "uploading", len(stagedData), time.Now(), imageID)
+		WHERE id = $4 AND status = 'queued'
+	`, "uploading", stagedSize, time.Now(), imageID)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		log.Error().Err(err).Str("image_id", imageID).Msg("image staging database error")
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to stage image data"})
 		return
 	}
-
-	// In stub mode, data is discarded
-	// In real mode, would save to staging location
-	_ = stagedData
+	if result.RowsAffected() == 0 {
+		c.JSON(http.StatusConflict, gin.H{"message": "Image is not in queued state"})
+		return
+	}
 
 	c.Status(http.StatusNoContent)
 }

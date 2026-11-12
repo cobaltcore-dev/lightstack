@@ -249,6 +249,16 @@ func NewServiceUnavailableError(message string) *OpenStackError {
 	}
 }
 
+// NewRequestEntityTooLargeError creates a 413 error, upstream's answer to a
+// request body over the configured size cap (e.g. Glance's image_size_cap).
+func NewRequestEntityTooLargeError(message string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode: http.StatusRequestEntityTooLarge,
+		Code:       "requestEntityTooLarge",
+		Message:    message,
+	}
+}
+
 func NewInternalServerError(message string) *OpenStackError {
 	return &OpenStackError{
 		StatusCode: http.StatusInternalServerError,

@@ -130,6 +130,63 @@ func TestAggregateAdminUnchanged(t *testing.T) {
 	_, _ = testPool.Exec(context.Background(), `DELETE FROM host_aggregates WHERE name = 'spec023-agg-2'`)
 }
 
+// TestDeploymentReadSurfacesRequireAdmin: the hypervisor and service views
+// describe the whole deployment, not a project, so they are administrator-only
+// like the migration list and host aggregates. /os-hypervisors/statistics is
+// the sharp one: it reports a real deployment-wide running-VM count.
+func TestDeploymentReadSurfacesRequireAdmin(t *testing.T) {
+	requireDB(t)
+	seedAuthzFixtures(t)
+	r := newNovaTestRouter()
+
+	paths := []string{
+		"/v2.1/os-hypervisors",
+		"/v2.1/os-hypervisors/detail",
+		"/v2.1/os-hypervisors/statistics",
+		"/v2.1/os-services",
+	}
+	for _, path := range paths {
+		t.Run("member "+path, func(t *testing.T) {
+			code, body := doReq(r, http.MethodGet, path, "", operatorHdr("member"))
+			if code != http.StatusForbidden {
+				t.Errorf("member GET %s: code=%d, want 403. body: %s", path, code, body)
+			}
+		})
+		t.Run("admin "+path, func(t *testing.T) {
+			code, body := doReq(r, http.MethodGet, path, "", operatorHdr("admin"))
+			if code != http.StatusOK {
+				t.Errorf("admin GET %s: code=%d, want 200. body: %s", path, code, body)
+			}
+		})
+	}
+}
+
+// TestConsoleAuthTokenRequiresAdmin: the compatibility token view resolves an
+// arbitrary console token, which names another user's instance and its
+// internal access path. It is an operator surface, gated before the store is
+// even consulted (a member gets 403, not a store-dependent 404).
+func TestConsoleAuthTokenRequiresAdmin(t *testing.T) {
+	requireDB(t)
+	r, store := newConsoleTestRouter(t, "stub")
+	id := seedConsoleInstance(t, seededProjectID)
+	tok, err := store.Issue(t.Context(), id, seededProjectID, testConsoleSocket, testDomainID)
+	if err != nil {
+		t.Fatalf("issuing a console token: %v", err)
+	}
+
+	member := operatorHdr("member")
+	code, body := doReq(r, http.MethodGet, "/v2.1/os-console-auth-tokens/"+tok, "", member)
+	if code != http.StatusForbidden {
+		t.Errorf("member reading a console token: code=%d, want 403. body: %s", code, body)
+	}
+
+	admin := testAuthHdr(seededProjectID, seededUserID)
+	code, body = doReq(r, http.MethodGet, "/v2.1/os-console-auth-tokens/"+tok, "", admin)
+	if code != http.StatusOK {
+		t.Errorf("admin reading a console token: code=%d, want 200. body: %s", code, body)
+	}
+}
+
 // TestMigrationListRequiresAdmin: O1. The deployment-wide list reports every
 // project's instance movements — server uuid, source and destination node,
 // flavour changes — and was readable by any authenticated tenant. The handler's

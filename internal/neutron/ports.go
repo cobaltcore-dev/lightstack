@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -43,7 +44,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	projectID := c.GetString("project_id")
 	portID := uuid.New().String()
-	tapName := "tap-" + portID[:8]
+	tapName := tapNameFor(portID)
 	macAddress := generateMAC()
 
 	adminStateUp := true
@@ -75,25 +76,18 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	}
 
 	// Get subnet to allocate IP
-	var subnetID, cidr string
+	var subnetID string
 	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, cidr FROM subnets WHERE network_id = $1 LIMIT 1",
+		"SELECT id FROM subnets WHERE network_id = $1 LIMIT 1",
 		req.Port.NetworkID,
-	).Scan(&subnetID, &cidr)
+	).Scan(&subnetID)
 
-	var fixedIPs []map[string]any
-	if err == nil {
-		// Allocate IP from subnet
-		allocatedIP := allocateIP(cidr)
-		fixedIPs = []map[string]any{
-			{
-				"subnet_id":  subnetID,
-				"ip_address": allocatedIP,
-			},
-		}
+	if err != nil && !errors.Is(err, database.ErrNoRows) {
+		log.Error().Err(err).Msg("port create: subnet lookup failed")
+		common.SendError(c, common.NewInternalServerError("failed to look up subnet"))
+		return
 	}
-
-	fixedIPsJSON, _ := json.Marshal(fixedIPs)
+	fixedIPs := []map[string]any{}
 
 	// Create the TAP where the bridge is — the namespace Lightstack runs in. CreateTAPDevice no longer takes
 	// a namespace at all, so this placement is now a property of the API rather than of the call.
@@ -133,15 +127,33 @@ func (svc *Service) CreatePort(c *gin.Context) {
 
 	// Insert into database
 	now := time.Now()
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		if subnetID != "" {
+			cidr, err := LockSubnet(c.Request.Context(), tx, subnetID)
+			if err != nil {
+				return err
+			}
+			ip, err := AllocateFreeIP(c.Request.Context(), tx, subnetID, cidr)
+			if err != nil {
+				return err
+			}
+			fixedIPs = append(fixedIPs, map[string]any{"subnet_id": subnetID, "ip_address": ip})
+		}
+		fixedIPsJSON, _ := json.Marshal(fixedIPs)
+		_, err := tx.Exec(c.Request.Context(), `
 		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, portID, req.Port.Name, req.Port.NetworkID, projectID, sql.NullString{String: req.Port.DeviceID, Valid: req.Port.DeviceID != ""},
-		sql.NullString{String: req.Port.DeviceOwner, Valid: req.Port.DeviceOwner != ""}, macAddress, adminStateUp, "ACTIVE", fixedIPsJSON, now, now)
-
+			sql.NullString{String: req.Port.DeviceOwner, Valid: req.Port.DeviceOwner != ""}, macAddress, adminStateUp, "ACTIVE", fixedIPsJSON, now, now)
+		return err
+	})
 	if err != nil {
-		log.Error().Err(err).Str("operation", "create_port").Msg("database error")
 		_ = svc.tapManager.DeleteTAPDevice(tapName)
+		if errors.Is(err, ErrNoAvailableIP) {
+			common.SendError(c, common.NewConflictError("no IP address available in the network's subnet"))
+			return
+		}
+		log.Error().Err(err).Str("operation", "create_port").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create port"))
 		return
 	}
@@ -531,48 +543,7 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	}
 	portID = resolvedID
 
-	tapName := "tap-" + portID[:8]
-
-	// Detach XDP program if eBPF mode
-	if svc.sgManager != nil && svc.mode == "ebpf" {
-		if err := svc.sgManager.DetachFromInterface(tapName); err != nil {
-			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to detach XDP program from interface")
-		}
-
-		// Remove port from eBPF maps (need MAC address). A scan failure
-		// leaves macAddress empty, which skips the eBPF cleanup below —
-		// safe degradation; a leftover map entry will be reconciled on
-		// the next sync.
-		var macAddress string
-		if err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT mac_address FROM ports WHERE id = $1",
-			portID,
-		).Scan(&macAddress); err != nil {
-			log.Warn().Err(err).Str("port_id", portID).Msg("failed to resolve port MAC during teardown")
-		}
-
-		if macAddress != "" {
-			if mac, err := net.ParseMAC(macAddress); err == nil {
-				if err := svc.sgManager.RemoveSecurityGroupFromPort(portID, mac); err != nil {
-					log.Warn().Err(err).Str("port_id", portID).Str("mac", mac.String()).Msg("failed to remove security group from port")
-				}
-			}
-		}
-	}
-
-	// Delete TAP device from the DEFAULT namespace, where CreatePort put it (F10). Best-effort: a
-	// leftover TAP is hygiene, not correctness — the port row is about to be deleted.
-	if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
-		log.Warn().Err(err).Str("tap", tapName).Msg("failed to delete TAP device")
-	}
-
-	// Remove FDB entry if VXLAN is enabled
-	if svc.vxlanCoordinator != nil {
-		if err := svc.vxlanCoordinator.RemoveFDBEntry(c.Request.Context(), portID); err != nil {
-			// Log but don't fail
-			log.Warn().Err(err).Str("port_id", portID).Msg("failed to remove FDB entry")
-		}
-	}
+	svc.teardownPortHost(c.Request.Context(), portID)
 
 	// Delete from database. The row was resolved above, so this deletes by an id already known to
 	// exist and to belong to the caller.
@@ -653,22 +624,172 @@ func allocateIP(cidr string) string {
 		return ""
 	}
 
-	// Count usable host addresses (excluding network and broadcast)
 	ones, bits := ipNet.Mask.Size()
 	hostBits := bits - ones
-	if hostBits < 2 {
+	if hostBits < 0 {
 		return ""
 	}
-	maxOffset := int64(1<<uint(hostBits)) - 2 // exclude network(0) and broadcast
 
-	n, err := rand.Int(rand.Reader, big.NewInt(maxOffset-10))
-	offset := uint(10) // fallback to offset 10 if rand fails
-	if err == nil {
-		offset = uint(n.Int64() + 10)
+	// Match upstream Neutron's generate_pools(): a /32 and a /31 have no
+	// network/broadcast pair to exclude, IPv4 larger than /31 excludes both,
+	// and IPv6 is handled normally. A small pool is never refused as
+	// "untenable" — exhaustion is what fails, in AllocateFreeIP.
+	isV4 := ipNet.IP.To4() != nil
+	var lo, span int64
+	switch {
+	case isV4 && hostBits == 0: // /32: single address
+		lo, span = 0, 1
+	case isV4 && ones >= 31: // /31: both addresses usable
+		lo, span = 0, 2
+	case isV4: // exclude network and broadcast
+		lo, span = 1, (int64(1)<<uint(hostBits))-2
+	case hostBits == 0: // IPv6 /128
+		lo, span = 0, 1
+	case hostBits >= 32: // IPv6: bounded random window inside the subnet
+		// The offset must fit incrementIP's uint and int64 arithmetic; a /64
+		// has far more host bits than this, so sample a window rather than
+		// shifting by 64 (which overflows int64 and used to panic).
+		lo, span = 1, 1<<32
+	default: // small IPv6 subnet: first+1 .. last
+		lo, span = 1, (int64(1)<<uint(hostBits))-1
+	}
+	if span <= 0 {
+		return ""
 	}
 
-	ip := incrementIP(ipNet.IP, offset)
-	return ip.String()
+	n, err := rand.Int(rand.Reader, big.NewInt(span))
+	offset := lo
+	if err == nil {
+		offset += n.Int64()
+	}
+	return incrementIP(ipNet.IP, uint(offset)).String()
+}
+
+type subnetQuerier interface {
+	Query(context.Context, string, ...any) (database.Rows, error)
+	QueryRow(context.Context, string, ...any) database.Row
+}
+
+// ErrNoAvailableIP distinguishes exhaustion from a database failure.
+var ErrNoAvailableIP = errors.New("no IP address available in the subnet")
+
+// LockSubnet serializes allocation and insertion across Neutron and Nova. Hold
+// this transaction until the port's fixed_ips have been inserted.
+func LockSubnet(ctx context.Context, tx database.Tx, subnetID string) (string, error) {
+	var cidr string
+	err := tx.QueryRow(ctx, "SELECT cidr FROM subnets WHERE id = $1 FOR UPDATE", subnetID).Scan(&cidr)
+	return cidr, err
+}
+
+// usedSubnetAddresses includes port addresses and the gateway, canonicalized so
+// compressed/expanded IPv6 spellings refer to the same address.
+func usedSubnetAddresses(ctx context.Context, pool subnetQuerier, subnetID string) (map[string]bool, error) {
+	used := map[string]bool{}
+	rows, err := pool.Query(ctx, `
+		SELECT fixed_ips FROM ports
+		WHERE network_id = (SELECT network_id FROM subnets WHERE id = $1)
+	`, subnetID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the subnet's used addresses: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fixedIPs common.FixedIPs
+		if err := rows.Scan(&fixedIPs); err != nil {
+			return nil, fmt.Errorf("scanning a port's fixed addresses: %w", err)
+		}
+		for _, entry := range fixedIPs {
+			if entry.SubnetID != subnetID {
+				continue
+			}
+			if addr := net.ParseIP(entry.IPAddress); addr != nil {
+				used[addr.String()] = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating ports in the subnet's network: %w", err)
+	}
+
+	// The gateway belongs to the subnet, not to any port.
+	var gateway sql.NullString
+	if err := pool.QueryRow(ctx,
+		"SELECT gateway_ip FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err != nil {
+		return nil, fmt.Errorf("reading the subnet's gateway: %w", err)
+	}
+	if addr := net.ParseIP(gateway.String); addr != nil {
+		used[addr.String()] = true
+	}
+	return used, nil
+}
+
+// IPAvailable reports whether no port in the subnet holds the address (and it
+// is not the subnet's gateway). Exported for Nova's os-interface path, which
+// accepts a caller-specified fixed_ip and must refuse one another port holds —
+// the explicit side of the N-4 collision rule the allocator covers for
+// generated addresses.
+func IPAvailable(ctx context.Context, pool subnetQuerier, subnetID, ip string) (bool, error) {
+	addr := net.ParseIP(ip)
+	if addr == nil {
+		return false, fmt.Errorf("invalid IP address %q", ip)
+	}
+	used, err := usedSubnetAddresses(ctx, pool, subnetID)
+	if err != nil {
+		return false, err
+	}
+	return !used[addr.String()], nil
+}
+
+// AllocateFreeIP picks a random usable address in the subnet that no port in
+// it already holds: allocateIP drew purely at random,
+// so two ports in one subnet landed on the same address at birthday-problem
+// rates — two MACs claiming one IP, dnsmasq handing it to one of them, and a
+// guest that could not reliably reach anything. The subnet's gateway (when
+// set) is excluded too: a port claiming it breaks routing for the whole
+// subnet.
+//
+// Exported and pool-taking because Nova's os-interface path allocates against
+// the same subnets and used to run its own next-free scan — two allocators
+// over one subnet is how they hand out the same address (round 2 of this
+// review).
+//
+// Writers must LockSubnet and insert the port in the same transaction.
+func AllocateFreeIP(ctx context.Context, pool subnetQuerier, subnetID, cidr string) (string, error) {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return "", fmt.Errorf("invalid subnet CIDR: %w", err)
+	}
+	used, err := usedSubnetAddresses(ctx, pool, subnetID)
+	if err != nil {
+		return "", err
+	}
+
+	// Random candidates make sparse subnets cheap. Dense subnets get a complete
+	// search below, so the last free address is never missed by chance.
+	for range 100 {
+		candidate := allocateIP(cidr)
+		if candidate == "" {
+			return "", fmt.Errorf("subnet %s has no usable addresses", subnetID)
+		}
+		if !used[candidate] {
+			return candidate, nil
+		}
+	}
+	// At most len(used)+1 candidates are visited, even on a huge IPv6 range.
+	candidate := prefix.Masked().Addr()
+	if (candidate.Is4() && prefix.Bits() < 31) || (candidate.Is6() && prefix.Bits() < 128) {
+		candidate = candidate.Next()
+	}
+	for candidate.IsValid() && prefix.Contains(candidate) {
+		if candidate.Is4() && prefix.Bits() < 31 && !prefix.Contains(candidate.Next()) {
+			break // IPv4 broadcast address
+		}
+		if !used[candidate.String()] {
+			return candidate.String(), nil
+		}
+		candidate = candidate.Next()
+	}
+	return "", fmt.Errorf("%w: %s", ErrNoAvailableIP, subnetID)
 }
 
 // Security Groups implementation
@@ -1494,7 +1615,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 
 	// The two cases are not the same answer: no subnet is something the tenant can fix, so it is
 	// marked for them and shown in the server's fault (SPEC-025 FR-018); a failed query is
-	// something only an operator can, so its text stays out of it. Surfacing pgx.ErrNoRows used
+	// something only an operator can, so its text stays out of it. Surfacing database.ErrNoRows used
 	// to put "no rows in result set" in front of a tenant.
 	if errors.Is(err, database.ErrNoRows) {
 		return nil, &tenantVisibleError{msg: fmt.Sprintf("no subnet found for network %s", networkID)}
@@ -1503,19 +1624,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 		return nil, fmt.Errorf("looking up a subnet for network %s: %w", networkID, err)
 	}
 
-	// Allocate IP from subnet
-	allocatedIP := allocateIP(cidr)
-	if allocatedIP == "" {
-		return nil, &tenantVisibleError{msg: fmt.Sprintf("failed to allocate IP from subnet %s", subnetID)}
-	}
-
-	fixedIPs := []map[string]any{
-		{
-			"subnet_id":  subnetID,
-			"ip_address": allocatedIP,
-		},
-	}
-	fixedIPsJSON, _ := json.Marshal(fixedIPs)
+	var allocatedIP string
 
 	// The security groups the instance was created with, so rules apply to the
 	// VM's north-south traffic (SPEC-009 WS-3 / T034). port_security_groups is what
@@ -1544,7 +1653,7 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// error return after the TAP exists must release it, or a retried boot leaves an
 	// orphan tap-<id> on the host per attempt (mirrors CreatePort's rollbackPort).
 	// Deleting the TAP detaches it from the bridge; nothing else needs undoing.
-	tapName := "tap-" + portID[:8]
+	tapName := tapNameFor(portID)
 	releaseTAP := func(reason string) {
 		if svc.mode == "stub" {
 			return
@@ -1579,6 +1688,19 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 	// which keeps the API and the dataplane in agreement.
 	now := time.Now()
 	if err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		cidr, err = LockSubnet(ctx, tx, subnetID)
+		if err != nil {
+			return err
+		}
+		allocatedIP, err = AllocateFreeIP(ctx, tx, subnetID, cidr)
+		if errors.Is(err, ErrNoAvailableIP) {
+			return &tenantVisibleError{msg: fmt.Sprintf("failed to allocate a free IP from subnet %s", subnetID)}
+		}
+		if err != nil {
+			return err
+		}
+		fixedIPsJSON, _ := json.Marshal([]map[string]any{{"subnet_id": subnetID, "ip_address": allocatedIP}})
+
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -1722,4 +1844,99 @@ func derefOr[T any](v *T, fallback T) T {
 		return fallback
 	}
 	return *v
+}
+
+// ReleaseInstancePorts deletes the ports Neutron allocated for an instance
+// (device_owner 'compute:nova'), with the same best-effort host cleanup
+// DeletePort does. It is the rollback for a boot that allocated ports and then
+// failed on a later network: the loop used to
+// markInstanceError and return with the earlier networks' ports still in the
+// database — rows the API still listed for a server that would never exist,
+// with leases still reserved, that only an operator could clean up.
+//
+// Scoped to 'compute:nova' on purpose: a port the tenant created and attached
+// (os-interface with port_id) is theirs, not the instance's — releasing a
+// failed boot must not delete it (same discriminator as server delete).
+func (svc *Service) ReleaseInstancePorts(ctx context.Context, instanceID string) error {
+	rows, err := svc.pool.Query(ctx, `
+		SELECT id::text, network_id::text FROM ports
+		WHERE device_id = $1 AND device_owner = 'compute:nova'
+	`, instanceID)
+	if err != nil {
+		return fmt.Errorf("looking up instance ports: %w", err)
+	}
+	defer rows.Close()
+
+	type released struct{ portID, networkID string }
+	var toRelease []released
+	for rows.Next() {
+		var r released
+		if err := rows.Scan(&r.portID, &r.networkID); err != nil {
+			return fmt.Errorf("scanning instance port: %w", err)
+		}
+		toRelease = append(toRelease, r)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating instance ports: %w", err)
+	}
+	if len(toRelease) == 0 {
+		return nil
+	}
+
+	for _, r := range toRelease {
+		svc.teardownPortHost(ctx, r.portID)
+	}
+
+	if _, err := svc.pool.Exec(ctx, `
+		DELETE FROM ports WHERE device_id = $1 AND device_owner = 'compute:nova'
+	`, instanceID); err != nil {
+		return fmt.Errorf("deleting instance ports: %w", err)
+	}
+
+	// Refresh DHCP for the affected networks so the released addresses stop
+	// being reserved for a server that will not boot.
+	for _, r := range toRelease {
+		if _, _, err := svc.applyDHCPForNetwork(ctx, r.networkID, true); err != nil {
+			log.Warn().Err(err).Str("network_id", r.networkID).
+				Msg("release: failed to refresh DHCP after port release")
+		}
+	}
+	return nil
+}
+
+func tapNameFor(portID string) string {
+	if len(portID) < 8 {
+		return "tap-" + portID
+	}
+	return "tap-" + portID[:8]
+}
+
+// teardownPortHost removes host-side state for a port. Rollback and DeletePort
+// use the same path so eBPF, TAP, and VXLAN cleanup cannot drift.
+func (svc *Service) teardownPortHost(ctx context.Context, portID string) {
+	tapName := tapNameFor(portID)
+	if svc.sgManager != nil && svc.mode == "ebpf" {
+		if err := svc.sgManager.DetachFromInterface(tapName); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to detach XDP program from interface")
+		}
+		var macAddress string
+		if err := svc.pool.QueryRow(ctx, "SELECT mac_address FROM ports WHERE id = $1", portID).Scan(&macAddress); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Msg("failed to resolve port MAC during teardown")
+		}
+		if macAddress != "" {
+			if mac, err := net.ParseMAC(macAddress); err == nil {
+				if err := svc.sgManager.RemoveSecurityGroupFromPort(portID, mac); err != nil {
+					log.Warn().Err(err).Str("port_id", portID).Str("mac", mac.String()).Msg("failed to remove security group from port")
+				}
+			}
+		}
+	}
+	if err := svc.tapManager.DeleteTAPDevice(tapName); err != nil {
+		log.Warn().Err(err).Str("port_id", portID).Str("tap", tapName).Msg("failed to delete TAP device")
+	}
+	if svc.vxlanCoordinator != nil {
+		if err := svc.vxlanCoordinator.RemoveFDBEntry(ctx, portID); err != nil {
+			log.Warn().Err(err).Str("port_id", portID).Msg("failed to remove FDB entry")
+		}
+	}
 }

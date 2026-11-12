@@ -1588,8 +1588,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 	// Handle reset status action (admin operation)
 	if resetStatusData, ok := req["os-reset_status"]; ok {
 		// Verify admin role
-		if !common.HasRole(c, common.RoleAdmin) {
-			common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-reset_status to be performed."))
+		if !common.RequireAdmin(c, "cinder:VolumeAction") {
 			return
 		}
 
@@ -1993,8 +1992,7 @@ func (svc *Service) SnapshotAction(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("unknown action"))
 		return
 	}
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-reset_status to be performed."))
+	if !common.RequireAdmin(c, "cinder:SnapshotAction") {
 		return
 	}
 	resetStatusMap, ok := resetStatusData.(map[string]any)
@@ -2028,7 +2026,7 @@ func (svc *Service) SnapshotAction(c *gin.Context) {
 // ListVolumeTypes lists all volume types
 func (svc *Service) ListVolumeTypes(c *gin.Context) {
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT id, name, description, is_public, created_at
+		SELECT id, name, COALESCE(description, ''), is_public, created_at
 		FROM volume_types
 		ORDER BY name
 	`)

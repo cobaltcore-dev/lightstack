@@ -344,14 +344,18 @@ func (s *ImageStore) uploadImageStub(imageID string, reader io.Reader) (int64, e
 // this raw file. The upload streams to a temp file, then qemu-img converts it
 // to raw (or renames it if already raw / qemu-img is unavailable).
 func (s *ImageStore) uploadImageLocal(ctx context.Context, imageID string, reader io.Reader) (int64, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
+	// No deadline here, deliberately: s.timeout is for metadata ops
+	// (head/delete, see its field comment); the body transfer streams to
+	// completion under the CALLER's context — the request's, cancelled on
+	// client disconnect — exactly as the S3 path's connect-only timeout does
+	// not bound transfers (FR-014). The 5 s cap here used to fire long before
+	// glance's 10 GiB upload cap could, turning oversized uploads into 503s
+	// instead of 413s (round 3 of this review).
 	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
 	tmpPath := imagePath + ".upload"
 
-	// Stream the upload to a temp file. Wrap the source so the timeout fires —
-	// os.File doesn't natively respect context.
+	// Stream the upload to a temp file. Wrap the source so cancellation fires
+	// — os.File doesn't natively respect context.
 	tmp, err := os.Create(tmpPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create image file: %w", err)
@@ -603,6 +607,30 @@ func (s *ImageStore) uploadLocalToS3(ctx context.Context, imageID string) error 
 	}
 
 	return nil
+}
+
+// StoredChecksum returns the MD5 hex digest of the image's stored local bytes.
+// Normalizing backends (local, local,rbd, local,s3) rewrite the upload — a
+// qcow2 becomes a raw base — so the checksum Glance advertises, downloads
+// serve and EnsureLocalBase verifies against must be taken from the stored
+// object, not from the client's upload stream: the stream hash made
+// boot-from-image fail on any node without the local base, because
+// MD5(raw replica) never equals MD5(original qcow2). For S3-only and
+// stub modes the stored bytes are the upload bytes, so the stream hash the
+// caller already computed is the stored checksum and this method is not
+// consulted. A future RBD-only backend should hash its own object instead.
+func (s *ImageStore) StoredChecksum(ctx context.Context, imageID string) (string, error) {
+	imagePath := filepath.Join(s.localPath, imageFileName(imageID))
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := md5.New() // #nosec G401 -- Glance checksum is MD5 (compatibility), not a security control
+	if _, err := io.Copy(h, &ctxReader{ctx: ctx, r: f}); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // DownloadImage downloads an image from storage

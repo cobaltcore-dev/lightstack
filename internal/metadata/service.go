@@ -352,78 +352,156 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		return
 	}
 
-	// Query all ports for this instance
-	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT p.id, p.mac_address, p.fixed_ip, p.network_id, n.name, s.cidr, s.gateway_ip, s.dns_nameservers
+	// Read each port once, then decode fixed_ips and resolve the referenced subnets.
+	// Doing this in Go keeps JSON array traversal and text-array decoding portable
+	// between PostgreSQL and SQLite, while preserving one link per port and one
+	// network entry per fixed address.
+	portRows, err := svc.pool.Query(c.Request.Context(), `
+		SELECT p.id::text, p.mac_address, p.fixed_ips, p.network_id::text
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
-		LEFT JOIN subnets s ON p.network_id = s.network_id
-		WHERE p.device_id = $1
-		ORDER BY p.created_at
+		WHERE p.device_id::text = $1
+		ORDER BY p.created_at, p.id
 	`, instanceID)
-
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_network_data_json").Str("instance_id", instanceID).Msg("failed to query instance ports")
 		common.SendError(c, common.NewInternalServerError("failed to get network data"))
 		return
 	}
-	defer rows.Close()
-
-	var links []gin.H
-	var networks []gin.H
-
-	linkID := 0
-	for rows.Next() {
-		var portID, mac, ip, networkID, networkName, cidr, gateway string
-		var dnsServers []string
-
-		if err := rows.Scan(&portID, &mac, &ip, &networkID, &networkName, &cidr, &gateway, &dnsServers); err != nil {
-			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to scan network data row")
+	type networkDataPort struct {
+		id, mac, networkID string
+		fixedIPs           common.FixedIPs
+	}
+	ports := []networkDataPort{}
+	networkIDs := []string{}
+	seenNetworkIDs := map[string]bool{}
+	for portRows.Next() {
+		var port networkDataPort
+		if err := portRows.Scan(&port.id, &port.mac, &port.fixedIPs, &port.networkID); err != nil {
+			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to scan network data port")
+			portRows.Close()
 			common.SendError(c, common.NewInternalServerError("failed to get network data"))
 			return
 		}
+		ports = append(ports, port)
+		if !seenNetworkIDs[port.networkID] {
+			seenNetworkIDs[port.networkID] = true
+			networkIDs = append(networkIDs, port.networkID)
+		}
+	}
+	if err := portRows.Err(); err != nil {
+		portRows.Close()
+		log.Error().Err(err).Msg("network data port rows iteration error")
+		common.SendError(c, common.NewInternalServerError("failed to get network data"))
+		return
+	}
+	portRows.Close()
 
-		// Create link (interface)
+	type networkDataSubnet struct {
+		cidr, gateway string
+		dnsServers    []string
+	}
+	subnets := map[string]networkDataSubnet{}
+	if len(networkIDs) > 0 {
+		subnetRows, err := svc.pool.Query(c.Request.Context(), `
+			SELECT id::text, cidr, COALESCE(gateway_ip, ''), dns_nameservers
+			FROM subnets WHERE network_id::text = ANY($1::text[])
+			ORDER BY network_id, id
+		`, networkIDs)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to query network data subnets")
+			common.SendError(c, common.NewInternalServerError("failed to get network data"))
+			return
+		}
+		for subnetRows.Next() {
+			var id, cidr, gateway string
+			var dnsServers []string
+			if err := subnetRows.Scan(&id, &cidr, &gateway, &dnsServers); err != nil {
+				subnetRows.Close()
+				log.Error().Err(err).Msg("failed to scan network data subnet")
+				common.SendError(c, common.NewInternalServerError("failed to get network data"))
+				return
+			}
+			if dnsServers == nil {
+				dnsServers = []string{}
+			}
+			subnets[id] = networkDataSubnet{cidr: cidr, gateway: gateway, dnsServers: dnsServers}
+		}
+		if err := subnetRows.Err(); err != nil {
+			subnetRows.Close()
+			log.Error().Err(err).Msg("network data subnet rows iteration error")
+			common.SendError(c, common.NewInternalServerError("failed to get network data"))
+			return
+		}
+		subnetRows.Close()
+	}
+
+	links := []gin.H{}
+	networks := []gin.H{}
+	services := []gin.H{}
+	seenDNS := map[string]bool{}
+	for linkID, port := range ports {
+		linkName := fmt.Sprintf("tap%d", linkID)
 		links = append(links, gin.H{
-			"id":                   fmt.Sprintf("tap%d", linkID),
+			"id":                   linkName,
 			"type":                 "bridge",
-			"ethernet_mac_address": mac,
+			"ethernet_mac_address": port.mac,
 			"mtu":                  1500,
 		})
 
-		// Create network config
-		netConfig := gin.H{
-			"id":         fmt.Sprintf("network%d", linkID),
-			"link":       fmt.Sprintf("tap%d", linkID),
-			"type":       "ipv4",
-			"ip_address": ip,
-			"netmask":    cidrToNetmask(cidr), // Convert /24 → "255.255.255.0"
-		}
+		for _, fixedIP := range port.fixedIPs {
+			ip := fixedIP.IPAddress
+			if ip == "" {
+				continue
+			}
+			subnet := subnets[fixedIP.SubnetID]
 
-		if gateway != "" {
-			netConfig["gateway"] = gateway
+			// Match Nova metadata for each address family, with a distinct network ID
+			// even when several addresses share one link.
+			addressType := "ipv4"
+			if addr := net.ParseIP(ip); addr != nil && addr.To4() == nil {
+				addressType = "ipv6"
+			}
+			netConfig := gin.H{
+				"id":         fmt.Sprintf("network%d", len(networks)),
+				"link":       linkName,
+				"type":       addressType,
+				"network_id": port.networkID,
+				"ip_address": ip,
+				"netmask":    cidrToNetmask(subnet.cidr),
+				"routes":     []gin.H{},
+				"services":   []gin.H{},
+			}
+			if subnet.gateway != "" {
+				netConfig["gateway"] = subnet.gateway
+				zero := "0.0.0.0"
+				if addressType == "ipv6" {
+					zero = "::"
+				}
+				netConfig["routes"] = []gin.H{{"network": zero, "netmask": zero, "gateway": subnet.gateway}}
+			}
+			if len(subnet.dnsServers) > 0 {
+				netConfig["dns_nameservers"] = subnet.dnsServers
+				dnsServices := make([]gin.H, 0, len(subnet.dnsServers))
+				for _, dns := range subnet.dnsServers {
+					entry := gin.H{"type": "dns", "address": dns}
+					dnsServices = append(dnsServices, entry)
+					if !seenDNS[dns] {
+						services = append(services, entry)
+						seenDNS[dns] = true
+					}
+				}
+				netConfig["services"] = dnsServices
+			}
+			networks = append(networks, netConfig)
 		}
-
-		if len(dnsServers) > 0 {
-			netConfig["dns_nameservers"] = dnsServers
-		}
-
-		networks = append(networks, netConfig)
-		linkID++
-	}
-	// Fail rather than serve a partial network_data.json: a missing interface would
-	// leave the guest misconfigured, and cloud-init retries on error.
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("network data rows iteration error")
-		common.SendError(c, common.NewInternalServerError("failed to get network data"))
-		return
 	}
 
 	// Return network_data.json structure
 	c.JSON(http.StatusOK, gin.H{
 		"links":    links,
 		"networks": networks,
-		"services": []gin.H{},
+		"services": services,
 	})
 }
 
@@ -759,6 +837,5 @@ func cidrToNetmask(cidr string) string {
 		}
 		return cidr
 	}
-	mask := ipNet.Mask
-	return fmt.Sprintf("%d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3])
+	return net.IP(ipNet.Mask).String()
 }
