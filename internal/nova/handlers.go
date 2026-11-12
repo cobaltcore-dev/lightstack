@@ -1126,8 +1126,8 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			// Any failure from the first successful allocation onward (a later
 			// network, the boot volume, libvirt itself) leaves the earlier ports
 			// allocated for a server that will never run. Release them on the way
-			// out unless the boot completed (: they used to
-			// leak — still listed by the API, leases still reserved).
+			// out unless the boot completed: they used to leak — still listed by
+			// the API, leases still reserved.
 			defer func() {
 				if portsAllocated && !bootSucceeded && svc.neutronSvc != nil {
 					rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)

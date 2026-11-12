@@ -5,6 +5,7 @@ package common
 // metadata service (instance-by-address lookup) read it to find which port holds an address.
 type FixedIPs []struct {
 	IPAddress string `json:"ip_address"`
+	SubnetID  string `json:"subnet_id"`
 }
 
 // Holds reports whether ip is one of the port's fixed addresses, compared as a whole string.

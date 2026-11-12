@@ -571,10 +571,10 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 	}
 
 	// Making a network shared exposes it to every tenant in the deployment —
-	// an operator decision, like router:external below (
-	// A member-created shared network was visible to, and attachable by,
-	// every project). Same shape as the external gate: only `true` is gated,
-	// matching upstream's explicit-set rule.
+	// an operator decision, like router:external below. A member-created
+	// shared network was visible to, and attachable by, every project. Same
+	// shape as the external gate: only `true` is gated, matching upstream's
+	// explicit-set rule.
 	shared := false
 	if req.Network.Shared != nil {
 		if *req.Network.Shared && !common.HasRole(c, common.RoleAdmin) {

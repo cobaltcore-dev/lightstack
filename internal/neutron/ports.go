@@ -695,23 +695,11 @@ func usedSubnetAddresses(ctx context.Context, pool subnetQuerier, subnetID strin
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var fixedIPsJSON []byte
-		if err := rows.Scan(&fixedIPsJSON); err != nil {
+		var fixedIPs common.FixedIPs
+		if err := rows.Scan(&fixedIPs); err != nil {
 			return nil, fmt.Errorf("scanning a port's fixed addresses: %w", err)
 		}
-		trimmed := bytes.TrimSpace(fixedIPsJSON)
-		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-			// Legacy subnet-less ports can store JSON null. It has no addresses.
-			continue
-		}
-		var entries []struct {
-			SubnetID  string `json:"subnet_id"`
-			IPAddress string `json:"ip_address"`
-		}
-		if err := json.Unmarshal(trimmed, &entries); err != nil {
-			return nil, fmt.Errorf("decoding a port's fixed addresses: %w", err)
-		}
-		for _, entry := range entries {
+		for _, entry := range fixedIPs {
 			if entry.SubnetID != subnetID {
 				continue
 			}

@@ -62,7 +62,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	// fixedIPEntries is what the response reports as the attachment's
 	// fixed_ips: the port's actual entries (port_id path) or the one just
 	// allocated (net_id path). Empty means none — not a fabricated one.
-	var fixedIPEntries []gin.H
+	var fixedIPEntries common.FixedIPs
 	// novaCreatedPort is true when this request had Nova create the port
 	// (net_id path); false when it attached a port the tenant already owned
 	// (port_id path). It decides the device_owner stamp below (N-8).
@@ -79,11 +79,11 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		// "correct" only because a failed Scan invalidates the lookup, even if some earlier columns were read. Any real database error on this lookup surfaced the same way:
 		// a bogus 200 with an empty net_id and MAC.
 		var deviceID string
-		var fixedIPsJSON []byte
+		var fixedIPs common.FixedIPs
 		err := svc.pool.QueryRow(c.Request.Context(),
 			"SELECT network_id, fixed_ips, mac_address, COALESCE(device_id::text, '') FROM ports WHERE id = $1 AND project_id = $2",
 			portID, projectID,
-		).Scan(&networkID, &fixedIPsJSON, &macAddress, &deviceID)
+		).Scan(&networkID, &fixedIPs, &macAddress, &deviceID)
 
 		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("port"))
@@ -105,7 +105,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		// to be reported instead (round 2 of this review). A port with no
 		// addresses reports an empty list, as upstream does — not a fabricated
 		// {"ip_address": ""}.
-		fixedIPEntries = parseFixedIPEntries(fixedIPsJSON)
+		fixedIPEntries = fixedIPs
 	} else if req.InterfaceAttachment.NetID != "" {
 		// Create new port on the specified network
 		networkID = req.InterfaceAttachment.NetID
@@ -222,7 +222,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 					return err
 				}
 			}
-			fixedIPEntries = []gin.H{{"ip_address": fixedIP, "subnet_id": subnetID}}
+			fixedIPEntries = common.FixedIPs{{IPAddress: fixedIP, SubnetID: subnetID}}
 			fixedIPsJSON, _ := json.Marshal(fixedIPEntries)
 			_, err = tx.Exec(c.Request.Context(), `
 				INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
@@ -297,7 +297,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 	// empty list for a port with none (round 3 of this review: this used to
 	// fabricate exactly one {"ip_address": ""}).
 	if fixedIPEntries == nil {
-		fixedIPEntries = []gin.H{}
+		fixedIPEntries = common.FixedIPs{}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"interfaceAttachment": gin.H{
@@ -309,24 +309,6 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			"port_state": "ACTIVE",
 		},
 	})
-}
-
-// parseFixedIPEntries reads a port's fixed_ips JSONB into response entries.
-// NULL or malformed JSON yields no entries — a port with no addresses reports
-// none, never a fabricated one.
-func parseFixedIPEntries(fixedIPsJSON []byte) []gin.H {
-	var entries []struct {
-		IPAddress string `json:"ip_address"`
-		SubnetID  string `json:"subnet_id"`
-	}
-	if err := json.Unmarshal(fixedIPsJSON, &entries); err != nil {
-		return nil
-	}
-	out := make([]gin.H, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, gin.H{"ip_address": e.IPAddress, "subnet_id": e.SubnetID})
-	}
-	return out
 }
 
 // DetachInterface detaches a network interface from an instance
@@ -422,10 +404,10 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 	var attachments []gin.H
 	for rows.Next() {
 		var id, portID, networkID, macAddress string
-		var fixedIPsJSON []byte
+		var fixedIPs common.FixedIPs
 		var portState *string
 
-		if err := rows.Scan(&id, &portID, &networkID, &fixedIPsJSON, &macAddress, &portState); err != nil {
+		if err := rows.Scan(&id, &portID, &networkID, &fixedIPs, &macAddress, &portState); err != nil {
 			log.Warn().Err(err).Str("operation", "ListInterfaceAttachments").Msg("failed to scan row")
 			continue
 		}
@@ -435,15 +417,10 @@ func (svc *Service) ListInterfaceAttachments(c *gin.Context) {
 			state = *portState
 		}
 
-		// Parse fixed_ips from JSONB. An attachment whose port has no
-		// addresses is still an attachment: it is listed with an empty
-		// fixed_ips, exactly as the attach response reports it (round 3 of
-		// this review — the guard here used to make an attachment invisible
-		// in the list the moment it was created).
-		fixedIPs := []map[string]any{}
-		_ = json.Unmarshal(fixedIPsJSON, &fixedIPs)
-		if fixedIPs == nil { // JSON null in the column
-			fixedIPs = []map[string]any{}
+		// An attachment with no addresses remains visible and reports an empty
+		// fixed_ips list, matching the attach response.
+		if fixedIPs == nil {
+			fixedIPs = common.FixedIPs{}
 		}
 		attachments = append(attachments, gin.H{
 			"id":         id,

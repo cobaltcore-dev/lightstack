@@ -81,9 +81,9 @@ func TestRegisterRoutesMiddlewareWiring(t *testing.T) {
 		t.Fatal("GET /v3/domains/:id bypassed the auth middleware — it must be on mgmt, not the public v3 group")
 	}
 
-	// The domain write/config routes moved to `mgmt` with the admin gate
-	//, so their malformed-id 404 is likewise produced
-	// in-handler, after the authz decision — same shape, different producer.
+	// The domain write/config routes moved to `mgmt` with the admin gate, so
+	// their malformed-id 404 is likewise produced in-handler, after the authz
+	// decision — same shape, different producer.
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodPatch, "/v3/domains/not-a-uuid"},
 		{http.MethodDelete, "/v3/domains/not-a-uuid"},

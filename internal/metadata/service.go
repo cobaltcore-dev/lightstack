@@ -3,7 +3,6 @@ package metadata
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -371,14 +370,14 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 	}
 	type networkDataPort struct {
 		id, mac, networkID string
-		fixedIPsJSON       []byte
+		fixedIPs           common.FixedIPs
 	}
 	ports := []networkDataPort{}
 	networkIDs := []string{}
 	seenNetworkIDs := map[string]bool{}
 	for portRows.Next() {
 		var port networkDataPort
-		if err := portRows.Scan(&port.id, &port.mac, &port.fixedIPsJSON, &port.networkID); err != nil {
+		if err := portRows.Scan(&port.id, &port.mac, &port.fixedIPs, &port.networkID); err != nil {
 			log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to scan network data port")
 			portRows.Close()
 			common.SendError(c, common.NewInternalServerError("failed to get network data"))
@@ -416,19 +415,15 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		}
 		for subnetRows.Next() {
 			var id, cidr, gateway string
-			var dnsValue any
-			if err := subnetRows.Scan(&id, &cidr, &gateway, &dnsValue); err != nil {
+			var dnsServers []string
+			if err := subnetRows.Scan(&id, &cidr, &gateway, &dnsServers); err != nil {
 				subnetRows.Close()
 				log.Error().Err(err).Msg("failed to scan network data subnet")
 				common.SendError(c, common.NewInternalServerError("failed to get network data"))
 				return
 			}
-			dnsServers, err := decodeNetworkDataDNS(dnsValue)
-			if err != nil {
-				subnetRows.Close()
-				log.Error().Err(err).Str("subnet_id", id).Msg("failed to decode subnet DNS nameservers")
-				common.SendError(c, common.NewInternalServerError("failed to get network data"))
-				return
+			if dnsServers == nil {
+				dnsServers = []string{}
 			}
 			subnets[id] = networkDataSubnet{cidr: cidr, gateway: gateway, dnsServers: dnsServers}
 		}
@@ -454,18 +449,7 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 			"mtu":                  1500,
 		})
 
-		var fixedIPs []struct {
-			IPAddress string `json:"ip_address"`
-			SubnetID  string `json:"subnet_id"`
-		}
-		if len(strings.TrimSpace(string(port.fixedIPsJSON))) > 0 {
-			if err := json.Unmarshal(port.fixedIPsJSON, &fixedIPs); err != nil {
-				log.Error().Err(err).Str("port_id", port.id).Msg("failed to decode port fixed addresses")
-				common.SendError(c, common.NewInternalServerError("failed to get network data"))
-				return
-			}
-		}
-		for _, fixedIP := range fixedIPs {
+		for _, fixedIP := range port.fixedIPs {
 			ip := fixedIP.IPAddress
 			if ip == "" {
 				continue
@@ -519,49 +503,6 @@ func (svc *Service) GetNetworkDataJSON(c *gin.Context) {
 		"networks": networks,
 		"services": services,
 	})
-}
-
-// decodeNetworkDataDNS accepts PostgreSQL text[] values and SQLite JSON text.
-func decodeNetworkDataDNS(value any) ([]string, error) {
-	switch v := value.(type) {
-	case nil:
-		return []string{}, nil
-	case []string:
-		return v, nil
-	case []any:
-		values := make([]string, 0, len(v))
-		for i, item := range v {
-			switch s := item.(type) {
-			case string:
-				values = append(values, s)
-			case []byte:
-				values = append(values, string(s))
-			default:
-				return nil, fmt.Errorf("unsupported DNS nameserver value at index %d: %T", i, item)
-			}
-		}
-		return values, nil
-	case []byte:
-		var values []string
-		if err := json.Unmarshal(v, &values); err != nil {
-			return nil, fmt.Errorf("decode DNS nameservers: %w", err)
-		}
-		if values == nil {
-			values = []string{}
-		}
-		return values, nil
-	case string:
-		var values []string
-		if err := json.Unmarshal([]byte(v), &values); err != nil {
-			return nil, fmt.Errorf("decode DNS nameservers: %w", err)
-		}
-		if values == nil {
-			values = []string{}
-		}
-		return values, nil
-	default:
-		return nil, fmt.Errorf("unsupported DNS nameserver value %T", value)
-	}
 }
 
 // GetVendorDataJSON returns vendor-specific data (usually empty)

@@ -3,26 +3,11 @@ package keystone
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
-
-func identityRequest(r *gin.Engine, method, path, body string, headers map[string]string) (int, string) {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	if body != "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	return w.Code, w.Body.String()
-}
 
 func identityUserHeaders(userID, roles string) map[string]string {
 	return map[string]string{"X-Test-User": userID, "X-Test-Roles": roles}
@@ -50,7 +35,7 @@ func TestGenericCredentialOwnerAndAdminAuthorization(t *testing.T) {
 		{http.MethodPatch, "/v3/credentials/" + ownerCredentialID, "{\"credential\":{\"blob\":\"outsider-secret\"}}"},
 		{http.MethodDelete, "/v3/credentials/" + ownerCredentialID, ""},
 	} {
-		if code, body := identityRequest(r, tc.method, tc.path, tc.body, outsider); code != http.StatusForbidden {
+		if code, body := doJSONReq(r, tc.method, tc.path, tc.body, outsider); code != http.StatusForbidden {
 			t.Errorf("outsider %s %s: code=%d body=%s; want 403", tc.method, tc.path, code, body)
 		}
 	}
@@ -58,27 +43,27 @@ func TestGenericCredentialOwnerAndAdminAuthorization(t *testing.T) {
 		headers map[string]string
 		wantID  string
 	}{{owner, ownerCredentialID}, {outsider, ""}, {admin, adminCredentialID}} {
-		code, body := identityRequest(r, http.MethodGet, "/v3/credentials", "", tc.headers)
+		code, body := doJSONReq(r, http.MethodGet, "/v3/credentials", "", tc.headers)
 		if code != http.StatusOK || (tc.wantID != "" && !strings.Contains(body, tc.wantID)) || (tc.wantID == "" && strings.Contains(body, ownerCredentialID)) {
 			t.Errorf("credential list: code=%d body=%s", code, body)
 		}
 	}
-	if code, body := identityRequest(r, http.MethodGet, "/v3/credentials/"+ownerCredentialID, "", owner); code != http.StatusOK || !strings.Contains(body, "review-secret") {
+	if code, body := doJSONReq(r, http.MethodGet, "/v3/credentials/"+ownerCredentialID, "", owner); code != http.StatusOK || !strings.Contains(body, "review-secret") {
 		t.Errorf("owner get credential: code=%d body=%s", code, body)
 	}
-	if code, body := identityRequest(r, http.MethodPatch, "/v3/credentials/"+ownerCredentialID, "{\"credential\":{\"blob\":\"owner-updated\"}}", owner); code != http.StatusOK || !strings.Contains(body, "owner-updated") {
+	if code, body := doJSONReq(r, http.MethodPatch, "/v3/credentials/"+ownerCredentialID, "{\"credential\":{\"blob\":\"owner-updated\"}}", owner); code != http.StatusOK || !strings.Contains(body, "owner-updated") {
 		t.Errorf("owner update credential: code=%d body=%s", code, body)
 	}
-	if code, body := identityRequest(r, http.MethodDelete, "/v3/credentials/"+ownerCredentialID, "", owner); code != http.StatusNoContent {
+	if code, body := doJSONReq(r, http.MethodDelete, "/v3/credentials/"+ownerCredentialID, "", owner); code != http.StatusNoContent {
 		t.Errorf("owner delete credential: code=%d body=%s", code, body)
 	}
-	if code, body := identityRequest(r, http.MethodGet, "/v3/credentials/"+adminCredentialID, "", admin); code != http.StatusOK {
+	if code, body := doJSONReq(r, http.MethodGet, "/v3/credentials/"+adminCredentialID, "", admin); code != http.StatusOK {
 		t.Errorf("admin get credential: code=%d body=%s", code, body)
 	}
-	if code, body := identityRequest(r, http.MethodPatch, "/v3/credentials/"+adminCredentialID, "{\"credential\":{\"blob\":\"admin-updated\"}}", admin); code != http.StatusOK || !strings.Contains(body, "admin-updated") {
+	if code, body := doJSONReq(r, http.MethodPatch, "/v3/credentials/"+adminCredentialID, "{\"credential\":{\"blob\":\"admin-updated\"}}", admin); code != http.StatusOK || !strings.Contains(body, "admin-updated") {
 		t.Errorf("admin update credential: code=%d body=%s", code, body)
 	}
-	if code, body := identityRequest(r, http.MethodDelete, "/v3/credentials/"+adminCredentialID, "", admin); code != http.StatusNoContent {
+	if code, body := doJSONReq(r, http.MethodDelete, "/v3/credentials/"+adminCredentialID, "", admin); code != http.StatusNoContent {
 		t.Errorf("admin delete credential: code=%d body=%s", code, body)
 	}
 }
@@ -91,11 +76,11 @@ func TestApplicationCredentialMalformedIDsAreValidatedAfterAuthorization(t *test
 	foreignUserID := "00000000-0000-0000-0000-000000000001"
 	for _, method := range []string{http.MethodGet, http.MethodDelete} {
 		path := "/v3/users/" + memberID + "/application_credentials/not-a-uuid"
-		if code, body := identityRequest(r, method, path, "", member); code != http.StatusNotFound || !strings.Contains(body, "Could not find Application Credential: not-a-uuid.") {
+		if code, body := doJSONReq(r, method, path, "", member); code != http.StatusNotFound || !strings.Contains(body, "Could not find Application Credential: not-a-uuid.") {
 			t.Errorf("self %s malformed credential id: code=%d body=%s; want Keystone 404", method, code, body)
 		}
 		foreignPath := "/v3/users/" + foreignUserID + "/application_credentials/not-a-uuid"
-		if code, body := identityRequest(r, method, foreignPath, "", member); code != http.StatusForbidden {
+		if code, body := doJSONReq(r, method, foreignPath, "", member); code != http.StatusForbidden {
 			t.Errorf("foreign %s malformed credential id: code=%d body=%s; want authz-first 403", method, code, body)
 		}
 	}
@@ -115,7 +100,7 @@ func TestAssignRoleUnknownIDsReturnResourceNotFound(t *testing.T) {
 		{"role", "/v3/projects/" + projectID + "/users/" + userID + "/roles/" + unknownID},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
-			code, body := identityRequest(r, http.MethodPut, tc.path, "", admin)
+			code, body := doJSONReq(r, http.MethodPut, tc.path, "", admin)
 			if code != http.StatusNotFound || !strings.Contains(body, "Could not find "+tc.kind+": "+unknownID+".") {
 				t.Errorf("unknown %s: code=%d body=%s; want resource-specific 404", tc.kind, code, body)
 			}

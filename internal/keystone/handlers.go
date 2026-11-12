@@ -1476,12 +1476,6 @@ func (svc *Service) UpdateUser(c *gin.Context) {
 func (svc *Service) DeleteUser(c *gin.Context) {
 	userID := c.Param("id")
 
-	// Canonicalise a well-formed id so the delete matches on SQLite's text ids; a
-	// malformed id is left for the uuid.Validate guard below to 404 after the authz check.
-	if parsed, err := uuid.Parse(userID); err == nil {
-		userID = parsed.String()
-	}
-
 	// Only admins may delete users
 	if !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("admin role required to delete users"))
@@ -1518,14 +1512,6 @@ func (svc *Service) DeleteUser(c *gin.Context) {
 // ChangePassword changes a user's password (POST /v3/users/:id/password)
 func (svc *Service) ChangePassword(c *gin.Context) {
 	userID := c.Param("id")
-
-	// Canonicalise a well-formed id up front so the self-check compares like with like
-	// (the token's user_id is canonical) and the queries match on SQLite's text ids. A
-	// malformed id is left as-is: it can't match the caller's own id, so an unauthorised
-	// caller still gets 403 before the 404 below (#515).
-	if parsed, err := uuid.Parse(userID); err == nil {
-		userID = parsed.String()
-	}
 
 	// Users may only change their own password; admins may change any user's password
 	callerID := c.GetString("user_id")

@@ -52,16 +52,9 @@ func ec2CredentialView(userID, tenantID, access, secret string) gin.H {
 // API returns the secret, so every handler must be owner-or-admin only — otherwise any
 // authenticated tenant could read or mint another user's S3 credential and reach that
 // tenant's RGW namespace (SPEC-014 FR-007; mirrors the self-or-admin check in
-// ChangePassword). On success it returns the id in canonical form, so the caller's
-// queries match on SQLite's text ids.
+// ChangePassword). The management group's canonicalization middleware puts valid ids
+// in canonical form so the caller's queries match on SQLite's text ids.
 func denyIfNotSelfOrAdmin(c *gin.Context, userID string) (string, bool) {
-	// Canonicalise a well-formed id up front so the self-check compares like with like
-	// (the token's user_id is canonical) and the caller's query matches on SQLite's text
-	// ids. A malformed id is left as-is: it cannot match the caller's own id, so an
-	// unauthorised caller still gets 403 before the 404 below (#515).
-	if parsed, err := uuid.Parse(userID); err == nil {
-		userID = parsed.String()
-	}
 	if !sameUser(c.GetString("user_id"), userID) && !common.HasRole(c, common.RoleAdmin) {
 		common.SendError(c, common.NewForbiddenError("cannot manage another user's EC2 credentials"))
 		return "", true
