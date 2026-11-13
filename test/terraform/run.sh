@@ -42,6 +42,9 @@ set -euo pipefail
 
 readonly TF_VERSION_PIN="1.13.4"
 
+# Match the CLI harness: OS_AUTH_URL selects the target, not an inherited cloud.
+unset OS_CLOUD
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_DIR="$SCRIPT_DIR/compat"
 
@@ -343,11 +346,11 @@ set -e
 case "$plan_rc" in
     0) log "post-destroy plan: clean (no changes)" ;;
     2) summary="$(printf '%s\n' "$plan_out" | grep -E '^Plan:' || true)"
-        if printf '%s\n' "$plan_out" | grep -qE '[1-9][0-9]* to (change|destroy)'; then
-            die "post-destroy drift: plan proposes changes/destroys:
+        if ! printf '%s\n' "$summary" | grep -qE '^Plan: [0-9]+ to add, 0 to change, 0 to destroy\.$'; then
+            die "post-destroy plan did not prove an adds-only result:
 $plan_out"
         fi
-        log "post-destroy plan: ${summary:-adds only} (expected after destroy; \
+        log "post-destroy plan: $summary (expected after destroy; \
 residue check above proves the adds are fresh creates, not leftovers)" ;;
     *) die "post-destroy plan errored (-detailed-exitcode=$plan_rc):
 $plan_out" ;;

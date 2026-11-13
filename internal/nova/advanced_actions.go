@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 
@@ -1110,7 +1111,7 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 	// The backup name becomes the glance image's name, whose schema (and
 	// column) cap at 255 — over-long names answer 400 upstream, not a 500
 	// from the VARCHAR overflow.
-	if len(backupName) > 255 {
+	if utf8.RuneCountInString(backupName) > 255 {
 		common.SendError(c, common.NewBadRequestError("backup name too long (max 255 characters)"))
 		return
 	}

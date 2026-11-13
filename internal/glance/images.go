@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 
@@ -242,7 +243,7 @@ func (svc *Service) CreateImage(c *gin.Context) {
 	// Name length is validated with the tags, for the same reason: the
 	// column is VARCHAR(255) and upstream's schema answers 400, not a 500
 	// from the overflow after (part of) the write failed.
-	if len(req.Name) > 255 {
+	if utf8.RuneCountInString(req.Name) > 255 {
 		common.SendError(c, common.NewBadRequestError("image name too long (max 255 characters)"))
 		return
 	}
@@ -252,7 +253,7 @@ func (svc *Service) CreateImage(c *gin.Context) {
 	// VARCHAR(255) would turn an over-long tag into a 500 after the image was
 	// already committed.
 	for _, tag := range req.Tags {
-		if len(tag) > 255 {
+		if utf8.RuneCountInString(tag) > 255 {
 			common.SendError(c, common.NewBadRequestError("image tag too long (max 255 characters)"))
 			return
 		}
@@ -1629,7 +1630,7 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 
 	// Upstream's schema caps a tag at 255 characters and answers 400; the
 	// column's VARCHAR(255) would instead surface as a 500.
-	if len(tag) > 255 {
+	if utf8.RuneCountInString(tag) > 255 {
 		common.SendError(c, common.NewBadRequestError("image tag too long (max 255 characters)"))
 		return
 	}

@@ -66,7 +66,7 @@ elif args[0] == "destroy":
         sys.exit(1)
     (workspace / "destroyed").touch()
 elif args[0] == "plan" and (workspace / "destroyed").exists():
-    print("Plan: 9 to add, 0 to change, 0 to destroy.")
+    print(os.environ.get("POST_DESTROY_PLAN", "Plan: 9 to add, 0 to change, 0 to destroy."))
     sys.exit(2)
 '''
 
@@ -125,6 +125,11 @@ class TerraformRunnerTests(unittest.TestCase):
         self.assertEqual(len(workspaces), 1)
         self.assertEqual((workspaces[0] / "terraform.tfstate").read_text(), "recovery-state")
         self.assertIn("retained Terraform workspace", result.stderr)
+
+    def test_post_destroy_plan_requires_positive_evidence(self):
+        for plan in ("", "unrecognized output", "Plan: 1 to add, 1 to change, 0 to destroy."):
+            with self.subTest(plan=plan):
+                self.assert_failed(self.run_wrapper(POST_DESTROY_PLAN=plan))
 
     def test_catalog_failure_cannot_pass_preflight(self):
         self.assert_failed(self.run_wrapper(FAIL_LIST="catalog list"))

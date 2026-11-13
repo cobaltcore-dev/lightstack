@@ -187,6 +187,11 @@ func TestSnapshotMetadataKey(t *testing.T) {
 	if !strings.Contains(body, `"metadata":{"snapkey":"snapval"}`) {
 		t.Errorf("list-detail response lacks the snapshot's metadata: %s", body)
 	}
+	code, body = doReq(r, http.MethodPut, "/v3/snapshots/"+snapID,
+		`{"snapshot":{"description":"updated"}}`, hdr)
+	if code != http.StatusOK || !strings.Contains(body, `"metadata":{"snapkey":"snapval"}`) {
+		t.Errorf("update response lost snapshot metadata: code=%d body=%s", code, body)
+	}
 }
 
 // TestVolumeTypeConformance — three defects in the type surface (SPEC-028):

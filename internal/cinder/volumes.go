@@ -2508,8 +2508,13 @@ func (svc *Service) UpdateSnapshot(c *gin.Context) {
 		return
 	}
 
+	metadata, err := snapshotMetadataRows(c.Request.Context(), svc.pool, []string{snapshotID})
+	if err != nil {
+		common.SendError(c, common.NewInternalServerError("failed to read snapshot metadata"))
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"snapshot": serializeSnapshot(snapshotID, currentName, currentDesc, volumeID, status, sizeGB, createdAt, nil),
+		"snapshot": serializeSnapshot(snapshotID, currentName, currentDesc, volumeID, status, sizeGB, createdAt, metadata[snapshotID]),
 	})
 }
 

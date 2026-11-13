@@ -164,3 +164,20 @@ func TestCreateImageNameTooLong(t *testing.T) {
 		t.Errorf("create with 256-char name: code=%d body=%s; want 400", code, body)
 	}
 }
+
+func TestImageNameAndTagLengthCountCharacters(t *testing.T) {
+	requireDB(t)
+	r := newGlanceTestRouter(t)
+	hdr := map[string]string{"X-Test-Project": "00000000-0000-0000-0000-000000000002"}
+	value := strings.Repeat("é", 255)
+	payload, _ := json.Marshal(map[string]any{"name": value, "disk_format": "raw", "container_format": "bare", "tags": []string{value}})
+	code, body := doReqBody(r, http.MethodPost, "/images", string(payload), hdr)
+	if code != http.StatusCreated {
+		t.Fatalf("255 Unicode characters: %d %s", code, body)
+	}
+	var image map[string]any
+	if err := json.Unmarshal([]byte(body), &image); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM images WHERE id=$1", image["id"]) })
+}
