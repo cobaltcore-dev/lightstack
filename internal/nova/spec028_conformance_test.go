@@ -219,12 +219,8 @@ func TestServerShowLockedField(t *testing.T) {
 	}
 }
 
-// TestServerGroupDuplicateName409 — upstream nova refuses a duplicate
-// (project, name) with 409; the handler inserted unconditionally, so a
-// second group with the same name was silently accepted with 200 and
-// `server group show <name>` became ambiguous. Migration 076 adds the
-// constraint; this pins the handler's clean 409 (SPEC-028).
-func TestServerGroupDuplicateName409(t *testing.T) {
+// Duplicate names are valid in Flamingo Nova; groups retain distinct IDs and policies.
+func TestServerGroupDuplicateNamesAllowed(t *testing.T) {
 	requireDB(t)
 	r := newNovaTestRouter()
 	hdr := testAuthHdr(seededProjectID, seededUserID)
@@ -242,8 +238,8 @@ func TestServerGroupDuplicateName409(t *testing.T) {
 
 	code, body = doReq(r, http.MethodPost, "/v2.1/os-server-groups",
 		`{"server_group":{"name":"`+name+`","policy":"affinity"}}`, hdr)
-	if code != http.StatusConflict {
-		t.Errorf("duplicate create: code=%d body=%s; want 409", code, body)
+	if code != http.StatusOK {
+		t.Errorf("duplicate create: code=%d body=%s; want 200", code, body)
 	}
 
 	var n int
@@ -252,8 +248,8 @@ func TestServerGroupDuplicateName409(t *testing.T) {
 		seededProjectID, name).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("rows for (%s, %s) = %d; want exactly 1", seededProjectID, name, n)
+	if n != 2 {
+		t.Errorf("rows for (%s, %s) = %d; want exactly 2", seededProjectID, name, n)
 	}
 }
 

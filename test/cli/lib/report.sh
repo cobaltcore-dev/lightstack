@@ -221,6 +221,15 @@ report_failed() {
     if [[ ! -s "${RESULTS_FILE:-}" ]]; then
         return 0
     fi
+    # Standalone runs must reject malformed evidence without coverage.sh.
+    if ! jq -e -s 'length > 0 and
+        all(.[]; (.id | type == "string" and length > 0) and
+            (.status == "pass" or .status == "fail" or
+             .status == "known-failing" or .status == "skip")) and
+        ((map(.id) | unique | length) == length)' \
+        "$RESULTS_FILE" >/dev/null 2>&1; then
+        return 0
+    fi
     local predicate='any(.[]; .status == "fail")'
     if [[ "${CLI_STRICT:-0}" == "1" ]]; then
         local baseline_ids

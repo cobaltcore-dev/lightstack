@@ -215,9 +215,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: terraform-conformance-results
-          # run.sh isolates state in a mktemp workspace and removes it on
-          # every exit path, so no state files survive to upload — the
-          # logs the wrapper writes to its results dir are the artifact.
+          # Upload diagnostic logs. Recovery state remains in the job-local
+          # workspace on failed cleanup; do not publish credential-bearing state.
           path: |
             test/terraform/results/
           retention-days: 7

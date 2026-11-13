@@ -57,7 +57,13 @@ elif args[:2] == ["state", "pull"]:
         }]}))
 elif args[0] == "output":
     print("{}")
+elif args[:2] == ["state", "list"]:
+    if os.environ.get("FAIL_DESTROY"):
+        print("openstack_compute_instance_v2.partial")
 elif args[0] == "destroy":
+    if os.environ.get("FAIL_DESTROY"):
+        (workspace / "terraform.tfstate").write_text("recovery-state")
+        sys.exit(1)
     (workspace / "destroyed").touch()
 elif args[0] == "plan" and (workspace / "destroyed").exists():
     print("Plan: 9 to add, 0 to change, 0 to destroy.")
@@ -111,6 +117,14 @@ class TerraformRunnerTests(unittest.TestCase):
         for mode in ("error", "malformed"):
             with self.subTest(mode=mode):
                 self.assert_failed(self.run_wrapper(STATE_MODE=mode))
+
+    def test_failed_destroy_preserves_recovery_state(self):
+        result = self.run_wrapper(FAIL_DESTROY="1")
+        self.assert_failed(result)
+        workspaces = list(self.root.glob("tf-compat-workspace.*"))
+        self.assertEqual(len(workspaces), 1)
+        self.assertEqual((workspaces[0] / "terraform.tfstate").read_text(), "recovery-state")
+        self.assertIn("retained Terraform workspace", result.stderr)
 
     def test_catalog_failure_cannot_pass_preflight(self):
         self.assert_failed(self.run_wrapper(FAIL_LIST="catalog list"))

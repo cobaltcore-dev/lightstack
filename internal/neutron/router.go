@@ -494,8 +494,8 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
-	if req.SubnetID == "" && req.PortID == "" {
-		common.SendError(c, common.NewBadRequestError("either subnet_id or port_id must be specified"))
+	if (req.SubnetID == "") == (req.PortID == "") {
+		common.SendError(c, common.NewBadRequestError("exactly one of subnet_id or port_id must be specified"))
 		return
 	}
 
@@ -509,6 +509,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 
 	var subnetID, networkID, cidr, portID string
 	var gatewayIP *string
+	var interfaceIP string
 	if req.PortID != "" {
 		// port_id path — attach a port the caller already owns. The handler
 		// used to ignore the field entirely and read the (empty) subnet_id
@@ -539,14 +540,13 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 				"Port "+portID+" already has a device assigned and cannot be attached to a router."))
 			return
 		}
-		var fixedIPs []struct {
-			SubnetID string `json:"subnet_id"`
-		}
-		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil || len(fixedIPs) == 0 || fixedIPs[0].SubnetID == "" {
-			common.SendError(c, common.NewBadRequestError("port has no subnet; use a port with a fixed IP from a subnet"))
+		var fixedIPs common.FixedIPs
+		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil || len(fixedIPs) != 1 || fixedIPs[0].SubnetID == "" || net.ParseIP(fixedIPs[0].IPAddress) == nil {
+			common.SendError(c, common.NewBadRequestError("router port must have exactly one valid fixed IP"))
 			return
 		}
 		subnetID = fixedIPs[0].SubnetID
+		interfaceIP = fixedIPs[0].IPAddress
 	}
 
 	// Subnet row — reached from either path (the caller's subnet_id, or the
@@ -582,19 +582,32 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		return
 	}
 
-	// A subnet without a gateway (an explicit null clears it, S14) used to
-	// 500 here: the scan above targeted a plain string and NULL cannot land
-	// in one. Upstream never refuses a usable pool — /30, /31, /32 and IPv6
-	// subnets all allocate — so a NULL gateway falls back to the same
-	// allocator CreatePort uses, and only an exhausted/invalid CIDR is a
-	// clean 400 (SPEC-028).
-	if gatewayIP == nil {
-		allocated := allocateIP(cidr)
-		if allocated == "" {
-			common.SendError(c, common.NewBadRequestError("subnet's cidr has no usable address for a router interface"))
-			return
+	// Serialize allocation with port/VM creation. The port claim and interface
+	// record commit together, including rollback on request cancellation.
+	tx, err := svc.pool.Begin(ctx)
+	if err != nil {
+		common.SendError(c, common.NewInternalServerError("failed to begin router attachment"))
+		return
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := LockSubnet(ctx, tx, subnetID); err != nil {
+		common.SendError(c, common.NewInternalServerError("failed to lock subnet"))
+		return
+	}
+	if req.PortID == "" {
+		if gatewayIP != nil {
+			interfaceIP = *gatewayIP
+		} else {
+			interfaceIP, err = AllocateFreeIP(ctx, tx, subnetID, cidr)
+			if err != nil {
+				if errors.Is(err, ErrNoAvailableIP) {
+					common.SendError(c, common.NewConflictError("subnet has no available IP address"))
+				} else {
+					common.SendError(c, common.NewInternalServerError("failed to allocate router address"))
+				}
+				return
+			}
 		}
-		gatewayIP = &allocated
 	}
 
 	// A second interface for the same (router, subnet) is upstream's 409 —
@@ -604,7 +617,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	// a 409 nobody could 'router remove port' away (the interface row had
 	// never been inserted, so the remove lookup found nothing; SPEC-028).
 	var alreadyAttached bool
-	err = svc.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM router_interfaces WHERE router_id = $1 AND subnet_id = $2)",
 		id, subnetID).Scan(&alreadyAttached)
 	if err != nil {
@@ -627,12 +640,12 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		fixedIPs := []map[string]string{
 			{
 				"subnet_id":  subnetID,
-				"ip_address": *gatewayIP,
+				"ip_address": interfaceIP,
 			},
 		}
 		fixedIPsJSON, _ := json.Marshal(fixedIPs)
 
-		_, err = svc.pool.Exec(ctx, `
+		_, err = tx.Exec(ctx, `
 			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		`, portID, "router-interface-"+id[:8], networkID, projectID, id, "network:router_interface",
@@ -652,7 +665,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		// points at it). The WHERE keeps the claim atomic in the row lock;
 		// zero rows affected means someone claimed it in between. (The
 		// column is UUID: an unclaimed port is NULL, never ''.)
-		ct, err := svc.pool.Exec(ctx, `
+		ct, err := tx.Exec(ctx, `
 			UPDATE ports SET device_id = $1, device_owner = 'network:router_interface', updated_at = $2
 			WHERE id = $3 AND device_id IS NULL
 		`, id, now, portID)
@@ -669,32 +682,12 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	}
 
 	// Create router interface record
-	_, err = svc.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO router_interfaces (id, router_id, port_id, subnet_id, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, uuid.New().String(), id, portID, subnetID, now)
 
 	if err != nil {
-		// The record is what ties the pieces together; without it the port
-		// above would be an orphan holding the network hostage. The port
-		// this handler created is taken back outright; the caller's own
-		// port is UNclaimed — its device_id was empty on entry (checked
-		// above), so clearing the fields restores exactly the pre-call
-		// state rather than leaving a router-owned port no 'router remove
-		// port' can match (no interface row exists to remove). The same
-		// rollback serves the unique-violation race below: it, too, has
-		// already claimed the port when it loses.
-		if req.PortID == "" {
-			if _, derr := svc.pool.Exec(ctx, "DELETE FROM ports WHERE id = $1", portID); derr != nil {
-				log.Warn().Err(derr).Str("port_id", portID).Msg("rollback: failed to delete router interface port")
-			}
-		} else {
-			if _, derr := svc.pool.Exec(ctx, `
-				UPDATE ports SET device_id = NULL, device_owner = NULL, updated_at = $2 WHERE id = $1
-			`, portID, now); derr != nil {
-				log.Warn().Err(derr).Str("port_id", portID).Msg("rollback: failed to unclaim router interface port")
-			}
-		}
 		if database.IsUniqueViolation(err) {
 			// The constraint is the duplicate-interface backstop: the
 			// EXISTS check above can lose a race with a concurrent attach
@@ -709,13 +702,18 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		return
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		common.SendError(c, common.NewInternalServerError("failed to commit router attachment"))
+		return
+	}
+
 	// WS-3: if this router already has an external gateway, masquerade the
 	// just-attached subnet's egress out the uplink now (real mode), so egress
 	// works whether the gateway was set before or after this interface.
 	if svc.mode != "stub" {
 		var snatOn bool
 		if err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT EXISTS (SELECT 1 FROM routers rt WHERE rt.id = $1 AND "+snatOnPredicate+")", routerID).Scan(&snatOn); err == nil && snatOn {
+			"SELECT EXISTS (SELECT 1 FROM routers rt WHERE rt.id = $1 AND "+snatOnPredicate+")", id).Scan(&snatOn); err == nil && snatOn {
 			if uplink, uerr := networking.DefaultUplinkInterface(); uerr == nil {
 				if err := svc.routerManager.EnsureEgressSNAT(cidr, uplink); err != nil {
 					log.Warn().Err(err).Str("router_id", routerID).Str("cidr", cidr).Msg("WS-3: egress SNAT on interface attach failed")
@@ -734,7 +732,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	maskBits, _ := ipNet.Mask.Size()
 	cidrSuffix := fmt.Sprintf("%d", maskBits)
 
-	if err := svc.routerManager.AttachInterfaceToRouter(routerID, interfaceName, *gatewayIP, cidrSuffix); err != nil {
+	if err := svc.routerManager.AttachInterfaceToRouter(id, interfaceName, interfaceIP, cidrSuffix); err != nil {
 		log.Warn().Err(err).Str("router_id", routerID).Str("interface", interfaceName).Msg("failed to attach interface to router")
 	}
 

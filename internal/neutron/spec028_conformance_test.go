@@ -89,13 +89,13 @@ func TestListFloatingIPsFilters_DB(t *testing.T) {
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, status, description)
 		 VALUES ($1,$2,$3,$4,'ACTIVE','spec028 fip a')`,
-		fipA, seededProjectID, netA, "203.0.113."+randByte(t)); err != nil {
+		fipA, seededProjectID, netA, "198.19.254.1"); err != nil {
 		t.Fatalf("insert fip a: %v", err)
 	}
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, status, description)
 		 VALUES ($1,$2,$3,$4,'DOWN','spec028 fip b')`,
-		fipB, seededProjectID, netB, "203.0.113."+randByte(t)); err != nil {
+		fipB, seededProjectID, netB, "198.19.254.2"); err != nil {
 		t.Fatalf("insert fip b: %v", err)
 	}
 	t.Cleanup(func() {
@@ -145,18 +145,6 @@ func TestListFloatingIPsFilters_DB(t *testing.T) {
 	if got := fips(body); len(got) != 0 {
 		t.Errorf("?port_id=not-a-uuid returned %d fips; want 0", len(got))
 	}
-}
-
-// randByte derives a stable, collision-free last octet for a test fip's
-// address (floating_ip_address is UNIQUE).
-func randByte(t *testing.T) string {
-	t.Helper()
-	b, err := uuid.NewRandom()
-	if err != nil {
-		t.Fatalf("rand: %v", err)
-	}
-	n := int(b[0])%200 + 10 // 10..209
-	return string(rune('0'+n/100)) + string(rune('0'+(n/10)%10)) + string(rune('0'+n%10))
 }
 
 // ---------------------------------------------------------------------------

@@ -3,9 +3,9 @@ package nova
 import (
 	"net/http"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -22,7 +22,7 @@ func (svc *Service) ListServerGroups(c *gin.Context) {
 	}
 
 	rows, err := svc.pool.Query(c.Request.Context(),
-		`SELECT id, name, policies, members, project_id, created_at, updated_at
+		`SELECT id, name, policies, members, project_id, rules, created_at, updated_at
 		 FROM server_groups WHERE project_id = $1`,
 		projectID,
 	)
@@ -38,15 +38,16 @@ func (svc *Service) ListServerGroups(c *gin.Context) {
 		var id, name, projectID string
 		var policies []string
 		var members []string
+		var rules map[string]int
 		var createdAt, updatedAt time.Time
 
-		err := rows.Scan(&id, &name, &policies, &members, &projectID, &createdAt, &updatedAt)
+		err := rows.Scan(&id, &name, &policies, &members, &projectID, &rules, &createdAt, &updatedAt)
 		if err != nil {
 			continue
 		}
 
 		serverGroups = append(serverGroups,
-			serverGroupResponse(id, name, policies, members, projectID))
+			serverGroupResponse(id, name, policies, members, projectID, rules))
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
@@ -95,7 +96,10 @@ func serverGroupPolicyFrom(policies []string, policy string) (string, bool) {
 // serverGroupResponse renders one server group for the API. It carries BOTH
 // the legacy `policies` array and the 2.64+ `policy` string, so clients of
 // any microversion read the field they negotiated for.
-func serverGroupResponse(id, name string, policies []string, members []string, projectID string) gin.H {
+func serverGroupResponse(id, name string, policies []string, members []string, projectID string, rules map[string]int) gin.H {
+	if rules == nil {
+		rules = map[string]int{}
+	}
 	policy := ""
 	if len(policies) > 0 {
 		policy = policies[0]
@@ -107,6 +111,7 @@ func serverGroupResponse(id, name string, policies []string, members []string, p
 		"policy":     policy,
 		"members":    members,
 		"metadata":   gin.H{},
+		"rules":      rules,
 		"project_id": projectID,
 	}
 }
@@ -117,16 +122,10 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 
 	var req struct {
 		ServerGroup struct {
-			Name     string   `json:"name"`
-			Policies []string `json:"policies"`
-			Policy   string   `json:"policy"`
-			// 2.64+ also accepts rules (max_server_per_host). Accepted and
-			// validated for shape, not persisted: placement is not enforced
-			// in stub mode, and a rules column would need a migration for a
-			// knob nothing reads yet.
-			Rules *struct {
-				MaxServerPerHost int `json:"max_server_per_host"`
-			} `json:"rules"`
+			Name     string         `json:"name"`
+			Policies []string       `json:"policies"`
+			Policy   string         `json:"policy"`
+			Rules    map[string]int `json:"rules"`
 		} `json:"server_group"`
 	}
 
@@ -134,8 +133,8 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
-	if req.ServerGroup.Name == "" {
-		common.SendError(c, common.NewBadRequestError("name is required"))
+	if req.ServerGroup.Name == "" || utf8.RuneCountInString(req.ServerGroup.Name) > 255 {
+		common.SendError(c, common.NewBadRequestError("name must contain 1 to 255 characters"))
 		return
 	}
 
@@ -146,6 +145,16 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 		return
 	}
 
+	for key, value := range req.ServerGroup.Rules {
+		if key != "max_server_per_host" || value < 1 || policy != "anti-affinity" {
+			common.SendError(c, common.NewBadRequestError("rules require anti-affinity and a positive max_server_per_host"))
+			return
+		}
+	}
+	if req.ServerGroup.Rules == nil {
+		req.ServerGroup.Rules = map[string]int{}
+	}
+
 	// An unscoped token has no project to create the group in.
 	if projectID == "" {
 		common.SendError(c, common.NewForbiddenError(
@@ -153,49 +162,22 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 		return
 	}
 
-	// Upstream nova refuses a duplicate (project, name) with 409 — and the
-	// server group is then addressable by name unambiguously. The handler
-	// used to insert unconditionally: a second group with the same name was
-	// silently accepted with 200, and `server group show <name>` became a
-	// coin toss (SPEC-028).
-	var nameTaken bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		`SELECT EXISTS(SELECT 1 FROM server_groups WHERE project_id = $1 AND name = $2)`,
-		projectID, req.ServerGroup.Name).Scan(&nameTaken)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "create_server_group_dupcheck").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to create server group"))
-		return
-	}
-	if nameTaken {
-		common.SendError(c, common.NewResourceInUseError("server group", "create",
-			"Server group "+req.ServerGroup.Name+" already exists."))
-		return
-	}
-
 	groupID := uuid.New().String()
 	now := time.Now()
 
-	_, err = svc.pool.Exec(c.Request.Context(),
-		`INSERT INTO server_groups (id, name, policies, members, project_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		groupID, req.ServerGroup.Name, []string{policy}, []string{}, projectID, now, now,
+	_, err := svc.pool.Exec(c.Request.Context(),
+		`INSERT INTO server_groups (id, name, policies, members, project_id, rules, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		groupID, req.ServerGroup.Name, []string{policy}, []string{}, projectID, req.ServerGroup.Rules, now, now,
 	)
 	if err != nil {
-		// The migration 076 constraint makes the duplicate check race-safe:
-		// two concurrent creates both pass it, and exactly one insert wins.
-		if database.IsUniqueViolation(err) {
-			common.SendError(c, common.NewResourceInUseError("server group", "create",
-				"Server group "+req.ServerGroup.Name+" already exists."))
-			return
-		}
 		log.Error().Err(err).Str("operation", "create_server_group").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create server group"))
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"server_group": serverGroupResponse(groupID, req.ServerGroup.Name, []string{policy}, []string{}, projectID),
+		"server_group": serverGroupResponse(groupID, req.ServerGroup.Name, []string{policy}, []string{}, projectID, req.ServerGroup.Rules),
 	})
 }
 
@@ -212,13 +194,14 @@ func (svc *Service) GetServerGroup(c *gin.Context) {
 	var name, projectIDFromDB string
 	var policies []string
 	var members []string
+	var rules map[string]int
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(c.Request.Context(),
-		`SELECT name, policies, members, project_id, created_at, updated_at
+		`SELECT name, policies, members, project_id, rules, created_at, updated_at
 		 FROM server_groups WHERE id = $1 AND project_id = $2`,
 		groupID, projectID,
-	).Scan(&name, &policies, &members, &projectIDFromDB, &createdAt, &updatedAt)
+	).Scan(&name, &policies, &members, &projectIDFromDB, &rules, &createdAt, &updatedAt)
 
 	if err != nil {
 		common.SendError(c, common.NewNotFoundError("server group"))
@@ -226,7 +209,7 @@ func (svc *Service) GetServerGroup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"server_group": serverGroupResponse(groupID, name, policies, members, projectIDFromDB),
+		"server_group": serverGroupResponse(groupID, name, policies, members, projectIDFromDB, rules),
 	})
 }
 

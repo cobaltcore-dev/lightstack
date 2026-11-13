@@ -1,0 +1,1 @@
+ALTER TABLE server_groups ADD COLUMN rules TEXT NOT NULL DEFAULT '{}';

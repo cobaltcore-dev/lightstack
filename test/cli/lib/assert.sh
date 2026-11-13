@@ -47,7 +47,7 @@ _jq_eval() {
 }
 
 _jq_fail() {
-    t_fail "$1 (expr: $2, got: $3, stderr: $4, output was: $(_snip "$OSC_OUT"))"
+    t_fail "$1 (expr: $2, got: $3, stderr: ${4:-${_JQ_ERROR:-}}, output was: $(_snip "$OSC_OUT"))"
 }
 
 assert_rc() {

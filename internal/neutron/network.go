@@ -1923,13 +1923,29 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+	tx, err := svc.pool.Begin(ctx)
+	if err != nil {
+		common.SendError(c, common.NewInternalServerError("failed to begin subnet deletion"))
+		return
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := LockSubnet(ctx, tx, resolvedID); err != nil {
+		if errors.Is(err, database.ErrNoRows) {
+			common.SendError(c, common.NewNotFoundError("subnet"))
+		} else {
+			common.SendError(c, common.NewInternalServerError("failed to lock subnet"))
+		}
+		return
+	}
+
 	// A subnet with allocations is upstream's SubnetInUse: 409, not a delete
 	// that orphans the holder. The router interface case mattered most — the
 	// port survived the subnet (no FK from fixed_ips), silently blocked the
 	// network's deletion with a 409, and 'router remove port' 404s because the
 	// interface row cascaded away with the subnet (SPEC-028).
 	var holder string
-	ports, err := svc.pool.Query(c.Request.Context(),
+	ports, err := tx.Query(c.Request.Context(),
 		"SELECT id, fixed_ips FROM ports WHERE network_id = $1", networkID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_subnet_inuse").Str("subnet_id", resolvedID).Msg("database error")
@@ -1982,13 +1998,18 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 	// project_id here would silently no-op for a network owner removing another
 	// project's subnet — 204 with the row still present — because the two predicates
 	// would disagree. One decision, one place.
-	_, err = svc.pool.Exec(c.Request.Context(),
+	_, err = tx.Exec(c.Request.Context(),
 		"DELETE FROM subnets WHERE id = $1",
 		resolvedID,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		common.SendError(c, common.NewInternalServerError("failed to commit subnet deletion"))
 		return
 	}
 

@@ -314,19 +314,6 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 		return
 	}
 
-	// Unshelve restores from the snapshot, consuming it (upstream deletes the
-	// shelved image when the instance is restored). The row must not survive:
-	// instance_snapshots has UNIQUE(instance_id), and a leftover row made the
-	// next shelve fail with 500 (SPEC-028).
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		DELETE FROM instance_snapshots WHERE instance_id = $1
-	`, instanceID)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "unshelve_delete_snapshot").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to unshelve instance"))
-		return
-	}
-
 	// Restart the guest shelve stopped — BEFORE the record claims ACTIVE. The
 	// state reconciler exists to correct records that disagree with the
 	// hypervisor, so a record written ACTIVE over a stopped guest was flipped
@@ -365,19 +352,27 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 	// asks about the dead domain, and flips ACTIVE back to SHUTOFF within one
 	// sweep: the very bug this restart exists to fix, reborn on the self-heal
 	// path. persistRunState does the same for os-start's heal (FR-025).
-	if healedDomain != "" {
-		_, err = svc.pool.Exec(c.Request.Context(), `
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		if healedDomain != "" {
+			_, err = tx.Exec(c.Request.Context(), `
 			UPDATE instances
 			SET status = $1, power_state = $2, task_state = $3, updated_at = $4, libvirt_domain_id = $5
 			WHERE id = $6
 		`, "ACTIVE", 1, "", time.Now(), healedDomain, instanceID)
-	} else {
-		_, err = svc.pool.Exec(c.Request.Context(), `
+		} else {
+			_, err = tx.Exec(c.Request.Context(), `
 			UPDATE instances
 			SET status = $1, power_state = $2, task_state = $3, updated_at = $4
 			WHERE id = $5
 		`, "ACTIVE", 1, "", time.Now(), instanceID)
-	}
+		}
+
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(c.Request.Context(), "DELETE FROM instance_snapshots WHERE instance_id = $1", instanceID)
+		return err
+	})
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "unshelve_instance").Msg("database error")

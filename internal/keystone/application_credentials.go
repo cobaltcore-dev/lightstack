@@ -170,6 +170,7 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 	// is written.
 	type resolvedRole struct{ id, name string }
 	var resolved []resolvedRole
+	seenRoles := map[string]bool{}
 	for _, role := range req.ApplicationCredential.Roles {
 		idStr, _ := role["id"].(string)
 		nameStr, _ := role["name"].(string)
@@ -183,19 +184,39 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 			err = svc.pool.QueryRow(c.Request.Context(),
 				"SELECT id::text, name FROM roles WHERE name = $1", nameStr).Scan(&rid, &rname)
 		default:
-			continue // names neither an id nor a name: nothing to associate
+			common.SendError(c, common.NewBadRequestError("each role must have an id or name"))
+			return
 		}
 		if err != nil {
 			common.SendError(c, common.NewBadRequestError("application credential references a role that does not exist"))
 			return
 		}
-		resolved = append(resolved, resolvedRole{rid, rname})
+		if !seenRoles[rid] {
+			resolved = append(resolved, resolvedRole{rid, rname})
+			seenRoles[rid] = true
+		}
 	}
 
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		_, err := tx.Exec(c.Request.Context(), `
 		INSERT INTO application_credentials (id, user_id, project_id, name, secret_hash, description, expires_at, unrestricted, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`, credID, userID, projectID, req.ApplicationCredential.Name, string(secretHash), req.ApplicationCredential.Description, expiresAt, req.ApplicationCredential.Unrestricted, now)
+
+		if err != nil {
+			return err
+		}
+		for _, role := range resolved {
+			if _, err := tx.Exec(c.Request.Context(), `
+			INSERT INTO application_credential_roles (application_credential_id, role_id)
+			VALUES ($1, $2)
+		`, credID, role.id); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
 
 	if err != nil {
 		// application_credentials is UNIQUE(user_id, name); a duplicate name
@@ -208,19 +229,6 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 		log.Error().Err(err).Str("operation", "create_application_credential").Str("user_id", userID).Msg("Failed to create application credential")
 		common.SendError(c, common.NewInternalServerError("failed to create application credential"))
 		return
-	}
-
-	// Associate the resolved roles. A failed role insert is logged but doesn't
-	// abort: the credential row already exists; missing roles will
-	// limit what it can do but the API caller still gets a working
-	// credential they can re-grant manually.
-	for _, role := range resolved {
-		if _, err := svc.pool.Exec(c.Request.Context(), `
-			INSERT INTO application_credential_roles (application_credential_id, role_id)
-			VALUES ($1, $2)
-		`, credID, role.id); err != nil {
-			log.Warn().Err(err).Str("credential_id", credID.String()).Str("role_id", role.id).Msg("failed to associate role with application credential")
-		}
 	}
 
 	credential := map[string]any{

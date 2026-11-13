@@ -3,7 +3,6 @@ package database
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -24,7 +23,7 @@ func migratedSQLite(t *testing.T, target uint) (*sql.DB, string) {
 	return db, url
 }
 
-func TestSQLiteServerGroupMigrationMergesDuplicates(t *testing.T) {
+func TestSQLiteServerGroupMigrationPreservesDuplicates(t *testing.T) {
 	ctx := context.Background()
 	db, url := migratedSQLite(t, 77)
 	var projectID string
@@ -43,30 +42,19 @@ func TestSQLiteServerGroupMigrationMergesDuplicates(t *testing.T) {
 	if err := MigrateToVersion(url, "../../migrations", 78); err != nil {
 		t.Fatalf("migrate server-group uniqueness: %v", err)
 	}
-	var count int
-	var membersJSON string
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*), MIN(members) FROM server_groups WHERE project_id = ? AND name = 'migration-duplicate'", projectID).Scan(&count, &membersJSON); err != nil {
-		t.Fatalf("read merged server group: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("duplicate server groups after migration = %d, want 1", count)
-	}
-	var members []string
-	if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
-		t.Fatalf("decode merged members %q: %v", membersJSON, err)
-	}
-	got := map[string]bool{}
-	for _, member := range members {
-		got[member] = true
-	}
-	for _, member := range []string{"member-a", "member-b", "shared"} {
-		if !got[member] {
-			t.Errorf("merged members %q omit %q", membersJSON, member)
+	for _, row := range []struct{ id, members string }{
+		{"duplicate-a", "[\"member-a\",\"shared\"]"},
+		{"duplicate-b", "[\"member-b\",\"shared\"]"},
+	} {
+		var members string
+		if err := db.QueryRowContext(ctx, "SELECT members FROM server_groups WHERE id=?", row.id).Scan(&members); err != nil || members != row.members {
+			t.Fatalf("group %s changed during upgrade: members=%s err=%v", row.id, members, err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO server_groups (id, name, policies, members, project_id) VALUES ('duplicate-c', 'migration-duplicate', '[]', '[]', ?)", projectID); err == nil {
-		t.Fatal("unique index allowed a duplicate server group")
+	if _, err := db.ExecContext(ctx, "INSERT INTO server_groups (id, name, policies, members, project_id) VALUES ('duplicate-c', 'migration-duplicate', '[]', '[]', ?)", projectID); err != nil {
+		t.Fatalf("duplicate group name rejected: %v", err)
 	}
+
 }
 
 func TestSQLiteOwnerMigrationsRejectNullProjectIDs(t *testing.T) {

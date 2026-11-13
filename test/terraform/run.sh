@@ -89,6 +89,7 @@ RESULTS_DIR="${TF_RESULTS_DIR:-$(cd "$(dirname "$0")" && pwd)/results}"
 
 cleanup() {
     local rc=$?
+    local preserve=0 remaining=""
     trap - EXIT
     # A failed run must not take its evidence with it: the wrapper works in a
     # mktemp workspace that this function removes, so the apply/destroy logs
@@ -108,7 +109,19 @@ cleanup() {
         log "cleanup: best-effort terraform destroy of the partial apply"
         timeout 600 terraform -chdir="$WORKSPACE" destroy \
             -auto-approve -input=false -no-color "${TF_VAR_ARGS[@]}" \
-            >/dev/null 2>&1 || true
+            >"$WORKSPACE/cleanup-destroy.log" 2>&1 || preserve=1
+    fi
+    # A failed destroy or unreadable state must retain the recovery workspace.
+    if [ -n "$WORKSPACE" ] && [ -d "$WORKSPACE" ]; then
+        if ! remaining="$(timeout 120 terraform -chdir="$WORKSPACE" state list 2>/dev/null)" || [ -n "$remaining" ]; then
+            preserve=1
+        fi
+    fi
+    if [ "$preserve" -eq 1 ]; then
+        printf 'Cleanup incomplete; retained Terraform workspace and state: %s\n' "$WORKSPACE" >&2
+        # Keep the prerequisite image too: destroy refreshes its data source.
+        [ -z "$CREATED_IMAGE_ID" ] || printf 'Retained prerequisite image: %s\n' "$CREATED_IMAGE_ID" >&2
+        exit 1
     fi
     if [ -n "$CREATED_IMAGE_ID" ]; then
         log "cleanup: deleting image created by this run ($CREATED_IMAGE_ID)"

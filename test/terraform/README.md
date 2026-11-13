@@ -128,6 +128,7 @@ Working state (`.terraform/`, `*.tfstate`, lockfile) is git-ignored — see
 
 The compat module's keypair is declared without `public_key`, so the provider generates one
 and stores the **private key unencrypted** in `terraform.tfstate` — upstream warns about this
-on `openstack_compute_keypair_v2`. The wrapper's temp workspace (and its state) is deleted at
-exit, but treat any by-hand `terraform.tfstate` as a secret while a run is in progress,
+on `openstack_compute_keypair_v2`. The wrapper deletes its temp workspace after successful cleanup. If destroy fails or state
+cannot be read, it prints and retains the workspace path and prerequisite image so cleanup
+can be retried. Treat this retained state and any by-hand `terraform.tfstate` as a secret while a run is in progress,
 particularly on a shared host.

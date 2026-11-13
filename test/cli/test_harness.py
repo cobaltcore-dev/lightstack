@@ -142,6 +142,23 @@ class HarnessTests(unittest.TestCase):
                 self.results.write_text(payload)
                 self.assertNotEqual(self.run_gate().returncode, 0)
 
+    def test_run_gate_rejects_invalid_evidence(self):
+        for cases in ([{"id": "case", "status": "unknown"}],
+                      [{"id": "case", "status": "pass"}] * 2,
+                      [{"status": "pass"}], []):
+            with self.subTest(cases=cases):
+                self.assertEqual(self.strict_report_failed(cases).returncode, 0)
+
+    def test_failed_assertion_records_failure_under_nounset(self):
+        result = subprocess.run(
+            ["bash", "-uc",
+             'source "$1/lib/assert.sh"; t_fail() { echo "RECORDED: $*"; }; '
+             'OSC_OUT="{}"; assert_jq .missing expected; echo continued',
+             "assert-test", str(CLI_ROOT)], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RECORDED:", result.stdout)
+        self.assertIn("continued", result.stdout)
+
     def test_report_revision_is_the_checkout_under_test(self):
         expected = subprocess.check_output(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"], text=True,
