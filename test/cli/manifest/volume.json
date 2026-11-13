@@ -1,0 +1,198 @@
+{
+  "service": "volume",
+  "description": "Cinder (block storage) command surface served by lightstack — SPEC-028 tier A/B conformance. Verified against python-openstackclient 7.0.0; see suites/volume.sh for the known-failing entries (metadata serialization, backup name lookup, NULL-description volume types, os-set_bootable).",
+  "commands": [
+    {
+      "id": "volume.volume.create",
+      "cmd": "openstack volume create --size <gb> <name>",
+      "endpoints": ["POST /v3/volumes"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "volume.volume.create.bootable",
+      "cmd": "openstack volume create --size <gb> --image <image> <name>",
+      "endpoints": ["POST /v3/volumes"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.volume.create.type",
+      "cmd": "openstack volume create --size <gb> --type <volume-type> <name>",
+      "endpoints": ["POST /v3/volumes"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.volume.list",
+      "cmd": "openstack volume list",
+      "endpoints": ["GET /v3/volumes/detail"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.volume.show",
+      "cmd": "openstack volume show <volume>",
+      "endpoints": ["GET /v3/volumes/{id}"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "volume.volume.set",
+      "cmd": "openstack volume set --description <desc> <volume>",
+      "endpoints": ["PUT /v3/volumes/{id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.volume.set.size",
+      "cmd": "openstack volume set --size <gb> <volume> (extend)",
+      "endpoints": ["POST /v3/volumes/{id}/action (os-extend)"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "volume.volume.set.property",
+      "cmd": "openstack volume set --property <key=value> / volume unset --property <key> <volume>",
+      "endpoints": ["POST /v3/volumes/{id}/metadata", "DELETE /v3/volumes/{id}/metadata/{key}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.volume.set.bootable",
+      "cmd": "openstack volume set --bootable / --non-bootable <volume>",
+      "endpoints": ["POST /v3/volumes/{id}/action (os-set_bootable)"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.volume.delete",
+      "cmd": "openstack volume delete <volume>",
+      "endpoints": ["DELETE /v3/volumes/{id}"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "volume.snapshot.create",
+      "cmd": "openstack volume snapshot create --volume <volume> <snapshot>",
+      "endpoints": ["POST /v3/snapshots"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.snapshot.list",
+      "cmd": "openstack volume snapshot list",
+      "endpoints": ["GET /v3/snapshots/detail"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.snapshot.show",
+      "cmd": "openstack volume snapshot show <snapshot>",
+      "endpoints": ["GET /v3/snapshots/{id}"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "volume.snapshot.set",
+      "cmd": "openstack volume snapshot set --description/--property, volume snapshot unset --property <snapshot>",
+      "endpoints": ["PUT /v3/snapshots/{id}", "POST /v3/snapshots/{id}/metadata", "DELETE /v3/snapshots/{id}/metadata/{key}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.snapshot.delete",
+      "cmd": "openstack volume snapshot delete <snapshot>",
+      "endpoints": ["DELETE /v3/snapshots/{id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.backup.create",
+      "cmd": "openstack volume backup create --name <name> <volume>",
+      "endpoints": ["POST /v3/backups"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.backup.list",
+      "cmd": "openstack volume backup list",
+      "endpoints": ["GET /v3/backups"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.backup.show",
+      "cmd": "openstack volume backup show <backup>",
+      "endpoints": ["GET /v3/backups/{id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.backup.show.byname",
+      "cmd": "openstack volume backup show <backup-name> (name lookup)",
+      "endpoints": ["GET /v3/backups/{id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.backup.delete",
+      "cmd": "openstack volume backup delete <backup>",
+      "endpoints": ["DELETE /v3/backups/{id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.type.create",
+      "cmd": "openstack volume type create --description <desc> <name>",
+      "endpoints": ["POST /v3/types"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.type.create.nodesc",
+      "cmd": "openstack volume type create <name> (no --description)",
+      "endpoints": ["POST /v3/types", "GET /v3/types"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.type.list",
+      "cmd": "openstack volume type list",
+      "endpoints": ["GET /v3/types"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.type.show",
+      "cmd": "openstack volume type show <volume-type>",
+      "endpoints": ["GET /v3/types/{id}"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "volume.type.set",
+      "cmd": "openstack volume type set --description <desc> <volume-type>",
+      "endpoints": ["PUT /v3/types/{id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.type.set.property",
+      "cmd": "openstack volume type set --property <key=value> / volume type unset --property <key> <volume-type>",
+      "endpoints": ["POST /v3/types/{id}/extra_specs", "DELETE /v3/types/{id}/extra_specs/{key}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.type.delete",
+      "cmd": "openstack volume type delete <volume-type>",
+      "endpoints": ["DELETE /v3/types/{id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.quota.show",
+      "cmd": "openstack quota show --volume <project>",
+      "endpoints": ["GET /v3/os-quota-sets/{project_id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.quota.set",
+      "cmd": "openstack quota set --volumes <n> <project> (admin; restored by the case)",
+      "endpoints": ["PUT /v3/os-quota-sets/{project_id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.service.list",
+      "cmd": "openstack volume service list (admin, read-only)",
+      "endpoints": ["GET /v3/os-services"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.transfer.request",
+      "cmd": "openstack volume transfer request create/list/show/delete <volume>",
+      "endpoints": ["POST /v3/os-volume-transfer", "GET /v3/os-volume-transfer/detail", "GET /v3/os-volume-transfer/{id}", "DELETE /v3/os-volume-transfer/{id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "volume.transfer.accept",
+      "cmd": "openstack volume transfer request accept <transfer> --auth-key <key>",
+      "endpoints": ["POST /v3/os-volume-transfer/{id}/accept"],
+      "tiers": ["A"]
+    }
+  ]
+}

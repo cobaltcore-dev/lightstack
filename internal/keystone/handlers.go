@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -34,6 +35,14 @@ func NewService(pool database.DB, authService *AuthService, cacheInstance *cache
 // RegisterRoutes registers Keystone routes.
 // Public routes (auth) require no token. Management routes require a valid token.
 func (svc *Service) RegisterRoutes(r *gin.RouterGroup, authMiddleware gin.HandlerFunc) {
+	// Keystone's error envelope is {"error": {...}} (see
+	// common/identity_errors.go): keystoneauth1 — the client behind every
+	// identity command — parses only that shape, and every other body
+	// degrades to "Unrecognized schema in response body." Marked once here so
+	// every route below, plus the auth middleware and panic recovery inside,
+	// renders it.
+	r.Use(common.MarkIdentityErrors)
+
 	v3 := r.Group("/v3")
 
 	// Version discovery — no auth required
@@ -321,8 +330,20 @@ func (svc *Service) ValidateToken(c *gin.Context) {
 
 // RevokeToken revokes a token (DELETE /v3/auth/tokens)
 func (svc *Service) RevokeToken(c *gin.Context) {
-	// In JWT implementation, we don't maintain token blacklist
-	// Tokens expire naturally based on TTL
+	// Upstream validates the subject token and answers 404 when it names
+	// nothing revocable; the previous unconditional 204 hid typos and
+	// expired ids, so clients could not detect them (SPEC-028). Tokens are
+	// JWTs that expire naturally, so revoking a valid token is acknowledged
+	// with 204 — there is no server-side session to destroy.
+	tokenString := c.GetHeader("X-Subject-Token")
+	if tokenString == "" {
+		common.SendError(c, common.NewBadRequestError("X-Subject-Token header required"))
+		return
+	}
+	if _, err := svc.authService.ValidateToken(tokenString); err != nil {
+		common.SendError(c, common.NewIdentityNotFoundError("token", "requested"))
+		return
+	}
 	c.Status(http.StatusNoContent)
 }
 
@@ -376,7 +397,7 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description.String,
+			"description": common.NullString(description),
 			"enabled":     enabled,
 			"domain_id":   domainID.String,
 			"links":       identityLink(c, "projects", id),
@@ -411,11 +432,11 @@ func (svc *Service) ListUsers(c *gin.Context) {
 	f.eqDomain(c, "domain_id", "domain_id")
 	f.eqBool(c, "enabled", "enabled")
 	rows, err := svc.pool.Query(c.Request.Context(),
-		"SELECT id, name, enabled, domain_id FROM users"+f.Where()+" ORDER BY name", f.Args()...,
+		"SELECT id, name, enabled, domain_id, email, description FROM users"+f.Where()+" ORDER BY name", f.Args()...,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_users").Msg("Failed to query users")
-		common.SendError(c, common.NewInternalServerError("failed to query users"))
+		common.SendError(c, common.NewInternalServerError("failed to list users"))
 		return
 	}
 	defer rows.Close()
@@ -424,17 +445,25 @@ func (svc *Service) ListUsers(c *gin.Context) {
 	for rows.Next() {
 		var id, name, domainID string
 		var enabled bool
-		if err := rows.Scan(&id, &name, &enabled, &domainID); err != nil {
+		// email and description are nullable; scanning them into plain
+		// strings would turn a user without either into a 500 for the whole
+		// collection (SPEC-028: both were also missing from the response
+		// entirely, so 'user show' printed email: null for a user created
+		// with one).
+		var email, description sql.NullString
+		if err := rows.Scan(&id, &name, &enabled, &domainID, &email, &description); err != nil {
 			log.Error().Err(err).Str("operation", "list_users_scan").Msg("Failed to scan user row")
 			common.SendError(c, common.NewInternalServerError("failed to read users"))
 			return
 		}
 		users = append(users, gin.H{
-			"id":        id,
-			"name":      name,
-			"enabled":   enabled,
-			"domain_id": domainID,
-			"links":     identityLink(c, "users", id),
+			"id":          id,
+			"name":        name,
+			"enabled":     enabled,
+			"domain_id":   domainID,
+			"email":       common.NullString(email),
+			"description": common.NullString(description),
+			"links":       identityLink(c, "users", id),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -459,10 +488,13 @@ func (svc *Service) GetUser(c *gin.Context) {
 
 	var id, name, domainID string
 	var enabled bool
+	// Nullable for the same reason as in ListUsers; SPEC-028: they were
+	// dropped entirely from the show response.
+	var email, description sql.NullString
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, name, enabled, domain_id FROM users WHERE id = $1",
+		"SELECT id, name, enabled, domain_id, email, description FROM users WHERE id = $1",
 		userID,
-	).Scan(&id, &name, &enabled, &domainID)
+	).Scan(&id, &name, &enabled, &domainID, &email, &description)
 
 	if err != nil {
 		notFoundOr500(c, err, "user", userID)
@@ -470,11 +502,13 @@ func (svc *Service) GetUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"user": gin.H{
-		"id":        id,
-		"name":      name,
-		"enabled":   enabled,
-		"domain_id": domainID,
-		"links":     identityLink(c, "users", id),
+		"id":          id,
+		"name":        name,
+		"enabled":     enabled,
+		"domain_id":   domainID,
+		"email":       common.NullString(email),
+		"description": common.NullString(description),
+		"links":       identityLink(c, "users", id),
 	}})
 }
 
@@ -526,7 +560,7 @@ func (svc *Service) ListProjects(c *gin.Context) {
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description.String,
+			"description": common.NullString(description),
 			"enabled":     enabled,
 			"domain_id":   domainID.String,
 			"links":       identityLink(c, "projects", id),
@@ -588,7 +622,7 @@ func (svc *Service) GetProject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"project": gin.H{
 		"id":          id,
 		"name":        name,
-		"description": description.String,
+		"description": common.NullString(description),
 		"enabled":     enabled,
 		"domain_id":   domainID.String,
 		"links":       identityLink(c, "projects", id),
@@ -745,7 +779,7 @@ func (svc *Service) UpdateProject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"project": gin.H{
 		"id":          projectID,
 		"name":        name,
-		"description": description.String,
+		"description": common.NullString(description),
 		"domain_id":   domainID.String,
 		"enabled":     enabled,
 		"links":       identityLink(c, "projects", projectID),
@@ -895,6 +929,12 @@ func (svc *Service) CreateRole(c *gin.Context) {
 		roleID, req.Role.Name, now,
 	)
 	if err != nil {
+		// roles.name is UNIQUE; a duplicate is the caller's conflict, not a
+		// server fault — upstream answers 409 (SPEC-028).
+		if database.IsUniqueViolation(err) {
+			common.SendError(c, common.NewConflictError("role already exists"))
+			return
+		}
 		log.Error().Err(err).Str("operation", "create_role").Msg("Failed to create role")
 		common.SendError(c, common.NewInternalServerError("failed to create role"))
 		return
@@ -1198,39 +1238,78 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 	f.eqID(c, "scope.project.id", "ra.project_id")
 	f.eqID(c, "role.id", "ra.role_id")
 
-	query := `SELECT ra.user_id, ra.project_id, ra.role_id, r.name as role_name
+	// include_names=true embeds entity names alongside the ids, the shape
+	// upstream returns and the one `role assignment list --names` (and
+	// openstacksdk's name-normalizing consumer) requires: user.name,
+	// user.domain.{id,name}, scope.project.name, scope.project.domain.{id,name},
+	// role.name. Without it only ids are emitted, as before (SPEC-028).
+	includeNames := strings.EqualFold(c.Query("include_names"), "true")
+
+	query := `SELECT ra.user_id, ra.project_id, ra.role_id, r.name
 	          FROM role_assignments ra
-	          INNER JOIN roles r ON ra.role_id = r.id` + f.Where()
+	          INNER JOIN roles r ON ra.role_id = r.id`
+	if includeNames {
+		query = `SELECT ra.user_id, u.name, ud.id, ud.name,
+		                ra.project_id, p.name, pd.id, pd.name,
+		                ra.role_id, r.name
+		         FROM role_assignments ra
+		         INNER JOIN roles r ON ra.role_id = r.id
+		         LEFT JOIN users u ON ra.user_id = u.id
+		         LEFT JOIN domains ud ON u.domain_id = ud.id
+		         LEFT JOIN projects p ON ra.project_id = p.id
+		         LEFT JOIN domains pd ON p.domain_id = pd.id`
+	}
+	query += f.Where()
 
 	rows, err := svc.pool.Query(c.Request.Context(), query, f.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_role_assignments").Msg("Failed to query role assignments")
-		common.SendError(c, common.NewInternalServerError("failed to query role assignments"))
+		common.SendError(c, common.NewInternalServerError("failed to list role assignments"))
 		return
 	}
 	defer rows.Close()
 
+	baseURL := common.BaseURL(c, 35357)
 	var assignments []gin.H
 	for rows.Next() {
-		var uid, pid, rid, rname string
-		if err := rows.Scan(&uid, &pid, &rid, &rname); err != nil {
+		var uid, pid, rid, rname sql.NullString
+		var uname, udomID, udomName, pname, pdomID, pdomName sql.NullString
+		if includeNames {
+			if err := rows.Scan(&uid, &uname, &udomID, &udomName,
+				&pid, &pname, &pdomID, &pdomName, &rid, &rname); err != nil {
+				log.Warn().Err(err).Msg("failed to scan role assignment row")
+				continue
+			}
+		} else if err := rows.Scan(&uid, &pid, &rid, &rname); err != nil {
 			log.Warn().Err(err).Msg("failed to scan role assignment row")
 			continue
 		}
-		assignments = append(assignments, gin.H{
-			"user": gin.H{
-				"id": uid,
-			},
-			"scope": gin.H{
-				"project": gin.H{
-					"id": pid,
-				},
-			},
+
+		user := gin.H{"id": uid.String}
+		project := gin.H{"id": pid.String}
+		if includeNames {
+			user["name"] = uname.String
+			user["domain"] = gin.H{"id": udomID.String, "name": udomName.String}
+			project["name"] = pname.String
+			project["domain"] = gin.H{"id": pdomID.String, "name": pdomName.String}
+		}
+		assignment := gin.H{
+			"user":  user,
+			"scope": gin.H{"project": project},
 			"role": gin.H{
-				"id":   rid,
-				"name": rname,
+				"id":   rid.String,
+				"name": rname.String,
 			},
-		})
+		}
+		// The self link names the user and project; a row without either
+		// (neither is creatable through the API today) would render empty
+		// path segments, so it gets no link at all.
+		if uid.Valid && pid.Valid && rid.Valid {
+			assignment["links"] = gin.H{
+				"assignment": baseURL + "/v3/projects/" + pid.String + "/users/" + uid.String + "/roles/" + rid.String,
+			}
+		}
+		assignments = append(assignments, assignment)
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
@@ -1630,7 +1709,7 @@ func (svc *Service) GetUserProjects(c *gin.Context) {
 		projects = append(projects, gin.H{
 			"id":          id,
 			"name":        name,
-			"description": description.String,
+			"description": common.NullString(description),
 			"enabled":     enabled,
 			"domain_id":   domainID.String,
 			"links":       identityLink(c, "projects", id),

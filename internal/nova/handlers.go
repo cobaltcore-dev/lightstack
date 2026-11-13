@@ -1593,7 +1593,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	rows, err := svc.pool.Query(c.Request.Context(), fmt.Sprintf(`
 		SELECT i.id, i.name, i.status, i.power_state, i.project_id, i.user_id,
 		       i.flavor_id, i.image_id, i.created_at, i.updated_at, i.launched_at,
-		       i.key_name,
+		       i.key_name, i.locked,
 		       f.vcpus, f.ram_mb, f.disk_gb, f.name as flavor_name
 		FROM instances i
 		LEFT JOIN flavors f ON i.flavor_id = f.id
@@ -1616,10 +1616,11 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		var createdAt, updatedAt time.Time
 		var launchedAt sql.NullTime
 		var imageID, keyName sql.NullString
+		var locked bool
 
 		if err := rows.Scan(&id, &name, &status, &powerState, &rowProjectID, &userID,
 			&flavorID, &imageID, &createdAt, &updatedAt, &launchedAt, &keyName,
-			&vcpus, &ramMB, &diskGB, &flavorName); err != nil {
+			&locked, &vcpus, &ramMB, &diskGB, &flavorName); err != nil {
 			log.Warn().Err(err).Msg("failed to scan server detail row")
 			continue
 		}
@@ -1633,6 +1634,10 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 			"created":                createdAt.Format(time.RFC3339),
 			"updated":                updatedAt.Format(time.RFC3339),
 			"OS-EXT-STS:power_state": powerState,
+			// Exposed since microversion 2.9 upstream; the lock/unlock actions
+			// maintain the column, but the detail responses never carried it,
+			// so `openstack server show` printed null (SPEC-028).
+			"locked": locked,
 			"flavor": gin.H{
 				"id":    flavorID,
 				"vcpus": vcpus,
@@ -1916,17 +1921,18 @@ func (svc *Service) GetServer(c *gin.Context) {
 	var faultCode sql.NullInt32
 	var faultCreated sql.NullTime
 	var powerState int
+	var locked bool
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, status, power_state, project_id,
 		       user_id::text, flavor_id::text, image_id::text,
-		       created_at, updated_at, key_name,
+		       created_at, updated_at, key_name, locked,
 		       fault_code, fault_message, fault_created
 		FROM instances
 		WHERE id = $1 AND project_id = $2
 	`, instanceID, projectID).Scan(&id, &name, &status, &powerState, &projectID, &userID, &flavorID, &imageID,
-		&createdAt, &updatedAt, &keyName, &faultCode, &faultMessage, &faultCreated)
+		&createdAt, &updatedAt, &keyName, &locked, &faultCode, &faultMessage, &faultCreated)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -1956,6 +1962,10 @@ func (svc *Service) GetServer(c *gin.Context) {
 		"updated":                updatedAt.Format(time.RFC3339),
 		"addresses":              addresses,
 		"OS-EXT-STS:power_state": powerState,
+		// Exposed since microversion 2.9 upstream; the lock/unlock actions
+		// maintain the column, but this response never carried it, so
+		// `openstack server show` printed null (SPEC-028).
+		"locked": locked,
 	}
 
 	if userID.Valid {

@@ -61,19 +61,76 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	}
 
 	f := &common.SQLFilter{}
-	f.Eq("project_id", projectID)
+	// The caller's project — unless an administrator filters by tenant:
+	// upstream honours the filter for admin tokens, and it was silently
+	// ignored before, so `floating ip list --project X` presented the
+	// ADMIN's addresses as project X's (SPEC-028; mirrors
+	// buildNetworkListFilter's tenant bypass). ::text so a non-UUID value
+	// narrows to nothing instead of failing the cast.
+	fipTenant := c.Query("tenant_id")
+	if fipTenant == "" {
+		fipTenant = c.Query("project_id")
+	}
+	if fipTenant != "" && common.HasRole(c, common.RoleAdmin) {
+		f.Eq("project_id::text", fipTenant)
+	} else {
+		f.Eq("project_id", projectID)
+	}
+
+	// Standard Neutron list filters (neutron-lib FloatingIPDbMixin):
+	// floating_network_id, port_id, router_id, status, fixed_ip_address,
+	// floating_ip_address, description. All exact matches. They were silently
+	// ignored before, so `openstack floating ip list --network <net>` returned
+	// every tenant's addresses (SPEC-028). The slice keeps the WHERE layout
+	// deterministic.
+	for _, flt := range []struct{ param, column string }{
+		{"floating_network_id", "floating_network_id"},
+		{"port_id", "port_id"},
+		{"router_id", "router_id"},
+		{"status", "status"},
+		{"fixed_ip_address", "fixed_ip_address"},
+		{"floating_ip_address", "floating_ip_address"},
+		{"description", "description"},
+	} {
+		v := c.Query(flt.param)
+		if v == "" {
+			continue
+		}
+		switch flt.column {
+		case "floating_network_id", "port_id", "router_id":
+			// UUID columns: a non-UUID value can only match nothing, but it
+			// would fail the cast and answer 500 — answer the empty list a
+			// well-formed-but-unknown value gets. The comparison itself is
+			// uuid-typed (not ::text), so an upper-case filter value matches
+			// like any client would expect.
+			if _, err := uuid.Parse(v); err != nil {
+				c.JSON(http.StatusOK, gin.H{"floatingips": []gin.H{}})
+				return
+			}
+			f.Eq(flt.column, v)
+		default:
+			f.Eq(flt.column, v)
+		}
+	}
 
 	// Marker paging over a TOTAL order. created_at alone is not unique, so the order was undefined
 	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
 	// only those before it — a page walk silently dropped them. id is the primary key, so
-	// (created_at, id) is total (as #549 established for compute).
+	// (created_at, id) is total (as #549 established for compute). The marker resolves under the
+	// listing's own scope (see the tenant bypass above): an unresolvable marker would silently
+	// drop the condition and make the walk restart from the first page forever.
+	fipAdminBypass := fipTenant != "" && common.HasRole(c, common.RoleAdmin)
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
-		err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT created_at, id FROM floating_ips WHERE id = $1 AND project_id = $2",
-			marker, projectID,
-		).Scan(&markerCreatedAt, &markerID)
+		markerQuery := "SELECT created_at, id FROM floating_ips WHERE id = $1"
+		markerArgs := []any{marker}
+		if !fipAdminBypass {
+			markerQuery += " AND project_id = $2"
+			markerArgs = append(markerArgs, projectID)
+		}
+		err := svc.pool.QueryRow(c.Request.Context(), markerQuery, markerArgs...).
+			Scan(&markerCreatedAt, &markerID)
 		if err == nil {
 			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
@@ -346,16 +403,25 @@ func (svc *Service) GetFloatingIP(c *gin.Context) {
 
 	// id::text comparison resolves by UUID or floating-IP address without
 	// crashing on a non-UUID identifier — the CLI looks a FIP up by its address
-	// (e.g. `server add floating ip <vm> <address>`).
-	err := svc.pool.QueryRow(c.Request.Context(), `
+	// (e.g. `server add floating ip <vm> <address>`). An administrator may
+	// show any floating IP (upstream's get_floatingip policy is
+	// admin_or_owner), so the tenant-filtered listing's rows do not dead-end
+	// their follow-up show with 404 — the same carve-out the other reads got
+	// (SPEC-028). A non-admin keeps the project scope.
+	fipQuery := `
 		SELECT id, project_id, floating_network_id, floating_ip_address,
 		       fixed_ip_address, port_id, router_id, status, description,
 		       created_at, updated_at
 		FROM floating_ips
-		WHERE (id::text = $1 OR floating_ip_address = $1) AND project_id = $2
-		LIMIT 1
-	`, floatingIPID, projectID).Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
-		&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
+		WHERE (id::text = $1 OR floating_ip_address = $1)`
+	fipArgs := []any{floatingIPID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		fipQuery += ` AND project_id = $2`
+		fipArgs = append(fipArgs, projectID)
+	}
+	err := svc.pool.QueryRow(c.Request.Context(), fipQuery+" LIMIT 1", fipArgs...).
+		Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
+			&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 
@@ -239,18 +240,71 @@ func (svc *Service) CreateImage(c *gin.Context) {
 		containerFormat = req.ContainerFormat
 	}
 
+	// Name length is validated with the tags, for the same reason: the
+	// column is VARCHAR(255) and upstream's schema answers 400, not a 500
+	// from the overflow after (part of) the write failed.
+	if utf8.RuneCountInString(req.Name) > 255 {
+		common.SendError(c, common.NewBadRequestError("image name too long (max 255 characters)"))
+		return
+	}
+
+	// Tag length is validated BEFORE the image row is written — upstream's
+	// schema caps a tag at 255 characters and answers 400, while the column's
+	// VARCHAR(255) would turn an over-long tag into a 500 after the image was
+	// already committed.
+	for _, tag := range req.Tags {
+		if utf8.RuneCountInString(tag) > 255 {
+			common.SendError(c, common.NewBadRequestError("image tag too long (max 255 characters)"))
+			return
+		}
+	}
+
 	// Insert into database. Record the owning project for images of EVERY visibility,
 	// not just private ones — visibility governs who can see an image, ownership governs
 	// who can delete it (F6, FR-014). Storing public images ownerless (project_id NULL)
 	// was the root cause of the delete no-op.
 	now := time.Now()
-	_, err := svc.pool.Exec(c.Request.Context(), `
+	// Image and tags land in ONE transaction: a tag-insert failure used to
+	// answer 500 with the image row already committed, so the client's
+	// retry created a duplicate image (upstream creates them atomically).
+	tx, err := svc.pool.Begin(c.Request.Context())
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_image").Msg("failed to begin transaction")
+		common.SendError(c, common.NewInternalServerError("failed to create image"))
+		return
+	}
+	defer func() { _ = tx.Rollback(c.Request.Context()) }() // no-op once committed
+
+	_, err = tx.Exec(c.Request.Context(), `
 		INSERT INTO images (id, name, project_id, status, visibility, disk_format, container_format, min_disk_gb, min_ram_mb, rbd_pool, rbd_image, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`, imageID, req.Name, sql.NullString{String: projectID, Valid: projectID != ""}, "queued", visibility, diskFormat, containerFormat, req.MinDisk, req.MinRAM, svc.cephPool, "image-"+imageID, now, now)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_image").Msg("failed to insert image into database")
+		common.SendError(c, common.NewInternalServerError("failed to create image"))
+		return
+	}
+
+	// Persist the requested tags. The 201 response below echoes req.Tags, but
+	// the rows were never written before, so a follow-up show returned `tags: []`
+	// — `openstack image create --tag` silently dropped them (SPEC-028). The
+	// dedicated PUT uses the same ON CONFLICT DO NOTHING, so a request repeating
+	// a tag stays legal. Length was validated above, before the image row.
+	for _, tag := range req.Tags {
+		if _, err := tx.Exec(c.Request.Context(), `
+			INSERT INTO image_tags (image_id, tag)
+			VALUES ($1, $2)
+			ON CONFLICT (image_id, tag) DO NOTHING
+		`, imageID, tag); err != nil {
+			log.Error().Err(err).Str("operation", "create_image").Str("image_id", imageID).Msg("failed to insert image tag")
+			common.SendError(c, common.NewInternalServerError("failed to create image"))
+			return
+		}
+	}
+
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		log.Error().Err(err).Str("operation", "create_image").Msg("failed to commit image transaction")
 		common.SendError(c, common.NewInternalServerError("failed to create image"))
 		return
 	}
@@ -339,6 +393,47 @@ func (svc *Service) ListImages(c *gin.Context) {
 	}
 	if status := c.Query("status"); status != "" {
 		f.Eq("i.status", status)
+	}
+
+	// The remaining standard Glance v2 list parameters (glance's ALLOWED_PARAMS):
+	// name, disk_format, container_format, size_min, size_max, owner, tag. All are
+	// exact matches upstream. They were silently ignored before, which broke the
+	// terraform-provider-openstack image data source (it sends `name` server-side
+	// and does no client-side matching) and `openstack image list --tag` (SPEC-028).
+	if name := c.Query("name"); name != "" {
+		f.Eq("i.name", name)
+	}
+	if diskFormat := c.Query("disk_format"); diskFormat != "" {
+		f.Eq("i.disk_format", diskFormat)
+	}
+	if containerFormat := c.Query("container_format"); containerFormat != "" {
+		f.Eq("i.container_format", containerFormat)
+	}
+	// size_min/size_max are byte bounds; a NULL size (a queued image) matches
+	// neither, which is upstream's behaviour too.
+	if sizeMin := c.Query("size_min"); sizeMin != "" {
+		if n, err := strconv.ParseInt(sizeMin, 10, 64); err == nil && n >= 0 {
+			f.Cond("i.size_bytes >= " + f.Arg(n))
+		} else {
+			common.SendError(c, common.NewBadRequestError("Invalid size_min value: "+sizeMin))
+			return
+		}
+	}
+	if sizeMax := c.Query("size_max"); sizeMax != "" {
+		if n, err := strconv.ParseInt(sizeMax, 10, 64); err == nil && n >= 0 {
+			f.Cond("i.size_bytes <= " + f.Arg(n))
+		} else {
+			common.SendError(c, common.NewBadRequestError("Invalid size_max value: "+sizeMax))
+			return
+		}
+	}
+	if owner := c.Query("owner"); owner != "" {
+		// Dash-insensitive, like the membership comparison above — callers hold
+		// the id in either spelling.
+		f.Cond("replace(i.project_id::text, '-', '') = replace(" + f.Arg(owner) + ", '-', '')")
+	}
+	if tag := c.Query("tag"); tag != "" {
+		f.Cond("EXISTS (SELECT 1 FROM image_tags t WHERE t.image_id = i.id AND t.tag = " + f.Arg(tag) + ")")
 	}
 
 	// Marker-based pagination over a TOTAL order.
@@ -663,9 +758,10 @@ func (svc *Service) DeleteImage(c *gin.Context) {
 
 	// Invalidate cache. Entries are keyed per caller (imageCacheKey), so evicting this image
 	// means evicting every project's view of it, not just the deleter's.
+	// (Only `image:<project>:<scope>:<id>` keys are ever written — imageCacheKey —
+	// so this one pattern is the complete eviction.)
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(ctx, "image:*:"+imageID)
-		svc.cache.TryDeletePattern(ctx, "images:*")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -790,7 +886,6 @@ func (svc *Service) UpdateImage(c *gin.Context) {
 	// every project's view of it, not just the patcher's — same as DeleteImage.
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(c.Request.Context(), "image:*:"+imageID)
-		svc.cache.TryDeletePattern(c.Request.Context(), "images:*")
 	}
 
 	// The response reports the applied state (FR-016).
@@ -1533,6 +1628,13 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 		return
 	}
 
+	// Upstream's schema caps a tag at 255 characters and answers 400; the
+	// column's VARCHAR(255) would instead surface as a 500.
+	if utf8.RuneCountInString(tag) > 255 {
+		common.SendError(c, common.NewBadRequestError("image tag too long (max 255 characters)"))
+		return
+	}
+
 	// Add tag (ignore if already exists due to UNIQUE constraint)
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO image_tags (image_id, tag)
@@ -1545,6 +1647,13 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to add image tag"))
 		return
 	}
+
+	// Evict like every other image mutation (UpdateImage, members): GetImage
+	// caches the object INCLUDING its tags, so without this a tag added here
+	// stays invisible to `image show` for the cache's whole TTL (SPEC-028).
+	// evictImage drops every caller's view via the one key family that
+	// exists (image:<project>:<scope>:<id>).
+	svc.evictImage(c.Request.Context(), imageID)
 
 	c.Status(http.StatusNoContent)
 }
@@ -1588,6 +1697,10 @@ func (svc *Service) DeleteImageTag(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to delete image tag"))
 		return
 	}
+
+	// Evict like every other image mutation — the cached image body carries
+	// the tags array, and a removal must not linger in `image show` either.
+	svc.evictImage(c.Request.Context(), imageID)
 
 	c.Status(http.StatusNoContent)
 }

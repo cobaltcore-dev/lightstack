@@ -1,3 +1,10 @@
+> **⚠️ SUPERSEDED — historical snapshot (2026-03-30).** The counts below were frozen on the date
+> shown and no longer reflect the current test suite. The current coverage matrix is
+> [BLUEPRINT_TEST_COVERAGE.md](BLUEPRINT_TEST_COVERAGE.md). Going forward, per-command status will
+> come from the machine-generated `test/cli` manifest report (`test/cli/results/`, produced by
+> `make cli-coverage`), currently being built in parallel under
+> [SPEC-028](../../docs/specs/028-cli-conformance-test-environment/plan.md).
+
 # Contract Test Results - Final Summary (2026-03-30)
 
 ## Overall Results

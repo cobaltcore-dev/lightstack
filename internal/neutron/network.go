@@ -475,6 +475,9 @@ type CreateNetworkRequest struct {
 		Name         string `json:"name" binding:"required"`
 		AdminStateUp *bool  `json:"admin_state_up"`
 		Shared       *bool  `json:"shared"`
+		// The standard resource annotation (migration 075). A pointer so an
+		// omitted key and an explicit empty string differ, as upstream does.
+		Description *string `json:"description"`
 		// Both spellings of the owning project. Neither was declared before, so the value a client
 		// sent was discarded by ShouldBindJSON and never reached the handler: the request was
 		// answered 201 with the network in the CALLER's project (cloud-storage#546 B11). Nothing was
@@ -610,9 +613,9 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 	}
 
 	_, err := svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, external, network_type, mtu, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, networkID, req.Network.Name, projectID, adminStateUp, "ACTIVE", shared, external, networkType, mtu, now, now)
+		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, external, network_type, mtu, description, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, networkID, req.Network.Name, projectID, adminStateUp, "ACTIVE", shared, external, networkType, mtu, req.Network.Description, now, now)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_network").Msg("database error")
@@ -648,6 +651,7 @@ func (svc *Service) CreateNetwork(c *gin.Context) {
 			"shared":          shared,
 			"router:external": external,
 			"mtu":             mtu,
+			"description":     derefOr(req.Network.Description, ""),
 			"subnets":         []string{},
 			"created_at":      now.Format(time.RFC3339),
 			"updated_at":      now.Format(time.RFC3339),
@@ -700,13 +704,17 @@ func networkListDecision(sharedParam, routerExternalParam string) (sf sharedFilt
 }
 
 // buildNetworkListFilter builds the WHERE conditions and positional args for the
-// network list from the caller's project and the neutron list filters Horizon sends
-// (F4). It honors `shared` (only/exclude shared), `router:external` (a real predicate since
-// SPEC-024 F11), and `tenant_id`/`project_id` (narrowing within the
-// caller's authorized scope), plus the id/name filters the Terraform provider uses.
-// Placeholders are numbered from $1; `empty` means the query must return nothing. The
-// caller continues numbering marker/pagination args from $(len(args)+1). Pure — no DB.
-func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantParam, idParam, nameParam string) (f *common.SQLFilter, empty bool) {
+// networks listing. isAdmin matters only together with tenantParam: an
+// administrator filtering by tenant gets that tenant's networks outright
+// (upstream honours the filter for admin tokens), so the caller's read scope
+// must not be ANDed in — it would leave only the shared/external subset and
+// answer [] for another project's private networks (SPEC-028). A non-admin
+// keeps the scope AND tenant intersection. The filter also honors `shared`
+// (only/exclude shared), `router:external` (a real predicate since SPEC-024
+// F11), and the id/name filters the Terraform provider uses. Placeholders are
+// numbered from $1; `empty` means the query must return nothing. The caller
+// continues numbering marker/pagination args from $(len(args)+1). Pure — no DB.
+func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantParam, idParam, nameParam string, isAdmin bool) (f *common.SQLFilter, empty bool) {
 	sf, empty := networkListDecision(sharedParam, routerExternalParam)
 	if empty {
 		return nil, true
@@ -723,14 +731,21 @@ func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantPara
 		// select it as a router gateway; requiring `shared` as well would leave the tenant-facing
 		// Set Gateway dropdown empty and fix F11 for administrators only (FR-033a). Read-only:
 		// visibility confers no authority (FR-033b, and #545's rule for shared networks).
-		f.Cond(networkReadScope(f.Arg(caller)))
+		//
+		// Skipped when an admin explicitly filters by tenant: the tenant filter
+		// is then the authoritative owner scope.
+		if !isAdmin || tenantParam == "" {
+			f.Cond(networkReadScope(f.Arg(caller)))
+		}
 	}
 
 	if ext, ok := neutronBool(routerExternalParam); ok {
 		f.Eq("external", ext)
 	}
 	if tenantParam != "" {
-		f.Eq("project_id", tenantParam)
+		// ::text — a non-UUID tenant value must narrow to nothing, not
+		// fail the uuid cast and answer 500 (SPEC-028).
+		f.Eq("project_id::text", tenantParam)
 	}
 	if idParam != "" {
 		f.Eq("id::text", idParam)
@@ -865,7 +880,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	if tenant == "" {
 		tenant = c.Query("project_id")
 	}
-	f, empty := buildNetworkListFilter(projectID, c.Query("shared"), c.Query("router:external"), tenant, c.Query("id"), c.Query("name"))
+	f, empty := buildNetworkListFilter(projectID, c.Query("shared"), c.Query("router:external"), tenant, c.Query("id"), c.Query("name"), common.HasRole(c, common.RoleAdmin))
 	if empty {
 		// No filter combination produces this today; kept so a future filter can short-circuit
 		// without re-plumbing the caller.
@@ -873,9 +888,20 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 		return
 	}
 
-	// Marker-based pagination (see resolveListMarker).
-	m, ok := svc.resolveListMarker(c, limit, "network",
-		"SELECT created_at, id FROM networks WHERE id::text = $1 AND "+networkReadScope("$2"))
+	// Marker-based pagination (see resolveListMarker). The marker resolves
+	// under the SAME scope the listing used: an admin's tenant-filtered walk
+	// dropped the read scope above (buildNetworkListFilter), so resolving
+	// with it would 404 the walk mid-page on the very rows the listing just
+	// returned (SPEC-028).
+	var m *listMarker
+	var ok bool
+	if common.HasRole(c, common.RoleAdmin) && tenant != "" {
+		m, ok = svc.resolveListMarker(c, limit, "network",
+			"SELECT created_at, id FROM networks WHERE id::text = $1")
+	} else {
+		m, ok = svc.resolveListMarker(c, limit, "network",
+			"SELECT created_at, id FROM networks WHERE id::text = $1 AND "+networkReadScope("$2"), projectID)
+	}
 	if !ok {
 		return
 	}
@@ -889,7 +915,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	where := f.Conds()
 	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", f.Arg(limit), f.Arg(offset))
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external, COALESCE(description, '')
 		FROM networks
 		WHERE `+where+`
 		ORDER BY created_at DESC, id DESC`+limitOffset, f.Args()...)
@@ -903,12 +929,12 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 
 	var networks []gin.H
 	for rows.Next() {
-		var id, name, status, owner string
+		var id, name, status, owner, description string
 		var adminStateUp, shared, external bool
 		var mtu int
 		var createdAt, updatedAt time.Time
 
-		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external); err != nil {
+		if err := rows.Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description); err != nil {
 			log.Warn().Err(err).Str("network_id", id).Msg("skipping unreadable network row")
 			continue
 		}
@@ -926,6 +952,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 			"shared":          shared,
 			"router:external": external,
 			"mtu":             mtu,
+			"description":     description,
 			"created_at":      createdAt.Format(time.RFC3339),
 			"updated_at":      updatedAt.Format(time.RFC3339),
 		})
@@ -965,6 +992,11 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 // Scoping the key rather than re-checking on hit keeps a hit free of database work, at the cost of
 // one entry per (caller, network) pair — a shared or external network is cached once per project
 // that asks for it, which is the price of the lookup preceding the check.
+//
+// The invariant holds only because GetNetwork's WRITE side caches nothing the project is not
+// entitled to by the read scope: since the admin carve-out made visibility role-dependent, a
+// fetched row outside the read scope (an admin reading another project's private network) is
+// served but never cached — see the TrySet guard in GetNetwork.
 func networkCacheKey(projectID, networkID string) string {
 	return "network:" + projectID + ":" + networkID
 }
@@ -997,17 +1029,30 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	}
 
 	// Cache miss - query database
-	var id, name, status, owner string
+	var id, name, status, owner, description string
 	var adminStateUp, shared, external bool
 	var mtu int
 	var createdAt, updatedAt time.Time
 
-	err := svc.pool.QueryRow(ctx, `
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
+	// An administrator may show any network — upstream's get_network policy
+	// is "admin_or_owner or shared or external", and the LIST already honours
+	// that for the admin (buildNetworkListFilter bypasses the read scope for
+	// an admin's tenant filter). Without the matching carve-out here, an
+	// admin could list another project's private network with --project and
+	// then get a 404 showing the id it just listed (SPEC-028).
+	query := `
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external, COALESCE(description, '')
 		FROM networks
-		WHERE (id::text = $1 OR name = $1) AND `+networkReadScope("$2")+`
-		LIMIT 1
-	`, networkID, projectID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external)
+		WHERE (id::text = $1 OR name = $1)`
+	args := []any{networkID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		query += ` AND ` + networkReadScope("$2")
+		args = append(args, projectID)
+	}
+	query += ` LIMIT 1`
+
+	err := svc.pool.QueryRow(ctx, query, args...).
+		Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -1031,6 +1076,7 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 		"shared":          shared,
 		"router:external": external,
 		"mtu":             mtu,
+		"description":     description,
 		"created_at":      createdAt.Format(time.RFC3339),
 		"updated_at":      updatedAt.Format(time.RFC3339),
 	}
@@ -1038,8 +1084,12 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	// Store in cache (30min TTL per config) before adding the dynamic subnet
 	// list, so cached entries never carry a stale subnets field. Written under the SAME
 	// caller-scoped key the read above uses, so an entry can only ever be served back to a caller
-	// entitled to it.
-	if svc.cache != nil {
+	// entitled to it. The admin carve-out above can exceed that entitlement — an admin may
+	// fetch another project's PRIVATE network — and caching such a row under the
+	// project's key would hand it to the project's plain members as a 200 where the
+	// uncached answer is 404 (the key names only the project, not the role). Rows
+	// outside the project's read scope are therefore simply not cached.
+	if svc.cache != nil && (owner == projectID || shared || external) {
 		svc.cache.TrySet(ctx, networkCacheKey(projectID, id), network, 30*time.Minute)
 	}
 
@@ -1116,9 +1166,10 @@ func (svc *Service) DeleteNetwork(c *gin.Context) {
 
 	// Invalidate cache. Entries are keyed per caller (networkCacheKey), so evicting this
 	// network means evicting every project's view of it, not just the deleter's.
+	// (Only `network:<project>:<id>` keys are ever written — networkCacheKey —
+	// so this one pattern is the complete eviction.)
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(ctx, "network:*:"+id)
-		svc.cache.TryDeletePattern(ctx, "networks:*")
 	}
 
 	c.Status(http.StatusNoContent)
@@ -1197,6 +1248,10 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 			Name         *string `json:"name"`
 			AdminStateUp *bool   `json:"admin_state_up"`
 			External     *bool   `json:"router:external"`
+			// The standard resource annotation (migration 075): 'network set
+			// --description' PUTs it, and the handler had no column to
+			// persist it to (SPEC-028).
+			Description *string `json:"description"`
 		} `json:"network"`
 	}
 
@@ -1225,6 +1280,10 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 
 	if req.Network.AdminStateUp != nil {
 		u.Set("admin_state_up", *req.Network.AdminStateUp)
+	}
+
+	if req.Network.Description != nil {
+		u.Set("description", *req.Network.Description)
 	}
 
 	if u.Empty() {
@@ -1277,7 +1336,6 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 	// reason DeleteNetwork's does.
 	if svc.cache != nil {
 		svc.cache.TryDeletePattern(c.Request.Context(), "network:*:"+networkID)
-		svc.cache.TryDeletePattern(c.Request.Context(), "networks:*")
 	}
 	svc.writeNetworkResponse(c, networkID)
 }
@@ -1285,17 +1343,17 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 // writeNetworkResponse emits a network by id with no visibility predicate, for the caller that just
 // wrote it (see UpdateNetwork). Ownership was already decided by the write.
 func (svc *Service) writeNetworkResponse(c *gin.Context, networkID string) {
-	var id, name, status, owner string
+	var id, name, status, owner, description string
 	var adminStateUp, shared, external bool
 	var mtu int
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external
+		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external, COALESCE(description, '')
 		FROM networks
 		WHERE id::text = $1
 		LIMIT 1
-	`, networkID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external)
+	`, networkID).Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -1324,6 +1382,7 @@ func (svc *Service) writeNetworkResponse(c *gin.Context, networkID string) {
 		"shared":          shared,
 		"router:external": external,
 		"mtu":             mtu,
+		"description":     description,
 		"created_at":      createdAt.Format(time.RFC3339),
 		"updated_at":      updatedAt.Format(time.RFC3339),
 		"subnets":         subnets,
@@ -1583,13 +1642,20 @@ type listMarker struct {
 // The networks, subnets and ports listings used to read the marker with no visibility and ignore one
 // that did not resolve, so another project's private row narrowed the page where an absent id did
 // not — telling the caller it exists.
-func (svc *Service) resolveListMarker(c *gin.Context, limit any, resource, query string) (*listMarker, bool) {
+// resolveListMarker resolves a listing's marker as upstream Neutron does (neutron-lib
+// _resolve_pagination_marker): the marker names a row of the SAME collection under the
+// SAME visibility the listing itself used, and the page continues after it. Callers
+// pass the scope predicates' arguments after the marker id (normally just the caller's
+// project id); a listing that dropped its read scope — an admin's tenant-filtered
+// walk — passes none, so the marker resolves under the listing's actual scope and an
+// admin's walk cannot 404 mid-page on a row the listing itself just returned.
+func (svc *Service) resolveListMarker(c *gin.Context, limit any, resource, query string, scopeArgs ...any) (*listMarker, bool) {
 	marker := c.Query("marker")
 	if marker == "" || limit == nil {
 		return nil, true
 	}
 	var m listMarker
-	err := svc.pool.QueryRow(c.Request.Context(), query, marker, c.GetString("project_id")).Scan(&m.createdAt, &m.id)
+	err := svc.pool.QueryRow(c.Request.Context(), query, append([]any{marker}, scopeArgs...)...).Scan(&m.createdAt, &m.id)
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError(resource))
 		return nil, false
@@ -1624,17 +1690,26 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 
 	f := &common.SQLFilter{}
 
-	// Scope by the owning NETWORK's visibility, not only the subnet's own project_id (see
-	// subnetReadScope). One argument read by two placeholders, so it is appended once and the
-	// placeholder reused.
-	caller := f.Arg(projectID)
-	f.Cond(subnetReadScope(caller))
-
 	// Client filters (B6). Both spellings of the project attribute map onto project_id.
 	tenant := c.Query("tenant_id")
 	if tenant == "" {
 		tenant = c.Query("project_id")
 	}
+
+	// Scope by the owning NETWORK's visibility, not only the subnet's own project_id (see
+	// subnetReadScope). One argument read by two placeholders, so it is appended once and the
+	// placeholder reused. Dropped for an administrator who filters by tenant or by network —
+	// upstream honours both for admin tokens, and network_id in particular is a pointer that
+	// comes straight out of a network body the admin was allowed to read, so scoping it again
+	// would answer 200 for the network and [] for its subnets (SPEC-028; mirrors
+	// buildNetworkListFilter's tenant bypass). A non-admin keeps the scope AND filter
+	// intersection.
+	adminBypass := common.HasRole(c, common.RoleAdmin) && (tenant != "" || c.Query("network_id") != "")
+	if !adminBypass {
+		caller := f.Arg(projectID)
+		f.Cond(subnetReadScope(caller))
+	}
+
 	addSubnetListFilter(f, subnetFilterParams{
 		NetworkID:  c.Query("network_id"),
 		ID:         c.Query("id"),
@@ -1648,9 +1723,16 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 	// Marker-based pagination on a TOTAL order. `created_at` alone is not unique, so ties made the
 	// page boundary unstable and a walk could repeat or skip rows — the same defect #549 found in the
 	// compute listings. ListNetworks already pages on (created_at, id); FR-025 requires the same here.
-	// The marker itself resolves as resolveListMarker describes.
-	m, ok := svc.resolveListMarker(c, limit, "subnet",
-		"SELECT s.created_at, s.id FROM subnets s JOIN networks n ON s.network_id = n.id WHERE s.id::text = $1 AND "+subnetReadScope("$2"))
+	// The marker itself resolves as resolveListMarker describes — under the listing's own scope.
+	var m *listMarker
+	var ok bool
+	if adminBypass {
+		m, ok = svc.resolveListMarker(c, limit, "subnet",
+			"SELECT s.created_at, s.id FROM subnets s JOIN networks n ON s.network_id = n.id WHERE s.id::text = $1")
+	} else {
+		m, ok = svc.resolveListMarker(c, limit, "subnet",
+			"SELECT s.created_at, s.id FROM subnets s JOIN networks n ON s.network_id = n.id WHERE s.id::text = $1 AND "+subnetReadScope("$2"), projectID)
+	}
 	if !ok {
 		return
 	}
@@ -1758,14 +1840,22 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	// Consequently s.project_id is selected, not assumed: this handler can return a subnet
 	// the caller does not own — one on their network, or on a shared network — so reporting
 	// the caller as tenant_id would tell them a resource is theirs when it is not.
-	err := svc.pool.QueryRow(c.Request.Context(), `
+	// An administrator may show any subnet — the same carve-out GetNetwork
+	// has (upstream's get_subnet policy includes ADMIN_OR_NET_OWNER_READER).
+	// Without it, an admin could show a network and then 404 on the subnet
+	// ids its own body lists (SPEC-028).
+	query := `
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at, s.project_id
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
-		WHERE (s.id::text = $1 OR s.name = $1)
-		  AND `+subnetReadScope("$2")+`
-		LIMIT 1
-	`, subnetID, projectID).Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner)
+		WHERE (s.id::text = $1 OR s.name = $1)`
+	args := []any{subnetID}
+	if !common.HasRole(c, common.RoleAdmin) {
+		query += ` AND ` + subnetReadScope("$2")
+		args = append(args, projectID)
+	}
+	err := svc.pool.QueryRow(c.Request.Context(), query+" LIMIT 1", args...).
+		Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet"))
@@ -1833,17 +1923,93 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+	tx, err := svc.pool.Begin(ctx)
+	if err != nil {
+		common.SendError(c, common.NewInternalServerError("failed to begin subnet deletion"))
+		return
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := LockSubnet(ctx, tx, resolvedID); err != nil {
+		if errors.Is(err, database.ErrNoRows) {
+			common.SendError(c, common.NewNotFoundError("subnet"))
+		} else {
+			common.SendError(c, common.NewInternalServerError("failed to lock subnet"))
+		}
+		return
+	}
+
+	// A subnet with allocations is upstream's SubnetInUse: 409, not a delete
+	// that orphans the holder. The router interface case mattered most — the
+	// port survived the subnet (no FK from fixed_ips), silently blocked the
+	// network's deletion with a 409, and 'router remove port' 404s because the
+	// interface row cascaded away with the subnet (SPEC-028).
+	var holder string
+	ports, err := tx.Query(c.Request.Context(),
+		"SELECT id, fixed_ips FROM ports WHERE network_id = $1", networkID)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "delete_subnet_inuse").Str("subnet_id", resolvedID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+		return
+	}
+	for ports.Next() {
+		var portID string
+		var fixedIPsJSON []byte
+		if err := ports.Scan(&portID, &fixedIPsJSON); err != nil {
+			ports.Close()
+			log.Error().Err(err).Str("operation", "delete_subnet_inuse").Str("subnet_id", resolvedID).Msg("database error")
+			common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+			return
+		}
+		var fixedIPs []struct {
+			SubnetID string `json:"subnet_id"`
+		}
+		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil {
+			ports.Close()
+			log.Error().Err(err).Str("operation", "delete_subnet_inuse").Str("subnet_id", resolvedID).Msg("invalid fixed_ips JSON")
+			common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+			return
+		}
+		for _, fixedIP := range fixedIPs {
+			if fixedIP.SubnetID == resolvedID {
+				holder = portID
+				break
+			}
+		}
+		if holder != "" {
+			break
+		}
+	}
+	rowsErr := ports.Err()
+	ports.Close()
+	if rowsErr != nil {
+		log.Error().Err(rowsErr).Str("operation", "delete_subnet_inuse").Str("subnet_id", resolvedID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+		return
+	}
+
+	if holder != "" {
+		common.SendError(c, common.NewResourceInUseError("subnet", "delete",
+			fmt.Sprintf("Unable to delete subnet: one or more ports have an IP allocation from this subnet (first: %s).", holder)))
+		return
+	}
+
 	// Delete by the id the entitlement check above already resolved. Re-filtering on
 	// project_id here would silently no-op for a network owner removing another
 	// project's subnet — 204 with the row still present — because the two predicates
 	// would disagree. One decision, one place.
-	_, err = svc.pool.Exec(c.Request.Context(),
+	_, err = tx.Exec(c.Request.Context(),
 		"DELETE FROM subnets WHERE id = $1",
 		resolvedID,
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		common.SendError(c, common.NewInternalServerError("failed to commit subnet deletion"))
 		return
 	}
 
@@ -1964,6 +2130,9 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 			// Raw for the same reason as CreateSubnet: an explicit null clears the gateway, an
 			// omitted key leaves it alone (FR-023, contract S14).
 			GatewayIP json.RawMessage `json:"gateway_ip"`
+			// 'subnet set --dhcp/--no-dhcp' PUTs it; the handler had no
+			// binding for it, so the flag was a 200 no-op (SPEC-028).
+			EnableDHCP *bool `json:"enable_dhcp"`
 		} `json:"subnet"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -2039,31 +2208,39 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	// the old name still stored, because the two predicates disagree (the same trap
 	// DeleteSubnet had).
 	// gateway_ip is only touched when the key was supplied; an explicit null clears it (S14).
-	switch {
-	case gatewayGiven:
+	// Every supplied column lands in ONE statement: two separate UPDATEs (name/gateway,
+	// then the DHCP flag) could leave a half-applied update behind if the second failed.
+	u := &common.SQLUpdate{}
+	if req.Subnet.Name != nil {
+		u.Set("name", *req.Subnet.Name)
+	}
+	if gatewayGiven {
+		u.Set("gateway_ip", newGateway)
+	}
+	// The DHCP flag is applied independently of name/gateway, so it works alone
+	// ('subnet set --no-dhcp') and together — but only when the flag actually
+	// flips. Host state follows the row: dnsmasq restarts for a survivor when
+	// this was the network's only DHCP subnet, and stops when none remain —
+	// the same convergence the post-delete reconciler performs.
+	dhcpToggled := req.Subnet.EnableDHCP != nil && *req.Subnet.EnableDHCP != subnetDHCP
+	if dhcpToggled {
+		u.Set("enable_dhcp", *req.Subnet.EnableDHCP)
+	}
+	// An empty update succeeds without a write, matching Neutron and clients that
+	// send unchanged resources. In particular, leave updated_at untouched.
+	if !u.Empty() {
+		u.Set("updated_at", time.Now())
 		_, err = svc.pool.Exec(c.Request.Context(),
-			"UPDATE subnets SET name = $1, gateway_ip = $2 WHERE id = $3",
-			currentName, newGateway, resolvedID,
-		)
-	case req.Subnet.Name != nil:
-		_, err = svc.pool.Exec(c.Request.Context(),
-			"UPDATE subnets SET name = $1 WHERE id = $2",
-			currentName, resolvedID,
-		)
-	default:
-		// Nothing was supplied, so nothing is written. This used to issue
-		// `UPDATE subnets SET name = <the name just read>` — a statement that changed no column and
-		// did not even touch updated_at (second review, AGY-2).
-		//
-		// The request still SUCCEEDS: upstream Neutron accepts an empty update and answers 200 with
-		// the unchanged resource, and Terraform and Horizon both send updates that can reduce to
-		// nothing. Refusing with 400 — the second review's suggestion — would have been an API
-		// compatibility regression, which this project's first principle forbids.
+			"UPDATE subnets SET "+u.Assignments()+" WHERE id = "+u.Arg(resolvedID),
+			u.Args()...)
 	}
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_subnet").Str("subnet_id", resolvedID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update subnet"))
 		return
+	}
+	if dhcpToggled {
+		svc.reconcileNetworkDHCPAfterSubnetDelete(c.Request.Context(), subnetNetwork)
 	}
 	if gatewayChanged && subnetDHCP {
 		svc.reconcileNetworkDHCPAfterGatewayChange(c.Request.Context(), subnetNetwork, subnetCIDR, currentGateway, newGateway)

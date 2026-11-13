@@ -1,0 +1,342 @@
+{
+  "service": "network",
+  "description": "Neutron (network) command surface served by lightstack — SPEC-028 tier A/B conformance. Verified against python-openstackclient 7.0.0 (openstacksdk 4.21.0, osc-lib 4.7.0). Lifecycle entries cover the full CRUD of their resource in one case (the volume.transfer.request precedent) to keep the standalone suite inside its runtime budget. Excluded with reason: 'address group' (GET /v2.0/address-groups answers 404 — no route in internal/neutron), 'network flavor' (GET /v2.0/flavors answers 404 — no route), 'floating ip show' (OSC 7.0.0 passes a plain-callable port_details formatter that osc-lib 4.7.0 rejects — every invocation exits 1 with 'Invalid formatter provided.' before the response is rendered, reproducible against any Neutron; lightstack's GET /v2.0/floatingips/{id} itself answers 200 with the full body), 'network rbac set' (openstacksdk 4.21.0 crashes client-side with 'Resource.get() takes 1 positional argument but 2 were given' before any request; the served PUT /v2.0/rbac-policies/{id} also binds only the legacy target_tenant field, not target_project_id), and 'network agent show' (this deployment registers no agents, so GET /v2.0/agents/{id} has nothing to serve — only the list is covered). 'address scope' commands are served by the server but are not covered in this wave (runtime budget; their by-name GET still answers 500 instead of 404 — the uuid-guard pattern applied to ports and subnet pools has not been extended to them). Every divergence this suite recorded as known-failing on its first run has since been fixed in the server. The probes remain in suites/network.sh as self-healing conditionals: each asserts the fixed behaviour outright, and records its historical reason as known-failing again only if the fix regresses.",
+  "commands": [
+    {
+      "id": "network.network.create",
+      "cmd": "openstack network create <name> (case also covers network list + delete of the created network)",
+      "endpoints": [
+        "POST /v2.0/networks",
+        "GET /v2.0/networks",
+        "DELETE /v2.0/networks/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.network.create.external",
+      "cmd": "openstack network create --external <name>",
+      "endpoints": [
+        "POST /v2.0/networks"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.network.show",
+      "cmd": "openstack network show <network>",
+      "endpoints": [
+        "GET /v2.0/networks/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.network.set",
+      "cmd": "openstack network set --name / --disable <network>",
+      "endpoints": [
+        "PUT /v2.0/networks/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.network.set.description",
+      "cmd": "openstack network set --description <desc> <network>",
+      "endpoints": [
+        "PUT /v2.0/networks/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.network.delete",
+      "cmd": "openstack network delete <network>",
+      "endpoints": [
+        "DELETE /v2.0/networks/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.subnet.create",
+      "cmd": "openstack subnet create --network <network> --subnet-range <cidr> <name> (case also covers subnet list/show/delete)",
+      "endpoints": [
+        "POST /v2.0/subnets",
+        "GET /v2.0/subnets",
+        "GET /v2.0/subnets/{id}",
+        "DELETE /v2.0/subnets/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.subnet.set",
+      "cmd": "openstack subnet set --name / --gateway <subnet>",
+      "endpoints": [
+        "PUT /v2.0/subnets/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.subnet.set.dhcp",
+      "cmd": "openstack subnet set --no-dhcp <subnet>",
+      "endpoints": [
+        "PUT /v2.0/subnets/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.subnet.delete",
+      "cmd": "openstack subnet delete <subnet> (tier B only: deletion while a router interface holds the subnet)",
+      "endpoints": [
+        "DELETE /v2.0/subnets/{id}"
+      ],
+      "tiers": [
+        "B"
+      ]
+    },
+    {
+      "id": "network.port.create",
+      "cmd": "openstack port create --network <network> <name> (case also covers port list/show/delete)",
+      "endpoints": [
+        "POST /v2.0/ports",
+        "GET /v2.0/ports",
+        "GET /v2.0/ports/{id}",
+        "DELETE /v2.0/ports/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.port.show.byname",
+      "cmd": "openstack port show <port-name>",
+      "endpoints": [
+        "GET /v2.0/ports/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.port.set",
+      "cmd": "openstack port set --name <name> <port>",
+      "endpoints": [
+        "PUT /v2.0/ports/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.router.create",
+      "cmd": "openstack router create <name> (case also covers router list/show/delete)",
+      "endpoints": [
+        "POST /v2.0/routers",
+        "GET /v2.0/routers",
+        "GET /v2.0/routers/{id}",
+        "DELETE /v2.0/routers/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.router.set",
+      "cmd": "openstack router set --name <name> <router>",
+      "endpoints": [
+        "PUT /v2.0/routers/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.router.addsubnet",
+      "cmd": "openstack router add subnet <router> <subnet> / openstack router remove subnet <router> <subnet>",
+      "endpoints": [
+        "PUT /v2.0/routers/{id}/add_router_interface",
+        "PUT /v2.0/routers/{id}/remove_router_interface"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.router.addport",
+      "cmd": "openstack router add port <router> <port>",
+      "endpoints": [
+        "PUT /v2.0/routers/{id}/add_router_interface"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.router.removeport",
+      "cmd": "openstack router remove port <router> <port>",
+      "endpoints": [
+        "PUT /v2.0/routers/{id}/remove_router_interface"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.router.setgateway",
+      "cmd": "openstack router set --external-gateway <network> <router> / openstack router unset --external-gateway <router>",
+      "endpoints": [
+        "PUT /v2.0/routers/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.securitygroup.create",
+      "cmd": "openstack security group create <name> (case also covers security group list/show/delete)",
+      "endpoints": [
+        "POST /v2.0/security-groups",
+        "GET /v2.0/security-groups",
+        "GET /v2.0/security-groups/{id}",
+        "DELETE /v2.0/security-groups/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.securitygroup.set",
+      "cmd": "openstack security group set --description <desc> <group>",
+      "endpoints": [
+        "PUT /v2.0/security-groups/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.securitygrouprule.create",
+      "cmd": "openstack security group rule create --proto tcp --dst-port <port> <group> (case also covers security group rule list/delete)",
+      "endpoints": [
+        "POST /v2.0/security-group-rules",
+        "GET /v2.0/security-group-rules",
+        "DELETE /v2.0/security-group-rules/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.floatingip.create",
+      "cmd": "openstack floating ip create <network> (case also covers floating ip list/delete)",
+      "endpoints": [
+        "POST /v2.0/floatingips",
+        "GET /v2.0/floatingips",
+        "DELETE /v2.0/floatingips/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.floatingip.set",
+      "cmd": "openstack floating ip set --port <port> / openstack floating ip unset --port <floating-ip>",
+      "endpoints": [
+        "PUT /v2.0/floatingips/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.agent.list",
+      "cmd": "openstack network agent list (admin, read-only)",
+      "endpoints": [
+        "GET /v2.0/agents"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.subnetpool.create",
+      "cmd": "openstack subnet pool create --pool-prefix <cidr> <name> (case also covers subnet pool list/show/delete)",
+      "endpoints": [
+        "POST /v2.0/subnetpools",
+        "GET /v2.0/subnetpools",
+        "GET /v2.0/subnetpools/{id}",
+        "DELETE /v2.0/subnetpools/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    },
+    {
+      "id": "network.subnetpool.show.byname",
+      "cmd": "openstack subnet pool show <pool-name>",
+      "endpoints": [
+        "GET /v2.0/subnetpools/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.subnetpool.set",
+      "cmd": "openstack subnet pool set --name <name> <pool>",
+      "endpoints": [
+        "PUT /v2.0/subnetpools/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.subnetpool.set.description",
+      "cmd": "openstack subnet pool set --description <desc> <pool>",
+      "endpoints": [
+        "PUT /v2.0/subnetpools/{id}"
+      ],
+      "tiers": [
+        "A"
+      ]
+    },
+    {
+      "id": "network.rbac.create",
+      "cmd": "openstack network rbac create --type network --target-project <project> --action access_as_shared <network> (case also covers network rbac list/show/delete)",
+      "endpoints": [
+        "POST /v2.0/rbac-policies",
+        "GET /v2.0/rbac-policies",
+        "GET /v2.0/rbac-policies/{id}",
+        "DELETE /v2.0/rbac-policies/{id}"
+      ],
+      "tiers": [
+        "A",
+        "B"
+      ]
+    }
+  ]
+}

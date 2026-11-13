@@ -59,6 +59,10 @@ func SendError(c *gin.Context, err *OpenStackError) {
 		c.JSON(err.StatusCode, err.NeutronJSON())
 		return
 	}
+	if usesIdentityEnvelope(c) {
+		c.JSON(err.StatusCode, err.IdentityJSON())
+		return
+	}
 	c.JSON(err.StatusCode, err.ToJSON())
 }
 

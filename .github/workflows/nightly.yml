@@ -1,0 +1,223 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily
+  workflow_dispatch:
+
+# The repository guard sits at job level (not workflow level) so manual
+# workflow_dispatch runs stay possible on forks while the schedule only ever
+# runs on the upstream repo.
+jobs:
+  cli-conformance-full:
+    name: CLI Conformance (Full)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.repository == 'cobaltcore-dev/lightstack'
+    timeout-minutes: 60
+
+    # SPEC-028 nightly: the FULL suite (workflows included, so tier C) plus the
+    # strict coverage gate. No PR context here, so the binary is built in the
+    # job instead of downloaded from the build job's artifact.
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_USER: lightstack
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: lightstack_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightstack -d lightstack_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+
+      - name: Build binary
+        run: make build
+
+      - name: Install local storage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils
+
+      - name: Start lightstack server (native)
+        run: |
+          # Match the PR job: local backing must be writable by the runner.
+          sed '/^state_path:/d' config/lightstack.yaml > "$RUNNER_TEMP/lightstack.yaml"
+          printf '\nstate_path: "%s"\n' "$RUNNER_TEMP/lightstack-state" >> "$RUNNER_TEMP/lightstack.yaml"
+          LIGHTSTACK_DB_URL="postgres://lightstack:secret@localhost:5432/lightstack_test?sslmode=disable" \
+          LIGHTSTACK_JWT_SECRET="ci-secret" LIGHTSTACK_ENDPOINT_HOST="localhost" \
+          nohup ./bin/lightstack --config "$RUNNER_TEMP/lightstack.yaml" --migrations migrations > /tmp/lightstack.log 2>&1 &
+
+      - name: Wait for lightstack to be ready
+        run: |
+          echo "Waiting for all Lightstack services to be ready..."
+
+          # Check with proper API version paths
+          timeout 120 bash -c '
+            until curl -sf http://localhost:35357/v3 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:8774/v2.1 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:9696/v2.0 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:8776/v3 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:9292/v2 > /dev/null 2>&1; do
+              echo "⏳ Services not ready, retrying... ($(date +%H:%M:%S))"
+              sleep 3
+            done
+          '
+
+          echo "✅ All Lightstack services are ready"
+
+      - name: Install pinned OpenStack CLI
+        # venv for PEP 668 + PATH resolution — see the ci.yml cli-conformance job.
+        run: |
+          python3 -m venv /tmp/osc-venv
+          /tmp/osc-venv/bin/pip install -c test/cli/constraints.txt python-openstackclient
+          echo "/tmp/osc-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Run CLI conformance suite (full, incl. workflows)
+        run: ./test/cli/bin/run.sh --strict
+        env:
+          OS_AUTH_URL: "http://localhost:35357/v3"
+          OS_USERNAME: "admin"
+          OS_PASSWORD: "secret"
+          OS_PROJECT_NAME: "default"
+          OS_USER_DOMAIN_NAME: "Default"
+          OS_PROJECT_DOMAIN_NAME: "Default"
+
+      - name: Check CLI conformance coverage (strict, incl. tier C)
+        run: ./test/cli/bin/coverage.sh --strict
+
+      - name: Dump server log on failure
+        if: failure()
+        run: tail -n 300 /tmp/lightstack.log
+
+      - name: Upload CLI conformance results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-conformance-full-results
+          path: test/cli/results/
+          retention-days: 7
+
+  terraform-conformance:
+    name: Terraform Conformance
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.repository == 'cobaltcore-dev/lightstack'
+    timeout-minutes: 45
+
+    # SPEC-028 nightly: apply + destroy the UNMODIFIED terraform-provider-
+    # openstack compat module (test/terraform/compat) against a native server
+    # and assert a clean final state. `make test-terraform` wraps
+    # test/terraform/run.sh; the module reads auth from the OS_* variables.
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_USER: lightstack
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: lightstack_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightstack -d lightstack_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+
+      - name: Build binary
+        run: make build
+
+      - name: Install local storage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils
+
+      - name: Start lightstack server (native)
+        run: |
+          # Match the PR job: local backing must be writable by the runner.
+          sed '/^state_path:/d' config/lightstack.yaml > "$RUNNER_TEMP/lightstack.yaml"
+          printf '\nstate_path: "%s"\n' "$RUNNER_TEMP/lightstack-state" >> "$RUNNER_TEMP/lightstack.yaml"
+          LIGHTSTACK_DB_URL="postgres://lightstack:secret@localhost:5432/lightstack_test?sslmode=disable" \
+          LIGHTSTACK_JWT_SECRET="ci-secret" LIGHTSTACK_ENDPOINT_HOST="localhost" \
+          nohup ./bin/lightstack --config "$RUNNER_TEMP/lightstack.yaml" --migrations migrations > /tmp/lightstack.log 2>&1 &
+
+      - name: Wait for lightstack to be ready
+        run: |
+          echo "Waiting for all Lightstack services to be ready..."
+
+          # Check with proper API version paths
+          timeout 120 bash -c '
+            until curl -sf http://localhost:35357/v3 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:8774/v2.1 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:9696/v2.0 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:8776/v3 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:9292/v2 > /dev/null 2>&1; do
+              echo "⏳ Services not ready, retrying... ($(date +%H:%M:%S))"
+              sleep 3
+            done
+          '
+
+          echo "✅ All Lightstack services are ready"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.13.4"
+
+      - name: Install pinned OpenStack CLI
+        # venv for PEP 668 + PATH resolution — see the ci.yml cli-conformance job.
+        run: |
+          python3 -m venv /tmp/osc-venv
+          /tmp/osc-venv/bin/pip install -c test/cli/constraints.txt python-openstackclient
+          echo "/tmp/osc-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Run Terraform conformance module
+        run: make test-terraform
+        env:
+          OS_AUTH_URL: "http://localhost:35357/v3"
+          OS_USERNAME: "admin"
+          OS_PASSWORD: "secret"
+          OS_PROJECT_NAME: "default"
+          OS_USER_DOMAIN_NAME: "Default"
+          OS_PROJECT_DOMAIN_NAME: "Default"
+
+      - name: Dump server log on failure
+        if: failure()
+        run: tail -n 300 /tmp/lightstack.log
+
+      - name: Upload Terraform run artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: terraform-conformance-results
+          # Upload diagnostic logs. Recovery state remains in the job-local
+          # workspace on failed cleanup; do not publish credential-bearing state.
+          path: |
+            test/terraform/results/
+          retention-days: 7
+          if-no-files-found: ignore

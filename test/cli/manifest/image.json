@@ -1,0 +1,66 @@
+{
+  "service": "image",
+  "description": "Glance (Image) v2 command surface lightstack serves: image lifecycle (create/upload, list, show, set, save, delete) and image sharing members. Only PATCH-writable base properties are covered — custom properties and tags are not implemented by the patch path.",
+  "commands": [
+    {
+      "id": "image.create",
+      "cmd": "openstack image create <name> --disk-format raw --container-format bare --file <file>",
+      "endpoints": ["POST /v2/images", "PUT /v2/images/{image_id}/file"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "image.show",
+      "cmd": "openstack image show <image>",
+      "endpoints": ["GET /v2/images/{image_id}"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "image.list",
+      "cmd": "openstack image list [--status <status>]",
+      "endpoints": ["GET /v2/images"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "image.set",
+      "cmd": "openstack image set <image> --name <name> --min-disk <gb> --min-ram <mb> --shared",
+      "endpoints": ["PATCH /v2/images/{image_id}"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "image.save",
+      "cmd": "openstack image save <image> --file <file>",
+      "endpoints": ["GET /v2/images/{image_id}/file"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "image.delete",
+      "cmd": "openstack image delete <image>",
+      "endpoints": ["DELETE /v2/images/{image_id}"],
+      "tiers": ["A", "B"]
+    },
+    {
+      "id": "image.member.add",
+      "cmd": "openstack image add project <image> <project>",
+      "endpoints": ["POST /v2/images/{image_id}/members"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "image.member.list",
+      "cmd": "openstack image member list <image>",
+      "endpoints": ["GET /v2/images/{image_id}/members"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "image.member.get",
+      "cmd": "openstack image member get <image> <member-project-id>",
+      "endpoints": ["GET /v2/images/{image_id}/members/{member_id}"],
+      "tiers": ["A"]
+    },
+    {
+      "id": "image.member.remove",
+      "cmd": "openstack image remove project <image> <project>",
+      "endpoints": ["DELETE /v2/images/{image_id}/members/{member_id}"],
+      "tiers": ["A"]
+    }
+  ]
+}

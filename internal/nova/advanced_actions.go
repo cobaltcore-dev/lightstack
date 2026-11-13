@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -221,8 +223,22 @@ func (svc *Service) ShelveInstance(c *gin.Context, instanceID, projectID string)
 		return
 	}
 
-	// Create snapshot before shelving
+	// Create snapshot before shelving. instance_snapshots has
+	// UNIQUE(instance_id), so a stale row from a crashed shelving — or from
+	// an unshelve path that predates snapshot consumption — would fail this
+	// insert with 500. Reclaim any leftover first: at this point the instance
+	// is ACTIVE/SHUTOFF and about to be SHELVED, so no live snapshot of it
+	// can exist (SPEC-028: shelve → unshelve → shelve was a 500).
 	snapshotName := fmt.Sprintf("shelved-%s-%d", instanceID[:8], time.Now().Unix())
+
+	_, err = svc.pool.Exec(c.Request.Context(), `
+		DELETE FROM instance_snapshots WHERE instance_id = $1
+	`, instanceID)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "reclaim_shelve_snapshot").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to create snapshot"))
+		return
+	}
 
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO instance_snapshots (id, instance_id, snapshot_name, flavor_id, created_at)
@@ -275,11 +291,13 @@ func (svc *Service) ShelveInstance(c *gin.Context, instanceID, projectID string)
 func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID string) {
 
 	// Get instance
+	var domainScan *string
 	var status string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT status FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT COALESCE(libvirt_domain_id, ''), status FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
-	).Scan(&status)
+	).Scan(&domainScan, &status)
+	libvirtDomainID := guestDomain(domainScan)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -297,12 +315,65 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 		return
 	}
 
-	// Update status to ACTIVE
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		UPDATE instances
-		SET status = $1, power_state = $2, task_state = $3, updated_at = $4
-		WHERE id = $5
-	`, "ACTIVE", 1, "", time.Now(), instanceID)
+	// Restart the guest shelve stopped — BEFORE the record claims ACTIVE. The
+	// state reconciler exists to correct records that disagree with the
+	// hypervisor, so a record written ACTIVE over a stopped guest was flipped
+	// back to SHUTOFF within one 30s sweep: `server unshelve` observably did
+	// nothing (SPEC-028, round 9). Starting first also wins the reconciler's
+	// compare-and-set by construction: a SHELVED row is never a reconcile
+	// candidate, and once the guest is up no verdict disagrees with ACTIVE.
+	// A domain that has gone missing since the shelve self-heals the way
+	// os-start does (FR-025) rather than answering 202 over nothing.
+	healedDomain := ""
+	if svc.vmManager != nil && libvirtDomainID != "" {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), common.LifecycleResponseSlack)
+		defer cancel()
+		if err := svc.vmManager.StartVM(ctx, libvirtDomainID); err != nil {
+			if !errors.Is(err, hypervisor.ErrDomainNotFound) {
+				sendLifecycleError(c, "unshelve", err)
+				return
+			}
+			var herr error
+			healedDomain, herr = svc.reviveGuest(ctx, instanceID)
+			if herr != nil {
+				// The record must not go on claiming the server runs (FR-025c).
+				svc.persistRunState(c, instanceID, projectID, "ERROR", 0, "")
+				log.Error().Err(herr).Str("instance_id", instanceID).
+					Msg("unshelve self-heal failed; the server has no guest and could not be given one")
+				common.SendError(c, common.NewOperationConflictError("unshelve",
+					"the server's guest is absent and could not be re-created"))
+				return
+			}
+			svc.recordSelfHeal(c, instanceID, projectID, healedDomain)
+		}
+	}
+
+	// Update status to ACTIVE. A self-healed guest runs under a NEW domain
+	// identifier — the row must name it, or the reconciler selects the row,
+	// asks about the dead domain, and flips ACTIVE back to SHUTOFF within one
+	// sweep: the very bug this restart exists to fix, reborn on the self-heal
+	// path. persistRunState does the same for os-start's heal (FR-025).
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		if healedDomain != "" {
+			_, err = tx.Exec(c.Request.Context(), `
+			UPDATE instances
+			SET status = $1, power_state = $2, task_state = $3, updated_at = $4, libvirt_domain_id = $5
+			WHERE id = $6
+		`, "ACTIVE", 1, "", time.Now(), healedDomain, instanceID)
+		} else {
+			_, err = tx.Exec(c.Request.Context(), `
+			UPDATE instances
+			SET status = $1, power_state = $2, task_state = $3, updated_at = $4
+			WHERE id = $5
+		`, "ACTIVE", 1, "", time.Now(), instanceID)
+		}
+
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(c.Request.Context(), "DELETE FROM instance_snapshots WHERE instance_id = $1", instanceID)
+		return err
+	})
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "unshelve_instance").Msg("database error")
@@ -1037,6 +1108,13 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 		common.SendError(c, common.NewBadRequestError("missing backup name"))
 		return
 	}
+	// The backup name becomes the glance image's name, whose schema (and
+	// column) cap at 255 — over-long names answer 400 upstream, not a 500
+	// from the VARCHAR overflow.
+	if utf8.RuneCountInString(backupName) > 255 {
+		common.SendError(c, common.NewBadRequestError("backup name too long (max 255 characters)"))
+		return
+	}
 
 	backupType, _ := backupMap["backup_type"].(string)
 	rotation, _ := backupMap["rotation"].(float64)
@@ -1049,11 +1127,11 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 	}
 
 	// Verify instance exists
-	var sourceImageID string
+	var existingInstanceID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT image_id FROM instances WHERE id = $1 AND project_id = $2",
+		"SELECT id FROM instances WHERE id = $1 AND project_id = $2",
 		instanceID, projectID,
-	).Scan(&sourceImageID)
+	).Scan(&existingInstanceID)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("instance"))
@@ -1068,15 +1146,16 @@ func (svc *Service) CreateBackupAction(c *gin.Context, instanceID, projectID str
 	// Generate new UUID for backup image
 	backupImageID := uuid.New().String()
 
-	// Create backup image in images table
-	// Image name pattern: {backup_name}-{backup_type}-{timestamp}
-	timestamp := time.Now().Format("20060102-150405")
-	fullImageName := fmt.Sprintf("%s-%s-%s", backupName, backupType, timestamp)
-
+	// Create backup image in the images table. The image is named EXACTLY
+	// what the caller asked for — upstream Nova passes `name` through
+	// verbatim — so clients can look the image up by name afterwards
+	// (OSC's `server backup create` polls for it; the previous
+	// `{name}-{type}-{timestamp}` suffix broke that lookup). Rotation finds
+	// its candidates through the image_tags below, not through the name.
 	_, err = svc.pool.Exec(c.Request.Context(), `
 		INSERT INTO images (id, name, project_id, status, visibility, disk_format, container_format, created_at, updated_at)
 		VALUES ($1, $2, $3, 'active', 'private', 'qcow2', 'bare', $4, $4)
-	`, backupImageID, fullImageName, projectID, time.Now())
+	`, backupImageID, backupName, projectID, time.Now())
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_backup_image").Msg("database error")

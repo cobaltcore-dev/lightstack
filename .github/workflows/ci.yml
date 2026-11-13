@@ -20,14 +20,9 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: 'stable'
-
-      - name: Cache Go modules
-        uses: actions/cache@v5
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
 
       - name: Build binary
         run: make build
@@ -45,6 +40,12 @@ jobs:
 
       - name: Run linters
         run: make lint
+
+      - name: Test CLI harness reporting and coverage gates
+        run: python3 -m unittest discover -s test/cli -p 'test_*.py' -v
+
+      - name: Test Terraform harness evidence gates
+        run: python3 -m unittest discover -s test/terraform -p 'test_*.py' -v
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
@@ -84,14 +85,9 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: 'stable'
-
-      - name: Cache Go modules
-        uses: actions/cache@v5
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
 
       - name: Install qemu-img for image normalization tests
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-utils
@@ -129,14 +125,9 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: 'stable'
-
-      - name: Cache Go modules
-        uses: actions/cache@v5
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
 
       - name: Start lightstack services
         run: |
@@ -250,14 +241,9 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: 'stable'
-
-      - name: Cache Go modules
-        uses: actions/cache@v5
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
 
       - name: Build
         run: make build
@@ -423,6 +409,113 @@ jobs:
   # TODO: Add e2e-fast and e2e-full jobs once E2E test scenarios are implemented.
   # Planned: VM lifecycle, volume attach/detach, network isolation, Terraform validation, Horizon UI tests.
 
+  cli-conformance:
+    name: CLI Conformance
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 40
+
+    # SPEC-028: drive the build artifact with the pinned python OpenStack CLI.
+    # The downloaded binary runs natively against a PostgreSQL service (no
+    # docker), so the suite always exercises exactly what the build job made.
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_USER: lightstack
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: lightstack_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightstack -d lightstack_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download lightstack binary
+        uses: actions/download-artifact@v5
+        with:
+          name: lightstack-binary
+          path: bin/
+
+      - name: Make binary executable
+        run: chmod +x bin/lightstack
+
+      - name: Install local storage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils
+
+      - name: Start lightstack server (native)
+        run: |
+          # The native server runs as the unprivileged runner. Keep its local
+          # image and volume backing in the job workspace, not /var/lib.
+          sed '/^state_path:/d' config/lightstack.yaml > "$RUNNER_TEMP/lightstack.yaml"
+          printf '\nstate_path: "%s"\n' "$RUNNER_TEMP/lightstack-state" >> "$RUNNER_TEMP/lightstack.yaml"
+          LIGHTSTACK_DB_URL="postgres://lightstack:secret@localhost:5432/lightstack_test?sslmode=disable" \
+          LIGHTSTACK_JWT_SECRET="ci-secret" LIGHTSTACK_ENDPOINT_HOST="localhost" \
+          nohup ./bin/lightstack --config "$RUNNER_TEMP/lightstack.yaml" --migrations migrations > /tmp/lightstack.log 2>&1 &
+
+      - name: Wait for lightstack to be ready
+        run: |
+          echo "Waiting for all Lightstack services to be ready..."
+
+          # Check with proper API version paths
+          timeout 120 bash -c '
+            until curl -sf http://localhost:35357/v3 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:8774/v2.1 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:9696/v2.0 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:8776/v3 > /dev/null 2>&1 && \
+                  curl -sf http://localhost:9292/v2 > /dev/null 2>&1; do
+              echo "⏳ Services not ready, retrying... ($(date +%H:%M:%S))"
+              sleep 3
+            done
+          '
+
+          echo "✅ All Lightstack services are ready"
+
+      - name: Install pinned OpenStack CLI
+        # A venv, not the system python: ubuntu-latest is PEP 668
+        # externally-managed, and the harness resolves the CLI from PATH
+        # (command -v openstack), so the venv's bin dir joins GITHUB_PATH.
+        run: |
+          python3 -m venv /tmp/osc-venv
+          /tmp/osc-venv/bin/pip install -c test/cli/constraints.txt python-openstackclient
+          echo "/tmp/osc-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Run CLI conformance suite (fast subset)
+        run: ./test/cli/bin/run.sh --fast
+        env:
+          OS_AUTH_URL: "http://localhost:35357/v3"
+          OS_USERNAME: "admin"
+          OS_PASSWORD: "secret"
+          OS_PROJECT_NAME: "default"
+          OS_USER_DOMAIN_NAME: "Default"
+          OS_PROJECT_DOMAIN_NAME: "Default"
+
+      - name: Check CLI conformance coverage
+        run: ./test/cli/bin/coverage.sh
+
+      - name: Dump server log on failure
+        if: failure()
+        run: tail -n 300 /tmp/lightstack.log
+
+      - name: Upload CLI conformance results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-conformance-results
+          path: test/cli/results/
+          retention-days: 7
+
+  # The e2e surface is the CLI conformance suite: cli-conformance here (fast
+  # subset) and the nightly full + terraform runs (.github/workflows/nightly.yml).
+
   helm-check:
     name: Helm Charts
     runs-on: ubuntu-latest
@@ -493,7 +586,7 @@ jobs:
   status-check:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [build, unit-tests, contract-tests, contract-tests-sqlite, integration-tests, dco-check, rgw-integration-tests, helm-check]
+    needs: [build, unit-tests, contract-tests, contract-tests-sqlite, integration-tests, cli-conformance, dco-check, rgw-integration-tests, helm-check]
     if: always()
 
     steps:
@@ -504,6 +597,7 @@ jobs:
           echo "Contract Tests: ${{ needs.contract-tests.result }}"
           echo "Contract Tests (SQLite): ${{ needs.contract-tests-sqlite.result }}"
           echo "Integration Tests: ${{ needs.integration-tests.result }}"
+          echo "CLI Conformance: ${{ needs.cli-conformance.result }}"
           echo "SAP Sign-off: ${{ needs.dco-check.result }}"
           echo "RGW Integration Tests: ${{ needs.rgw-integration-tests.result }}"
           echo "Helm Charts: ${{ needs.helm-check.result }}"
@@ -535,7 +629,12 @@ jobs:
             exit 1
           fi
 
-          if [ "${{ needs.dco-check.result }}" != "success" ]; then
+          if [ "${{ needs.cli-conformance.result }}" != "success" ]; then
+            echo "❌ CLI conformance suite failed"
+            exit 1
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ needs.dco-check.result }}" != "success" ]; then
             echo "❌ SAP sign-off check failed — all commits need Signed-off-by: name@sap.com"
             exit 1
           fi

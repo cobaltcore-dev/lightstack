@@ -1,0 +1,59 @@
+{
+  "service": "keystone",
+  "description": "Identity command surface lightstack actually serves. Federation/SAML and regions are excluded: /v3/regions and /v3/OS-FEDERATION are not implemented. HEAD /v3/groups/{id}/users/{user_id} (openstack group contains user) is also unimplemented and therefore omitted.",
+  "commands": [
+    { "id": "keystone.project.list", "cmd": "openstack project list", "endpoints": ["GET /v3/projects"], "tiers": ["A"] },
+    { "id": "keystone.project.create", "cmd": "openstack project create <name>", "endpoints": ["POST /v3/projects"], "tiers": ["A", "B"] },
+    { "id": "keystone.project.show", "cmd": "openstack project show <name>", "endpoints": ["GET /v3/projects/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.project.set", "cmd": "openstack project set <name> --description", "endpoints": ["PATCH /v3/projects/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.project.delete", "cmd": "openstack project delete <name>", "endpoints": ["DELETE /v3/projects/{id}"], "tiers": ["A", "B"] },
+
+    { "id": "keystone.user.list", "cmd": "openstack user list", "endpoints": ["GET /v3/users"], "tiers": ["A"] },
+    { "id": "keystone.user.create", "cmd": "openstack user create <name> --password --email", "endpoints": ["POST /v3/users"], "tiers": ["A", "B"] },
+    { "id": "keystone.user.show", "cmd": "openstack user show <name>", "endpoints": ["GET /v3/users/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.user.set", "cmd": "openstack user set <name> --name --email", "endpoints": ["PATCH /v3/users/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.user.delete", "cmd": "openstack user delete <name>", "endpoints": ["DELETE /v3/users/{id}"], "tiers": ["A", "B"] },
+
+    { "id": "keystone.group.list", "cmd": "openstack group list", "endpoints": ["GET /v3/groups"], "tiers": ["A"] },
+    { "id": "keystone.group.create", "cmd": "openstack group create <name>", "endpoints": ["POST /v3/groups"], "tiers": ["A", "B"] },
+    { "id": "keystone.group.show", "cmd": "openstack group show <name>", "endpoints": ["GET /v3/groups/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.group.set", "cmd": "openstack group set <name> --description", "endpoints": ["PATCH /v3/groups/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.group.delete", "cmd": "openstack group delete <name>", "endpoints": ["DELETE /v3/groups/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.group.member", "cmd": "openstack group add user / group remove user", "endpoints": ["PUT /v3/groups/{id}/users/{user_id}", "DELETE /v3/groups/{id}/users/{user_id}"], "tiers": ["A", "B"] },
+
+    { "id": "keystone.role.list", "cmd": "openstack role list", "endpoints": ["GET /v3/roles"], "tiers": ["A"] },
+    { "id": "keystone.role.create", "cmd": "openstack role create <name>", "endpoints": ["POST /v3/roles"], "tiers": ["A", "B"] },
+    { "id": "keystone.role.show", "cmd": "openstack role show <name>", "endpoints": ["GET /v3/roles/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.role.set", "cmd": "openstack role set <name> --name", "endpoints": ["PATCH /v3/roles/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.role.delete", "cmd": "openstack role delete <name>", "endpoints": ["DELETE /v3/roles/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.role.assignment.add", "cmd": "openstack role add <role> --user --project", "endpoints": ["PUT /v3/projects/{id}/users/{user_id}/roles/{role_id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.role.assignment.remove", "cmd": "openstack role remove <role> --user --project", "endpoints": ["DELETE /v3/projects/{id}/users/{user_id}/roles/{role_id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.role.assignment.list", "cmd": "openstack role assignment list [--user --project]", "endpoints": ["GET /v3/role_assignments"], "tiers": ["A"] },
+    { "id": "keystone.role.assignment.list.names", "cmd": "openstack role assignment list --names", "endpoints": ["GET /v3/role_assignments?include_names=true"], "tiers": ["A"] },
+
+    { "id": "keystone.domain.list", "cmd": "openstack domain list", "endpoints": ["GET /v3/domains"], "tiers": ["A"] },
+    { "id": "keystone.domain.create", "cmd": "openstack domain create <name>", "endpoints": ["POST /v3/domains"], "tiers": ["A", "B"] },
+    { "id": "keystone.domain.show", "cmd": "openstack domain show <name>", "endpoints": ["GET /v3/domains/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.domain.set", "cmd": "openstack domain set <name> --description --disable", "endpoints": ["PATCH /v3/domains/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.domain.delete", "cmd": "openstack domain delete <name>", "endpoints": ["DELETE /v3/domains/{id}"], "tiers": ["A", "B"] },
+
+    { "id": "keystone.service.list", "cmd": "openstack service list", "endpoints": ["GET /v3/services"], "tiers": ["A"] },
+    { "id": "keystone.service.show", "cmd": "openstack service show <service>", "endpoints": ["GET /v3/services/{id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.catalog.list", "cmd": "openstack catalog list", "endpoints": ["POST /v3/auth/tokens (catalog in token response)"], "tiers": ["A"] },
+    { "id": "keystone.catalog.show", "cmd": "openstack catalog show <service>", "endpoints": ["POST /v3/auth/tokens (catalog in token response)"], "tiers": ["A"] },
+    { "id": "keystone.endpoint.list", "cmd": "openstack endpoint list", "endpoints": ["GET /v3/endpoints"], "tiers": ["A"] },
+
+    { "id": "keystone.applicationcredential.create", "cmd": "openstack application credential create <name>", "endpoints": ["POST /v3/users/{id}/application_credentials"], "tiers": ["A", "B"] },
+    { "id": "keystone.applicationcredential.list", "cmd": "openstack application credential list", "endpoints": ["GET /v3/users/{id}/application_credentials"], "tiers": ["A"] },
+    { "id": "keystone.applicationcredential.show", "cmd": "openstack application credential show <name>", "endpoints": ["GET /v3/users/{id}/application_credentials/{cred_id}"], "tiers": ["A", "B"] },
+    { "id": "keystone.applicationcredential.delete", "cmd": "openstack application credential delete <name>", "endpoints": ["DELETE /v3/users/{id}/application_credentials/{cred_id}"], "tiers": ["A", "B"] },
+
+    { "id": "keystone.ec2credential.create", "cmd": "openstack ec2 credentials create", "endpoints": ["POST /v3/users/{id}/credentials/OS-EC2"], "tiers": ["A"] },
+    { "id": "keystone.ec2credential.list", "cmd": "openstack ec2 credentials list", "endpoints": ["GET /v3/users/{id}/credentials/OS-EC2"], "tiers": ["A"] },
+    { "id": "keystone.ec2credential.show", "cmd": "openstack ec2 credentials show <access-key>", "endpoints": ["GET /v3/users/{id}/credentials/OS-EC2/{access}"], "tiers": ["A", "B"] },
+    { "id": "keystone.ec2credential.delete", "cmd": "openstack ec2 credentials delete <access-key>", "endpoints": ["DELETE /v3/users/{id}/credentials/OS-EC2/{access}"], "tiers": ["A", "B"] },
+
+    { "id": "keystone.token.issue", "cmd": "openstack token issue", "endpoints": ["POST /v3/auth/tokens"], "tiers": ["A", "B"] },
+    { "id": "keystone.token.revoke", "cmd": "openstack token revoke <token>", "endpoints": ["DELETE /v3/auth/tokens"], "tiers": ["A", "B"] }
+  ]
+}
