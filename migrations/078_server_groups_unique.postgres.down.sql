@@ -2,3 +2,4 @@
 -- folded duplicates are not resurrected (they were indistinguishable anyway).
 ALTER TABLE server_groups
     DROP CONSTRAINT IF EXISTS uq_server_groups_project_name;
+DROP INDEX IF EXISTS uq_server_groups_project_name;

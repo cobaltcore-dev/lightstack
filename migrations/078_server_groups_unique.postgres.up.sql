@@ -50,5 +50,5 @@ WHERE id IN (
     WHERE t.rn > 1
 );
 
-ALTER TABLE server_groups
-    ADD CONSTRAINT uq_server_groups_project_name UNIQUE (project_id, name);
+CREATE UNIQUE INDEX uq_server_groups_project_name
+    ON server_groups(project_id, name);
