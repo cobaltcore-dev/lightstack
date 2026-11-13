@@ -17,6 +17,13 @@ import (
 // domain instead of the one they asked for (SPEC-022 FR-001a). Names are matched
 // exactly — upstream treats domain names as case-sensitive.
 func (svc *Service) ListDomains(c *gin.Context) {
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+
 	query := `SELECT id, name, description, enabled FROM domains`
 	args := []any{}
 	if name := c.Query("name"); name != "" {
@@ -74,6 +81,13 @@ func (svc *Service) ListDomains(c *gin.Context) {
 
 // CreateDomain handles POST /v3/domains
 func (svc *Service) CreateDomain(c *gin.Context) {
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+
 	var req struct {
 		Domain struct {
 			Name        string `json:"name" binding:"required"`
@@ -128,6 +142,13 @@ func (svc *Service) CreateDomain(c *gin.Context) {
 func (svc *Service) GetDomain(c *gin.Context) {
 	domainID := c.Param("id")
 
+	// Admin-only: domain records enumerate the
+	// deployment's trust structure. Checked before the alias resolution
+	// below, which doubles as this route's in-handler id validation (#515).
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+
 	// This route is registered on the non-validating group precisely so the `default`
 	// alias reaches here (see the note in RegisterRoutes). Resolve it to a real id
 	// first; the resolver also rejects any other non-identifier value without a query,
@@ -177,6 +198,17 @@ func (svc *Service) GetDomain(c *gin.Context) {
 // UpdateDomain handles PATCH /v3/domains/:id
 func (svc *Service) UpdateDomain(c *gin.Context) {
 	domainID := c.Param("id")
+
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "domain", domainID) {
+		return
+	}
 
 	var req struct {
 		Domain map[string]any `json:"domain" binding:"required"`
@@ -267,6 +299,17 @@ func (svc *Service) UpdateDomain(c *gin.Context) {
 func (svc *Service) DeleteDomain(c *gin.Context) {
 	domainID := c.Param("id")
 
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "domain", domainID) {
+		return
+	}
+
 	// Check if domain is enabled
 	var enabled bool
 	err := svc.pool.QueryRow(c.Request.Context(), `
@@ -305,6 +348,17 @@ func (svc *Service) DeleteDomain(c *gin.Context) {
 // GetDomainConfig handles GET /v3/domains/:id/config
 func (svc *Service) GetDomainConfig(c *gin.Context) {
 	domainID := c.Param("id")
+
+	// Admin-only: the identity management surface
+	// must not honor a plain member — this is the role/assignment/catalog
+	// authority.
+	if !common.RequireAdmin(c, "keystone:identity-management") {
+		return
+	}
+	// Authorization passed; validate the ids after it so 403 precedes the 404 (#515).
+	if denyIfMalformedID(c, "domain", domainID) {
+		return
+	}
 
 	// Verify domain exists
 	var exists bool

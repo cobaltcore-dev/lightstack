@@ -18,7 +18,7 @@ import (
 // doing. The comment below already said as much; the check was simply missing.
 func (svc *Service) ListMigrations(c *gin.Context) {
 	// List all migrations (admin endpoint in real OpenStack)
-	if !requireAdmin(c, "os-migrations:index") {
+	if !common.RequireAdmin(c, "os-migrations:index") {
 		return
 	}
 	rows, err := svc.pool.Query(c.Request.Context(), `

@@ -34,7 +34,7 @@ func (svc *Service) CreateTask(c *gin.Context) {
 	`, taskID, req.Type, "pending", req.Input, owner, now, now)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to create task"})
 		return
 	}
 
@@ -51,16 +51,19 @@ func (svc *Service) CreateTask(c *gin.Context) {
 	})
 }
 
-// ListTasks handles GET /v2/tasks
+// ListTasks handles GET /v2/tasks. Owner-scoped: task
+// input/result carry the caller's image references and endpoint URLs — a
+// member must see only their own tasks; an admin sees all.
 func (svc *Service) ListTasks(c *gin.Context) {
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, type, status, input, result, owner, created_at, updated_at
 		FROM image_tasks
+		WHERE owner = $1 OR $2
 		ORDER BY created_at DESC
 		LIMIT 100
-	`)
+	`, c.GetString("user_id"), common.HasRole(c, common.RoleAdmin))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to list tasks"})
 		return
 	}
 	defer rows.Close()
@@ -108,7 +111,8 @@ func (svc *Service) ListTasks(c *gin.Context) {
 	})
 }
 
-// GetTask handles GET /v2/tasks/:id
+// GetTask handles GET /v2/tasks/:id. Owner-or-admin:
+// input/result/message are the caller's own task payload, not public data.
 func (svc *Service) GetTask(c *gin.Context) {
 	taskID := c.Param("id")
 
@@ -123,8 +127,14 @@ func (svc *Service) GetTask(c *gin.Context) {
 	`, taskID).Scan(&taskType, &status, &inputJSON, &resultJSON, &owner, &message, &createdAt, &updatedAt)
 
 	if err != nil {
-		// Log the actual error for debugging
-		c.JSON(http.StatusNotFound, gin.H{"message": "Task not found", "debug_error": err.Error()})
+		// Not found — and no internal error details in the response body
+		// because err.Error() could leak driver internals.
+		c.JSON(http.StatusNotFound, gin.H{"message": "Task not found"})
+		return
+	}
+
+	if owner != c.GetString("user_id") && !common.HasRole(c, common.RoleAdmin) {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Task not found"})
 		return
 	}
 

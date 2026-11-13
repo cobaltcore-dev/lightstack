@@ -124,7 +124,10 @@ func (svc *Service) validateSignedRequest(c *gin.Context) {
 	}
 
 	pid := b.TenantID
-	if pid == "" && projectID != nil {
+	// The generic credential API allows owners to edit the blob. Its embedded
+	// tenant must not override the credential's immutable, recorded project.
+	// Retain the blob fallback only for legacy rows without project_id.
+	if projectID != nil {
 		pid = *projectID
 	}
 	svc.renderS3Token(c, userID, pid)
@@ -225,21 +228,27 @@ func (svc *Service) renderS3Token(c *gin.Context, userID, projectID string) {
 		SELECT DISTINCT r.name FROM roles r
 		JOIN role_assignments ra ON ra.role_id = r.id
 		WHERE ra.user_id = $1 AND ra.project_id = $2`, userID, projectID)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				log.Warn().Err(err).Str("operation", "renderS3Token").Msg("failed to scan role row")
-			} else {
-				roles = append(roles, gin.H{"name": name})
-			}
+	if err != nil {
+		log.Warn().Err(err).Msg("s3tokens: role lookup failed")
+		common.SendError(c, common.NewUnauthorizedError(authFailed))
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			log.Warn().Err(err).Msg("s3tokens: role scan failed")
+			common.SendError(c, common.NewUnauthorizedError(authFailed))
+			return
 		}
-		// Log rather than fail the token: RGW uses the role list for tenant mapping, and
-		// refusing the token outright would deny S3 access entirely.
-		if err := rows.Err(); err != nil {
-			log.Error().Err(err).Str("user_id", userID).Msg("s3token role rows iteration error; role list may be truncated")
-		}
+		roles = append(roles, gin.H{"name": name})
+	}
+	// Credentials survive role removal. A valid signature alone no longer
+	// authorizes a project after that membership has been revoked.
+	if err := rows.Err(); err != nil || len(roles) == 0 {
+		log.Warn().Err(err).Str("user_id", userID).Msg("s3tokens: no verified project role")
+		common.SendError(c, common.NewUnauthorizedError(authFailed))
+		return
 	}
 
 	// RGW parses the response as a full Keystone token and requires expires_at

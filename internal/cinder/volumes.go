@@ -1774,8 +1774,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 	// Handle reset status action (admin operation)
 	if resetStatusData, ok := req["os-reset_status"]; ok {
 		// Verify admin role
-		if !common.HasRole(c, common.RoleAdmin) {
-			common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-reset_status to be performed."))
+		if !common.RequireAdmin(c, "cinder:VolumeAction") {
 			return
 		}
 
@@ -2234,8 +2233,7 @@ func (svc *Service) SnapshotAction(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("unknown action"))
 		return
 	}
-	if !common.HasRole(c, common.RoleAdmin) {
-		common.SendError(c, common.NewForbiddenError("Policy doesn't allow os-reset_status to be performed."))
+	if !common.RequireAdmin(c, "cinder:SnapshotAction") {
 		return
 	}
 	resetStatusMap, ok := resetStatusData.(map[string]any)

@@ -11,6 +11,13 @@ import (
 
 // ListCachedImages lists images in the cache
 func (svc *Service) ListCachedImages(c *gin.Context) {
+	// Admin-only: the cache is a per-node operator
+	// surface — upstream's cache_list policy. The rest of the cache handlers
+	// were gated in this review's first pass; the list was missed.
+	if !common.RequireAdmin(c, "glance:ListCachedImages") {
+		return
+	}
+
 	// Query images that have been marked as cached
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, size_bytes, cached_at
@@ -61,9 +68,15 @@ func (svc *Service) ListCachedImages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"cached_images": cachedImages})
 }
 
-// PrefetchImage prefetches an image into the cache
+// PrefetchImage prefetches an image into the cache. Admin-only:
+// cache management is an operator surface (upstream
+// `admin_api`) — it moves shared disk state for every tenant.
 func (svc *Service) PrefetchImage(c *gin.Context) {
 	imageID := c.Param("id")
+
+	if !common.RequireAdmin(c, "glance:PrefetchImage") {
+		return
+	}
 
 	// Verify image exists
 	var exists bool
@@ -93,9 +106,13 @@ func (svc *Service) PrefetchImage(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// DeleteCachedImage removes an image from the cache
+// DeleteCachedImage removes an image from the cache. Admin-only.
 func (svc *Service) DeleteCachedImage(c *gin.Context) {
 	imageID := c.Param("id")
+
+	if !common.RequireAdmin(c, "glance:DeleteCachedImage") {
+		return
+	}
 
 	result, err := svc.pool.Exec(c.Request.Context(), `
 		UPDATE images
@@ -117,8 +134,14 @@ func (svc *Service) DeleteCachedImage(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// ClearCache clears all cached images
+// ClearCache clears all cached images. Admin-only:
+// without the gate any member could flush the deployment-wide cache (DoS on
+// boot-time caching) with one request.
 func (svc *Service) ClearCache(c *gin.Context) {
+	if !common.RequireAdmin(c, "glance:ClearCache") {
+		return
+	}
+
 	_, err := svc.pool.Exec(c.Request.Context(), `
 		UPDATE images
 		SET cached_at = NULL

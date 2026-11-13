@@ -8,9 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/cobaltcore-dev/lightstack/internal/database"
-
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
 	"github.com/cobaltcore-dev/lightstack/pkg/storage"
 	"github.com/gin-gonic/gin"
@@ -67,6 +66,51 @@ type VolumeAttachment struct {
 	AttachedAt time.Time `json:"attachedAt"`
 }
 
+// novaAttachRefusal is a client-facing attach refusal (wrong volume state,
+// already attached) carried out of the attach transaction so the handler can
+// answer with the right status instead of a generic 500. Mirrors cinder's
+// attachRefusal.
+type novaAttachRefusal struct {
+	message string
+}
+
+func (e *novaAttachRefusal) Error() string { return e.message }
+
+var errNovaVolumeNotFound = errors.New("volume not found")
+var errNovaAttachmentNotFound = errors.New("volume attachment not found")
+var errNovaVolumeStateChanged = errors.New("volume attachment state changed during rollback")
+
+// rollbackVolumeAttachment removes an attachment and restores the volume in a
+// single transaction. A half rollback would leave an in-use volume with no
+// attachment row, or an available volume whose attachment row still exists.
+func rollbackVolumeAttachment(ctx context.Context, pool database.DB, attachmentID, volumeID, instanceID string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return database.WithTx(cleanupCtx, pool, func(tx database.Tx) error {
+		tag, err := tx.Exec(cleanupCtx,
+			"DELETE FROM volume_attachments WHERE id = $1 AND volume_id = $2 AND instance_id = $3",
+			attachmentID, volumeID, instanceID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return errNovaAttachmentNotFound
+		}
+		tag, err = tx.Exec(cleanupCtx, `
+			UPDATE volumes
+			SET attached_to_instance_id = NULL, status = 'available', updated_at = $1
+			WHERE id = $2 AND attached_to_instance_id = $3
+		`, time.Now(), volumeID, instanceID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return errNovaVolumeStateChanged
+		}
+		return nil
+	})
+}
+
 // AttachVolumeRequest represents a volume attachment request
 type AttachVolumeRequest struct {
 	VolumeAttachment struct {
@@ -105,70 +149,82 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		return
 	}
 
-	// Verify volume exists and is available
-	var volumeStatus string
-	var attachedToInstance any
-	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT status, attached_to_instance_id FROM volumes WHERE id = $1 AND project_id = $2",
-		req.VolumeAttachment.VolumeID, projectID,
-	).Scan(&volumeStatus, &attachedToInstance)
+	// Verify volume exists and is available, create the attachment and flip
+	// the volume to in-use — all in one transaction with the volume row
+	// locked: the old check-then-act let the loser of
+	// a concurrent double-attach surface as a 500 from the UNIQUE constraint,
+	// and a failure between the INSERT and the UPDATE left the volume row
+	// inconsistent with its attachment. Mirrors cinder's attach CAS.
+	var device string
+	attachmentID := uuid.NewString()
+	var now time.Time
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		// Different volumes attached to one server must reserve distinct devices.
+		// Lock the instance before the volume, and use this transaction for every
+		// query: acquiring another pool connection here can deadlock a full pool.
+		if err := tx.QueryRow(c.Request.Context(),
+			"SELECT COALESCE(libvirt_domain_id, '') FROM instances WHERE id = $1 FOR UPDATE",
+			instanceID).Scan(&libvirtDomainID); err != nil {
+			return err
+		}
+		var volumeStatus string
+		var attachedToInstance any
+		if err := tx.QueryRow(c.Request.Context(),
+			"SELECT status, attached_to_instance_id FROM volumes WHERE id = $1 AND project_id = $2 FOR UPDATE",
+			req.VolumeAttachment.VolumeID, projectID,
+		).Scan(&volumeStatus, &attachedToInstance); err != nil {
+			if errors.Is(err, database.ErrNoRows) {
+				return errNovaVolumeNotFound
+			}
+			return err
+		}
+		if volumeStatus != "available" {
+			return &novaAttachRefusal{message: fmt.Sprintf("volume status is %s, must be available", volumeStatus)}
+		}
+		if attachedToInstance != nil {
+			// Upstream answers a re-attach with 400 (Invalid input /
+			// volume already attached), not 409 — round 2 of this review.
+			return &novaAttachRefusal{message: "volume is already attached to an instance"}
+		}
 
-	if errors.Is(err, database.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("volume"))
-		return
-	}
+		// Auto-assign device if not provided. The instance lock above serializes
+		// assignments across different volumes attached concurrently.
+		device = req.VolumeAttachment.Device
+		if device == "" {
+			device, err = getNextAvailableDevice(c.Request.Context(), tx, instanceID)
+			if err != nil {
+				return fmt.Errorf("device assignment: %w", err)
+			}
+		}
 
-	if volumeStatus != "available" {
-		common.SendError(c, common.NewBadRequestError(fmt.Sprintf("volume status is %s, must be available", volumeStatus)))
-		return
-	}
-
-	if attachedToInstance != nil {
-		common.SendError(c, common.NewBadRequestError("volume is already attached to an instance"))
-		return
-	}
-
-	// Auto-assign device if not provided
-	device := req.VolumeAttachment.Device
-	if device == "" {
-		device, err = svc.getNextAvailableDevice(c.Request.Context(), instanceID)
-		if err != nil {
-			log.Error().Err(err).Str("operation", "get_next_device").Msg("device assignment error")
-			common.SendError(c, common.NewInternalServerError("failed to assign device"))
+		now = time.Now()
+		if _, err := tx.Exec(c.Request.Context(), `
+			INSERT INTO volume_attachments (id, volume_id, instance_id, device, attached_at)
+			VALUES ($1, $2, $3, $4, $5)
+		`, attachmentID, req.VolumeAttachment.VolumeID, instanceID, device, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(c.Request.Context(), `
+			UPDATE volumes
+			SET attached_to_instance_id = $1, status = $2, updated_at = $3
+			WHERE id = $4
+		`, instanceID, "in-use", now, req.VolumeAttachment.VolumeID); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		var refusal *novaAttachRefusal
+		if errors.As(err, &refusal) {
+			common.SendError(c, common.NewBadRequestError(refusal.message))
 			return
 		}
-	}
-
-	// Create attachment record
-	attachmentID := uuid.New().String()
-	now := time.Now()
-
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO volume_attachments (id, volume_id, instance_id, device, attached_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`, attachmentID, req.VolumeAttachment.VolumeID, instanceID, device, now)
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "create_volume_attachment").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to create volume attachment"))
-		return
-	}
-
-	// Update volume status
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		UPDATE volumes
-		SET attached_to_instance_id = $1, status = $2, updated_at = $3
-		WHERE id = $4
-	`, instanceID, "in-use", now, req.VolumeAttachment.VolumeID)
-
-	if err != nil {
-		// Rollback attachment (best-effort; the update error is the
-		// user-facing one)
-		if _, rbErr := svc.pool.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID); rbErr != nil {
-			log.Warn().Err(rbErr).Str("attachment_id", attachmentID).Msg("rollback: failed to delete volume attachment after volume update failure")
+		if errors.Is(err, errNovaVolumeNotFound) {
+			common.SendError(c, common.NewNotFoundError("volume"))
+			return
 		}
-		log.Error().Err(err).Str("operation", "update_volume_status").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to update volume status"))
+		log.Error().Err(err).Str("operation", "attach_volume_tx").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to attach volume"))
 		return
 	}
 
@@ -180,19 +236,21 @@ func (svc *Service) AttachVolume(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancel()
 		var rbdPool, rbdImage string
-		_ = svc.pool.QueryRow(ctx,
+		if err := svc.pool.QueryRow(ctx,
 			"SELECT rbd_pool, rbd_image FROM volumes WHERE id = $1",
-			req.VolumeAttachment.VolumeID).Scan(&rbdPool, &rbdImage)
+			req.VolumeAttachment.VolumeID).Scan(&rbdPool, &rbdImage); err != nil {
+			log.Error().Err(err).Str("volume_id", req.VolumeAttachment.VolumeID).Msg("failed to read volume backing before attaching")
+			if rollbackErr := rollbackVolumeAttachment(c.Request.Context(), svc.pool, attachmentID, req.VolumeAttachment.VolumeID, instanceID); rollbackErr != nil {
+				log.Error().Err(rollbackErr).Str("attachment_id", attachmentID).Msg("failed to roll back volume attachment after backing lookup failure")
+			}
+			common.SendError(c, common.NewInternalServerError("failed to attach volume to the instance"))
+			return
+		}
 		diskXML := volumeDiskXML(req.VolumeAttachment.VolumeID, device, rbdPool, rbdImage)
 		if err := svc.vmManager.AttachDevice(ctx, libvirtDomainID, diskXML); err != nil {
 			log.Error().Err(err).Str("volume_id", req.VolumeAttachment.VolumeID).Str("libvirt_domain", libvirtDomainID).Msg("failed to attach volume to VM; reverting")
-			if _, e := svc.pool.Exec(c.Request.Context(), "DELETE FROM volume_attachments WHERE id = $1", attachmentID); e != nil {
-				log.Warn().Err(e).Str("attachment_id", attachmentID).Msg("revert: delete attachment")
-			}
-			if _, e := svc.pool.Exec(c.Request.Context(),
-				"UPDATE volumes SET attached_to_instance_id = NULL, status = 'available', updated_at = $1 WHERE id = $2",
-				time.Now(), req.VolumeAttachment.VolumeID); e != nil {
-				log.Warn().Err(e).Str("volume_id", req.VolumeAttachment.VolumeID).Msg("revert: reset volume status")
+			if rollbackErr := rollbackVolumeAttachment(c.Request.Context(), svc.pool, attachmentID, req.VolumeAttachment.VolumeID, instanceID); rollbackErr != nil {
+				log.Error().Err(rollbackErr).Str("attachment_id", attachmentID).Msg("failed to roll back volume attachment after hypervisor failure")
 			}
 			common.SendError(c, common.NewInternalServerError("failed to attach volume to the instance"))
 			return
@@ -290,6 +348,11 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 		common.SendError(c, common.NewNotFoundError("volume attachment"))
 		return
 	}
+	if err != nil {
+		log.Error().Err(err).Str("volume_id", volumeID).Str("instance_id", instanceID).Msg("failed to look up volume attachment")
+		common.SendError(c, common.NewInternalServerError("failed to get volume attachment"))
+		return
+	}
 
 	// Detach from hypervisor first
 	if svc.vmManager != nil && libvirtDomainID != "" {
@@ -303,40 +366,49 @@ func (svc *Service) DetachVolume(c *gin.Context) {
 			volumeID,
 		).Scan(&rbdPool, &rbdImage)
 
-		if err == nil {
-			diskXML := volumeDiskXML(volumeID, device, rbdPool, rbdImage)
+		if err != nil {
+			log.Error().Err(err).Str("volume_id", volumeID).Msg("failed to read volume backing before detaching")
+			common.SendError(c, common.NewInternalServerError("failed to detach disk"))
+			return
+		}
+		diskXML := volumeDiskXML(volumeID, device, rbdPool, rbdImage)
 
-			if err := svc.vmManager.DetachDevice(ctx, libvirtDomainID, diskXML); err != nil {
-				log.Error().Err(err).Str("operation", "detach_disk_libvirt").Msg("libvirt error")
-				common.SendError(c, common.NewInternalServerError("failed to detach disk"))
-				return
-			}
+		if err := svc.vmManager.DetachDevice(ctx, libvirtDomainID, diskXML); err != nil {
+			log.Error().Err(err).Str("operation", "detach_disk_libvirt").Msg("libvirt error")
+			common.SendError(c, common.NewInternalServerError("failed to detach disk"))
+			return
 		}
 	}
 
-	// Delete attachment record
-	_, err = svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM volume_attachments WHERE id = $1",
-		attachmentID,
-	)
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_volume_attachment").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to delete volume attachment"))
-		return
-	}
-
-	// Update volume status
+	// Delete the attachment and release the volume in one transaction. As two
+	// statements, a failure after the DELETE left the
+	// volume stranded in-use with no attachment row — unfixable through the
+	// API, since detach could no longer find the attachment to remove.
 	now := time.Now()
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		UPDATE volumes
-		SET attached_to_instance_id = NULL, status = $1, updated_at = $2
-		WHERE id = $3
-	`, "available", now, volumeID)
-
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		tag, err := tx.Exec(c.Request.Context(),
+			"DELETE FROM volume_attachments WHERE id = $1",
+			attachmentID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return errNovaAttachmentNotFound
+		}
+		_, err = tx.Exec(c.Request.Context(), `
+			UPDATE volumes
+			SET attached_to_instance_id = NULL, status = $1, updated_at = $2
+			WHERE id = $3
+		`, "available", now, volumeID)
+		return err
+	})
 	if err != nil {
-		log.Error().Err(err).Str("operation", "update_volume_status_detach").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to update volume status"))
+		if errors.Is(err, errNovaAttachmentNotFound) {
+			common.SendError(c, common.NewNotFoundError("volume attachment"))
+			return
+		}
+		log.Error().Err(err).Str("operation", "detach_volume_tx").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to detach volume"))
 		return
 	}
 
@@ -442,9 +514,9 @@ func attachedVolumes(vols []gin.H) []gin.H {
 }
 
 // getNextAvailableDevice finds the next available device name (vdb, vdc, etc.)
-func (svc *Service) getNextAvailableDevice(ctx context.Context, instanceID string) (string, error) {
+func getNextAvailableDevice(ctx context.Context, tx database.Tx, instanceID string) (string, error) {
 	// Query existing devices
-	rows, err := svc.pool.Query(ctx,
+	rows, err := tx.Query(ctx,
 		"SELECT device FROM volume_attachments WHERE instance_id = $1",
 		instanceID,
 	)
@@ -457,8 +529,7 @@ func (svc *Service) getNextAvailableDevice(ctx context.Context, instanceID strin
 	for rows.Next() {
 		var device string
 		if err := rows.Scan(&device); err != nil {
-			log.Warn().Err(err).Str("operation", "getNextAvailableDevice").Msg("failed to scan row")
-			continue
+			return "", fmt.Errorf("scan volume device: %w", err)
 		}
 		usedDevices[device] = true
 	}
