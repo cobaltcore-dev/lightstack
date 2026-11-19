@@ -19,7 +19,7 @@ import (
 // ONLY the {"error": {...}} (or API-SIG {"errors": [...]}) shape. Every other
 // body degrades to "Unrecognized schema in response body.", which throws away
 // the reason: 'domain delete <enabled>' told the operator nothing about
-// disabling it first (SPEC-028).
+// disabling it first (SPEC-031).
 //
 // Marked once per engine by the identity service, so all handler sites and
 // every middleware path render Keystone's shape without touching any of them.

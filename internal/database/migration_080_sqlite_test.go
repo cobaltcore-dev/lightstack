@@ -23,38 +23,32 @@ func migratedSQLite(t *testing.T, target uint) (*sql.DB, string) {
 	return db, url
 }
 
-func TestSQLiteServerGroupMigrationPreservesDuplicates(t *testing.T) {
+func TestSQLiteServerGroupMigrationDropsPreReleaseUniqueness(t *testing.T) {
 	ctx := context.Background()
-	db, url := migratedSQLite(t, 77)
+	db, url := migratedSQLite(t, 80)
 	var projectID string
 	if err := db.QueryRowContext(ctx, "SELECT id FROM projects ORDER BY id LIMIT 1").Scan(&projectID); err != nil {
 		t.Fatalf("find seeded project: %v", err)
 	}
-	for _, row := range []struct{ id, members string }{
-		{"duplicate-a", "[\"member-a\",\"shared\"]"},
-		{"duplicate-b", "[\"member-b\",\"shared\"]"},
-	} {
-		if _, err := db.ExecContext(ctx, "INSERT INTO server_groups (id, name, policies, members, project_id) VALUES (?, 'migration-duplicate', '[]', ?, ?)",
-			row.id, row.members, projectID); err != nil {
-			t.Fatalf("seed duplicate server group: %v", err)
-		}
+	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX uq_server_groups_project_name ON server_groups(project_id, name)"); err != nil {
+		t.Fatalf("seed pre-release uniqueness index: %v", err)
 	}
-	if err := MigrateToVersion(url, "../../migrations", 78); err != nil {
-		t.Fatalf("migrate server-group uniqueness: %v", err)
+	if _, err := db.ExecContext(ctx, "INSERT INTO server_groups (id, name, policies, members, project_id) VALUES ('legacy-a', 'migration-duplicate', '[]', '[]', ?)", projectID); err != nil {
+		t.Fatalf("seed existing server group: %v", err)
 	}
-	for _, row := range []struct{ id, members string }{
-		{"duplicate-a", "[\"member-a\",\"shared\"]"},
-		{"duplicate-b", "[\"member-b\",\"shared\"]"},
-	} {
-		var members string
-		if err := db.QueryRowContext(ctx, "SELECT members FROM server_groups WHERE id=?", row.id).Scan(&members); err != nil || members != row.members {
-			t.Fatalf("group %s changed during upgrade: members=%s err=%v", row.id, members, err)
-		}
+	if err := MigrateToVersion(url, "../../migrations", 81); err != nil {
+		t.Fatalf("drop pre-release server-group uniqueness: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO server_groups (id, name, policies, members, project_id) VALUES ('duplicate-c', 'migration-duplicate', '[]', '[]', ?)", projectID); err != nil {
-		t.Fatalf("duplicate group name rejected: %v", err)
+	var name, policies, members string
+	if err := db.QueryRowContext(ctx, "SELECT name, policies, members FROM server_groups WHERE id='legacy-a'").Scan(&name, &policies, &members); err != nil {
+		t.Fatalf("read existing server group: %v", err)
 	}
-
+	if name != "migration-duplicate" || policies != "[]" || members != "[]" {
+		t.Fatalf("migration changed existing group: name=%s policies=%s members=%s", name, policies, members)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO server_groups (id, name, policies, members, project_id) VALUES ('legacy-b', 'migration-duplicate', '[]', '[]', ?)", projectID); err != nil {
+		t.Fatalf("duplicate group name still rejected after migration 081: %v", err)
+	}
 }
 
 func TestSQLiteOwnerMigrationsRejectNullProjectIDs(t *testing.T) {

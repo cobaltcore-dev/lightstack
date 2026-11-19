@@ -1,6 +1,6 @@
 package neutron
 
-// SPEC-028 conformance fixes for the Neutron list surface, found by the CLI
+// SPEC-031 conformance fixes for the Neutron list surface, found by the CLI
 // conformance suites (issue #105).
 
 import (
@@ -31,11 +31,11 @@ func TestListNetworksAdminTenantFilter_DB(t *testing.T) {
 	otherProject := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
-		otherProject, "spec028-tenant-proj-"+otherProject[:8]); err != nil {
+		otherProject, "spec031-tenant-proj-"+otherProject[:8]); err != nil {
 		t.Fatalf("insert other project: %v", err)
 	}
 	netID := uuid.NewString()
-	netName := "spec028-tenant-net-" + netID[:8]
+	netName := "spec031-tenant-net-" + netID[:8]
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
 		netID, netName, otherProject); err != nil {
@@ -72,13 +72,13 @@ func TestListNetworksAdminTenantFilter_DB(t *testing.T) {
 
 // TestListFloatingIPsFilters_DB — `GET /v2.0/floatingips` ignored every list
 // filter, so `openstack floating ip list --network <net>` returned addresses
-// from all networks (SPEC-028). The standard exact-match filters must hold.
+// from all networks (SPEC-031). The standard exact-match filters must hold.
 func TestListFloatingIPsFilters_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 
 	netA, netB := uuid.NewString(), uuid.NewString()
-	for _, n := range []struct{ id, name string }{{netA, "spec028-fipnet-a-" + netA[:8]}, {netB, "spec028-fipnet-b-" + netB[:8]}} {
+	for _, n := range []struct{ id, name string }{{netA, "spec031-fipnet-a-" + netA[:8]}, {netB, "spec031-fipnet-b-" + netB[:8]}} {
 		if _, err := testPool.Exec(ctx,
 			`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
 			n.id, n.name, seededProjectID); err != nil {
@@ -88,13 +88,13 @@ func TestListFloatingIPsFilters_DB(t *testing.T) {
 	fipA, fipB := uuid.NewString(), uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, status, description)
-		 VALUES ($1,$2,$3,$4,'ACTIVE','spec028 fip a')`,
+		 VALUES ($1,$2,$3,$4,'ACTIVE','spec031 fip a')`,
 		fipA, seededProjectID, netA, "198.19.254.1"); err != nil {
 		t.Fatalf("insert fip a: %v", err)
 	}
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, status, description)
-		 VALUES ($1,$2,$3,$4,'DOWN','spec028 fip b')`,
+		 VALUES ($1,$2,$3,$4,'DOWN','spec031 fip b')`,
 		fipB, seededProjectID, netB, "198.19.254.2"); err != nil {
 		t.Fatalf("insert fip b: %v", err)
 	}
@@ -148,32 +148,32 @@ func TestListFloatingIPsFilters_DB(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CLI conformance round two (SPEC-028): the network suite's findings.
+// CLI conformance round two (SPEC-031): the network suite's findings.
 
-// seedSpec028NetSubnet creates a network + subnet owned by the seeded
+// seedConformanceNetSubnet creates a network + subnet owned by the seeded
 // project, with a random third octet so concurrent runs cannot collide.
-func seedSpec028NetSubnet(t *testing.T, ctx context.Context, label string) (netID, subnetID, cidr string) {
+func seedConformanceNetSubnet(t *testing.T, ctx context.Context, label string) (netID, subnetID, cidr string) {
 	t.Helper()
 	b, _ := uuid.NewRandom()
 	octet := int(b[0])%200 + 10
 	netID, subnetID = uuid.NewString(), uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
-		netID, "spec028-"+label+"-net-"+netID[:8], seededProjectID); err != nil {
+		netID, "spec031-"+label+"-net-"+netID[:8], seededProjectID); err != nil {
 		t.Fatalf("insert network: %v", err)
 	}
 	cidr = fmt.Sprintf("10.%d.0.0/24", octet)
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version) VALUES ($1,$2,$3,$4,$5,$6,4)`,
-		subnetID, "spec028-"+label+"-sub-"+subnetID[:8], netID, seededProjectID, cidr, fmt.Sprintf("10.%d.0.1", octet)); err != nil {
+		subnetID, "spec031-"+label+"-sub-"+subnetID[:8], netID, seededProjectID, cidr, fmt.Sprintf("10.%d.0.1", octet)); err != nil {
 		t.Fatalf("insert subnet: %v", err)
 	}
 	return netID, subnetID, cidr
 }
 
-// cleanupSpec028Net removes everything a seed + router-interface test can
+// cleanupConformanceNet removes everything a seed + router-interface test can
 // leave on a network, then the network itself.
-func cleanupSpec028Net(t *testing.T, ctx context.Context, netID string) {
+func cleanupConformanceNet(t *testing.T, ctx context.Context, netID string) {
 	t.Helper()
 	testPool.Exec(ctx, `DELETE FROM ports WHERE network_id = $1`, netID)
 	testPool.Exec(ctx, `DELETE FROM subnets WHERE network_id = $1`, netID)
@@ -183,28 +183,28 @@ func cleanupSpec028Net(t *testing.T, ctx context.Context, netID string) {
 // TestPortShowAndUpdateByName404_DB — GET/PUT /v2.0/ports/{name} used to
 // surface the uuid cast error as a 500, which breaks the SDK's name-fallback
 // for 'port show/set/delete <name>' (it only falls back on 404). Real
-// Neutron answers 404; now so does this (SPEC-028).
+// Neutron answers 404; now so does this (SPEC-031).
 func TestPortShowAndUpdateByName404_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
-	netID, _, _ := seedSpec028NetSubnet(t, ctx, "portname")
-	t.Cleanup(func() { cleanupSpec028Net(t, ctx, netID) })
+	netID, _, _ := seedConformanceNetSubnet(t, ctx, "portname")
+	t.Cleanup(func() { cleanupConformanceNet(t, ctx, netID) })
 
 	portID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips)
 		 VALUES ($1,$2,$3,$4,$5,true,'ACTIVE','[]'::jsonb)`,
-		portID, "spec028-byname-port", netID, seededProjectID, "02:00:00:00:00:01"); err != nil {
+		portID, "spec031-byname-port", netID, seededProjectID, "02:00:00:00:00:01"); err != nil {
 		t.Fatalf("insert port: %v", err)
 	}
 
 	r := newNeutronTestRouter()
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
 
-	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/spec028-byname-port", hdr); code != http.StatusNotFound {
+	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/spec031-byname-port", hdr); code != http.StatusNotFound {
 		t.Errorf("GET port by name: code=%d; want 404 (body=%s)", code, body)
 	}
-	if code, body := doReqBody(r, http.MethodPut, "/v2.0/ports/spec028-byname-port",
+	if code, body := doReqBody(r, http.MethodPut, "/v2.0/ports/spec031-byname-port",
 		`{"port":{"name":"renamed"}}`, hdr); code != http.StatusNotFound {
 		t.Errorf("PUT port by name: code=%d; want 404 (body=%s)", code, body)
 	}
@@ -215,7 +215,7 @@ func TestPortShowAndUpdateByName404_DB(t *testing.T) {
 
 // TestSubnetPoolShowByName404_DB — same divergence on subnet pools: a
 // by-name GET/PUT was a 500, and the CLI's name resolution needs the 404
-// (SPEC-028).
+// (SPEC-031).
 func TestSubnetPoolShowByName404_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -223,7 +223,7 @@ func TestSubnetPoolShowByName404_DB(t *testing.T) {
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnet_pools (id, project_id, name, prefixes, min_prefixlen, max_prefixlen, ip_version)
 		 VALUES ($1,$2,$3,$4,8,32,4)`,
-		poolID, seededProjectID, "spec028-byname-pool", []string{"198.51.100.0/24"}); err != nil {
+		poolID, seededProjectID, "spec031-byname-pool", []string{"198.51.100.0/24"}); err != nil {
 		t.Fatalf("insert subnet pool: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM subnet_pools WHERE id=$1", poolID) })
@@ -231,10 +231,10 @@ func TestSubnetPoolShowByName404_DB(t *testing.T) {
 	r := newNeutronTestRouter()
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
 
-	if code, body := doReq(r, http.MethodGet, "/v2.0/subnetpools/spec028-byname-pool", hdr); code != http.StatusNotFound {
+	if code, body := doReq(r, http.MethodGet, "/v2.0/subnetpools/spec031-byname-pool", hdr); code != http.StatusNotFound {
 		t.Errorf("GET subnet pool by name: code=%d; want 404 (body=%s)", code, body)
 	}
-	if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnetpools/spec028-byname-pool",
+	if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnetpools/spec031-byname-pool",
 		`{"subnetpool":{"name":"renamed"}}`, hdr); code != http.StatusNotFound {
 		t.Errorf("PUT subnet pool by name: code=%d; want 404 (body=%s)", code, body)
 	}
@@ -246,7 +246,7 @@ func TestSubnetPoolShowByName404_DB(t *testing.T) {
 // TestSubnetPoolReportsOwningProjectForSharedPool_DB — shared pools are
 // visible to every project, so ListSubnetPools/GetSubnetPool serve rows whose
 // project_id is not the caller's. Both used to render the CALLER's project as
-// tenant_id; the response must name the row's owner (the same round-8 bug
+// tenant_id; the response must name the row's owner (the same owner-rendering behavior
 // fixed for cinder volumes and neutron ports). Visibility semantics stay:
 // another project's private pool remains invisible and 404s by id.
 func TestSubnetPoolReportsOwningProjectForSharedPool_DB(t *testing.T) {
@@ -275,8 +275,8 @@ func TestSubnetPoolReportsOwningProjectForSharedPool_DB(t *testing.T) {
 		}
 		return created.Pool.ID
 	}
-	sharedID := createPool("spec028-shared-owner", true)
-	privateID := createPool("spec028-private-owner", false)
+	sharedID := createPool("spec031-shared-owner", true)
+	privateID := createPool("spec031-private-owner", false)
 	t.Cleanup(func() {
 		testPool.Exec(ctx, "DELETE FROM subnet_pools WHERE id = ANY($1)", []string{sharedID, privateID})
 	})
@@ -344,8 +344,8 @@ func TestSubnetPoolReportsOwningProjectForSharedPool_DB(t *testing.T) {
 	}
 }
 
-// TestRouterInterfaceByPortAndDuplicate409_DB — three coupled defects in
-// add_router_interface (SPEC-028):
+// TestRouterInterfaceByPortAndDuplicateSubnet_DB — three coupled defects in
+// add_router_interface (SPEC-031):
 //   - port_id was ignored: 'router add port' read the empty subnet_id and
 //     answered 500 "failed to get subnet".
 //   - a duplicate interface hit the (router_id, subnet_id) unique constraint
@@ -353,16 +353,16 @@ func TestSubnetPoolReportsOwningProjectForSharedPool_DB(t *testing.T) {
 //     blocked the network's deletion with a 409 nothing could remove.
 //   - a routed subnet could be deleted (upstream: 409 SubnetInUse), orphaning
 //     the interface port.
-func TestRouterInterfaceByPortAndDuplicate409_DB(t *testing.T) {
+func TestRouterInterfaceByPortAndDuplicateSubnet_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
-	netID, subnetID, _ := seedSpec028NetSubnet(t, ctx, "if")
-	t.Cleanup(func() { cleanupSpec028Net(t, ctx, netID) })
+	netID, subnetID, _ := seedConformanceNetSubnet(t, ctx, "if")
+	t.Cleanup(func() { cleanupConformanceNet(t, ctx, netID) })
 
 	routerID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
-		routerID, "spec028-if-router-"+routerID[:8], seededProjectID); err != nil {
+		routerID, "spec031-if-router-"+routerID[:8], seededProjectID); err != nil {
 		t.Fatalf("insert router: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM routers WHERE id=$1", routerID) })
@@ -372,7 +372,7 @@ func TestRouterInterfaceByPortAndDuplicate409_DB(t *testing.T) {
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips)
 		 VALUES ($1,$2,$3,$4,$5,true,'ACTIVE',$6::jsonb)`,
-		portID, "spec028-if-port", netID, seededProjectID, "02:00:00:00:00:02", fixedIPs); err != nil {
+		portID, "spec031-if-port", netID, seededProjectID, "02:00:00:00:00:02", fixedIPs); err != nil {
 		t.Fatalf("insert port: %v", err)
 	}
 
@@ -421,9 +421,9 @@ func TestRouterInterfaceByPortAndDuplicate409_DB(t *testing.T) {
 		t.Errorf("add attached port again: code=%d; want 409 (body=%s)", code, body)
 	}
 
-	// A second interface for the same subnet is a 409 that leaks nothing.
-	if code, body := add(fmt.Sprintf(`{"subnet_id":"%s"}`, subnetID)); code != http.StatusConflict {
-		t.Errorf("duplicate interface: code=%d; want 409 (body=%s)", code, body)
+	// A second interface for the same subnet is a 400 and leaks nothing.
+	if code, body := add(fmt.Sprintf(`{"subnet_id":"%s"}`, subnetID)); code != http.StatusBadRequest {
+		t.Errorf("duplicate interface: code=%d; want 400 (body=%s)", code, body)
 	}
 	var leaked int
 	if err := testPool.QueryRow(ctx,
@@ -449,7 +449,7 @@ func TestRouterInterfaceByPortAndDuplicate409_DB(t *testing.T) {
 
 // TestNetworkDescriptionRoundTrip_DB — networks had no description column,
 // so 'network set --description' was a 400 "no updates provided"
-// (SPEC-028, migration 075).
+// (SPEC-031, migration 075).
 func TestNetworkDescriptionRoundTrip_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -457,7 +457,7 @@ func TestNetworkDescriptionRoundTrip_DB(t *testing.T) {
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
 
 	code, body := doReqBody(r, http.MethodPost, "/v2.0/networks",
-		`{"network":{"name":"spec028-desc-net","description":"first"}}`, hdr)
+		`{"network":{"name":"spec031-desc-net","description":"first"}}`, hdr)
 	if code != http.StatusCreated {
 		t.Fatalf("create network with description: code=%d (body=%s)", code, body)
 	}
@@ -506,12 +506,12 @@ func TestNetworkDescriptionRoundTrip_DB(t *testing.T) {
 }
 
 // TestSubnetSetDHCP_DB — 'subnet set --no-dhcp' PUTs enable_dhcp, which the
-// update handler had no binding for: the flag was a 200 no-op (SPEC-028).
+// update handler had no binding for: the flag was a 200 no-op (SPEC-031).
 func TestSubnetSetDHCP_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
-	netID, subnetID, _ := seedSpec028NetSubnet(t, ctx, "dhcp")
-	t.Cleanup(func() { cleanupSpec028Net(t, ctx, netID) })
+	netID, subnetID, _ := seedConformanceNetSubnet(t, ctx, "dhcp")
+	t.Cleanup(func() { cleanupConformanceNet(t, ctx, netID) })
 
 	r := newNeutronTestRouter()
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
@@ -528,7 +528,7 @@ func TestSubnetSetDHCP_DB(t *testing.T) {
 
 	// And back on, together with a rename, in one request.
 	if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID,
-		`{"subnet":{"enable_dhcp":true,"name":"spec028-dhcp-renamed"}}`, hdr); code != http.StatusOK {
+		`{"subnet":{"enable_dhcp":true,"name":"spec031-dhcp-renamed"}}`, hdr); code != http.StatusOK {
 		t.Fatalf("subnet set dhcp+name: code=%d (body=%s)", code, body)
 	}
 	if err := testPool.QueryRow(ctx, `SELECT enable_dhcp FROM subnets WHERE id=$1`, subnetID).Scan(&enableDHCP); err != nil || !enableDHCP {
@@ -538,7 +538,7 @@ func TestSubnetSetDHCP_DB(t *testing.T) {
 
 // TestSubnetPoolPrefixValidationAndDescription_DB — a malformed prefix was
 // stored as-is (upstream 400s), and pools had no description column
-// (SPEC-028, migration 075).
+// (SPEC-031, migration 075).
 func TestSubnetPoolPrefixValidationAndDescription_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -546,12 +546,12 @@ func TestSubnetPoolPrefixValidationAndDescription_DB(t *testing.T) {
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
 
 	if code, body := doReqBody(r, http.MethodPost, "/v2.0/subnetpools",
-		`{"subnetpool":{"name":"spec028-badpool","prefixes":["not-a-cidr"]}}`, hdr); code != http.StatusBadRequest {
+		`{"subnetpool":{"name":"spec031-badpool","prefixes":["not-a-cidr"]}}`, hdr); code != http.StatusBadRequest {
 		t.Errorf("create pool with malformed prefix: code=%d; want 400 (body=%s)", code, body)
 	}
 
 	code, body := doReqBody(r, http.MethodPost, "/v2.0/subnetpools",
-		`{"subnetpool":{"name":"spec028-desc-pool","prefixes":["198.51.100.0/24"],"description":"first"}}`, hdr)
+		`{"subnetpool":{"name":"spec031-desc-pool","prefixes":["198.51.100.0/24"],"description":"first"}}`, hdr)
 	if code != http.StatusCreated {
 		t.Fatalf("create pool with description: code=%d (body=%s)", code, body)
 	}
@@ -590,17 +590,14 @@ func TestSubnetPoolPrefixValidationAndDescription_DB(t *testing.T) {
 	}
 }
 
-// TestSecurityGroupCreateRulesEmpty_DB — the create response omitted
-// security_group_rules, so OSC rendered it as null and its table formatter
-// crashed ('NoneType' object is not iterable). Upstream reports [] for a
-// fresh group (SPEC-028).
-func TestSecurityGroupCreateRulesEmpty_DB(t *testing.T) {
+// TestSecurityGroupCreateRules_DB checks Neutron's default egress rules on create.
+func TestSecurityGroupCreateRules_DB(t *testing.T) {
 	requireDB(t)
 	r := newNeutronTestRouter()
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
 
 	code, body := doReqBody(r, http.MethodPost, "/v2.0/security-groups",
-		`{"security_group":{"name":"spec028-rules-sg","description":"SPEC-028 rules key"}}`, hdr)
+		`{"security_group":{"name":"spec031-rules-sg","description":"SPEC-031 rules key"}}`, hdr)
 	if code != http.StatusCreated {
 		t.Fatalf("create security group: code=%d (body=%s)", code, body)
 	}
@@ -614,10 +611,8 @@ func TestSecurityGroupCreateRulesEmpty_DB(t *testing.T) {
 		t.Fatalf("unmarshal create: %v (body=%s)", err, body)
 	}
 	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM security_groups WHERE id=$1", created.SG.ID) })
-	if created.SG.Rules == nil {
-		t.Errorf("create: security_group_rules is null; want [] (body=%s)", body)
-	} else if len(created.SG.Rules) != 0 {
-		t.Errorf("create: security_group_rules has %d entries; want 0", len(created.SG.Rules))
+	if len(created.SG.Rules) != 2 {
+		t.Errorf("create: security_group_rules has %d entries; want IPv4 and IPv6 egress defaults", len(created.SG.Rules))
 	}
 }
 
@@ -626,7 +621,7 @@ func TestSecurityGroupCreateRulesEmpty_DB(t *testing.T) {
 // /v2.0/networks/{id} kept the caller's read scope unconditionally, so an
 // admin could list another project's private network and then get a 404
 // showing the id it just listed. Upstream's get_network policy is
-// "admin_or_owner or shared or external" (SPEC-028).
+// "admin_or_owner or shared or external" (SPEC-031).
 func TestGetNetworkAdminCarveOut_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -634,13 +629,14 @@ func TestGetNetworkAdminCarveOut_DB(t *testing.T) {
 	otherProject := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
-		otherProject, "spec028-show-proj-"+otherProject[:8]); err != nil {
+		otherProject, "spec031-show-proj-"+otherProject[:8]); err != nil {
 		t.Fatalf("insert other project: %v", err)
 	}
 	netID := uuid.NewString()
+	netName := "spec031-show-net-" + netID[:8]
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
-		netID, "spec028-show-net-"+netID[:8], otherProject); err != nil {
+		netID, netName, otherProject); err != nil {
 		t.Fatalf("insert network: %v", err)
 	}
 	t.Cleanup(func() {
@@ -655,6 +651,11 @@ func TestGetNetworkAdminCarveOut_DB(t *testing.T) {
 	if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+netID, adminHdr); code != http.StatusOK {
 		t.Errorf("admin shows other project's private network: code=%d; want 200 (body=%s)", code, body)
 	}
+	// The cross-project carve-out is for IDs only. A duplicate name must stay
+	// inside the caller's project and cannot select this private network.
+	if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+netName, adminHdr); code != http.StatusNotFound {
+		t.Errorf("admin resolves another project's private network by name: code=%d; want 404 (body=%s)", code, body)
+	}
 	// A plain member of ANOTHER project still cannot: 404, not 403, so the
 	// network's existence stays private.
 	if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+netID, memberHdr); code != http.StatusNotFound {
@@ -666,7 +667,7 @@ func TestGetNetworkAdminCarveOut_DB(t *testing.T) {
 // add_router_interface was unscoped: a caller who owned a router could attach
 // an interface to ANOTHER project's private subnet by id. The port path was
 // already project-scoped; now the subnet row must be the caller's, or sit on
-// a shared/external network (SPEC-028).
+// a shared/external network (SPEC-031).
 func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -674,7 +675,7 @@ func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 	otherProject := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
-		otherProject, "spec028-ifscope-proj-"+otherProject[:8]); err != nil {
+		otherProject, "spec031-ifscope-proj-"+otherProject[:8]); err != nil {
 		t.Fatalf("insert other project: %v", err)
 	}
 	// A private and a shared network, both owned by the other project.
@@ -685,7 +686,7 @@ func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 	}{{privateNet, false}, {sharedNet, true}} {
 		if _, err := testPool.Exec(ctx,
 			`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,$4,false)`,
-			n.id, "spec028-ifscope-net-"+n.id[:8], otherProject, n.shared); err != nil {
+			n.id, "spec031-ifscope-net-"+n.id[:8], otherProject, n.shared); err != nil {
 			t.Fatalf("insert network: %v", err)
 		}
 	}
@@ -693,14 +694,14 @@ func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 	for _, s := range []struct{ id, net string }{{privateSub, privateNet}, {sharedSub, sharedNet}} {
 		if _, err := testPool.Exec(ctx,
 			`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version) VALUES ($1,$2,$3,$4,$5,$6,4)`,
-			s.id, "spec028-ifscope-sub-"+s.id[:8], s.net, otherProject, "10.231.0.0/24", "10.231.0.1"); err != nil {
+			s.id, "spec031-ifscope-sub-"+s.id[:8], s.net, otherProject, "10.231.0.0/24", "10.231.0.1"); err != nil {
 			t.Fatalf("insert subnet: %v", err)
 		}
 	}
 	routerID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
-		routerID, "spec028-ifscope-rt-"+routerID[:8], seededProjectID); err != nil {
+		routerID, "spec031-ifscope-rt-"+routerID[:8], seededProjectID); err != nil {
 		t.Fatalf("insert router: %v", err)
 	}
 	t.Cleanup(func() {
@@ -738,12 +739,12 @@ func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 	ownNet := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
-		ownNet, "spec028-ifscope-own-"+ownNet[:8], seededProjectID); err != nil {
+		ownNet, "spec031-ifscope-own-"+ownNet[:8], seededProjectID); err != nil {
 		t.Fatalf("insert own network: %v", err)
 	}
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version) VALUES ($1,$2,$3,$4,$5,$6,4)`,
-		adminSub, "spec028-ifscope-asub-"+adminSub[:8], ownNet, otherProject, "10.232.0.0/24", "10.232.0.1"); err != nil {
+		adminSub, "spec031-ifscope-asub-"+adminSub[:8], ownNet, otherProject, "10.232.0.0/24", "10.232.0.1"); err != nil {
 		t.Fatalf("insert admin subnet on own network: %v", err)
 	}
 	t.Cleanup(func() {
@@ -763,14 +764,14 @@ func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 // visibility check, so an ADMIN's fetch of another project's private network
 // must not leave an entry that a plain member of the admin's project then
 // reads as a 200 where the uncached answer is 404. Only rows the project is
-// entitled to by the read scope may be cached (SPEC-028).
+// entitled to by the read scope may be cached (SPEC-031).
 func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 	requireDB(t)
 
 	// The poisoning only exists with a real cache behind the service.
 	cacheInst, err := cache.NewCache(cache.Config{
 		RedisURL: "redis://127.0.0.1:6379", Enabled: true,
-		KeyPrefix: "spec028-cachetest:", DefaultTTL: time.Minute,
+		KeyPrefix: "spec031-cachetest:", DefaultTTL: time.Minute,
 	})
 	if err != nil {
 		t.Skipf("no local Redis for the cache regression: %v", err)
@@ -778,7 +779,7 @@ func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 	t.Cleanup(func() {
 		// DeletePattern prepends the instance's KeyPrefix itself, so the
 		// pattern is just "*" — a prefixed pattern would double the prefix
-		// and match nothing (round 9).
+		// and match nothing (later regression).
 		cacheInst.DeletePattern(context.Background(), "*")
 	})
 
@@ -786,19 +787,19 @@ func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 	otherProject := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
-		otherProject, "spec028-cache-proj-"+otherProject[:8]); err != nil {
+		otherProject, "spec031-cache-proj-"+otherProject[:8]); err != nil {
 		t.Fatalf("insert other project: %v", err)
 	}
 	foreignNet := uuid.NewString() // other project's PRIVATE network
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
-		foreignNet, "spec028-cache-net-"+foreignNet[:8], otherProject); err != nil {
+		foreignNet, "spec031-cache-net-"+foreignNet[:8], otherProject); err != nil {
 		t.Fatalf("insert foreign network: %v", err)
 	}
 	ownNet := uuid.NewString() // the caller project's own network
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
-		ownNet, "spec028-cache-own-"+ownNet[:8], seededProjectID); err != nil {
+		ownNet, "spec031-cache-own-"+ownNet[:8], seededProjectID); err != nil {
 		t.Fatalf("insert own network: %v", err)
 	}
 	t.Cleanup(func() {
@@ -852,7 +853,7 @@ func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 // explicit null clears it, S14) made add_router_interface 500: the lookup
 // scanned gateway_ip into a plain string and NULL cannot land in one.
 // Upstream attaches with an address allocated from the subnet; the fix
-// falls back to the same allocator CreatePort uses (SPEC-028).
+// falls back to the same allocator CreatePort uses (SPEC-031).
 func TestAddRouterInterfaceNullGateway_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -860,20 +861,20 @@ func TestAddRouterInterfaceNullGateway_DB(t *testing.T) {
 	netID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
-		netID, "spec028-nogw-net-"+netID[:8], seededProjectID); err != nil {
+		netID, "spec031-nogw-net-"+netID[:8], seededProjectID); err != nil {
 		t.Fatalf("insert network: %v", err)
 	}
 	// gateway_ip deliberately omitted: NULL.
 	subID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnets (id, name, network_id, project_id, cidr, ip_version) VALUES ($1,$2,$3,$4,$5,4)`,
-		subID, "spec028-nogw-sub-"+subID[:8], netID, seededProjectID, "10.233.0.0/24"); err != nil {
+		subID, "spec031-nogw-sub-"+subID[:8], netID, seededProjectID, "10.233.0.0/24"); err != nil {
 		t.Fatalf("insert subnet: %v", err)
 	}
 	routerID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
-		routerID, "spec028-nogw-rt-"+routerID[:8], seededProjectID); err != nil {
+		routerID, "spec031-nogw-rt-"+routerID[:8], seededProjectID); err != nil {
 		t.Fatalf("insert router: %v", err)
 	}
 	t.Cleanup(func() {
@@ -899,7 +900,7 @@ func TestAddRouterInterfaceNullGateway_DB(t *testing.T) {
 // and list [] for them. Upstream's get_subnet policy includes
 // ADMIN_OR_NET_OWNER_READER; the carve-out now covers subnets and ports,
 // their listings under an explicit network_id pointer, and a member of
-// another project still gets 404 (SPEC-028).
+// another project still gets 404 (SPEC-031).
 func TestSubnetPortAdminCarveOut_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -907,26 +908,26 @@ func TestSubnetPortAdminCarveOut_DB(t *testing.T) {
 	otherProject := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
-		otherProject, "spec028-sub-carve-"+otherProject[:8]); err != nil {
+		otherProject, "spec031-sub-carve-"+otherProject[:8]); err != nil {
 		t.Fatalf("insert other project: %v", err)
 	}
 	netID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO networks (id, name, project_id, shared, external) VALUES ($1,$2,$3,false,false)`,
-		netID, "spec028-sub-carve-net-"+netID[:8], otherProject); err != nil {
+		netID, "spec031-sub-carve-net-"+netID[:8], otherProject); err != nil {
 		t.Fatalf("insert network: %v", err)
 	}
 	subID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version) VALUES ($1,$2,$3,$4,$5,$6,4)`,
-		subID, "spec028-sub-carve-sub-"+subID[:8], netID, otherProject, "10.234.0.0/24", "10.234.0.1"); err != nil {
+		subID, "spec031-sub-carve-sub-"+subID[:8], netID, otherProject, "10.234.0.0/24", "10.234.0.1"); err != nil {
 		t.Fatalf("insert subnet: %v", err)
 	}
 	portID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO ports (id, name, network_id, project_id, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 		 VALUES ($1,$2,$3,$4,$5,true,'ACTIVE','[]'::jsonb,now(),now())`,
-		portID, "spec028-sub-carve-port-"+portID[:8], netID, otherProject, "02:00:00:00:23:28"); err != nil {
+		portID, "spec031-sub-carve-port-"+portID[:8], netID, otherProject, "02:00:00:00:23:28"); err != nil {
 		t.Fatalf("insert port: %v", err)
 	}
 	t.Cleanup(func() {
@@ -952,7 +953,7 @@ func TestSubnetPortAdminCarveOut_DB(t *testing.T) {
 	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/"+portID, adminHdr); code != http.StatusOK {
 		t.Errorf("admin shows foreign port: code=%d; want 200 (body=%s)", code, body)
 	}
-	// Round 8: the row's OWN project is rendered, never the caller's —
+	// The row's own project is rendered, never the caller's —
 	// stamping the admin's project on a foreign port tells a client a
 	// resource is theirs when it is not.
 	if code, body := doReq(r, http.MethodGet, "/v2.0/ports/"+portID, adminHdr); code != http.StatusOK || !strings.Contains(body, `"tenant_id":"`+otherProject+`"`) {
@@ -973,7 +974,7 @@ func TestSubnetPortAdminCarveOut_DB(t *testing.T) {
 // honored by the NETWORKS listing only; every other list silently ignored
 // it and presented the ADMIN's rows as the target project's. Router here
 // stands for the fixed pattern (subnets/ports/FIPs/cinder share it);
-// upstream honours the filter for admin tokens (SPEC-028).
+// upstream honours the filter for admin tokens (SPEC-031).
 func TestListTenantFilterHonoredForAdmin_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -981,19 +982,19 @@ func TestListTenantFilterHonoredForAdmin_DB(t *testing.T) {
 	otherProject := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
-		otherProject, "spec028-rt-tenant-"+otherProject[:8]); err != nil {
+		otherProject, "spec031-rt-tenant-"+otherProject[:8]); err != nil {
 		t.Fatalf("insert other project: %v", err)
 	}
 	otherRouter := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
-		otherRouter, "spec028-rt-tenant-rt-"+otherRouter[:8], otherProject); err != nil {
+		otherRouter, "spec031-rt-tenant-rt-"+otherRouter[:8], otherProject); err != nil {
 		t.Fatalf("insert other router: %v", err)
 	}
 	ownRouter := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO routers (id, name, project_id) VALUES ($1,$2,$3)`,
-		ownRouter, "spec028-rt-tenant-own-"+ownRouter[:8], seededProjectID); err != nil {
+		ownRouter, "spec031-rt-tenant-own-"+ownRouter[:8], seededProjectID); err != nil {
 		t.Fatalf("insert own router: %v", err)
 	}
 	t.Cleanup(func() {
@@ -1018,7 +1019,7 @@ func TestListTenantFilterHonoredForAdmin_DB(t *testing.T) {
 		t.Errorf("member routers?tenant_id=<other>: code=%d body=%s; must not contain the foreign router", code, body)
 	}
 
-	// Round 8: the show must not dead-end the listing's rows — an admin
+	// Showing a listed resource by id must not dead-end an admin's listing
 	// follow-up `router show` on the foreign router answers 200, a member's
 	// 404 (the same carve-out GetNetwork/GetSubnet/GetPort carry).
 	if code, body := doReq(r, http.MethodGet, "/v2.0/routers/"+otherRouter, adminHdr); code != http.StatusOK {
@@ -1068,7 +1069,7 @@ func TestAllocateIPHandlesTinyAndIPv6Pools(t *testing.T) {
 // candidates when the subnet has no gateway) is a valid upstream pool. The old
 // allocator refused it with a 400; now the port must be created with a real
 // fixed IP and nothing blank may be persisted. The same must hold for IPv6,
-// which the old int64-overflow guard refused wholesale (SPEC-028, round 9).
+// which the old int64-overflow guard refused wholesale (SPEC-031, later regression).
 func TestCreatePortAllocatesFromTinyPool(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -1141,6 +1142,6 @@ func TestCreatePortAllocatesFromTinyPool(t *testing.T) {
 		}
 	}
 
-	assertAllocated(createNetSubnet("spec028-r9-tiny", "10.198.0.0/30", 4), "tiny-ipv4")
-	assertAllocated(createNetSubnet("spec028-r9-tiny6", "fd00:198::/64", 6), "tiny-ipv6")
+	assertAllocated(createNetSubnet("spec031-r9-tiny", "10.198.0.0/30", 4), "tiny-ipv4")
+	assertAllocated(createNetSubnet("spec031-r9-tiny6", "fd00:198::/64", 6), "tiny-ipv6")
 }

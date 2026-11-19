@@ -60,7 +60,7 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 			"ip_version":    ipVersion,
 			// The row's OWN project, not the caller's: the shared visibility
 			// clause above returns other projects' pools, and `tenant_id` must
-			// name the owner (same round-8 fix as cinder volumes and ports).
+			// name the owner, as the other resource lists do.
 			"tenant_id":   ownerID,
 			"description": description,
 			"created_at":  createdAt.Format(time.RFC3339),
@@ -105,7 +105,7 @@ func (svc *Service) CreateSubnetPool(c *gin.Context) {
 
 	// A pool's prefixes are CIDRs; a malformed one must be the caller's 400,
 	// not a 201 that stores garbage every subnet allocation then chokes on
-	// (subnets are validated this way already; SPEC-028).
+	// (subnets are validated this way already; SPEC-031).
 	for _, p := range req.SubnetPool.Prefixes {
 		if _, _, err := net.ParseCIDR(p); err != nil {
 			common.SendError(c, common.NewBadRequestError("invalid prefixes: '"+p+"' is not a valid CIDR"))
@@ -185,7 +185,7 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 
 	// A non-UUID reference (a pool name — the CLI resolves names with a list
 	// fallback only after a 404) can only name nothing here; the uuid-typed
-	// lookup used to surface the cast error as 500 instead (SPEC-028).
+	// lookup used to surface the cast error as 500 instead (SPEC-031).
 	if _, err := uuid.Parse(poolID); err != nil {
 		common.SendError(c, common.NewNotFoundError("subnet pool"))
 		return
@@ -263,7 +263,7 @@ func (svc *Service) UpdateSubnetPool(c *gin.Context) {
 	}
 
 	// See CreateSubnetPool: prefixes are CIDRs, and a malformed one is the
-	// caller's 400 (SPEC-028).
+	// caller's 400 (SPEC-031).
 	for _, p := range req.SubnetPool.Prefixes {
 		if _, _, err := net.ParseCIDR(p); err != nil {
 			common.SendError(c, common.NewBadRequestError("invalid prefixes: '"+p+"' is not a valid CIDR"))
@@ -271,7 +271,7 @@ func (svc *Service) UpdateSubnetPool(c *gin.Context) {
 		}
 	}
 
-	// See GetSubnetPool: a non-UUID reference must 404, not 500 (SPEC-028).
+	// See GetSubnetPool: a non-UUID reference must 404, not 500 (SPEC-031).
 	if _, err := uuid.Parse(poolID); err != nil {
 		common.SendError(c, common.NewNotFoundError("subnet pool"))
 		return

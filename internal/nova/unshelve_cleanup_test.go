@@ -29,7 +29,7 @@ func (tx failUnshelveTx) Exec(ctx context.Context, q string, args ...any) (datab
 
 func TestFailedUnshelveRetainsSnapshot(t *testing.T) {
 	requireDB(t)
-	id := seedSpec028Instance(t, "review-unshelve", false)
+	id := seedConformanceInstance(t, "review-unshelve", false)
 	r := newNovaTestRouter()
 	payload, _ := json.Marshal(map[string]any{"shelve": nil})
 	if code, body := doReq(r, http.MethodPost, "/v2.1/servers/"+id+"/action", string(payload), testAuthHdr(seededProjectID, seededUserID)); code != 202 {

@@ -1636,7 +1636,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 			"OS-EXT-STS:power_state": powerState,
 			// Exposed since microversion 2.9 upstream; the lock/unlock actions
 			// maintain the column, but the detail responses never carried it,
-			// so `openstack server show` printed null (SPEC-028).
+			// so `openstack server show` printed null (SPEC-031).
 			"locked": locked,
 			"flavor": gin.H{
 				"id":    flavorID,
@@ -1964,7 +1964,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 		"OS-EXT-STS:power_state": powerState,
 		// Exposed since microversion 2.9 upstream; the lock/unlock actions
 		// maintain the column, but this response never carried it, so
-		// `openstack server show` printed null (SPEC-028).
+		// `openstack server show` printed null (SPEC-031).
 		"locked": locked,
 	}
 

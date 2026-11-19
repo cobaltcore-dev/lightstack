@@ -1,5 +1,5 @@
 #!/bin/bash
-# common.sh — shared foundation for the lightstack CLI conformance harness (SPEC-028).
+# common.sh — shared foundation for the lightstack CLI conformance harness (SPEC-031).
 #
 # Every suite sources exactly this file; it in turn sources assert.sh and report.sh.
 # The locked API (suites depend on these names — do not rename):
@@ -112,10 +112,10 @@ EOF
 # the CLI itself needs it).
 _now_ms() {
     if [[ -n "${EPOCHREALTIME:-}" ]]; then
-        local s frac
-        s=${EPOCHREALTIME%.*}
-        frac=${EPOCHREALTIME#*.}
-        printf '%s%03d\n' "$s" "$((10#${frac:0:3}))"
+        # LC_ALL takes precedence over LC_NUMERIC, so EPOCHREALTIME may use
+        # a comma decimal separator. Keep only digits and drop microseconds.
+        local t=${EPOCHREALTIME//[!0-9]/}
+        printf '%s\n' "${t:0:${#t}-3}"
     else
         python3 -c 'import time; print(int(time.time() * 1000))'
     fi
@@ -134,14 +134,21 @@ log_error() { if _use_color; then printf '\033[0;31m[cli] ERROR\033[0m %s\n' "$*
 # The one way to invoke the CLI
 # ---------------------------------------------------------------------------
 
-# Reusable stderr capture file (suites run sequentially).
-_CLI_ERR_FILE="${TMPDIR:-/tmp}/lightstack-cli-err.$$"
-_CLI_ERR_FILE_CREATED=0
+# Reusable, private stderr capture file (suites run sequentially).
+_CLI_ERR_FILE=""
 
 # Inner executor: runs the CLI with exactly the given args.
 _osc_exec() {
     local args=("$@")
-    [[ $_CLI_ERR_FILE_CREATED -eq 0 ]] && : >"$_CLI_ERR_FILE" && _CLI_ERR_FILE_CREATED=1
+    if [[ -z "$_CLI_ERR_FILE" ]]; then
+        _CLI_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/lightstack-cli-err.XXXXXX")" || {
+            OSC_OUT=""
+            OSC_ERR="cannot create temporary stderr file"
+            OSC_RC=1
+            LAST_CMD="$OSC_BIN ${args[*]}"
+            return 0
+        }
+    fi
 
     local t0 t1
     t0=$(_now_ms)
@@ -164,6 +171,11 @@ osc() {
     local args=("$@") has_format=0 a
     for a in "$@"; do
         [[ "$a" == "-f" || "$a" == "--format" ]] && has_format=1
+    done
+    # The CLI rejects formatters on delete/set/unset with argparse exit 2.
+    # Skip the extra invocation and token request for these mutations.
+    for a in "${@:1:4}"; do
+        [[ "$a" == "delete" || "$a" == "set" || "$a" == "unset" ]] && has_format=1
     done
     # Machine-readable output unless the caller explicitly asked otherwise
     # (e.g. -f value, -f csv, --help).
@@ -195,7 +207,7 @@ _cli_cleanup() {
     # reset it, flattening every early failure (unknown option, preflight
     # errors) to a successful exit.
     local rc=$?
-    rm -f "$_CLI_ERR_FILE"
+    [[ -z "$_CLI_ERR_FILE" ]] || rm -f "$_CLI_ERR_FILE"
     # A suite can register extra cleanup by defining suite_cleanup() — for
     # its own temp files, which would otherwise leak when a standalone run
     # is killed mid-flight (compute.sh's public-key file is the first user).

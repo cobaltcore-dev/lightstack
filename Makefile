@@ -18,7 +18,7 @@ DB_URL?=postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable
 build:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/lightstack
+	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/lightstack
 
 # Build eBPF programs
 build-ebpf:
@@ -125,7 +125,7 @@ test-compose-kvm:
 	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' not found." && exit 1)
 	@bash test/compose_kvm_state_test.sh
 
-# Run the OpenStack CLI conformance suite (SPEC-028, issue #105) against a
+# Run the OpenStack CLI conformance suite (SPEC-031, issue #105) against a
 # lightstack server. Builds bin/lightstack first if absent — the suite tests
 # the built artifact. Uses a server at OS_AUTH_URL if one is running,
 # otherwise starts the binary-test compose stack (requires docker).
@@ -134,14 +134,14 @@ test-cli:
 	@test -x bin/lightstack || $(MAKE) build
 	@bash test/cli/bin/run.sh
 
-# CLI conformance coverage gate (SPEC-028): cross-reference manifest/*.json
+# CLI conformance coverage gate (SPEC-031): cross-reference manifest/*.json
 # with results/results.json; fails on untested/failed/skipped tier A+B
 # commands. Run after test-cli (or a CI job that stores its results there).
 cli-coverage:
 	@echo "Checking CLI conformance coverage..."
 	@bash test/cli/bin/coverage.sh
 
-# Run the Terraform provider conformance module (SPEC-028) against a running
+# Run the Terraform provider conformance module (SPEC-031) against a running
 # lightstack server. Requires terraform and network access to the provider
 # registry on first run.
 test-terraform:

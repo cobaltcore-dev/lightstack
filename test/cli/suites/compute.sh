@@ -1,5 +1,5 @@
 #!/bin/bash
-# compute.sh — SPEC-028 tier A/B conformance cases for the compute (Nova) service.
+# compute.sh — SPEC-031 tier A/B conformance cases for the compute (Nova) service.
 #
 # Covers every command in manifest/compute.json: server CRUD + actions, image/
 # backup creation, consoles, flavors, keypairs, server groups, availability
@@ -18,12 +18,14 @@ suite_begin compute
 # and its teardown sweeps them, so running this suite alone after a sweep
 # re-ensures here instead of failing with confusing missing-resource errors.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/fixtures.sh"
-fixtures_require
+fixtures_require || exit 2
 
 CP_IMAGE="cli-conf-image"
 CP_NETWORK="cli-conf-net"
 CP_FLAVOR="m1.tiny"
-CP_MISSING="cli-conf-cp-missing"
+# Valid, absent UUID: resource finders send a GET to the API instead of
+# stopping client-side while resolving an unknown name.
+CP_MISSING="00000000-0000-4000-8000-000000000000"
 
 # A real 2048-bit RSA public key (generated for this suite; embedding it keeps
 # the suite free of a runtime ssh-keygen dependency and makes the expected
@@ -96,12 +98,9 @@ _cp_neg_server() {
     fi
 }
 
-# The CLI's client-side "resource not found" path prints a message on stderr
-# and exits non-zero; assert presence, not exact wording.
+# A missing resource must reach the API and produce a not-found response.
 _cp_assert_err_nonempty() {
-    if [[ -z "$OSC_ERR" ]]; then
-        t_fail "expected an error message on stderr for: ${LAST_CMD:-?}"
-    fi
+    assert_http_error 404
 }
 
 # Ensure a keypair exists (used by list/show/delete cases).
@@ -126,7 +125,7 @@ _cp_agg_purge() {
 }
 
 # Ensure a server group exists. The create API accepts both the legacy
-# pre-2.63 'policies' array and the 2.64+ 'policy' string (SPEC-028 fix), so
+# pre-2.63 'policies' array and the 2.64+ 'policy' string (SPEC-031 fix), so
 # the fixture uses the current client shape.
 _cp_sg_ensure() {
     local name="$1"
@@ -307,7 +306,7 @@ S="cli-conf-cp-lock"
 _cp_server_ensure "$S"
 osc server lock "$S"
 assert_rc 0
-# The locked flag is surfaced in `server show` (SPEC-028 fix); the action
+# The locked flag is surfaced in `server show` (SPEC-031 fix); the action
 # history is the independent record of the transition.
 osc server show "$S"
 assert_rc 0
@@ -596,15 +595,17 @@ assert_jq_type '.[0]["Hypervisor Hostname"]' string
 t_end
 
 t_begin compute.usage.list
+S="cli-conf-cp-usage"
+_cp_server_ensure "$S"
 osc usage list
 assert_rc 0
 assert_jq_type '.' array
-# Deliberately NO length guard, unlike the hypervisor probe: usage lists
-# per-project instance aggregates, and every case before this one deletes
-# its server (rerun-safety), so an empty listing is the legitimate steady
-# state. `all` over [] is vacuously true by design here — the row-shape
-# assertion is the actual contract.
+# This case owns one ACTIVE server so both the aggregate row and its server
+# count have to reflect real instance usage; an empty result cannot pass.
+assert_jq_gt 'length' 0
 assert_jq 'all(.[]; (.Project | type) == "string")' "true"
+assert_jq 'any(.[]; (.["Servers"] // 0) > 0)' "true"
+_cp_server_purge "$S"
 t_end
 
 # ---------------------------------------------------------------------------

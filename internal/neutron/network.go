@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -708,7 +709,7 @@ func networkListDecision(sharedParam, routerExternalParam string) (sf sharedFilt
 // administrator filtering by tenant gets that tenant's networks outright
 // (upstream honours the filter for admin tokens), so the caller's read scope
 // must not be ANDed in — it would leave only the shared/external subset and
-// answer [] for another project's private networks (SPEC-028). A non-admin
+// answer [] for another project's private networks (SPEC-031). A non-admin
 // keeps the scope AND tenant intersection. The filter also honors `shared`
 // (only/exclude shared), `router:external` (a real predicate since SPEC-024
 // F11), and the id/name filters the Terraform provider uses. Placeholders are
@@ -744,7 +745,7 @@ func buildNetworkListFilter(caller, sharedParam, routerExternalParam, tenantPara
 	}
 	if tenantParam != "" {
 		// ::text — a non-UUID tenant value must narrow to nothing, not
-		// fail the uuid cast and answer 500 (SPEC-028).
+		// fail the uuid cast and answer 500 (SPEC-031).
 		f.Eq("project_id::text", tenantParam)
 	}
 	if idParam != "" {
@@ -776,10 +777,8 @@ func optionalString(raw json.RawMessage) (value *string, present bool, err error
 
 // validateSubnetGateway checks a gateway against its subnet as upstream does (_validate_subnet and
 // ipam's check_gateway_invalid_in_subnet): an address of the subnet's IP version, and neither its
-// network address nor, for IPv4, its broadcast address. Two differences remain. Upstream accepts a
-// gateway outside the subnet; Lightstack refuses it, because the network's bridge carries the gateway
-// address and can only carry one on the subnet. And upstream refuses a gateway inside an allocation
-// pool (GatewayConflictWithAllocationPools); Lightstack keeps no per-subnet pools to check against.
+// network address nor, for IPv4, its broadcast address. One difference remains: upstream accepts a
+// gateway outside the subnet; Lightstack refuses it because the network bridge carries that address.
 func validateSubnetGateway(gateway, cidr string) error {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -801,6 +800,25 @@ func validateSubnetGateway(gateway, cidr string) error {
 		return fmt.Errorf("%s is the subnet's broadcast address", gateway)
 	}
 	return nil
+}
+
+// gatewayConflictsWithAllocationPool reports whether gateway is in the
+// default allocation range exposed for this subnet. Neutron refuses this with
+// GatewayConflictWithAllocationPools because DHCP clients may receive it.
+func gatewayConflictsWithAllocationPool(gateway, cidr string) bool {
+	ip := net.ParseIP(gateway).To4()
+	if ip == nil {
+		return false
+	}
+	for _, pool := range subnetAllocationPools(cidr) {
+		start, _ := pool["start"].(string)
+		end, _ := pool["end"].(string)
+		startIP, endIP := net.ParseIP(start).To4(), net.ParseIP(end).To4()
+		if startIP != nil && endIP != nil && bytes.Compare(ip, startIP) >= 0 && bytes.Compare(ip, endIP) <= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // subnetFilterParams carries the raw query values the subnet listing honours, so the builder below
@@ -892,7 +910,7 @@ func (svc *Service) ListNetworks(c *gin.Context) {
 	// under the SAME scope the listing used: an admin's tenant-filtered walk
 	// dropped the read scope above (buildNetworkListFilter), so resolving
 	// with it would 404 the walk mid-page on the very rows the listing just
-	// returned (SPEC-028).
+	// returned (SPEC-031).
 	var m *listMarker
 	var ok bool
 	if common.HasRole(c, common.RoleAdmin) && tenant != "" {
@@ -1034,24 +1052,21 @@ func (svc *Service) GetNetwork(c *gin.Context) {
 	var mtu int
 	var createdAt, updatedAt time.Time
 
-	// An administrator may show any network — upstream's get_network policy
-	// is "admin_or_owner or shared or external", and the LIST already honours
-	// that for the admin (buildNetworkListFilter bypasses the read scope for
-	// an admin's tenant filter). Without the matching carve-out here, an
-	// admin could list another project's private network with --project and
-	// then get a 404 showing the id it just listed (SPEC-028).
+	// Administrators may address any network by id, but a name stays in the
+	// caller's read scope so a duplicate name cannot select another tenant's
+	// resource.
 	query := `
 		SELECT id, name, admin_state_up, status, shared, mtu, created_at, updated_at, project_id, external, COALESCE(description, '')
 		FROM networks
-		WHERE (id::text = $1 OR name = $1)`
-	args := []any{networkID}
-	if !common.HasRole(c, common.RoleAdmin) {
-		query += ` AND ` + networkReadScope("$2")
-		args = append(args, projectID)
+		WHERE (id::text = $1 AND `
+	scope := networkReadScope("$2")
+	idScope := scope
+	if common.HasRole(c, common.RoleAdmin) {
+		idScope = `TRUE`
 	}
-	query += ` LIMIT 1`
+	query += idScope + `) OR (name = $1 AND ` + scope + `) LIMIT 1`
 
-	err := svc.pool.QueryRow(ctx, query, args...).
+	err := svc.pool.QueryRow(ctx, query, networkID, projectID).
 		Scan(&id, &name, &adminStateUp, &status, &shared, &mtu, &createdAt, &updatedAt, &owner, &external, &description)
 
 	if errors.Is(err, database.ErrNoRows) {
@@ -1250,7 +1265,7 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 			External     *bool   `json:"router:external"`
 			// The standard resource annotation (migration 075): 'network set
 			// --description' PUTs it, and the handler had no column to
-			// persist it to (SPEC-028).
+			// persist it to (SPEC-031).
 			Description *string `json:"description"`
 		} `json:"network"`
 	}
@@ -1548,6 +1563,10 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("invalid gateway_ip: "+err.Error()))
 			return
 		}
+		if gatewayConflictsWithAllocationPool(*gatewayIP, req.Subnet.CIDR) {
+			common.SendError(c, common.NewConflictError("gateway IP conflicts with the subnet allocation pool"))
+			return
+		}
 	}
 	if !present {
 		auto := incrementIP(ipNet.IP, 1).String()
@@ -1632,23 +1651,13 @@ type listMarker struct {
 	id        string
 }
 
-// resolveListMarker resolves a listing's marker as upstream Neutron does (neutron-lib
-// db/utils.get_marker_obj): only when a limit is given — without one the marker is not used — and
-// through the resource's own read, so an id the caller may not read resolves exactly like an id that
-// names nothing. query selects (created_at, id) of the row with id $1 the caller may read, the
-// caller's project id being $2. A marker that does not resolve is the resource's 404, written here so
-// the handler only has to return; a nil marker with ok true means none is in effect.
-//
-// The networks, subnets and ports listings used to read the marker with no visibility and ignore one
-// that did not resolve, so another project's private row narrowed the page where an absent id did
-// not — telling the caller it exists.
-// resolveListMarker resolves a listing's marker as upstream Neutron does (neutron-lib
-// _resolve_pagination_marker): the marker names a row of the SAME collection under the
-// SAME visibility the listing itself used, and the page continues after it. Callers
-// pass the scope predicates' arguments after the marker id (normally just the caller's
-// project id); a listing that dropped its read scope — an admin's tenant-filtered
-// walk — passes none, so the marker resolves under the listing's actual scope and an
-// admin's walk cannot 404 mid-page on a row the listing itself just returned.
+// resolveListMarker resolves a listing's marker through the same resource read and visibility
+// used by the listing, as upstream Neutron does (neutron-lib _resolve_pagination_marker). It is
+// used only when a limit is present. query selects (created_at, id) for the row named by $1;
+// scopeArgs are the scope predicate's arguments after the marker id, normally the caller's project
+// id. Listings that drop their read scope pass no scope arguments, so an admin's tenant-filtered
+// walk cannot 404 mid-page on a row it just returned. A marker that does not resolve is the
+// resource's 404; a nil marker with ok true means no marker is in effect.
 func (svc *Service) resolveListMarker(c *gin.Context, limit any, resource, query string, scopeArgs ...any) (*listMarker, bool) {
 	marker := c.Query("marker")
 	if marker == "" || limit == nil {
@@ -1701,7 +1710,7 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 	// placeholder reused. Dropped for an administrator who filters by tenant or by network —
 	// upstream honours both for admin tokens, and network_id in particular is a pointer that
 	// comes straight out of a network body the admin was allowed to read, so scoping it again
-	// would answer 200 for the network and [] for its subnets (SPEC-028; mirrors
+	// would answer 200 for the network and [] for its subnets (SPEC-031; mirrors
 	// buildNetworkListFilter's tenant bypass). A non-admin keeps the scope AND filter
 	// intersection.
 	adminBypass := common.HasRole(c, common.RoleAdmin) && (tenant != "" || c.Query("network_id") != "")
@@ -1840,21 +1849,20 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 	// Consequently s.project_id is selected, not assumed: this handler can return a subnet
 	// the caller does not own — one on their network, or on a shared network — so reporting
 	// the caller as tenant_id would tell them a resource is theirs when it is not.
-	// An administrator may show any subnet — the same carve-out GetNetwork
-	// has (upstream's get_subnet policy includes ADMIN_OR_NET_OWNER_READER).
-	// Without it, an admin could show a network and then 404 on the subnet
-	// ids its own body lists (SPEC-028).
+	// Administrators may address a subnet by id across projects. Name lookups
+	// stay in the caller's subnet read scope.
 	query := `
 		SELECT s.id, s.name, s.network_id, s.cidr, s.gateway_ip, s.ip_version, s.enable_dhcp, s.dns_nameservers, s.created_at, s.updated_at, s.project_id
 		FROM subnets s
 		JOIN networks n ON s.network_id = n.id
-		WHERE (s.id::text = $1 OR s.name = $1)`
-	args := []any{subnetID}
-	if !common.HasRole(c, common.RoleAdmin) {
-		query += ` AND ` + subnetReadScope("$2")
-		args = append(args, projectID)
+		WHERE (s.id::text = $1 AND `
+	scope := subnetReadScope("$2")
+	idScope := scope
+	if common.HasRole(c, common.RoleAdmin) {
+		idScope = `TRUE`
 	}
-	err := svc.pool.QueryRow(c.Request.Context(), query+" LIMIT 1", args...).
+	query += idScope + `) OR (s.name = $1 AND ` + scope + `) LIMIT 1`
+	err := svc.pool.QueryRow(c.Request.Context(), query, subnetID, projectID).
 		Scan(&id, &name, &networkID, &cidr, &gatewayIP, &ipVersion, &enableDHCP, &dnsNameservers, &createdAt, &updatedAt, &owner)
 
 	if errors.Is(err, database.ErrNoRows) {
@@ -1943,7 +1951,7 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 	// that orphans the holder. The router interface case mattered most — the
 	// port survived the subnet (no FK from fixed_ips), silently blocked the
 	// network's deletion with a 409, and 'router remove port' 404s because the
-	// interface row cascaded away with the subnet (SPEC-028).
+	// interface row cascaded away with the subnet (SPEC-031).
 	var holder string
 	ports, err := tx.Query(c.Request.Context(),
 		"SELECT id, fixed_ips FROM ports WHERE network_id = $1", networkID)
@@ -1954,19 +1962,10 @@ func (svc *Service) DeleteSubnet(c *gin.Context) {
 	}
 	for ports.Next() {
 		var portID string
-		var fixedIPsJSON []byte
-		if err := ports.Scan(&portID, &fixedIPsJSON); err != nil {
+		var fixedIPs common.FixedIPs
+		if err := ports.Scan(&portID, &fixedIPs); err != nil {
 			ports.Close()
 			log.Error().Err(err).Str("operation", "delete_subnet_inuse").Str("subnet_id", resolvedID).Msg("database error")
-			common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
-			return
-		}
-		var fixedIPs []struct {
-			SubnetID string `json:"subnet_id"`
-		}
-		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil {
-			ports.Close()
-			log.Error().Err(err).Str("operation", "delete_subnet_inuse").Str("subnet_id", resolvedID).Msg("invalid fixed_ips JSON")
 			common.SendError(c, common.NewInternalServerError("failed to delete subnet"))
 			return
 		}
@@ -2131,7 +2130,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 			// omitted key leaves it alone (FR-023, contract S14).
 			GatewayIP json.RawMessage `json:"gateway_ip"`
 			// 'subnet set --dhcp/--no-dhcp' PUTs it; the handler had no
-			// binding for it, so the flag was a 200 no-op (SPEC-028).
+			// binding for it, so the flag was a 200 no-op (SPEC-031).
 			EnableDHCP *bool `json:"enable_dhcp"`
 		} `json:"subnet"`
 	}
@@ -2180,6 +2179,10 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 	if gatewayGiven && newGateway != nil {
 		if err := validateSubnetGateway(*newGateway, subnetCIDR); err != nil {
 			common.SendError(c, common.NewBadRequestError("invalid gateway_ip: "+err.Error()))
+			return
+		}
+		if gatewayConflictsWithAllocationPool(*newGateway, subnetCIDR) {
+			common.SendError(c, common.NewConflictError("gateway IP conflicts with the subnet allocation pool"))
 			return
 		}
 	}

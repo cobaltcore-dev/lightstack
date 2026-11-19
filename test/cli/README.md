@@ -1,10 +1,10 @@
-# OpenStack CLI Conformance Suite (SPEC-028)
+# OpenStack CLI Conformance Suite (SPEC-031)
 
 Systematic verification that the **built lightstack binary** works against the
 **python OpenStack CLI** (`openstack`) across all cases — every CLI-exposed
 operation of the five services, happy path and negative path — enforced in CI.
 
-Implements [SPEC-028](../../docs/specs/028-cli-conformance-test-environment/plan.md)
+Implements [SPEC-031](../../docs/specs/031-cli-conformance-test-environment/plan.md)
 for [issue #105](https://github.com/cobaltcore-dev/lightstack/issues/105).
 
 ## Quick start
@@ -29,7 +29,7 @@ bin/run.sh ── sources ──> lib/common.sh ──> lib/assert.sh, lib/repor
     │                                                │
     │  fixtures_ensure/teardown (lib/fixtures.sh)    │ results.json + results.junit.xml
     ▼                                                ▼
-suites/<service>.sh   ── case records ──> results/results.jsonl ──> bin/coverage.sh
+suites/<service>.sh   ── case records ──> results/results.json ──> bin/coverage.sh
 manifest/<service>.json ──────────────────────────────────┘ (the gate)
 ```
 
@@ -72,7 +72,10 @@ a tracked issue.
 | A | happy path + output shape (`-f json` fields present and typed) | `<manifest id>` | yes |
 | B | negative paths (404/400/409 semantics via the CLI) | `<manifest id>.neg` | yes |
 | C | cross-service workflows | scenario id, verbatim | nightly (`--strict`) |
-| S | smoke — harness end-to-end proof | `smoke.*` | no |
+
+Tier B asserts the CLI's refusal and expected error class. The CLI may resolve a
+resource before sending a later write, so a case can exercise only that lookup;
+see the [manifest guidance](manifest/README.md) for recording the stage covered.
 
 ## The lib API (locked)
 
@@ -154,10 +157,12 @@ CI runs the binary natively instead (artifact download + PostgreSQL service).
    tier B if a negative case makes sense).
 2. Write the case in `suites/<service>.sh` using the id from the manifest
    (`<id>` for tier A, `<id>.neg` for tier B).
-3. `./test/cli/bin/run.sh --suite <service> && ./test/cli/bin/coverage.sh`
-   until green.
+3. Run ./test/cli/bin/run.sh --suite <service> while iterating. Since
+   coverage.sh checks every manifest, run the full
+   ./test/cli/bin/run.sh && ./test/cli/bin/coverage.sh before merging.
 
 ## Pinning policy
 
-`constraints.txt` pins `python-openstackclient`. Upgrades are deliberate PRs
-(batch the expected diffs), never ambient. Current pin: 7.0.0.
+constraints.txt pins the full resolved CLI dependency set, including
+python-openstackclient 7.0.0. Upgrade the set deliberately and review the
+expected output changes with it.

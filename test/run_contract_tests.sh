@@ -47,72 +47,43 @@ fi
 echo -e "${GREEN}✓ Authentication successful${NC}"
 echo ""
 
-# Run contract tests for each service
-SERVICES=("keystone" "nova" "cinder" "neutron" "glance")
-TOTAL_PASS=0
-TOTAL_FAIL=0
-TOTAL_TESTS=0
+# Run every Go package under test/contract, including the root package.
+cd "$SCRIPT_DIR/contract"
+TEST_RC=0
+TEST_OUTPUT=$(go test -json -count=1 -timeout=10m ./...) || TEST_RC=$?
+
+# go test -json writes structured events to stdout. Keep stderr separate: module
+# download and compiler diagnostics must not corrupt the JSON event stream.
+PASS_COUNT=$(printf '%s\n' "$TEST_OUTPUT" | jq -r 'select(.Action == "pass" and .Test != null) | .Test' | wc -l | tr -d ' ')
+FAIL_COUNT=$(printf '%s\n' "$TEST_OUTPUT" | jq -r 'select(.Action == "fail" and .Test != null) | .Test' | wc -l | tr -d ' ')
+TOTAL_TESTS=$((PASS_COUNT + FAIL_COUNT))
 BROKEN_SUITES=0
+if [ "$TEST_RC" -ne 0 ] || [ "$TOTAL_TESTS" -eq 0 ]; then
+    BROKEN_SUITES=1
+    echo "ERROR: contract packages did not complete a passing test run (exit $TEST_RC)" >&2
+fi
+if [ "$FAIL_COUNT" -gt 0 ]; then
+    echo "Failed tests:" >&2
+    printf '%s\n' "$TEST_OUTPUT" | jq -r 'select(.Action == "fail" and .Test != null) | .Package + "." + .Test' >&2
+fi
 
-for SERVICE in "${SERVICES[@]}"; do
-    echo "============================="
-    echo "Testing $SERVICE"
-    echo "============================="
-
-    cd "$SCRIPT_DIR/contract/$SERVICE"
-
-    # Run tests with timeout and JSON output.
-    # `|| true`: a non-zero go test exit (failing tests) must not abort the
-    # script under `set -e` — the counts below decide the final exit code.
-    TEST_RC=0
-    TEST_OUTPUT=$(go test -json -count=1 -timeout=3m 2>&1) || TEST_RC=$?
-
-    # Count results. `|| true`: jq exits non-zero if go test mixed non-JSON
-    # stderr (e.g. build errors) into the stream; the counts we did get are
-    # still what we want to report, and zero matches is a normal outcome.
-    PASS_COUNT=$(echo "$TEST_OUTPUT" | jq -r 'select(.Action == "pass" and .Test != null) | .Test' | wc -l | tr -d ' ' || true)
-    FAIL_COUNT=$(echo "$TEST_OUTPUT" | jq -r 'select(.Action == "fail" and .Test != null) | .Test' | wc -l | tr -d ' ' || true)
-    if [ "$TEST_RC" -ne 0 ] || [ "$((PASS_COUNT + FAIL_COUNT))" -eq 0 ]; then
-        BROKEN_SUITES=$((BROKEN_SUITES + 1))
-        echo "ERROR: $SERVICE did not complete a passing test run (exit $TEST_RC)"
-    fi
-
-    TOTAL_PASS=$((TOTAL_PASS + PASS_COUNT))
-    TOTAL_FAIL=$((TOTAL_FAIL + FAIL_COUNT))
-    TOTAL_TESTS=$((TOTAL_TESTS + PASS_COUNT + FAIL_COUNT))
-
-    if [ "$FAIL_COUNT" -eq 0 ]; then
-        echo -e "${GREEN}✓ All $PASS_COUNT tests passed${NC}"
-    else
-        echo -e "${YELLOW}⚠ $PASS_COUNT passed, $FAIL_COUNT failed${NC}"
-        echo ""
-        echo "Failed tests:"
-        echo "$TEST_OUTPUT" | jq -r 'select(.Action == "fail" and .Test != null) | .Test' || true
-    fi
-    echo ""
-done
-
-# Summary
 echo "============================="
 echo "Test Summary"
 echo "============================="
 echo "Total Tests: $TOTAL_TESTS"
-echo -e "Passed: ${GREEN}$TOTAL_PASS${NC}"
-echo -e "Failed: ${RED}$TOTAL_FAIL${NC}"
+echo -e "Passed: ${GREEN}$PASS_COUNT${NC}"
+echo -e "Failed: ${RED}$FAIL_COUNT${NC}"
 
-# Guard the division: if every test was skipped TOTAL_TESTS is 0 and awk
-# would abort with "division by zero" (fatal under `set -e`).
 if [ "$TOTAL_TESTS" -gt 0 ]; then
-    PASS_RATE=$(awk "BEGIN {printf \"%.1f\", ($TOTAL_PASS/$TOTAL_TESTS)*100}")
+    PASS_RATE=$(awk "BEGIN {printf \"%.1f\", ($PASS_COUNT/$TOTAL_TESTS)*100}")
 else
     PASS_RATE=0.0
 fi
 echo "Pass Rate: $PASS_RATE%"
 
-if [ "$TOTAL_FAIL" -eq 0 ] && [ "$BROKEN_SUITES" -eq 0 ]; then
-    echo -e "${GREEN}✓ All tests passed!${NC}"
+if [ "$FAIL_COUNT" -eq 0 ] && [ "$BROKEN_SUITES" -eq 0 ]; then
+    echo -e "${GREEN}✓ All contract tests passed!${NC}"
     exit 0
-else
-    echo -e "${YELLOW}⚠ Some tests failed${NC}"
-    exit 1
 fi
+echo -e "${YELLOW}⚠ Some contract tests failed${NC}"
+exit 1

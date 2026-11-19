@@ -1,6 +1,6 @@
 package nova
 
-// SPEC-028 conformance fixes for the compute surface, found by the CLI
+// SPEC-031 conformance fixes for the compute surface, found by the CLI
 // conformance suites (issue #105). Each test pins the upstream behaviour the
 // corresponding bug diverged from.
 
@@ -15,9 +15,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// seedSpec028Instance inserts an ACTIVE instance owned by the seeded project
+// seedConformanceInstance inserts an ACTIVE instance owned by the seeded project
 // and returns its id. The caller owns cleanup.
-func seedSpec028Instance(t *testing.T, name string, withImage bool) string {
+func seedConformanceInstance(t *testing.T, name string, withImage bool) string {
 	t.Helper()
 	id := uuid.NewString()
 	var err error
@@ -52,7 +52,7 @@ func TestServerGroupCreatePolicy264(t *testing.T) {
 	requireDB(t)
 	r := newNovaTestRouter()
 	hdr := testAuthHdr(seededProjectID, seededUserID)
-	name := "spec028-sg-policy-" + uuid.NewString()[:8]
+	name := "spec031-sg-policy-" + uuid.NewString()[:8]
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(),
 			"DELETE FROM server_groups WHERE name=$1", name)
@@ -134,8 +134,8 @@ func TestCreateBackupImageNameExact(t *testing.T) {
 	requireDB(t)
 	r := newNovaTestRouter()
 	hdr := testAuthHdr(seededProjectID, seededUserID)
-	id := seedSpec028Instance(t, "spec028-bak-src", true)
-	imageName := "spec028-bak-img-" + uuid.NewString()[:8]
+	id := seedConformanceInstance(t, "spec031-bak-src", true)
+	imageName := "spec031-bak-img-" + uuid.NewString()[:8]
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), "DELETE FROM images WHERE name=$1", imageName)
 	})
@@ -164,7 +164,7 @@ func TestShelveUnshelveReshelve(t *testing.T) {
 	requireDB(t)
 	r := newNovaTestRouter()
 	hdr := testAuthHdr(seededProjectID, seededUserID)
-	id := seedSpec028Instance(t, "spec028-shelve-src", false)
+	id := seedConformanceInstance(t, "spec031-shelve-src", false)
 	action := func(name string) (int, string) {
 		return doReq(r, http.MethodPost, "/v2.1/servers/"+id+"/action",
 			`{"`+name+`":null}`, hdr)
@@ -197,7 +197,7 @@ func TestServerShowLockedField(t *testing.T) {
 	requireDB(t)
 	r := newNovaTestRouter()
 	hdr := testAuthHdr(seededProjectID, seededUserID)
-	id := seedSpec028Instance(t, "spec028-locked-src", false)
+	id := seedConformanceInstance(t, "spec031-locked-src", false)
 
 	code, body := doReq(r, http.MethodGet, "/v2.1/servers/"+id, "", hdr)
 	if code != http.StatusOK {
@@ -224,7 +224,7 @@ func TestServerGroupDuplicateNamesAllowed(t *testing.T) {
 	requireDB(t)
 	r := newNovaTestRouter()
 	hdr := testAuthHdr(seededProjectID, seededUserID)
-	name := "spec028-sg-dup-" + uuid.NewString()[:8]
+	name := "spec031-sg-dup-" + uuid.NewString()[:8]
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(),
 			"DELETE FROM server_groups WHERE name=$1", name)
@@ -259,11 +259,11 @@ func TestServerGroupDuplicateNamesAllowed(t *testing.T) {
 // flipped the unshelved server back to SHUTOFF within one 30s sweep:
 // `server unshelve` observably did nothing. Upstream's unshelve boots the
 // restored instance; the guest must be up before the record claims ACTIVE
-// (SPEC-028, round 9 — caught by a full run losing the race).
+// (SPEC-031, later regression — caught by a full run losing the race).
 func TestUnshelveRestartsGuest(t *testing.T) {
 	requireDB(t)
 	_, r, mgr := newLifecycleService(t)
-	id, domainID := seedLifecycleInstance(t, mgr, "spec028-r9-unshelve")
+	id, domainID := seedLifecycleInstance(t, mgr, "spec031-r9-unshelve")
 	hdr := lifecycleHdr()
 	action := func(name string) (int, string) {
 		return doReq(r, http.MethodPost, "/v2.1/servers/"+id+"/action",
@@ -308,11 +308,11 @@ func TestUnshelveRestartsGuest(t *testing.T) {
 // domain while the revived guest ran under a new one: the reconciler then
 // selected the row, asked about the stale id, and flipped ACTIVE back to
 // SHUTOFF within one sweep — the exact bug the restart exists to fix, reborn
-// on the self-heal path (round 10).
+// on the self-heal path.
 func TestUnshelveSelfHealPersistsRevivedDomain(t *testing.T) {
 	requireDB(t)
 	_, r, mgr := newLifecycleService(t)
-	id, domainID := seedLifecycleInstance(t, mgr, "spec028-r10-unshelve-heal")
+	id, domainID := seedLifecycleInstance(t, mgr, "spec031-r10-unshelve-heal")
 	hdr := lifecycleHdr()
 	action := func(name string) (int, string) {
 		return doReq(r, http.MethodPost, "/v2.1/servers/"+id+"/action",
@@ -348,7 +348,7 @@ func TestUnshelveSelfHealPersistsRevivedDomain(t *testing.T) {
 	volID := uuid.NewString()
 	if _, err := testPool.Exec(t.Context(),
 		`INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, volume_type, created_at, updated_at)
-		 VALUES ($1, 'spec028-r10-heal-root', $2, $3, 1, 'in-use', true, '__DEFAULT__', now(), now())`,
+		 VALUES ($1, 'spec031-r10-heal-root', $2, $3, 1, 'in-use', true, '__DEFAULT__', now(), now())`,
 		volID, seededProjectID, seededUserID); err != nil {
 		t.Fatalf("seed root volume: %v", err)
 	}

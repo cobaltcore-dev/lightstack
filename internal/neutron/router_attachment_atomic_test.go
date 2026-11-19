@@ -29,8 +29,8 @@ func (tx failInterfaceTx) Exec(ctx context.Context, query string, args ...any) (
 func TestRouterAttachmentRollbackAndExhaustion(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
-	netID, subnetID, _ := seedSpec028NetSubnet(t, ctx, "review")
-	t.Cleanup(func() { cleanupSpec028Net(t, ctx, netID) })
+	netID, subnetID, _ := seedConformanceNetSubnet(t, ctx, "review")
+	t.Cleanup(func() { cleanupConformanceNet(t, ctx, netID) })
 	routerID, portID := uuid.NewString(), uuid.NewString()
 	if _, err := testPool.Exec(ctx, "INSERT INTO routers (id,name,project_id) VALUES ($1,$2,$3)", routerID, routerID, seededProjectID); err != nil {
 		t.Fatal(err)

@@ -96,7 +96,7 @@ func (svc *Service) ListRouters(c *gin.Context) {
 	// The caller's project — unless an administrator filters by tenant:
 	// upstream honours the filter for admin tokens, and it was silently
 	// ignored before, so `router list --project X` presented the admin's
-	// routers as project X's (SPEC-028; mirrors buildNetworkListFilter's
+	// routers as project X's (SPEC-031; mirrors buildNetworkListFilter's
 	// tenant bypass). ::text so a non-UUID value narrows to nothing instead
 	// of failing the cast.
 	routerTenant := c.Query("tenant_id")
@@ -287,24 +287,19 @@ func (svc *Service) GetRouter(c *gin.Context) {
 	var r Router
 	var gatewayInfo sql.NullString
 
-	// id::text comparison resolves by UUID or name without crashing on a
-	// non-UUID identifier — the CLI looks a router up by name this way
-	// (consistent with GetNetwork/GetSubnet). An administrator may show any
-	// router (upstream's get_router policy is admin_or_owner), so the
-	// tenant-filtered listing's rows do not dead-end their follow-up show
-	// with 404 — the same carve-out the other reads got (SPEC-028). A
-	// non-admin keeps the project scope.
+	// Administrators may address any router by id. Name lookups stay in the
+	// caller's project so a duplicate name cannot select another tenant's row.
 	routerQuery := `
 		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
 		       distributed, ha, created_at, updated_at
 		FROM routers
-		WHERE (id::text = $1 OR name = $1)`
-	routerArgs := []any{routerID}
-	if !common.HasRole(c, common.RoleAdmin) {
-		routerQuery += ` AND project_id = $2`
-		routerArgs = append(routerArgs, projectID)
+		WHERE (id::text = $1 AND `
+	idScope := `project_id = $2`
+	if common.HasRole(c, common.RoleAdmin) {
+		idScope = `TRUE`
 	}
-	err := svc.pool.QueryRow(c.Request.Context(), routerQuery+" LIMIT 1", routerArgs...).
+	routerQuery += idScope + `) OR (name = $1 AND project_id = $2)`
+	err := svc.pool.QueryRow(c.Request.Context(), routerQuery+" LIMIT 1", routerID, projectID).
 		Scan(&r.ID, &r.Name, &r.ProjectID, &r.AdminStateUp, &r.Status,
 			&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt)
 
@@ -514,18 +509,18 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		// port_id path — attach a port the caller already owns. The handler
 		// used to ignore the field entirely and read the (empty) subnet_id
 		// instead, so 'router add port' answered 500 "failed to get subnet"
-		// (SPEC-028).
+		// (SPEC-031).
 		if _, err := uuid.Parse(req.PortID); err != nil {
 			common.SendError(c, common.NewNotFoundError("port"))
 			return
 		}
-		var fixedIPsJSON []byte
+		var fixedIPs common.FixedIPs
 		var deviceID sql.NullString
 		err := svc.pool.QueryRow(ctx, `
 			SELECT id::text, network_id::text, fixed_ips, device_id
 			FROM ports
 			WHERE id = $1 AND project_id = $2
-		`, req.PortID, projectID).Scan(&portID, &networkID, &fixedIPsJSON, &deviceID)
+		`, req.PortID, projectID).Scan(&portID, &networkID, &fixedIPs, &deviceID)
 		if errors.Is(err, database.ErrNoRows) {
 			common.SendError(c, common.NewNotFoundError("port"))
 			return
@@ -540,8 +535,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 				"Port "+portID+" already has a device assigned and cannot be attached to a router."))
 			return
 		}
-		var fixedIPs common.FixedIPs
-		if err := json.Unmarshal(fixedIPsJSON, &fixedIPs); err != nil || len(fixedIPs) != 1 || fixedIPs[0].SubnetID == "" || net.ParseIP(fixedIPs[0].IPAddress) == nil {
+		if len(fixedIPs) != 1 || fixedIPs[0].SubnetID == "" || net.ParseIP(fixedIPs[0].IPAddress) == nil {
 			common.SendError(c, common.NewBadRequestError("router port must have exactly one valid fixed IP"))
 			return
 		}
@@ -610,12 +604,12 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		}
 	}
 
-	// A second interface for the same (router, subnet) is upstream's 409 —
+	// A second interface for the same (router, subnet) is upstream's 400 —
 	// and it must be refused BEFORE anything is written: the unique
 	// constraint used to turn it into a 500 that left the freshly created
 	// interface port behind, which then blocked the network's deletion with
 	// a 409 nobody could 'router remove port' away (the interface row had
-	// never been inserted, so the remove lookup found nothing; SPEC-028).
+	// never been inserted, so the remove lookup found nothing; SPEC-031).
 	var alreadyAttached bool
 	err = tx.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM router_interfaces WHERE router_id = $1 AND subnet_id = $2)",
@@ -626,8 +620,7 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		return
 	}
 	if alreadyAttached {
-		common.SendError(c, common.NewResourceInUseError("router", "add interface to router",
-			"Router already has an interface on subnet "+subnetID+"."))
+		common.SendError(c, common.NewBadRequestError("Router already has a port on subnet "+subnetID))
 		return
 	}
 
@@ -691,10 +684,9 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		if database.IsUniqueViolation(err) {
 			// The constraint is the duplicate-interface backstop: the
 			// EXISTS check above can lose a race with a concurrent attach
-			// of the same (router, subnet). Answer the same 409 the check
+			// of the same (router, subnet). Answer the same 400 the check
 			// produces instead of surfacing the race as a 500.
-			common.SendError(c, common.NewResourceInUseError("router", "add interface to router",
-				"Router already has an interface on subnet "+subnetID+"."))
+			common.SendError(c, common.NewBadRequestError("Router already has a port on subnet "+subnetID))
 			return
 		}
 		log.Error().Err(err).Str("operation", "add_router_interface_record").Msg("database error")

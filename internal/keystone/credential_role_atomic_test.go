@@ -44,7 +44,10 @@ func TestCredentialRolesAreAtomic(t *testing.T) {
 	})
 	svc := NewService(failCredentialDB{testPool}, nil, nil)
 	r := gin.New()
-	r.POST("/users/:id/application_credentials", func(c *gin.Context) { c.Set("user_id", userID) }, svc.CreateApplicationCredential)
+	r.POST("/users/:id/application_credentials", func(c *gin.Context) {
+		c.Set("user_id", userID)
+		c.Set("roles", []string{roleID})
+	}, svc.CreateApplicationCredential)
 	payload := func(roles []map[string]string) string {
 		b, err := json.Marshal(map[string]any{"application_credential": map[string]any{"name": name, "roles": roles}})
 		if err != nil {

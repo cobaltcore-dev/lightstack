@@ -1,5 +1,5 @@
 #!/bin/bash
-# keystone.sh — SPEC-028 tier A/B conformance cases for Keystone (identity).
+# keystone.sh — SPEC-031 tier A/B conformance cases for Keystone (identity).
 #
 # Case ids match manifest/keystone.json exactly (tier A = manifest id, tier B =
 # "<id>.neg"). Every resource created here is named cli-conf-ke-* and deleted
@@ -18,11 +18,10 @@ suite_begin keystone
 
 # --- helpers -----------------------------------------------------------------
 
-# Assert the last osc() call exited non-zero (the standard tier B shape).
+# Assert a negative case produced the expected API error, not an unrelated
+# auth, connection, server, or client argument failure.
 _ke_assert_failed() {
-    if (( OSC_RC == 0 )); then
-        t_fail "expected a non-zero exit code, got 0"
-    fi
+    assert_http_error "${1:-404}"
 }
 
 # Assert the pinned client surfaced HTTP status <code> for the last osc()
@@ -31,9 +30,7 @@ _ke_assert_failed() {
 # only the number is asserted — never the surrounding text.
 _ke_assert_http() {
     local code="$1"
-    if [[ "$OSC_ERR" != *"$code"* ]]; then
-        t_fail "expected HTTP $code in the client error output; stderr: ${OSC_ERR:0:300}"
-    fi
+    assert_http_error "$code"
 }
 
 # Assert the last `osc <noun> list` output holds exactly one entry named $1
@@ -87,10 +84,10 @@ osc project delete cli-conf-ke-proj
 osc project create cli-conf-ke-proj
 assert_rc 0
 osc project create cli-conf-ke-proj
-_ke_assert_failed
+_ke_assert_failed 409
 _ke_assert_http 409
 osc project create ""
-_ke_assert_failed
+_ke_assert_failed 400
 _ke_assert_http 400
 osc project delete cli-conf-ke-proj
 t_end
@@ -184,7 +181,7 @@ osc user delete cli-conf-ke-user
 osc user create cli-conf-ke-user --password ke-pass-123
 assert_rc 0
 osc user create cli-conf-ke-user --password ke-pass-123
-_ke_assert_failed
+_ke_assert_failed 409
 _ke_assert_http 409
 osc user delete cli-conf-ke-user
 t_end
@@ -202,7 +199,7 @@ assert_jq_type '.domain_id' string
 if printf '%s' "$OSC_OUT" | jq -e '.email == "ke-user@cli-conf.invalid"' >/dev/null 2>&1; then
     assert_jq '.email' ke-user@cli-conf.invalid
 else
-    t_known_failure "openstack user show: lightstack GET /v3/users/{id} returns only id/name/enabled/domain_id (+links) — the email set at create (and description set via create/set) is dropped on read, while upstream Keystone returns both, so the CLI reports email null. Same loss is visible in 'user list --long' (GET /v3/users selects no email/description columns)."
+    t_fail "user show omitted the email set at create"
 fi
 osc user delete cli-conf-ke-user
 t_end
@@ -280,7 +277,7 @@ osc group delete cli-conf-ke-grp
 osc group create cli-conf-ke-grp
 assert_rc 0
 osc group create cli-conf-ke-grp
-_ke_assert_failed
+_ke_assert_failed 409
 _ke_assert_http 409
 osc group delete cli-conf-ke-grp
 t_end
@@ -393,12 +390,8 @@ t_end
 t_begin keystone.role.create.neg
 # member is a bootstrap role; creating it again must conflict
 osc role create member
-_ke_assert_failed
-if [[ "$OSC_ERR" == *409* ]]; then
-    :
-else
-    t_known_failure "openstack role create <duplicate>: upstream Keystone answers 409 Conflict for an existing role name; lightstack answers HTTP 500 (the roles.name UNIQUE violation in POST /v3/roles is not mapped to a conflict error). Client stderr: ${OSC_ERR:0:200}"
-fi
+_ke_assert_failed 409
+_ke_assert_http 409
 t_end
 
 t_begin keystone.role.show
@@ -511,11 +504,19 @@ osc role delete cli-conf-ke-rar
 t_end
 
 t_begin keystone.role.assignment.remove.neg
-# admin holds only the admin role on the default project; removing 'reader'
-# names an assignment that does not exist
-osc role remove reader --user admin --project default
+# Use a throwaway user and project with no assignments so this negative case
+# never changes the admin user's real role bindings.
+osc user delete cli-conf-ke-rnu
+osc project delete cli-conf-ke-rnp
+osc user create cli-conf-ke-rnu --password ke-pass-123
+assert_rc 0
+osc project create cli-conf-ke-rnp
+assert_rc 0
+osc role remove reader --user cli-conf-ke-rnu --project cli-conf-ke-rnp
 _ke_assert_failed
 _ke_assert_http 404
+osc user delete cli-conf-ke-rnu
+osc project delete cli-conf-ke-rnp
 t_end
 
 t_begin keystone.role.assignment.list
@@ -535,12 +536,9 @@ t_end
 
 t_begin keystone.role.assignment.list.names
 osc role assignment list --names
-if (( OSC_RC == 0 )); then
-    assert_jq_type '.' array
-    assert_jq '[.[] | select((.Role // .role) != null)] | length >= 1'
-else
-    t_known_failure "openstack role assignment list --names: with include_names=true upstream Keystone embeds user/project/role names in every role_assignment; lightstack ignores the parameter and returns bare ids (plus role.name), so the pinned OSC 7 aborts in _get_names with KeyError 'name' (exit 1)."
-fi
+assert_rc 0
+assert_jq_type '.' array
+assert_jq '[.[] | select(.Role == "admin" and .User == "admin" and .Project == "default")] | length >= 1'
 t_end
 
 # --- domains -----------------------------------------------------------------
@@ -556,13 +554,10 @@ t_end
 t_begin keystone.domain.create
 _ke_domain_purge cli-conf-ke-dom
 osc domain create cli-conf-ke-dom
-if (( OSC_RC == 0 )); then
-    assert_jq '.name' cli-conf-ke-dom
-    assert_jq_type '.id' string
-    assert_jq '.enabled' true
-else
-    t_known_failure "openstack domain create: lightstack POST /v3/domains returns the domain without a links field; upstream Keystone always includes links.self, and the pinned OSC 7 aborts rendering with KeyError 'links' (exit 1). The POST itself is a 201 — the domain is created (verified below via domain list)."
-fi
+assert_rc 0
+assert_jq '.name' cli-conf-ke-dom
+assert_jq_type '.id' string
+assert_jq '.enabled' true
 osc domain list
 assert_rc 0
 _ke_list_has cli-conf-ke-dom
@@ -572,20 +567,17 @@ t_end
 t_begin keystone.domain.create.neg
 # Default is the bootstrap domain — a duplicate name must conflict
 osc domain create Default
-_ke_assert_failed
+_ke_assert_failed 409
 _ke_assert_http 409
 t_end
 
 t_begin keystone.domain.show
 _ke_domain_ensure cli-conf-ke-dom
 osc domain show cli-conf-ke-dom
-if (( OSC_RC == 0 )); then
-    assert_jq '.name' cli-conf-ke-dom
-    assert_jq_type '.id' string
-    assert_jq '.enabled' true
-else
-    t_known_failure "openstack domain show: lightstack GET /v3/domains/{id} returns the domain without a links field; upstream Keystone always includes links.self, and the pinned OSC 7 aborts rendering with KeyError 'links' (exit 1)."
-fi
+assert_rc 0
+assert_jq '.name' cli-conf-ke-dom
+assert_jq_type '.id' string
+assert_jq '.enabled' true
 _ke_domain_purge cli-conf-ke-dom
 t_end
 
@@ -598,8 +590,10 @@ t_begin keystone.domain.set
 _ke_domain_ensure cli-conf-ke-dom
 osc domain set cli-conf-ke-dom --description "updated by keystone suite"
 assert_rc 0
-# domain show is currently unusable (missing links, see above), so the
-# round-trip is verified through domain list, which does expose Description
+# Confirm the write by reading the updated domain.
+osc domain show cli-conf-ke-dom
+assert_rc 0
+assert_jq '.description' "updated by keystone suite"
 osc domain list
 assert_rc 0
 assert_jq '[.[] | select(.Name == "cli-conf-ke-dom") | .Description] | first' "updated by keystone suite"
@@ -626,7 +620,7 @@ t_begin keystone.domain.delete.neg
 # an enabled domain must refuse deletion (upstream answers 403 as well)
 _ke_domain_ensure cli-conf-ke-dom
 osc domain delete cli-conf-ke-dom
-_ke_assert_failed
+_ke_assert_failed 403
 _ke_assert_http 403
 _ke_domain_purge cli-conf-ke-dom
 t_end
@@ -702,12 +696,8 @@ osc application credential delete cli-conf-ke-ac
 osc application credential create cli-conf-ke-ac
 assert_rc 0
 osc application credential create cli-conf-ke-ac
-_ke_assert_failed
-if [[ "$OSC_ERR" == *409* ]]; then
-    :
-else
-    t_known_failure "openstack application credential create <duplicate>: upstream Keystone answers 409 Conflict (application_credentials is UNIQUE(user_id, name)); lightstack answers HTTP 500 ('failed to create application credential') because the unique violation is not mapped. Client stderr: ${OSC_ERR:0:200}"
-fi
+_ke_assert_failed 409
+_ke_assert_http 409
 osc application credential delete cli-conf-ke-ac
 t_end
 
@@ -716,12 +706,9 @@ osc application credential delete cli-conf-ke-ac
 osc application credential create cli-conf-ke-ac
 assert_rc 0
 osc application credential list
-if (( OSC_RC == 0 )); then
-    assert_jq_type '.' array
-    _ke_list_has cli-conf-ke-ac
-else
-    t_known_failure "openstack application credential list: lightstack omits the roles key from GET /v3/users/{id}/application_credentials items — the application_credential_roles table is never created by any migration, the roles subquery fails and the handler swallows the error. Upstream always includes roles (possibly empty), and the pinned OSC 7 crashes joining role names (TypeError: 'NoneType' object is not iterable, exit 1) whenever the user owns at least one credential."
-fi
+assert_rc 0
+assert_jq_type '.' array
+_ke_list_has cli-conf-ke-ac
 osc application credential delete cli-conf-ke-ac
 assert_rc 0
 t_end
@@ -731,12 +718,10 @@ osc application credential delete cli-conf-ke-ac
 osc application credential create cli-conf-ke-ac
 assert_rc 0
 osc application credential show cli-conf-ke-ac
-if (( OSC_RC == 0 )); then
-    assert_jq '(.Name // .name)' cli-conf-ke-ac
-    assert_jq_type '(.ID // .id)' string
-else
-    t_known_failure "openstack application credential show: same root cause as application credential list — GET /v3/users/{id}/application_credentials/{cred_id} omits the roles key (missing application_credential_roles table), and the pinned OSC 7 crashes rendering it (TypeError: 'NoneType' object is not iterable, exit 1)."
-fi
+assert_rc 0
+assert_jq '(.Name // .name)' cli-conf-ke-ac
+assert_jq_type '(.ID // .id)' string
+assert_jq_type '(.Roles // .roles)' array
 osc application credential delete cli-conf-ke-ac
 t_end
 
@@ -826,7 +811,7 @@ KE_EC2_ACCESS="$(printf '%s' "$OSC_OUT" | jq -r '.access')"
 osc ec2 credentials delete "$KE_EC2_ACCESS"
 assert_rc 0
 osc ec2 credentials delete "$KE_EC2_ACCESS"
-_ke_assert_failed
+_ke_assert_failed 404
 _ke_assert_http 404
 t_end
 
@@ -844,7 +829,7 @@ t_end
 
 t_begin keystone.token.issue.neg
 osc --os-password cli-conf-ke-wrong-password token issue
-_ke_assert_failed
+_ke_assert_failed 401
 _ke_assert_http 401
 t_end
 

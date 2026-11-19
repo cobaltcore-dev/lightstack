@@ -3,7 +3,7 @@
 > [BLUEPRINT_TEST_COVERAGE.md](BLUEPRINT_TEST_COVERAGE.md). Going forward, per-command status will
 > come from the machine-generated `test/cli` manifest report (`test/cli/results/`, produced by
 > `make cli-coverage`), currently being built in parallel under
-> [SPEC-028](../../docs/specs/028-cli-conformance-test-environment/plan.md).
+> [SPEC-031](../../docs/specs/031-cli-conformance-test-environment/plan.md).
 
 # Contract Test Results
 

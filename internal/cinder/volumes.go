@@ -388,7 +388,7 @@ type volumeRow struct {
 	Name string
 	// Description is any so a NULL column renders as JSON null — the value
 	// upstream emits for an unset description — instead of the "" that
-	// NullString.String would produce (SPEC-028). Request-driven sites pass
+	// NullString.String would produce (SPEC-031). Request-driven sites pass
 	// the string the caller supplied.
 	Description any
 	TenantID    string
@@ -400,7 +400,7 @@ type volumeRow struct {
 	Attachments []any
 	// Metadata is the volume's user metadata; nil means none, which
 	// serializes as the empty object — the key itself is mandatory
-	// (SPEC-028: OSC reads volume.properties from it).
+	// (SPEC-031: OSC reads volume.properties from it).
 	Metadata  map[string]string
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -761,7 +761,7 @@ func (svc *Service) CreateVolume(c *gin.Context) {
 // and project_id (that one project, admin-only — `volume list --project`).
 // Both are IGNORED for non-administrators, whose listing stays their own
 // project — upstream ignores administrator-only query parameters the same
-// way nova's all_tenants does (FR-005b, SPEC-028). Before this, an admin's
+// way nova's all_tenants does (FR-005b, SPEC-031). Before this, an admin's
 // --project filter was silently dropped and the ADMIN's volumes were
 // presented as the target project's.
 func volumeListScope(c *gin.Context) (tenant string, allTenants bool) {
@@ -977,7 +977,7 @@ func (svc *Service) ListVolumesDetail(c *gin.Context) {
 		}
 	}
 
-	// User metadata for every listed volume in one query (SPEC-028).
+	// User metadata for every listed volume in one query (SPEC-031).
 	metadata, err := volumeMetadataRows(c.Request.Context(), svc.pool, ids)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_volumes_detail_metadata").Msg("database error")
@@ -1010,21 +1010,16 @@ func (svc *Service) GetVolume(c *gin.Context) {
 	// The row's OWN project, not the caller's — see the detail listing.
 	var ownerID string
 
-	// Support lookup by ID or name. An administrator may show any volume —
-	// the same carve-out the listings have for their cross-project walks
-	// (`volume list --project X` then `volume show <id>` must not dead-end
-	// with 404 on the very rows the listing returned; SPEC-028). A
-	// non-admin keeps the project scope.
-	getQuery := `
-		SELECT id, name, description, size_gb, status, bootable, user_id, volume_type, project_id, created_at, updated_at
-		FROM volumes
-		WHERE ((id::text = $1) OR (name = $1))`
-	getArgs := []any{volumeID}
-	if !common.HasRole(c, common.RoleAdmin) {
-		getQuery += ` AND project_id = $2`
-		getArgs = append(getArgs, projectID)
+	// Administrators may show any volume by id, matching the cross-project
+	// list carve-out. Name lookup stays in the caller's project: another
+	// project's duplicate name must never select its volume.
+	getQuery := "SELECT id, name, description, size_gb, status, bootable, user_id, volume_type, project_id, created_at, updated_at FROM volumes WHERE "
+	idScope := "project_id = $2"
+	if common.HasRole(c, common.RoleAdmin) {
+		idScope = "TRUE"
 	}
-	err := svc.pool.QueryRow(c.Request.Context(), getQuery, getArgs...).
+	getQuery += "(id::text = $1 AND " + idScope + ") OR (name = $1 AND project_id = $2) LIMIT 1"
+	err := svc.pool.QueryRow(c.Request.Context(), getQuery, volumeID, projectID).
 		Scan(&id, &name, &description, &size, &status, &bootable, &userID, &volumeType, &ownerID, &createdAt, &updatedAt)
 
 	if errors.Is(err, database.ErrNoRows) {
@@ -1045,7 +1040,7 @@ func (svc *Service) GetVolume(c *gin.Context) {
 	}
 
 	// User metadata on the object, not only via the metadata endpoint
-	// (SPEC-028: 'volume show' read its properties column from {}).
+	// (SPEC-031: 'volume show' read its properties column from {}).
 	metadata, err := volumeMetadataRows(c.Request.Context(), svc.pool, []string{id})
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_volume_metadata").Str("volume_id", volumeID).Msg("database error")
@@ -1238,88 +1233,77 @@ func volumeAttachments(ctx context.Context, pool database.DB, volumeIDs []string
 // Volume show and list-detail serialize it into the volume object — the
 // metadata endpoint returns it, but the object itself answered {} however
 // much was set, so 'volume show' always reported empty properties
-// (SPEC-028).
+// (SPEC-031).
 func volumeMetadataRows(ctx context.Context, pool database.DB, volumeIDs []string) (map[string]map[string]string, error) {
-	result := make(map[string]map[string]string, len(volumeIDs))
-	if len(volumeIDs) == 0 {
-		return result, nil
-	}
-	rows, err := pool.Query(ctx, `
+	return metadataRows(ctx, pool, `
 		SELECT volume_id::text, meta_key, meta_value
 		FROM volume_metadata
 		WHERE volume_id = ANY($1::uuid[])
 	`, volumeIDs)
-	if err != nil {
-		return nil, fmt.Errorf("query volume metadata: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var volumeID, key, value string
-		if err := rows.Scan(&volumeID, &key, &value); err != nil {
-			return nil, fmt.Errorf("scan volume metadata: %w", err)
-		}
-		if result[volumeID] == nil {
-			result[volumeID] = map[string]string{}
-		}
-		result[volumeID][key] = value
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate volume metadata: %w", err)
-	}
-	return result, nil
 }
 
 // snapshotMetadataRows loads the user metadata of many snapshots in one
 // query. Snapshot show and list-detail serialize it into the snapshot object
-// (SPEC-028): the metadata endpoint returned it, but the object itself
+// (SPEC-031): the metadata endpoint returned it, but the object itself
 // omitted the key entirely, and the pinned OSC 7 formatter crashes with
 // KeyError 'metadata' on a snapshot without one.
 func snapshotMetadataRows(ctx context.Context, pool database.DB, snapshotIDs []string) (map[string]map[string]string, error) {
-	result := make(map[string]map[string]string, len(snapshotIDs))
-	if len(snapshotIDs) == 0 {
-		return result, nil
-	}
-	rows, err := pool.Query(ctx, `
+	return metadataRows(ctx, pool, `
 		SELECT snapshot_id::text, meta_key, meta_value
 		FROM snapshot_metadata
 		WHERE snapshot_id = ANY($1::uuid[])
 	`, snapshotIDs)
+}
+
+// metadataRows groups an owner's metadata rows by owner id.
+func metadataRows(ctx context.Context, pool database.DB, query string, ids []string) (map[string]map[string]string, error) {
+	result := make(map[string]map[string]string, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	rows, err := pool.Query(ctx, query, ids)
 	if err != nil {
-		return nil, fmt.Errorf("query snapshot metadata: %w", err)
+		return nil, fmt.Errorf("query metadata: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var snapshotID, key, value string
-		if err := rows.Scan(&snapshotID, &key, &value); err != nil {
-			return nil, fmt.Errorf("scan snapshot metadata: %w", err)
+		var ownerID, key, value string
+		if err := rows.Scan(&ownerID, &key, &value); err != nil {
+			return nil, fmt.Errorf("scan metadata: %w", err)
 		}
-		if result[snapshotID] == nil {
-			result[snapshotID] = map[string]string{}
+		if result[ownerID] == nil {
+			result[ownerID] = map[string]string{}
 		}
-		result[snapshotID][key] = value
+		result[ownerID][key] = value
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate snapshot metadata: %w", err)
+		return nil, fmt.Errorf("iterate metadata: %w", err)
 	}
 	return result, nil
 }
 
+type snapshotRow struct {
+	ID, Name, Description, VolumeID, Status string
+	Size                                    int
+	CreatedAt                               time.Time
+	Metadata                                map[string]string
+}
+
 // serializeSnapshot renders a snapshot as the upstream Cinder v3 object. The
-// metadata key is mandatory — OSC's formatter dereferences it unconditionally
-// (SPEC-028).
-func serializeSnapshot(id, name, description, volumeID, status string, size int, createdAt time.Time, metadata map[string]string) gin.H {
-	if metadata == nil {
-		metadata = map[string]string{}
+// metadata key is mandatory — OSC's formatter dereferences it unconditionally.
+func serializeSnapshot(s snapshotRow) gin.H {
+	if s.Metadata == nil {
+		s.Metadata = map[string]string{}
 	}
 	return gin.H{
-		"id":          id,
-		"name":        name,
-		"description": description,
-		"volume_id":   volumeID,
-		"size":        size,
-		"status":      status,
-		"created_at":  createdAt.Format("2006-01-02T15:04:05.000000"),
-		"metadata":    metadata,
+		"id":          s.ID,
+		"name":        s.Name,
+		"description": s.Description,
+		"volume_id":   s.VolumeID,
+		"size":        s.Size,
+		"status":      s.Status,
+		"created_at":  s.CreatedAt.Format("2006-01-02T15:04:05.000000"),
+		"metadata":    s.Metadata,
 	}
 }
 
@@ -1808,7 +1792,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 
 	// Handle set/unset bootable. python-cinderclient's 'volume set
 	// --bootable/--non-bootable' PUTs {"os-set_bootable": {"bootable": true}}
-	// (SPEC-028). Bootable is attach metadata rather than a state
+	// (SPEC-031). Bootable is attach metadata rather than a state
 	// transition, so it is accepted in any status — matching upstream.
 	if setBootableData, ok := req["os-set_bootable"]; ok {
 		bootableMap, ok := setBootableData.(map[string]any)
@@ -1817,6 +1801,9 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			return
 		}
 		bootable, ok := bootableMap["bootable"].(bool)
+		if value, isString := bootableMap["bootable"].(string); isString {
+			bootable, ok = common.ParseQueryBool(value)
+		}
 		if !ok {
 			common.SendError(c, common.NewBadRequestError("os-set_bootable.bootable must be a boolean"))
 			return
@@ -1835,7 +1822,7 @@ func (svc *Service) VolumeAction(c *gin.Context) {
 			return
 		}
 
-		c.Status(http.StatusAccepted)
+		c.Status(http.StatusOK)
 		return
 	}
 
@@ -1922,8 +1909,10 @@ func (svc *Service) CreateSnapshot(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"snapshot": serializeSnapshot(snapshotID, req.Snapshot.Name, req.Snapshot.Description,
-			volumeID, "creating", size, now, nil),
+		"snapshot": serializeSnapshot(snapshotRow{
+			ID: snapshotID, Name: req.Snapshot.Name, Description: req.Snapshot.Description,
+			VolumeID: volumeID, Status: "creating", Size: size, CreatedAt: now,
+		}),
 	})
 }
 
@@ -2010,7 +1999,10 @@ func (svc *Service) ListSnapshotsDetail(c *gin.Context) {
 			continue
 		}
 
-		snapshots = append(snapshots, serializeSnapshot(id, name, description, volumeID, status, size, createdAt, nil))
+		snapshots = append(snapshots, serializeSnapshot(snapshotRow{
+			ID: id, Name: name, Description: description, VolumeID: volumeID,
+			Status: status, Size: size, CreatedAt: createdAt,
+		}))
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
@@ -2019,7 +2011,7 @@ func (svc *Service) ListSnapshotsDetail(c *gin.Context) {
 		return
 	}
 
-	// User metadata for every listed snapshot in one query (SPEC-028).
+	// User metadata for every listed snapshot in one query (SPEC-031).
 	metadata, err := snapshotMetadataRows(c.Request.Context(), svc.pool, ids)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_snapshots_metadata").Msg("database error")
@@ -2083,7 +2075,10 @@ func (svc *Service) ListSnapshots(c *gin.Context) {
 			continue
 		}
 
-		snapshots = append(snapshots, serializeSnapshot(id, name, description, volumeID, status, size, createdAt, nil))
+		snapshots = append(snapshots, serializeSnapshot(snapshotRow{
+			ID: id, Name: name, Description: description, VolumeID: volumeID,
+			Status: status, Size: size, CreatedAt: createdAt,
+		}))
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
@@ -2092,7 +2087,7 @@ func (svc *Service) ListSnapshots(c *gin.Context) {
 		return
 	}
 
-	// User metadata for every listed snapshot in one query (SPEC-028).
+	// User metadata for every listed snapshot in one query (SPEC-031).
 	metadata, err := snapshotMetadataRows(c.Request.Context(), svc.pool, ids)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_snapshots_metadata").Msg("database error")
@@ -2119,7 +2114,7 @@ func (svc *Service) GetSnapshot(c *gin.Context) {
 
 	// A non-UUID reference can only name nothing here — the lookup is
 	// uuid-typed, and the cast error used to surface as 500 instead of the
-	// 404 clients need (SPEC-028).
+	// 404 clients need (SPEC-031).
 	if _, err := uuid.Parse(snapshotID); err != nil {
 		common.SendError(c, common.NewNotFoundError("snapshot"))
 		return
@@ -2146,7 +2141,7 @@ func (svc *Service) GetSnapshot(c *gin.Context) {
 	}
 
 	// User metadata on the object, not only via the metadata endpoint
-	// (SPEC-028).
+	// (SPEC-031).
 	metadata, err := snapshotMetadataRows(c.Request.Context(), svc.pool, []string{id})
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_snapshot_metadata").Str("snapshot_id", snapshotID).Msg("database error")
@@ -2155,7 +2150,10 @@ func (svc *Service) GetSnapshot(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"snapshot": serializeSnapshot(id, name, description, volumeID, status, size, createdAt, metadata[id]),
+		"snapshot": serializeSnapshot(snapshotRow{
+			ID: id, Name: name, Description: description, VolumeID: volumeID,
+			Status: status, Size: size, CreatedAt: createdAt, Metadata: metadata[id],
+		}),
 	})
 }
 
@@ -2164,7 +2162,7 @@ func (svc *Service) DeleteSnapshot(c *gin.Context) {
 	snapshotID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// See GetSnapshot: a non-UUID reference must 404, not 500 (SPEC-028).
+	// See GetSnapshot: a non-UUID reference must 404, not 500 (SPEC-031).
 	if _, err := uuid.Parse(snapshotID); err != nil {
 		common.SendError(c, common.NewNotFoundError("snapshot"))
 		return
@@ -2285,7 +2283,7 @@ func (svc *Service) ListVolumeTypes(c *gin.Context) {
 		// description is NULL for a type created without one; scanning it
 		// into a plain string failed the row, and rows.Err() then failed the
 		// WHOLE listing with 500 "failed to read results" until the type was
-		// deleted (SPEC-028).
+		// deleted (SPEC-031).
 		var description sql.NullString
 		var isPublic bool
 		// jsonb: scan as any-valued so non-string values (none are
@@ -2308,7 +2306,7 @@ func (svc *Service) ListVolumeTypes(c *gin.Context) {
 			"is_public":   isPublic,
 			// The type object carries its extra_specs — the endpoint returns
 			// them, but the object omitted the key, so 'volume type show'
-			// always reported properties: {} (SPEC-028).
+			// always reported properties: {} (SPEC-031).
 			"extra_specs": extraSpecs,
 		})
 	}
@@ -2331,7 +2329,7 @@ func (svc *Service) GetVolumeType(c *gin.Context) {
 
 	// A non-UUID reference (a type name, or garbage) can only name nothing;
 	// the uuid-typed lookup used to surface the cast error as 500 instead of
-	// the 404 clients need (SPEC-028).
+	// the 404 clients need (SPEC-031).
 	if _, err := uuid.Parse(typeID); err != nil {
 		common.SendError(c, common.NewNotFoundError("volume type"))
 		return
@@ -2385,7 +2383,7 @@ func (svc *Service) UpdateVolume(c *gin.Context) {
 			// set --name/--description (captured with --debug against OSC 7:
 			// {"volume": {"display_description": ...}}); real Cinder accepts
 			// both aliases, and only the v3 names were bound here, so the
-			// request succeeded but persisted nothing (SPEC-028).
+			// request succeeded but persisted nothing (SPEC-031).
 			DisplayName        *string `json:"display_name"`
 			DisplayDescription *string `json:"display_description"`
 		} `json:"volume"`
@@ -2514,7 +2512,10 @@ func (svc *Service) UpdateSnapshot(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"snapshot": serializeSnapshot(snapshotID, currentName, currentDesc, volumeID, status, sizeGB, createdAt, metadata[snapshotID]),
+		"snapshot": serializeSnapshot(snapshotRow{
+			ID: snapshotID, Name: currentName, Description: currentDesc, VolumeID: volumeID,
+			Status: status, Size: sizeGB, CreatedAt: createdAt, Metadata: metadata[snapshotID],
+		}),
 	})
 }
 

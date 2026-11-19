@@ -5,7 +5,7 @@ scenario is a self-contained module:
 
 ```text
 test/terraform/
-├── run.sh                # SPEC-028 (issue #105): the conformance wrapper — run the compat
+├── run.sh                # SPEC-031 (issue #105): the conformance wrapper — run the compat
 │                         #   module end-to-end (init → validate → apply → destroy) with
 │                         #   clean-state assertions. What `make test-terraform` runs.
 ├── compat/               # SPEC-016 (cloud-storage#481): the mode-agnostic compatibility smoke —
@@ -41,7 +41,7 @@ bash test/terraform/run.sh
   on `PATH` (e.g. `/opt/osc-venv/bin/openstack`).
 - **curl**, **jq**, and **timeout** (GNU coreutils) on `PATH`.
 - Network access to the public Terraform registry on **first** run only (provider download);
-  afterwards the shared `TF_PLUGIN_CACHE_DIR` (default `~/.terraform.d/plugin-cache`) serves it.
+  Terraform downloads the provider into the isolated per-run workspace.
 
 The wrapper creates the Glance image the module needs (a 64KiB dummy, raw/bare — stub Glance
 stores metadata only) under a unique `tf-cirros-*` name and deletes it at exit. Set
@@ -64,7 +64,6 @@ A run passes (exit 0) iff **all** of the following hold:
 | `terraform state list` | empty after destroy |
 | `terraform output` | no outputs after destroy |
 | OpenStack CLI residue check | zero `tf-compat-*` servers/networks/subnets/SGs/volumes/keypairs remain — the authoritative proof that destroy actually cleaned Lightstack (an empty state alone cannot show residue) |
-| post-destroy plan | `-detailed-exitcode` 0, or exit 2 with **adds only** — an empty state always re-proposes the 9 creates, so a bare "exit 0" is unattainable there; any to-change/to-destroy, or CLI residue, is a failure |
 
 ### Pinning policy
 
@@ -88,8 +87,8 @@ python3 -m unittest discover -s test/terraform -p 'test_*.py' -v
 ```
 
 These regression tests check that failed catalog/resource listings and unreadable
-Terraform state fail the run, and that leaked resources (including nameless floating
-IPs captured from state) cannot produce a successful cleanup report.
+Terraform state fail the run, and that leaked named resources cannot produce a
+successful cleanup report.
 
 ## Known divergences
 

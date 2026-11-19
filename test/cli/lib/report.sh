@@ -1,5 +1,5 @@
 #!/bin/bash
-# report.sh — case recording and reporting for the CLI conformance harness (SPEC-028).
+# report.sh — case recording and reporting for the CLI conformance harness (SPEC-031).
 #
 # Locked API:
 #   _record_case <suite> <id> <status> <dur-ms> <command> <error>
@@ -135,9 +135,10 @@ report_write() {
             printf '  <testsuite name="%s" tests="%d" failures="%d" skipped="%d" time="%.3f">\n' \
                 "$(_xml_escape "$s")" "$n" "$fail" "$skip" "$time"
             while IFS= read -r case_line; do
-                # case_line: "<classname>\t<name>\t<status>\t<duration_ms>\t<command>\t<error>"
+                # case_line uses a non-whitespace separator so empty command
+                # or error fields keep their position when read by bash.
                 local cname name status dur cmd err
-                IFS=$'\t' read -r cname name status dur cmd err <<<"$case_line"
+                IFS=$'\x1f' read -r cname name status dur cmd err <<<"$case_line"
                 printf '    <testcase classname="%s" name="%s" time="%.3f"' \
                     "$(_xml_escape "$cname")" "$(_xml_escape "$name")" "$(awk -v d="${dur:-0}" 'BEGIN { printf "%.3f", d / 1000 }')"
                 if [[ "$status" == "fail" ]]; then
@@ -153,7 +154,7 @@ report_write() {
                     printf '/>\n'
                 fi
             done < <(jq -r --arg s "$s" \
-                'select(.suite == $s) | [.suite, .id, .status, (.duration_ms | tostring), .command, .error] | @tsv' \
+                'select(.suite == $s) | [.suite, .id, .status, (.duration_ms | tostring), .command, .error] | ([31] | implode) as $us | map(. // "" | tostring | gsub("\n"; " ") | gsub($us; " ")) | join($us)' \
                 "$RESULTS_FILE")
             printf '  </testsuite>\n'
         done <<<"$suites"
@@ -232,39 +233,17 @@ report_failed() {
     fi
     local predicate='any(.[]; .status == "fail")'
     if [[ "${CLI_STRICT:-0}" == "1" ]]; then
-        local baseline_ids
-        if ! baseline_ids="$(cli_baseline_ids)"; then
-            log_error "cannot evaluate --strict: known-failure baseline is missing or unreadable"
-            return 0
-        fi
-        local -A baseline=()
-        local id
-        while IFS= read -r id; do
-            [[ -n "$id" ]] && baseline["$id"]=1
-        done <<<"$baseline_ids"
-
-        local known_ids
+        local known_ids pass_ids baseline_rc=0
         if ! known_ids=$(jq -r -s '.[] | select(.status == "known-failing") | .id' "$RESULTS_FILE" 2>/dev/null); then
             return 0 # unparseable results are a failed run
         fi
-        while IFS= read -r id; do
-            [[ -z "$id" ]] && continue
-            if [[ -z "${baseline[$id]:-}" ]]; then
-                log_error "new known-failing case not in $(cli_baseline_file): $id"
-                return 0
-            fi
-        done <<<"$known_ids"
-
-        local pass_ids
         if ! pass_ids=$(jq -r -s '.[] | select(.status == "pass") | .id' "$RESULTS_FILE" 2>/dev/null); then
             return 0
         fi
-        while IFS= read -r id; do
-            [[ -z "$id" ]] && continue
-            if [[ -n "${baseline[$id]:-}" ]]; then
-                log_warn "stale baseline entry '$id' now passes — remove it from $(cli_baseline_file)"
-            fi
-        done <<<"$pass_ids"
+        cli_baseline_check_ids "$known_ids" "$pass_ids" || baseline_rc=$?
+        if (( baseline_rc != 0 )); then
+            return 0
+        fi
 
         predicate='any(.[]; .status == "fail" or .status == "skip")'
     fi

@@ -1,6 +1,6 @@
 package cinder
 
-// SPEC-028 conformance fixes for the volume surface, found by the CLI
+// SPEC-031 conformance fixes for the volume surface, found by the CLI
 // conformance suites (issue #105).
 
 import (
@@ -12,9 +12,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// seedSpec028Volume inserts an available volume owned by the seeded project
+// seedConformanceVolume inserts an available volume owned by the seeded project
 // and returns its id. The caller owns cleanup.
-func seedSpec028Volume(t *testing.T, name string, bootable bool) string {
+func seedConformanceVolume(t *testing.T, name string, bootable bool) string {
 	t.Helper()
 	id := uuid.NewString()
 	if _, err := testPool.Exec(t.Context(),
@@ -33,15 +33,15 @@ func seedSpec028Volume(t *testing.T, name string, bootable bool) string {
 // TestUpdateVolumeV2Aliases — python-cinderclient still PUTs the legacy v2
 // field names (display_name / display_description) for `volume set
 // --name/--description`; only the v3 names were bound, so the request
-// succeeded but persisted nothing (SPEC-028).
+// succeeded but persisted nothing (SPEC-031).
 func TestUpdateVolumeV2Aliases(t *testing.T) {
 	requireDB(t)
 	r := newCinderTestRouter()
 	hdr := cinderAuthHdr(seededProjectID, seededUserID)
-	id := seedSpec028Volume(t, "spec028-v2alias", false)
+	id := seedConformanceVolume(t, "spec031-v2alias", false)
 
 	code, body := doReq(r, http.MethodPut, "/v3/volumes/"+id,
-		`{"volume":{"display_name":"spec028-v2alias-renamed","display_description":"set via v2 alias"}}`, hdr)
+		`{"volume":{"display_name":"spec031-v2alias-renamed","display_description":"set via v2 alias"}}`, hdr)
 	if code != http.StatusOK {
 		t.Fatalf("update with v2 aliases: code=%d body=%s", code, body)
 	}
@@ -51,7 +51,7 @@ func TestUpdateVolumeV2Aliases(t *testing.T) {
 		"SELECT name, COALESCE(description,'') FROM volumes WHERE id=$1", id).Scan(&name, &description); err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if name != "spec028-v2alias-renamed" {
+	if name != "spec031-v2alias-renamed" {
 		t.Errorf("display_name was not persisted: name=%q", name)
 	}
 	if description != "set via v2 alias" {
@@ -75,15 +75,15 @@ func TestUpdateVolumeV2Aliases(t *testing.T) {
 
 // TestVolumeMetadataOnObject — volume show and list-detail serialized
 // metadata: {} however much was set, so 'volume show' always reported empty
-// properties (SPEC-028).
+// properties (SPEC-031).
 func TestVolumeMetadataOnObject(t *testing.T) {
 	requireDB(t)
 	r := newCinderTestRouter()
 	hdr := cinderAuthHdr(seededProjectID, seededUserID)
-	id := seedSpec028Volume(t, "spec028-meta", false)
+	id := seedConformanceVolume(t, "spec031-meta", false)
 
 	code, body := doReq(r, http.MethodPost, "/v3/volumes/"+id+"/metadata",
-		`{"metadata":{"spec028key":"spec028value"}}`, hdr)
+		`{"metadata":{"spec031key":"spec031value"}}`, hdr)
 	if code != http.StatusOK {
 		t.Fatalf("set metadata: code=%d body=%s", code, body)
 	}
@@ -92,7 +92,7 @@ func TestVolumeMetadataOnObject(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("show: code=%d body=%s", code, body)
 	}
-	if !strings.Contains(body, `"metadata":{"spec028key":"spec028value"}`) {
+	if !strings.Contains(body, `"metadata":{"spec031key":"spec031value"}`) {
 		t.Errorf("show response lacks the volume's metadata: %s", body)
 	}
 
@@ -100,23 +100,22 @@ func TestVolumeMetadataOnObject(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("list detail: code=%d body=%s", code, body)
 	}
-	if !strings.Contains(body, `"metadata":{"spec028key":"spec028value"}`) {
+	if !strings.Contains(body, `"metadata":{"spec031key":"spec031value"}`) {
 		t.Errorf("list-detail response lacks the volume's metadata: %s", body)
 	}
 }
 
-// TestVolumeSetBootableAction — `volume set --bootable/--non-bootable` PUTs
-// os-set_bootable, which answered 400 unknown action (SPEC-028).
+// TestVolumeSetBootableAction pins Cinder's response and boolean parsing for os-set_bootable.
 func TestVolumeSetBootableAction(t *testing.T) {
 	requireDB(t)
 	r := newCinderTestRouter()
 	hdr := cinderAuthHdr(seededProjectID, seededUserID)
-	id := seedSpec028Volume(t, "spec028-bootable", false)
+	id := seedConformanceVolume(t, "spec031-bootable", false)
 
 	code, body := doReq(r, http.MethodPost, "/v3/volumes/"+id+"/action",
 		`{"os-set_bootable":{"bootable":true}}`, hdr)
-	if code != http.StatusAccepted {
-		t.Fatalf("os-set_bootable: code=%d body=%s; want 202", code, body)
+	if code != http.StatusOK {
+		t.Fatalf("os-set_bootable: code=%d body=%s; want 200", code, body)
 	}
 	_, body = doReq(r, http.MethodGet, "/v3/volumes/"+id, "", hdr)
 	if !strings.Contains(body, `"bootable":"true"`) {
@@ -125,19 +124,24 @@ func TestVolumeSetBootableAction(t *testing.T) {
 
 	code, body = doReq(r, http.MethodPost, "/v3/volumes/"+id+"/action",
 		`{"os-set_bootable":{"bootable":false}}`, hdr)
-	if code != http.StatusAccepted {
-		t.Fatalf("os-set_bootable false: code=%d body=%s; want 202", code, body)
+	if code != http.StatusOK {
+		t.Fatalf("os-set_bootable false: code=%d body=%s; want 200", code, body)
 	}
 	_, body = doReq(r, http.MethodGet, "/v3/volumes/"+id, "", hdr)
 	if !strings.Contains(body, `"bootable":"false"`) {
 		t.Errorf("bootable was not reset: %s", body)
 	}
 
-	// Malformed payloads are client errors, and an unknown volume 404s.
+	// Oslo boolean strings are accepted; malformed payloads are client errors.
 	code, _ = doReq(r, http.MethodPost, "/v3/volumes/"+id+"/action",
 		`{"os-set_bootable":{"bootable":"yes"}}`, hdr)
+	if code != http.StatusOK {
+		t.Errorf("string boolean bootable: code=%d; want 200", code)
+	}
+	code, _ = doReq(r, http.MethodPost, "/v3/volumes/"+id+"/action",
+		`{"os-set_bootable":{"bootable":"maybe"}}`, hdr)
 	if code != http.StatusBadRequest {
-		t.Errorf("non-boolean bootable: code=%d; want 400", code)
+		t.Errorf("invalid boolean bootable: code=%d; want 400", code)
 	}
 	code, _ = doReq(r, http.MethodPost, "/v3/volumes/"+uuid.NewString()+"/action",
 		`{"os-set_bootable":{"bootable":true}}`, hdr)
@@ -148,15 +152,15 @@ func TestVolumeSetBootableAction(t *testing.T) {
 
 // TestSnapshotMetadataKey — snapshot create/show/list omitted the metadata
 // key entirely, and the pinned OSC 7 formatter crashes with KeyError
-// 'metadata' on a snapshot without one (SPEC-028).
+// 'metadata' on a snapshot without one (SPEC-031).
 func TestSnapshotMetadataKey(t *testing.T) {
 	requireDB(t)
 	r := newCinderTestRouter()
 	hdr := cinderAuthHdr(seededProjectID, seededUserID)
-	volID := seedSpec028Volume(t, "spec028-snapmeta-vol", false)
+	volID := seedConformanceVolume(t, "spec031-snapmeta-vol", false)
 
 	code, body := doReq(r, http.MethodPost, "/v3/snapshots",
-		`{"snapshot":{"name":"spec028-snapmeta","volume_id":"`+volID+`"}}`, hdr)
+		`{"snapshot":{"name":"spec031-snapmeta","volume_id":"`+volID+`"}}`, hdr)
 	if code != http.StatusAccepted {
 		t.Fatalf("create snapshot: code=%d body=%s", code, body)
 	}
@@ -165,7 +169,7 @@ func TestSnapshotMetadataKey(t *testing.T) {
 	}
 	var snapID string
 	if err := testPool.QueryRow(t.Context(),
-		"SELECT id::text FROM snapshots WHERE name='spec028-snapmeta' AND volume_id=$1", volID).Scan(&snapID); err != nil {
+		"SELECT id::text FROM snapshots WHERE name='spec031-snapmeta' AND volume_id=$1", volID).Scan(&snapID); err != nil {
 		t.Fatalf("resolve snapshot: %v", err)
 	}
 	t.Cleanup(func() {
@@ -194,7 +198,7 @@ func TestSnapshotMetadataKey(t *testing.T) {
 	}
 }
 
-// TestVolumeTypeConformance — three defects in the type surface (SPEC-028):
+// TestVolumeTypeConformance — three defects in the type surface (SPEC-031):
 //   - a type without a description (NULL) made GET /v3/types fail with 500
 //     for every caller until the type was deleted;
 //   - the type object omitted extra_specs, so 'volume type show' always
@@ -210,7 +214,7 @@ func TestVolumeTypeConformance(t *testing.T) {
 	typeID := uuid.NewString()
 	if _, err := testPool.Exec(t.Context(),
 		`INSERT INTO volume_types (id, name, is_public, extra_specs, created_at)
-		 VALUES ($1, 'spec028-type-nodesc', true, '{"spec028k":"spec028v"}'::jsonb, now())`,
+		 VALUES ($1, 'spec031-type-nodesc', true, '{"spec031k":"spec031v"}'::jsonb, now())`,
 		typeID); err != nil {
 		t.Fatalf("seed type: %v", err)
 	}
@@ -220,7 +224,7 @@ func TestVolumeTypeConformance(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("list types with a NULL-description member: code=%d body=%s; want 200", code, body)
 	}
-	if !strings.Contains(body, `"name":"spec028-type-nodesc"`) {
+	if !strings.Contains(body, `"name":"spec031-type-nodesc"`) {
 		t.Errorf("listing dropped the NULL-description type: %s", body)
 	}
 
@@ -228,12 +232,12 @@ func TestVolumeTypeConformance(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("show type: code=%d body=%s", code, body)
 	}
-	if !strings.Contains(body, `"extra_specs":{"spec028k":"spec028v"}`) {
+	if !strings.Contains(body, `"extra_specs":{"spec031k":"spec031v"}`) {
 		t.Errorf("show response lacks the type's extra_specs: %s", body)
 	}
 
 	// A non-UUID reference and an unknown UUID both 404 — in show and delete.
-	for _, ref := range []string{"spec028-type-nodesc", uuid.NewString()} {
+	for _, ref := range []string{"spec031-type-nodesc", uuid.NewString()} {
 		code, _ = doReq(r, http.MethodGet, "/v3/types/"+ref, "", hdr)
 		if code != http.StatusNotFound {
 			t.Errorf("show type by %q: code=%d; want 404", ref, code)
@@ -247,7 +251,7 @@ func TestVolumeTypeConformance(t *testing.T) {
 
 // TestBackupNonUUIDIs404 — cinderclient resolves backup show/delete by name
 // with no list fallback, so the name itself reached the uuid-typed lookup
-// and surfaced the cast error as 500; clients need the 404 (SPEC-028).
+// and surfaced the cast error as 500; clients need the 404 (SPEC-031).
 func TestBackupNonUUIDIs404(t *testing.T) {
 	requireDB(t)
 	r := newCinderTestRouter()
@@ -269,28 +273,28 @@ func TestBackupNonUUIDIs404(t *testing.T) {
 // listing semantics were absent: an admin's `volume list --project X`
 // (project_id filter) and `--all-projects` (all_tenants) were silently
 // ignored and the ADMIN's volumes were presented as the target project's.
-// Both are admin-only upstream, and ignored for non-admins (SPEC-028).
+// Both are admin-only upstream, and ignored for non-admins (SPEC-031).
 func TestVolumeListAllTenantsAndProjectFilter_DB(t *testing.T) {
 	requireDB(t)
 
 	otherProject := uuid.NewString()
 	if _, err := testPool.Exec(t.Context(),
 		`INSERT INTO projects (id, name, domain_id, enabled) VALUES ($1,$2,NULL,true)`,
-		otherProject, "spec028-vol-tenant-"+otherProject[:8]); err != nil {
+		otherProject, "spec031-vol-tenant-"+otherProject[:8]); err != nil {
 		t.Fatalf("insert other project: %v", err)
 	}
 	otherVol := uuid.NewString()
 	if _, err := testPool.Exec(t.Context(),
 		`INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, created_at, updated_at)
 		 VALUES ($1,$2,$3,$4,1,'available',false,now(),now())`,
-		otherVol, "spec028-vol-tenant-other", otherProject, seededUserID); err != nil {
+		otherVol, "spec031-vol-tenant-other", otherProject, seededUserID); err != nil {
 		t.Fatalf("insert other volume: %v", err)
 	}
 	ownVol := uuid.NewString()
 	if _, err := testPool.Exec(t.Context(),
 		`INSERT INTO volumes (id, name, project_id, user_id, size_gb, status, bootable, created_at, updated_at)
 		 VALUES ($1,$2,$3,$4,1,'available',false,now(),now())`,
-		ownVol, "spec028-vol-tenant-own", seededProjectID, seededUserID); err != nil {
+		ownVol, "spec031-vol-tenant-own", seededProjectID, seededUserID); err != nil {
 		t.Fatalf("insert own volume: %v", err)
 	}
 	t.Cleanup(func() {
@@ -333,7 +337,7 @@ func TestVolumeListAllTenantsAndProjectFilter_DB(t *testing.T) {
 		t.Errorf("member volumes?all_tenants: code=%d body=%s; must contain only the member's volume", code, body)
 	}
 
-	// Round 8, MAJOR-1: a foreign row must carry ITS OWN tenant_id — the
+	// A foreign row must carry its own tenant_id — the
 	// detail listing used to stamp every row with the caller's project, so
 	// an admin's cross-project walk labeled project X's volumes as the
 	// admin's (os-vol-tenant-attr:tenant_id is consumed by tooling).
@@ -345,7 +349,7 @@ func TestVolumeListAllTenantsAndProjectFilter_DB(t *testing.T) {
 		t.Errorf("admin volumes?project_id=<other>: a row carries the ADMIN's tenant_id: %s", body)
 	}
 
-	// Round 8, MINOR-3: the show must not dead-end the listing's rows — an
+	// Showing a listed resource by id must not dead-end an admin's listing — an
 	// admin's follow-up `volume show` on the foreign volume answers 200 with
 	// the row's own tenant_id; a member's answers 404.
 	code, body = doReq(r, http.MethodGet, "/v3/volumes/"+otherVol, "", adminHdr)

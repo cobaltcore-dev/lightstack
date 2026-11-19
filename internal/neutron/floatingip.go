@@ -64,7 +64,7 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	// The caller's project — unless an administrator filters by tenant:
 	// upstream honours the filter for admin tokens, and it was silently
 	// ignored before, so `floating ip list --project X` presented the
-	// ADMIN's addresses as project X's (SPEC-028; mirrors
+	// ADMIN's addresses as project X's (SPEC-031; mirrors
 	// buildNetworkListFilter's tenant bypass). ::text so a non-UUID value
 	// narrows to nothing instead of failing the cast.
 	fipTenant := c.Query("tenant_id")
@@ -81,7 +81,7 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	// floating_network_id, port_id, router_id, status, fixed_ip_address,
 	// floating_ip_address, description. All exact matches. They were silently
 	// ignored before, so `openstack floating ip list --network <net>` returned
-	// every tenant's addresses (SPEC-028). The slice keeps the WHERE layout
+	// every tenant's addresses (SPEC-031). The slice keeps the WHERE layout
 	// deterministic.
 	for _, flt := range []struct{ param, column string }{
 		{"floating_network_id", "floating_network_id"},
@@ -401,25 +401,20 @@ func (svc *Service) GetFloatingIP(c *gin.Context) {
 	var fip FloatingIP
 	var fixedIP, portID, routerID, description sql.NullString
 
-	// id::text comparison resolves by UUID or floating-IP address without
-	// crashing on a non-UUID identifier — the CLI looks a FIP up by its address
-	// (e.g. `server add floating ip <vm> <address>`). An administrator may
-	// show any floating IP (upstream's get_floatingip policy is
-	// admin_or_owner), so the tenant-filtered listing's rows do not dead-end
-	// their follow-up show with 404 — the same carve-out the other reads got
-	// (SPEC-028). A non-admin keeps the project scope.
+	// Administrators may address any floating IP by id. Address lookups stay
+	// in the caller's project so they cannot select another tenant's row.
 	fipQuery := `
 		SELECT id, project_id, floating_network_id, floating_ip_address,
 		       fixed_ip_address, port_id, router_id, status, description,
 		       created_at, updated_at
 		FROM floating_ips
-		WHERE (id::text = $1 OR floating_ip_address = $1)`
-	fipArgs := []any{floatingIPID}
-	if !common.HasRole(c, common.RoleAdmin) {
-		fipQuery += ` AND project_id = $2`
-		fipArgs = append(fipArgs, projectID)
+		WHERE (id::text = $1 AND `
+	idScope := `project_id = $2`
+	if common.HasRole(c, common.RoleAdmin) {
+		idScope = `TRUE`
 	}
-	err := svc.pool.QueryRow(c.Request.Context(), fipQuery+" LIMIT 1", fipArgs...).
+	fipQuery += idScope + `) OR (floating_ip_address = $1 AND project_id = $2)`
+	err := svc.pool.QueryRow(c.Request.Context(), fipQuery+" LIMIT 1", floatingIPID, projectID).
 		Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
 			&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
 

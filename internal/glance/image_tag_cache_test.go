@@ -1,7 +1,7 @@
 package glance
 
-// Round-8 delta review pins for PR #107 (issue #105): the tag-mutation cache
-// eviction and the name-length validation, both from the round-7 fix set.
+// Image tag mutations evict the cache, and names and tags are limited to 255
+// characters, counted as characters rather than bytes.
 
 import (
 	"context"
@@ -25,7 +25,7 @@ func newGlanceCacheRouter(t *testing.T) (*gin.Engine, *cache.Cache) {
 	t.Helper()
 	cacheInst, err := cache.NewCache(cache.Config{
 		RedisURL: "redis://127.0.0.1:6379", Enabled: true,
-		KeyPrefix: "spec028-r8glance:", DefaultTTL: time.Minute,
+		KeyPrefix: "spec031-r8glance:", DefaultTTL: time.Minute,
 	})
 	if err != nil {
 		t.Skipf("no local Redis for the cache regression: %v", err)
@@ -33,7 +33,7 @@ func newGlanceCacheRouter(t *testing.T) (*gin.Engine, *cache.Cache) {
 	t.Cleanup(func() {
 		// DeletePattern prepends the instance's KeyPrefix itself, so the
 		// pattern is just "*" — a prefixed pattern would double the prefix
-		// and match nothing (round 9).
+		// and match nothing.
 		cacheInst.DeletePattern(context.Background(), "*")
 	})
 
@@ -58,7 +58,7 @@ func newGlanceCacheRouter(t *testing.T) (*gin.Engine, *cache.Cache) {
 // TestAddImageTagEvictsCache — GetImage caches the object INCLUDING its tags;
 // the dedicated tag PUT used to skip the eviction every other image mutation
 // performs, so a tag added after a show stayed invisible to `image show` for
-// the cache's whole TTL (SPEC-028, round-7 F3).
+// the cache's whole TTL (SPEC-031).
 func TestAddImageTagEvictsCache(t *testing.T) {
 	requireDB(t)
 	r, _ := newGlanceCacheRouter(t)
@@ -66,8 +66,8 @@ func TestAddImageTagEvictsCache(t *testing.T) {
 	hdr := map[string]string{"X-Test-Project": "00000000-0000-0000-0000-000000000002"}
 	// The tag is deliberately NOT a substring of the image name: the first
 	// version of this test asserted on a tag that matched the name in every
-	// response, so the check passed with the eviction deleted (round 9).
-	name := "spec028-r8-addtag-" + uuid.NewString()[:8]
+	// response, so the check fails if the eviction is removed.
+	name := "spec031-r8-addtag-" + uuid.NewString()[:8]
 	const tag = "round8-evict-pin"
 	code, body := doReqBody(r, http.MethodPost, "/images",
 		`{"name":"`+name+`","disk_format":"raw","container_format":"bare"}`, hdr)
@@ -113,9 +113,9 @@ func TestDeleteImageTagEvictsCache(t *testing.T) {
 	r, _ := newGlanceCacheRouter(t)
 
 	hdr := map[string]string{"X-Test-Project": "00000000-0000-0000-0000-000000000002"}
-	name := "spec028-r8-untag-" + uuid.NewString()[:8]
+	name := "spec031-r8-untag-" + uuid.NewString()[:8]
 	code, body := doReqBody(r, http.MethodPost, "/images",
-		`{"name":"`+name+`","disk_format":"raw","container_format":"bare","tags":["spec028-r8-gone"]}`, hdr)
+		`{"name":"`+name+`","disk_format":"raw","container_format":"bare","tags":["spec031-r8-gone"]}`, hdr)
 	if code != http.StatusCreated {
 		t.Fatalf("create image: code=%d body=%s; want 201", code, body)
 	}
@@ -134,7 +134,7 @@ func TestDeleteImageTagEvictsCache(t *testing.T) {
 	if code, body := doReq(r, http.MethodGet, "/images/"+imageID, hdr); code != http.StatusOK {
 		t.Fatalf("prime show: code=%d body=%s", code, body)
 	}
-	code, body = doReq(r, http.MethodDelete, "/images/"+imageID+"/tags/spec028-r8-gone", hdr)
+	code, body = doReq(r, http.MethodDelete, "/images/"+imageID+"/tags/spec031-r8-gone", hdr)
 	if code != http.StatusNoContent {
 		t.Fatalf("delete tag: code=%d body=%s; want 204", code, body)
 	}
@@ -144,14 +144,14 @@ func TestDeleteImageTagEvictsCache(t *testing.T) {
 		t.Fatalf("post-untag show: code=%d body=%s", code, body)
 	}
 	// Exact-array form, symmetric with the add-tag pin above.
-	if strings.Contains(body, `"tags":["spec028-r8-gone"]`) {
+	if strings.Contains(body, `"tags":["spec031-r8-gone"]`) {
 		t.Errorf("post-untag show still sees the tag — cache not evicted: %s", body)
 	}
 }
 
 // TestCreateImageNameTooLong — the name column is VARCHAR(255) and upstream's
 // schema answers 400; the overflow used to surface as a 500 from the INSERT
-// (SPEC-028, round-7 F7).
+// (SPEC-031).
 func TestCreateImageNameTooLong(t *testing.T) {
 	requireDB(t)
 	r := newGlanceTestRouter(t)

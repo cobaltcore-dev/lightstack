@@ -746,7 +746,7 @@ func createKeystoneServer(cfg *common.Config, svc *keystone.Service, authService
 	// envelope, and NoRoute/NoMethod are engine-level — without this, an
 	// unknown path under :35357 rendered the compute envelope and
 	// keystoneauth1 degraded it to "Unrecognized schema in response body."
-	// (SPEC-028; same placement Neutron's ErrorEnvelope uses.)
+	// (SPEC-031; same placement Neutron's ErrorEnvelope uses.)
 	r.Use(common.MarkIdentityErrors)
 	r.Use(middleware.ErrorHandlingMiddleware())
 	r.Use(middleware.LoggingMiddleware())

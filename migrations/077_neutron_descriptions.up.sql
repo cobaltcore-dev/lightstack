@@ -1,5 +1,5 @@
 -- networks.description and subnet_pools.description — upstream Neutron's
--- standard resource annotation (SPEC-028).
+-- standard resource annotation (SPEC-031).
 --
 -- Neither table had the column, so `network set --description` answered
 -- 400 "no updates provided" (the update handler binds name/admin_state_up/

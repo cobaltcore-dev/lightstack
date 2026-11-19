@@ -125,6 +125,13 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		return
 	}
 
+	// An unbound port starts DOWN, as in Neutron. A port already created with a
+	// device owner represents an active attachment in this stub implementation.
+	portStatus := "DOWN"
+	if req.Port.DeviceOwner != "" {
+		portStatus = "ACTIVE"
+	}
+
 	// Insert into database
 	now := time.Now()
 	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
@@ -144,7 +151,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, portID, req.Port.Name, req.Port.NetworkID, projectID, sql.NullString{String: req.Port.DeviceID, Valid: req.Port.DeviceID != ""},
-			sql.NullString{String: req.Port.DeviceOwner, Valid: req.Port.DeviceOwner != ""}, macAddress, adminStateUp, "ACTIVE", fixedIPsJSON, now, now)
+			sql.NullString{String: req.Port.DeviceOwner, Valid: req.Port.DeviceOwner != ""}, macAddress, adminStateUp, portStatus, fixedIPsJSON, now, now)
 		return err
 	})
 	if err != nil {
@@ -289,7 +296,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 			"device_owner":    req.Port.DeviceOwner,
 			"mac_address":     macAddress,
 			"admin_state_up":  adminStateUp,
-			"status":          "ACTIVE",
+			"status":          portStatus,
 			"fixed_ips":       fixedIPs,
 			"security_groups": securityGroups,
 			"created_at":      now.Format(time.RFC3339),
@@ -333,7 +340,7 @@ func (svc *Service) ListPorts(c *gin.Context) {
 	// straight out of a body the admin was allowed to read), and upstream
 	// honours all of them for admin tokens; scoping them again would answer
 	// 200 for the network and [] for its ports. Mirrors
-	// buildNetworkListFilter's tenant bypass (SPEC-028). A non-admin keeps
+	// buildNetworkListFilter's tenant bypass (SPEC-031). A non-admin keeps
 	// the scope AND filter intersection.
 	tenant := c.Query("tenant_id")
 	if tenant == "" {
@@ -369,20 +376,29 @@ func (svc *Service) ListPorts(c *gin.Context) {
 		pf.Cond(fmt.Sprintf("(p.created_at, p.id) < (%s, %s)", pf.Arg(m.createdAt), pf.Arg(m.id)))
 	}
 
-	// Standard Neutron port filters. Notably ?device_id=<server> is how
-	// `openstack server add floating ip` finds a server's port — without it the
-	// client gets every port on the network and may grab the wrong one (e.g. the
-	// router interface), associating the FIP to the VM instead of the gateway.
-	// The uuid-typed columns compare as ::text: a non-UUID value in the query
-	// string must narrow to nothing, not fail the cast and answer 500 — the
-	// same guard the floating-ip filter loop carries (SPEC-028).
-	for _, filter := range []struct{ col, val string }{
-		{"p.device_id::text", c.Query("device_id")},
-		{"p.network_id::text", c.Query("network_id")},
-		{"p.device_owner", c.Query("device_owner")},
-		{"p.mac_address", c.Query("mac_address")},
-		{"p.id::text", c.Query("id")},
+	// Standard Neutron port filters. ?device_id=<server> is how `openstack
+	// server add floating ip` finds the guest's port; without it the client may
+	// select a router interface and associate the FIP with the gateway.
+	// Parse UUID filters before querying: malformed ids match nothing, and
+	// canonical UUIDs match case-insensitively without casting indexed columns.
+	for _, filter := range []struct {
+		col, val string
+		isUUID   bool
+	}{
+		{"p.device_id", c.Query("device_id"), true},
+		{"p.network_id", c.Query("network_id"), true},
+		{"p.device_owner", c.Query("device_owner"), false},
+		{"p.mac_address", c.Query("mac_address"), false},
+		{"p.id", c.Query("id"), true},
 	} {
+		if filter.isUUID && filter.val != "" {
+			id, err := uuid.Parse(filter.val)
+			if err != nil {
+				c.JSON(http.StatusOK, gin.H{"ports": []gin.H{}})
+				return
+			}
+			filter.val = id.String()
+		}
 		if filter.val != "" {
 			pf.Eq(filter.col, filter.val)
 		}
@@ -482,7 +498,7 @@ func (svc *Service) GetPort(c *gin.Context) {
 	// A non-UUID reference (a port name — the CLI resolves names with a list
 	// fallback only after a 404) can only name nothing here; the uuid-typed
 	// lookup used to surface the cast error as 500 instead, which broke the
-	// SDK's fallback for 'port show/set/delete <name>' (SPEC-028).
+	// SDK's fallback for 'port show/set/delete <name>' (SPEC-031).
 	if _, err := uuid.Parse(portID); err != nil {
 		common.SendError(c, common.NewNotFoundError("port"))
 		return
@@ -619,7 +635,7 @@ func (svc *Service) UpdatePort(c *gin.Context) {
 	portID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// See GetPort: a non-UUID reference must 404, not 500 (SPEC-028).
+	// See GetPort: a non-UUID reference must 404, not 500 (SPEC-031).
 	if _, err := uuid.Parse(portID); err != nil {
 		common.SendError(c, common.NewNotFoundError("port"))
 		return
@@ -888,12 +904,19 @@ func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 		}
 	}
 
-	// Insert into database
+	// Neutron gives every new group the IPv4 and IPv6 default egress rules.
+	// Insert the group and its rules atomically so no successful create can
+	// return a rule-less group.
 	now := time.Now()
-	_, err := svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO security_groups (id, name, project_id, description, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, sgID, req.SecurityGroup.Name, projectID, req.SecurityGroup.Description, now, now)
+	err := database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		if _, err := tx.Exec(c.Request.Context(), `
+			INSERT INTO security_groups (id, name, project_id, description, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6)
+		`, sgID, req.SecurityGroup.Name, projectID, req.SecurityGroup.Description, now, now); err != nil {
+			return err
+		}
+		return seedDefaultSecurityGroupRules(c.Request.Context(), tx, sgID)
+	})
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_security_group").Msg("database error")
@@ -901,17 +924,24 @@ func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 		return
 	}
 
+	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), svc.pool, []string{sgID})
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_security_group_rules").Str("security_group_id", sgID).Msg("failed to read default rules")
+		common.SendError(c, common.NewInternalServerError("failed to create security group"))
+		return
+	}
+	rules := rulesByGroup[sgID]
+	if rules == nil {
+		rules = []gin.H{}
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"security_group": gin.H{
-			"id":          sgID,
-			"name":        req.SecurityGroup.Name,
-			"tenant_id":   projectID,
-			"description": req.SecurityGroup.Description,
-			// The key must exist and be a list: upstream reports [] for a
-			// fresh group, and OSC's table formatter iterates it — a null
-			// crashed 'security group create' with "'NoneType' object is
-			// not iterable" (SPEC-028).
-			"security_group_rules": []gin.H{},
+			"id":                   sgID,
+			"name":                 req.SecurityGroup.Name,
+			"tenant_id":            projectID,
+			"description":          req.SecurityGroup.Description,
+			"security_group_rules": rules,
 			"created_at":           now.Format(time.RFC3339),
 			"updated_at":           now.Format(time.RFC3339),
 		},

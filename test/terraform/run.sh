@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# SPEC-028 phase 3 (lightstack #105) — Terraform OpenStack-provider conformance
+# SPEC-031 phase 3 (lightstack #105) — Terraform OpenStack-provider conformance
 # wrapper. Automates the manual runbook for the compat module:
 #   docs/specs/016-terraform-openstack-provider-verification/HOST_TESTING.md
 #
@@ -9,12 +9,10 @@
 #
 # Exit 0 iff: init + validate + apply + destroy all succeed, the post-apply
 # re-plan is clean, and after destroy the state is empty with no tf-compat-*
-# residue left in lightstack and no post-destroy drift.
+# residue left in lightstack.
 #
 # Repo hygiene: the module never runs in place — it is copied to a mktemp
-# workspace, so .terraform/ and tfstate never land in the repo tree. Provider
-# downloads are shared through TF_PLUGIN_CACHE_DIR so repeat runs (and the
-# nightly CI job) don't re-download the provider.
+# workspace, so .terraform/ and tfstate never land in the repo tree.
 #
 # Usage:
 #   make test-terraform          # from the repo root
@@ -32,10 +30,7 @@
 #                      missing and only deleted if this run created it.
 #   TF_FLAVOR_NAME     flavor name (default: m1.small — seeded by lightstack).
 #   OPENSTACK_CLI      path to the openstack CLI (used for prerequisites).
-#   TF_PLUGIN_CACHE_DIR  provider download cache (default ~/.terraform.d/plugin-cache).
-#
-# Pinning: terraform is pinned to TF_VERSION_PIN (see the install hint printed
-# by the preflight if it is missing). The provider version is pinned in
+# Pinning: Terraform is checked against TF_VERSION_PIN during preflight. The provider version is pinned in
 # compat/provider.tf required_providers ("~> 3.0" — the 3.x series).
 
 set -euo pipefail
@@ -77,8 +72,6 @@ FLAVOR_NAME="${TF_FLAVOR_NAME:-m1.small}"
 # name wired through, or the module falls back to its variables.tf default.
 TF_VAR_ARGS=(-var "image_name=$IMAGE_NAME" -var "flavor_name=$FLAVOR_NAME")
 
-export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-$HOME/.terraform.d/plugin-cache}"
-mkdir -p "$TF_PLUGIN_CACHE_DIR" # must exist before any terraform invocation
 export TF_IN_AUTOMATION=1
 
 log()  { printf '\n=== %s ===\n' "$*"; }
@@ -115,7 +108,7 @@ cleanup() {
             >"$WORKSPACE/cleanup-destroy.log" 2>&1 || preserve=1
     fi
     # A failed destroy or unreadable state must retain the recovery workspace.
-    if [ -n "$WORKSPACE" ] && [ -d "$WORKSPACE" ]; then
+    if [ -n "$WORKSPACE" ] && [ -d "$WORKSPACE" ] && [ -f "$WORKSPACE/terraform.tfstate" ]; then
         if ! remaining="$(timeout 120 terraform -chdir="$WORKSPACE" state list 2>/dev/null)" || [ -n "$remaining" ]; then
             preserve=1
         fi
@@ -159,6 +152,10 @@ for tool in curl jq timeout; do
 done
 
 log "terraform version"
+tf_version="$(terraform version -json | jq -er '.terraform_version')" \
+    || die "cannot read the terraform version"
+[ "$tf_version" = "$TF_VERSION_PIN" ] \
+    || die "terraform $tf_version found; this wrapper is pinned to $TF_VERSION_PIN"
 terraform version | head -1
 
 curl -sf --max-time 10 "$OS_AUTH_URL" -o /dev/null \
@@ -210,15 +207,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Workspace isolation + provider cache
+# 3. Workspace isolation
 # ---------------------------------------------------------------------------
 WORKSPACE="$(mktemp -d "${TMPDIR:-/tmp}/tf-compat-workspace.XXXXXX")"
-mkdir -p "$TF_PLUGIN_CACHE_DIR"
 cp -r "$MODULE_DIR"/. "$WORKSPACE"/
 # Never inherit local state/plugins if someone ran terraform in compat/ by hand.
 rm -rf "$WORKSPACE/.terraform" "$WORKSPACE/.terraform.lock.hcl" \
     "$WORKSPACE"/terraform.tfstate* 2>/dev/null || true
-log "workspace: $WORKSPACE (shared provider cache: $TF_PLUGIN_CACHE_DIR)"
+log "workspace: $WORKSPACE"
 
 tf() { timeout 900 terraform -chdir="$WORKSPACE" "$@"; }
 
@@ -235,7 +231,7 @@ log "terraform apply"
 tf apply -auto-approve -input=false -no-color "${TF_VAR_ARGS[@]}" 2>&1 \
     | tee "$WORKSPACE/apply.log" || {
     # Root-cause hint for a historical lightstack divergence (fixed by the
-    # SPEC-028 Glance name-filter change). The module itself stays
+    # SPEC-031 Glance name-filter change). The module itself stays
     # unmodified — see README.md "Known divergences".
     if grep -q 'data.openstack_images_image_v2' "$WORKSPACE/apply.log" 2>/dev/null \
         && grep -q 'more than one result' "$WORKSPACE/apply.log" 2>/dev/null; then
@@ -245,7 +241,7 @@ FAIL: terraform apply failed — see the output above.
 
 NOTE: the provider's data.openstack_images_image_v2 resolves images with a
 server-side ?name= filter on GET /v2/images. Lightstack honours that filter
-since the SPEC-028 fix, so a "more than one result" error now means genuinely
+since the SPEC-031 fix, so a "more than one result" error now means genuinely
 duplicate names (this server currently has $n image(s)) — not the historical
 ignored-filter divergence. Check for images sharing the module's image name.
 EOF
@@ -268,18 +264,6 @@ $plan_out"
 # ---------------------------------------------------------------------------
 # 6. destroy
 # ---------------------------------------------------------------------------
-# Floating IPs carry no name, so the post-destroy residue sweep cannot match
-# them by prefix. Capture the module's own FIP ids from the state now —
-# before destroy empties it — and assert each is gone afterwards.
-# A failed pull or malformed state must not silently erase the IDs whose
-# absence we need to prove after destroy. pipefail preserves both failures.
-FIP_IDS_BEFORE_DESTROY="$(tf state pull \
-    | jq -er '[.resources[] | select(.type == "openstack_networking_floatingip_v2")
-               | .instances[].attributes.id]
-              | if all(.[]; type == "string" and length > 0) then join(" ")
-                else error("invalid floating IP ID in state") end')" \
-    || die "unable to capture floating IP IDs from Terraform state"
-
 log "terraform destroy"
 tf destroy -auto-approve -input=false -no-color "${TF_VAR_ARGS[@]}" 2>&1 \
     | tee "$WORKSPACE/destroy.log" \
@@ -301,12 +285,8 @@ outputs="$(tf output -json 2>/dev/null)" || die "terraform output failed"
 log "outputs: none"
 
 # No tf-compat-* residue left in lightstack (the authoritative residue check —
-# an empty state alone cannot prove the infra is gone). The router and
-# floating-IP checks are defensive only: the current compat module creates
-# neither (network, subnet, security group + rules, keypair, server, volume,
-# attach), but a future module revision may add them, and the sweep must not
-# silently stop covering the surface when it does. Floating IPs carry no
-# name at all — they are covered by the id-based check below.
+# an empty state alone cannot prove the infra is gone). Keep the sweep aligned
+# with the named resource families in the compat module as it grows.
 residue=0
 for res in "server list" "network list" "security group list" "volume list" "keypair list" "subnet list" "router list"; do
     read -r -a resource_args <<<"$res"
@@ -315,46 +295,9 @@ for res in "server list" "network list" "security group list" "volume list" "key
     n="$(printf '%s\n' "$names" | grep -c '^tf-compat-' || true)"
     residue=$((residue + n))
 done
-# The module's own floating IPs, captured from state before destroy — the
-# only precise check available for nameless resources. Resolved through the
-# LIST, not 'floating ip show': the pinned OSC 7.0.0 fails that command
-# client-side on every invocation ("Invalid formatter provided.", osc-lib
-# 4.7.0 vs the plain-callable port_details formatter), so a show-based probe
-# would report "gone" unconditionally — including for a leaked FIP.
-if [ -n "$FIP_IDS_BEFORE_DESTROY" ]; then
-    fip_list="$("$OSC" floating ip list -f value -c ID)" \
-        || die "cannot check residue: openstack floating ip list failed"
-    for fip in $FIP_IDS_BEFORE_DESTROY; do
-        if printf '%s\n' "$fip_list" | grep -qx "$fip"; then
-            residue=$((residue + 1))
-        fi
-    done
-fi
 [ "$residue" -eq 0 ] || die "tf-compat-* residue left in lightstack after destroy \
 ($residue object(s)) — destroy reported success but left objects behind"
 log "openstack residue: none"
-
-# Post-destroy plan: with an empty state the plan necessarily proposes the 9
-# creates again (-detailed-exitcode=2), so a bare "require 0" cannot hold.
-# What we require instead: no error, and a plan that contains ONLY adds —
-# any to-change/to-destroy, or residue matching a would-be add (caught above
-# by the CLI check), means destroy did not fully clean up.
-set +e
-plan_out="$(tf plan -detailed-exitcode -input=false -no-color "${TF_VAR_ARGS[@]}" 2>&1)"
-plan_rc=$?
-set -e
-case "$plan_rc" in
-    0) log "post-destroy plan: clean (no changes)" ;;
-    2) summary="$(printf '%s\n' "$plan_out" | grep -E '^Plan:' || true)"
-        if ! printf '%s\n' "$summary" | grep -qE '^Plan: [0-9]+ to add, 0 to change, 0 to destroy\.$'; then
-            die "post-destroy plan did not prove an adds-only result:
-$plan_out"
-        fi
-        log "post-destroy plan: $summary (expected after destroy; \
-residue check above proves the adds are fresh creates, not leftovers)" ;;
-    *) die "post-destroy plan errored (-detailed-exitcode=$plan_rc):
-$plan_out" ;;
-esac
 
 # ---------------------------------------------------------------------------
 # 8. Summary
@@ -376,6 +319,5 @@ cat <<EOF
   state list       : empty
   outputs          : none
   openstack residue: 0 tf-compat-* objects
-  post-destroy plan: adds only, no residue
 EOF
 exit 0

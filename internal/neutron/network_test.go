@@ -155,7 +155,7 @@ func TestBuildNetworkListFilter(t *testing.T) {
 
 	// tenant + name append sequential placeholders after the scope arg ($1).
 	// The tenant filter compares as ::text (a non-UUID value narrows to
-	// nothing rather than failing the uuid cast; SPEC-028).
+	// nothing rather than failing the uuid cast; SPEC-031).
 	f, _ = buildNetworkListFilter(caller, "", "", "proj-A", "", "netx", false)
 	where := f.Conds()
 	if !strings.Contains(where, "project_id::text = $2") || !strings.Contains(where, "name = $3") {
@@ -168,9 +168,9 @@ func TestBuildNetworkListFilter(t *testing.T) {
 	// Admin + tenant: the tenant filter is the authoritative owner scope — the
 	// caller's read scope must NOT be ANDed in, or another project's private
 	// networks can never appear and `network list --project <id>` answers []
-	// (SPEC-028). Upstream honours the filter for admin tokens. The filter
+	// (SPEC-031). Upstream honours the filter for admin tokens. The filter
 	// compares as ::text: a non-UUID value must narrow to nothing, not fail
-	// the uuid cast and answer 500 (SPEC-028).
+	// the uuid cast and answer 500 (SPEC-031).
 	f, _ = buildNetworkListFilter(caller, "", "", "proj-B", "", "", true)
 	where = f.Conds()
 	if where != "project_id::text = $1" {

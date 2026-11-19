@@ -1,5 +1,5 @@
 #!/bin/bash
-# coverage.sh — the CLI conformance coverage gate (SPEC-028).
+# coverage.sh — the CLI conformance coverage gate (SPEC-031).
 #
 # Cross-references the command manifests (test/cli/manifest/*.json) with the
 # recorded results (test/cli/results/results.json) and prints the per-service
@@ -83,6 +83,19 @@ MANIFESTS_JSON=$(jq -s '.' "$MANIFEST_DIR"/*.json) || {
     echo "ERROR: manifests in $MANIFEST_DIR are not parseable JSON" >&2
     exit 2
 }
+if ! printf '%s' "$MANIFESTS_JSON" | jq -e '
+    type == "array" and length > 0 and
+    all(.[]; (.service | type == "string" and length > 0) and
+        (.commands | type == "array" and length > 0 and
+            all(.[]; type == "object" and
+                (.id | type == "string" and length > 0) and
+                (.tiers | type == "array" and length > 0 and
+                    all(.[]; . == "A" or . == "B" or . == "C" or . == "S"))))) and
+    ([.[].commands[].id] | length == (unique | length))
+' >/dev/null; then
+    echo "ERROR: manifests must have unique command ids and non-empty commands with valid ids and tiers" >&2
+    exit 2
+fi
 # A parseable report is not necessarily valid evidence: an unknown status used
 # to evade every failure predicate, and selecting the first duplicate ID could
 # hide a later failed attempt. Require one recognized result per case.
@@ -161,35 +174,13 @@ printf '%s\n' "$ROWS" | jq -r '
 # A ledger entry that now passes is stale — warn, do not fail: a fix must never
 # be punished for making the baseline smaller.
 # ---------------------------------------------------------------------------
-BASELINE_IDS="$(cli_baseline_ids)" || exit 2
-declare -A BASELINE=() ROW_STATUS=()
-while IFS= read -r id; do
-    [[ -n "$id" ]] && BASELINE["$id"]=1
-done <<<"$BASELINE_IDS"
-while IFS=$'\t' read -r id status; do
-    [[ -n "$id" ]] && ROW_STATUS["$id"]="$status"
-done < <(printf '%s' "$ROWS" | jq -r '.[] | [.case_id, .status] | @tsv')
-
-NEW_KNOWN=""
-while IFS=$'\t' read -r tier id cmd; do
-    [[ -z "$id" ]] && continue
-    if [[ -z "${BASELINE[$id]:-}" ]]; then
-        NEW_KNOWN+="  [$tier] $id (known-failing, not in baseline): $cmd"$'\n'
-    fi
-done < <(printf '%s' "$ROWS" | jq -r \
-    '.[] | select(.status == "known-failing") | [.tier, .case_id, .cmd] | @tsv')
-
-STALE=()
-while IFS= read -r id; do
-    [[ -z "$id" ]] && continue
-    if [[ "${ROW_STATUS[$id]:-}" == "pass" ]]; then
-        STALE+=("$id")
-    fi
-done <<<"$BASELINE_IDS"
-if (( ${#STALE[@]} > 0 )); then
-    echo "WARNING: stale known-failure baseline entries — these cases now pass:" >&2
-    printf '  %s\n' "${STALE[@]}" >&2
-    echo "Remove each entry from $(cli_baseline_file) (or convert its probe to an assertion)." >&2
+known_ids=$(printf '%s' "$ROWS" | jq -r '.[] | select(.status == "known-failing") | .case_id')
+passed_ids=$(printf '%s' "$ROWS" | jq -r '.[] | select(.status == "pass") | .case_id')
+baseline_rc=0
+cli_baseline_check_ids "$known_ids" "$passed_ids" || baseline_rc=$?
+if (( baseline_rc == 2 )); then
+    echo "ERROR: cannot read the known-failure baseline" >&2
+    exit 2
 fi
 
 # The gate: fail on fail / untested / skip in the required tiers, and on any
@@ -197,12 +188,15 @@ fi
 VIOLATIONS=$(printf '%s' "$ROWS" | jq -r \
     '.[] | select(.status == "fail" or .status == "untested" or .status == "skip")
      | "  [\(.tier)] \(.id) (\(.status)): \(.cmd)"')
-if [[ -n "$NEW_KNOWN" ]]; then
-    VIOLATIONS+="${VIOLATIONS:+$'\n'}$NEW_KNOWN"
+if (( baseline_rc == 1 )); then
+    if [[ -n "$VIOLATIONS" ]]; then
+        VIOLATIONS+=$'\n'
+    fi
+    VIOLATIONS+="  known-failing cases are missing from the baseline"
 fi
 if [[ -n "$VIOLATIONS" ]]; then
     echo
-    echo "Coverage gate FAILED — untested, failing, or skipped commands, or new known-failing cases:"
+    echo "Coverage gate FAILED — untested, failing, skipped, or unbaselined known-failing cases:"
     printf '%s\n' "$VIOLATIONS"
     exit 1
 fi

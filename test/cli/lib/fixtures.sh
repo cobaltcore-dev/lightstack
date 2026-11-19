@@ -1,5 +1,5 @@
 #!/bin/bash
-# fixtures.sh — idempotent shared fixtures + crash-safe sweep (SPEC-028).
+# fixtures.sh — idempotent shared fixtures + crash-safe sweep (SPEC-031).
 #
 # Locked API:
 #   fixtures_ensure     create-or-get the shared fixtures (project, image,
@@ -16,9 +16,11 @@
 #                       across servers, snapshots, backups, volumes, ports,
 #                       subnets, routers, networks, security groups,
 #                       keypairs, server groups, images, flavors, users,
-#                       groups and projects — best-effort. NOT covered:
-#                       nameless or differently-keyed kinds (floating IPs,
-#                       roles, domains, volume types, subnet pools,
+#                       groups and projects — best-effort. Floating IPs are
+#                       matched through a harness-prefixed floating network;
+#                       router interfaces are detached before their routers
+#                       are deleted. NOT covered: differently-keyed kinds
+#                       (roles, domains, volume types, subnet pools,
 #                       aggregates, app-credentials) and volumes stuck in a
 #                       transfer; the suites' cases pre-clean their own
 #                       residue of those, so the gap only matters after a
@@ -52,7 +54,8 @@ FIX_SUBNET="$FIX_PREFIX-subnet"
 # is the emitted handle — `keypair delete` takes the name anyway.
 _ids_by_name_prefix() {
     jq -r --arg p "$FIX_PREFIX" \
-        '.[] | select((.Name // .name // "") | startswith($p)) | (.ID // .id // .Name // .name)' 2>/dev/null
+        '.[] | select((.Name // .name // "") as $n | $n == $p or ($n | startswith($p + "-")))
+             | (.ID // .id // .Name // .name)' 2>/dev/null
 }
 
 # _sweep_list <label> <list-args...>: run the list command and echo its JSON
@@ -126,14 +129,49 @@ fixtures_sweep() {
     # build does not implement it — see the suite's known-failing ledger).
     _delete_all volumes "$out" "volume delete {id}" "volume delete --force {id}"
 
-    # Network: ports, subnets, routers, then networks. Floating IPs are NOT
-    # swept (they carry no name); suites that allocate them must release them.
+    # Floating IPs have no name. Match their floating network against this
+    # harness's named networks and release them before those networks go away.
+    local networks network_ids
+    networks=$(_sweep_list networks network list)
+    network_ids=$(printf '%s' "$networks" | _ids_by_name_prefix | jq -Rsc 'split("\n") | map(select(length > 0))')
+    out=$(_sweep_list "floating IPs" floating ip list)
+    while IFS= read -r id; do
+        [[ -z "$id" ]] && continue
+        OSC_QUIET=1 osc floating ip delete "$id"
+        if (( OSC_RC != 0 )); then
+            log_warn "sweep: failed to delete floating IP $id: $(_snip "$OSC_ERR")"
+        fi
+    done < <(printf '%s' "$out" | jq -r --argjson ids "$network_ids" \
+        '.[] | (.floating_network_id // ."Floating Network") as $network | select(($ids | index($network)) != null) | (.ID // .id)')
+
+    # Detach and delete named routers before their subnets. Deleting a router
+    # with interfaces is refused, and subnet deletion can otherwise erase the
+    # interface row while leaving its router port behind.
+    local rid port
+    out=$(_sweep_list routers router list)
+    while IFS= read -r rid; do
+        [[ -z "$rid" ]] && continue
+        OSC_QUIET=1 osc router show "$rid"
+        if (( OSC_RC == 0 )); then
+            while IFS= read -r port; do
+                [[ -z "$port" ]] && continue
+                OSC_QUIET=1 osc router remove port "$rid" "$port"
+                if (( OSC_RC != 0 )); then
+                    log_warn "sweep: failed to detach router port $port from $rid: $(_snip "$OSC_ERR")"
+                fi
+            done < <(printf '%s' "$OSC_OUT" | jq -r '.interfaces_info // [] | .[].port_id')
+        fi
+        OSC_QUIET=1 osc router delete "$rid"
+        if (( OSC_RC != 0 )); then
+            log_warn "sweep: failed to delete router $rid: $(_snip "$OSC_ERR")"
+        fi
+    done < <(printf '%s' "$out" | _ids_by_name_prefix)
+
+    # Network: ports, subnets, then networks.
     out=$(_sweep_list ports port list)
     _delete_all ports "$out" "port delete {id}"
     out=$(_sweep_list subnets subnet list)
     _delete_all subnets "$out" "subnet delete {id}"
-    out=$(_sweep_list routers router list)
-    _delete_all routers "$out" "router delete {id}"
     out=$(_sweep_list networks network list)
     _delete_all networks "$out" "network delete {id}"
     out=$(_sweep_list "security groups" security group list)
@@ -179,7 +217,7 @@ _ensure_project() {
         FIX_PROJECT_ID=$(printf '%s' "$OSC_OUT" | jq -r '.id')
         return 0
     fi
-    osc project create "$FIX_PROJECT" --description "SPEC-028 CLI conformance fixtures"
+    osc project create "$FIX_PROJECT" --description "SPEC-031 CLI conformance fixtures"
     if (( OSC_RC != 0 )); then
         log_error "cannot create fixture project: $(_snip "$OSC_ERR")"
         return 1

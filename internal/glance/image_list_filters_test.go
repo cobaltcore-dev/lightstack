@@ -64,7 +64,7 @@ func contains(haystack []string, needle string) bool {
 // the filter the unmodified terraform-provider-openstack data source relies
 // on (images.ListOpts{Name} with no client-side fallback), so without it any
 // server holding more than one image breaks `data "openstack_images_image_v2"`
-// with "Your query returned more than one result" (SPEC-028 terraform
+// with "Your query returned more than one result" (SPEC-031 terraform
 // conformance finding).
 func TestListImagesNameFilter(t *testing.T) {
 	requireDB(t)
@@ -94,7 +94,7 @@ func TestListImagesNameFilter(t *testing.T) {
 // TestListImagesPropertyFilters — the other standard Glance v2 list
 // parameters (glance ALLOWED_PARAMS): disk_format, size_min/max, owner, tag.
 // Silently ignoring them makes `openstack image list --tag X` /
-// `--disk-format qcow2` return unfiltered results (SPEC-028 CLI conformance
+// `--disk-format qcow2` return unfiltered results (SPEC-031 CLI conformance
 // finding).
 //
 // The assertions are written for a SHARED server (other suites create images
@@ -170,7 +170,7 @@ func TestListImagesPropertyFilters(t *testing.T) {
 // TestCreateImagePersistsTags — `POST /v2/images` accepts a `tags` array and
 // echoes it in the 201 response, but the rows were never written: an
 // immediate `GET /v2/images/{id}` returned `tags: []`. The create/echo/show
-// round-trip must agree (SPEC-028 CLI conformance finding:
+// round-trip must agree (SPEC-031 CLI conformance finding:
 // `openstack image create --tag` silently drops the tag).
 func TestCreateImagePersistsTags(t *testing.T) {
 	requireDB(t)
@@ -223,7 +223,7 @@ func TestCreateImagePersistsTags(t *testing.T) {
 // TestImageTagLengthValidated — upstream's image schema caps a tag at 255
 // characters and answers 400; the image_tags column is VARCHAR(255), so
 // without the check an over-long tag surfaced as a 500 after (create path)
-// the image row was already committed (SPEC-028).
+// the image row was already committed (SPEC-031).
 func TestImageTagLengthValidated(t *testing.T) {
 	requireDB(t)
 	r := newGlanceTestRouter(t)

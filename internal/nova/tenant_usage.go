@@ -102,6 +102,10 @@ func (svc *Service) GetTenantUsage(c *gin.Context) {
 // entry renders one project's usage as the gin.H both os-simple-tenant-usage forms return.
 func (u *usageTotals) entry(projectID string) gin.H {
 	now := time.Now()
+	serverUsages := u.serverUsages
+	if serverUsages == nil {
+		serverUsages = []gin.H{}
+	}
 	return gin.H{
 		"tenant_id":             projectID,
 		"total_local_gb_usage":  u.localGB,
@@ -110,19 +114,20 @@ func (u *usageTotals) entry(projectID string) gin.H {
 		"total_hours":           u.hours,
 		"start":                 now.Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05.000000"),
 		"stop":                  now.Format("2006-01-02T15:04:05.000000"),
-		"server_usages":         []gin.H{},
+		"server_usages":         serverUsages,
 	}
 }
 
-// tenantUsageQuery returns one row per instance: its project, its creation time and its
-// flavor's size, NULL when it has none.
-const tenantUsageQuery = `SELECT i.project_id, i.created_at, f.vcpus, f.ram_mb, f.disk_gb
+// tenantUsageQuery returns one row per instance and its optional flavor.
+const tenantUsageQuery = `SELECT i.project_id, i.id, i.name, i.status, i.created_at,
+	 f.id, f.name, f.vcpus, f.ram_mb, f.disk_gb
 	 FROM instances i
 	 LEFT JOIN flavors f ON i.flavor_id = f.id`
 
 // usageTotals is one project's consumption.
 type usageTotals struct {
 	hours, vcpus, memoryMB, localGB float64
+	serverUsages                    []gin.H
 }
 
 // sumUsage adds up tenantUsageQuery's rows per project, in the order the projects first appear.
@@ -134,10 +139,11 @@ func sumUsage(rows database.Rows) (map[string]*usageTotals, []string, error) {
 	totals := map[string]*usageTotals{}
 	var order []string
 	for rows.Next() {
-		var projectID string
+		var projectID, instanceID, name, status string
 		var created *time.Time
+		var flavorID, flavorName *string
 		var vcpus, ramMB, diskGB *int
-		if err := rows.Scan(&projectID, &created, &vcpus, &ramMB, &diskGB); err != nil {
+		if err := rows.Scan(&projectID, &instanceID, &name, &status, &created, &flavorID, &flavorName, &vcpus, &ramMB, &diskGB); err != nil {
 			return nil, nil, err
 		}
 		u := totals[projectID]
@@ -147,6 +153,39 @@ func sumUsage(rows database.Rows) (map[string]*usageTotals, []string, error) {
 			order = append(order, projectID)
 		}
 		u.add(now, created, vcpus, ramMB, diskGB)
+		flavor := gin.H{}
+		if flavorID != nil {
+			flavor["id"] = *flavorID
+		}
+		if flavorName != nil {
+			flavor["original_name"] = *flavorName
+		}
+		if vcpus != nil {
+			flavor["vcpus"] = *vcpus
+		}
+		if ramMB != nil {
+			flavor["ram"] = *ramMB
+		}
+		if diskGB != nil {
+			flavor["disk"] = *diskGB
+		}
+		var startedAt any
+		var hours float64
+		var uptime int64
+		if created != nil {
+			startedAt = created.Format("2006-01-02T15:04:05.000000")
+			seconds := now.Sub(*created).Seconds()
+			if seconds > 0 {
+				hours = seconds / 3600
+				uptime = int64(seconds)
+			}
+		}
+		u.serverUsages = append(u.serverUsages, gin.H{
+			"tenant_id": projectID, "instance_id": instanceID, "name": name,
+			"state": status, "flavor": flavor, "hours": hours, "uptime": uptime,
+			"started_at": startedAt, "ended_at": nil,
+			"vcpus": vcpus, "memory_mb": ramMB, "local_gb": diskGB,
+		})
 	}
 	return totals, order, rows.Err()
 }

@@ -5,7 +5,7 @@
 -- it: every roles lookup failed with `relation "application_credential_roles" does not
 -- exist`, the handlers swallowed the error, and the `roles` key was omitted from list
 -- and show responses — upstream always includes it, and the pinned python-openstackclient
--- crashes rendering a credential without one (SPEC-028).
+-- crashes rendering a credential without one (SPEC-031).
 --
 -- Fresh installs get the table; installs migrated past 029 get it too, empty, which is
 -- exactly what their credentials answer today (no roles were ever persisted).

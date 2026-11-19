@@ -228,7 +228,7 @@ func (svc *Service) ShelveInstance(c *gin.Context, instanceID, projectID string)
 	// an unshelve path that predates snapshot consumption — would fail this
 	// insert with 500. Reclaim any leftover first: at this point the instance
 	// is ACTIVE/SHUTOFF and about to be SHELVED, so no live snapshot of it
-	// can exist (SPEC-028: shelve → unshelve → shelve was a 500).
+	// can exist (SPEC-031: shelve → unshelve → shelve was a 500).
 	snapshotName := fmt.Sprintf("shelved-%s-%d", instanceID[:8], time.Now().Unix())
 
 	_, err = svc.pool.Exec(c.Request.Context(), `
@@ -319,7 +319,7 @@ func (svc *Service) UnshelveInstance(c *gin.Context, instanceID, projectID strin
 	// state reconciler exists to correct records that disagree with the
 	// hypervisor, so a record written ACTIVE over a stopped guest was flipped
 	// back to SHUTOFF within one 30s sweep: `server unshelve` observably did
-	// nothing (SPEC-028, round 9). Starting first also wins the reconciler's
+	// nothing (SPEC-031). Starting first also wins the reconciler's
 	// compare-and-set by construction: a SHELVED row is never a reconcile
 	// candidate, and once the guest is up no verdict disagrees with ACTIVE.
 	// A domain that has gone missing since the shelve self-heals the way

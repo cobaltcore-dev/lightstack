@@ -1,6 +1,6 @@
 {
   "service": "volume",
-  "description": "Cinder (block storage) command surface served by lightstack — SPEC-028 tier A/B conformance. Verified against python-openstackclient 7.0.0; see suites/volume.sh for the known-failing entries (metadata serialization, backup name lookup, NULL-description volume types, os-set_bootable).",
+  "description": "Cinder (block storage) command surface served by Lightstack — SPEC-031 tier A/B conformance, verified against python-openstackclient 7.0.0. The only known-failing case is backup show by name, which is a bug in the pinned client; see the baseline and suites/volume.sh for its expected error.",
   "commands": [
     {
       "id": "volume.volume.create",
@@ -41,7 +41,7 @@
     {
       "id": "volume.volume.set.size",
       "cmd": "openstack volume set --size <gb> <volume> (extend)",
-      "endpoints": ["POST /v3/volumes/{id}/action (os-extend)"],
+      "endpoints": ["GET /v3/volumes/{id} (lookup)", "POST /v3/volumes/{id}/action (os-extend)"],
       "tiers": ["A", "B"]
     },
     {

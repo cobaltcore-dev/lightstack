@@ -158,7 +158,7 @@ list of endpoints with zero coverage) is tracked in
 [docs/testing/BLUEPRINT_TEST_COVERAGE.md](../../docs/testing/BLUEPRINT_TEST_COVERAGE.md) —
 consult that matrix instead of any older per-run count in this repo. A
 machine-generated CLI conformance report (`test/cli/results/`, produced by
-`make cli-coverage`) is being added under SPEC-028 and will extend this
+`make cli-coverage`) is being added under SPEC-031 and will extend this
 coverage tracking to the `openstack` CLI surface.
 
 ## Validation Gates

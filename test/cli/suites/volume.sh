@@ -1,5 +1,5 @@
 #!/bin/bash
-# volume.sh — SPEC-028 tier A/B conformance cases for Cinder (block storage).
+# volume.sh — SPEC-031 tier A/B conformance cases for Cinder (block storage).
 #
 # One case per manifest/volume.json entry: tier A uses the manifest id, tier B
 # uses <id>.neg. Every resource is named cli-conf-vo-* and removed by the case
@@ -20,7 +20,7 @@ suite_begin volume
 # after a sweep re-ensures here instead of failing with confusing
 # missing-resource errors.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/fixtures.sh"
-fixtures_require
+fixtures_require || exit 2
 
 VO_TYPE="ceph-rbd" # seeded shared volume type (migration 002)
 QPROJECT="cli-conf" # shared fixture project for the admin quota cases
@@ -216,7 +216,7 @@ osc volume show cli-conf-vo-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent volume must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -229,11 +229,7 @@ osc volume set --description "set by cli-conf volume suite" "$V"
 assert_rc 0
 osc volume show "$V"
 assert_rc 0
-if [[ "$(printf '%s' "$OSC_OUT" | jq -r '.description // empty')" != "set by cli-conf volume suite" ]]; then
-    t_known_failure "python-cinderclient PUTs /v3/volumes/{id} with the legacy v2 field names (display_description/display_name) and lightstack's UpdateVolume only binds description/name, so 'volume set --description' (and --name) answers 200 but persists nothing — a raw PUT carrying 'description' does update it; Cinder-compatible servers accept both aliases"
-else
-    assert_jq '.description' 'set by cli-conf volume suite'
-fi
+assert_jq '.description' 'set by cli-conf volume suite'
 VID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 [[ -n "$VID" ]] && OSC_QUIET=1 osc volume delete "$VID"
 t_end
@@ -253,23 +249,15 @@ VID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 t_end
 
 t_begin volume.volume.set.size.neg
-V="cli-conf-vo-shrink"
-_vo_clean_volume "$V"
-osc volume create --size 2 "$V"
-assert_rc 0
-# Extending to a smaller size must be refused server-side (os-extend requires
-# new_size > current size).
-osc volume set --size 1 "$V"
+# A valid absent UUID exercises the server-side resource lookup. OSC rejects
+# a non-positive resize locally, before it can reach the os-extend endpoint;
+# this case therefore checks lookup refusal only, not resize validation.
+osc volume set --size 1 00000000-0000-4000-8000-000000000000
 if (( OSC_RC == 0 )); then
-    t_fail "extending a volume to a smaller size must not exit 0"
+    t_fail "setting the size on a nonexistent volume must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
-osc volume show "$V"
-assert_rc 0
-assert_jq '.size' 2
-VID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
-[[ -n "$VID" ]] && OSC_QUIET=1 osc volume delete "$VID"
 t_end
 
 t_begin volume.volume.set.property
@@ -281,11 +269,7 @@ osc volume set --property cli_conf_key=cli_conf_value "$V"
 assert_rc 0
 osc volume show "$V"
 assert_rc 0
-if [[ "$(printf '%s' "$OSC_OUT" | jq -r '.properties.cli_conf_key // empty')" != "cli_conf_value" ]]; then
-    t_known_failure "volume metadata writes persist (GET /v3/volumes/{id}/metadata returns them) but GET /v3/volumes/{id} serializes metadata as {} — OSC maps metadata to 'properties', so 'volume show' never displays a property set via 'volume set --property'"
-else
-    assert_jq '.properties.cli_conf_key' 'cli_conf_value'
-fi
+assert_jq '.properties.cli_conf_key' 'cli_conf_value'
 osc volume unset --property cli_conf_key "$V"
 assert_rc 0
 VID=$(_vo_vol_id "$V")
@@ -298,18 +282,15 @@ _vo_clean_volume "$V"
 osc volume create --size 1 "$V"
 assert_rc 0
 osc volume set --bootable "$V"
-if (( OSC_RC != 0 )); then
-    t_known_failure "POST /v3/volumes/{id}/action has no os-set_bootable case — the server answers HTTP 400 'unknown action', so 'volume set --bootable' and '--non-bootable' both fail; bootable can only be set at create time (--image)"
-else
-    osc volume show "$V"
-    assert_rc 0
-    assert_jq '(.bootable == "true" or .bootable == true)' true
-    osc volume set --non-bootable "$V"
-    assert_rc 0
-    osc volume show "$V"
-    assert_rc 0
-    assert_jq '(.bootable == "false" or .bootable == false)' true
-fi
+assert_rc 0
+osc volume show "$V"
+assert_rc 0
+assert_jq '(.bootable == "true" or .bootable == true)' true
+osc volume set --non-bootable "$V"
+assert_rc 0
+osc volume show "$V"
+assert_rc 0
+assert_jq '(.bootable == "false" or .bootable == false)' true
 VID=$(_vo_vol_id "$V")
 [[ -n "$VID" ]] && OSC_QUIET=1 osc volume delete "$VID"
 t_end
@@ -334,7 +315,7 @@ osc volume delete cli-conf-vo-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent volume must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -344,13 +325,13 @@ osc volume create --size 0 cli-conf-vo-badsize
 if (( OSC_RC == 0 )); then
     t_fail "volume create --size 0 must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 400
 fi
 osc volume create --size -1 cli-conf-vo-badsize
 if (( OSC_RC == 0 )); then
     t_fail "volume create --size -1 must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 400
 fi
 t_end
 
@@ -367,7 +348,7 @@ osc volume create --size 1 "$V"
 assert_rc 0
 osc volume snapshot create --volume "$V" "$S"
 if (( OSC_RC != 0 )); then
-    t_known_failure "POST /v3/snapshots omits 'metadata' from the snapshot object; OSC 7's snapshot formatter raises KeyError('metadata') and exits 1 — the snapshot IS created server-side (asserted below via volume snapshot list)"
+    t_fail "snapshot create failed: $(_snip "$OSC_ERR")"
 else
     assert_rc 0
     assert_jq '.name' "$S"
@@ -422,7 +403,7 @@ SID=$(_vo_snap_id "$S")
 if [[ -n "$SID" ]]; then
     osc volume snapshot show "$SID"
     if (( OSC_RC != 0 )); then
-        t_known_failure "GET /v3/snapshots/{id} omits 'metadata' from the snapshot object; OSC 7's snapshot formatter raises KeyError('metadata') and exits 1"
+        t_fail "snapshot show failed: $(_snip "$OSC_ERR")"
     else
         assert_rc 0
         assert_jq_type '.' object
@@ -441,7 +422,7 @@ osc volume snapshot show cli-conf-vo-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent snapshot must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -565,7 +546,11 @@ osc volume backup create "$V" --name "$B"
 assert_rc 0
 osc volume backup show "$B"
 if (( OSC_RC != 0 )); then
-    t_known_failure "pinned OSC 7.0.0 client bug, not a server divergence: 'volume backup show' calls sdk get_backup() (raw GET /v3/backups/{name-or-id}) with no name fallback, while 'volume backup delete' uses find_backup() — the server correctly answers 404 for a non-UUID reference (the old 500 uuid-cast is fixed), matching real Cinder, which does not resolve names there either. Fixed client-side in OSC 7.3.0 ('Fixed the openstack volume backup show command to show a backup by name', python-openstackclient release notes); this probe self-heals when the pin is raised. By-ID show and by-name delete/list work"
+    if printf '%s' "$OSC_ERR" | grep -Fq 'No Backup found for'; then
+        t_known_failure "pinned OSC 7.0.0 by-name backup lookup bug: $(_snip "$OSC_ERR")"
+    else
+        t_fail "backup show failed for an unexpected reason: $(_snip "$OSC_ERR")"
+    fi
 else
     assert_jq '.name' "$B"
     assert_jq '.status' 'available'
@@ -647,7 +632,7 @@ osc volume type show cli-conf-vo-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent volume type must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -686,7 +671,7 @@ assert_rc 0
 osc volume type show "$T"
 assert_rc 0
 if [[ "$(printf '%s' "$OSC_OUT" | jq -r '.properties.cli_conf_spec // empty')" != "spec_value" ]]; then
-    t_known_failure "type extra-spec writes persist (GET /v3/types/{id}/extra_specs returns them) but GET /v3/types/{id} omits extra_specs from the type object, so OSC's 'volume type show' reports properties: {} after 'volume type set --property'"
+    t_fail "volume type show omitted the configured extra spec"
 else
     assert_jq '.properties.cli_conf_spec' 'spec_value'
 fi
@@ -708,7 +693,7 @@ TID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 [[ -n "$TID" ]] || t_fail "no type id in create output"
 osc volume type list
 if (( OSC_RC != 0 )); then
-    t_known_failure "volume type create without --description stores a NULL description and GET /v3/types then fails HTTP 500 'failed to read results' (ListVolumeTypes scans description into a non-nullable string) for every caller until the type is deleted — the type itself is created fine"
+    t_fail "volume type list failed after creating a type without a description: $(_snip "$OSC_ERR")"
 else
     assert_jq "[.[] | select((.Name // .name) == \"$T\")] | length" 1
 fi

@@ -47,7 +47,7 @@ func (svc *Service) ListServerGroups(c *gin.Context) {
 		}
 
 		serverGroups = append(serverGroups,
-			serverGroupResponse(id, name, policies, members, projectID, rules))
+			serverGroupResponse(serverGroupRow{ID: id, Name: name, Policies: policies, Members: members, ProjectID: projectID, Rules: rules}))
 	}
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
@@ -93,26 +93,33 @@ func serverGroupPolicyFrom(policies []string, policy string) (string, bool) {
 	return "", false
 }
 
-// serverGroupResponse renders one server group for the API. It carries BOTH
-// the legacy `policies` array and the 2.64+ `policy` string, so clients of
-// any microversion read the field they negotiated for.
-func serverGroupResponse(id, name string, policies []string, members []string, projectID string, rules map[string]int) gin.H {
-	if rules == nil {
-		rules = map[string]int{}
+// serverGroupRow keeps the mostly-string response fields named at call sites.
+type serverGroupRow struct {
+	ID, Name, ProjectID string
+	Policies, Members   []string
+	Rules               map[string]int
+}
+
+// serverGroupResponse renders one server group for the API. It carries both
+// the legacy policies array and the 2.64+ policy string, so clients of any
+// microversion read the field they negotiated for.
+func serverGroupResponse(group serverGroupRow) gin.H {
+	if group.Rules == nil {
+		group.Rules = map[string]int{}
 	}
 	policy := ""
-	if len(policies) > 0 {
-		policy = policies[0]
+	if len(group.Policies) > 0 {
+		policy = group.Policies[0]
 	}
 	return gin.H{
-		"id":         id,
-		"name":       name,
-		"policies":   policies,
+		"id":         group.ID,
+		"name":       group.Name,
+		"policies":   group.Policies,
 		"policy":     policy,
-		"members":    members,
+		"members":    group.Members,
 		"metadata":   gin.H{},
-		"rules":      rules,
-		"project_id": projectID,
+		"rules":      group.Rules,
+		"project_id": group.ProjectID,
 	}
 }
 
@@ -177,7 +184,7 @@ func (svc *Service) CreateServerGroup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"server_group": serverGroupResponse(groupID, req.ServerGroup.Name, []string{policy}, []string{}, projectID, req.ServerGroup.Rules),
+		"server_group": serverGroupResponse(serverGroupRow{ID: groupID, Name: req.ServerGroup.Name, Policies: []string{policy}, Members: []string{}, ProjectID: projectID, Rules: req.ServerGroup.Rules}),
 	})
 }
 
@@ -209,7 +216,7 @@ func (svc *Service) GetServerGroup(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"server_group": serverGroupResponse(groupID, name, policies, members, projectIDFromDB, rules),
+		"server_group": serverGroupResponse(serverGroupRow{ID: groupID, Name: name, Policies: policies, Members: members, ProjectID: projectIDFromDB, Rules: rules}),
 	})
 }
 

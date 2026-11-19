@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -332,7 +331,7 @@ func (svc *Service) ValidateToken(c *gin.Context) {
 func (svc *Service) RevokeToken(c *gin.Context) {
 	// Upstream validates the subject token and answers 404 when it names
 	// nothing revocable; the previous unconditional 204 hid typos and
-	// expired ids, so clients could not detect them (SPEC-028). Tokens are
+	// expired ids, so clients could not detect them (SPEC-031). Tokens are
 	// JWTs that expire naturally, so revoking a valid token is acknowledged
 	// with 204 — there is no server-side session to destroy.
 	tokenString := c.GetHeader("X-Subject-Token")
@@ -447,7 +446,7 @@ func (svc *Service) ListUsers(c *gin.Context) {
 		var enabled bool
 		// email and description are nullable; scanning them into plain
 		// strings would turn a user without either into a 500 for the whole
-		// collection (SPEC-028: both were also missing from the response
+		// collection (SPEC-031: both were also missing from the response
 		// entirely, so 'user show' printed email: null for a user created
 		// with one).
 		var email, description sql.NullString
@@ -488,7 +487,7 @@ func (svc *Service) GetUser(c *gin.Context) {
 
 	var id, name, domainID string
 	var enabled bool
-	// Nullable for the same reason as in ListUsers; SPEC-028: they were
+	// Nullable for the same reason as in ListUsers; SPEC-031: they were
 	// dropped entirely from the show response.
 	var email, description sql.NullString
 	err := svc.pool.QueryRow(c.Request.Context(),
@@ -930,7 +929,7 @@ func (svc *Service) CreateRole(c *gin.Context) {
 	)
 	if err != nil {
 		// roles.name is UNIQUE; a duplicate is the caller's conflict, not a
-		// server fault — upstream answers 409 (SPEC-028).
+		// server fault — upstream answers 409 (SPEC-031).
 		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("role already exists"))
 			return
@@ -1242,8 +1241,8 @@ func (svc *Service) ListRoleAssignments(c *gin.Context) {
 	// upstream returns and the one `role assignment list --names` (and
 	// openstacksdk's name-normalizing consumer) requires: user.name,
 	// user.domain.{id,name}, scope.project.name, scope.project.domain.{id,name},
-	// role.name. Without it only ids are emitted, as before (SPEC-028).
-	includeNames := strings.EqualFold(c.Query("include_names"), "true")
+	// role.name. Without it only ids are emitted, as before (SPEC-031).
+	includeNames := common.QueryFlag(c, "include_names")
 
 	query := `SELECT ra.user_id, ra.project_id, ra.role_id, r.name
 	          FROM role_assignments ra

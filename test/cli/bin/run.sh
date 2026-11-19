@@ -1,5 +1,5 @@
 #!/bin/bash
-# run.sh — entrypoint for the lightstack OpenStack CLI conformance harness (SPEC-028).
+# run.sh — entrypoint for the lightstack OpenStack CLI conformance harness (SPEC-031).
 #
 # Usage:
 #   run.sh [--suite <name>]... [--fast] [--strict] [--no-cleanup]
@@ -113,7 +113,7 @@ _start_compose_stack() {
     # which runs before the EXIT trap exists. `down -v` on a project that never
     # came up is a harmless no-op.
     STARTED_STACK=1
-    (cd "$REPO_ROOT" && docker compose -p lightstack-binary-test -f deployments/docker-compose.binary-test.yml up -d) || return 1
+    (cd "$REPO_ROOT" && docker compose -p lightstack-binary-test -f deployments/docker-compose.binary-test.yml up -d --build --force-recreate) || return 1
 
     log_info "waiting for services to become ready..."
     local deadline=$(( SECONDS + 180 ))
@@ -222,7 +222,7 @@ source "$CLI_ROOT/lib/fixtures.sh"
 cleanup() {
     # failed is declared HERE, before report_write's check below — a later
     # `local failed=0` would shadow an earlier assignment made while the
-    # variable was still global, silently disabling the check (round 9).
+    # variable used to be global, silently disabling the check.
     local rc=$? failed=0
     trap - EXIT INT TERM
     if (( ! NO_CLEANUP )); then

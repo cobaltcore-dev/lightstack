@@ -1,5 +1,5 @@
 #!/bin/bash
-# network.sh — SPEC-028 tier A/B conformance cases for Neutron (network).
+# network.sh — SPEC-031 tier A/B conformance cases for Neutron (network).
 #
 # One case per manifest/network.json entry: tier A uses the manifest id, tier B
 # uses <id>.neg. Lifecycle entries cover the full CRUD of their resource in a
@@ -16,10 +16,9 @@
 # name at all — every case that allocates one releases it before
 # t_end, on all paths.
 #
-# Known-failing cases (t_known_failure) record today's product truth with the
-# precise divergence in the reason string; see manifest/network.json. They are
-# structured as self-healing probes: if the server is fixed the normal
-# assertions take over again.
+# Network cases assert their expected behavior directly. This suite has no
+# known-failing entries; pinned-client exclusions are documented in the
+# manifest/network.json description.
 
 # shellcheck source=../lib/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
@@ -94,6 +93,13 @@ _nt_clean_network() {
     local nid id
     nid=$(_nt_net_id "$1")
     [[ -z "$nid" ]] && return 0
+    OSC_QUIET=1 osc floating ip list
+    if (( OSC_RC == 0 )); then
+        while IFS= read -r id; do
+            [[ -n "$id" ]] && OSC_QUIET=1 osc floating ip delete "$id"
+        done < <(printf '%s' "$OSC_OUT" | jq -r --arg n "$nid" \
+            '.[] | select((.floating_network_id // ."Floating Network") == $n) | (.ID // .id)')
+    fi
     OSC_QUIET=1 osc port list --network "$nid"
     if (( OSC_RC == 0 )); then
         while IFS= read -r id; do
@@ -172,11 +178,11 @@ NID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 t_end
 
 t_begin network.network.show.neg
-osc network show cli-conf-nt-does-not-exist
+osc network show 00000000-0000-4000-8000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent network must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -202,15 +208,10 @@ osc network create "$N"
 assert_rc 0
 NID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 osc network set --description "set by cli-conf network suite" "$N"
-SETRC=$OSC_RC
-SETERR=$(_snip "$OSC_ERR")
+assert_rc 0
 osc network show "$N"
 assert_rc 0
-if [[ "$(printf '%s' "$OSC_OUT" | jq -r '.description // empty')" != "set by cli-conf network suite" ]]; then
-    t_known_failure "PUT /v2.0/networks/{id} binds only name/admin_state_up/router:external (internal/neutron/network.go UpdateNetwork), so 'network set --description' answers HTTP 400 'no updates provided' (rc=$SETRC: $SETERR) instead of persisting — real Neutron updates description (and shared) here"
-else
-    assert_jq '.description' 'set by cli-conf network suite'
-fi
+assert_jq '.description' 'set by cli-conf network suite'
 OSC_QUIET=1 osc network delete "$NID"
 t_end
 
@@ -233,7 +234,7 @@ osc network delete cli-conf-nt-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent network must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 # network in use (a port on it): must be refused with a conflict
 N="cli-conf-nt-netdelneg"
@@ -251,7 +252,7 @@ osc network delete "$N"
 if (( OSC_RC == 0 )); then
     t_fail "delete of a network with a port on it must not exit 0"
 else
-    printf '%s' "$OSC_ERR" | grep -q "409" || t_fail "expected a 409 conflict for an in-use network, stderr: $(_snip "$OSC_ERR")"
+    assert_http_error 409
 fi
 # teardown in dependency order: port, subnet, then the network
 OSC_QUIET=1 osc port delete "$PID"
@@ -311,7 +312,7 @@ if (( OSC_RC == 0 )); then
     SUBID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
     [[ -n "$SUBID" ]] && OSC_QUIET=1 osc subnet delete "$SUBID"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 # malformed CIDR: the server must refuse (400 invalid CIDR)
 N="cli-conf-nt-subneg"
@@ -325,6 +326,7 @@ if (( OSC_RC == 0 )); then
     SUBID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
     [[ -n "$SUBID" ]] && OSC_QUIET=1 osc subnet delete "$SUBID"
 else
+    assert_http_error 400
     assert_err_contains 'invalid CIDR'
 fi
 OSC_QUIET=1 osc network delete "$NID"
@@ -341,13 +343,31 @@ osc subnet create "$S" --network "$N" --subnet-range 10.104.0.0/24
 assert_rc 0
 osc subnet set --name "$S-rn" "$S"
 assert_rc 0
-osc subnet set --gateway 10.104.0.254 "$S-rn"
+osc subnet set --gateway 10.104.0.1 "$S-rn"
 assert_rc 0
 osc subnet show "$S-rn"
 assert_rc 0
 assert_jq '.name' "$S-rn"
-assert_jq '.gateway_ip' '10.104.0.254'
+assert_jq '.gateway_ip' '10.104.0.1'
 OSC_QUIET=1 osc subnet delete "$S-rn"
+OSC_QUIET=1 osc network delete "$NID"
+t_end
+
+t_begin network.subnet.set.neg
+N="cli-conf-nt-subgwneg-net"
+S="cli-conf-nt-subgwneg"
+_nt_clean_network "$N"
+osc network create "$N"
+assert_rc 0
+NID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
+osc subnet create "$S" --network "$N" --subnet-range 10.106.0.0/24
+assert_rc 0
+osc subnet set --gateway 10.106.0.254 "$S"
+assert_http_error 409
+osc subnet show "$S"
+assert_rc 0
+assert_jq '.gateway_ip' '10.106.0.1'
+OSC_QUIET=1 osc subnet delete "$S"
 OSC_QUIET=1 osc network delete "$NID"
 t_end
 
@@ -368,7 +388,7 @@ assert_rc 0
 # so '.enable_dhcp // empty' prints nothing exactly when the flag is off —
 # the one answer this probe exists to detect.
 if [[ "$(printf '%s' "$OSC_OUT" | jq -r '.enable_dhcp | tostring')" != "false" ]]; then
-    t_known_failure "PUT /v2.0/subnets/{id} binds only name and gateway_ip (internal/neutron/network.go UpdateSubnet), so 'subnet set --no-dhcp' answers 200 but persists nothing — GET /v2.0/subnets/{id} still reports enable_dhcp: true, where real Neutron flips the flag (same for --dhcp, --dns-nameserver, --host-route, --description)"
+    t_fail "subnet set --no-dhcp must persist enable_dhcp=false"
 else
     assert_jq '.enable_dhcp' false
     osc subnet set --dhcp "$S"
@@ -403,12 +423,9 @@ assert_jq '.interfaces_info | length' 1
 IFPORT=$(printf '%s' "$OSC_OUT" | jq -r '.interfaces_info[0].port_id // empty')
 osc subnet delete "$S"
 if (( OSC_RC == 0 )); then
-    t_known_failure "DELETE /v2.0/subnets/{id} succeeds while a router interface still holds the subnet — real Neutron refuses with 409 (SubnetInUse) — and leaves the interface port $IFPORT orphaned on the network, where it blocks network deletion with 409 'Cannot delete network' (the case sweeps it up by hand)"
-    # the interface record now dangles (remove-by-port 404s), so take the
-    # orphaned port out directly before removing the router and network
-    [[ -n "$IFPORT" ]] && OSC_QUIET=1 osc port delete "$IFPORT"
+    t_fail "a subnet with a router interface must not be deletable"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 409
     osc router remove subnet "$R" "$S"
     assert_rc 0
     osc subnet delete "$S"
@@ -439,7 +456,7 @@ assert_jq_type '.' object
 assert_jq '.name' "$P"
 assert_jq_type '.id' string
 assert_jq '.network_id' "$NID"
-assert_jq '.status' 'ACTIVE'
+assert_jq '.status' 'DOWN'
 assert_jq '.admin_state_up' true
 assert_jq_type '.mac_address' string
 assert_jq_type '.fixed_ips' array
@@ -454,12 +471,12 @@ assert_jq "[.[] | select((.Name // .name) == \"$P\")] | length" 1
 assert_jq "[.[] | select((.Name // .name) == \"$P\")][0] | (.ID // .id) | type" 'string'
 assert_jq "[.[] | select((.Name // .name) == \"$P\")][0][\"MAC Address\"] | type" 'string'
 assert_jq "[.[] | select((.Name // .name) == \"$P\")][0][\"Fixed IP Addresses\"] | length" 1
-assert_jq "[.[] | select((.Name // .name) == \"$P\")][0].Status" 'ACTIVE'
+assert_jq "[.[] | select((.Name // .name) == \"$P\")][0].Status" 'DOWN'
 osc port show "$PID"
 assert_rc 0
 assert_jq_type '.' object
 assert_jq '.name' "$P"
-assert_jq '.status' 'ACTIVE'
+assert_jq '.status' 'DOWN'
 osc port delete "$PID"
 assert_rc 0
 osc port show "$PID"
@@ -478,14 +495,14 @@ if (( OSC_RC == 0 )); then
     PID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
     [[ -n "$PID" ]] && OSC_QUIET=1 osc port delete "$PID"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 # unknown port: show must refuse
-osc port show cli-conf-nt-does-not-exist
+osc port show 00000000-0000-4000-8000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent port must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -500,12 +517,9 @@ osc port create "$P" --network "$N"
 assert_rc 0
 PID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 osc port show "$P" # by NAME
-if (( OSC_RC != 0 )); then
-    t_known_failure "GET /v2.0/ports/{name-or-non-uuid} answers HTTP 500 'failed to get port' (internal/neutron/ports.go GetPort casts the path segment to the uuid column p.id) instead of 404 — openstacksdk's find() only falls back to a name-filtered list on 404/400/403, so 'port show/set/delete <name>' all fail against lightstack while they resolve the name on real Neutron (by-ID forms work; evidence: $(_snip "$OSC_ERR"))"
-else
-    assert_rc 0
-    assert_jq '.name' "$P"
-fi
+assert_rc 0
+assert_jq '.name' "$P"
+
 OSC_QUIET=1 osc port delete "$PID"
 OSC_QUIET=1 osc network delete "$NID"
 t_end
@@ -568,17 +582,17 @@ t_end
 
 t_begin network.router.create.neg
 # unknown router: show and delete must refuse
-osc router show cli-conf-nt-does-not-exist
+osc router show 00000000-0000-4000-8000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent router must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
-osc router delete cli-conf-nt-does-not-exist
+osc router delete 00000000-0000-4000-8000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent router must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -630,7 +644,7 @@ OSC_QUIET=1 osc network delete "$NID"
 t_end
 
 t_begin network.router.addsubnet.neg
-# adding the same subnet twice must be refused (Neutron: 409)
+# adding the same subnet twice must be refused (Neutron: 400)
 N="cli-conf-nt-rtdup-net"
 S="cli-conf-nt-rtdup-sub"
 R="cli-conf-nt-rtdup"
@@ -648,10 +662,8 @@ assert_rc 0
 osc router add subnet "$R" "$S"
 if (( OSC_RC == 0 )); then
     t_fail "adding the same subnet to a router twice must not exit 0"
-elif printf '%s' "$OSC_ERR" | grep -q "409"; then
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
-else
-    t_known_failure "PUT /v2.0/routers/{id}/add_router_interface for an already-attached subnet answers HTTP 500 'failed to create router interface record' (unique violation on router_interfaces) where real Neutron answers 409 Conflict — worse, the failed call has already inserted the interface port, so it is orphaned on the network and later blocks network deletion with 409 (the case sweeps it up; evidence: $(_snip "$OSC_ERR"))"
+elif ! printf '%s' "$OSC_ERR" | grep -qE '\(HTTP 400\)|400 Bad Request'; then
+    t_fail "expected HTTP 400 for a duplicate router subnet; stderr: $(_snip "$OSC_ERR")"
 fi
 # cleanup: detach the one real interface, then sweep any port the failed
 # call leaked before removing the subnet and network
@@ -684,20 +696,18 @@ osc port create "$P" --network "$N"
 assert_rc 0
 PID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 osc router add port "$R" "$PID"
-if (( OSC_RC != 0 )); then
-    t_known_failure "PUT /v2.0/routers/{id}/add_router_interface ignores port_id — internal/neutron/router.go AddRouterInterface always resolves req.SubnetID (empty for 'router add port'), the uuid column cast fails and the server answers HTTP 500 'failed to get subnet'; real Neutron attaches the given port as the router interface (evidence: $(_snip "$OSC_ERR"))"
-else
-    osc router show "$R"
-    assert_rc 0
-    assert_jq '.interfaces_info | length' 1
-    assert_jq '[.interfaces_info[] | select(.port_id == "'"$PID"'")] | length' 1
-    osc router remove port "$R" "$PID"
-    assert_rc 0
-fi
+assert_rc 0
+osc router show "$R"
+assert_rc 0
+assert_jq '.interfaces_info | length' 1
+assert_jq '[.interfaces_info[] | select(.port_id == "'"$PID"'")] | length' 1
+osc router remove port "$R" "$PID"
+assert_rc 0
+
 # 'router remove port' deletes the interface port itself (upstream Neutron
 # does the same, and so does this server) — no separate cleanup needed on the
-# fixed path. The belt-and-braces delete below stays for the known-failure
-# path, where the interface row never existed and the port is still ours.
+# fixed path. The explicit delete below is harmless if the interface handler
+# has already removed the port.
 OSC_QUIET=1 osc port delete "$PID"
 _nt_clean_router "$R"
 OSC_QUIET=1 osc subnet delete "$SUBID"
@@ -784,16 +794,11 @@ assert_jq '.name' "$SG"
 assert_jq '.description' "$SG" # the CLI sends the name as default description
 assert_jq_type '.id' string
 assert_jq_type '.project_id' string
-if [[ "$(printf '%s' "$OSC_OUT" | jq -r '.rules | type')" != "array" ]]; then
-    # Live evidence of the user impact: with OSC's default table formatter the
-    # same create crashes outright ('NoneType' object is not iterable).
-    osc security group create "$SG2" -f table
-    TBLRC=$OSC_RC
-    OSC_QUIET=1 osc security group delete "$SG2"
-    t_known_failure "POST /v2.0/security-groups returns the created group without security_group_rules (OSC reports rules: null; GET /v2.0/security-groups/{id} correctly returns []) where real Neutron returns [] — with OSC's default table output 'security group create' therefore crashes with \"'NoneType' object is not iterable\" (table run rc=$TBLRC)"
-else
-    assert_jq_type '.rules' 'array'
-fi
+assert_jq_type '.rules' array
+osc security group create "$SG2" -f table
+assert_rc 0
+OSC_QUIET=1 osc security group delete "$SG2"
+
 osc security group list
 assert_rc 0
 assert_jq_type '.' array
@@ -816,13 +821,13 @@ osc security group show cli-conf-nt-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent security group must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 osc security group delete cli-conf-nt-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent security group must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -866,10 +871,10 @@ RULEID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 osc security group rule list
 assert_rc 0
 assert_jq_type '.' array
-assert_jq "[.[] | select((.\"Security Group\" // .security_group_id) == \"$SGID\")] | length" 1
-assert_jq "[.[] | select((.\"Security Group\" // .security_group_id) == \"$SGID\")][0].\"IP Protocol\"" 'tcp'
-assert_jq "[.[] | select((.\"Security Group\" // .security_group_id) == \"$SGID\")][0].\"Port Range\"" '22:22'
-assert_jq "[.[] | select((.\"Security Group\" // .security_group_id) == \"$SGID\")][0].Direction" 'ingress'
+assert_jq "[.[] | select((.\"Security Group\" // .security_group_id) == \"$SGID\" and .Direction == \"ingress\")] | length" 1
+assert_jq "[.[] | select((.\"Security Group\" // .security_group_id) == \"$SGID\" and .Direction == \"ingress\")][0].\"IP Protocol\"" 'tcp'
+assert_jq "[.[] | select((.\"Security Group\" // .security_group_id) == \"$SGID\" and .Direction == \"ingress\")][0].\"Port Range\"" '22:22'
+assert_jq "[.[] | select((.\"Security Group\" // .security_group_id) == \"$SGID\" and .Direction == \"ingress\")][0].Direction" 'ingress'
 osc security group rule delete "$RULEID"
 assert_rc 0
 osc security group rule list
@@ -886,14 +891,14 @@ if (( OSC_RC == 0 )); then
     RULEID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
     [[ -n "$RULEID" ]] && OSC_QUIET=1 osc security group rule delete "$RULEID"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 # unknown rule: delete must refuse
 osc security group rule delete 00000000-0000-0000-0000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent rule must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -956,7 +961,7 @@ if (( OSC_RC == 0 )); then
     FIPID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
     [[ -n "$FIPID" ]] && OSC_QUIET=1 osc floating ip delete "$FIPID"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 400
 fi
 OSC_QUIET=1 osc subnet delete "$SUBID"
 OSC_QUIET=1 osc network delete "$NID"
@@ -1079,13 +1084,13 @@ osc subnet pool show cli-conf-nt-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent subnet pool must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 osc subnet pool delete cli-conf-nt-does-not-exist
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent subnet pool must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 
@@ -1096,12 +1101,9 @@ osc subnet pool create "$SP" --pool-prefix 10.111.0.0/16
 assert_rc 0
 SPID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 osc subnet pool show "$SP" # by NAME
-if (( OSC_RC != 0 )); then
-    t_known_failure "GET /v2.0/subnetpools/{name-or-non-uuid} answers HTTP 500 'failed to get subnet pool' (internal/neutron/subnet_pools.go GetSubnetPool casts the path segment to the uuid column) instead of 404 — openstacksdk's find() only falls back to a name-filtered list on 404/400/403, so 'subnet pool show/set/delete <name>' all fail against lightstack while they resolve the name on real Neutron (by-ID forms work; evidence: $(_snip "$OSC_ERR"))"
-else
-    assert_rc 0
-    assert_jq '.name' "$SP"
-fi
+assert_rc 0
+assert_jq '.name' "$SP"
+
 OSC_QUIET=1 osc subnet pool delete "$SPID"
 t_end
 
@@ -1128,15 +1130,10 @@ assert_rc 0
 SPID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
 [[ -n "$SPID" ]] || t_fail "no subnet pool id in create output"
 osc subnet pool set --description "set by cli-conf network suite" "$SPID"
-SETRC=$OSC_RC
-SETERR=$(_snip "$OSC_ERR")
 osc subnet pool show "$SPID"
 assert_rc 0
-if [[ "$(printf '%s' "$OSC_OUT" | jq -r '.description // empty')" != "set by cli-conf network suite" ]]; then
-    t_known_failure "PUT /v2.0/subnetpools/{id} binds only name/prefixes/prefix lengths (internal/neutron/subnet_pools.go UpdateSubnetPool), so 'subnet pool set --description' answers HTTP 400 'no updates provided' (rc=$SETRC: $SETERR) instead of persisting — real Neutron updates the description here"
-else
-    assert_jq '.description' 'set by cli-conf network suite'
-fi
+assert_jq '.description' 'set by cli-conf network suite'
+
 OSC_QUIET=1 osc subnet pool delete "$SPID"
 t_end
 
@@ -1188,20 +1185,20 @@ if (( OSC_RC == 0 )); then
     RBID=$(printf '%s' "$OSC_OUT" | jq -r '.id // empty')
     [[ -n "$RBID" ]] && OSC_QUIET=1 osc network rbac delete "$RBID"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 # unknown policy: show and delete must refuse
 osc network rbac show 00000000-0000-0000-0000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent rbac policy must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 osc network rbac delete 00000000-0000-0000-0000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent rbac policy must not exit 0"
 else
-    [[ -n "$OSC_ERR" ]] || t_fail "expected an error message on stderr"
+    assert_http_error 404
 fi
 t_end
 

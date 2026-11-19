@@ -1,5 +1,5 @@
 #!/bin/bash
-# workflows.sh — SPEC-028 tier C: cross-service scenario coverage.
+# workflows.sh — SPEC-031 tier C: cross-service scenario coverage.
 #
 # One case per scenario; the case id equals the manifest id verbatim
 # (manifest/workflows.json). A failing step marks the case failed via t_fail
@@ -24,7 +24,7 @@ suite_begin workflows
 # and its teardown sweeps them, so running this suite alone after a sweep
 # re-ensures here instead of failing with confusing missing-resource errors.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/fixtures.sh"
-fixtures_require
+fixtures_require || exit 2
 
 # ---------------------------------------------------------------------------
 # Suite-local helpers (the lib API is locked; additions stay in this file)
@@ -472,7 +472,7 @@ t_end
 # 6. wf.project.isolation
 #    Two projects with a user each and identically-named networks; each user
 #    sees only their own network (auth-scoped listing), while the admin
-#    cross-project listing filter is a tracked known failure.
+#    admin tenant filters return only the selected project's network.
 # ===========================================================================
 t_begin wf.project.isolation
 
@@ -481,11 +481,13 @@ WF_ISO_P2="cli-conf-wf-p2"
 WF_ISO_U1="cli-conf-wf-u1"
 WF_ISO_U2="cli-conf-wf-u2"
 WF_ISO_NET="cli-conf-wf-iso-net"
+WF_ISO_VOL="cli-conf-wf-iso-vol"
 WF_ISO_U1_PASS="cli-conf-wf-u1-pass"
 WF_ISO_U2_PASS="cli-conf-wf-u2-pass"
 
-# Rerun-safety: users first, then projects (project delete cascades their
-# networks — verified against this server).
+# Rerun-safety: release the prior project-2 volume before removing its user,
+# then remove users and projects (project deletion cascades networks).
+osc_as_user "$WF_ISO_U2" "$WF_ISO_U2_PASS" "$WF_ISO_P2" volume delete "$WF_ISO_VOL"
 osc user delete "$WF_ISO_U1"
 osc user delete "$WF_ISO_U2"
 osc project delete "$WF_ISO_P1"
@@ -535,25 +537,28 @@ assert_jq '[.[] | select((.Name // .name) == "'$WF_ISO_NET'")] | length' 1
 assert_jq '[.[] | select((.Name // .name) == "'$WF_ISO_NET'")][0] | (.ID // .id)' "$WF_ISO_N2_ID"
 assert_jq '[.[] | select((.ID // .id) == "'$WF_ISO_N1_ID'")] | length' 0
 
-# Project scoping holds for the other services too: project 1's user sees no
-# volumes or servers from the admin project.
+# Give project 2 a real Cinder resource, then check project 1 cannot list it.
+osc_as_user "$WF_ISO_U2" "$WF_ISO_U2_PASS" "$WF_ISO_P2" volume create --size 1 "$WF_ISO_VOL"
+assert_rc 0
+WF_ISO_VOL_ID="$(wf_jq '.id')"
+assert_jq '.name' "$WF_ISO_VOL"
 osc_as_user "$WF_ISO_U1" "$WF_ISO_U1_PASS" "$WF_ISO_P1" volume list
 assert_rc 0
-assert_jq 'length' 0
-osc_as_user "$WF_ISO_U1" "$WF_ISO_U1_PASS" "$WF_ISO_P1" server list
-assert_rc 0
-assert_jq 'length' 0
+assert_jq '[.[] | select((.ID // .id) == "'$WF_ISO_VOL_ID'")] | length' 0
 
 # Admin cross-project listing (GET /v2.0/networks?tenant_id=<project>).
-# Genuine product divergence: the tenant_id list filter is not honored — the
-# admin gets an empty list for a project that owns a network. Real Neutron
-# returns that project's networks. Tracked, not hidden.
+# The tenant filter is authoritative for an admin: return project 1's network
+# and exclude the identically named network owned by project 2.
 osc network list --project "$WF_ISO_P1_ID"
-if (( OSC_RC == 0 )) && [[ "$(wf_jq '[.[] | select((.ID // .id) == "'$WF_ISO_N1_ID'")] | length')" == "1" ]]; then
-    : # the filter works — no known failure to record
-else
-    t_known_failure "openstack network list --project <id> as admin (GET /v2.0/networks?tenant_id=...) returns no networks even though the project owns one — the tenant_id list filter is not honored; per-project visibility only works via project-scoped tokens"
-fi
+assert_rc 0
+assert_jq '[.[] | select((.ID // .id) == "'$WF_ISO_N1_ID'")] | length' 1
+assert_jq '[.[] | select((.ID // .id) == "'$WF_ISO_N2_ID'")] | length' 0
+osc network list --project "$WF_ISO_P2_ID"
+assert_rc 0
+assert_jq '[.[] | select((.ID // .id) == "'$WF_ISO_N2_ID'")] | length' 1
+assert_jq '[.[] | select((.ID // .id) == "'$WF_ISO_N1_ID'")] | length' 0
+osc_as_user "$WF_ISO_U2" "$WF_ISO_U2_PASS" "$WF_ISO_P2" volume delete "$WF_ISO_VOL_ID"
+assert_rc 0
 
 # Clean up: users, then projects (projects cascade-delete their networks).
 osc user delete "$WF_ISO_U1"
@@ -583,7 +588,7 @@ WF_QT_V2="cli-conf-wf-qvol2"
 # the project survived a crashed run), then the project itself.
 osc project show "$WF_QT_PROJ"
 if (( OSC_RC == 0 )) && [[ -n "$OSC_OUT" ]]; then
-    osc role add --project "$WF_QT_PROJ" --user admin admin
+    osc role add --project "$WF_QT_PROJ" --user "$OS_USERNAME" --user-domain "$OS_USER_DOMAIN_NAME" admin
     osc_as_project "$WF_QT_PROJ" volume delete "$WF_QT_V1" "$WF_QT_V2"
 fi
 osc project delete "$WF_QT_PROJ"
@@ -592,7 +597,7 @@ osc project create "$WF_QT_PROJ"
 assert_rc 0
 
 # The admin user needs a role in the project to scope a token to it.
-osc role add --project "$WF_QT_PROJ" --user admin admin
+osc role add --project "$WF_QT_PROJ" --user "$OS_USERNAME" --user-domain "$OS_USER_DOMAIN_NAME" admin
 assert_rc 0
 
 # Capture the current quota so it can be restored exactly.

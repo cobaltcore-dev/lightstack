@@ -1,5 +1,5 @@
 #!/bin/bash
-# image.sh — SPEC-028 tier A/B conformance cases for Glance (Image service).
+# image.sh — SPEC-031 tier A/B conformance cases for Glance (Image service).
 #
 # Covers manifest/image.json: image lifecycle (create from a local file, list
 # with filters, show, set base properties, save with content verification,
@@ -18,7 +18,7 @@ suite_begin image
 # it, so running this suite alone after a sweep re-ensures here instead of
 # failing with confusing missing-resource errors.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/fixtures.sh"
-fixtures_require
+fixtures_require || exit 2
 
 # ---------------------------------------------------------------------------
 # Suite-local fixtures: one 64 KiB file of zeros, uploaded by the create cases
@@ -32,6 +32,7 @@ suite_cleanup() {
 }
 IM_IMG_FILE="$IM_TMP_DIR/im64k.bin"
 IM_IMG_MD5=""
+IM_MISSING_ID="00000000-0000-4000-8000-000000000000"
 dd if=/dev/zero of="$IM_IMG_FILE" bs=1024 count=64 2>/dev/null
 IM_IMG_MD5="$(md5sum "$IM_IMG_FILE" | awk '{print $1}')"
 
@@ -55,7 +56,7 @@ _im_cleanup_image() {
 # Create a fresh image for a case. Assumes the leftover with the same name was
 # removed just before. Leaves OSC_RC / OSC_OUT from the create call.
 _im_create() {
-    osc image create "$1" \
+    osc image create "$1" --private \
         --disk-format raw --container-format bare --file "$IM_IMG_FILE"
 }
 
@@ -114,11 +115,11 @@ t_end
 
 # --- image.show (negative) ---------------------------------------------------
 t_begin image.show.neg
-osc image show cli-conf-im-does-not-exist
+osc image show "$IM_MISSING_ID"
 if (( OSC_RC == 0 )); then
     t_fail "show of a nonexistent image must not exit 0"
-elif [[ -z "$OSC_ERR" ]]; then
-    t_fail "non-zero exit but no error message on stderr"
+else
+    assert_http_error 404
 fi
 t_end
 
@@ -151,8 +152,8 @@ t_begin image.list.neg
 osc image list --marker 00000000-0000-0000-0000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "list with an unknown marker id must not exit 0"
-elif [[ -z "$OSC_ERR" ]]; then
-    t_fail "non-zero exit but no error message on stderr"
+else
+    assert_http_error 400
 fi
 t_end
 
@@ -181,11 +182,11 @@ t_end
 
 # --- image.set (negative) ----------------------------------------------------
 t_begin image.set.neg
-osc image set cli-conf-im-does-not-exist --name still-nothing
+osc image set "$IM_MISSING_ID" --name still-nothing
 if (( OSC_RC == 0 )); then
     t_fail "set on a nonexistent image must not exit 0"
-elif [[ -z "$OSC_ERR" ]]; then
-    t_fail "non-zero exit but no error message on stderr"
+else
+    assert_http_error 404
 fi
 t_end
 
@@ -226,16 +227,18 @@ assert_rc 0
 osc image show cli-conf-im-delete
 if (( OSC_RC == 0 )); then
     t_fail "image still exists after delete"
+else
+    assert_http_error 404
 fi
 t_end
 
 # --- image.delete (negative) -------------------------------------------------
 t_begin image.delete.neg
-osc image delete cli-conf-im-does-not-exist
+osc image delete "$IM_MISSING_ID"
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent image must not exit 0"
-elif [[ -z "$OSC_ERR" ]]; then
-    t_fail "non-zero exit but no error message on stderr"
+else
+    assert_http_error 404
 fi
 t_end
 

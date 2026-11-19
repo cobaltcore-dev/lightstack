@@ -1,4 +1,4 @@
-# Binary-test stack (SPEC-028): run the artifact from `make build`, not a
+# Binary-test stack (SPEC-031): run the artifact from `make build`, not a
 # container-internal rebuild.
 #
 # The lightstack service uses the same runtime image as docker-compose.yml,
@@ -8,7 +8,7 @@
 # compose file (layers are cached), then:
 #
 #   make build
-#   docker compose -f deployments/docker-compose.binary-test.yml up -d
+#   docker compose -f deployments/docker-compose.binary-test.yml up -d --build --force-recreate
 #   ./test/cli/bin/run.sh --keep-server
 #
 # The distinct project name (lightstack-binary-test) and volume prefix keep
@@ -25,8 +25,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
     volumes:
       - binary_test_postgres_data:/var/lib/postgresql
-    ports:
-      - "5433:5432" # offset from the dev stack to allow both at once
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lightstack}"]
       interval: 5s
@@ -52,10 +50,11 @@ services:
       - "9292:9292" # Glance (Image)
       - "8775:8775" # Metadata Service
     volumes:
-      # THE POINT OF THIS FILE: test the binary this checkout builds. The
-      # image's own copy is shadowed; CI downloads the build artifact into
-      # bin/ before starting this stack.
+      # Test this checkout's binary, migrations, and config. The binary must
+      # be static (CGO_ENABLED=0) because the runtime image uses Alpine/musl.
       - ../bin/lightstack:/app/lightstack:ro
+      - ../migrations:/app/migrations:ro
+      - ../config/lightstack.yaml:/app/config/lightstack.yaml:ro
     environment:
       LIGHTSTACK_DB_URL: "postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable"
       LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"

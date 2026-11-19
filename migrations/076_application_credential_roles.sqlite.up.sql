@@ -1,5 +1,5 @@
 -- SQLite stores all resource identifiers as TEXT. Keep the same relational
--- contract as the PostgreSQL variant without UUID column types (SPEC-028).
+-- contract as the PostgreSQL variant without UUID column types (SPEC-031).
 CREATE TABLE IF NOT EXISTS application_credential_roles (
     application_credential_id TEXT NOT NULL REFERENCES application_credentials(id) ON DELETE CASCADE,
     role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,

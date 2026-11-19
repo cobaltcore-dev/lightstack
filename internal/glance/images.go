@@ -288,7 +288,7 @@ func (svc *Service) CreateImage(c *gin.Context) {
 
 	// Persist the requested tags. The 201 response below echoes req.Tags, but
 	// the rows were never written before, so a follow-up show returned `tags: []`
-	// — `openstack image create --tag` silently dropped them (SPEC-028). The
+	// — `openstack image create --tag` silently dropped them (SPEC-031). The
 	// dedicated PUT uses the same ON CONFLICT DO NOTHING, so a request repeating
 	// a tag stays legal. Length was validated above, before the image row.
 	for _, tag := range req.Tags {
@@ -399,7 +399,7 @@ func (svc *Service) ListImages(c *gin.Context) {
 	// name, disk_format, container_format, size_min, size_max, owner, tag. All are
 	// exact matches upstream. They were silently ignored before, which broke the
 	// terraform-provider-openstack image data source (it sends `name` server-side
-	// and does no client-side matching) and `openstack image list --tag` (SPEC-028).
+	// and does no client-side matching) and `openstack image list --tag` (SPEC-031).
 	if name := c.Query("name"); name != "" {
 		f.Eq("i.name", name)
 	}
@@ -1124,7 +1124,7 @@ func (svc *Service) UploadImageData(c *gin.Context) {
 	size, normalizedToRaw, err := svc.imageStore.UploadImage(c.Request.Context(), imageID, io.TeeReader(c.Request.Body, hasher))
 	if err != nil {
 		// Over the cap is 413 — upstream's answer to image_size_cap — not a
-		// storage failure (round 2 of this review: the MaxBytesReader error
+		// storage failure: the MaxBytesReader error
 		// surfaced from the storage read as a 503).
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
@@ -1650,7 +1650,7 @@ func (svc *Service) AddImageTag(c *gin.Context) {
 
 	// Evict like every other image mutation (UpdateImage, members): GetImage
 	// caches the object INCLUDING its tags, so without this a tag added here
-	// stays invisible to `image show` for the cache's whole TTL (SPEC-028).
+	// stays invisible to `image show` for the cache's whole TTL (SPEC-031).
 	// evictImage drops every caller's view via the one key family that
 	// exists (image:<project>:<scope>:<id>).
 	svc.evictImage(c.Request.Context(), imageID)

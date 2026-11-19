@@ -1,4 +1,4 @@
-# Known-failure baseline for the CLI conformance gates (SPEC-028).
+# Known-failure baseline for the CLI conformance gates (SPEC-031).
 #
 # One case id per line. A case listed here may be recorded `known-failing`
 # without failing bin/coverage.sh or bin/run.sh --strict. Any OTHER case

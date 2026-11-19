@@ -150,7 +150,7 @@ func (svc *Service) DeleteVolumeType(c *gin.Context) {
 
 	typeID := c.Param("id")
 
-	// See GetVolumeType: a non-UUID reference must 404, not 500 (SPEC-028).
+	// See GetVolumeType: a non-UUID reference must 404, not 500 (SPEC-031).
 	if _, err := uuid.Parse(typeID); err != nil {
 		common.SendError(c, common.NewNotFoundError("volume type"))
 		return

@@ -1,5 +1,5 @@
 #!/bin/bash
-# assert.sh — assertions on the OpenStack CLI's last output (SPEC-028).
+# assert.sh — assertions on the OpenStack CLI's last output (SPEC-031).
 #
 # Locked API (suites depend on these names):
 #   assert_rc <expected-rc>                          last osc() exit code
@@ -130,6 +130,26 @@ assert_err_contains() {
     local needle="$1"
     if [[ "$OSC_ERR" != *"$needle"* ]]; then
         t_fail "stderr does not contain '$needle'; stderr: $(_snip "$OSC_ERR")"
+    fi
+}
+
+# Assert that the last CLI command reached an expected API error. A 404 can be
+# formatted as a client-side not-found message after name resolution, so match
+# both that text and the HTTP status forms emitted by keystoneauth.
+assert_http_error() {
+    local code="$1" pattern
+    case "$code" in
+        400) pattern='\(HTTP 400\)|400 Bad Request|BadRequestException' ;;
+        401) pattern='\(HTTP 401\)|401 Unauthorized|UnauthorizedException' ;;
+        403) pattern='\(HTTP 403\)|403 Forbidden|ForbiddenException' ;;
+        404) pattern='\(HTTP 404\)|404 Not Found|NotFoundException|ResourceNotFound|No [[:alpha:] _-]+ (found for|with a name or ID of)' ;;
+        409) pattern='\(HTTP 409\)|409 Conflict|ConflictException' ;;
+        *)   pattern="\(HTTP $code\)|(^|[^0-9])$code([^0-9]|$)" ;;
+    esac
+    if (( OSC_RC == 0 )); then
+        t_fail "expected HTTP $code failure, command exited 0"
+    elif ! printf '%s' "$OSC_ERR" | grep -Eiq "$pattern"; then
+        t_fail "expected HTTP $code in CLI error output; stderr: $(_snip "$OSC_ERR")"
     fi
 }
 

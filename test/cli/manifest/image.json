@@ -4,7 +4,7 @@
   "commands": [
     {
       "id": "image.create",
-      "cmd": "openstack image create <name> --disk-format raw --container-format bare --file <file>",
+      "cmd": "openstack image create <name> --private --disk-format raw --container-format bare --file <file>",
       "endpoints": ["POST /v2/images", "PUT /v2/images/{image_id}/file"],
       "tiers": ["A"]
     },

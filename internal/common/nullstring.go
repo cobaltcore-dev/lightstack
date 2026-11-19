@@ -6,7 +6,7 @@ import "database/sql"
 // when the column is NULL, the string otherwise. Emitting ns.String
 // unconditionally turns a NULL into "" — a value the APIs never produce for
 // optional string fields, and one the CLI renders differently from a real
-// empty string (SPEC-028).
+// empty string (SPEC-031).
 func NullString(ns sql.NullString) any {
 	if !ns.Valid {
 		return nil

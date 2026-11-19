@@ -1,6 +1,6 @@
 package keystone
 
-// SPEC-028 conformance fixes for the identity surface, found by the CLI
+// SPEC-031 conformance fixes for the identity surface, found by the CLI
 // conformance suites (issue #105).
 
 import (
@@ -34,12 +34,12 @@ func doReqBody(r *gin.Engine, method, path, body string, headers map[string]stri
 	return w.Code, w.Body.String()
 }
 
-// spec028Router wires the real routes over the test pool with a real
+// newIdentityConformanceRouter wires the real routes over the test pool with a real
 // AuthService, for the paths (token revoke) that need one.
-func spec028Router() (*gin.Engine, *AuthService) {
+func newIdentityConformanceRouter() (*gin.Engine, *AuthService) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	authSvc := NewAuthService(testPool, "spec028-test-secret", time.Hour, nil)
+	authSvc := NewAuthService(testPool, "spec031-test-secret", time.Hour, nil)
 	NewService(testPool, authSvc, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))
@@ -55,16 +55,16 @@ func spec028Router() (*gin.Engine, *AuthService) {
 // TestUserShowCarriesEmailAndDescription — the users table has both columns,
 // create/set accept both, but the show and list queries selected neither, so
 // `openstack user show` printed email: null for a user created with one
-// (SPEC-028).
+// (SPEC-031).
 func TestUserShowCarriesEmailAndDescription(t *testing.T) {
 	requireDB(t)
-	r, _ := spec028Router()
+	r, _ := newIdentityConformanceRouter()
 
 	userID := uuid.NewString()
-	name := "spec028-email-" + userID[:8]
+	name := "spec031-email-" + userID[:8]
 	if _, err := testPool.Exec(context.Background(),
 		`INSERT INTO users (id, name, password_hash, domain_id, email, description)
-		 VALUES ($1,$2,'x',$3,'spec028@example.com','spec028 description')`,
+		 VALUES ($1,$2,'x',$3,'spec031@example.com','spec031 description')`,
 		userID, name, defaultDomainID); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
@@ -74,26 +74,26 @@ func TestUserShowCarriesEmailAndDescription(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("show user: code=%d body=%s", code, body)
 	}
-	if !strings.Contains(body, `"email":"spec028@example.com"`) {
+	if !strings.Contains(body, `"email":"spec031@example.com"`) {
 		t.Errorf("show response lacks the persisted email: %s", body)
 	}
-	if !strings.Contains(body, `"description":"spec028 description"`) {
+	if !strings.Contains(body, `"description":"spec031 description"`) {
 		t.Errorf("show response lacks the persisted description: %s", body)
 	}
 
 	_, body = doReq(r, http.MethodGet, "/v3/users?name="+name, adminHdr)
-	if !strings.Contains(body, `"email":"spec028@example.com"`) {
+	if !strings.Contains(body, `"email":"spec031@example.com"`) {
 		t.Errorf("list response lacks the persisted email: %s", body)
 	}
 }
 
 // TestRoleCreateDuplicateIsConflict — roles.name is UNIQUE; a duplicate name
-// was surfaced as 500 instead of upstream's 409 (SPEC-028).
+// was surfaced as 500 instead of upstream's 409 (SPEC-031).
 func TestRoleCreateDuplicateIsConflict(t *testing.T) {
 	requireDB(t)
-	r, _ := spec028Router()
+	r, _ := newIdentityConformanceRouter()
 
-	name := "spec028-dup-role-" + uuid.NewString()[:8]
+	name := "spec031-dup-role-" + uuid.NewString()[:8]
 	body := `{"role":{"name":"` + name + `"}}`
 	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM roles WHERE name=$1", name) })
 
@@ -109,24 +109,24 @@ func TestRoleCreateDuplicateIsConflict(t *testing.T) {
 
 // TestRoleAssignmentIncludeNames — `GET /v3/role_assignments` ignored
 // include_names=true and returned bare ids; openstacksdk's consumer dies with
-// KeyError 'name', so `role assignment list --names` exited 1 (SPEC-028).
+// KeyError 'name', so `role assignment list --names` exited 1 (SPEC-031).
 func TestRoleAssignmentIncludeNames(t *testing.T) {
 	requireDB(t)
-	r, _ := spec028Router()
+	r, _ := newIdentityConformanceRouter()
 	ctx := context.Background()
 	domID := defaultDomainID
 
 	userID, projectID := uuid.NewString(), uuid.NewString()
 	roleID := uuid.NewString()
-	roleName := "spec028-ra-role-" + roleID[:8]
+	roleName := "spec031-ra-role-" + roleID[:8]
 	for _, ins := range []struct {
 		sql  string
 		args []any
 	}{
 		{`INSERT INTO users (id, name, password_hash, domain_id) VALUES ($1,$2,'x',$3)`,
-			[]any{userID, "spec028-ra-user-" + userID[:8], domID}},
+			[]any{userID, "spec031-ra-user-" + userID[:8], domID}},
 		{`INSERT INTO projects (id, name, domain_id) VALUES ($1,$2,$3)`,
-			[]any{projectID, "spec028-ra-proj-" + projectID[:8], domID}},
+			[]any{projectID, "spec031-ra-proj-" + projectID[:8], domID}},
 		{`INSERT INTO roles (id, name) VALUES ($1,$2)`, []any{roleID, roleName}},
 		{`INSERT INTO role_assignments (user_id, project_id, role_id) VALUES ($1,$2,$3)`,
 			[]any{userID, projectID, roleID}},
@@ -188,16 +188,16 @@ func TestRoleAssignmentIncludeNames(t *testing.T) {
 }
 
 // TestDomainResponsesCarryLinks — POST and GET /v3/domains omitted `links`;
-// the pinned OSC 7 formatter aborts with KeyError 'links' (SPEC-028).
+// the pinned OSC 7 formatter aborts with KeyError 'links' (SPEC-031).
 func TestDomainResponsesCarryLinks(t *testing.T) {
 	requireDB(t)
-	r, _ := spec028Router()
+	r, _ := newIdentityConformanceRouter()
 
-	name := "spec028-links-" + uuid.NewString()[:8]
+	name := "spec031-links-" + uuid.NewString()[:8]
 	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM domains WHERE name=$1", name) })
 
 	code, body := doReqBody(r, http.MethodPost, "/v3/domains",
-		`{"domain":{"name":"`+name+`","description":"spec028 links"}}`, adminHdr)
+		`{"domain":{"name":"`+name+`","description":"spec031 links"}}`, adminHdr)
 	if code != http.StatusCreated {
 		t.Fatalf("create domain: code=%d body=%s", code, body)
 	}
@@ -247,7 +247,7 @@ func TestDomainResponsesCarryLinks(t *testing.T) {
 }
 
 // TestApplicationCredentialConformance — three defects in one surface
-// (SPEC-028):
+// (SPEC-031):
 //   - a role given by NAME ONLY panicked on a nil type assertion (recovered
 //     by gin as 500, after the credential row was already committed);
 //   - a duplicate (user_id, name) answered 500 instead of 409;
@@ -257,30 +257,37 @@ func TestDomainResponsesCarryLinks(t *testing.T) {
 //     on the missing key.
 func TestApplicationCredentialConformance(t *testing.T) {
 	requireDB(t)
-	r, _ := spec028Router()
+	r, _ := newIdentityConformanceRouter()
 	ctx := context.Background()
 
 	userID := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO users (id, name, password_hash, domain_id) VALUES ($1,$2,'x',$3)`,
-		userID, "spec028-ac-user-"+userID[:8], defaultDomainID); err != nil {
+		userID, "spec031-ac-user-"+userID[:8], defaultDomainID); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	roleID := uuid.NewString()
-	roleName := "spec028-ac-role-" + roleID[:8]
+	roleName := "spec031-ac-role-" + roleID[:8]
 	if _, err := testPool.Exec(ctx, "INSERT INTO roles (id, name) VALUES ($1,$2)", roleID, roleName); err != nil {
 		t.Fatalf("seed role: %v", err)
 	}
+	unassignedRoleID := uuid.NewString()
+	unassignedRoleName := "spec031-ac-unassigned-" + unassignedRoleID[:8]
+	if _, err := testPool.Exec(ctx, "INSERT INTO roles (id, name) VALUES ($1,$2)", unassignedRoleID, unassignedRoleName); err != nil {
+		t.Fatalf("seed unassigned role: %v", err)
+	}
+	creatorHdr := map[string]string{"X-Test-Roles": roleName, "X-Test-User": userID}
 	t.Cleanup(func() {
 		testPool.Exec(ctx, "DELETE FROM application_credentials WHERE user_id=$1", userID)
 		testPool.Exec(ctx, "DELETE FROM users WHERE id=$1", userID)
 		testPool.Exec(ctx, "DELETE FROM roles WHERE id=$1", roleID)
+		testPool.Exec(ctx, "DELETE FROM roles WHERE id=$1", unassignedRoleID)
 	})
 
 	// Role by name only: 201 (was a panic → 500), with the role resolved to
 	// its id and name, and actually persisted.
 	code, body := doReqBody(r, http.MethodPost, "/v3/users/"+userID+"/application_credentials",
-		`{"application_credential":{"name":"spec028-ac-byname","roles":[{"name":"`+roleName+`"}]}}`, adminHdr)
+		`{"application_credential":{"name":"spec031-ac-byname","roles":[{"name":"`+roleName+`"}]}}`, creatorHdr)
 	if code != http.StatusCreated {
 		t.Fatalf("create with role by name: code=%d body=%s; want 201 (was a panic/500)", code, body)
 	}
@@ -296,15 +303,27 @@ func TestApplicationCredentialConformance(t *testing.T) {
 		t.Errorf("role association persisted: count=%d; want 1", n)
 	}
 
+	// A role exists but is absent from the creator token: upstream rejects it.
+	code, body = doReqBody(r, http.MethodPost, "/v3/users/"+userID+"/application_credentials",
+		`{"application_credential":{"name":"spec031-ac-unassigned","roles":[{"id":"`+unassignedRoleID+`"}]}}`, creatorHdr)
+	if code != http.StatusBadRequest {
+		t.Errorf("create with an unassigned role: code=%d body=%s; want 400", code, body)
+	}
+
 	// Duplicate name for the same user: 409 (was 500).
 	code, body = doReqBody(r, http.MethodPost, "/v3/users/"+userID+"/application_credentials",
-		`{"application_credential":{"name":"spec028-ac-byname"}}`, adminHdr)
+		`{"application_credential":{"name":"spec031-ac-byname"}}`, creatorHdr)
 	if code != http.StatusConflict {
 		t.Errorf("duplicate create: code=%d body=%s; want 409", code, body)
 	}
 
-	// List and show always carry roles (empty array when none).
-	code, body = doReq(r, http.MethodGet, "/v3/users/"+userID+"/application_credentials", adminHdr)
+	// Omitting roles inherits the creator token's role set.
+	code, body = doReqBody(r, http.MethodPost, "/v3/users/"+userID+"/application_credentials",
+		`{"application_credential":{"name":"spec031-ac-inherited"}}`, creatorHdr)
+	if code != http.StatusCreated || !strings.Contains(body, `"roles":[{"id":"`+roleID+`","name":"`+roleName+`"}]`) {
+		t.Errorf("create without roles must inherit token roles: code=%d body=%s", code, body)
+	}
+	code, body = doReq(r, http.MethodGet, "/v3/users/"+userID+"/application_credentials", creatorHdr)
 	if code != http.StatusOK {
 		t.Fatalf("list: code=%d body=%s", code, body)
 	}
@@ -313,11 +332,11 @@ func TestApplicationCredentialConformance(t *testing.T) {
 	}
 	var credID string
 	if err := testPool.QueryRow(ctx,
-		"SELECT id::text FROM application_credentials WHERE user_id=$1 AND name='spec028-ac-byname'", userID).
+		"SELECT id::text FROM application_credentials WHERE user_id=$1 AND name='spec031-ac-byname'", userID).
 		Scan(&credID); err != nil {
 		t.Fatalf("resolve credential: %v", err)
 	}
-	code, body = doReq(r, http.MethodGet, "/v3/users/"+userID+"/application_credentials/"+credID, adminHdr)
+	code, body = doReq(r, http.MethodGet, "/v3/users/"+userID+"/application_credentials/"+credID, creatorHdr)
 	if code != http.StatusOK {
 		t.Fatalf("show: code=%d body=%s", code, body)
 	}
@@ -329,10 +348,10 @@ func TestApplicationCredentialConformance(t *testing.T) {
 // TestTokenRevokeUnknownToken — DELETE /v3/auth/tokens answered 204
 // unconditionally; upstream validates the subject token and answers 404 when
 // it names nothing revocable, so typos and expired ids were invisible to
-// clients (SPEC-028).
+// clients (SPEC-031).
 func TestTokenRevokeUnknownToken(t *testing.T) {
 	requireDB(t)
-	r, authSvc := spec028Router()
+	r, authSvc := newIdentityConformanceRouter()
 
 	// Garbage subject token: 404, not 204.
 	code, body := doReq(r, http.MethodDelete, "/v3/auth/tokens",
@@ -353,7 +372,7 @@ func TestTokenRevokeUnknownToken(t *testing.T) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 		},
-	}).SignedString([]byte("spec028-test-secret"))
+	}).SignedString([]byte("spec031-test-secret"))
 	if err != nil {
 		t.Fatalf("mint token: %v", err)
 	}
@@ -371,12 +390,12 @@ func TestTokenRevokeUnknownToken(t *testing.T) {
 // parses only {"error": {...}} (or the API-SIG {"errors": [...]}) bodies;
 // every other JSON shape degrades to "Unrecognized schema in response body.",
 // throwing away the reason. Upstream Keystone renders code/message/title, so
-// 'domain delete <enabled>' must say why it refused (SPEC-028).
+// 'domain delete <enabled>' must say why it refused (SPEC-031).
 func TestIdentityErrorEnvelopeIsKeystoneShaped(t *testing.T) {
 	requireDB(t)
-	r, _ := spec028Router()
+	r, _ := newIdentityConformanceRouter()
 
-	name := "spec028-envelope-" + uuid.NewString()[:8]
+	name := "spec031-envelope-" + uuid.NewString()[:8]
 	t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM domains WHERE name=$1", name) })
 
 	code, body := doReqBody(r, http.MethodPost, "/v3/domains",
