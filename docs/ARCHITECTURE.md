@@ -271,8 +271,10 @@ compares the two schemas.
 
 **No transaction around external work**: volume and snapshot creates reserve their row
 (`creating`, under the node's name), create the backing store outside any transaction, then
-finalise. At startup each node sets the reservations it left behind to `error`; as upstream Cinder
-does, it leaves their backing for the delete of the errored volume or snapshot. On SQLite, where
+finalise. Each running process heartbeats its reservations' owner record. A node sets the
+reservations left behind to `error` at its startup, and by a periodic pass once their owner has
+stopped heartbeating; as upstream Cinder does, it leaves their backing for the delete of the
+errored volume or snapshot. On SQLite, where
 one transaction holds the whole file, this is what keeps an image copy from stopping every
 project's writes.
 
