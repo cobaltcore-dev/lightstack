@@ -52,7 +52,11 @@ type VMManager struct {
 	mode       string // "stub" or "real"
 	// The current libvirt connection: replaced, never reopened in place, when it
 	// drops (see stayConnected). Nil until the first connection opens.
-	conn    atomic.Pointer[libvirt.Libvirt]
+	conn atomic.Pointer[libvirt.Libvirt]
+	// The socket behind conn. go-libvirt does not close it once its read loop has ended, and
+	// net connections are not closed by the garbage collector, so the loop closes the one it
+	// dropped (untilLost) and Close closes the last (publish, closeSocket).
+	rawConn atomic.Pointer[net.Conn]
 	mu      sync.Mutex
 	stubVMs map[string]*stubVM // For stub mode
 
@@ -182,14 +186,33 @@ type libvirtDialer interface {
 // StartVMManager's loop does. This is NewVMManager's contract, for a caller that cannot go on
 // without libvirt: the uninstall purge fails closed when this fails.
 func (m *VMManager) connect(dialer libvirtDialer, minWait, maxWait time.Duration) error {
-	l, err := dialWithin(dialer, connectAttemptTimeout)
+	l, socket, err := dialWithin(dialer, connectAttemptTimeout)
 	if err != nil {
 		return err
 	}
 	log.Info().Str("socket", dialer.Dialed()).Msg("connected to libvirt")
-	m.conn.Store(l)
+	m.publish(l, socket)
 	m.start(dialer, minWait, maxWait)
 	return nil
+}
+
+// publish makes l the connection callers use, recording the socket behind it so the loop can
+// close it when the connection drops. A nil socket (a dialer without one, as tests use) records
+// nothing and changes nothing.
+func (m *VMManager) publish(l *libvirt.Libvirt, socket net.Conn) {
+	m.conn.Store(l)
+	if socket != nil {
+		m.rawConn.Store(&socket)
+	}
+}
+
+// closeSocket closes the socket behind the published connection, if one is recorded, and
+// forgets it. Closing after a connection dropped is safe: go-libvirt refuses a call on a
+// disconnected socket before it touches the descriptor, and closing it twice is harmless.
+func (m *VMManager) closeSocket() {
+	if socket := m.rawConn.Swap(nil); socket != nil {
+		_ = (*socket).Close()
+	}
 }
 
 // start runs the connection loop in the background until Close.
@@ -216,20 +239,32 @@ type dialResult struct {
 
 // dialWithin is dial bounded by timeout. go-libvirt puts no deadline on its handshake, so a
 // daemon that accepts the connection and never answers would hold the attempt forever.
-func dialWithin(dialer libvirtDialer, timeout time.Duration) (*libvirt.Libvirt, error) {
+//
+// It returns the socket the connection runs on alongside the client: the caller must close it
+// when the connection is finished with, since go-libvirt does not once its read loop has ended.
+func dialWithin(dialer libvirtDialer, timeout time.Duration) (*libvirt.Libvirt, net.Conn, error) {
 	attempt := &dialAttempt{dialer: dialer}
 	ch := make(chan dialResult, 1)
 	go func() {
 		l, err := dial(attempt)
+		if err != nil {
+			// A handshake that fails within the bound is nobody's connection: go-libvirt's
+			// own cleanup does not close it once its read loop has recorded the drop
+			// (socket.Disconnect returns without closing then), so the attempt must.
+			attempt.close()
+		}
 		ch <- dialResult{l, err}
 	}()
 	select {
 	case r := <-ch:
-		return r.l, r.err
+		if r.err != nil {
+			return nil, nil, r.err
+		}
+		return r.l, attempt.connection(), nil
 	case <-time.After(timeout):
 	}
 	abandonDial(attempt, ch)
-	return nil, fmt.Errorf("libvirt at %s did not answer within %s", dialer.Dialed(), timeout)
+	return nil, nil, fmt.Errorf("libvirt at %s did not answer within %s", dialer.Dialed(), timeout)
 }
 
 // abandonDial gives up on an attempt that outlived its bound (dialAttempt.abandon), and
@@ -272,6 +307,13 @@ func (a *dialAttempt) Dial() (net.Conn, error) {
 	return conn, nil
 }
 
+// connection is the socket the attempt opened, once its handshake completed.
+func (a *dialAttempt) connection() net.Conn {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.conn
+}
+
 // abandon gives the attempt up. It closes the connection the attempt opened — go-libvirt has no
 // deadline on its handshake, and closing the connection under it is what makes a hung handshake
 // return — and has Dial close one that opens later.
@@ -279,6 +321,18 @@ func (a *dialAttempt) abandon() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.abandoned = true
+	if a.conn != nil {
+		_ = a.conn.Close()
+	}
+}
+
+// close releases the connection a failed attempt opened, without giving the attempt up. It runs
+// when the handshake ends in an error: go-libvirt closes the socket only while its read loop is
+// still running, and a daemon that accepts and then dies has already ended it, so nothing else
+// would close this side.
+func (a *dialAttempt) close() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.conn != nil {
 		_ = a.conn.Close()
 	}
@@ -309,11 +363,11 @@ func (m *VMManager) stayConnected(dialer libvirtDialer, minWait, maxWait time.Du
 			}
 			firstWait = minWait
 		}
-		l, ok := m.redial(dialer, firstWait, minWait, maxWait)
+		l, socket, ok := m.redial(dialer, firstWait, minWait, maxWait)
 		if !ok {
 			return
 		}
-		m.conn.Store(l)
+		m.publish(l, socket)
 		log.Info().Str("socket", dialer.Dialed()).Msg("connected to libvirt")
 	}
 }
@@ -329,6 +383,10 @@ func (m *VMManager) untilLost(conn *libvirt.Libvirt, prep *sync.WaitGroup, minWa
 		return false
 	case <-conn.Disconnected():
 	}
+	// The socket behind the dropped connection is nobody else's to close: go-libvirt stops
+	// where its read loop stopped, and the descriptor would stay open for the life of the
+	// process — one per libvirtd restart, the very event this loop exists to survive.
+	m.closeSocket()
 	log.Warn().Msg("libvirt connection lost; reconnecting")
 	return true
 }
@@ -358,17 +416,17 @@ func (m *VMManager) afterConnect(conn *libvirt.Libvirt, minWait, maxWait time.Du
 // from minWait up to maxWait. Each attempt is bounded (dialWithin). The first failure is
 // logged at WARN, naming the socket or sockets tried; later ones at DEBUG. It reports false
 // when the manager is closed first.
-func (m *VMManager) redial(dialer libvirtDialer, firstWait, minWait, maxWait time.Duration) (*libvirt.Libvirt, bool) {
+func (m *VMManager) redial(dialer libvirtDialer, firstWait, minWait, maxWait time.Duration) (*libvirt.Libvirt, net.Conn, bool) {
 	wait, next := firstWait, min(max(2*firstWait, minWait), maxWait)
 	for failures := 0; ; failures++ {
 		select {
 		case <-m.done:
-			return nil, false
+			return nil, nil, false
 		case <-time.After(wait):
 		}
-		l, err := dialWithin(dialer, connectAttemptTimeout)
+		l, socket, err := dialWithin(dialer, connectAttemptTimeout)
 		if err == nil {
-			return l, true
+			return l, socket, true
 		}
 		if failures == 0 {
 			log.Warn().Err(err).Dur("next_attempt_in", next).Msg("libvirt connection attempt failed; retrying in the background")
@@ -932,6 +990,9 @@ func (m *VMManager) Close() {
 		if conn := m.conn.Load(); conn != nil {
 			_ = conn.Disconnect()
 		}
+		// A connection that dropped before Close left its socket open: go-libvirt's
+		// Disconnect returns at once for it, so close the descriptor here.
+		m.closeSocket()
 	})
 }
 
