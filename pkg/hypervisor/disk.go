@@ -31,13 +31,19 @@ func EnsureInstanceDir(instanceID string) error {
 }
 
 // PrepareInstanceDir creates the per-instance directory and, in real mode, makes it owned
-// by the user libvirt runs QEMU as (cached from capabilities at startup). QEMU opens each
-// guest's serial console.log — the <log file> chardev — itself, so the directory must be
-// writable by that user. Older libvirt opened that log as root in the daemon, which masked
-// the gap; the modular virtqemud does not, so a root-owned directory makes the domain fail
-// to start ("console.log: Permission denied"). Lightstack keeps write access to stage the
-// overlay because root is exempt from the directory's mode. Stub mode — or real mode before
-// capabilities have been read — just creates the directory. Idempotent.
+// by the user libvirt runs QEMU as (read from its capabilities by the console socket
+// directory's preparation). QEMU opens each guest's serial console.log — the <log file>
+// chardev — itself, so the directory must be writable by that user. Older libvirt opened
+// that log as root in the daemon, which masked the gap; the modular virtqemud does not, so a
+// root-owned directory makes the domain fail to start ("console.log: Permission denied").
+// Lightstack keeps write access to stage the overlay because root is exempt from the
+// directory's mode. Stub mode — or real mode before QEMU's user is known — just creates the
+// directory. Idempotent.
+//
+// Every guest start calls it immediately before QEMU launches, once the preparation has
+// succeeded (SPEC-031 FR-014): a directory created while QEMU's user was unknown, left
+// root-owned by an earlier release, or owned by a QEMU user that has since changed is made
+// QEMU's then.
 func (m *VMManager) PrepareInstanceDir(instanceID string) error {
 	dir := InstanceDir(instanceID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -48,9 +54,9 @@ func (m *VMManager) PrepareInstanceDir(instanceID string) error {
 	}
 	owner := m.qemuOwner.Load()
 	if owner == nil {
-		// Capabilities were never read (startup prep failed); guest starts are already
-		// refused by consoleDirReady, so creating the directory without the chown is
-		// harmless — it never gets used.
+		// QEMU's user is not known yet. The create paths call this before a guest start, which
+		// prepares first and then calls it again; nothing launches into this directory before
+		// it is QEMU's.
 		return nil
 	}
 	if err := os.Chown(dir, owner.uid, owner.gid); err != nil {

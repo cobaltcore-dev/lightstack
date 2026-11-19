@@ -202,9 +202,12 @@ func (svc *Service) SetCinderService(cinder CinderService) {
 	svc.cinderSvc = cinder
 }
 
-// InitHypervisor initializes the hypervisor connection
+// InitHypervisor starts the hypervisor. In real mode the connection to libvirt is made in the
+// background (hypervisor.StartVMManager), so a manager always exists, connected or not, and
+// the console socket directory is prepared after every connection. Only a libvirt_uri
+// Lightstack cannot honour fails it.
 func (svc *Service) InitHypervisor() error {
-	vmManager, err := hypervisor.NewVMManager(svc.libvirtURI, svc.libvirtMode)
+	vmManager, err := hypervisor.StartVMManager(svc.libvirtURI, svc.libvirtMode)
 	if err != nil {
 		return fmt.Errorf("failed to initialize hypervisor: %w", err)
 	}
@@ -212,14 +215,15 @@ func (svc *Service) InitHypervisor() error {
 	return nil
 }
 
-// PrepareConsoleSocketDir makes the console socket directory QEMU's (SPEC-021
-// FR-017a). Until it has, the hypervisor refuses every guest start, because each domain
-// names its console socket in that directory and libvirt does not prepare it.
-func (svc *Service) PrepareConsoleSocketDir(ctx context.Context, dir string) error {
+// HypervisorReady is real-mode readiness's hypervisor check (SPEC-031 FR-017): nil once the
+// console socket directory has been prepared, which the hypervisor does after it first reaches
+// libvirt, and nil from then on, through later libvirt outages (FR-018a). It reads recorded
+// state and makes no libvirt call.
+func (svc *Service) HypervisorReady(ctx context.Context) error {
 	if svc.vmManager == nil {
 		return errNoHypervisor
 	}
-	return svc.vmManager.PrepareConsoleSocketDir(ctx, dir)
+	return svc.vmManager.Ready(ctx)
 }
 
 // startRefusal is the 500 for a guest start the hypervisor refused. A console socket
@@ -644,12 +648,34 @@ func (svc *Service) removeBootVolume(volumeID string) {
 	}
 }
 
+// The faults a create records for the hypervisor's part, curated as allocationFault's are:
+// the tenant reads them, and the hypervisor's own error stays in the log line.
+const (
+	faultHypervisorNotReady = "the hypervisor is not ready to start guests"
+	faultHypervisorCreate   = "the hypervisor could not create the guest"
+)
+
+// createFault is the fault a create records when the hypervisor refused or failed it. A
+// console socket directory that is not ready — which is also how a missing libvirt connection
+// surfaces before the first preparation — is "not ready"; anything else is a failed create.
+func createFault(err error) string {
+	if errors.Is(err, hypervisor.ErrConsoleSocketDirNotReady) {
+		return faultHypervisorNotReady
+	}
+	return faultHypervisorCreate
+}
+
 // markInstanceError flags an instance ERROR (best-effort), used from the
 // VM-creation goroutine's failure paths. Uses svc.ctx so it still runs even if
-// the request context was cancelled.
+// the request context was cancelled, under a 5-second bound as markActionFailed does:
+// nothing waits on the record, but the goroutine must still finish — the port-release
+// defer and Shutdown's svc.wg.Wait() sit behind it, so a hung database would stall
+// graceful shutdown rather than merely leave the row stale.
 func (svc *Service) markInstanceError(instanceID string, reason string) {
 	now := time.Now()
-	if _, err := svc.pool.Exec(svc.ctx,
+	ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
+	defer cancel()
+	if _, err := svc.pool.Exec(ctx,
 		`UPDATE instances
 		    SET status = 'ERROR', updated_at = $1,
 		        fault_code = $2, fault_message = $3, fault_created = $1
@@ -684,6 +710,16 @@ func (svc *Service) CreateServer(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		logger.Warn().Err(err).Msg("Invalid request body for server creation")
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+
+	// A create must name what it boots from. Upstream refuses one that carries neither an
+	// imageRef nor a block device mapping before it looks anything up
+	// (nova/api/openstack/compute/servers.py, _image_from_req_data). Accepting it only left a
+	// server that could never boot. Lightstack reads block_device_mapping_v2 only.
+	if req.Server.ImageRef == "" && len(req.Server.BlockDeviceMappingV2) == 0 {
+		logger.Warn().Msg("refusing server create: neither imageRef nor a block device mapping")
+		common.SendError(c, common.NewBadRequestError("Missing imageRef attribute"))
 		return
 	}
 
@@ -1104,11 +1140,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Error().Interface("panic", r).Str("instance_id", instanceID).Msg("PANIC in VM creation goroutine")
-					if _, err := svc.pool.Exec(context.Background(),
-						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-						"ERROR", time.Now(), instanceID); err != nil {
-						log.Error().Err(err).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after VM-creation panic")
-					}
+					svc.markInstanceError(instanceID, "the server could not be created")
 				}
 			}()
 
@@ -1257,11 +1289,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				// fails to start the domain (SPEC-009 WS-5).
 				if err := svc.vmManager.PrepareInstanceDir(instanceID); err != nil {
 					log.Error().Err(err).Str("instance_id", instanceID).Msg("boot-from-volume: failed to create instance dir")
-					if _, dbErr := svc.pool.Exec(svc.ctx,
-						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-						"ERROR", time.Now(), instanceID); dbErr != nil {
-						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after instance-dir failure")
-					}
+					svc.markInstanceError(instanceID, "the per-instance directory could not be prepared")
 					return
 				}
 				// Record the attachment first, then mark the volume in-use. Both must
@@ -1287,11 +1315,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				parsedImageUUID, err := uuid.Parse(req.Server.ImageRef)
 				if err != nil {
 					log.Error().Err(err).Str("image_ref", req.Server.ImageRef).Str("instance_id", instanceID).Msg("Invalid imageRef — not a valid UUID")
-					if _, dbErr := svc.pool.Exec(svc.ctx,
-						"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-						"ERROR", time.Now(), instanceID); dbErr != nil {
-						log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after invalid imageRef")
-					}
+					svc.markInstanceError(instanceID, "the image reference is not a valid image ID")
 					return
 				}
 				imageUUID := parsedImageUUID.String()
@@ -1307,11 +1331,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 							"SELECT COALESCE(checksum, '') FROM images WHERE id = $1", imageUUID).Scan(&checksum)
 						if _, ferr := svc.imageStore.EnsureLocalBase(svc.ctx, imageUUID, checksum); ferr != nil {
 							log.Error().Err(ferr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to materialize image base for boot")
-							if _, dbErr := svc.pool.Exec(svc.ctx,
-								"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-								"ERROR", time.Now(), instanceID); dbErr != nil {
-								log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after image fetch failure")
-							}
+							svc.markInstanceError(instanceID, "the image could not be made available on this host")
 							return
 						}
 					}
@@ -1323,11 +1343,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 					overlay, stageErr := hypervisor.StageOverlay(instanceID, storage.LocalImagePath(imageUUID))
 					if stageErr != nil {
 						log.Error().Err(stageErr).Str("instance_id", instanceID).Str("image_id", imageUUID).Msg("Failed to stage per-instance disk overlay")
-						if _, dbErr := svc.pool.Exec(svc.ctx,
-							"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-							"ERROR", time.Now(), instanceID); dbErr != nil {
-							log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after overlay staging failure")
-						}
+						svc.markInstanceError(instanceID, "the root disk could not be staged")
 						return
 					}
 					imagePath = overlay
@@ -1354,14 +1370,7 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 			if err != nil {
 				log.Error().Err(err).Str("instance_id", instanceID).Msg("Failed to create VM via libvirt")
-				// Update instance status to ERROR
-				dbCtx, dbCancel := context.WithTimeout(svc.ctx, 5*time.Second)
-				defer dbCancel()
-				if _, dbErr := svc.pool.Exec(dbCtx,
-					"UPDATE instances SET status = $1, updated_at = $2 WHERE id = $3",
-					"ERROR", time.Now(), instanceID); dbErr != nil {
-					log.Error().Err(dbErr).Str("instance_id", instanceID).Msg("failed to mark instance ERROR after libvirt create failure")
-				}
+				svc.markInstanceError(instanceID, createFault(err))
 				return
 			}
 
@@ -1387,6 +1396,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				log.Error().Err(err).Str("instance_id", instanceID).Str("libvirt_uuid", libvirtUUID).Msg("failed to mark instance ACTIVE after libvirt create")
 			}
 		}()
+	} else if svc.libvirtMode == "real" {
+		// Real mode never fakes a guest (Constitution IV): with no hypervisor wired in, the
+		// create fails as it does when libvirt cannot be reached (SPEC-031 FR-019).
+		logger.Error().Str("instance_id", instanceID).Msg("no hypervisor wired in; the server cannot be created")
+		svc.markInstanceError(instanceID, faultHypervisorNotReady)
 	} else {
 		logger.Debug().Msg("Stub mode: skipping libvirt VM creation")
 		// In stub mode, immediately set instance to ACTIVE so Terraform polling succeeds

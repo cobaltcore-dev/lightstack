@@ -37,11 +37,9 @@ Why each line:
 - **SELinux permissive** — enforcing blocks k3s from exec'ing its binary (`status=203/EXEC`, no
   k3s-selinux policy on openSUSE) and svirt blocks QEMU on the `var_lib_t` state; the `sed` persists
   it, `setenforce 0` applies it now.
-- **modular libvirt sockets** must be up (openSUSE has no `libvirt-sock`).
-- **`/run/libvirt/libvirt-sock` symlink** — `/run` is tmpfs, so it vanishes on reboot; the Helm chart
-  hard-codes that path (Part C).
+- **modular libvirt sockets** must be up (openSUSE has no `libvirt-sock`; Lightstack dials
+  `virtqemud-sock` itself, so no symlink is needed).
 - **default libvirt network** must be active for minikube's kvm2 driver (Part C).
-- **warm libvirt** so the 1 s console-dir capability read at real-mode startup doesn't time out.
 
 **Host (sudo):**
 ```
@@ -49,16 +47,13 @@ sudo systemctl disable --now firewalld
 sudo sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
 sudo setenforce 0
 sudo systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket
-sudo ln -sf virtqemud-sock /run/libvirt/libvirt-sock
 sudo virsh -c qemu:///system net-start default 2>/dev/null || true
-sudo virsh -c qemu:///system capabilities >/dev/null && echo "libvirt warm"
 ```
 
-Verify (want `firewalld=inactive`, `selinux_enforce=0`, the symlink resolving to `virtqemud-sock`, and
-`default` active):
+Verify (want `firewalld=inactive`, `selinux_enforce=0`, `virtqemud-sock` listed, and `default` active):
 ```
 echo "firewalld=$(systemctl is-active firewalld)  selinux_enforce=$(cat /sys/fs/selinux/enforce)"
-ls -l /run/libvirt/libvirt-sock
+ls -l /run/libvirt/virtqemud-sock
 sudo virsh -c qemu:///system net-list
 ```
 
@@ -179,28 +174,15 @@ host's modular libvirt. Part A (stub/CI) is **not** affected.
 (the running QEMU's current i440fx machine), so real-mode `server create` defines on QEMU 11 with no
 workaround. Nothing to do; this note stays so an older checkout's define failure is recognisable.
 
-**Blocker — libvirt socket path.** The binary dials `/var/run/libvirt/libvirt-sock` whenever
-`nova.libvirt_uri` is `qemu:///system`. Modular libvirt on this host exposes only
-`/run/libvirt/virtqemud-sock`.
-- **Part B (compose-kvm)** avoids it cleanly: the config file this runbook writes sets
-  `nova.libvirt_uri: "/run/libvirt/virtqemud-sock"`, which the binary uses verbatim. No symlink.
-- **Part C (Helm chart)** can't set `libvirt_uri` (the chart hard-codes `qemu:///system` in
-  `_helpers.tpl`), so create a compatibility symlink on the host before installing:
+**Fixed in this tree — libvirt socket path (SPEC-031).** With `nova.libvirt_uri: qemu:///system` the
+binary dials `virtqemud-sock` where it exists and `libvirt-sock` otherwise, so modular libvirt needs no
+symlink and no `virtproxyd`. Through the chart, a non-default `realMode.libvirtSocketPath` is also the
+socket the binary dials. A `libvirt-sock` symlink left from an earlier run is harmless and can go.
 
-  ```bash
-  sudo ln -sf virtqemud-sock /run/libvirt/libvirt-sock
-  ls -l /run/libvirt/libvirt-sock
-  ```
-
-  `/run` is tmpfs — re-create the symlink after a reboot.
-
-**Watch-point — cold libvirt (SPEC-021).** Real-mode startup reads libvirt capabilities once with a
-1 s deadline; a freshly socket-activated `virtqemud` can answer slower, after which **every** guest
-start is refused. Warm it before starting Lightstack, and grep the log if starts are refused:
-
-```bash
-sudo virsh -c qemu:///system capabilities >/dev/null && echo "libvirt warm"
-```
+**Fixed in this tree — cold libvirt (SPEC-031).** The console socket directory's preparation is
+retried until libvirt answers, and in real mode `/readyz` waits for it, so no warm-up is needed. A
+freshly socket-activated `virtqemud` that misses the first 1 s attempt logs one WARN or ERROR line, then
+`console socket directory ready; guests can start` once it answers.
 
 **Watch-point — SELinux (svirt).** SELinux is enforcing here. If a guest fails to start or the
 console socket can't be created, check for denials:
@@ -226,9 +208,8 @@ for real-mode guests, both validated 2026-11-02:
   `svirt_image_t` or set `security_driver="none"` in the host qemu.conf). `setenforce 1` when done.
   (The per-instance-dir **ownership** gap is a separate DAC layer, fixed in code — see §0.4's note.)
 
-The machine-type fix landed in this tree (`machine='pc'`). The remaining libvirt-socket item is left
-as the symlink workaround above; I can turn it into a proper commit (a chart-settable `libvirt_uri`
-plus a correct default on modular libvirt) if you want it fixed rather than worked around.
+The machine-type, libvirt-socket and cold-libvirt fixes have all landed in this tree: beyond the
+firewalld and SELinux relaxations above, real mode needs no host workaround.
 
 ---
 
@@ -383,8 +364,9 @@ Boots a **real libvirt/KVM VM** under `deployments/docker-compose-kvm.yml` and c
 create, SSH-key injection, SSH login, console login, internet egress. SQLite backend (one file,
 no Postgres container).
 
-The machine-type fix is already in this tree (§0.4), so the VM defines on QEMU 11 unchanged. The
-libvirt-socket item is handled by the config's `libvirt_uri` override below — no symlink needed here.
+The machine-type and libvirt-socket fixes are in this tree (§0.4), so the VM defines on QEMU 11 and the
+binary finds `virtqemud-sock` itself. The config below still names the socket; `qemu:///system` would
+choose the same one.
 
 > **Run the KVM stack with `sudo` (rootful podman).** Real mode needs real root: neutron `iptables`
 > mode creates bridges/TAPs in the **host** network namespace and Lightstack talks to the host libvirt
@@ -397,7 +379,6 @@ libvirt-socket item is handled by the config's `libvirt_uri` override below — 
 ### B1 — Host prep and config
 
 ```bash
-sudo virsh -c qemu:///system capabilities >/dev/null && echo "libvirt warm"
 sudo mkdir -p /var/lib/lightstack/images /var/lib/lightstack/volumes /var/lib/lightstack/instances /var/lib/lightstack/cloud-init /var/lib/lightstack/dhcp /var/lib/lightstack/db /var/lib/lightstack/console-sockets
 sudo mkdir -p /opt/lightstack/config
 ```
@@ -458,12 +439,13 @@ sudo podman rm -f lightstack 2>/dev/null || true
 sudo docker compose -f deployments/docker-compose-kvm.yml up -d --build
 timeout 120 bash -c 'until curl -sf http://localhost:35357/v3 >/dev/null; do sleep 3; done'
 sudo docker compose -f deployments/docker-compose-kvm.yml logs --tail=40 lightstack
-sudo docker compose -f deployments/docker-compose-kvm.yml logs lightstack 2>/dev/null | grep -i "console socket directory not ready" && echo "WARN cold-libvirt: restart lightstack after warming" || echo "console dir OK"
+sudo docker compose -f deployments/docker-compose-kvm.yml logs lightstack 2>/dev/null | grep -i "console socket directory ready" || echo "WAIT: libvirt has not answered yet; the preparation is retried, check again"
 ```
 
 Desired outcome: Keystone answers; the log shows migrations applied, real hypervisor + iptables neutron
-+ local cinder/glance, and **no** "console socket directory not ready". If that warning appears, warm
-libvirt (§0.4) and `sudo docker compose -f deployments/docker-compose-kvm.yml restart lightstack`.
++ local cinder/glance, and `console socket directory ready; guests can start`. A cold `virtqemud` may log
+`console socket directory not ready` first: the preparation is retried, so check again — no restart and
+no warm-up.
 
 ### B3 — Authenticate and seed image + keypair + network
 
@@ -593,10 +575,10 @@ Three shells, each pinned to a context — each block is labelled with the shell
 - **T2 — OpenStack CLI**: drives Lightstack over the node IP. No kubeconfig.
 - **T3 — Rook/minikube**: the default kubeconfig (`~/.kube/config`, context `rook`).
 
-The machine-type fix is already in this tree (§0.4), so the chart image boots a guest unchanged.
-Create the `libvirt-sock` symlink first (the chart can't override `libvirt_uri`) — C0 does this.
+The machine-type fix is already in this tree (§0.4), so the chart image boots a guest unchanged. The
+chart's default `realMode.libvirtSocketPath` lets the binary choose `virtqemud-sock`: no symlink.
 
-### C0 — Fresh k3s, blockers, kubeconfig (T1)
+### C0 — Fresh k3s, kubeconfig (T1)
 
 Install a **clean k3s each run**: uninstall any prior k3s first (its uninstaller is idempotent and
 only present when k3s is installed), then install. A fresh install wipes k3s's containerd image
@@ -609,13 +591,10 @@ curl -sfL https://get.k3s.io | sudo INSTALL_K3S_SELINUX_WARN=true INSTALL_K3S_SK
 sudo systemctl is-active k3s
 ```
 
-Then the real-mode blockers (libvirt socket + warm) and a user-readable kubeconfig pinned to T1:
+Then a user-readable kubeconfig pinned to T1:
 
 **T1 — host:**
 ```bash
-sudo ln -sf virtqemud-sock /run/libvirt/libvirt-sock
-ls -l /run/libvirt/libvirt-sock
-sudo virsh -c qemu:///system capabilities >/dev/null && echo "libvirt warm"
 mkdir -p ~/.kube
 sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/k3s.yaml
 sudo chown "$(id -u):$(id -g)" ~/.kube/k3s.yaml
@@ -624,8 +603,7 @@ export KUBECONFIG=~/.kube/k3s.yaml
 kubectl get nodes
 ```
 
-Desired outcome: k3s is `active`, the symlink resolves to `virtqemud-sock`, libvirt is warm, and the
-k3s node is `Ready`. Keep `KUBECONFIG` exported in T1 for the rest of Part C.
+Desired outcome: k3s is `active` and the k3s node is `Ready`. Keep `KUBECONFIG` exported in T1 for the rest of Part C.
 
 ### C1 — Rook/Ceph + RGW on minikube (T3)
 
@@ -758,13 +736,13 @@ Confirm every service is **real** and the RGW endpoint is reachable from the pod
 **T1 — host:**
 ```bash
 kubectl -n lightstack get secret lightstack-lightstack-config -o jsonpath='{.data.lightstack\.yaml}' | base64 -d | grep -E "_mode:|libvirt_mode:"
-kubectl -n lightstack logs deploy/lightstack-lightstack | grep -i "console socket directory not ready" && echo "WARN cold-libvirt: kubectl -n lightstack rollout restart deploy/lightstack-lightstack after warming" || echo "console dir OK"
+kubectl -n lightstack logs deploy/lightstack-lightstack | grep -i "console socket directory ready" || echo "WAIT: libvirt has not answered yet; the pod turns Ready once it has"
 kubectl -n lightstack exec deploy/lightstack-lightstack -- sh -c "wget -qO- $RGW_URL 2>&1 | head -c 120; echo"
 ```
 
 Desired outcome: `libvirt_mode: "real"`, `networking_mode: "iptables"`,
-`security_group_mode: "iptables"`, `storage_mode: "s3"` (glance) and `"local"` (cinder); no
-cold-libvirt warning; the `wget` prints S3 XML (`<ListAllMyBucketsResult…>` or
+`security_group_mode: "iptables"`, `storage_mode: "s3"` (glance) and `"local"` (cinder); the
+`console socket directory ready` line; the `wget` prints S3 XML (`<ListAllMyBucketsResult…>` or
 `<Error><Code>AccessDenied`). If the pod can't reach RGW, add the cross-cluster rules:
 
 **T1 — host (only if the wget failed):**
@@ -1010,10 +988,9 @@ sudo /usr/local/bin/k3s-uninstall.sh
 deployments/rook/setup-rook-rgw.sh --delete
 ```
 
-**Remove the compatibility symlink, and (for a truly fresh run) the node-local state** that lives
-outside k3s and survives its uninstall:
+**For a truly fresh run, remove the node-local state** that lives outside k3s and survives its
+uninstall:
 ```bash
-sudo rm -f /run/libvirt/libvirt-sock
 sudo rm -rf /var/lib/lightstack
 ```
 

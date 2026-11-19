@@ -71,11 +71,29 @@ list_count() {
     echo "$body" | sed '$d' | jq -r "$filter" 2>/dev/null || echo "unparseable body"
 }
 
+# boot_image creates a private, active image for the token's project and prints its id.
+# Every server create below names one: a create must say what it boots from, and a
+# private image per project keeps the isolation checks free of anything shared.
+boot_image() {
+    local token="$1" name="$2" id
+    id=$(curl -s -X POST "http://localhost:9292/v2/images" \
+        -H "X-Auth-Token: $token" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"'$name'","visibility":"private","container_format":"bare","disk_format":"raw"}' \
+        | jq -r '.id')
+    curl -s -o /dev/null -X PUT "http://localhost:9292/v2/images/$id/file" \
+        -H "X-Auth-Token: $token" \
+        -H "Content-Type: application/octet-stream" \
+        --data-binary "lightstack test image"
+    echo "$id"
+}
+
 # Resources the teardown removes. Populated as setup progresses so an abort part-way
 # through still cleans up what it managed to create.
 PROJECT1_ID=""; PROJECT2_ID=""; USER1_ID=""; USER2_ID=""
 USER1_TOKEN=""; USER2_TOKEN=""; MEMBER_ROLE_ID=""
 SERVER1_ID=""; SERVER2_ID=""; NET1_ID=""; NET2_ID=""; SUBNET2_ID=""; VOL1_ID=""; IMAGE1_ID=""
+BOOT_IMAGE1_ID=""; BOOT_IMAGE2_ID=""
 SHARED_NET_ID=""; SHARED_INTRUDER_ID=""
 
 # Teardown runs however the suite exits — pass, failed check, or aborted setup — and
@@ -103,9 +121,11 @@ teardown() {
         [ -n "$VOL1_ID" ] && [ "$VOL1_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:8776/v3/$PROJECT1_ID/volumes/$VOL1_ID" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
         [ -n "$NET1_ID" ] && [ "$NET1_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/networks/$NET1_ID" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
         [ -n "$IMAGE1_ID" ] && [ "$IMAGE1_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9292/v2/images/$IMAGE1_ID" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
+        [ -n "$BOOT_IMAGE1_ID" ] && [ "$BOOT_IMAGE1_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9292/v2/images/$BOOT_IMAGE1_ID" -H "X-Auth-Token: $USER1_TOKEN" 2>/dev/null || true
     fi
     if [ -n "$USER2_TOKEN" ] && [ "$USER2_TOKEN" != "null" ]; then
         [ -n "$SERVER2_ID" ] && [ "$SERVER2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:8774/v2.1/servers/$SERVER2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
+        [ -n "$BOOT_IMAGE2_ID" ] && [ "$BOOT_IMAGE2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9292/v2/images/$BOOT_IMAGE2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
         # Subnet, then network (deleting the network would also delete the subnet).
         [ -n "$SUBNET2_ID" ] && [ "$SUBNET2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/subnets/$SUBNET2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
         [ -n "$NET2_ID" ] && [ "$NET2_ID" != "null" ] && curl -s -o /dev/null -X DELETE "http://localhost:9696/v2.0/networks/$NET2_ID" -H "X-Auth-Token: $USER2_TOKEN" 2>/dev/null || true
@@ -247,13 +267,19 @@ for pair in "test-user-1:$USER1_TOKEN" "test-user-2:$USER2_TOKEN"; do
     fi
 done
 
+# The image each project's servers boot from.
+BOOT_IMAGE1_ID=$(boot_image "$USER1_TOKEN" "project1-boot-image")
+BOOT_IMAGE2_ID=$(boot_image "$USER2_TOKEN" "project2-boot-image")
+require_value "a boot image for project 1" "$BOOT_IMAGE1_ID"
+require_value "a boot image for project 2" "$BOOT_IMAGE2_ID"
+
 # Test 1: Server isolation - User1 creates server, User2 cannot see it
 log_test "Server isolation between projects"
 
 SERVER1_ID=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
     -H "X-Auth-Token: $USER1_TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{"server":{"name":"project1-server","flavorRef":"m1.tiny"}}' \
+    -d '{"server":{"name":"project1-server","flavorRef":"m1.tiny","imageRef":"'$BOOT_IMAGE1_ID'"}}' \
     | jq -r '.server.id')
 
 if [ -n "$SERVER1_ID" ] && [ "$SERVER1_ID" != "null" ]; then
@@ -474,7 +500,7 @@ for i in {1..3}; do
     curl -s -X POST "http://localhost:8774/v2.1/servers" \
         -H "X-Auth-Token: $USER1_TOKEN" \
         -H "Content-Type: application/json" \
-        -d '{"server":{"name":"project1-server-'$i'","flavorRef":"m1.tiny"}}' > /dev/null
+        -d '{"server":{"name":"project1-server-'$i'","flavorRef":"m1.tiny","imageRef":"'$BOOT_IMAGE1_ID'"}}' > /dev/null
 done
 
 # Check User1's usage affects their quota, not User2's
@@ -497,7 +523,7 @@ log_test "Cannot reference cross-project resources"
 SERVER2_ID=$(curl -s -X POST "http://localhost:8774/v2.1/servers" \
     -H "X-Auth-Token: $USER2_TOKEN" \
     -H "Content-Type: application/json" \
-    -d '{"server":{"name":"project2-server","flavorRef":"m1.tiny"}}' \
+    -d '{"server":{"name":"project2-server","flavorRef":"m1.tiny","imageRef":"'$BOOT_IMAGE2_ID'"}}' \
     | jq -r '.server.id')
 
 if [ -n "$SERVER2_ID" ] && [ "$SERVER2_ID" != "null" ] && [ -n "$VOL1_ID" ] && [ "$VOL1_ID" != "null" ]; then

@@ -250,7 +250,10 @@ compute:
   heartbeat_interval: 30s
 nova:
   port: 8774
-  libvirt_uri: "qemu:///system"
+  {{- /* The default socket leaves the choice to the binary: virtqemud-sock where it exists,
+         else libvirt-sock. Any other is the socket it dials, as well as the one the pods
+         mount (SPEC-031 FR-004). Compared here only. */}}
+  libvirt_uri: {{ if eq .Values.realMode.libvirtSocketPath "/var/run/libvirt/libvirt-sock" }}"qemu:///system"{{ else }}{{ .Values.realMode.libvirtSocketPath | quote }}{{ end }}
   libvirt_mode: {{ .Values.nova.libvirtMode | quote }}
   console_proxy_base_url: {{ .Values.nova.consoleProxyBaseUrl | quote }}
   console_token_ttl: {{ .Values.nova.consoleTokenTtl | quote }}
@@ -410,6 +413,11 @@ imagePullSecrets:
 {{- end }}
 {{- if .Values.realMode.enabled }}
 hostNetwork: {{ .Values.realMode.hostNetwork }}
+{{- if .Values.realMode.hostNetwork }}
+# A host-networked pod resolves through the node unless told otherwise, so in-cluster
+# Service names (an operator-managed PostgreSQL, RGW, Redis) would never resolve.
+dnsPolicy: ClusterFirstWithHostNet
+{{- end }}
 {{- end }}
 {{- include "lightstack.scheduling" . }}
 {{- if .Values.realMode.enabled }}

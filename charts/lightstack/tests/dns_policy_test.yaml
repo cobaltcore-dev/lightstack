@@ -1,0 +1,94 @@
+# helm-unittest specs for the pod DNS policy (SPEC-031 FR-001, FR-002, FR-003).
+# A host-networked pod treats the default ClusterFirst like Default and resolves through the
+# node, so <service>.<namespace>.svc names never resolve. ClusterFirstWithHostNet sends it to
+# the cluster DNS, as the console proxy already does. Without host networking nothing changes.
+suite: pod DNS policy
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db.lightstack.svc/lightstack
+tests:
+  - it: renders ClusterFirstWithHostNet on the single-node Deployment with host networking
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.hostNetwork: true
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
+
+  - it: renders ClusterFirstWithHostNet on the multi-node DaemonSet with host networking
+    template: templates/daemonset.yaml
+    set:
+      deploymentMode: multi-node
+      glance.storageMode: rbd   # the multi-node real-mode gates refuse node-local storage
+      cinder.storageMode: rbd
+      realMode.enabled: true
+      realMode.hostNetwork: true
+    asserts:
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
+
+  - it: renders ClusterFirstWithHostNet on the teardown purge Job with host networking
+    template: templates/teardown-purge-job.yaml
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+      realMode.enabled: true
+      realMode.hostNetwork: true
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
+
+  - it: renders no dnsPolicy in stub mode, even with realMode.hostNetwork set
+    template: templates/deployment.yaml
+    set:
+      realMode.hostNetwork: true
+    asserts:
+      - notExists:
+          path: spec.template.spec.dnsPolicy
+
+  - it: renders no dnsPolicy on the Deployment in real mode without host networking
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      realMode.hostNetwork: false
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: false
+      - notExists:
+          path: spec.template.spec.dnsPolicy
+
+  - it: renders no dnsPolicy on the DaemonSet in real mode without host networking
+    template: templates/daemonset.yaml
+    set:
+      deploymentMode: multi-node
+      glance.storageMode: rbd   # the multi-node real-mode gates refuse node-local storage
+      cinder.storageMode: rbd
+      realMode.enabled: true
+      realMode.hostNetwork: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.dnsPolicy
+
+  - it: renders no dnsPolicy on the purge Job in real mode without host networking
+    template: templates/teardown-purge-job.yaml
+    set:
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+      realMode.enabled: true
+      realMode.hostNetwork: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.dnsPolicy

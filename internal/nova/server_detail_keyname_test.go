@@ -16,7 +16,7 @@ func TestServerDetail_KeyName_RoundTrip(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-kn","flavorRef":"m1.small","key_name":"spec017-key"}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-kn","flavorRef":"m1.small","key_name":"spec017-key"}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create: code=%d body=%s; want 202", code, body)
 	}
@@ -65,7 +65,7 @@ func TestServerDetail_KeyName_NullWhenAbsent(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-nokey","flavorRef":"m1.small"}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-nokey","flavorRef":"m1.small"}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create: code=%d body=%s; want 202", code, body)
 	}
@@ -94,7 +94,7 @@ func TestCreateServer_UnknownKeyName_400(t *testing.T) {
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		`{"server":{"name":"spec017-badkey","flavorRef":"m1.small","key_name":"spec017-nope"}}`)
+		withImage(t, seededProjectID, `{"server":{"name":"spec017-badkey","flavorRef":"m1.small","key_name":"spec017-nope"}}`))
 	if code != http.StatusBadRequest {
 		t.Fatalf("create with unknown key_name: code=%d body=%s; want 400", code, body)
 	}

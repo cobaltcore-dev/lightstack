@@ -14,8 +14,8 @@ import (
 
 // consoleReadTimeout bounds the libvirt console readback. Constitution III caps
 // external dependencies at 1 second, and go-libvirt's generated calls take no
-// context — the dialer's timeout only covers connect, which happens once at
-// startup — so the caller has to impose this itself (SPEC-021 FR-007).
+// context — connectAttemptTimeout bounds only the connection attempts, not the calls
+// made on an open connection — so the caller has to impose this itself (SPEC-021 FR-007).
 const consoleReadTimeout = time.Second
 
 // Console readback failures, each mapping to a distinct API response so the
@@ -75,7 +75,7 @@ func (m *VMManager) GetConsoleSocket(ctx context.Context, vmUUID string) (string
 	}
 	conn := m.conn.Load()
 	if conn == nil {
-		return "", 0, errors.New("not connected to libvirt")
+		return "", 0, errNotConnected
 	}
 
 	console, err := withDeadline(ctx, func() (domainConsole, error) { return fetchDomainConsole(conn, vmUUID) })
