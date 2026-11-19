@@ -202,10 +202,18 @@ func TestServerListIPFilterMatches(t *testing.T) {
 	requireDB(t)
 	f := seedFilterFixtures(t)
 	ctx := context.Background()
-	var portID string
+	// A whole port, with a network and a MAC, as Lightstack creates them.
+	var netID, portID string
 	if err := testPool.QueryRow(ctx,
-		`INSERT INTO ports (project_id, device_id, device_owner, fixed_ips) VALUES ($1, $2, 'compute:nova', $3::jsonb) RETURNING id`,
-		filterProject, f.alphaID, `[{"ip_address":"10.11.12.13"}]`).Scan(&portID); err != nil {
+		`INSERT INTO networks (name, project_id) VALUES ('filter-net', $1) RETURNING id::text`,
+		filterProject).Scan(&netID); err != nil {
+		t.Fatalf("seed network: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM networks WHERE id = $1`, netID) })
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO ports (name, network_id, project_id, device_id, device_owner, mac_address, fixed_ips)
+		 VALUES ('filter-port', $1, $2, $3, 'compute:nova', 'fa:16:3e:00:0f:01', $4::jsonb) RETURNING id`,
+		netID, filterProject, f.alphaID, `[{"ip_address":"10.11.12.13"}]`).Scan(&portID); err != nil {
 		t.Fatalf("seed port: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM ports WHERE id = $1`, portID) })

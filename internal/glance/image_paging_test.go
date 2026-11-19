@@ -32,8 +32,12 @@ func TestImageMarkerPagingDoesNotDropTiedRows(t *testing.T) {
 	ctx := context.Background()
 	r := newGlanceTestRouter(t)
 
-	// Five images sharing one timestamp — the tie the old predicate could not page through.
+	// Five images sharing one timestamp — the tie the old predicate could not page through — and
+	// one name, unique to this run. The walk filters on it, so every page boundary, every marker,
+	// is one of these five: other packages share the seeded project and add and delete images of
+	// their own while this runs, and a marker that is theirs can vanish mid-walk.
 	shared := time.Now().UTC().Truncate(time.Microsecond)
+	name := "pagetie-" + uuid.NewString()[:8]
 	ids := make(map[string]bool, 5)
 	for i := range 5 {
 		id := uuid.NewString()
@@ -41,7 +45,7 @@ func TestImageMarkerPagingDoesNotDropTiedRows(t *testing.T) {
 		if _, err := testPool.Exec(ctx, `
 			INSERT INTO images (id, name, project_id, status, visibility, disk_format, container_format, created_at, updated_at)
 			VALUES ($1, $2, $3, 'active', 'private', 'qcow2', 'bare', $4, $4)
-		`, id, "pagetie-"+id[:8], seededProjectID, shared); err != nil {
+		`, id, name, seededProjectID, shared); err != nil {
 			t.Fatalf("seed image %d: %v", i, err)
 		}
 		t.Cleanup(func() {
@@ -53,7 +57,7 @@ func TestImageMarkerPagingDoesNotDropTiedRows(t *testing.T) {
 	seen := map[string]int{}
 	marker := ""
 	for page := 0; page < 12; page++ {
-		path := "/images?limit=1"
+		path := "/images?limit=1&name=" + name
 		if marker != "" {
 			path += "&marker=" + marker
 		}
@@ -73,9 +77,10 @@ func TestImageMarkerPagingDoesNotDropTiedRows(t *testing.T) {
 			break
 		}
 		for _, img := range resp.Images {
-			if ids[img.ID] {
-				seen[img.ID]++
+			if !ids[img.ID] {
+				t.Fatalf("page %d: the walk returned %s, which is not one of this test's images", page, img.ID)
 			}
+			seen[img.ID]++
 		}
 		marker = resp.Images[len(resp.Images)-1].ID
 	}

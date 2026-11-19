@@ -25,6 +25,10 @@ func TestVolumeMarkerPagingDoesNotDropTiedRows(t *testing.T) {
 	ctx := context.Background()
 	r := newCinderTestRouter()
 
+	// A project of the test's own: volumes are visible to their project only, so every page
+	// boundary, every marker, is one of these five. In the shared seeded project, other packages add
+	// and delete volumes of their own while this runs, and a marker that is theirs can vanish.
+	project := cinderProject(t, nil)
 	shared := time.Now().UTC().Truncate(time.Microsecond)
 	ids := make(map[string]bool, 5)
 	for i := range 5 {
@@ -33,7 +37,7 @@ func TestVolumeMarkerPagingDoesNotDropTiedRows(t *testing.T) {
 		if _, err := testPool.Exec(ctx, `
 			INSERT INTO volumes (id, name, project_id, size_gb, status, created_at, updated_at)
 			VALUES ($1, $2, $3, 1, 'available', $4, $4)
-		`, id, "pagetie-"+id[:8], seededProjectID, shared); err != nil {
+		`, id, "pagetie-"+id[:8], project, shared); err != nil {
 			t.Fatalf("seed volume %d: %v", i, err)
 		}
 		t.Cleanup(func() {
@@ -47,11 +51,11 @@ func TestVolumeMarkerPagingDoesNotDropTiedRows(t *testing.T) {
 			seen := map[string]int{}
 			marker := ""
 			for page := 0; page < 12; page++ {
-				url := fmt.Sprintf(path, seededProjectID) + "?limit=1"
+				url := fmt.Sprintf(path, project) + "?limit=1"
 				if marker != "" {
 					url += "&marker=" + marker
 				}
-				code, body := doReq(r, http.MethodGet, url, "", cinderAuthHdr(seededProjectID, seededUserID))
+				code, body := doReq(r, http.MethodGet, url, "", cinderAuthHdr(project, seededUserID))
 				if code != http.StatusOK {
 					t.Fatalf("page %d: code=%d body=%s", page, code, body)
 				}
@@ -67,9 +71,10 @@ func TestVolumeMarkerPagingDoesNotDropTiedRows(t *testing.T) {
 					break
 				}
 				for _, v := range resp.Volumes {
-					if ids[v.ID] {
-						seen[v.ID]++
+					if !ids[v.ID] {
+						t.Fatalf("page %d: the walk returned %s, which is not one of this test's volumes", page, v.ID)
 					}
+					seen[v.ID]++
 				}
 				marker = resp.Volumes[len(resp.Volumes)-1].ID
 			}
