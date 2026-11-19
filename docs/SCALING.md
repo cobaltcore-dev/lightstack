@@ -654,8 +654,8 @@ compute:
   tunnel_ip: "192.168.20.11"  # Change per node
 EOF
 
-# Run migrations (only on controller1)
-./bin/lightstack migrate --config config/lightstack.yaml
+# Run migrations (only on controller1); make build builds bin/lightstack-migrate beside the server
+./bin/lightstack-migrate up -config config/lightstack.yaml
 
 # Create systemd service
 sudo tee /etc/systemd/system/lightstack.service <<EOF

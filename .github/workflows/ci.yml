@@ -27,6 +27,9 @@ jobs:
       - name: Build binary
         run: make build
 
+      - name: Test the deploy script
+        run: bash test/deploy_single_node_test.sh
+
       - name: Check binary size
         run: |
           SIZE=$(stat --format=%s bin/lightstack 2>/dev/null || stat -f%z bin/lightstack)

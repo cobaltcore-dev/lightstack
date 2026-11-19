@@ -14,11 +14,12 @@ POSTGRES_VERSION?=18
 # Production should set DB_URL via environment variable with sslmode=require.
 DB_URL?=postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable
 
-# Build the binary
+# Build the server and the migration tool: the scripts that install or upgrade a node run both
 build:
-	@echo "Building $(BINARY_NAME)..."
+	@echo "Building $(BINARY_NAME) and $(BINARY_NAME)-migrate..."
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/lightstack
+	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-migrate ./cmd/lightstack-migrate
 
 # Build eBPF programs
 build-ebpf:

@@ -536,7 +536,8 @@ ip -4 addr show | grep inet | grep -v 127.0.0.1
 **Solutions:**
 
 - Verify database URL in config
-- Run migration: `./bin/lightstack --config config/lightstack.yaml --migrate`
+- Run the migrations with `./bin/lightstack-migrate up -config config/lightstack.yaml`; the server also applies
+  them at start
 - Set explicit `tunnel_ip` in config if auto-detection fails
 
 ---
