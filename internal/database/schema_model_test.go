@@ -209,6 +209,38 @@ func (t *modelTable) sorted() *modelTable {
 	return t
 }
 
+// sqliteTriggerNotNullColumns reports ownership columns whose NOT NULL invariant is
+// enforced by SQLite triggers. SQLite cannot ALTER these referenced tables to add a
+// column constraint without rebuilding them, which would cascade-delete child rows.
+func sqliteTriggerNotNullColumns(ctx context.Context, db *sql.DB) (map[string]map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, "SELECT name FROM sqlite_schema WHERE type = 'trigger'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	const suffix = "_project_id_not_null_insert"
+	const updateSuffix = "_project_id_not_null_update"
+	result := map[string]map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		table := strings.TrimSuffix(name, suffix)
+		if table == name {
+			table = strings.TrimSuffix(name, updateSuffix)
+		}
+		if table == name {
+			continue
+		}
+		if result[table] == nil {
+			result[table] = map[string]bool{}
+		}
+		result[table]["project_id"] = true
+	}
+	return result, rows.Err()
+}
+
 // sqliteModel builds the model of a SQLite database's schema from its catalog.
 func sqliteModel(ctx context.Context, db *sql.DB, source string) (schemaModel, error) {
 	type table struct{ name, sql string }
@@ -228,6 +260,10 @@ func sqliteModel(ctx context.Context, db *sql.DB, source string) (schemaModel, e
 	}
 	rows.Close()
 
+	enforcedNotNull, err := sqliteTriggerNotNullColumns(ctx, db)
+	if err != nil {
+		return nil, err
+	}
 	m := schemaModel{}
 	for _, t := range tables {
 		mt := &modelTable{}
@@ -250,7 +286,7 @@ func sqliteModel(ctx context.Context, db *sql.DB, source string) (schemaModel, e
 				return nil, err
 			}
 			mt.columns = append(mt.columns, modelColumn{name: name, family: strings.ToLower(typ),
-				notNull: notNull == 1 || pk > 0, def: normalizeDefault(def.String), maxLen: maxLen[name]})
+				notNull: notNull == 1 || pk > 0 || enforcedNotNull[t.name][name], def: normalizeDefault(def.String), maxLen: maxLen[name]})
 			if pk > 0 {
 				pkOrder[pk] = name
 			}

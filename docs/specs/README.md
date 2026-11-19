@@ -7,6 +7,14 @@
 
 This directory contains technical specifications for Lightstack development. Each specification follows the library-first, test-first approach defined in the project constitution.
 
+## Recently delivered
+
+### [SPEC-031: OpenStack CLI Conformance Test Environment](./031-cli-conformance-test-environment/spec.md)
+
+Implemented for issue #105 in PR 107. See the [plan](./031-cli-conformance-test-environment/plan.md)
+and [task checklist](./031-cli-conformance-test-environment/tasks.md) for the shipped harness, CI
+gates, and deferred coverage work.
+
 ## Active Specifications
 
 ### Compliance Framework (Priority Zero)

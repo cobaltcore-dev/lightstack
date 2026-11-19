@@ -1,5 +1,8 @@
 # Binaries
 bin/
+# The CLI conformance harness lives in test/cli/bin/ — scripts, not
+# binaries; re-include it so the gate scripts ship with the repo.
+!test/cli/bin/
 *.exe
 *.dll
 *.so
@@ -84,6 +87,9 @@ cirros*.img
 # SPEC-018 real-mode host-run values — contains RGW/JWT secrets, never commit.
 # HOST_TESTING_REAL_MODE.md generates this (ideally under /tmp); guard the repo-root path too.
 /lightstack-real-values.yaml
+
+# Python harness regression tests
+__pycache__/
 
 # Keep important root docs
 !/README.md

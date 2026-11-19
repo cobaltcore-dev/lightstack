@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 // DefaultUplinkInterface returns the host's primary uplink: the interface the
@@ -29,7 +30,7 @@ func DefaultUplinkInterface() (string, error) {
 		}
 	}
 	// Fallback: scan the route table for the default route (Dst nil or 0.0.0.0/0).
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+	routes, err := netlink.RouteList(nil, unix.AF_INET)
 	if err != nil {
 		return "", fmt.Errorf("list routes: %w", err)
 	}
