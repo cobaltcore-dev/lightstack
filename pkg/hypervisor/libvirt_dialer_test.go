@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -179,7 +181,7 @@ func TestDialWithinClosesAnAbandonedConnection(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &delayedDialer{delay: tc.delay, fake: tc.fake, served: make(chan struct{})}
-			if _, err := dialWithin(d, 100*time.Millisecond); err == nil || !strings.Contains(err.Error(), "delayed-sock") {
+			if _, _, err := dialWithin(d, 100*time.Millisecond); err == nil || !strings.Contains(err.Error(), "delayed-sock") {
 				t.Fatalf("dialWithin = %v; want a timeout naming the dialer's socket", err)
 			}
 			select {
@@ -188,5 +190,99 @@ func TestDialWithinClosesAnAbandonedConnection(t *testing.T) {
 				t.Fatal("the abandoned attempt's connection is still open")
 			}
 		})
+	}
+}
+
+// closeSpy records whether the connection it wraps was closed.
+type closeSpy struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (c *closeSpy) Close() error {
+	c.closed.Store(true)
+	return c.Conn.Close()
+}
+
+// dyingDialer hands out a connection whose peer reads the request and vanishes, so the
+// handshake fails on EOF — the shape of a socket-activated daemon that accepts and then dies
+// before answering.
+type dyingDialer struct{ spy *closeSpy }
+
+func (d *dyingDialer) Dial() (net.Conn, error) {
+	client, server := net.Pipe()
+	go func() {
+		buf := make([]byte, 4096)
+		_, _ = server.Read(buf)
+		_ = server.Close()
+	}()
+	d.spy.Conn = client
+	return d.spy, nil
+}
+
+func (d *dyingDialer) Dialed() string { return "dying-sock" }
+
+// A handshake that fails within the bound closes the connection the attempt opened. go-libvirt
+// does not: by the time the failure surfaces its read loop has already recorded the drop, and
+// socket.Disconnect returns without closing. Net connections are not closed by the garbage
+// collector either, so a daemon that crash-looped leaked one descriptor per attempt, every
+// second to five.
+func TestDialWithinClosesAConnectionWhoseHandshakeFails(t *testing.T) {
+	spy := &closeSpy{}
+	if _, _, err := dialWithin(&dyingDialer{spy: spy}, time.Second); err == nil {
+		t.Fatal("dialWithin succeeded against a peer that vanished mid-handshake")
+	}
+	if !spy.closed.Load() {
+		t.Error("the connection a failed handshake opened was not closed")
+	}
+}
+
+// spyingDialer wraps another dialer's connections, recording whether each was closed.
+type spyingDialer struct {
+	inner libvirtDialer
+
+	mu    sync.Mutex
+	spies []*closeSpy
+}
+
+func (d *spyingDialer) Dial() (net.Conn, error) {
+	conn, err := d.inner.Dial()
+	if err != nil {
+		return nil, err
+	}
+	spy := &closeSpy{Conn: conn}
+	d.mu.Lock()
+	d.spies = append(d.spies, spy)
+	d.mu.Unlock()
+	return spy, nil
+}
+
+func (d *spyingDialer) Dialed() string { return d.inner.Dialed() }
+
+// first is the connection the dialer handed out first.
+func (d *spyingDialer) first() *closeSpy {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.spies[0]
+}
+
+// A connection that drops is replaced, and the socket behind it is closed. Nothing else closed
+// it: go-libvirt stops where its read loop stopped, net connections are not closed by the
+// garbage collector, and its Disconnect returns at once for a connection that already dropped.
+// The leak was one descriptor per libvirtd restart — a package upgrade, a crash — which is the
+// very event the reconnect loop exists to survive.
+func TestDroppedConnectionSocketIsClosed(t *testing.T) {
+	pd := &pipeDialer{}
+	d := &spyingDialer{inner: pd}
+	m := &VMManager{mode: "real", stubVMs: make(map[string]*stubVM)}
+	if err := m.connect(d, time.Millisecond, 5*time.Millisecond); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer m.Close()
+
+	pd.drop()
+	waitFor(t, "a new dial after libvirtd went away", func() bool { return pd.dialCount() >= 2 })
+	if !d.first().closed.Load() {
+		t.Error("the socket behind a dropped connection was not closed")
 	}
 }
