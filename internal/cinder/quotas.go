@@ -90,8 +90,8 @@ func cinderQuotaUsage(ctx context.Context, pool database.DB, projectID string) (
 		return nil, fmt.Errorf("count snapshot usage: %w", err)
 	}
 	gigabytes += snapshotGigabytes
-	// volume_backups (migration 022) carries no 'deleted' status — DeleteBackup removes
-	// the row — so this counts every row for the project.
+	// volume_backups carries no 'deleted' status — DeleteBackup removes the row — so this
+	// counts every row for the project.
 	if err := pool.QueryRow(ctx,
 		"SELECT COUNT(*), COALESCE(SUM(size_gb), 0) FROM volume_backups WHERE project_id = $1",
 		projectID).Scan(&backups, &backupGigabytes); err != nil {

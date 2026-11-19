@@ -34,7 +34,7 @@ func requireDB(t *testing.T) {
 	}
 }
 
-// seededSecretHash is the bcrypt('secret') hash from migration 002_seed_data.
+// seededSecretHash is the bcrypt('secret') hash the baseline (`001`) seeds for admin.
 const seededSecretHash = "$2a$10$/DyBs44Yot8zgjC4j.n03Ox/QG94ftrksEXKKvadKcixLbGll0dR2"
 
 // resetAdmin restores the seeded admin (enabled, bcrypt('secret')) and removes

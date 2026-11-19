@@ -3,13 +3,8 @@ package database
 import (
 	"context"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // TestMigrationsRoundTrip pins the reversibility gate (constitution v1.3.0): an empty
@@ -20,46 +15,9 @@ import (
 func TestMigrationsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	const migrations = "../../migrations"
-	source := migrationsSource(t, math.MaxUint64)
-	var url string
-	var model func() schemaModel
-	switch env := os.Getenv("LIGHTSTACK_TEST_DB_URL"); {
-	case strings.HasPrefix(env, "postgres://"), strings.HasPrefix(env, "postgresql://"):
-		url = scratchPostgres(t, env, "lightstack_roundtrip_"+strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
-		model = func() schemaModel {
-			conn, err := pgx.Connect(ctx, url)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer conn.Close(ctx)
-			tables, err := introspectPostgres(ctx, conn)
-			if err != nil {
-				t.Fatal(err)
-			}
-			m, err := postgresModel(tables, source)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return m
-		}
-	case strings.HasPrefix(env, "sqlite://"):
-		path := filepath.Join(t.TempDir(), "roundtrip.db")
-		url = "sqlite://" + path
-		model = func() schemaModel {
-			db, err := openSQLiteHandle(ctx, path, defaultSQLiteTxLock, true, PoolConfig{MaxConns: 1})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			m, err := sqliteModel(ctx, db, source)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return m
-		}
-	default:
-		t.Skip("set LIGHTSTACK_TEST_DB_URL to run the database-backed tests")
-	}
+	source := migrationsSource(t, "../../migrations", math.MaxUint64)
+	url, _ := freshDatabase(t, "lightstack_roundtrip")
+	model := func() schemaModel { return databaseModel(t, ctx, url, source) }
 
 	up := func(step string) {
 		t.Helper()

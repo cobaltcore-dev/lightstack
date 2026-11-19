@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 // binDir holds the lightstack and lightstack-migrate binaries TestMain builds, for the
@@ -245,5 +247,203 @@ func TestUnsupportedLibvirtURIRefused(t *testing.T) {
 				t.Errorf("the refusal created %s (stat: %v); it must come at configuration load, before the database is opened", watch, err)
 			}
 		})
+	}
+}
+
+// databaseEntryPoints are the entry points that migrate the database before anything else.
+func databaseEntryPoints(t *testing.T) []entryPoint {
+	t.Helper()
+	var out []entryPoint
+	for _, ep := range entryPoints {
+		if ep.name == "server" || ep.name == "lightstack-migrate" {
+			out = append(out, ep)
+		}
+	}
+	if len(out) != 2 {
+		t.Fatalf("found %d of the 2 migrating entry points", len(out))
+	}
+	return out
+}
+
+// sqliteWithVersion writes a SQLite database whose only content is golang-migrate's record of
+// version, as a database migrated before the squash records it.
+func sqliteWithVersion(t *testing.T, version uint64) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "db", "lightstack.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	db, err := database.Open(ctx, "sqlite://"+path, database.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range []string{
+		"CREATE TABLE schema_migrations (version uint64, dirty bool)",
+		fmt.Sprintf("INSERT INTO schema_migrations (version, dirty) VALUES (%d, 0)", version),
+	} {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	return "sqlite://" + path
+}
+
+// TestStartupRefusesAPreSquashDatabase pins SPEC-032 FR-011 at both migrating entry points: a
+// database migrated before the migration squash is refused with the reason and the way out, never
+// as "written by a newer Lightstack", and nothing migrates it.
+func TestStartupRefusesAPreSquashDatabase(t *testing.T) {
+	for _, ep := range databaseEntryPoints(t) {
+		t.Run(ep.name, func(t *testing.T) {
+			url := sqliteWithVersion(t, 82)
+			extra := fmt.Sprintf("state_path: %q\n", filepath.Join(t.TempDir(), "state"))
+			out := run(t, ep, url, extra, nil)
+			if out.code != 1 {
+				t.Errorf("exit code = %d; want 1. stderr: %s", out.code, out.stderr)
+			}
+			if !strings.Contains(out.stderr, "from before the migration squash") {
+				t.Errorf("stderr does not say the database predates the squash:\n%s", out.stderr)
+			}
+			if strings.Contains(out.stderr, "newer Lightstack") {
+				t.Errorf("a pre-squash database is reported as written by a newer Lightstack:\n%s", out.stderr)
+			}
+		})
+	}
+}
+
+// migrateCommand is lightstack-migrate running args, its options before the positional ones.
+func migrateCommand(args ...string) entryPoint {
+	return entryPoint{"lightstack-migrate " + strings.Join(args, " "), "lightstack-migrate", func(c string) []string {
+		return append([]string{args[0], "-config", c, "-migrations", "../../migrations"}, args[1:]...)
+	}, 1}
+}
+
+// TestMigrateCommandsOnAPreSquashDatabase pins SPEC-032 FR-011 and FR-022 for the commands that
+// report or prompt: status prints the state and the message; down, goto and force refuse before
+// they prompt, so nobody is asked to confirm what cannot run.
+func TestMigrateCommandsOnAPreSquashDatabase(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want []string // in the combined output
+	}{
+		{[]string{"status"}, []string{"Current Version: 82", "Status: PRE-SQUASH", "from before the migration squash"}},
+		{[]string{"down"}, []string{"from before the migration squash"}},
+		{[]string{"goto", "1"}, []string{"from before the migration squash"}},
+		{[]string{"force", "1"}, []string{"from before the migration squash"}},
+	} {
+		ep := migrateCommand(tc.args...)
+		t.Run(ep.name, func(t *testing.T) {
+			url := sqliteWithVersion(t, 82)
+			extra := fmt.Sprintf("state_path: %q\n", filepath.Join(t.TempDir(), "state"))
+			out := run(t, ep, url, extra, nil)
+			if out.code != 1 {
+				t.Errorf("exit code = %d; want 1. output:\n%s", out.code, out.output)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out.output, w) {
+					t.Errorf("output does not contain %q:\n%s", w, out.output)
+				}
+			}
+			if strings.Contains(out.output, "(yes/no)") {
+				t.Errorf("prompted before refusing:\n%s", out.output)
+			}
+		})
+	}
+}
+
+// TestStatusNamesTheMigration pins SPEC-032 FR-022 at the command: status names what the recorded
+// version is.
+func TestStatusNamesTheMigration(t *testing.T) {
+	url := "sqlite://" + filepath.Join(t.TempDir(), "db", "lightstack.db")
+	extra := fmt.Sprintf("state_path: %q\n", filepath.Join(t.TempDir(), "state"))
+	if out := run(t, migrateCommand("up"), url, extra, nil); out.code != 0 {
+		t.Fatalf("up: exit %d:\n%s", out.code, out.output)
+	}
+	out := run(t, migrateCommand("status"), url, extra, nil)
+	want := "Migration: baseline"
+	if out.code != 0 || !strings.Contains(out.output, want) {
+		t.Fatalf("status: exit %d; want %q in:\n%s", out.code, want, out.output)
+	}
+}
+
+// TestStartupRefusesAStaleDatabase pins SPEC-032 FR-020 at both migrating entry points: a database
+// that applied an earlier state of the open release migration is refused, untouched.
+func TestStartupRefusesAStaleDatabase(t *testing.T) {
+	migrations := filepath.Join(t.TempDir(), "migrations")
+	if err := os.CopyFS(migrations, os.DirFS("../../migrations")); err != nil {
+		t.Fatal(err)
+	}
+	fragment := filepath.Join(migrations, "next", "20990101000000-1-stale-demo")
+	for part, sql := range map[string]string{"up": "CREATE TABLE stale_demo (id TEXT);\n", "down": "DROP TABLE stale_demo;\n"} {
+		if err := os.WriteFile(fragment+"."+part+".sql", []byte(sql), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withMigrations := func(name, bin string, args func(c string) []string) entryPoint {
+		return entryPoint{name, bin, args, 1}
+	}
+	server := withMigrations("server", "lightstack", func(c string) []string { return []string{"--config", c, "--migrations", migrations} })
+	migrate := withMigrations("lightstack-migrate", "lightstack-migrate", func(c string) []string {
+		return []string{"up", "-config", c, "-migrations", migrations}
+	})
+	url := "sqlite://" + filepath.Join(t.TempDir(), "db", "lightstack.db")
+	extra := fmt.Sprintf("state_path: %q\n", filepath.Join(t.TempDir(), "state"))
+	if out := run(t, migrate, url, extra, nil); out.code != 0 {
+		t.Fatalf("migrate to the open release migration: exit %d:\n%s", out.code, out.output)
+	}
+	if err := os.WriteFile(fragment+".up.sql", []byte("CREATE TABLE stale_demo (id TEXT);\nCREATE TABLE stale_more (id TEXT);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, ep := range []entryPoint{server, migrate} {
+		t.Run(ep.name, func(t *testing.T) {
+			out := run(t, ep, url, extra, nil)
+			if out.code != 1 || !strings.Contains(out.stderr, "applied an earlier state of the open release migration") {
+				t.Errorf("exit %d; want 1 and the stale refusal on stderr:\n%s", out.code, out.output)
+			}
+		})
+	}
+
+	// status reports it; down and goto refuse before they prompt; force, the repair tool for a
+	// dirty version, still prompts (contracts/cli-and-startup.md).
+	command := func(args ...string) entryPoint {
+		return withMigrations("lightstack-migrate "+strings.Join(args, " "), "lightstack-migrate", func(c string) []string {
+			return append([]string{args[0], "-config", c, "-migrations", migrations}, args[1:]...)
+		})
+	}
+	for _, tc := range []struct {
+		args   []string
+		code   int
+		want   string
+		prompt bool
+	}{
+		{[]string{"status"}, 1, "Status: STALE", false},
+		{[]string{"down"}, 1, "applied an earlier state of the open release migration", false},
+		{[]string{"goto", "1"}, 1, "applied an earlier state of the open release migration", false},
+		{[]string{"force", "2"}, 0, "Force cancelled", true},
+	} {
+		ep := command(tc.args...)
+		t.Run(ep.name, func(t *testing.T) {
+			out := run(t, ep, url, extra, nil)
+			if out.code != tc.code || !strings.Contains(out.output, tc.want) || strings.Contains(out.output, "(yes/no)") != tc.prompt {
+				t.Errorf("exit %d; want %d, %q, prompt %v:\n%s", out.code, tc.code, tc.want, tc.prompt, out.output)
+			}
+		})
+	}
+}
+
+// TestStatusOnAMissingSQLiteFile pins status on a database file that does not exist yet: still an
+// error and still nothing created (SPEC-028: a mistyped path is an error), but reported as the
+// status NO DATABASE rather than as a failure (SPEC-032 FR-022).
+func TestStatusOnAMissingSQLiteFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "absent")
+	path := filepath.Join(dir, "lightstack.db")
+	extra := fmt.Sprintf("state_path: %q\n", filepath.Join(t.TempDir(), "state"))
+	out := run(t, migrateCommand("status"), "sqlite://"+path, extra, nil)
+	if out.code != 1 || !strings.Contains(out.output, "Status: NO DATABASE") || !strings.Contains(out.output, path) {
+		t.Errorf("exit %d; want 1, Status: NO DATABASE and the path:\n%s", out.code, out.output)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("status created %s (stat: %v)", dir, err)
 	}
 }

@@ -996,9 +996,9 @@ func (svc *Service) withdrawRouterEgressSNAT(ctx context.Context, routerID strin
 // subnet on it — so a tenant could point a router at an arbitrary network and Lightstack would try to
 // masquerade out of it.
 //
-// Applies to NEW create/update requests only. Gateways stored before migration 066 keep working and
-// the reconciler keeps asserting their NAT, because the column defaults to false and an upgrade must
-// not silently withdraw working guest egress (FR-035a).
+// Applies to NEW create/update requests only. Gateways stored before networks had the `external`
+// column keep working and the reconciler keeps asserting their NAT, because the column defaults to
+// false and an upgrade must not silently withdraw working guest egress (FR-035a).
 //
 // It takes the id rather than the gateway blob so the floating-IP caller, which has a plain string,
 // does not have to wrap it in a throwaway map (branch review 2026-08-13, SRC-7).

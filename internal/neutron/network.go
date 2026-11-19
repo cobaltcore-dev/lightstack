@@ -476,8 +476,8 @@ type CreateNetworkRequest struct {
 		Name         string `json:"name" binding:"required"`
 		AdminStateUp *bool  `json:"admin_state_up"`
 		Shared       *bool  `json:"shared"`
-		// The standard resource annotation (migration 075). A pointer so an
-		// omitted key and an explicit empty string differ, as upstream does.
+		// The standard resource annotation, stored in networks.description. A pointer so
+		// an omitted key and an explicit empty string differ, as upstream does.
 		Description *string `json:"description"`
 		// Both spellings of the owning project. Neither was declared before, so the value a client
 		// sent was discarded by ShouldBindJSON and never reached the handler: the request was
@@ -1264,9 +1264,9 @@ func (svc *Service) UpdateNetwork(c *gin.Context) {
 			Name         *string `json:"name"`
 			AdminStateUp *bool   `json:"admin_state_up"`
 			External     *bool   `json:"router:external"`
-			// The standard resource annotation (migration 075): 'network set
-			// --description' PUTs it, and the handler had no column to
-			// persist it to (SPEC-031).
+			// The standard resource annotation, stored in networks.description:
+			// 'network set --description' PUTs it, and the handler once had no
+			// column to persist it to (SPEC-031).
 			Description *string `json:"description"`
 		} `json:"network"`
 	}
@@ -1453,13 +1453,12 @@ func (svc *Service) callerMaySubnetNetwork(c *gin.Context, networkID, projectID 
 		return false
 	}
 
-	// `owner` is a plain string although networks.project_id is nullable (migration
-	// 001:76 declares no NOT NULL). Every writer sets it — CreateNetwork (network.go:498)
-	// and the auto-allocated topology (auto_allocated_topology.go:82) are the only two
-	// INSERTs, and both take the project from the token — so a NULL is reachable only by
-	// editing the table by hand. If one ever appears, Scan fails and the error limb below
-	// answers 500: this fails closed, which is the direction a security check should fail.
-	// A *string here would buy nothing and make the ownership comparison harder to read.
+	// `owner` is a plain string, and networks.project_id is NOT NULL (it was nullable once).
+	// Every writer sets it — CreateNetwork and CreateAutoAllocatedTopology hold the only two
+	// INSERTs, and both take the project from the token — so even before the constraint a
+	// NULL was reachable only by editing the table by hand. If one ever appears, Scan fails and the error limb below answers
+	// 500: this fails closed, which is the direction a security check should fail. A
+	// *string here would buy nothing and make the ownership comparison harder to read.
 	//
 	// That the Scan *fails* rather than yielding "" is the load-bearing half, so: pgx's
 	// scanPlanString returns `cannot scan NULL into *string` on a nil src
@@ -1765,7 +1764,7 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 	var subnets []gin.H
 	for rows.Next() {
 		var id, name, networkID, cidr string
-		// gateway_ip is nullable (migration 001) and a subnet may legitimately have none
+		// subnets.gateway_ip is nullable and a subnet may legitimately have none
 		// (cloud-storage#546 B6, FR-021/FR-022).
 		var gatewayIP *string
 		// Nullable: subnets.project_id carries no NOT NULL, and pgx refuses a NULL into a

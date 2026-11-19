@@ -1,4 +1,4 @@
-.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity test-compose-kvm clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui test-cli cli-coverage test-terraform
+.PHONY: build run test lint chart-test test-compose-identity test-compose-kvm clean install-deps install-tools migrate migration-fragment migrations-freeze db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui test-cli cli-coverage test-terraform
 
 # Build variables
 BINARY_NAME=lightstack
@@ -102,14 +102,6 @@ test-errors:
 	@echo "Checking Lightstack is running..."
 	@curl -s http://localhost:35357/v3 > /dev/null || (echo "ERROR: Lightstack not running." && exit 1)
 	@bash test/error_handling_test.sh
-
-# Verify the endpoint-hostname forward migration (cloud-storage#575). Needs a PostgreSQL it
-# may create a scratch database in; the database named in the URL is never touched. No
-# running Lightstack required.
-test-endpoint-migration:
-	@echo "Running endpoint-hostname migration tests..."
-	@test -n "$(LIGHTSTACK_TEST_DB_URL)" || (echo "ERROR: set LIGHTSTACK_TEST_DB_URL, e.g. postgres://lightstack:secret@127.0.0.1:5432/postgres" && exit 1)
-	@bash test/endpoint_hostname_migration_test.sh
 
 # Check that the Compose stacks' database identity is overridable (cloud-storage#575).
 # Renders each stack with `compose config`; no containers started, no running Lightstack.
@@ -228,6 +220,25 @@ migrate:
 	@echo "Running migrations..."
 	LIGHTSTACK_DB_URL="$(DB_URL)" go run ./cmd/lightstack-migrate up -migrations migrations
 
+# A schema change between releases is a fragment pair in migrations/next/, named by its UTC creation
+# time, ticket and purpose instead of a number (SPEC-032, migrations/README.md). Both files start
+# empty; rename them to .postgres/.sqlite pairs for a backend-specific change.
+migration-fragment:
+	@test -n "$(TICKET)" && test -n "$(NAME)" || { echo "usage: make migration-fragment TICKET=<issue number> NAME=<purpose, e.g. add-volume-note>"; exit 1; }
+	@echo "$(TICKET)" | grep -Eqx '[0-9]+' || { echo "TICKET must be the issue number: $(TICKET)"; exit 1; }
+	@echo "$(NAME)" | grep -Eqx '[a-z0-9]+(-[a-z0-9]+)*' || { echo "NAME must be lower-case words joined by '-': $(NAME)"; exit 1; }
+	@base=migrations/next/$$(date -u +%Y%m%d%H%M%S)-$(TICKET)-$(NAME); \
+	for part in up down; do \
+		test ! -e $$base.$$part.sql || { echo "$$base.$$part.sql exists already; nothing created"; exit 1; }; \
+	done; \
+	set -C; for part in up down; do : > $$base.$$part.sql || exit 1; echo $$base.$$part.sql; done
+
+# Freeze migrations/next/ into the release migration NNN_<RELEASE> (SPEC-032): run on main when cutting
+# the release, commit the result, then tag. A v* tag that still carries fragments fails CI.
+migrations-freeze:
+	@test -n "$(RELEASE)" || { echo "usage: make migrations-freeze RELEASE=v<semver>, e.g. RELEASE=v0.7.0"; exit 1; }
+	go run ./cmd/lightstack-migrate freeze -migrations migrations $(RELEASE)
+
 # Start PostgreSQL in Docker (for development)
 db-up:
 	@echo "Starting PostgreSQL..."
@@ -317,6 +328,8 @@ help:
 	@echo "  clean            - Remove build artifacts"
 	@echo "  install-deps     - Install Go dependencies"
 	@echo "  migrate        - Run database migrations"
+	@echo "  migration-fragment TICKET=<n> NAME=<purpose> - Create an empty schema-change fragment pair in migrations/next/"
+	@echo "  migrations-freeze RELEASE=v<semver> - Freeze migrations/next/ into the release's migration (on main, when cutting a release)"
 	@echo "  db-up          - Start PostgreSQL in Docker"
 	@echo "  db-down        - Stop PostgreSQL container"
 	@echo "  dev            - Run with hot reload (requires air)"

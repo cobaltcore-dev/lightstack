@@ -264,10 +264,10 @@ func seedInstanceForAddresses(t *testing.T, projectID string) string {
 // TestServerListIPFilterRequiresThePortToBelongToTheServer pins the pairing between a
 // port and the instance it names (branch review SRC-5).
 //
-// `ports.device_id` has no foreign key to `instances` (migration 001), and
-// neutron's CreatePort writes `project_id` from the caller's token while taking
-// `device_id` straight from the request body unvalidated — so a port whose project
-// disagrees with its instance's is reachable through the public API.
+// `ports.device_id` has no foreign key to `instances`, and neutron's CreatePort
+// writes `project_id` from the caller's token while taking `device_id` straight
+// from the request body unvalidated — so a port whose project disagrees with its
+// instance's is reachable through the public API.
 //
 // instanceAddressMap already refuses to attribute such a port, and says why: "Dropping
 // the predicate entirely would let a port whose project disagrees with its instance's

@@ -1021,8 +1021,8 @@ func coerceImagePatchValue(field imageUpdateField, path string, raw any) (any, *
 			return nil, common.NewInvalidValueError(path, fmt.Sprintf("%v", raw), "a string")
 		}
 		// A closed set is checked HERE rather than left to PostgreSQL, which has no
-		// constraint on these columns (migration 001 gives visibility a comment listing
-		// the values and no CHECK), so an unhonoured value would simply be stored.
+		// constraint on these columns (images.visibility is a VARCHAR(50) with no CHECK on
+		// its values), so an unhonoured value would simply be stored.
 		if len(field.allowed) > 0 && !slices.Contains(field.allowed, s) {
 			return nil, common.NewInvalidValueError(path, s, strings.Join(field.allowed, " or "))
 		}

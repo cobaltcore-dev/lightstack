@@ -60,7 +60,7 @@ func requireDB(t *testing.T) {
 	}
 }
 
-// Seeded scope from migration 002_seed_data.
+// Seeded scope from the baseline (`001`).
 const (
 	seededProjectID = "00000000-0000-0000-0000-000000000002"
 	seededUserID    = "00000000-0000-0000-0000-000000000001"
@@ -178,8 +178,8 @@ func TestVolumeCreateReadback_DB(t *testing.T) {
 }
 
 // TestSnapshotCreateReadback_DB covers the same create-then-read contract for snapshots:
-// CreateSnapshot must persist the requested description (column from migration 012), and
-// show/list must report it. Before this, the description was accepted and discarded, so a
+// CreateSnapshot must persist the requested description (the snapshots.description column),
+// and show/list must report it. Before this, the description was accepted and discarded, so a
 // snapshot could never report the description it was created with.
 func TestSnapshotCreateReadback_DB(t *testing.T) {
 	requireDB(t)

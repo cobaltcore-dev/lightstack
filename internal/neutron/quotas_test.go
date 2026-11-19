@@ -117,8 +117,8 @@ func TestQuotaDetails_Shape(t *testing.T) {
 	assertNeutronDefaultLimits(t, flattenLimits(q))
 
 	// `used` must be counted, not a constant. The seeded project always has a `default`
-	// security group with rules (migration 002), so these two cannot legitimately be 0 —
-	// which is what a presence-only assertion would have accepted.
+	// security group with rules (the baseline, `001`, seeds it), so these two cannot
+	// legitimately be 0 — which is what a presence-only assertion would have accepted.
 	for resource, atLeast := range map[string]float64{
 		"security_group":      1,
 		"security_group_rule": 1,
@@ -133,7 +133,7 @@ func TestQuotaDetails_Shape(t *testing.T) {
 			continue
 		}
 		if got < atLeast {
-			t.Errorf("details %q used=%v; want >=%v (migration 002 seeds a default security "+
+			t.Errorf("details %q used=%v; want >=%v (the baseline seeds a default security "+
 				"group with rules, so 0 means `used` is not reading the table)", resource, got, atLeast)
 		}
 	}

@@ -80,7 +80,7 @@ func TestListSecurityGroupsCarriesRulesArray(t *testing.T) {
 
 	groups := securityGroupsFromBody(t, body)
 	if len(groups) == 0 {
-		t.Fatal("no security groups returned; migration 002 seeds a default group for the seeded project")
+		t.Fatal("no security groups returned; the baseline seeds a default group for the seeded project")
 	}
 
 	for _, sg := range groups {
@@ -232,7 +232,7 @@ func TestSecurityGroupRuleCarriesEveryKeyHorizonDereferences(t *testing.T) {
 		}
 	}
 	if seenRules == 0 {
-		t.Fatal("no rules seen; migration 002 seeds rules on the default security group")
+		t.Fatal("no rules seen; the baseline seeds rules on the default security group")
 	}
 }
 
@@ -263,11 +263,11 @@ func TestRuleValuesAgreeAcrossAllFourEmitters(t *testing.T) {
 	// A rule with every nullable column populated, so "" and null cannot be confused.
 	sgID := seededDefaultGroupID(t, r, hdr)
 
-	// Count first rather than hardcode. The seeded rule count is a migration detail that
-	// has already changed once — 002 seeded three until 070 dropped the world-open SSH
-	// ingress (cloud-storage#528) and rewrote 002 to stop seeding it, leaving two egress
-	// rules on a fresh database. An assertion pinned to a literal passes only against a
-	// database carrying leftovers from an earlier run, which is how it came to be written.
+	// Count first rather than hardcode. The seeded rule count is a seed detail that has
+	// already changed once: the seed had three rules until the world-open SSH ingress was
+	// dropped (cloud-storage#528), leaving two egress rules on a fresh database. An
+	// assertion pinned to a literal passes only against a database carrying leftovers from
+	// an earlier run, which is how it came to be written.
 	before := len(rulesFromGroupList(t, r, hdr))
 
 	code, body := doReqBody(r, http.MethodPost, "/v2.0/security-group-rules",
@@ -465,7 +465,7 @@ func TestSecurityGroupRuleEndpointsCarryEveryKey(t *testing.T) {
 		t.Fatalf("parse security_group_rules: %v; body=%s", err, body)
 	}
 	if len(listEnv.Rules) == 0 {
-		t.Fatal("no rules returned; migration 002 seeds rules on the default security group")
+		t.Fatal("no rules returned; the baseline seeds rules on the default security group")
 	}
 	for _, rule := range listEnv.Rules {
 		assertRuleKeys(t, "GET /v2.0/security-group-rules", rule)

@@ -92,7 +92,7 @@ make build-ebpf
 **Status**: ✅ **IMPLEMENTED** - OpenStack API compliant (commit 308cc35)
 
 ### What Was Fixed
-- ✅ Database migration 053: `port_security_groups` table created
+- ✅ `port_security_groups` table created
 - ✅ API accepts `security_groups` field in CreatePort request
 - ✅ API returns `security_groups` in all port responses
 - ✅ Defaults to "default" security group if none specified
@@ -100,11 +100,11 @@ make build-ebpf
 
 ### Implementation Details
 
-**Database Schema** (`migrations/053_port_security_groups.up.sql`):
+**Database Schema**:
 ```sql
-CREATE TABLE IF NOT EXISTS port_security_groups (
-    port_id UUID REFERENCES ports(id) ON DELETE CASCADE,
-    security_group_id UUID REFERENCES security_groups(id) ON DELETE CASCADE,
+CREATE TABLE port_security_groups (
+    port_id UUID NOT NULL REFERENCES ports(id) ON DELETE CASCADE,
+    security_group_id UUID NOT NULL REFERENCES security_groups(id) ON DELETE CASCADE,
     PRIMARY KEY (port_id, security_group_id)
 );
 ```

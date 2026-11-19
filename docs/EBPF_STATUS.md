@@ -54,7 +54,7 @@ filter cannot express is dropped, never widened:
 ### 4. Port Lifecycle
 **File**: `internal/neutron/ports.go`
 
-- **Create**: `security_groups` is accepted and stored in `port_security_groups` (migrations 006 and 053).
+- **Create**: `security_groups` is accepted and stored in the `port_security_groups` table.
   In eBPF mode, for a port with a fixed IP, the rules of its groups are fetched and programmed, and the XDP
   filter is attached to the TAP **whether or not programming succeeded** — attaching only on success left
   everything that port sent unchecked. If the attach itself fails, the port is **not created**: the request

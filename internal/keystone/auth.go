@@ -1002,8 +1002,9 @@ func BuildServiceCatalog(pool database.DB, projectID, requestHost string, cacheI
 
 		// The `s3` (Ceph RGW) service is an external endpoint configured out-of-band.
 		// Serve the resolved config value (cfg.Glance.S3Endpoint — YAML or env, wired
-		// via SetGlanceS3Endpoint, same source the S3 client uses), never migration
-		// 062's seeded placeholder nor the lightstack host; omit it when RGW isn't configured.
+		// via SetGlanceS3Endpoint, same source the S3 client uses), never the placeholder
+		// the baseline (`001`) seeds, http://localhost:7480, nor the lightstack host; omit it
+		// when RGW isn't configured.
 		// substituteURLTemplates rewrites both the `lightstack` and `localhost` hosts to the
 		// configured endpoint host, so it would turn that seed into the LIGHTSTACK host — which
 		// is still the wrong target for an external RGW, hence this special case.
@@ -1127,10 +1128,9 @@ func substituteURLTemplates(url, projectID, baseHost string) string {
 	url = strings.ReplaceAll(url, "http://lightstack:", "http://"+baseHost+":")
 	// Also handle https://lightstack: for future SSL support
 	url = strings.ReplaceAll(url, "https://lightstack:", "https://"+baseHost+":")
-	// Also rewrite localhost-seeded endpoints (e.g. the cinder `volume` alias from
-	// migration 054, which migration 052's one-shot lightstack rewrite never reached) so they
-	// aren't pinned to localhost in non-local deployments (F5, FR-006/007). No-op when
-	// the host is unset (baseHost defaults to localhost above).
+	// Also rewrite localhost endpoints (the cinder `volume` alias was once seeded with one)
+	// so they aren't pinned to localhost in non-local deployments (F5, FR-006/007). No-op
+	// when the host is unset (baseHost defaults to localhost above).
 	url = strings.ReplaceAll(url, "http://localhost:", "http://"+baseHost+":")
 	url = strings.ReplaceAll(url, "https://localhost:", "https://"+baseHost+":")
 
@@ -1185,7 +1185,7 @@ func buildHardcodedCatalog(projectID, baseHost, s3Endpoint string) []CatalogEntr
 				{Interface: "public", Region: "RegionOne", URL: fmt.Sprintf("%s:8776/v3/%s", baseURL, projectID)},
 			},
 		},
-		// The block-storage alias migration 054 seeds, so the fallback lists the same
+		// The block-storage alias the baseline (`001`) seeds, so the fallback lists the same
 		// services as the table (TestHardcodedCatalogMatchesTheDatabase).
 		{
 			Type: "volume",
@@ -1205,7 +1205,7 @@ func buildHardcodedCatalog(projectID, baseHost, s3Endpoint string) []CatalogEntr
 	// Tenant object storage (Ceph RGW S3): the endpoint is the external RGW, taken
 	// from the resolved Glance S3 config (cfg.Glance.S3Endpoint, wired via
 	// SetGlanceS3Endpoint). Only advertised when configured (SPEC-014 FR-009); the
-	// DB catalog (migration 062) is primary, this is the fallback.
+	// DB catalog (seeded by the baseline, `001`) is primary, this is the fallback.
 	if s3Endpoint != "" {
 		entries = append(entries, CatalogEntry{
 			Type:      "s3",

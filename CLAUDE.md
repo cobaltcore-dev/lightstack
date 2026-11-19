@@ -81,7 +81,7 @@ openstack token issue
 
 ```bash
 # Build the main binary
-make build                    # Outputs to bin/lightstack
+make build                    # Outputs bin/lightstack and bin/lightstack-migrate
 
 # Run with configuration
 make run                      # Builds and starts with config/lightstack.yaml
@@ -123,6 +123,10 @@ make migrate                  # lightstack-migrate up; golang-migrate's migrate 
 
 # Stop PostgreSQL
 make db-down                  # Stops and removes container
+
+# Schema changes (SPEC-032): fragments in migrations/next/, frozen per release
+make migration-fragment TICKET=596 NAME=add-volume-note   # empty up/down fragment pair
+make migrations-freeze RELEASE=v0.8.0                     # on main, when cutting a release
 ```
 
 ### Code Quality
@@ -272,7 +276,7 @@ Requires Linux with appropriate dependencies.
 
 ## Database Schema
 
-72 tables, the same on PostgreSQL and SQLite (`TestSchemaParity` proves it). Key tables:
+75 tables, `applied_migrations` among them, the same on PostgreSQL and SQLite (`TestSchemaParity` proves it). Key tables:
 
 - **users**: User credentials (bcrypt hashed passwords)
 - **projects**: Projects/tenants
@@ -285,7 +289,7 @@ Requires Linux with appropriate dependencies.
 - **keypairs**: SSH public keys
 - **compute_nodes**: Multi-node registry for VXLAN coordination
 
-Migrations live in `migrations/`, one folder for both backends: each reads it through a view where `.postgres`/`.sqlite` files are that backend's own and replace the plain file of their number, and SQLite starts at a generated baseline (073). The server applies them at startup; `lightstack-migrate` and `make migrate` by hand. An edited migration never reaches a database that already ran it — golang-migrate records only the version — so a deployed schema changes through a new version. Rules and conventions: `migrations/README.md`.
+Migrations live in `migrations/`, one folder for both backends. Each backend reads it through a view in which `.postgres`/`.sqlite` files are that backend's own and replace the plain file of their number. Both backends start at a generated baseline, `001` (SPEC-032 squashed the 83 earlier migrations into it; they survive only as the generators' input in `internal/database/testdata/pre-squash/`). After it comes one release migration per release, `NNN_v<semver>`. A schema change is a **fragment** in `migrations/next/` (`make migration-fragment`), never a hand-numbered file. The view assembles the fragments into the open release migration, and `make migrations-freeze` freezes them when a release is cut. Numbered files are immutable once on `main`, and CI enforces it. Every migration records its checksum in `applied_migrations`. A database that applied an earlier state of its version, or that predates the squash, is refused with the way out: recreate it. The server applies migrations at startup; `lightstack-migrate` and `make migrate` apply them by hand. Rules and conventions: `migrations/README.md`.
 
 ## Testing Guidelines
 
@@ -494,6 +498,8 @@ if requestedVersion == "" {
 - the operator's SQLite database file and a sibling `backups/` directory under the node storage root (`state_path` / `realMode.hostStoragePath`, default `/var/lib/lightstack`). **No schema change, no migration, no persisted data owned by the chart.** PostgreSQL is untouched except the backend-neutral ceiling check. (030-sqlite-backup-restore)
 - Go 1.27.3 (`go.mod`; the constitution requires 1.26+). Helm 3.12+ chart templates (Go `text/template` + Sprig), JSON Schema draft-07. Markdown. + `digitalocean/go-libvirt` at the pinned `v0.0.0-20260609165003-6254771e63a8` (`socket.Dialer`, `ConnectToURI`, `Disconnected()`); `golang.org/x/sync/singleflight` (already required, now direct); `gin`; `internal/health`; helm-unittest. **No new module.** (031-realmode-dns-libvirt-fixes)
 - nothing new. No database schema change, no migration. Node-local ownership only: `<state_path>/console-sockets` (as today) and `<state_path>/instances/<id>` (now ensured before every launch). (031-realmode-dns-libvirt-fixes)
+- Go 1.27.3 (`go.mod`), Bash (CI steps, the immutability check and its test), Markdown. + golang-migrate v4.19.1 (the `iofs` source over the per-backend view, the PostgreSQL driver over lib/pq, the SQLite driver), `jackc/pgx/v5` v5.10.0 (the state check; schema introspection in the tests), `modernc.org/sqlite` v1.60.1, `crypto/sha256` (stdlib). **No new modules.** (032-migration-squash-per-release)
+- PostgreSQL 18 and SQLite from the one `migrations/` folder, both starting at a generated `001` baseline. A new table `applied_migrations (version, checksum, applied_at)` is created by the baseline on both. On SQLite, five `project_id` columns become NOT NULL (FR-005). No other schema or data change, as FR-004 proves. (032-migration-squash-per-release)
 
 ## Recent Changes
 - 028-sqlite-database-layer: plan — SQLite as a second backend behind a backend-neutral `internal/database` contract whose method sets mirror pgx's, so the 736 call sites change types only. PostgreSQL passes SQL through untouched; SQLite translates casts, `= ANY($n)`, `FOR UPDATE` and the console expiry, registers `now()`/`gen_random_uuid()`/no-op advisory locks, and converts times, JSON, lists and `[]byte` (a STRICT TEXT column refuses BLOBs). Ten rewrite sites, the same for both backends; `name ~` stays a database match (`REGEXP` on SQLite), as upstream's. Cinder creates reserve a `creating` row and build the backing outside any transaction (+ a per-node startup sweep); Nova gains a binding quota recheck under an advisory lock and answers **403** instead of 413 (with FR-036a's 400s, the two API changes). Probe-verified: deferred read-then-write hits `SQLITE_BUSY_SNAPSHOT` (517) → immediate transactions expected (SPEC-028 plan)

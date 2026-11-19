@@ -245,9 +245,9 @@ func TestCreateUserDuplicateNameIsConflict(t *testing.T) {
 }
 
 // TestCreateGroupAcceptsDomainAlias — FR-006. CreateGroup used to store the reference
-// verbatim (groups.domain_id was a VARCHAR with no foreign key until migration 072), so
-// `default` was kept as the string and any value was accepted. It now resolves like the
-// other creation paths.
+// verbatim (groups.domain_id was then a VARCHAR with no foreign key), so `default` was kept
+// as the string and any value was accepted. It now resolves like
+// the other creation paths.
 func TestCreateGroupAcceptsDomainAlias(t *testing.T) {
 	if !testDBAvailable {
 		t.Skip("LIGHTSTACK_TEST_DB_URL not set")
@@ -277,10 +277,10 @@ func TestCreateGroupAcceptsDomainAlias(t *testing.T) {
 }
 
 // TestCreateGroupDuplicateNameIsConflict — the group half of FR-004. groups carries
-// UNIQUE(name, domain_id) (migration 010) and the violation surfaced as a generic 500,
-// so a duplicate group name answered differently from a duplicate project name in the
-// same service. Found in the SPEC-022 real-mode run; closed here rather than split out,
-// since the constant and the pattern were already in the package.
+// UNIQUE(name, domain_id) and the violation surfaced as a generic 500, so a duplicate
+// group name answered differently from a duplicate project name in the same service.
+// Found in the SPEC-022 real-mode run; closed here rather than split out, since the
+// constant and the pattern were already in the package.
 func TestCreateGroupDuplicateNameIsConflict(t *testing.T) {
 	if !testDBAvailable {
 		t.Skip("LIGHTSTACK_TEST_DB_URL not set")

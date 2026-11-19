@@ -297,12 +297,7 @@ CONSOLE_TYPE = 'VNC'  # a Horizon CONSOLES key; 'novnc' is not one, and fails wi
 - Shared storage with Ceph, VXLAN multi-node networking
 - Load balancing, monitoring, backup, disaster recovery
 
-**Upgrading lightstack** ⭐ NEW:
-- Automated upgrade script: [scripts/upgrade-lightstack.sh](scripts/upgrade-lightstack.sh)
-- Safe upgrade with automatic backup and rollback
-- Supports version pinning and force rebuild
-- 2-5 minute upgrade process
-- See [scripts/README.md](scripts/README.md) for usage
+**Upgrading lightstack**: see [docs/UPGRADING.md](docs/UPGRADING.md).
 
 ## Configuration
 

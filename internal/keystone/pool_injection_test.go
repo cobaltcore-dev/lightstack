@@ -12,7 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// seededDefaultProjectID is the `default` project from migration 002_seed_data.
+// seededDefaultProjectID is the `default` project the baseline (`001`) seeds.
 const seededDefaultProjectID = "00000000-0000-0000-0000-000000000002"
 
 // TestServiceRunsOnItsOwnPool is ADR-001's payoff (SPEC-027 FR-008): a Keystone

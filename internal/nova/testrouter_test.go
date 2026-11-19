@@ -70,8 +70,8 @@ func doReqCtx(ctx context.Context, r *gin.Engine, method, path, body string, hea
 	return w.Code, w.Body.String()
 }
 
-// Seeded scope from migration 002_seed_data (the default project has a seeded
-// `default` security group and flavors). Feature tests that need a real DB scope
+// Seeded scope from the baseline (`001`): the default project has a seeded
+// `default` security group and flavors. Feature tests that need a real DB scope
 // use these; harness smoke tests below do not.
 const (
 	seededProjectID = "00000000-0000-0000-0000-000000000002"

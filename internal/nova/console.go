@@ -293,14 +293,14 @@ func sendConsoleEndpointError(c *gin.Context, instanceID string, err error) {
 		// A TCP console — a domain defined before consoles moved to unix sockets.
 		// Its port can be handed to another guest while a token still names it,
 		// and a wildcard one is reachable without any token. Refusing is the safe
-		// direction; docs/UPGRADING.md says how to fix the domain.
+		// direction. Only a domain an earlier release defined has one: recreate the instance.
 		log.Error().Err(err).Str("instance_id", instanceID).
 			Msg("console: guest console is not a unix socket; refusing to proxy")
 		common.SendError(c, common.NewInternalServerError("console misconfigured on this host"))
 	case errors.Is(err, hypervisor.ErrConsoleLegacySocket):
 		// A domain defined before the console sockets moved: its socket is in libvirt's
 		// per-domain directory, which the proxy deliberately cannot see (FR-017).
-		// docs/UPGRADING.md says how to fix the domain.
+		// Recreating the instance fixes it.
 		log.Error().Err(err).Str("instance_id", instanceID).
 			Msg("console: guest console socket is outside the console socket directory; refusing to proxy")
 		common.SendError(c, common.NewInternalServerError("console misconfigured on this host"))

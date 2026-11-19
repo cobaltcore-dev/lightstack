@@ -176,10 +176,22 @@ func openOrExit(url string) database.DB {
 // migrateOrExit migrates the test database up, closing db and exiting the test binary if it cannot.
 func migrateOrExit(db database.DB, url, migrationsPath string) {
 	if err := database.MigrateUp(url, migrationsPath); err != nil {
-		fmt.Fprintf(os.Stderr, "%s is set but migrations failed: %v\n", EnvURL, err)
+		fmt.Fprintln(os.Stderr, migrateFailure(url, err))
 		db.Close()
 		os.Exit(1)
 	}
+}
+
+// migrateFailure is the message for a test database that would not migrate. The shared PostgreSQL
+// test database outlives branches, so one migrated before the migration squash, or by a branch
+// whose fragments differ, is refused; the message then says how to recreate it (SPEC-032). SQLite
+// needs no hint: every run starts afresh.
+func migrateFailure(url string, err error) string {
+	msg := fmt.Sprintf("%s is set but migrations failed: %v", EnvURL, err)
+	if backend, _ := database.ParseURL(url); backend == database.Postgres && (database.IsPreSquash(err) || database.IsStale(err)) {
+		msg += " (the test database: make db-down && make db-up)"
+	}
+	return msg
 }
 
 // Close closes db at the end of TestMain. A pool whose Close does not return — a

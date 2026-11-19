@@ -262,8 +262,12 @@ lists are text on SQLite, bound and scanned through the same Go types as on Post
 
 **Migrations**: one `migrations/` folder serves both. Each backend reads it through a view —
 `.postgres`/`.sqlite` files are used by that backend only and replace the plain file of their
-number, and SQLite starts at a baseline generated from PostgreSQL's schema at 073
-([migrations/README.md](../migrations/README.md)). `TestSchemaParity` compares the two schemas.
+number. Both start at the baseline, `001`, and each release adds at most one migration,
+`NNN_v<release>`. A schema change is a fragment in `migrations/next/`: the view assembles the
+fragments into the open release migration, and cutting a release freezes them. Every migration
+records its checksum in `applied_migrations`, so a database that applied an earlier state of a
+migration is refused ([migrations/README.md](../migrations/README.md)). `TestSchemaParity`
+compares the two schemas.
 
 **No transaction around external work**: volume and snapshot creates reserve their row
 (`creating`, under the node's name), create the backing store outside any transaction, then

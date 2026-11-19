@@ -30,6 +30,13 @@ func main() {
 	// failure and never returns a non-nil error here in practice.
 	_ = flag.CommandLine.Parse(os.Args[2:])
 
+	// freeze works on the migrations folder alone — no configuration, no database — so a maintainer
+	// cuts a release from a plain checkout (SPEC-032 FR-023).
+	if command == "freeze" {
+		handleFreeze(*migrationsPath)
+		return
+	}
+
 	// Load configuration
 	cfg, err := common.LoadConfig(*configPath)
 	if err != nil {
@@ -93,22 +100,41 @@ func main() {
 	}
 }
 
+// handleStatus reports the database's migration version, what that version is, and its state. A
+// database the other commands refuse — one migrated before the squash, or a stale one — is
+// reported with the refusal, and exit 1 (SPEC-032 FR-022).
 func handleStatus(dbURL, migrationsPath string) {
 	info, err := database.GetMigrationStatus(dbURL, migrationsPath)
-	if err != nil {
+	if err != nil && !database.IsPreSquash(err) && !database.IsStale(err) && !database.IsMissingDatabase(err) {
 		fmt.Fprintf(os.Stderr, "Failed to get migration status: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("Database Migration Status\n")
 	fmt.Printf("=========================\n")
+	if database.IsMissingDatabase(err) {
+		// Still an error, as a mistyped path is one (SPEC-028), but reported as a status, not as a
+		// failure: the new release creates the file at its first start.
+		fmt.Printf("Status: NO DATABASE\n\n%v\n", err)
+		os.Exit(1)
+	}
 	fmt.Printf("Current Version: %d\n", info.Version)
-	if info.Dirty {
+	if info.Kind != "" {
+		fmt.Printf("Migration: %s\n", info.Kind)
+	}
+	switch {
+	case database.IsPreSquash(err):
+		fmt.Printf("Status: PRE-SQUASH\n\n%v\n", err)
+		os.Exit(1)
+	case database.IsStale(err):
+		fmt.Printf("Status: STALE\n\n%v\n", err)
+		os.Exit(1)
+	case info.Dirty:
 		fmt.Printf("Status: DIRTY (manual intervention required)\n")
 		fmt.Printf("\nTo fix dirty state, use:\n")
 		fmt.Printf("  lightstack-migrate force <version>\n")
 		os.Exit(1)
-	} else {
+	default:
 		fmt.Printf("Status: Clean\n")
 	}
 }
@@ -122,6 +148,7 @@ func handleUp(dbURL, migrationsPath string) {
 }
 
 func handleDown(dbURL, migrationsPath string) {
+	refuseBeforePrompt("Rollback failed", database.CheckDatabaseState(dbURL, migrationsPath))
 	fmt.Print("⚠️  Are you sure you want to roll back one migration? (yes/no): ")
 	var response string
 	_, _ = fmt.Scanln(&response) // EOF/parse errors leave response empty, which falls through to the cancel branch — the safe default for destructive ops
@@ -166,13 +193,7 @@ func handleGoto(dbURL, migrationsPath string) {
 		os.Exit(1)
 	}
 
-	// Refuse an impossible target before prompting, so a below-baseline version is rejected at
-	// once rather than after the operator confirms a destructive migration.
-	if err := database.RefuseBelowBaseline(dbURL, migrationsPath, int(targetVersion)); err != nil {
-		fmt.Fprintf(os.Stderr, "Migration failed: %v\n", err)
-		os.Exit(1)
-	}
-
+	refuseBeforePrompt("Migration failed", database.CheckDatabaseState(dbURL, migrationsPath))
 	fmt.Printf("⚠️  Migrating to version %d. Continue? (yes/no): ", targetVersion)
 	var response string
 	_, _ = fmt.Scanln(&response) // EOF/parse errors leave response empty, which falls through to the cancel branch — the safe default for destructive ops
@@ -200,12 +221,7 @@ func handleForce(dbURL, migrationsPath string) {
 		os.Exit(1)
 	}
 
-	// Refuse an impossible target before prompting (see handleGoto).
-	if err := database.RefuseBelowBaseline(dbURL, migrationsPath, version); err != nil {
-		fmt.Fprintf(os.Stderr, "Force failed: %v\n", err)
-		os.Exit(1)
-	}
-
+	refuseBeforePrompt("Force failed", database.CheckForceState(dbURL, migrationsPath))
 	fmt.Printf("⚠️  WARNING: Forcing version to %d without running migrations.\n", version)
 	fmt.Print("This should only be used to fix dirty state. Continue? (yes/no): ")
 	var response string
@@ -220,6 +236,31 @@ func handleForce(dbURL, migrationsPath string) {
 		os.Exit(1)
 	}
 	fmt.Printf("✅ Version forced to %d\n", version)
+}
+
+// refuseBeforePrompt exits 1 with refusal, the result of the command's own state check, so a command
+// never asks to confirm what it would refuse anyway (SPEC-032 FR-011, FR-020). The command's own
+// call checks again: the state may change while the prompt waits.
+func refuseBeforePrompt(failure string, refusal error) {
+	if refusal != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", failure, refusal)
+		os.Exit(1)
+	}
+}
+
+// handleFreeze freezes migrations/next/ into the release migration of the release named by the
+// first argument, or reports that the release adds none (contracts/migrations-folder.md § Freeze).
+func handleFreeze(migrationsPath string) {
+	if len(flag.Args()) != 1 {
+		fmt.Fprintf(os.Stderr, "Usage: lightstack-migrate freeze [-migrations <dir>] <release>\n")
+		os.Exit(1)
+	}
+	res, err := database.Freeze(migrationsPath, flag.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Freeze failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(res)
 }
 
 // handleBackup takes a consistent copy of the SQLite database while Lightstack keeps serving
@@ -289,6 +330,7 @@ func printUsage() {
 	fmt.Println("  check                 Check the SQLite database's integrity, and that it holds the whole")
 	fmt.Println("                        schema its version requires; non-zero if damaged, incomplete, dirty")
 	fmt.Println("                        (an interrupted migration), empty or not a Lightstack database")
+	fmt.Println("  freeze <release>      Freeze migrations/next/ into the release migration NNN_<release>; needs no database")
 	fmt.Println()
 	fmt.Println("backup and check are for SQLite only; for PostgreSQL use pg_dump. Options go before")
 	fmt.Println("the file: lightstack-migrate backup -config <path> <file>.")
@@ -309,5 +351,6 @@ func printUsage() {
 	fmt.Println("  lightstack-migrate force 7")
 	fmt.Println("  lightstack-migrate backup")
 	fmt.Println("  lightstack-migrate check")
+	fmt.Println("  lightstack-migrate freeze v0.7.0")
 	fmt.Println()
 }

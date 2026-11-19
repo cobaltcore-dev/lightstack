@@ -111,7 +111,7 @@ same class of gap as the documented port-id deviation in
 **Resolved — SPEC-017 (#524).** Nova server-detail (`GET /v2.1/servers/{id}` **and**
 `/servers/detail`) now returns `key_name` and `security_groups`. The estimate above ("≈1 line
 each") proved optimistic: neither value was persisted, so the fix also persists them at create —
-`key_name` via migration `063` (`instances.key_name`), security groups via `server_security_groups`
+`key_name` in a new column, `instances.key_name`, security groups via `server_security_groups`
 — validates them synchronously (unknown keypair / non-default group → `400`, matching Nova v2.1),
 ensures the project `default` group on demand, and defaults `security_groups` to
 `[{"name":"default"}]`. A repeated `terraform plan` is now a no-op — confirmed on a host run

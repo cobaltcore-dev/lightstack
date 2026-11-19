@@ -108,8 +108,8 @@ func TestCinderLimitsAgreeWithQuotaSet(t *testing.T) {
 
 // TestBackupUsageIsCounted is assertion 6 of contracts/cinder-extensions-and-quota-sets.md:
 // backup usage must reflect seeded backups, not 0. Both views hardcoded 0, justified by a
-// comment claiming Lightstack has no backups table — it has had `volume_backups` since migration
-// 022, and internal/cinder/backups.go writes to it (FR-004).
+// comment claiming Lightstack has no backups table — it has one, `volume_backups`, and
+// internal/cinder/backups.go writes to it (FR-004).
 func TestBackupUsageIsCounted(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()

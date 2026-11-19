@@ -16,10 +16,16 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// MigrationInfo contains migration status information
+// MigrationInfo contains migration status information: the version golang-migrate records, whether
+// it is dirty, and what that version is. A refused state comes back as GetMigrationStatus's error.
 type MigrationInfo struct {
 	Version uint
 	Dirty   bool
+	// Kind says what the recorded version is (FR-022): "none (empty database)", the baseline, a
+	// release migration ("release v0.8.0") or the open release migration of a build between
+	// releases. It is empty for a version the migrations do not hold: a pre-squash database, or
+	// one a newer Lightstack migrated.
+	Kind string
 }
 
 // withMigrator runs fn with a migrator for the backend dbURL selects, reading the
@@ -131,23 +137,6 @@ func closeMigrator(m *migrate.Migrate) {
 	}
 }
 
-// RefuseBelowBaseline refuses a SQLite target version below the baseline, where the SQLite schema
-// does not exist (contracts/migrations.md). Exported so lightstack-migrate can refuse goto/force
-// before it prompts for a destructive confirmation.
-func RefuseBelowBaseline(dbURL, migrationsPath string, version int) error {
-	if backend, err := ParseURL(dbURL); err != nil || backend != SQLite {
-		return err
-	}
-	baseline, err := baselineVersion(os.DirFS(migrationsPath))
-	if err != nil {
-		return err
-	}
-	if version >= 0 && uint64(version) < baseline {
-		return fmt.Errorf("SQLite starts at its baseline %03d; version %d is below it", baseline, version)
-	}
-	return nil
-}
-
 // refuseNewerDatabase refuses a database whose version is above the newest migration in the
 // folder. golang-migrate stops on one too, but as "no migration found for version N: read down
 // …", which does not tell an operator who has just restored a backup what went wrong.
@@ -180,10 +169,25 @@ func refuseNewerVersion(version uint64, migrationsPath string, backend Backend) 
 	return nil
 }
 
-// GetMigrationStatus returns current migration version and dirty state
+// GetMigrationStatus returns the current migration version, dirty state and database state. For a
+// database migrated before the squash it returns both the info and the *PreSquashError, without
+// opening a migrator, so status can show the version and say why it cannot go on (FR-011, FR-022).
 func GetMigrationStatus(dbURL, migrationsPath string) (*MigrationInfo, error) {
+	in, err := inspectDatabase(dbURL, migrationsPath)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case in.state == StatePreSquash:
+		// golang-migrate would read its version against the restarted numbering; the version and the
+		// refusal are all there is to report.
+		return &MigrationInfo{Version: uint(in.version), Dirty: in.dirty}, in.refusal()
+	case in.missing != "":
+		// status opens must-exist and creates nothing; it reports the file it did not find.
+		return &MigrationInfo{}, &MissingDatabaseError{Path: in.missing}
+	}
 	var info *MigrationInfo
-	err := withMigrator(dbURL, migrationsPath, false, func(m *migrate.Migrate) error {
+	err = withMigrator(dbURL, migrationsPath, false, func(m *migrate.Migrate) error {
 		version, dirty, err := m.Version()
 		if err != nil && !errors.Is(err, migrate.ErrNilVersion) {
 			return fmt.Errorf("failed to get migration version: %w", err)
@@ -191,12 +195,32 @@ func GetMigrationStatus(dbURL, migrationsPath string) (*MigrationInfo, error) {
 		info = &MigrationInfo{Version: version, Dirty: dirty}
 		return nil
 	})
-	return info, err
+	if err != nil {
+		return info, err
+	}
+	view, err := newMigrationView(os.DirFS(migrationsPath), in.backend)
+	if err != nil {
+		return info, err
+	}
+	info.Kind = view.kind(uint64(info.Version))
+	// A stale database is reported with its version, what that version is, and the refusal.
+	return info, in.refusal()
 }
 
 // MigrateUp applies all pending migrations. A database newer than every migration this binary
 // carries — one restored from a newer Lightstack's backup — is refused by name (SPEC-030 FR-008).
 func MigrateUp(dbURL, migrationsPath string) error {
+	if err := CheckDatabaseState(dbURL, migrationsPath); err != nil {
+		return err
+	}
+	backend, err := ParseURL(dbURL)
+	if err != nil {
+		return err
+	}
+	open, err := assembleOpen(os.DirFS(migrationsPath), backend)
+	if err != nil {
+		return err
+	}
 	return withMigrator(dbURL, migrationsPath, true, func(m *migrate.Migrate) error {
 		if err := refuseNewerDatabase(m, dbURL, migrationsPath); err != nil {
 			return err
@@ -211,13 +235,21 @@ func MigrateUp(dbURL, migrationsPath string) error {
 		}
 		version, _, _ := m.Version()
 		log.Info().Uint("version", version).Msg("Migrations applied successfully")
+		// A build between releases applied fragments no release has frozen yet (FR-018): when they
+		// change, the database has to be recreated.
+		if open != nil && uint64(version) == open.version {
+			log.Warn().Uint("version", version).Msgf("applied the open release migration %03d (unreleased)", version)
+		}
 		return nil
 	})
 }
 
-// MigrateDown rolls back one migration. On SQLite the last step down runs the baseline's
-// down file and leaves an empty database.
+// MigrateDown rolls back one migration. The last step down runs the baseline's down file and
+// leaves an empty database.
 func MigrateDown(dbURL, migrationsPath string) error {
+	if err := CheckDatabaseState(dbURL, migrationsPath); err != nil {
+		return err
+	}
 	return withMigrator(dbURL, migrationsPath, false, func(m *migrate.Migrate) error {
 		currentVersion, _, err := m.Version()
 		if err != nil {
@@ -236,10 +268,9 @@ func MigrateDown(dbURL, migrationsPath string) error {
 	})
 }
 
-// MigrateToVersion migrates to a specific version. On SQLite a version below the
-// baseline is refused.
+// MigrateToVersion migrates to a specific version.
 func MigrateToVersion(dbURL, migrationsPath string, targetVersion uint) error {
-	if err := RefuseBelowBaseline(dbURL, migrationsPath, int(targetVersion)); err != nil {
+	if err := CheckDatabaseState(dbURL, migrationsPath); err != nil {
 		return err
 	}
 	return withMigrator(dbURL, migrationsPath, true, func(m *migrate.Migrate) error {
@@ -362,9 +393,9 @@ func dropSQLiteObjects(ctx context.Context, db *sql.DB) error {
 }
 
 // ForceMigrationVersion sets the migration version without running migrations. Use this
-// to fix dirty state issues. On SQLite a version below the baseline is refused.
+// to fix dirty state issues.
 func ForceMigrationVersion(dbURL, migrationsPath string, version int) error {
-	if err := RefuseBelowBaseline(dbURL, migrationsPath, version); err != nil {
+	if err := CheckForceState(dbURL, migrationsPath); err != nil {
 		return err
 	}
 	return withMigrator(dbURL, migrationsPath, false, func(m *migrate.Migrate) error {
@@ -377,14 +408,21 @@ func ForceMigrationVersion(dbURL, migrationsPath string, version int) error {
 	})
 }
 
-// ValidateMigrations checks both backends' views of the migrations folder
-// (contracts/migrations.md): every up migration has its down migration and the reverse,
-// the folder holds exactly one SQLite baseline, and no version appears twice in a view.
+// ValidateMigrations checks the migrations folder (SPEC-032 contracts/migrations-folder.md): its
+// numbered files follow the grammar — the baseline pair at 001, release migrations numbered
+// consecutively from 002, nothing else (validateFolderNames) — and in each backend's view every up
+// migration has its down migration and the reverse, with no version twice.
 func ValidateMigrations(migrationsPath string) error {
 	if _, err := os.Stat(migrationsPath); os.IsNotExist(err) {
 		return fmt.Errorf("migrations directory does not exist: %s", migrationsPath)
 	}
 	src := os.DirFS(migrationsPath)
+	if err := validateFolderNames(src); err != nil {
+		return err
+	}
+	if _, err := readFragments(src); err != nil {
+		return err
+	}
 	for _, b := range []Backend{Postgres, SQLite} {
 		view, err := newMigrationView(src, b)
 		if err != nil {

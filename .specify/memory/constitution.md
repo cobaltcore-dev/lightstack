@@ -356,6 +356,9 @@ reading is ruled out. Neither change relaxes what a request experiences.
 **Migration plan**: none for the constitution itself. The reconnect loop has already shipped. SPEC-031
 ships the first-connection and preparation retries and ends the runtime fallback; its
 `docs/UPGRADING.md` notes (FR-024) cover what an existing real-mode deployment will notice.
+(Those notes were removed when UPGRADING.md became one section per release and v0.7.0 a fresh
+install; CHANGELOG.md summarises the change, and docs/CONFIGURATION.md and the chart README
+describe the behaviour.)
 
 ### v1.4.0 — 2026-11-04 — correcting interrupted reservations: a periodic pass, reclaim on delete (Article II)
 

@@ -40,7 +40,7 @@ func requireDB(t *testing.T) {
 	}
 }
 
-// Seeded scope from migration 002_seed_data.
+// Seeded scope from the baseline (`001`).
 const (
 	seededProjectID = "00000000-0000-0000-0000-000000000002"
 	seededUserID    = "00000000-0000-0000-0000-000000000001"

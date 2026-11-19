@@ -46,7 +46,7 @@ Choose your deployment strategy based on your use case.
   - VXLAN multi-node networking
   - Load balancing, monitoring, backup, disaster recovery
   - Complete production operations guide
-- **[UPGRADING](UPGRADING.md)** - Upgrade an existing install (incl. nodes installed under the previous product name)
+- **[UPGRADING](UPGRADING.md)** - What to do when upgrading to each release
 
 #### Kubernetes
 - **[KUBERNETES_DEPLOYMENT](KUBERNETES_DEPLOYMENT.md)** ⭐ **NEW**

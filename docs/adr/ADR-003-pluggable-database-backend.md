@@ -99,3 +99,16 @@ is generated, and the generator fails on a construct it has no mapping for.
 - SQLite is single-node. Multi-node deployments stay on PostgreSQL.
 - A regular expression in a server-name filter follows each backend's own dialect, as upstream's
   database filter does.
+
+## Amendment (SPEC-032, 2026-11-18)
+
+The migrations were squashed. Both backends now start at a generated baseline, `001`: the schema
+and seed data of the 83 earlier migrations, which survive only as the generators' input in
+`internal/database/testdata/pre-squash/`. With them goes the view's third rule, under which SQLite
+skipped every version below its own baseline at `073`; the views keep the other two. After the
+baseline come release migrations, one per release, frozen from fragments in `migrations/next/`
+that the view assembles into an open release migration in between. Every migration records its
+checksum in `applied_migrations`, which also marks a post-squash database.
+
+The decision itself is unchanged: one migrations folder for both backends, read through a view per
+backend, with the SQLite schema generated rather than hand-written.
