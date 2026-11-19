@@ -56,15 +56,26 @@ func TestSubnetGatewayIsValidated(t *testing.T) {
 		})
 	}
 
-	t.Run("a valid gateway is accepted", func(t *testing.T) {
+	t.Run("a valid explicit gateway is accepted on create", func(t *testing.T) {
 		if code, subnet := createSubnet(t, r, hdr, createBody("10.93.0.254")); code != http.StatusCreated {
 			t.Errorf("create: code=%d body=%v, want 201", code, subnet)
 		}
-		if code, raw := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.93.0.200"}}`, hdr); code != http.StatusOK {
+		if code, raw := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.93.0.1"}}`, hdr); code != http.StatusOK {
 			t.Errorf("update: code=%d body=%s, want 200", code, raw)
 		}
-		if got := storedGateway(t, subnetID); got == nil || *got != "10.93.0.200" {
-			t.Errorf("stored gateway = %s, want 10.93.0.200", derefOr(got, "null"))
+		if got := storedGateway(t, subnetID); got == nil || *got != gw {
+			t.Errorf("stored gateway = %s, want %s", derefOr(got, "null"), gw)
+		}
+	})
+
+	t.Run("update into the existing allocation pool is refused", func(t *testing.T) {
+		code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.93.0.200"}}`, hdr)
+		if code != http.StatusConflict {
+			t.Fatalf("code=%d body=%s, want 409", code, body)
+		}
+		assertNeutronShape(t, neutronError(t, body), "GatewayConflictWithAllocationPools")
+		if got := storedGateway(t, subnetID); got == nil || *got != gw {
+			t.Errorf("stored gateway after refused update = %s, want %s", derefOr(got, "null"), gw)
 		}
 	})
 }
@@ -89,9 +100,9 @@ func seedRouterPort(t *testing.T, routerID, netID, subnetID, ip string) (portID 
 func TestSubnetGatewayHeldByARouterIsNotChanged(t *testing.T) {
 	requireDB(t)
 	r := newEnvelopeRouter()
-	gw := "10.92.0.1"
+	gw := "fd00:92::1"
 	netID := seedNetwork(t, "spec024-gw-router-"+uuid.NewString()[:8])
-	subnetID := seedSubnet(t, netID, "spec024-gw-router", "10.92.0.0/24", &gw, 4, false)
+	subnetID := seedSubnet(t, netID, "spec024-gw-router", "fd00:92::/64", &gw, 6, false)
 
 	routerID := uuid.NewString()
 	mustExec(t, `INSERT INTO routers (id, name, project_id) VALUES ($1, 'spec024-gw-router', $2)`, routerID, seededProjectID)
@@ -99,7 +110,7 @@ func TestSubnetGatewayHeldByARouterIsNotChanged(t *testing.T) {
 	portID := seedRouterPort(t, routerID, netID, subnetID, gw)
 
 	for _, tc := range []struct{ name, body string }{
-		{"changed", `{"subnet":{"gateway_ip":"10.92.0.254"}}`},
+		{"changed", `{"subnet":{"gateway_ip":"fd00:92::254"}}`},
 		{"cleared", `{"subnet":{"gateway_ip":null}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,37 +126,37 @@ func TestSubnetGatewayHeldByARouterIsNotChanged(t *testing.T) {
 	}
 
 	t.Run("the same gateway is no change", func(t *testing.T) {
-		if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.92.0.1","name":"renamed"}}`, nil); code != http.StatusOK {
+		if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"fd00:92::1","name":"renamed"}}`, nil); code != http.StatusOK {
 			t.Errorf("code=%d body=%s, want 200", code, body)
 		}
 	})
 
 	t.Run("free once the router interface is gone", func(t *testing.T) {
 		mustExec(t, `DELETE FROM ports WHERE id = $1`, portID) // cascades the router_interfaces row
-		if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.92.0.254"}}`, nil); code != http.StatusOK {
+		if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"fd00:92::254"}}`, nil); code != http.StatusOK {
 			t.Fatalf("code=%d body=%s, want 200", code, body)
 		}
-		if got := storedGateway(t, subnetID); got == nil || *got != "10.92.0.254" {
-			t.Errorf("stored gateway = %s, want 10.92.0.254", derefOr(got, "null"))
+		if got := storedGateway(t, subnetID); got == nil || *got != "fd00:92::254" {
+			t.Errorf("stored gateway = %s, want fd00:92::254", derefOr(got, "null"))
 		}
 	})
 }
 
-// A router port is matched on its whole address: one holding 10.93.0.10 does not hold the
-// gateway 10.93.0.1, so the gateway may still change.
+// A router port is matched on its whole address: one holding fd00:93::10 does not hold the
+// gateway fd00:93::1, so the gateway may still change.
 func TestSubnetGatewayIsMatchedWholeAgainstRouterPorts(t *testing.T) {
 	requireDB(t)
 	r := newEnvelopeRouter()
-	gw := "10.93.0.1"
+	gw := "fd00:93::1"
 	netID := seedNetwork(t, "spec028-gw-prefix-"+uuid.NewString()[:8])
-	subnetID := seedSubnet(t, netID, "spec028-gw-prefix", "10.93.0.0/24", &gw, 4, false)
+	subnetID := seedSubnet(t, netID, "spec028-gw-prefix", "fd00:93::/64", &gw, 6, false)
 	routerID := uuid.NewString()
 	mustExec(t, `INSERT INTO routers (id, name, project_id) VALUES ($1, 'spec028-gw-prefix', $2)`, routerID, seededProjectID)
 	cleanupRows(t, "routers", routerID)
-	portID := seedRouterPort(t, routerID, netID, subnetID, "10.93.0.10")
+	portID := seedRouterPort(t, routerID, netID, subnetID, "fd00:93::10")
 	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), "DELETE FROM ports WHERE id = $1", portID) })
 
-	if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.93.0.254"}}`, nil); code != http.StatusOK {
-		t.Fatalf("code=%d body=%s, want 200: no router port holds 10.93.0.1", code, body)
+	if code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"fd00:93::254"}}`, nil); code != http.StatusOK {
+		t.Fatalf("code=%d body=%s, want 200: no router port holds fd00:93::1", code, body)
 	}
 }

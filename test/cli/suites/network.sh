@@ -662,7 +662,7 @@ assert_rc 0
 osc router add subnet "$R" "$S"
 if (( OSC_RC == 0 )); then
     t_fail "adding the same subnet to a router twice must not exit 0"
-elif ! printf '%s' "$OSC_ERR" | grep -qE '\(HTTP 400\)|400 Bad Request'; then
+elif ! printf '%s' "$OSC_ERR" | grep -qE '\(HTTP 400\)|400 Bad Request|BadRequestException'; then
     t_fail "expected HTTP 400 for a duplicate router subnet; stderr: $(_snip "$OSC_ERR")"
 fi
 # cleanup: detach the one real interface, then sweep any port the failed

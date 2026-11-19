@@ -779,8 +779,8 @@ func optionalString(raw json.RawMessage) (value *string, present bool, err error
 // ipam's check_gateway_invalid_in_subnet): an address of the subnet's IP version, and neither its
 // network address nor, for IPv4, its broadcast address. One difference remains: upstream accepts a
 // gateway outside the subnet; Lightstack refuses it because the network bridge carries that address.
-// The default allocation pools are generated around the gateway, so an in-subnet gateway is not a
-// conflict with those pools.
+// On create, default allocation pools are generated around the gateway. On update, the existing
+// allocation pool is preserved, so a changed gateway may conflict with it.
 func validateSubnetGateway(gateway, cidr string) error {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -802,6 +802,24 @@ func validateSubnetGateway(gateway, cidr string) error {
 		return fmt.Errorf("%s is the subnet's broadcast address", gateway)
 	}
 	return nil
+}
+
+// gatewayConflictsWithAllocationPool checks a changed gateway against the subnet's existing default
+// allocation pool. The pool was generated around the gateway that was current before this update.
+func gatewayConflictsWithAllocationPool(gateway, cidr string, currentGateway *string) bool {
+	ip := net.ParseIP(gateway).To4()
+	if ip == nil {
+		return false
+	}
+	for _, pool := range subnetAllocationPools(cidr, currentGateway) {
+		start, _ := pool["start"].(string)
+		end, _ := pool["end"].(string)
+		startIP, endIP := net.ParseIP(start).To4(), net.ParseIP(end).To4()
+		if startIP != nil && endIP != nil && bytes.Compare(ip, startIP) >= 0 && bytes.Compare(ip, endIP) <= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // subnetFilterParams carries the raw query values the subnet listing honours, so the builder below
@@ -2162,6 +2180,11 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 		}
 	}
 	gatewayChanged := gatewayGiven && derefOr(newGateway, "") != derefOr(currentGateway, "")
+	if gatewayChanged && newGateway != nil && gatewayConflictsWithAllocationPool(*newGateway, subnetCIDR, currentGateway) {
+		common.SendError(c, common.NewResourceInUseError("gateway conflict with allocation pools", "update subnet",
+			fmt.Sprintf("gateway IP %s conflicts with the subnet allocation pool", *newGateway)))
+		return
+	}
 	if gatewayChanged && currentGateway != nil {
 		holder, err := svc.routerPortHolding(c.Request.Context(), resolvedID, *currentGateway)
 		if err != nil {
