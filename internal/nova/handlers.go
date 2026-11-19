@@ -667,10 +667,15 @@ func createFault(err error) string {
 
 // markInstanceError flags an instance ERROR (best-effort), used from the
 // VM-creation goroutine's failure paths. Uses svc.ctx so it still runs even if
-// the request context was cancelled.
+// the request context was cancelled, under a 5-second bound as markActionFailed does:
+// nothing waits on the record, but the goroutine must still finish — the port-release
+// defer and Shutdown's svc.wg.Wait() sit behind it, so a hung database would stall
+// graceful shutdown rather than merely leave the row stale.
 func (svc *Service) markInstanceError(instanceID string, reason string) {
 	now := time.Now()
-	if _, err := svc.pool.Exec(svc.ctx,
+	ctx, cancel := context.WithTimeout(svc.ctx, 5*time.Second)
+	defer cancel()
+	if _, err := svc.pool.Exec(ctx,
 		`UPDATE instances
 		    SET status = 'ERROR', updated_at = $1,
 		        fault_code = $2, fault_message = $3, fault_created = $1
