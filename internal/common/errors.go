@@ -93,6 +93,16 @@ func NewNotFoundError(resource string) *OpenStackError {
 	}
 }
 
+// NewItemNotFoundError returns a 404 carrying message as it is, for a condition upstream words in a
+// sentence of its own rather than as "<resource> could not be found".
+func NewItemNotFoundError(message string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode: http.StatusNotFound,
+		Code:       "itemNotFound",
+		Message:    message,
+	}
+}
+
 // NewResourceNotFoundError creates a detailed not found error with resource type and ID
 func NewResourceNotFoundError(resourceType, resourceID string) *OpenStackError {
 	return &OpenStackError{

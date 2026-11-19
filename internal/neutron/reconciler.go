@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -27,7 +28,18 @@ type NetworkReconciler struct {
 	svc          *Service
 	pollInterval time.Duration
 	stopChan     chan struct{}
+	// readFloatingIPs reads every floating IP's record, associated or not, and whether the read was
+	// complete (SPEC-033 research R24). A field so that a test can return a partial read: a pass
+	// that only checked for an error would remove after one.
+	readFloatingIPs func(context.Context) ([]reconcileFIP, bool, error)
 }
+
+// reconcileFIP is a floating IP's record as a reconciliation pass reads it.
+type reconcileFIP struct {
+	address, fixed, port string
+}
+
+func (f reconcileFIP) associated() bool { return f.fixed != "" && f.port != "" }
 
 // NewNetworkReconciler binds a reconciler to the Neutron service's managers.
 // A zero/negative interval defaults to 30s.
@@ -35,11 +47,13 @@ func NewNetworkReconciler(svc *Service, pollInterval time.Duration) *NetworkReco
 	if pollInterval <= 0 {
 		pollInterval = 30 * time.Second
 	}
-	return &NetworkReconciler{
+	r := &NetworkReconciler{
 		svc:          svc,
 		pollInterval: pollInterval,
 		stopChan:     make(chan struct{}),
 	}
+	r.readFloatingIPs = r.readFloatingIPRecords
+	return r
 }
 
 // Start runs an initial reconcile, then re-reconciles on the poll interval until
@@ -79,9 +93,10 @@ func (r *NetworkReconciler) reconcile(ctx context.Context) {
 }
 
 // reconcileNAT re-asserts egress SNAT for every router with an external gateway
-// (per attached internal subnet) and re-asserts every associated floating IP's
-// NAT — so VM internet access and floating-IP reachability survive a Lightstack
-// control-plane restart (SPEC-009 WS-3 / T035). Idempotent.
+// (per attached internal subnet) and converges the node's floating-IP state with the
+// records both ways — so VM internet access and floating-IP reachability survive a
+// Lightstack control-plane restart (SPEC-009 WS-3 / T035), and state no record holds
+// goes within a pass (SPEC-033 FR-010). Idempotent.
 func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 	r.reportGrandfatheredGateways(ctx)
 
@@ -93,35 +108,9 @@ func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 		log.Error().Err(err).Msg("reconcile: egress subnets read incomplete; ensuring what was read this pass")
 	}
 
-	// Floating IPs currently associated to a port.
-	type fipRow struct{ floating, fixed, port string }
-	var fips []fipRow
-	if rows, err := r.svc.pool.Query(ctx, `
-		SELECT floating_ip_address, fixed_ip_address, port_id
-		FROM floating_ips
-		WHERE port_id IS NOT NULL AND fixed_ip_address IS NOT NULL`); err == nil {
-		for rows.Next() {
-			var f fipRow
-			if err := rows.Scan(&f.floating, &f.fixed, &f.port); err != nil {
-				log.Warn().Err(err).Str("operation", "reconcileNAT").Msg("failed to scan floating IP row")
-			} else if f.floating != "" && f.fixed != "" {
-				fips = append(fips, f)
-			}
-		}
-		if err := rows.Err(); err != nil {
-			log.Error().Err(err).Msg("reconcile: floating IP rows error; NAT set may be incomplete this pass")
-		}
-		rows.Close()
-	} else {
-		log.Error().Err(err).Msg("reconcile: failed to query floating IPs")
-	}
-
-	if len(cidrs) == 0 && len(fips) == 0 {
-		return
-	}
-	uplink, err := networking.DefaultUplinkInterface()
+	uplink, err := r.svc.uplink()
 	if err != nil {
-		log.Debug().Err(err).Msg("reconcile: no uplink for north-south NAT")
+		log.Error().Err(err).Msg("reconcile: no uplink; egress SNAT and floating IPs skipped this pass")
 		return
 	}
 	for _, cidr := range cidrs {
@@ -129,14 +118,169 @@ func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
 			log.Debug().Err(err).Str("cidr", cidr).Msg("reconcile: egress SNAT")
 		}
 	}
-	for _, f := range fips {
-		if err := r.svc.routerManager.EnsureFloatingIP(f.floating, f.fixed, uplink); err != nil {
-			log.Debug().Err(err).Str("floating_ip", f.floating).Msg("reconcile: floating IP")
-		}
-		if err := r.svc.ensureIngressFilter(ctx, f.fixed, uplink, f.port); err != nil {
-			log.Debug().Err(err).Str("fixed_ip", f.fixed).Msg("reconcile: ingress filter")
+	r.reconcileFloatingIPs(ctx, uplink)
+}
+
+// reconcileFloatingIPs converges this node's floating-IP state with the records, both ways (SPEC-033
+// research R24). It lists the node first, then reads every floating IP's record: every path commits its
+// record before it creates node state, so whatever the listing found belongs to a record this read can
+// see, and has none only when the record is gone. Then, one address at a time under the node lock:
+//   - every floating IP with a record or a marked rule is converged where the listing differs; one with
+//     only a marked rule is converged only after a complete read, and one with only unmarked rules and
+//     no record is left alone, as an operator's;
+//   - an associated floating IP whose NAT matches has its filter compared and kept (research R7);
+//   - after a complete read only, each filter that no association names and no rule of the shape
+//     reaches is removed.
+//
+// An address whose lock is held is skipped until the next pass: the holder is changing it anyway.
+func (r *NetworkReconciler) reconcileFloatingIPs(ctx context.Context, uplink string) {
+	state, err := r.svc.dataplane.NorthSouthState(uplink)
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: listing the node's floating-IP state failed; skipped this pass")
+		return
+	}
+	records, complete, err := r.readFloatingIPs(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: reading the floating IPs failed")
+		complete = false
+	}
+	if !complete {
+		log.Error().Msg("reconcile: floating-IP read incomplete; ensuring what was read, removing nothing this pass")
+	}
+
+	byAddress := make(map[string]reconcileFIP, len(records))
+	for _, rec := range records {
+		byAddress[rec.address] = rec
+	}
+	natByAddress := map[string][]networking.FloatingNAT{}
+	for _, n := range state.NAT {
+		natByAddress[n.FloatingIP] = append(natByAddress[n.FloatingIP], n)
+	}
+	onUplink := make(map[string]bool, len(state.Addresses))
+	for _, a := range state.Addresses {
+		onUplink[a] = true
+	}
+	candidates := make(map[string]bool, len(records))
+	for _, rec := range records {
+		candidates[rec.address] = true
+	}
+	for _, n := range state.NAT {
+		if n.Marked {
+			candidates[n.FloatingIP] = true
 		}
 	}
+
+	removed := map[string]bool{}
+	for _, f := range slices.Sorted(maps.Keys(candidates)) {
+		rec, hasRecord := byAddress[f]
+		if !hasRecord && !complete {
+			continue
+		}
+		if !natDiffers(rec, hasRecord, natByAddress[f], onUplink[f]) {
+			if hasRecord && rec.associated() {
+				if err := r.svc.ensureIngressFilter(ctx, rec.fixed, uplink, rec.port); errors.Is(err, errNodeBusy) {
+					log.Debug().Err(err).Str("fixed_ip", rec.fixed).Msg("reconcile: ingress filter skipped this pass, the node lock is held")
+				} else if err != nil {
+					log.Error().Err(err).Str("fixed_ip", rec.fixed).Msg("reconcile: ingress filter")
+				}
+			}
+			continue
+		}
+		release, err := r.svc.lockNode()
+		if err != nil {
+			log.Debug().Err(err).Str("floating_ip", f).Msg("reconcile: floating IP skipped this pass, the node lock is held")
+			continue
+		}
+		gone, err := r.svc.convergeFloatingIPLocked(ctx, f, uplink)
+		release()
+		for _, x := range gone {
+			removed[x] = true
+		}
+		if err != nil {
+			log.Error().Err(err).Str("floating_ip", f).Msg("reconcile: converge floating IP")
+		}
+	}
+	if !complete {
+		return
+	}
+
+	associated := map[string]bool{}
+	for _, rec := range records {
+		if rec.associated() {
+			associated[rec.fixed] = true
+		}
+	}
+	for _, x := range state.Filters {
+		if removed[x] || associated[x] || natReaches(state.NAT, x) {
+			continue
+		}
+		r.removeOrphanFilter(ctx, x)
+	}
+}
+
+// removeOrphanFilter removes a filter that the pass found no association for, under the node lock,
+// after checking the records again: a request that associated a floating IP with it since the pass's
+// read has committed its record before converging.
+func (r *NetworkReconciler) removeOrphanFilter(ctx context.Context, fixedIP string) {
+	release, err := r.svc.lockNode()
+	if err != nil {
+		log.Debug().Err(err).Str("fixed_ip", fixedIP).Msg("reconcile: filter skipped this pass, the node lock is held")
+		return
+	}
+	defer release()
+	held, err := r.svc.fixedIPAssociated(ctx, fixedIP)
+	if err == nil && !held {
+		err = r.svc.dataplane.RemoveIngressFilter(fixedIP)
+	}
+	if err != nil {
+		log.Error().Err(err).Str("fixed_ip", fixedIP).Msg("reconcile: remove an orphan ingress filter")
+	}
+}
+
+// natDiffers reports whether a floating IP's NAT and address on the node differ from its record: an
+// associated one needs exactly its marked rule to its fixed IP in each hook and its address; an
+// unassociated one, or a marked rule without a record, needs nothing at all.
+func natDiffers(rec reconcileFIP, hasRecord bool, rules []networking.FloatingNAT, hasAddress bool) bool {
+	if !hasRecord || !rec.associated() {
+		return len(rules) > 0 || hasAddress
+	}
+	if !hasAddress {
+		return true
+	}
+	hooks := map[string]int{}
+	for _, n := range rules {
+		if !n.Marked || n.FixedIP != rec.fixed {
+			return true
+		}
+		hooks[n.Chain]++
+	}
+	return hooks["PREROUTING"] != 1 || hooks["OUTPUT"] != 1
+}
+
+// readFloatingIPRecords reads every floating IP's record. complete is false when a row could not be
+// read: such a list is safe to ensure from and unsafe to remove from, as readNetworkIDs.
+func (r *NetworkReconciler) readFloatingIPRecords(ctx context.Context) ([]reconcileFIP, bool, error) {
+	rows, err := r.svc.pool.Query(ctx,
+		"SELECT floating_ip_address, COALESCE(fixed_ip_address, ''), COALESCE(port_id::text, '') FROM floating_ips")
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	complete := true
+	var out []reconcileFIP
+	for rows.Next() {
+		var f reconcileFIP
+		if err := rows.Scan(&f.address, &f.fixed, &f.port); err != nil {
+			log.Warn().Err(err).Str("operation", "reconcileFloatingIPs").Msg("failed to scan floating IP row")
+			complete = false
+			continue
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return out, false, err
+	}
+	return out, complete, nil
 }
 
 // reconcileNetworks ensures each network's bridge exists. Best-effort: bridges

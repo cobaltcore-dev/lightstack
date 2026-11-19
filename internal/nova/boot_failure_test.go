@@ -55,11 +55,50 @@ type fakeNeutron struct {
 	mu          sync.Mutex
 	usableAdmin []bool
 	allocAdmin  []bool
+
+	refreshed  [][]string // the ports of every RefreshPortFilters call
+	refreshErr error      // what RefreshPortFilters returns
+
+	allocs []allocCall // every AllocatePortForInstance call, in order
+
+	converged   [][]string // the floating IPs of every ConvergeFloatingIPs call
+	convergeErr error      // what ConvergeFloatingIPs returns
 }
 
-func (f *fakeNeutron) AllocatePortForInstance(_ context.Context, networkID, _, _ string, _ []string, admin bool) (any, error) {
+// ConvergeFloatingIPs records the floating IPs it is asked to converge and returns convergeErr.
+func (f *fakeNeutron) ConvergeFloatingIPs(_ context.Context, floatingIPs []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.converged = append(f.converged, append([]string(nil), floatingIPs...))
+	return f.convergeErr
+}
+
+// allocCall is what one AllocatePortForInstance call was given.
+type allocCall struct {
+	networkID string
+	groups    []string
+	copyFrom  string
+}
+
+// allocations returns every allocation so far, in order.
+func (f *fakeNeutron) allocations() []allocCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]allocCall(nil), f.allocs...)
+}
+
+// RefreshPortFilters records the ports it is asked to rebuild and returns refreshErr.
+func (f *fakeNeutron) RefreshPortFilters(_ context.Context, portIDs []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refreshed = append(f.refreshed, append([]string(nil), portIDs...))
+	return f.refreshErr
+}
+
+func (f *fakeNeutron) AllocatePortForInstance(_ context.Context, networkID, _, _ string, groups []string, copyFrom string, admin bool) (any, error) {
 	f.mu.Lock()
 	f.allocAdmin = append(f.allocAdmin, admin)
+	f.allocs = append(f.allocs, allocCall{networkID: networkID, groups: append([]string(nil), groups...), copyFrom: copyFrom})
 	f.mu.Unlock()
 	f.allocCalls++
 	if err, ok := f.allocErrFor[networkID]; ok && err != nil {

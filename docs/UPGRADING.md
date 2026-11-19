@@ -650,3 +650,53 @@ the legacy `block_device_mapping` alone was never honoured either, and is now re
 Suspend, resume and shelve answer `202` and only then ask libvirt. A failed suspend or resume already
 turned the server `ERROR`; a failed shelve was dropped, and the server read `SHELVED` while its guest
 ran on. It now ends `ERROR` too, and all three log the cause (`shelve failed in libvirt`, and so on).
+
+## Security-group membership reaches the ports
+
+A server's security groups now live on its ports, the list the firewall is built from. Adding or
+removing a group through the compute API changes the ports, and with them what reaches the server.
+It used to change a separate record that the firewall never read, so a group added to a running
+server opened nothing and a group removed closed nothing.
+
+| | before | after |
+|---|---|---|
+| `addSecurityGroup` / `removeSecurityGroup` | changed a record of the server's; the ports and the firewall stayed as they were | change every port of the server, and its floating-IP filters, before the answer |
+| the group in either action | by name only | by name or by id, as server create, resolved in the server's project |
+| either action on a server with no port | `202` | `404`, "instance_id `<id>` could not be found as device id on any ports", as upstream |
+| removing a server's last group | `400 cannot remove last security group from instance` | `202`, as upstream: its ports carry no group, and a floating IP on them admits replies only |
+| a server's `security_groups` | its own record, with `default` invented when it held none | its ports' groups, one entry per port and group; no key when they carry none. Servers created by v0.6.1 or earlier report none, since their ports carry none |
+| an interface attached with `net_id` | a port with no group | a port in the project's `default` group, created if missing; the server's other groups are not copied, as upstream |
+| `PUT /v2.0/ports/{id}` with `security_groups` | ignored, or `400 no updates provided` when it was the only field | replaces the port's groups and rebuilds its floating-IP filters before the answer |
+| `POST /v2.0/ports` with `security_groups: []` or `null` | the port got `default` | the port gets no group; absent still gives `default` |
+| `GET /v2.0/security-groups?id=…&name=…` | every group of the project | the groups matching `id` (repeatable) and `name` |
+| deleting a group a port carries | `204`, and the group left every port | `409 SecurityGroupInUse`, as upstream |
+| deleting a group that does not exist or is another project's | `204` | `404` |
+| deleting a port or a server whose port has a floating IP | the floating IP kept its fixed IP, router and `ACTIVE`, and its NAT stayed | the floating IP loses its port, fixed IP and router and goes `DOWN` in the same step, and the node stops forwarding it before the answer |
+| the `forceDelete` server action | deleted the instance row and its domain; the server's ports and volume attachments stayed | deletes the server as `DELETE` does: its boot ports go, ports attached by id are detached, its volumes are released |
+| a membership, rule or floating-IP change that the serving node cannot apply, or that waits more than one second | answered success | `500`, and the change is undone |
+
+Each server keeps the groups it has. A server created by v0.6.1 or earlier, whose ports carry none,
+now reports none: that is what its firewall was enforcing. Add its groups again with
+`openstack server add security group` to have them enforced.
+
+### The floating-IP dataplane (real mode)
+
+A floating IP's filter is now replaced in one `iptables-restore` commit, before its NAT, so its
+traffic is never forwarded unfiltered. Every firewall and NAT command runs with a one-second limit.
+The NAT rules Lightstack writes carry the comment `lightstack-fip`, which needs iptables' `comment`
+match (the `xt_comment` module with the legacy backend). Without it, every floating-IP association
+answers `500`.
+
+Reconciliation now converges every node both ways within one pass: it adds what a record holds and
+removes floating-IP NAT, addresses and filters that no record holds. It removes only Lightstack's
+rules: the marked ones, and the unmarked ones of earlier releases for floating IPs that still
+exist, which it replaces with marked ones. The unmarked rules of floating IPs deleted before the
+upgrade cannot be told from an operator's own DNAT, so they stay, and so does the filter they
+reach. List them on each node with
+
+```sh
+iptables -t nat -S PREROUTING | grep -- '-j DNAT' | grep -v lightstack-fip
+iptables -t nat -S OUTPUT | grep -- '-j DNAT' | grep -v lightstack-fip
+```
+
+and remove the ones that are not yours.

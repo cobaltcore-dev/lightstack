@@ -201,6 +201,17 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			fixedIP = ip.String()
 		}
 
+		// The new port gets the project's default group, as upstream: an interface attached on a
+		// network is not given the server's other groups (SPEC-033 FR-013). Ensured, not looked up,
+		// because a project has no default group until its first use; before the transaction,
+		// because ensuring it is a transaction of its own.
+		defaultGroupID, err := neutron.EnsureDefaultSecurityGroup(c.Request.Context(), svc.pool, projectID)
+		if err != nil {
+			log.Error().Err(err).Str("project_id", projectID).Msg("interface attach: ensuring the default security group failed")
+			common.SendError(c, common.NewInternalServerError("failed to create port"))
+			return
+		}
+
 		// Allocate/check and insert while holding the subnet lock shared with
 		// Neutron's port-create and server-boot paths.
 		err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
@@ -228,7 +239,10 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 				INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
 			`, portID, networkID, projectID, fmt.Sprintf("port-%s", portID[:8]), macAddress, fixedIPsJSON, instanceID, "compute:nova", "ACTIVE", time.Now(), time.Now())
-			return err
+			if err != nil {
+				return err
+			}
+			return neutron.AddPortSecurityGroup(c.Request.Context(), tx, portID, defaultGroupID)
 		})
 		if err != nil {
 			if errors.Is(err, neutron.ErrNoAvailableIP) {

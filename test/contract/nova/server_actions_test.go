@@ -295,114 +295,28 @@ func TestEvacuateAdmin_Contract(t *testing.T) {
 
 // TestAddSecurityGroup_Contract tests adding security group to instance
 //
-// The server carries "default" from create, so the group added is one the test creates.
+// The server carries "default" from create, so the group added is one the test creates. It boots on
+// a network: a server's groups are its ports' groups, so a server without a port has none to change
+// (SPEC-033).
 func TestAddSecurityGroup_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
+	token := issueToken(t)
+	sgName, _ := newTestSecurityGroup(t)
+	server := serverOnNetwork(t, token, "sg-test-server", "10.244.95.0/24")
 
-	client := setupNovaClient(t)
-	sgName := newTestSecurityGroup(t)
-
-	// Create test server
-	server, err := servers.Create(client, servers.CreateOpts{
-		Name:      "sg-test-server",
-		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  testImageID(t),
-	}).Extract()
-	require.NoError(t, err)
-	defer servers.Delete(client, server.ID)
-
-	// Wait for server to be ACTIVE
-	for i := 0; i < 30; i++ {
-		s, _ := servers.Get(client, server.ID).Extract()
-		if s.Status == "ACTIVE" {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-
-	// Add security group
-	actionBody := `{"addSecurityGroup":{"name":"` + sgName + `"}}`
-
-	url := client.ServiceURL("servers", server.ID, "action")
-	req, err := http.NewRequest("POST", url, strings.NewReader(actionBody))
-	require.NoError(t, err)
-
-	req.Header.Set("X-Auth-Token", client.TokenID)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode, "addSecurityGroup should succeed")
+	code, body := postAction(t, token, server, sgActionBody("addSecurityGroup", sgName))
+	assert.Equal(t, http.StatusAccepted, code, "addSecurityGroup should succeed: %s", body)
 }
 
 // TestRemoveSecurityGroup_Contract tests removing security group from instance
+//
+// The server boots on a network with only "default" on its port.
 func TestRemoveSecurityGroup_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
+	token := issueToken(t)
+	server := serverOnNetwork(t, token, "sg-remove-test-server", "10.244.96.0/24")
 
-	client := setupNovaClient(t)
-
-	// Note: This test validates the remove operation works when a second security group exists
-	// In practice, instances start with "default" security group, so we test removing
-	// a group that was explicitly added
-
-	// Create test server
-	server, err := servers.Create(client, servers.CreateOpts{
-		Name:      "sg-remove-test-server",
-		FlavorRef: "00000000-0000-0000-0000-000000000010",
-		ImageRef:  testImageID(t),
-	}).Extract()
-	require.NoError(t, err)
-	defer servers.Delete(client, server.ID)
-
-	// Wait for server to be ACTIVE
-	for i := 0; i < 30; i++ {
-		s, _ := servers.Get(client, server.ID).Extract()
-		if s.Status == "ACTIVE" {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-
-	// The test validates that removeSecurityGroup API works
-	// Even if the removal fails (last SG, not found), the API should handle it gracefully
-	// We test the success path by first adding "default" (if not already present), then removing it
-
-	url := client.ServiceURL("servers", server.ID, "action")
-
-	// Try to add default (may already exist, that's OK)
-	addBody := `{
-		"addSecurityGroup": {
-			"name": "default"
-		}
-	}`
-
-	req1, _ := http.NewRequest("POST", url, strings.NewReader(addBody))
-	req1.Header.Set("X-Auth-Token", client.TokenID)
-	req1.Header.Set("Content-Type", "application/json")
-	http.DefaultClient.Do(req1) // Ignore result - may already be associated
-
-	// The actual test: removeSecurityGroup API accepts valid request
-	// Note: This may return 400 "cannot remove last security group" which is correct behavior
-	removeBody := `{
-		"removeSecurityGroup": {
-			"name": "default"
-		}
-	}`
-
-	req2, err := http.NewRequest("POST", url, strings.NewReader(removeBody))
-	require.NoError(t, err)
-
-	req2.Header.Set("X-Auth-Token", client.TokenID)
-	req2.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req2)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	// Accept either 202 Accepted (success) or 400 Bad Request (last SG protection)
-	// Both are valid responses showing the API endpoint works correctly
-	assert.Contains(t, []int{http.StatusAccepted, http.StatusBadRequest}, resp.StatusCode,
-		"removeSecurityGroup should either succeed (202) or reject with validation error (400)")
+	// Removing the only group is allowed, as upstream: the server's ports then carry none (SPEC-033).
+	code, body := postAction(t, token, server, sgActionBody("removeSecurityGroup", "default"))
+	assert.Equal(t, http.StatusAccepted, code, "removeSecurityGroup should succeed: %s", body)
 }

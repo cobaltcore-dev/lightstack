@@ -85,6 +85,8 @@ var neutronConflictTypes = map[string]string{
 	"gateway ip":                             "GatewayIpInUse",
 	"gateway conflict with allocation pools": "GatewayConflictWithAllocationPools",
 	"router":                                 "RouterInUse",
+	// SPEC-033 FR-008c: a group a port carries.
+	"security group": "SecurityGroupInUse",
 }
 
 // neutronCodeTypes maps this package's envelope keys onto upstream class names for every status

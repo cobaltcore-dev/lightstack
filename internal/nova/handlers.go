@@ -59,7 +59,7 @@ const (
 
 // NeutronService defines the interface for Neutron operations Nova needs.
 type NeutronService interface {
-	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string, admin bool) (any, error)
+	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string, copyGroupsFrom string, admin bool) (any, error)
 	// ReleaseInstancePorts is AllocatePortForInstance's rollback: it deletes the
 	// ports Neutron allocated for a boot that failed after allocating them
 	// — the port rows, their host plumbing and their
@@ -76,6 +76,16 @@ type NeutronService interface {
 	// bad network BEFORE anything is created (FR-017), which is the half of a network
 	// failure that IS knowable up front.
 	NetworkUsableBy(ctx context.Context, networkID, projectID string, admin bool) error
+	// RefreshPortFilters rebuilds the floating-IP filters of the given ports from what the database
+	// now holds, on the node serving the request only; the other nodes converge in their
+	// reconciliation pass. In stub mode nothing is programmed. An error means the change has not
+	// reached the dataplane and the old filters still stand, so the caller undoes its change
+	// (SPEC-033 FR-008).
+	RefreshPortFilters(ctx context.Context, portIDs []string) error
+	// ConvergeFloatingIPs makes this node hold what each floating IP's record now says. A server's
+	// deletion calls it for the floating IPs it disassociated (neutron.DisassociatePortFloatingIPs),
+	// after its commit; a failure is logged and the deletion stands (SPEC-033 research R25).
+	ConvergeFloatingIPs(ctx context.Context, floatingIPs []string) error
 }
 
 // NewService creates a new Nova service
@@ -910,18 +920,11 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		// (launch-instance-model.service.js::setFinalSpecSecurityGroups). Matching on
 		// name alone rejected every dashboard launch with
 		// "Security group <uuid> not found." once the SG list started populating.
-		// id::text keeps a non-UUID identifier from erroring the comparison, as in
-		// neutron's GetSecurityGroup. An id match wins, so a group perversely named
-		// after another's UUID cannot shadow it.
-		var sgID string
-		sgErr := svc.pool.QueryRow(c.Request.Context(),
-			`SELECT id FROM security_groups
-			 WHERE (id::text = $1 OR name = $1) AND project_id = $2
-			 ORDER BY (id::text = $1) DESC
-			 LIMIT 1`,
-			name, projectID,
-		).Scan(&sgID)
-		if errors.Is(sgErr, database.ErrNoRows) {
+		// An id match wins, so a group perversely named after another's UUID cannot
+		// shadow it. The resolver is the one addSecurityGroup and removeSecurityGroup
+		// use, so the three cannot drift apart (SPEC-033 research R2).
+		sgID, sgErr := neutron.ResolveSecurityGroup(c.Request.Context(), svc.pool, name, projectID)
+		if errors.Is(sgErr, neutron.ErrSecurityGroupNotFound) {
 			if name == "default" {
 				if sgID, sgErr = neutron.EnsureDefaultSecurityGroup(c.Request.Context(), svc.pool, projectID); sgErr != nil {
 					log.Error().Err(sgErr).Str("operation", "ensure_default_sg").Msg("database error")
@@ -1052,12 +1055,9 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		keyName = req.Server.KeyName
 	}
 
-	// Create the instance and its security-group associations atomically: if any
-	// association fails, the instance INSERT rolls back too, so we never leave an
-	// instance without the security groups it was created with (FR-005; Constitution
-	// II, Synchronous Operations — "database updates happen within the same
-	// transaction as the operation"). Associations cascade on delete
-	// (server_security_groups FKs instances ON DELETE CASCADE).
+	// Create the instance. Its security groups are not stored with it: they go on its
+	// ports, the only list of a server's groups (SPEC-033 research R1). The boot gives
+	// the first port sgIDs and each later port the first port's groups.
 	queryStart = time.Now()
 	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		// The binding quota check (FR-035): under the project's lock, the usage it reads
@@ -1072,17 +1072,9 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		`, instanceID, req.Server.Name, projectID, userID, flavor.ID, imageID, "BUILD", 0, now, now, keyName); txErr != nil {
 			return fmt.Errorf("insert instance: %w", txErr)
 		}
-		for _, sgID := range sgIDs {
-			if _, txErr := tx.Exec(c.Request.Context(), `
-				INSERT INTO server_security_groups (server_id, security_group_id, created_at)
-				VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
-			`, instanceID, sgID, now); txErr != nil {
-				return fmt.Errorf("associate security group %s: %w", sgID, txErr)
-			}
-		}
 		return nil
 	})
-	middleware.LogDatabaseQuery(c, "INSERT instance and security groups", time.Since(queryStart), err)
+	middleware.LogDatabaseQuery(c, "INSERT instance", time.Since(queryStart), err)
 
 	var over *QuotaExceededError
 	if errors.As(err, &over) {
@@ -1171,11 +1163,18 @@ func (svc *Service) CreateServer(c *gin.Context) {
 				}
 			}()
 			if svc.neutronSvc != nil && len(req.Server.Networks) > 0 {
+				// The first port gets sgIDs, the groups resolved and validated above. Each
+				// later port copies the first port's groups as they are when it is
+				// allocated, so an add or remove accepted in between reaches it too
+				// (SPEC-033 FR-011, research R11).
+				var firstPortID string
 				for _, network := range req.Server.Networks {
 					log.Debug().Str("network_id", network.UUID).Msg("Allocating port for network")
-					// sgIDs: the groups resolved and validated above, so the port is
-					// filtered by the groups the server reports (cloud-storage#579).
-					portInfoRaw, err := svc.neutronSvc.AllocatePortForInstance(ctx, network.UUID, projectID, instanceID, sgIDs, isAdmin)
+					groups := sgIDs
+					if firstPortID != "" {
+						groups = nil
+					}
+					portInfoRaw, err := svc.neutronSvc.AllocatePortForInstance(ctx, network.UUID, projectID, instanceID, groups, firstPortID, isAdmin)
 					if err != nil {
 						// FAIL the boot. This used to log and `continue`, so the
 						// server reached ACTIVE with an empty address map and no
@@ -1215,6 +1214,9 @@ func (svc *Service) CreateServer(c *gin.Context) {
 						BridgeName: networking.BridgeNameForNetwork(portInfo.NetworkID),
 					})
 					portsAllocated = true
+					if firstPortID == "" {
+						firstPortID = portInfo.ID
+					}
 				}
 			}
 
@@ -1702,7 +1704,8 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 		}
 	}
 
-	// Attach security_groups to every entry in one batched query (no N+1, FR-007).
+	// security_groups: the groups each server's ports carry, in one batched query (no N+1, FR-007).
+	// A server whose ports carry none has no security_groups key (SPEC-033 FR-014, FR-015).
 	sgMap, err := securityGroupNamesForServers(c.Request.Context(), svc.pool, ids)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_servers_detail_sgs").Msg("database error")
@@ -1711,7 +1714,9 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 	}
 	for _, s := range servers {
 		sid, _ := s["id"].(string)
-		s["security_groups"] = formatSecurityGroups(sgMap[sid])
+		if groups := formatSecurityGroups(sgMap[sid]); groups != nil {
+			s["security_groups"] = groups
+		}
 	}
 
 	// And their attached volumes, in one query (FR-027).
@@ -1997,14 +2002,17 @@ func (svc *Service) GetServer(c *gin.Context) {
 		response["key_name"] = nil
 	}
 
-	// security_groups: current membership by name; [{"name":"default"}] when none (FR-004/FR-006).
-	sgNames, err := securityGroupNamesForServer(c.Request.Context(), svc.pool, id)
+	// security_groups: the groups the server's ports carry, the list its filter is built from. The key
+	// is absent when the ports carry none (SPEC-033 FR-014, FR-015).
+	sgMap, err := securityGroupNamesForServers(c.Request.Context(), svc.pool, []string{id})
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_server_sgs").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get security groups"))
 		return
 	}
-	response["security_groups"] = formatSecurityGroups(sgNames)
+	if groups := formatSecurityGroups(sgMap[id]); groups != nil {
+		response["security_groups"] = groups
+	}
 
 	volMap, err := volumesAttachedForServers(c.Request.Context(), svc.pool, []string{id})
 	if err != nil {
@@ -2058,6 +2066,25 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	middleware.LogOperationStart(c, "delete", "server", instanceID)
 	recordInstanceAction(c, svc.pool, instanceID, projectID, "delete")
 
+	if !svc.deleteServer(c, instanceID, projectID, false) {
+		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), errors.New("deletion refused or failed"))
+		return
+	}
+	logger.Info().Str("instance_id", instanceID).Msg("Instance deleted successfully")
+	middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), nil)
+	c.Status(http.StatusNoContent)
+}
+
+// deleteServer deletes a server for DELETE /servers/{id} and for the forceDelete action alike, as
+// upstream's two share one deletion (SPEC-033 FR-008e, research R25). In order: the console tokens; the
+// libvirt domain; one transaction that locks the instance, then its ports in id order, releases or
+// deletes its volumes, disassociates the floating IPs of the ports its boot created, detaches the ports
+// attached by id and deletes the boot ports and the instance; then, before the answer, the floating IPs
+// are converged; then the files are cleaned up. force tolerates a libvirt domain that cannot be deleted,
+// as forceDelete always has. It answers errors itself and reports whether the deletion happened; the
+// caller answers success in its own way.
+func (svc *Service) deleteServer(c *gin.Context, instanceID, projectID string, force bool) bool {
+	logger := middleware.GetLogger(c)
 	var instanceUUID string
 	var libvirtDomainID sql.NullString
 	var instanceImageID sql.NullString
@@ -2070,16 +2097,24 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 
 	if errors.Is(err, database.ErrNoRows) {
 		logger.Warn().Str("instance_id", instanceID).Msg("Instance not found")
-		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
 		common.SendError(c, common.NewNotFoundError("instance"))
-		return
+		return false
+	}
+	if err != nil {
+		logger.Error().Err(err).Str("instance_id", instanceID).Msg("delete: read instance failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return false
 	}
 
 	// Revoke console tokens before the domain goes, not merely before the row, so
 	// no link outlives the console it was issued for. The FK cascade removes the
 	// rows, but not their files (SPEC-021 FR-014).
-	if !svc.revokeConsoleTokens(c, instanceUUID, "instance deleted") {
-		return
+	reason := "instance deleted"
+	if force {
+		reason = "instance force-deleted"
+	}
+	if !svc.revokeConsoleTokens(c, instanceUUID, reason) {
+		return false
 	}
 
 	// Delete VM from libvirt (if available)
@@ -2089,151 +2124,131 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 
 		libvirtStart := time.Now()
 		if err := svc.vmManager.DeleteVM(ctx, libvirtDomainID.String); err != nil {
-			logger.Error().Err(err).Str("libvirt_domain_id", libvirtDomainID.String).Msg("Failed to delete VM from libvirt")
 			middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(libvirtStart), err)
-			middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
-			log.Error().Err(err).Str("operation", "delete_vm_libvirt").Msg("libvirt error")
-			common.SendError(c, common.NewInternalServerError("failed to delete server"))
-			return
+			if !force {
+				logger.Error().Err(err).Str("libvirt_domain_id", libvirtDomainID.String).Msg("Failed to delete VM from libvirt")
+				common.SendError(c, common.NewInternalServerError("failed to delete server"))
+				return false
+			}
+			// Best-effort for forceDelete: a leftover libvirt domain is hygiene, not
+			// correctness — the instance row is about to be deleted.
+			logger.Warn().Err(err).Str("libvirt_domain_id", libvirtDomainID.String).Msg("forceDelete: failed to delete libvirt domain")
+		} else {
+			middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(libvirtStart), nil)
+			logger.Info().Str("libvirt_domain_id", libvirtDomainID.String).Msg("VM deleted from libvirt")
 		}
-		middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(libvirtStart), nil)
-		logger.Info().Str("libvirt_domain_id", libvirtDomainID.String).Msg("VM deleted from libvirt")
 	}
 
 	// SPEC-009 FR-023: release (or, for delete-on-termination, delete) the volumes
 	// attached to this instance, drop its auto-allocated neutron ports, and delete
 	// the instance row — all in ONE transaction so a mid-sequence failure can't
-	// leave split state (e.g. a volume deleted while the server still exists). The
-	// attachment rows are read+resolved before the instance delete so the cascade
-	// can't drop them first. Filesystem cleanup (volume backing, overlay dir) is
-	// best-effort and runs only after the transaction commits.
+	// leave split state (e.g. a volume deleted while the server still exists).
+	// Filesystem cleanup (volume backing, overlay dir) is best-effort and runs only
+	// after the transaction commits.
 	ctx := c.Request.Context()
-	tx, txErr := svc.pool.Begin(ctx)
-	if txErr != nil {
-		logger.Error().Err(txErr).Str("instance_id", instanceUUID).Msg("delete: begin tx failed")
-		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), txErr)
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
-
-	rows, vaErr := tx.Query(ctx,
-		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1", instanceUUID)
-	if vaErr != nil {
-		logger.Error().Err(vaErr).Str("instance_id", instanceUUID).Msg("delete: query volume attachments failed")
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return
-	}
-	type attachedVol struct {
-		id  string
-		dot bool
-	}
-	var attached []attachedVol
-	for rows.Next() {
-		var a attachedVol
-		if scanErr := rows.Scan(&a.id, &a.dot); scanErr == nil {
-			attached = append(attached, a)
-		}
-	}
-	// Closed eagerly, not deferred: these rows came from tx, and pgx refuses a second
-	// command on a connection while a result set is open ("conn busy"), so the tx.Exec
-	// calls below need this cursor gone. The rows are already drained into `attached`,
-	// so there is nothing left to read.
-	rows.Close()
-	if rErr := rows.Err(); rErr != nil {
-		logger.Error().Err(rErr).Str("instance_id", instanceUUID).Msg("delete: iterate volume attachments failed")
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return
-	}
-
-	// Resolve each attachment in the tx; collect delete-on-termination volume ids
-	// so their backing files are removed after commit (filesystem ops can't be
-	// transactional).
-	var dotVolumes []string
-	for _, a := range attached {
-		if a.dot {
-			if _, e := tx.Exec(ctx, "DELETE FROM volumes WHERE id = $1", a.id); e != nil {
-				logger.Error().Err(e).Str("volume_id", a.id).Msg("delete: drop delete-on-termination volume failed")
-				common.SendError(c, common.NewInternalServerError("failed to delete server"))
-				return
+	var dotVolumes, floatingIPs []string
+	err = database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		// The instance first, then its ports in id order, the order every change to a server's
+		// ports takes them in (SPEC-033 research R3, R25). No row means a concurrent deletion won:
+		// 404, upstream's answer.
+		var one int
+		if err := tx.QueryRow(ctx, "SELECT 1 FROM instances WHERE id = $1 FOR UPDATE", instanceUUID).Scan(&one); err != nil {
+			if errors.Is(err, database.ErrNoRows) {
+				return common.NewNotFoundError("instance")
 			}
-			dotVolumes = append(dotVolumes, a.id)
-		} else {
-			if _, e := tx.Exec(ctx,
-				"UPDATE volumes SET status = 'available', attached_to_instance_id = NULL, updated_at = $1 WHERE id = $2",
-				time.Now(), a.id); e != nil {
-				logger.Error().Err(e).Str("volume_id", a.id).Msg("delete: release volume failed")
-				common.SendError(c, common.NewInternalServerError("failed to delete server"))
-				return
+			return fmt.Errorf("lock instance: %w", err)
+		}
+		var bootPorts []string
+		rows, err := tx.Query(ctx,
+			"SELECT id::text, COALESCE(device_owner, '') FROM ports WHERE device_id = $1 ORDER BY id FOR UPDATE", instanceUUID)
+		if err != nil {
+			return fmt.Errorf("lock ports: %w", err)
+		}
+		for rows.Next() {
+			var id, owner string
+			if err := rows.Scan(&id, &owner); err != nil {
+				rows.Close()
+				return fmt.Errorf("lock ports: %w", err)
+			}
+			if owner == "compute:nova" {
+				bootPorts = append(bootPorts, id)
 			}
 		}
-	}
-	if _, e := tx.Exec(ctx, "DELETE FROM volume_attachments WHERE instance_id = $1", instanceUUID); e != nil {
-		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: remove volume attachments failed")
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return
-	}
+		// Closed eagerly, not deferred: pgx refuses a second command on a connection while a
+		// result set is open ("conn busy").
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("lock ports: %w", err)
+		}
 
-	// The instance's ports, split by who owns them:
-	//
-	// - Ports Neutron allocated for the boot (device_owner 'compute:nova') are
-	//   Nova's to delete. Without this they linger after the server is gone and
-	//   deleting the network then fails with "network has active ports" — which
-	//   breaks `terraform destroy` (SPEC-009 / SC-007) and leaks ports.
-	//
-	// - A port the tenant created and attached (os-interface with port_id) is
-	//   the tenant's resource, not the server's: upstream detaches it — clears
-	//   the device, parks it DOWN — rather than deleting it. The blanket
-	//   `DELETE ... WHERE device_id = $1` used to destroy it: the tenant lost a
-	//   port they made, with its fixed IP, by deleting a server.
-	if _, e := tx.Exec(ctx, `
-		UPDATE ports
-		SET device_id = NULL, device_owner = NULL, status = 'DOWN', updated_at = NOW()
-		WHERE device_id = $1 AND COALESCE(device_owner, '') <> 'compute:nova'
-	`, instanceUUID); e != nil {
-		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: detach tenant ports failed")
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return
-	}
-	if _, e := tx.Exec(ctx,
-		"DELETE FROM ports WHERE device_id = $1 AND device_owner = 'compute:nova'", instanceUUID); e != nil {
-		logger.Error().Err(e).Str("instance_id", instanceUUID).Msg("delete: remove instance ports failed")
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return
-	}
+		if dotVolumes, err = releaseServerVolumes(ctx, tx, instanceUUID); err != nil {
+			return err
+		}
 
-	// Delete the instance row — by its resolved id alone: matching the name too
-	// would also delete a server named after this one's id, and leave its ports
-	// and attachments behind.
-	queryStart = time.Now()
-	tag, err := tx.Exec(ctx,
-		"DELETE FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	)
-	middleware.LogDatabaseQuery(c, "DELETE instance", time.Since(queryStart), err)
+		// The floating IPs of the ports the boot created lose their association with them, in
+		// this transaction, as upstream's port deletion does (FR-008d). A port attached by id is
+		// only detached below, so it keeps its floating IP.
+		if floatingIPs, err = neutron.DisassociatePortFloatingIPs(ctx, tx, bootPorts); err != nil {
+			return err
+		}
+
+		// The instance's ports, split by who owns them:
+		//
+		// - Ports Neutron allocated for the boot (device_owner 'compute:nova') are
+		//   Nova's to delete. Without this they linger after the server is gone and
+		//   deleting the network then fails with "network has active ports" — which
+		//   breaks `terraform destroy` (SPEC-009 / SC-007) and leaks ports.
+		//
+		// - A port the tenant created and attached (os-interface with port_id) is
+		//   the tenant's resource, not the server's: upstream detaches it — clears
+		//   the device, parks it DOWN — rather than deleting it. The blanket
+		//   `DELETE ... WHERE device_id = $1` used to destroy it: the tenant lost a
+		//   port they made, with its fixed IP, by deleting a server.
+		if _, err := tx.Exec(ctx, `
+			UPDATE ports
+			SET device_id = NULL, device_owner = NULL, status = 'DOWN', updated_at = NOW()
+			WHERE device_id = $1 AND COALESCE(device_owner, '') <> 'compute:nova'
+		`, instanceUUID); err != nil {
+			return fmt.Errorf("detach tenant ports: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			"DELETE FROM ports WHERE device_id = $1 AND device_owner = 'compute:nova'", instanceUUID); err != nil {
+			return fmt.Errorf("remove instance ports: %w", err)
+		}
+
+		// Delete the instance row — by its resolved id alone: matching the name too
+		// would also delete a server named after this one's id, and leave its ports
+		// and attachments behind.
+		tag, err := tx.Exec(ctx, "DELETE FROM instances WHERE id = $1 AND project_id = $2", instanceID, projectID)
+		if err != nil {
+			return fmt.Errorf("delete instance: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return common.NewNotFoundError("instance")
+		}
+		return nil
+	})
+	var refusal *common.OpenStackError
+	if errors.As(err, &refusal) {
+		logger.Warn().Str("instance_id", instanceUUID).Msg("delete: instance already gone (concurrent delete)")
+		common.SendError(c, refusal)
+		return false
+	}
 	if err != nil {
-		logger.Error().Err(err).Msg("Failed to delete instance from database")
+		logger.Error().Err(err).Str("instance_id", instanceUUID).Msg("delete: transaction failed")
 		log.Error().Err(err).Str("operation", "delete_instance").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return
-	}
-	// Exactly-once delete: the existence check at the top of this handler runs before the
-	// transaction, so two concurrent deletes can both pass it. The row is removed under the
-	// transaction's write lock, so only one DELETE affects a row; the loser affects none and
-	// is a 404 (upstream's answer), its volume and port deletes rolled back by the deferred
-	// Rollback.
-	if tag.RowsAffected() == 0 {
-		logger.Warn().Str("instance_id", instanceUUID).Msg("delete: instance already gone (concurrent delete)")
-		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), nil)
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return
+		return false
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		logger.Error().Err(err).Str("instance_id", instanceUUID).Msg("delete: commit failed")
-		middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), err)
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return
+	// The disassociated floating IPs leave this node before the answer. A failure is logged and the
+	// deletion stands: the ports are gone and their teardown has no undo, so the reconciliation pass
+	// removes what is left (SPEC-033 research R25, a recorded departure).
+	if len(floatingIPs) > 0 && svc.neutronSvc != nil {
+		if err := svc.neutronSvc.ConvergeFloatingIPs(context.WithoutCancel(ctx), floatingIPs); err != nil {
+			logger.Error().Err(err).Strs("floating_ips", floatingIPs).
+				Msg("delete: withdraw the floating IPs of the deleted ports; the reconciliation pass removes what is left")
+		}
 	}
 
 	// Post-commit, best-effort filesystem cleanup: delete-on-termination volume
@@ -2253,11 +2268,55 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 	if instanceImageID.Valid {
 		svc.reclaimImageBaseIfUnused(instanceImageID.String)
 	}
+	return true
+}
 
-	logger.Info().Str("instance_id", instanceID).Msg("Instance deleted successfully")
-	middleware.LogOperationEnd(c, "delete", "server", instanceID, time.Since(start), nil)
-
-	c.Status(http.StatusNoContent)
+// releaseServerVolumes releases the volumes attached to a server being deleted, or deletes those
+// marked delete-on-termination, and removes the attachments, on the deletion's transaction. It returns
+// the deleted volumes' ids, whose backing files go after the commit (filesystem work cannot be
+// transactional).
+func releaseServerVolumes(ctx context.Context, tx database.Tx, instanceID string) ([]string, error) {
+	rows, err := tx.Query(ctx,
+		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1", instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("query volume attachments: %w", err)
+	}
+	type attachedVol struct {
+		id  string
+		dot bool
+	}
+	var attached []attachedVol
+	for rows.Next() {
+		var a attachedVol
+		if err := rows.Scan(&a.id, &a.dot); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read volume attachment: %w", err)
+		}
+		attached = append(attached, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate volume attachments: %w", err)
+	}
+	var dotVolumes []string
+	for _, a := range attached {
+		if a.dot {
+			if _, err := tx.Exec(ctx, "DELETE FROM volumes WHERE id = $1", a.id); err != nil {
+				return nil, fmt.Errorf("drop delete-on-termination volume %s: %w", a.id, err)
+			}
+			dotVolumes = append(dotVolumes, a.id)
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			"UPDATE volumes SET status = 'available', attached_to_instance_id = NULL, updated_at = $1 WHERE id = $2",
+			time.Now(), a.id); err != nil {
+			return nil, fmt.Errorf("release volume %s: %w", a.id, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM volume_attachments WHERE instance_id = $1", instanceID); err != nil {
+		return nil, fmt.Errorf("remove volume attachments: %w", err)
+	}
+	return dotVolumes, nil
 }
 
 // consoleActions are the actions dispatched BEFORE the shared resolve-and-record
@@ -3740,62 +3799,12 @@ func (svc *Service) UnlockInstanceAction(c *gin.Context, instanceID, projectID s
 	c.Status(http.StatusAccepted)
 }
 
-// ForceDeleteInstanceAction handles the forceDelete action
+// ForceDeleteInstanceAction handles the forceDelete action. It runs the same deletion as DELETE
+// /servers/{id}, as upstream's force_delete does (SPEC-033 FR-008e): it used to delete only the
+// instance row and its domain, leaving the server's ports, their floating IPs and its volume
+// attachments behind. Its answer is as before.
 func (svc *Service) ForceDeleteInstanceAction(c *gin.Context, instanceID, projectID string) {
-	// Read in both modes: a found row is what proves this project owns the
-	// instance, and the console revoke below is not project-scoped.
-	var libvirtDomainID any
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT libvirt_domain_id FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&libvirtDomainID)
-
-	// Revoke console tokens before the row goes. The FK cascade removes their rows
-	// but not their projection files, and a file the proxy can still read keeps
-	// resolving, with no row left to revoke it by, until the next orphan sweep
-	// (SPEC-021 FR-014).
-	if err == nil && !svc.revokeConsoleTokens(c, instanceID, "instance force-deleted") {
-		return
-	}
-
-	// In stub mode, just delete from database
-	if svc.libvirtMode == "stub" || svc.vmManager == nil {
-		_, err := svc.pool.Exec(c.Request.Context(),
-			"DELETE FROM instances WHERE id = $1 AND project_id = $2",
-			instanceID, projectID,
-		)
-		if err != nil {
-			log.Error().Err(err).Str("operation", "force_delete_instance").Msg("database error")
-			common.SendError(c, common.NewInternalServerError("failed to delete instance"))
-			return
-		}
+	if svc.deleteServer(c, instanceID, projectID, true) {
 		c.Status(http.StatusNoContent)
-		return
 	}
-
-	// In real mode, destroy VM then delete from database
-	if err == nil && libvirtDomainID != nil {
-		domainStr := fmt.Sprintf("%v", libvirtDomainID)
-		if domainStr != "" {
-			ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-			defer cancel()
-			// Best-effort: a leftover libvirt domain is hygiene, not
-			// correctness — the instance row is about to be deleted.
-			if err := svc.vmManager.DeleteVM(ctx, domainStr); err != nil {
-				log.Warn().Err(err).Str("domain", domainStr).Str("instance_id", instanceID).Msg("failed to delete libvirt domain")
-			}
-		}
-	}
-
-	_, err = svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "force_delete_instance_db").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to delete instance"))
-		return
-	}
-
-	c.Status(http.StatusNoContent)
 }

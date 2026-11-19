@@ -10,13 +10,13 @@ import (
 
 func TestServerDetail_KeyName_RoundTrip(t *testing.T) {
 	requireDB(t)
-	cleanupSpec017(t)
-	defer cleanupSpec017(t)
-	createTestKeypair(t, "spec017-key")
+	cleanupReadback(t)
+	defer cleanupReadback(t)
+	createTestKeypair(t, "readback-key")
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		withImage(t, seededProjectID, `{"server":{"name":"spec017-kn","flavorRef":"m1.small","key_name":"spec017-key"}}`))
+		withImage(t, seededProjectID, `{"server":{"name":"readback-kn","flavorRef":"m1.small","key_name":"readback-key"}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create: code=%d body=%s; want 202", code, body)
 	}
@@ -30,8 +30,8 @@ func TestServerDetail_KeyName_RoundTrip(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("show: code=%d body=%s", code, body)
 	}
-	if got := serverBody(t, body)["key_name"]; got != "spec017-key" {
-		t.Errorf("show key_name=%v; want spec017-key", got)
+	if got := serverBody(t, body)["key_name"]; got != "readback-key" {
+		t.Errorf("show key_name=%v; want readback-key", got)
 	}
 
 	// list-detail
@@ -43,8 +43,8 @@ func TestServerDetail_KeyName_RoundTrip(t *testing.T) {
 	for _, s := range serversBody(t, body) {
 		if s["id"] == id {
 			found = true
-			if s["key_name"] != "spec017-key" {
-				t.Errorf("detail key_name=%v; want spec017-key", s["key_name"])
+			if s["key_name"] != "readback-key" {
+				t.Errorf("detail key_name=%v; want readback-key", s["key_name"])
 			}
 			// tenant_id comes from the scanned row, not the request context — a
 			// wrong scan target would silently emit "" for every server.
@@ -60,12 +60,12 @@ func TestServerDetail_KeyName_RoundTrip(t *testing.T) {
 
 func TestServerDetail_KeyName_NullWhenAbsent(t *testing.T) {
 	requireDB(t)
-	cleanupSpec017(t)
-	defer cleanupSpec017(t)
+	cleanupReadback(t)
+	defer cleanupReadback(t)
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		withImage(t, seededProjectID, `{"server":{"name":"spec017-nokey","flavorRef":"m1.small"}}`))
+		withImage(t, seededProjectID, `{"server":{"name":"readback-nokey","flavorRef":"m1.small"}}`))
 	if code != http.StatusAccepted {
 		t.Fatalf("create: code=%d body=%s; want 202", code, body)
 	}
@@ -89,16 +89,16 @@ func TestServerDetail_KeyName_NullWhenAbsent(t *testing.T) {
 // is created.
 func TestCreateServer_UnknownKeyName_400(t *testing.T) {
 	requireDB(t)
-	cleanupSpec017(t)
-	defer cleanupSpec017(t)
+	cleanupReadback(t)
+	defer cleanupReadback(t)
 
 	r := newNovaTestRouter()
 	code, body := createServerAs(t, r, seededProjectID, seededUserID,
-		withImage(t, seededProjectID, `{"server":{"name":"spec017-badkey","flavorRef":"m1.small","key_name":"spec017-nope"}}`))
+		withImage(t, seededProjectID, `{"server":{"name":"readback-badkey","flavorRef":"m1.small","key_name":"readback-nope"}}`))
 	if code != http.StatusBadRequest {
 		t.Fatalf("create with unknown key_name: code=%d body=%s; want 400", code, body)
 	}
-	if n := instanceCount(t, "spec017-badkey", seededProjectID); n != 0 {
+	if n := instanceCount(t, "readback-badkey", seededProjectID); n != 0 {
 		t.Errorf("instance created despite 400: count=%d", n)
 	}
 }

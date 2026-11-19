@@ -12,9 +12,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Shared test helpers for spec-017 (Nova server-detail read-back). All rows these
-// create are namespaced with the `spec017-` prefix (or the fresh test project) and
-// removed by cleanupSpec017.
+// Shared helpers for the server tests: requests and response bodies, keypairs, projects,
+// security groups and their rules. The read-back tests name their rows with the
+// `readback-` prefix (or use the fresh test project), and cleanupReadback removes them.
 
 // freshProjectID is a throwaway project (created per-test) that has NO seeded
 // `default` security group — used to prove neutron.EnsureDefaultSecurityGroup (FR-006a).
@@ -25,7 +25,7 @@ func createTestKeypair(t *testing.T, name string) {
 	if _, err := testPool.Exec(t.Context(),
 		`INSERT INTO keypairs (name, user_id, public_key) VALUES ($1, $2, $3)
 		 ON CONFLICT (user_id, name) DO NOTHING`,
-		name, seededUserID, "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABspec017"); err != nil {
+		name, seededUserID, "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABreadback"); err != nil {
 		t.Fatalf("createTestKeypair(%s): %v", name, err)
 	}
 }
@@ -36,31 +36,6 @@ func createTestProject(t *testing.T, id, name string) {
 		`INSERT INTO projects (id, name, description, enabled) VALUES ($1, $2, '', true)
 		 ON CONFLICT (id) DO NOTHING`, id, name); err != nil {
 		t.Fatalf("createTestProject(%s): %v", name, err)
-	}
-}
-
-// createTestSecurityGroup inserts (or reuses) a security group in a project and
-// returns its id.
-func createTestSecurityGroup(t *testing.T, name, projectID string) string {
-	t.Helper()
-	var id string
-	if err := testPool.QueryRow(t.Context(),
-		`INSERT INTO security_groups (name, project_id, description) VALUES ($1, $2, 'spec017 test')
-		 ON CONFLICT (project_id, name) DO UPDATE SET description = EXCLUDED.description
-		 RETURNING id`, name, projectID).Scan(&id); err != nil {
-		t.Fatalf("createTestSecurityGroup(%s): %v", name, err)
-	}
-	return id
-}
-
-// deleteSecurityGroupByID removes a security group row directly (simulating a
-// Neutron delete that leaves an orphaned server_security_groups row, since that
-// column has no FK).
-func deleteSecurityGroupByID(t *testing.T, id string) {
-	t.Helper()
-	if _, err := testPool.Exec(t.Context(),
-		"DELETE FROM security_groups WHERE id = $1", id); err != nil {
-		t.Fatalf("deleteSecurityGroupByID(%s): %v", id, err)
 	}
 }
 
@@ -76,24 +51,24 @@ func securityGroupExists(t *testing.T, name, projectID string) bool {
 	return ok
 }
 
-// cleanupSpec017 removes rows created by spec-017 tests. instances cascade to
+// cleanupReadback removes the rows the read-back tests created. instances cascade to
 // server_security_groups; deleting the fresh project cascades its instances and
 // any ensured `default` security group.
-func cleanupSpec017(t *testing.T) {
+func cleanupReadback(t *testing.T) {
 	t.Helper()
 	ctx := t.Context()
 	for _, q := range []string{
-		"DELETE FROM instances WHERE name LIKE 'spec017-%'",
-		"DELETE FROM keypairs WHERE name LIKE 'spec017-%'",
-		"DELETE FROM security_groups WHERE name LIKE 'spec017-%'",
+		"DELETE FROM instances WHERE name LIKE 'readback-%'",
+		"DELETE FROM keypairs WHERE name LIKE 'readback-%'",
+		"DELETE FROM security_groups WHERE name LIKE 'readback-%'",
 	} {
 		if _, err := testPool.Exec(ctx, q); err != nil {
-			t.Fatalf("cleanupSpec017 (%s): %v", q, err)
+			t.Fatalf("cleanupReadback (%s): %v", q, err)
 		}
 	}
 	// Last: instances and security_groups reference projects by FK.
 	if _, err := testPool.Exec(ctx, "DELETE FROM projects WHERE id = $1", freshProjectID); err != nil {
-		t.Fatalf("cleanupSpec017 (delete project %s): %v", freshProjectID, err)
+		t.Fatalf("cleanupReadback (delete project %s): %v", freshProjectID, err)
 	}
 }
 

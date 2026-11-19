@@ -26,7 +26,7 @@ func TestAllocatePortMessageIsReadableWhenNoSubnetExists(t *testing.T) {
 	svc := &Service{pool: testPool}
 	netID := seedNetwork(t, "spec025-nosubnet")
 
-	_, err := svc.AllocatePortForInstance(context.Background(), netID, seededProjectID, uuid.New().String(), nil, false)
+	_, err := svc.AllocatePortForInstance(context.Background(), netID, seededProjectID, uuid.New().String(), nil, "", false)
 	if err == nil {
 		t.Fatal("allocation succeeded against a network with no subnet; there is no address to hand out")
 	}

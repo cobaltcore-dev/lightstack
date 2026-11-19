@@ -35,6 +35,56 @@ type Service struct {
 	mdRedirect       *networking.MetadataRedirect
 	vxlanCoordinator *VXLANCoordinator
 	cache            *cache.Cache
+
+	// nsLock is the node lock: it serialises every change to this node's floating-IP state, from
+	// reading the records to applying them, so a reconciliation pass never applies rules it read
+	// before a change the node has since applied (SPEC-033 research R8). A one-slot channel, so that
+	// acquiring it has a deadline (lockNode).
+	nsLock chan struct{}
+	// dataplane is the node's floating-IP dataplane: routerManager, or a fake in tests (R9).
+	dataplane floatingIPDataplane
+	// uplink names the node's uplink: the default route's interface in real mode, "" in stub mode,
+	// where nothing is programmed (R9). A function so that tests can make it fail.
+	uplink func() (string, error)
+}
+
+// floatingIPDataplane is what the service programs on this node for floating IPs (SPEC-033 research
+// R9). *networking.RouterManager implements it; in stub mode it programs nothing.
+type floatingIPDataplane interface {
+	// EnsureIngressFilter makes the filter of a fixed IP hold exactly rules, replacing it in one
+	// commit when it differs. On an error the old filter stands.
+	EnsureIngressFilter(fixedIP, uplink string, rules []networking.IngressRule) error
+	// EnsureFloatingIP points a floating IP's NAT at a fixed IP in one commit, then adds the address
+	// to the uplink. It reports the other fixed IPs the replaced rules pointed at.
+	EnsureFloatingIP(floatingIP, fixedIP, uplink string) ([]string, error)
+	// WithdrawFloatingIP removes a floating IP's address, then every rule of its, marked or not. It
+	// reports the fixed IPs they pointed at.
+	WithdrawFloatingIP(floatingIP, uplink string) ([]string, error)
+	// RemoveIngressFilter removes a fixed IP's filter and its jumps in one commit.
+	RemoveIngressFilter(fixedIP string) error
+	// NorthSouthState lists the node: its NAT rules of the shape, its filters and the uplink's
+	// addresses.
+	NorthSouthState(uplink string) (networking.NorthSouth, error)
+}
+
+// nodeLockTimeout bounds the wait for the node lock (FR-007b).
+const nodeLockTimeout = time.Second
+
+// errNodeBusy is the node lock's timeout: another change to the node's floating-IP state held it for
+// the whole second.
+var errNodeBusy = errors.New("the node's floating-IP state is busy")
+
+// lockNode acquires the node lock within nodeLockTimeout and returns its release. A request that
+// cannot acquire it has a failed change; a reconciliation step skips the address until its next pass.
+func (svc *Service) lockNode() (release func(), err error) {
+	timer := time.NewTimer(nodeLockTimeout)
+	defer timer.Stop()
+	select {
+	case svc.nsLock <- struct{}{}:
+		return func() { <-svc.nsLock }, nil
+	case <-timer.C:
+		return nil, fmt.Errorf("%w: lock not acquired within %s", errNodeBusy, nodeLockTimeout)
+	}
 }
 
 // NewService creates a new Neutron service
@@ -42,6 +92,11 @@ func NewService(pool database.DB, mode string, cacheInstance *cache.Cache) *Serv
 	sgManager, err := networking.NewSecurityGroupManager(mode, "")
 	if err != nil {
 		log.Error().Err(err).Str("mode", mode).Msg("failed to initialize security group manager")
+	}
+	routerManager := networking.NewRouterManager(mode)
+	uplink := networking.DefaultUplinkInterface
+	if mode == "stub" {
+		uplink = func() (string, error) { return "", nil }
 	}
 	return &Service{
 		pool:          pool,
@@ -51,9 +106,12 @@ func NewService(pool database.DB, mode string, cacheInstance *cache.Cache) *Serv
 		tapManager:    networking.NewTAPDeviceManager(mode),
 		dhcpManager:   networking.NewDHCPManager(mode),
 		sgManager:     sgManager,
-		routerManager: networking.NewRouterManager(mode),
+		routerManager: routerManager,
 		mdRedirect:    networking.NewMetadataRedirect(mode),
 		cache:         cacheInstance,
+		nsLock:        make(chan struct{}, 1),
+		dataplane:     routerManager,
+		uplink:        uplink,
 	}
 }
 

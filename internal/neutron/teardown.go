@@ -64,8 +64,9 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 			}
 			rows.Close()
 			for _, f := range fips {
-				fail(svc.routerManager.WithdrawFloatingIP(f.floating, f.fixed, uplink), "withdraw floating IP")
-				fail(svc.routerManager.RemoveIngressFilter(f.fixed, uplink), "remove ingress filter")
+				_, err := svc.routerManager.WithdrawFloatingIP(f.floating, uplink)
+				fail(err, "withdraw floating IP")
+				fail(svc.routerManager.RemoveIngressFilter(f.fixed), "remove ingress filter")
 			}
 		} else {
 			fail(err, "query floating IPs")

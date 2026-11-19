@@ -88,7 +88,7 @@ func TestGuestAttachRuleMatchesUpstreamAndBothPathsAgree(t *testing.T) {
 				want = tc.admin
 			}
 			preErr := svc.NetworkUsableBy(ctx, netID, seededProjectID, admin)
-			_, allocErr := svc.AllocatePortForInstance(ctx, netID, seededProjectID, uuid.New().String(), nil, admin)
+			_, allocErr := svc.AllocatePortForInstance(ctx, netID, seededProjectID, uuid.New().String(), nil, "", admin)
 
 			for _, got := range []struct {
 				path string
@@ -151,7 +151,7 @@ func TestAllocationFailuresMarkWhatATenantMaySee(t *testing.T) {
 		{"no subnet", noSubnet},
 		{"unshared external network", foreignExternal},
 	} {
-		_, err := svc.AllocatePortForInstance(ctx, tc.networkID, seededProjectID, uuid.New().String(), nil, false)
+		_, err := svc.AllocatePortForInstance(ctx, tc.networkID, seededProjectID, uuid.New().String(), nil, "", false)
 		var visible tenantMessager
 		if !errors.As(err, &visible) {
 			t.Errorf("%s: %v is not marked fit for the tenant; it is a condition they can act on", tc.name, err)
@@ -170,7 +170,7 @@ func TestAllocationFailuresMarkWhatATenantMaySee(t *testing.T) {
 	}{
 		{"pre-flight", svc.NetworkUsableBy(cancelled, noSubnet, seededProjectID, false)},
 		{"allocation", func() error {
-			_, err := svc.AllocatePortForInstance(cancelled, noSubnet, seededProjectID, uuid.New().String(), nil, false)
+			_, err := svc.AllocatePortForInstance(cancelled, noSubnet, seededProjectID, uuid.New().String(), nil, "", false)
 			return err
 		}()},
 	} {

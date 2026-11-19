@@ -1003,16 +1003,27 @@ func (svc *Service) withdrawRouterEgressSNAT(ctx context.Context, routerID strin
 // It takes the id rather than the gateway blob so the floating-IP caller, which has a plain string,
 // does not have to wrap it in a throwaway map (branch review 2026-08-13, SRC-7).
 func requireExternalNetwork(c *gin.Context, pool database.DB, networkID, use string) bool {
-	if networkID == "" {
-		common.SendError(c, common.NewBadRequestError("a network_id is required to name "+use))
-		return false
+	err := externalNetworkRefusal(c.Request.Context(), pool, networkID, c.GetString("project_id"), use, false)
+	var refusal *common.OpenStackError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &refusal):
+		common.SendError(c, refusal)
+	default:
+		log.Error().Err(err).Str("network_id", networkID).Msg("failed to check external network")
+		common.SendError(c, common.NewInternalServerError("failed to verify external network"))
 	}
-	// By id only, unlike GetNetwork, which also takes a name: upstream validates network_id and
-	// floating_network_id as UUIDs (type:uuid) and answers 400, and a client resolves a name to an id
-	// before it sends one. A name used to reach the lookup below and come back as a 404.
-	if uuid.Validate(networkID) != nil {
-		common.SendError(c, common.NewBadRequestError(fmt.Sprintf("invalid network_id for %s: %q is not a valid UUID", use, networkID)))
-		return false
+	return false
+}
+
+// externalNetworkRefusal is requireExternalNetwork's check on a querier: nil when networkID names an
+// external network the caller can see, the *common.OpenStackError to answer with when it does not, or
+// a database error. forUpdate locks the network's row, for a transaction that relies on it staying
+// external until it commits (SPEC-033 research R20).
+func externalNetworkRefusal(ctx context.Context, q subnetQuerier, networkID, projectID, use string, forUpdate bool) error {
+	if refusal := networkIDRefusal(networkID, use); refusal != nil {
+		return refusal
 	}
 
 	// Scoped to what the caller may see — owner OR shared OR external, the same visibility predicate
@@ -1021,26 +1032,37 @@ func requireExternalNetwork(c *gin.Context, pool database.DB, networkID, use str
 	// distinguished existence and made the endpoint an oracle (branch review 2026-08-13, SRC-4).
 	// Nothing usable is hidden by this: a network that qualifies as a gateway is external, and external
 	// is itself one of the three ways to be visible (FR-033a).
+	query := `SELECT external FROM networks
+		WHERE id::text = $1 AND (project_id = $2 OR shared = true OR external = true)`
+	if forUpdate {
+		query += " FOR UPDATE"
+	}
 	var external bool
-	err := pool.QueryRow(c.Request.Context(), `
-		SELECT external FROM networks
-		WHERE id::text = $1 AND (project_id = $2 OR shared = true OR external = true)`,
-		networkID, c.GetString("project_id")).Scan(&external)
+	err := q.QueryRow(ctx, query, networkID, projectID).Scan(&external)
 	if errors.Is(err, database.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("network"))
-		return false
+		return common.NewNotFoundError("network")
 	}
 	if err != nil {
-		log.Error().Err(err).Str("network_id", networkID).Msg("failed to check external network")
-		common.SendError(c, common.NewInternalServerError("failed to verify external network"))
-		return false
+		return fmt.Errorf("check external network %s: %w", networkID, err)
 	}
 	if !external {
-		common.SendError(c, common.NewBadRequestError(
-			"Network "+networkID+" is not an external network and cannot be used as "+use))
-		return false
+		return common.NewBadRequestError("Network " + networkID + " is not an external network and cannot be used as " + use)
 	}
-	return true
+	return nil
+}
+
+// networkIDRefusal checks a network id from a request body before anything is looked up: present,
+// and a UUID. By id only, unlike GetNetwork, which also takes a name: upstream validates network_id and
+// floating_network_id as UUIDs (type:uuid) and answers 400, and a client resolves a name to an id
+// before it sends one. A name used to reach the lookup and come back as a 404.
+func networkIDRefusal(networkID, use string) *common.OpenStackError {
+	if networkID == "" {
+		return common.NewBadRequestError("a network_id is required to name " + use)
+	}
+	if uuid.Validate(networkID) != nil {
+		return common.NewBadRequestError(fmt.Sprintf("invalid network_id for %s: %q is not a valid UUID", use, networkID))
+	}
+	return nil
 }
 
 // gatewayNetworkID extracts the network a router's external_gateway_info names.

@@ -11,10 +11,10 @@ in a stock build, so eBPF mode currently adds no east-west filtering (see *What 
 `networking_mode: ebpf` currently behaves like `networking_mode: iptables`:
 
 - The **north-south** ingress filter applies in both modes. It is the per-fixed-IP iptables chain built from
-  `port_security_groups` when a floating IP is associated, and rebuilt when a group's rules change
-  (`RouterManager.EnsureIngressFilter`, `pkg/networking/northsouth.go`).
+  `port_security_groups` when a floating IP is associated, and rebuilt when a group's rules or a port's
+  groups change (`RouterManager.EnsureIngressFilter`, `pkg/networking/northsouth.go`).
 - The **east-west** XDP filter does not exist. `neutron.NewService` creates the security-group manager with
-  an empty object path (`internal/neutron/network.go:40`), `ebpf.LoadCollectionSpec("")` fails, Neutron
+  an empty object path (`internal/neutron/network.go:91`), `ebpf.LoadCollectionSpec("")` fails, Neutron
   logs `failed to initialize security group manager` and runs without a manager, and `CreatePort` skips the
   eBPF block: no rules are programmed and no filter is attached.
 
@@ -87,12 +87,14 @@ only if one of that port's ingress rules matches its protocol, source address an
 
 ## What's Missing ❌
 
-1. **Loading.** The object path is hard-coded empty (`internal/neutron/network.go:40`), the
+1. **Loading.** The object path is hard-coded empty (`internal/neutron/network.go:91`), the
    `security_group_mode` and `ebpf_object_path` keys in `config/lightstack.yaml` are read by nothing, and the
    container image does not build `secgroup.o`.
-2. **Rule synchronization.** Creating or deleting a security-group rule refreshes only the north-south filter
-   (`refreshIngressFiltersForSG`); the eBPF map keeps the rules the port was created with.
-3. **Security-group changes on an existing port.** Rules are programmed once, at port creation.
+2. **Rule synchronization.** Creating or deleting a security-group rule rebuilds only the north-south filter
+   (`rebuildGroupFilters`); the eBPF map keeps the rules the port was created with.
+3. **Security-group changes on an existing port.** Rules are programmed once, at port creation. A
+   membership change, through the compute API's add and remove or through a port update, rebuilds only the
+   north-south filter; it does not re-program the port's eBPF rule set.
 4. **Destinations that are not local ports.** Frames to the gateway, to broadcast, or to anything off-host
    are dropped (see *How the Filter Decides*).
 5. **IPv6.** IPv6 frames pass unfiltered, and IPv6 rules are dropped.

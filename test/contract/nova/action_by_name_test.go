@@ -76,7 +76,12 @@ func TestNovaActionsByName_Contract(t *testing.T) {
 	token := issueToken(t)
 
 	const name = "spec025-byname"
-	createNamedServer(t, token, name)
+	// On a network, with its port: a server's security groups are its ports' groups, so a server
+	// without a port answers addSecurityGroup and removeSecurityGroup 404 (SPEC-033), which the check
+	// below would read as the name not resolving.
+	netID := createNetworkWithSubnet(t, token, name+"-net", "10.244.97.0/24")
+	id := createNamedServerOnNetwork(t, token, name, netID)
+	require.NotEmpty(t, awaitAddresses(t, token, id), "the server never got a port")
 
 	// Every entry in the serverActions dispatch table, plus the lifecycle tail. Bodies
 	// are the minimal valid form for each.
