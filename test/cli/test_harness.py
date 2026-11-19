@@ -83,13 +83,13 @@ class HarnessTests(unittest.TestCase):
         cases[0]["status"] = "known-failing"
         result = self.gate(cases)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not in baseline", result.stdout)
+        self.assertIn("known-failing cases are missing from the baseline", result.stdout)
 
     def test_stale_baseline_entry_warns_but_passes(self):
         self.set_baseline(self.complete[0]["id"])
         result = self.gate(self.complete)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("stale known-failure baseline", result.stderr)
+        self.assertIn("stale baseline entry", result.stderr)
 
     def test_missing_baseline_fails_closed(self):
         self.baseline.unlink()
