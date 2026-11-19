@@ -779,6 +779,8 @@ func optionalString(raw json.RawMessage) (value *string, present bool, err error
 // ipam's check_gateway_invalid_in_subnet): an address of the subnet's IP version, and neither its
 // network address nor, for IPv4, its broadcast address. One difference remains: upstream accepts a
 // gateway outside the subnet; Lightstack refuses it because the network bridge carries that address.
+// The default allocation pools are generated around the gateway, so an in-subnet gateway is not a
+// conflict with those pools.
 func validateSubnetGateway(gateway, cidr string) error {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -800,25 +802,6 @@ func validateSubnetGateway(gateway, cidr string) error {
 		return fmt.Errorf("%s is the subnet's broadcast address", gateway)
 	}
 	return nil
-}
-
-// gatewayConflictsWithAllocationPool reports whether gateway is in the
-// default allocation range exposed for this subnet. Neutron refuses this with
-// GatewayConflictWithAllocationPools because DHCP clients may receive it.
-func gatewayConflictsWithAllocationPool(gateway, cidr string) bool {
-	ip := net.ParseIP(gateway).To4()
-	if ip == nil {
-		return false
-	}
-	for _, pool := range subnetAllocationPools(cidr) {
-		start, _ := pool["start"].(string)
-		end, _ := pool["end"].(string)
-		startIP, endIP := net.ParseIP(start).To4(), net.ParseIP(end).To4()
-		if startIP != nil && endIP != nil && bytes.Compare(ip, startIP) >= 0 && bytes.Compare(ip, endIP) <= 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // subnetFilterParams carries the raw query values the subnet listing honours, so the builder below
@@ -1563,10 +1546,6 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("invalid gateway_ip: "+err.Error()))
 			return
 		}
-		if gatewayConflictsWithAllocationPool(*gatewayIP, req.Subnet.CIDR) {
-			common.SendError(c, common.NewConflictError("gateway IP conflicts with the subnet allocation pool"))
-			return
-		}
 	}
 	if !present {
 		auto := incrementIP(ipNet.IP, 1).String()
@@ -1613,7 +1592,7 @@ func (svc *Service) CreateSubnet(c *gin.Context) {
 			"ip_version":       ipVersion,
 			"enable_dhcp":      enableDHCP,
 			"dns_nameservers":  dnsNameservers,
-			"allocation_pools": subnetAllocationPools(req.Subnet.CIDR),
+			"allocation_pools": subnetAllocationPools(req.Subnet.CIDR, gatewayIP),
 			"host_routes":      []gin.H{},
 			"service_types":    []string{},
 			"created_at":       now.Format(time.RFC3339),
@@ -1804,7 +1783,7 @@ func (svc *Service) ListSubnets(c *gin.Context) {
 			"ip_version":       ipVersion,
 			"enable_dhcp":      enableDHCP,
 			"dns_nameservers":  dnsNameservers,
-			"allocation_pools": subnetAllocationPools(cidr),
+			"allocation_pools": subnetAllocationPools(cidr, gatewayIP),
 			"host_routes":      []gin.H{},
 			"service_types":    []string{},
 			"created_at":       createdAt.Format(time.RFC3339),
@@ -1890,7 +1869,7 @@ func (svc *Service) GetSubnet(c *gin.Context) {
 			"ip_version":       ipVersion,
 			"enable_dhcp":      enableDHCP,
 			"dns_nameservers":  dnsNameservers,
-			"allocation_pools": subnetAllocationPools(cidr),
+			"allocation_pools": subnetAllocationPools(cidr, gatewayIP),
 			"host_routes":      []gin.H{},
 			"service_types":    []string{},
 			"created_at":       createdAt.Format(time.RFC3339),
@@ -2181,10 +2160,6 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("invalid gateway_ip: "+err.Error()))
 			return
 		}
-		if gatewayConflictsWithAllocationPool(*newGateway, subnetCIDR) {
-			common.SendError(c, common.NewConflictError("gateway IP conflicts with the subnet allocation pool"))
-			return
-		}
 	}
 	gatewayChanged := gatewayGiven && derefOr(newGateway, "") != derefOr(currentGateway, "")
 	if gatewayChanged && currentGateway != nil {
@@ -2284,7 +2259,7 @@ func (svc *Service) UpdateSubnet(c *gin.Context) {
 			"ip_version":       ipVersion,
 			"enable_dhcp":      enableDHCP,
 			"dns_nameservers":  dnsNameservers,
-			"allocation_pools": subnetAllocationPools(cidr),
+			"allocation_pools": subnetAllocationPools(cidr, gatewayIP),
 			"host_routes":      []gin.H{},
 			"service_types":    []string{},
 		},
@@ -2388,20 +2363,58 @@ func (svc *Service) networkSubnetIDs(ctx context.Context, networkID string) ([]s
 	return ids, nil
 }
 
-// subnetAllocationPools computes the default allocation pool for a subnet CIDR
-// (network address + 2 through broadcast - 1). It always returns a non-nil
-// slice so the JSON response serializes as a list, never null — OpenStack
-// clients format allocation_pools as a list and choke on null.
-func subnetAllocationPools(cidr string) []gin.H {
+// subnetAllocationPools computes the IPv4 default allocation ranges for a subnet,
+// excluding the network and broadcast addresses and reserving the gateway. A gateway
+// in the middle of the range splits it into two pools. It always returns a non-nil
+// slice so the JSON response serializes as a list, never null — OpenStack clients
+// format allocation_pools as a list and choke on null.
+func subnetAllocationPools(cidr string, gateway *string) []gin.H {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil || ipNet.IP.To4() == nil {
 		return []gin.H{}
 	}
+	ones, bits := ipNet.Mask.Size()
+	hostBits := bits - ones
+	start := ipNet.IP.To4()
+	end := broadcast(ipNet)
+	if ones < 31 {
+		start = incrementIP(start, 1)
+		end = decrementIP(end, 1)
+	}
+
+	pool := func(first, last net.IP) gin.H {
+		return gin.H{"start": first.String(), "end": last.String()}
+	}
+	if gateway == nil {
+		return []gin.H{pool(start, end)}
+	}
+	gatewayIP := net.ParseIP(*gateway).To4()
+	if gatewayIP == nil || !ipNet.Contains(gatewayIP) {
+		return []gin.H{pool(start, end)}
+	}
+	if hostBits == 0 { // /32: its only address is the gateway, so nothing is allocatable.
+		return []gin.H{}
+	}
+	if bytes.Compare(gatewayIP, start) < 0 || bytes.Compare(gatewayIP, end) > 0 {
+		return []gin.H{pool(start, end)}
+	}
+	if gatewayIP.Equal(start) {
+		start = incrementIP(start, 1)
+		if bytes.Compare(start, end) <= 0 {
+			return []gin.H{pool(start, end)}
+		}
+		return []gin.H{}
+	}
+	if gatewayIP.Equal(end) {
+		end = decrementIP(end, 1)
+		if bytes.Compare(start, end) <= 0 {
+			return []gin.H{pool(start, end)}
+		}
+		return []gin.H{}
+	}
 	return []gin.H{
-		{
-			"start": incrementIP(ipNet.IP, 2).String(),
-			"end":   decrementIP(broadcast(ipNet), 1).String(),
-		},
+		pool(start, decrementIP(gatewayIP, 1)),
+		pool(incrementIP(gatewayIP, 1), end),
 	}
 }
 
