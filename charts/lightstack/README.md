@@ -137,7 +137,6 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | `realMode.privileged` / `hostNetwork` | `false` | real | host-level access; host networking also renders `dnsPolicy: ClusterFirstWithHostNet` on the Lightstack pod and the purge Job, so in-cluster Service names (`<service>.<namespace>.svc`) resolve |
 | `realMode.libvirtSocketPath` | `/var/run/libvirt/libvirt-sock` | real | host libvirt socket; pods mount its directory (hostPath), so a re-created socket stays reachable. The default lets the binary choose `virtqemud-sock`, else `libvirt-sock`; any other value is also the socket it dials. With `secrets.existingSecret`, your own config's `nova.libvirt_uri` must name the same socket — absolute |
 | `realMode.hostStoragePath` | `/var/lib/lightstack` | real | node-local VM/volume/image data (hostPath); mounted at the same path and passed to the binary as `state_path` — absolute |
-| `realMode.legacyStatePath` | `""` | real | pre-rename root to migrate into `hostStoragePath` once; empty renders nothing |
 | `realMode.floatingIpPool` | `""` | real | operator pool routed to nodes (FR-009c) |
 | `podSecurity.applyPrivilegedNamespaceLabel` | `false` | real | label the namespace `privileged` (FR-012d) |
 

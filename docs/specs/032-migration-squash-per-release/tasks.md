@@ -645,7 +645,22 @@ Fixed after implementation, at the user's request. Every code change went test-f
   - Pointers into the removed sections are fixed: two comments in `internal/nova/console.go`, the error text in `pkg/hypervisor/console_endpoint.go`, `.env.example`, `docs/INDEX.md` and `charts/lightstack/README.md`. `docs/CONFIGURATION.md`'s note on the renamed variables, which linked there, is gone. `CLAUDE.md`, `migrations/README.md` and `CHANGELOG.md` no longer mention re-stamp.
   - The host runbook builds no pre-squash commit any more. §1 writes a `schema_migrations` row at 59 into `old`, and §2.4 checks the refusal against it. The re-stamp steps are gone, and with them the OpenStack CLI, `tar` and the need for the full git history.
   - Gates: build, `go vet` and `make lint` are clean. `internal/database`, `dbtest`, `cmd/lightstack` and `cmd/lightstack-migrate` pass on PostgreSQL and on SQLite. The host runbook ran end to end on 2026-11-19, every block matching its Expect line, and teardown left the host clean.
-- [ ] F12 After T064, delete the pre-squash history: `internal/database/testdata/pre-squash/` (180 files), both baseline generators and the equivalence tests. T064 needs them once more, after the rebase onto `main`. After that, both sides are frozen and the proof is done. The pre-squash refusal tests then stand in an old database with a `schema_migrations` row, as the host runbook does.
+- [ ] F12 After T064, delete the pre-squash history: `internal/database/testdata/pre-squash/` (184 files), both baseline generators and the equivalence tests. T064 needs them once more, after the rebase onto `main`. After that, both sides are frozen and the proof is done. The pre-squash refusal tests then stand in an old database with a `schema_migrations` row, as the host runbook does.
+- [X] F13 Branch review of 2026-11-19, every finding fixed with the user's approval:
+  - SRC-1: `pgQuerier` and `collectPostgres`, kept only for re-stamp's transaction, are gone. `readPostgresRecords` and the tests' introspection take a `*pgx.Conn` and read single rows with `QueryRow`.
+  - SRC-2: the baseline-stale branch has a test. `assertStale` takes the expected version, and a subtest regenerates the baseline's checksum header in a copy of the folder. A mutant without the branch fails it.
+  - SRC-3: `MigrationInfo.State` is gone; status's error is its one source of truth. `DatabaseState.String` stays, for the tests' failure messages.
+  - SRC-4: `openMigration.checksum` is gone; the tests read the header production reads.
+  - SRC-5: `inspectRecords` builds the inspection once, for `inspectDatabase` and `IntegrityCheck`.
+  - SRC-6: `Freeze` is all or nothing. `commitFreeze` writes and removes, and `undoFreeze` rolls a failure back. `writeNewFile` removes a file it could not write. A test with a read-only `next/` was RED first.
+  - OTHER-3: `make migration-fragment` checks both names before creating either file.
+  - SRC-7: `slices.Sorted(maps.Keys(…))` and `slices.Sort[Func]` replace `sortedKeys` and the hand-rolled sorts.
+  - SRC-8: `CheckForceState` holds force's stale exception, and `refuseBeforePrompt` only reports.
+  - SRC-9–11: `validateFolderNames`, `readFragments`, `assembleOpen`, `Freeze` and `inspectDatabase` are split into named steps (`releaseIndex`, `checkBaselinePair`, `checkFragmentPairs`, `splitFragments`, `renderRelease`, `readRecords`). `readSQLiteRecords` finds both tables in one query.
+  - MD-1: `docs/ARCHITECTURE.md` describes the periodic reservation pass. The constitution's Sync Impact Report notes where the removed UPGRADING section went.
+  - MD-2: five prose paragraphs are reflowed to 120 characters. Fields that `update-agent-context.sh` parses stay single lines.
+  - OTHER-1: the work is split into commits: deploy tooling, test fixtures, the squash, the architecture note.
+- [X] F14 The o3k state migration is removed (FR-013's fresh install): `scripts/migrate-legacy-state.sh` and its test, and the chart's `realMode.legacyStatePath` with its initContainer, volume, schema entry, README row and unit tests. It moved a pre-rename node's state into the new root, which a fresh install must not do. `make chart-test` is green: 23 suites, 161 tests.
 ---
 
 ## Dependencies & Execution Order

@@ -422,58 +422,6 @@ dnsPolicy: ClusterFirstWithHostNet
 {{- include "lightstack.scheduling" . }}
 {{- if .Values.realMode.enabled }}
 initContainers:
-  {{- if .Values.realMode.legacyStatePath }}
-  # One-time in-place upgrade from a pre-rename install (cloud-storage#575): the
-  # default node-local root moved with the product rename, so without this the upgraded
-  # pod writes to the new root and stops seeing the image bases, volumes, overlays,
-  # cloud-init ISOs and dnsmasq state already on the node.
-  #
-  # The copy loop below (`for sub in ...`) is pkg/paths/paths.go minus console-tokens;
-  # init-host-storage further down still CREATES console-tokens — creating is safe,
-  # copying is not. The directory is a projection of console_auth_tokens, never the
-  # store of record (SPEC-021 FR-023b): Lightstack writes an entry when it issues a token
-  # and afterwards only removes entries. A pre-rename node's entries predate the unix-socket
-  # console and map tokens to TCP host:port targets, which libvirt may since have handed to
-  # another guest — the stale-token-to-another-tenant's-guest case the unix-socket console
-  # exists to prevent. Losing the projection only stops tokens resolving.
-  #
-  # Merges file by file. The two roots are separate volumes, so rename() returns EXDEV and
-  # every move here is an interruptible copy; an interrupted one leaves a half-populated
-  # directory at the destination, and a per-directory `mv -n` would then refuse that whole
-  # directory on every later run, stranding the children it lacks. Nothing already at the
-  # destination is overwritten, and a path present under both roots fails the container so
-  # the pod does not start on top of an unfinished migration.
-  - name: migrate-legacy-state
-    image: {{ include "lightstack.image" . }}
-    imagePullPolicy: {{ .Values.image.pullPolicy }}
-    command:
-      - /bin/sh
-      - -c
-      - >-
-        set -e;
-        LEGACY="{{ .Values.realMode.legacyStatePath }}";
-        NEW="{{ .Values.realMode.hostStoragePath }}";
-        for sub in images volumes instances cloud-init dhcp; do
-        [ -d "$LEGACY/$sub" ] || continue;
-        mkdir -p "$NEW/$sub";
-        find "$LEGACY/$sub" -mindepth 1 -type d | while IFS= read -r d; do
-        mkdir -p "$NEW/$sub/${d#"$LEGACY/$sub/"}"; done;
-        find "$LEGACY/$sub" -mindepth 1 \( -type f -o -type l \) | while IFS= read -r f; do
-        mv -n "$f" "$NEW/$sub/${f#"$LEGACY/$sub/"}" 2>/dev/null || true; done;
-        find "$LEGACY/$sub" -mindepth 1 -type d -empty -delete 2>/dev/null || true;
-        done;
-        LEFT="$(find "$LEGACY" -mindepth 1 \( -type f -o -type l \) 2>/dev/null)";
-        if [ -n "$LEFT" ]; then
-        echo "ERROR: these paths exist under both state roots, so nothing was overwritten:";
-        echo "$LEFT";
-        echo "Compare each against $NEW, keep the one you want, remove the other.";
-        exit 1; fi
-    volumeMounts:
-      - name: legacy-state
-        mountPath: {{ .Values.realMode.legacyStatePath }}
-      - name: host-storage
-        mountPath: {{ .Values.realMode.hostStoragePath }}
-  {{- end }}
   # Real-mode node-local storage: the host-storage hostPath is DirectoryOrCreate, so it
   # materializes only the base dir and shadows the image's pre-created subdirs. Pre-create
   # the per-service subdirs here (before Lightstack starts) so a fresh deploy boots a VM with no
@@ -625,11 +573,5 @@ volumes:
     hostPath:
       path: {{ .Values.realMode.hostStoragePath }}
       type: DirectoryOrCreate
-  {{- if .Values.realMode.legacyStatePath }}
-  - name: legacy-state
-    hostPath:
-      path: {{ .Values.realMode.legacyStatePath }}
-      type: DirectoryOrCreate
-  {{- end }}
   {{- end }}
 {{- end -}}
