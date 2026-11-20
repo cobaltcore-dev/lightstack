@@ -1,5 +1,7 @@
 # Contract: the floating-IP dataplane (real mode, per node)
 
+> **Superseded in round 2** (2026-11-20): the floating-IP NAT moves into the router namespace (`router-namespace-dataplane.md`) and the filter is retired for the port firewall (`port-firewall.md`; FR-042). This file records round 1's design, which tasks T001–T052 implemented.
+
 Not an API. This pins what a node holds for each floating IP and when, so the host run and the tests can check it.
 
 ## Content

@@ -1,5 +1,7 @@
 # Contract: the Networking API
 
+> **Round 2** (2026-11-20): where this file differs from `network-api-round2.md` — the listing's filters, administrators' access (FR-057, FR-058), ids of other projects' groups (FR-018) — round 2 holds. T155 folds the pointers in.
+
 Errors use the Neutron error envelope (`NeutronError` with `type`, `message`, `detail`).
 
 ## `security_groups` on `POST /v2.0/ports` and `PUT /v2.0/ports/{id}`
@@ -16,7 +18,7 @@ Errors use the Neutron error envelope (`NeutronError` with `type`, `message`, `d
 | An entry that is not a UUID string | `400`: "Invalid input for security_groups. Reason: '`<value>`' is not a valid UUID." | none |
 | A repeated entry | `400`: "Invalid input for security_groups. Reason: Duplicate items in the list: '`<id>`'." | none |
 | The port is missing or another project's (`PUT`) | `404` (`PortNotFound`) | none |
-| An id that names no group of the port's project, administrators included (register entry 5) | `404` (`SecurityGroupNotFound`) | none |
+| An id that names no group the caller can see: for a member, none of the port's project; for an administrator, none at all (round 2, FR-018) | `404` (`SecurityGroupNotFound`) | none |
 | Success (`PUT`) | `200` with the port | The list is replaced, `updated_at` moves, and the port's floating-IP filters are rebuilt on the serving node before the answer |
 | Success (`POST`) | `201` with the port | As today, with the list above |
 | `PUT`: the serving node cannot rebuild the filter (a command fails or overruns one second, or the lock wait does) | `500` | The list goes back to what it was, unless another request has changed it since (compare-and-set); the old filter stays whole |
@@ -30,7 +32,7 @@ Errors use the Neutron error envelope (`NeutronError` with `type`, `message`, `d
 | none | every group of the caller's project, as today |
 | `?id=<a>` | the group `a`, if it is the caller's |
 | `?id=<a>&id=<b>` | groups `a` and `b`, as far as they are the caller's |
-| `?name=<n>` | the caller's group named `n` (names are unique per project) |
+| `?name=<n>` | every visible group named `n` (round 2: names may repeat, FR-026) |
 | `?id=…&name=…` | the groups matching both |
 | An id or a name that matches nothing, a malformed id, or another project's id | `200` with `[]` |
 
@@ -64,7 +66,7 @@ A group that a rule's `POST` names and that another request deletes while it run
 | Situation | Answer | Effect |
 |---|---|---|
 | A port carries the group | `409`, type `SecurityGroupInUse`, the group's id in `detail`, as network and router deletion answer theirs (was `204`, and the group was dropped from every port) | none |
-| The id names no group of the caller's project, administrators included (register entry 5) | `404` (was `204`) | none |
+| The id names no group the caller can see: for a member, none of the caller's project; for an administrator, none at all (round 2, FR-058) | `404` (was `204`) | none |
 | Otherwise | `204`, as today | The group and its rules are deleted. Rules of other groups that name it as their remote group go with it, as upstream |
 
 ## Deleting a port or a server: its floating IPs
@@ -74,5 +76,5 @@ A group that a rule's `POST` names and that another request deletes while it run
 | | Before | After |
 |---|---|---|
 | The floating IP's record | `port_id` cleared by the foreign key; `fixed_ip_address`, `router_id` and `status` (`ACTIVE`) left as they were | `port_id`, `fixed_ip_address` and `router_id` cleared in the transaction that deletes the port, as upstream's port deletion does, and `status` `DOWN` in the same step (upstream's L3 agent reports `DOWN` afterwards) |
-| Its NAT and filter on the serving node | Left in place: no request and no reconciliation pass removes them | Gone before the answer. If their removal fails, the deletion still answers as today, the failure is logged, and reconciliation removes them within one pass |
+| Its NAT and filter on the serving node | Left in place: no request and no reconciliation pass removes them | Round 2: removed from its router's namespace before the port's record goes; if that fails, `500` and the port stays (FR-008d, FR-040) |
 | The `forceDelete` action | Deletes the instance row and its libvirt domain only; the server's ports, their floating IPs and its volume attachments stay | The same deletion as `DELETE /v2.1/servers/{id}`: boot ports deleted with their floating IPs disassociated, ports attached by id detached, volumes released or deleted on termination |

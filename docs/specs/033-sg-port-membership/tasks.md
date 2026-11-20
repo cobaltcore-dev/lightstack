@@ -7,7 +7,7 @@ description: "Task list for SPEC-033 — server security-group membership reache
 
 **Feature**: `033-sg-port-membership` (cloud-storage#579)
 **Input**: Design documents from `docs/specs/033-sg-port-membership/`
-**Prerequisites**: plan.md and spec.md (required); research.md (R1–R24), data-model.md, contracts/ (4 files) and quickstart.md (present). Constitution **v1.5.0**, ratified 2026-11-17 at the analysis gate and refined on 2026-11-18 at the second (research R19); the plan's gate is open. Register entry 5 and the two `CLAUDE.md` lines were added with the amendment, so no task carries them.
+**Prerequisites**: plan.md and spec.md (required); research.md (R1–R53), data-model.md, contracts/ (8 files) and quickstart.md (present). Round 2 (T058–T168) starts at Phase 11. Constitution **v1.5.0**, ratified 2026-11-17 at the analysis gate and refined on 2026-11-18 at the second (research R19); the plan's gate is open. Register entry 5 and the two `CLAUDE.md` lines were added with the amendment, so no task carries them.
 
 **Tests**: INCLUDED. The spec requires them (FR-022), as does the constitution's Test-First Development:
 1. contract tests with OpenStack clients where an answer changes;
@@ -661,9 +661,9 @@ No tasks of its own. Both scenarios are covered where they first fail:
   - a port deletion reading the floating IPs before it locks the port, and a server deletion locking ports before the instance (T036, T041);
   - `forceDelete` deleting only the instance row again (T041);
   - the pass reading only associated floating IPs (T039, an unassociated floating IP's leftovers).
-- [ ] T053 Generate the host runbook `docs/specs/033-sg-port-membership/HOST_TESTING.md` with `/cl.hosttest docs/specs/033-sg-port-membership/`. It covers prerequisites, setup, the FR-023 steps (a)–(h) as `quickstart.md` §2 and research R18 lay them out (one connection attempt per second in (d)), and teardown, all zsh-paste-safe. The prerequisites block checks, read-only, that iptables' `comment` match works: `iptables -m comment --help` succeeds, and with the legacy backend (`iptables -V`) `modinfo xt_comment` finds the module. Without it, every association answers `500`.
-- [ ] T054 Run host validation (a)–(h) with T053's runbook on one real-mode node (libvirt, root, a routed floating IP, iptables' `comment` match, a second guest for (g) and (h)), and record each step's outcome in `docs/specs/033-sg-port-membership/HOST_TESTING.md`.
-- [ ] T055 FR-021: once T054 step (f) has passed, record instance *Edit Security Groups* as verified in `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`, with the date. Verified means it pre-selects the instance's groups and changes its ports.
+- [ ] T053 **Superseded by T165 (round 2 retires the floating-IP filter this run tests).** Generate the host runbook `docs/specs/033-sg-port-membership/HOST_TESTING.md` with `/cl.hosttest docs/specs/033-sg-port-membership/`. It covers prerequisites, setup, the FR-023 steps (a)–(h) as `quickstart.md` §2 and research R18 lay them out (one connection attempt per second in (d)), and teardown, all zsh-paste-safe. The prerequisites block checks, read-only, that iptables' `comment` match works: `iptables -m comment --help` succeeds, and with the legacy backend (`iptables -V`) `modinfo xt_comment` finds the module. Without it, every association answers `500`.
+- [ ] T054 **Superseded by T166–T167.** Run host validation (a)–(h) with T053's runbook on one real-mode node (libvirt, root, a routed floating IP, iptables' `comment` match, a second guest for (g) and (h)), and record each step's outcome in `docs/specs/033-sg-port-membership/HOST_TESTING.md`.
+- [ ] T055 **Moved to T168.** FR-021: once T054 step (f) has passed, record instance *Edit Security Groups* as verified in `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`, with the date. Verified means it pre-selects the instance's groups and changes its ports.
 - [X] T056 [P] Draft four follow-up tickets in `docs/specs/033-sg-port-membership/follow-ups.md` (new), for the user to file; do not file them (research R17).
   1. **The security-group listing's other filters** (`description`, `project_id`/`tenant_id`, `tags`, `shared`, `stateful`, `revision_number`). They are ignored today, a silent divergence. Honour those the data model can answer, and register or refuse the rest. Refusing all of them would break Horizon, which sends `tenant_id` (research R13).
   2. **Request paths that log a failed node-local step and answer success.** These are the departures named in the constitution's v1.5.0 migration plan, each with its location at `d81f081`:
@@ -696,6 +696,313 @@ No tasks of its own. Both scenarios are covered where they first fail:
 
 ---
 
+# Round 2 (2026-11-20): the follow-ups and the real-mode network layout
+
+**Input**: spec Sessions 2026-11-19 and 2026-11-20, and both round-2 analyses (US8–US12; FR-019a–b, FR-024–FR-058); research R26–R53; data-model.md round 2; contracts `network-api-round2.md`, `node-apply.md`, `router-namespace-dataplane.md`, `port-firewall.md`; quickstart §3–5. Constitution v1.5.0 refined 2026-11-20 (R42) is **already in place** (done at the plan gate), so no task carries it; register entry 6 was added there and withdrawn by the third analysis (R53). Locations are hints from `dcda565`.
+
+**Organization**: US8–US11 are the spec's stories for findings 1, 3 and 4. FR-033–FR-056's router API and layout work (finding 2, the router namespace, and the answers the round-2 analysis turned into requirements) has no user story in the spec; its phases (16 and 18–24) carry no story label and name their requirements instead. Order: setup and foundation (migration, seams, errors, node name), then the API (US8, US9, US11, the router API, US10), then the layout (node, units, firewall, deletions, reconciliation and teardown, the node), then polish.
+
+**Terms (round 2)**:
+- *unit*: a router, a network's DHCP, or a node's set of bound ports, rendered from the records and converged, or converged to *absent* before a deletion (R28, R29, R32, R34).
+- *node call*: the authenticated, one-second, stateless call naming a unit (R27; `contracts/node-apply.md`).
+- *the fakes*: in-memory `routerDataplane`, `dhcpDataplane`, `portFirewall` and `nodeCaller` in `internal/neutron`'s tests, holding state and able to record, block or fail calls (R41, T065).
+
+---
+
+## Phase 11: Round 2 setup
+
+- [ ] T058 Record the round-2 baseline in `docs/specs/033-sg-port-membership/baseline-gates.md`, section "Round 2 baseline", at `dcda565` plus the uncommitted spec and constitution changes: build, lint, unit tests on PostgreSQL and SQLite (per package, `-count=1 -p 1`), contract tests on both backends, `helm unittest charts/lightstack`, and `./test/security_groups_test.sh`. Fix nothing; record failures that predate round 2.
+- [ ] T059 Get round 2's test strategy approved before any round-2 test is written (constitution, Test-First Development, step 2): review research R43 and every round-2 test task below with the user, and record the approval, date and any change in `baseline-gates.md`. No later round-2 task starts before it.
+
+---
+
+## Phase 12: Round 2 foundational (blocks every round-2 story)
+
+### Tests (write first, confirm RED)
+
+- [ ] T060 [P] Migration 076 test in `internal/database/migration_076_test.go`: on both backends, after migrating up, `subnet_allocation_pools` exists with `id`, `subnet_id`, `first_ip`, `last_ip` and its cascade from `subnets`; `subnets.pools_stored`, `ports.binding_host_id`, `networks.ct_zone`, `security_groups.revision_number` (default 0) and `security_groups.stateful` (default 1) exist; `networks.ct_zone` has a unique index; the seeded project's `default` has the two ingress rules whose `remote_group_id` is its own id. Down removes all of it, and the two rules. `TestSchemaParity` and `TestMigrationsRoundTrip` must also pass with 076. Migration 077 too: on both backends `security_groups` accepts two groups with one name in a project, a second `default` in a project is refused by the partial unique index, and on SQLite every `port_security_groups` and `security_group_rules` row survives the rebuild.
+- [ ] T061 [P] `internal/database/migrate_notx_test.go` (new), R53: a SQLite migration file whose first line is `-- lightstack:no-transaction` runs outside a transaction with foreign keys off, and foreign keys are on again afterwards; a file that leaves a foreign-key violation fails with `foreign_key_check`'s rows named; PostgreSQL ignores the marker; files without it behave as today (lock).
+- [ ] T062 [P] Explicit Neutron error type in `internal/common/neutron_errors_test.go`: an error carrying an explicit Neutron type (`SecurityGroupCannotRemoveDefault`) renders that type even with resource "security group" and code 409, where today the resource map wins (`SecurityGroupInUse`). Errors without one render as today (lock).
+- [ ] T063 [P] Node name in `internal/compute/node_registry_test.go` (new): the registry registers and heartbeats under `common.NodeName()` (`internal/common/nodename.go:9`, which already returns `LIGHTSTACK_NODE_NAME` or the hostname), not `os.Hostname()` (R26).
+- [ ] T064 [P] `neutron.network_node` in `internal/common/config_test.go`: parsed from YAML and from its environment override; with VXLAN on and the key empty, start-up validation fails naming the key; with VXLAN off the node is its own network node whatever the key says.
+
+### Implementation
+
+- [ ] T065 Seams and fakes (R41): in `internal/neutron/units.go` (new) declare `routerDataplane`, `dhcpDataplane`, `portFirewall` and `nodeCaller`, and the unit lock type (per key, one-slot channel, acquired within the node call's shared 900 ms deadline, R27); add the fields to `Service` in `internal/neutron/network.go`, stub implementations that apply nothing, and in `internal/neutron/fake_units_test.go` (new) the four stateful fakes with `failWith`, `blockFirst`, `writes` and `seed*` helpers in the style of `fake_dataplane_test.go`. The fake `nodeCaller` routes a call to another in-process `Service` by node name, so two-node tests run in one process.
+- [ ] T066 Migration 076 (makes T060 green): `migrations/076_network_layout.postgres.up.sql`, `076_network_layout.postgres.down.sql`, `076_network_layout.sqlite.up.sql` and `076_network_layout.sqlite.down.sql`, per `migrations/README.md`'s naming: the new table (a pair, since it creates a table); `ALTER TABLE … ADD COLUMN` for `subnets.pools_stored` (integer), `ports.binding_host_id` (text) and `networks.ct_zone` (integer); a unique index on `networks(ct_zone)`; `security_groups.revision_number` (integer, default 0) and `security_groups.stateful` (integer, default 1); the seeded `default`'s two member rules (`002`'s ids). No table that others reference is rebuilt on SQLite. And migration 077 (`077_security_group_names.postgres.up.sql`/`.down.sql`, `077_security_group_names.sqlite.up.sql`/`.down.sql`, the SQLite up file with the `-- lightstack:no-transaction` marker): drop the unique name constraint (PostgreSQL by its looked-up name; SQLite by rebuilding the table), and create the partial unique index for `default` (R53).
+- [ ] T067 The migrator change (makes T061 green): `internal/database`'s migration runner honours the `-- lightstack:no-transaction` marker on SQLite (foreign keys off, run, `PRAGMA foreign_key_check`, foreign keys on); document it in `migrations/README.md`, replacing "comes with a change to the migrator" with the rule and its check.
+- [ ] T068 [P] Explicit Neutron type (makes T062 green) in `internal/common/errors.go` (a field and a constructor) and `internal/common/neutron_errors.go` (`neutronType` honours it first).
+- [ ] T069 [P] Node name (makes T063 green) in `internal/compute/node_registry.go`: register and heartbeat under `common.NodeName()`.
+- [ ] T070 [P] `neutron.network_node` (makes T064 green) in `internal/common/config.go` (`NeutronConfig`, the env override, validation called from `cmd/lightstack/main.go`'s `checkDatabaseConfig` neighbourhood), `config/lightstack.yaml` (commented example), and the chart: `charts/lightstack/values.yaml`, `values.schema.json`, `templates/_helpers.tpl` neutron block, plus a case in `charts/lightstack/tests/config_render_test.yaml`.
+
+**Checkpoint**: migration 076 applies on both backends; the seams and fakes compile; nothing user-visible changed.
+
+---
+
+## Phase 13: User Story 8 — A client lists groups by any attribute (Priority: P3)
+
+**Goal**: every attribute filter applies as upstream's (FR-019a, FR-019b; R38).
+**Independent Test**: contract — each filter against a project whose groups differ in it.
+
+### Tests for User Story 8 (write first, confirm RED)
+
+- [ ] T071 [P] [US8] Extend `internal/neutron/security_group_list_filter_test.go`: `description` (repeated values OR'd), `project_id`/`tenant_id` (own → all; another project as a member → empty; another project as an administrator → that project's groups), `shared=false`/`true`, `stateful=true`/`false` against stored values, `revision_number` against stored values, `tags`, `tags-any` (empty), `not-tags`, `not-tags-any` (all), `shared=maybe` → `400`, a repeated `name`. And every group in list, show, create and update bodies carries its `stateful` and `revision_number`, `shared: false`, `tags: []`.
+- [ ] T072 [P] [US8] Contract `test/contract/neutron/security_group_filters_test.go` (new): the same through gophercloud's `groups.List` with `ListOpts` and raw queries for the parameters gophercloud lacks; `revision_number` and `stateful` filters against groups created stateless and updated.
+
+- [ ] T073 [P] [US8] `internal/neutron/security_group_revision_test.go` (new), FR-050: a created group (with its starting rules) has `revision_number` 0; each update of the group adds one; each rule added or deleted adds one; a rule add undone on a failed apply leaves the revision where it was (compare-and-set, with the rule); `?revision_number=` lists by the stored value; `PUT` and `DELETE` with `If-Match: revision_number=<n>` and a different revision answer `412 RevisionNumberConstraintFailed`, nothing changed, and with the current one succeed; `GET /v2.0/extensions` lists `stateful-security-group`.
+- [ ] T074 [P] [US8] `internal/neutron/security_group_stateless_test.go` (new), FR-051: `POST` with `stateful: false` creates a stateless group, reported so; changing `stateful` while a port carries the group → `409 SecurityGroupInUse`, unchanged; while none does → `200`; a port create or update that would carry stateful and stateless groups → `409 SecurityGroupConflict`, nothing changed.
+- [ ] T075 [P] [US8] `internal/nova/security_group_stateless_test.go` (new), FR-051: `addSecurityGroup` of a stateless group to a server whose ports carry stateful ones → `409`, nothing changed; `addSecurityGroup` that leaves every port single-kind (a server whose ports already differ, each staying single-kind) succeeds; interface attach of a port of the other kind succeeds, the port keeping its groups (FR-013); a boot whose requested groups mix both kinds ends `ERROR` with a fault, as upstream's failed port creation does.
+
+### Implementation for User Story 8
+
+- [ ] T076 [US8] In `internal/neutron/ports.go` `securityGroupListFilter`: each parameter with `= ANY($n)` over its values, `project_id` and `tenant_id` merged (an administrator's replace the own-project scope with the named projects; anyone else's narrow within it), `stateful` and `revision_number` on their columns, the constant answers for `shared` and the tag filters, strict booleans; and the four fields in `ListSecurityGroups`, `GetSecurityGroup`, `CreateSecurityGroup` and `UpdateSecurityGroup` responses.
+
+- [ ] T077 [US8] `internal/neutron/ports.go` and `internal/neutron/security_group_default.go`: `revision_number` bumped in the transactions of `UpdateSecurityGroup`, `CreateSecurityGroupRule`, `DeleteSecurityGroupRule` and their undos; `stateful` accepted on create, refused on update while in use; the mixing check inside the shared membership helpers (`SetPortSecurityGroups`, `AddPortSecurityGroup`), so the port API, Nova's add, attach and the boot's allocation all refuse it; `internal/nova/advanced_actions.go` (`addSecurityGroup`) maps it to `409` (the check is per port; interface attach has none), and the boot's allocation failure in `internal/nova/handlers.go` to the fault; undos put `revision_number` back compare-and-set; `UpdateSecurityGroup` and `DeleteSecurityGroup` honour `If-Match`; `ListExtensions` (`internal/neutron/network.go`) adds `stateful-security-group`.
+
+**Checkpoint**: US8 green on both backends.
+
+---
+
+## Phase 14: User Story 9 — `default` stays the project's default (Priority: P2)
+
+**Goal**: upstream's refusals for `default`, duplicate names as upstream with `409 NoUniqueMatch` on an ambiguous name, upstream's starting rules (FR-024–FR-026, FR-043; R39, R53).
+**Independent Test**: delete, rename and create against `default` as a tenant and as an administrator; `test/security_groups_test.sh` Test 11.
+
+### Tests for User Story 9 (write first, confirm RED)
+
+- [ ] T078 [P] [US9] `internal/neutron/security_group_default_test.go` (new): non-administrator deletes unused `default` → `409 SecurityGroupCannotRemoveDefault`, group and rules unchanged; administrator → `204`, and the next `EnsureDefaultSecurityGroup` makes a new one with four rules; in-use `default` → `409 SecurityGroupInUse` for both; `PUT` `default` with `name: "web"` → `409 SecurityGroupCannotUpdateDefault`, with `name: "Default"` → `409 SecurityGroupDefaultAlreadyExists`, with only `description` → `200`; `POST` `default`/`DEFAULT` → `409 SecurityGroupDefaultAlreadyExists`; `PUT` of another group with `name: "default"` → `409 SecurityGroupDefaultAlreadyExists`; a duplicate name on create and on rename succeeds, as upstream (FR-026); `GET /v2.0/security-groups/{name}` with a name two groups share answers `404`, and `?name=` lists both.
+- [ ] T079 [P] [US9] `internal/neutron/security_group_starting_rules_test.go` (new): a created group has exactly two egress rules (IPv4, IPv6, no remote); `EnsureDefaultSecurityGroup` creates four (plus ingress IPv4 and IPv6 with `remote_group_id` = the group); no rule has neither remote while being ingress (cloud-storage#528 lock).
+- [ ] T080 [P] [US9] Contract `test/contract/neutron/security_group_default_test.go` (new): the refusals with their Neutron types through gophercloud, as a member and as an administrator.
+- [ ] T081 [P] [US9] In `test/security_groups_test.sh`, rename the `GROUPS` variable to `SG_LIST` (`:40`, `:43`, `:209`), so Test 1 finds `default` and Test 11 runs; Test 11 expects the `409`. Run it against `main`'s binary: Test 11 fails red (it deletes `default` with `204`).
+- [ ] T082 [P] [US9] `internal/nova/security_group_ambiguous_name_test.go` (new), FR-026: with two groups named `web` in the project, server create naming `web`, `addSecurityGroup` and `removeSecurityGroup` by name answer `409` with upstream Nova's `NoUniqueMatch` message and change nothing; by either group's id they succeed.
+
+### Implementation for User Story 9
+
+- [ ] T083 [US9] In `internal/neutron/ports.go`: `DeleteSecurityGroup` checks in-use first, then `default` and not administrator (`common.HasRole`); `CreateSecurityGroup` and `UpdateSecurityGroup` check the name against `default` case-insensitively, `UpdateSecurityGroup` refuses a `name` on `default`; neither refuses a duplicate name any more; `CreateSecurityGroup` inserts the two egress rules in its transaction (it gains one). Use T068's explicit types.
+- [ ] T084 [US9] In `internal/neutron/security_group_default.go`: `EnsureDefaultSecurityGroup` seeds four rules; update its comment (the member rules are not open to every address).
+- [ ] T085 [US9] `internal/neutron/ports.go` (`ResolveSecurityGroup`: an ambiguity error when a name matches several groups; `GetSecurityGroup`: `404` for an ambiguous name), `internal/neutron/security_group_default.go` (`EnsureDefaultSecurityGroup`'s conflict target becomes `(project_id) WHERE name = 'default'`), and `internal/nova/handlers.go` and `internal/nova/advanced_actions.go` (the ambiguity → `409` `NoUniqueMatch`) — makes T082 and T078's name cases green (R53).
+
+**Checkpoint**: US9 green; Test 11 passes.
+
+---
+
+## Phase 15: User Story 11 — Operators choose the floating range with allocation pools (Priority: P2)
+
+**Goal**: stored pools, upstream's validation, one allocator for every automatic address (FR-030–FR-032a; R30). Before US10, whose allocation uses it.
+**Independent Test**: subnet create and update with pools, refusals, and the addresses ports get.
+
+### Tests for User Story 11 (write first, confirm RED)
+
+- [ ] T086 [P] [US11] `internal/neutron/subnet_pools_test.go` (new), FR-030 and FR-052: create with pools reports them on create, show and list; absent → upstream's default (gateway removed, a split range when the gateway is inside); `[]` → no pool; `pools_stored` false → default (a subnet as migration 076 leaves it); the five refusals in upstream's order (`InvalidAllocationPool` for malformed, start after end and wrong version; `OutOfBoundsAllocationPool`; `OverlappingAllocationPools`; `GatewayConflictWithAllocationPools` on create, on a pools update and on a gateway update); an update replaces the pools, leaves allocated ports alone, and the next allocation comes from the new pools; `DeleteSubnet` with a non-DHCP port on it → `409 SubnetInUse`.
+- [ ] T087 [P] [US11] `internal/neutron/allocation_test.go` (new), FR-032 and FR-053: the allocator never hands out an address outside the pools, the gateway, a port's fixed IP or a floating IP of the network; a port gets a pool address; a requested address outside the pools but inside the subnet is accepted; the network and broadcast addresses are refused; exhaustion is reported as such. Concurrent `AllocatePortForInstance` on one subnet still gets distinct addresses (lock); a floating-IP create, a router gateway and a port on the same external subnet allocated concurrently get distinct addresses (PostgreSQL; every owner takes the subnet lock, FR-032).
+- [ ] T088 [P] [US11] Contract `test/contract/neutron/subnet_pools_test.go` (new): gophercloud `subnets.Create` with `AllocationPools`, the read-back, and the `409` for a pool holding the gateway.
+- [ ] T089 [P] [US11] `internal/nova/interface_attach_ip_test.go` (new), FR-053: a requested `fixed_ip` equal to the subnet's network or broadcast address → `400 InvalidIpForSubnet` (today accepted).
+
+### Implementation for User Story 11
+
+- [ ] T090 [US11] `internal/neutron/allocation.go` (new): pool reading (rows when `pools_stored`, else the default), `generatePools` (upstream's `generate_pools`), validation, and `allocateAddress(ctx, tx, subnet, policy)` with the policies of data-model.md (random, lowest), excluding the gateway, ports' fixed IPs and the network's floating IPs, always under the subnet's `LockSubnet`, whatever the owner. Replace `allocateIP`, `AllocateFreeIP` and `IPAvailable`'s range logic in `internal/neutron/ports.go` with it; `IPAvailable` refuses the network and broadcast addresses.
+- [ ] T091 [US11] `internal/neutron/network.go`: `CreateSubnetRequest` and `UpdateSubnet` accept `allocation_pools`; store rows and `pools_stored` in the subnet's transaction; `validateSubnetGateway` and the gateway update check against the pools; every response reports the stored or default pools (replaces `subnetAllocationPools`); `DeleteSubnet` checks in-use in its transaction.
+- [ ] T092 [US11] `internal/nova/interface_attach.go`: use `neutron.IPAvailable`'s new refusal (makes T089 green).
+
+**Checkpoint**: US11 green on both backends.
+
+---
+
+## Phase 16: Router API — gateway ports, interfaces, FR-039 (FR-038, FR-039, FR-045; R31)
+
+### Tests (write first, confirm RED)
+
+- [ ] T093 [P] `internal/neutron/router_ports_test.go` (new): gateway set creates one `network:router_gateway` port with no project and a pool address, reported in `external_gateway_info.external_fixed_ips` with its subnet; a requested address by an administrator is used; by a member → `403`; outside the network's subnets → `400 InvalidIpForNetwork`; equal to a subnet's gateway → `400`; taken → `409 IpAddressAlreadyAllocated`; a changed requested address updates the port; clear deletes it. `AddRouterInterface` stores port and interface in one transaction (a failing second insert leaves neither); a second interface on the same subnet → `400` with no new port; a subnet without a gateway → `400` (today `500`) (FR-055). The gateway port is listed for administrators only.
+- [ ] T094 [P] `internal/neutron/router_floating_ip_refusals_test.go` (new): removing an interface whose subnet a floating IP of this router reaches → `409 RouterInterfaceInUseByFloatingIP`; clearing or changing the gateway while a floating IP uses the router → `409 RouterExternalGatewayInUseByFloatingIp`; nothing changed in either case; with no such floating IP both succeed.
+- [ ] T095 [P] Contract `test/contract/neutron/router_gateway_test.go` (new): `external_fixed_ips` read back through gophercloud `routers.Get`, and FR-039's two `409`s.
+
+### Implementation
+
+- [ ] T096 `internal/neutron/router.go`: the gateway port (create, update, clear) in the router's transaction, `external_fixed_ips` rendered from it, the administrator rule and upstream's errors; `AddRouterInterface` in one transaction with upstream's `400`s and the subnet lookup scoped to the caller; FR-039's checks in the transactions that remove an interface or clear or change a gateway. The SNAT source becomes the gateway port's address (used by Phase 19).
+
+---
+
+## Phase 17: User Story 10 — Floating IPs are allocated and associated as upstream (Priority: P2)
+
+**Goal**: no allocation race, upstream's router lookup and refusals (FR-027–FR-029, FR-031; R36).
+**Independent Test**: concurrent creates; association with and without a joining router; a second floating IP on one fixed IP.
+
+### Tests for User Story 10 (write first, confirm RED)
+
+- [ ] T097 [P] [US10] `internal/neutron/floating_ip_allocation_test.go` (new): ten goroutines create on one external network at once → ten `201`, ten distinct addresses, all inside the pools (both backends; on SQLite the writers serialise anyway, the test still pins the answers); two external networks with overlapping subnets created concurrently → no `500`; a network with no IPv4 subnet → `400` and no row; pools taken → `400 ExternalIpAddressExhausted`; `subnet_id` and `floating_ip_address` honoured; a taken `floating_ip_address` → `409 IpAddressAlreadyAllocated` (FR-054).
+- [ ] T098 [P] [US10] `internal/neutron/floating_ip_router_test.go` (new): create with a port, and update to a port, whose subnet no router joins to the floating network → `404 ExternalGatewayForFloatingIPNotFound`, nothing stored (today `201` and `400`); a router joining the subnet to another external network → `404`; two joining routers → the one whose interface is the subnet's gateway; a second floating IP of the same network on the same fixed IP → `409 FloatingIPPortAlreadyAssociated` (create and update), one of another network accepted; a requested `fixed_ip_address` that is not the port's → `400` (FR-054).
+- [ ] T099 [P] [US10] Contract `test/contract/neutron/floating_ip_association_test.go` (new): the `404` and `409` through gophercloud `floatingips.Create`/`Update`, and ten parallel creates.
+
+### Implementation for User Story 10
+
+- [ ] T100 [US10] `internal/neutron/floatingip.go`: `CreateFloatingIP` takes the allocation advisory lock first in its transaction (`pg_advisory_xact_lock` on a named constant; SQLite's registered no-op), chooses the address there through T090's allocator (lowest, across the network's IPv4 subnets), honours `subnet_id` and `floating_ip_address`, refuses no subnet (`400`) and exhaustion (`400 ExternalIpAddressExhausted`); remove the pre-transaction `allocateFloatingIP` and the `192.0.2.0/24` fallback.
+- [ ] T101 [US10] `internal/neutron/floatingip.go`: replace `lockGatewayRouter` with upstream's lookup (an interface port on the fixed IP's subnet, a gateway port on the floating network, the gateway-interface preference), `404` when none, on create and update; the FR-029 check in the same transaction; `portFixedIP` verifies a requested fixed IP is the port's.
+
+**Checkpoint**: US10 green on both backends. Phases 11–17a are the API increment: no layout change; the gateway port's address is stored and reported, and egress keeps today's host SNAT until Phase 19 (R51).
+
+---
+
+## Phase 17a: User Story 12 — An administrator sees and manages every project's networking resources (Priority: P3)
+
+**Goal**: every Networking API listing, show and write as upstream's for administrators (FR-057, FR-058; R50).
+**Independent Test**: contract — as an administrator, another project's resource in each listing, by project filter and by id; as a member, nothing changes.
+
+### Tests for User Story 12 (write first, confirm RED)
+
+- [ ] T102 [P] [US12] `internal/neutron/admin_listing_test.go` (new), table-driven over the sixteen listings of R50: an administrator of project A sees project B's resource unfiltered; `?project_id=B` and `?tenant_id=B` list only B's; a show by id of B's resource answers `200`; `GetSecurityGroup` by B's group's name answers `404`; a member of A sees what they see today (own project; networks also shared and external) and gets `404` showing B's resource (lock).
+- [ ] T103 [P] [US12] Contract `test/contract/neutron/admin_listing_test.go` (new): the same through gophercloud as the seeded administrator and as a member of a second project, for networks, ports, routers, floating IPs and security groups.
+- [ ] T104 [P] [US12] `internal/neutron/admin_write_test.go` (new), table-driven over every update, delete and action handler of R50 and the creates' references by id: an administrator of project A succeeds on project B's resource by id, a member of A gets `404` (lock); a resource the administrator creates belongs to the named project or to A; an administrator putting B's security group on A's port by id succeeds, as upstream (FR-018).
+- [ ] T105 [P] [US12] Change round 1's pins of the old id rule to upstream's, FR-004 and FR-018 (R52): `internal/nova/security_group_actions_test.go`, `internal/neutron/port_api_security_groups_test.go` and `test/contract/nova/security_group_actions_test.go` — an administrator naming another project's group **by id** in `addSecurityGroup`, server create or port create/update now succeeds; **by name** it still resolves in the server's project (entry 5); a member naming another project's group by id or name still gets `404`. Red against the current code.
+
+### Implementation for User Story 12
+
+- [ ] T106 [US12] `internal/neutron/list_scope.go` (new): `projectScope(c, f, column)` per R50, and its use in all sixteen listings in `internal/neutron/network.go`, `ports.go`, `router.go`, `floatingip.go`, `port_forwarding.go` and the QoS, RBAC, trunk, address-scope, subnet-pool, IP-availability and metering handlers; the shows by id skip the project condition for an administrator, a name branch keeps it. The same helper decides every write's target (update, delete, action, and a create's references by id) for an administrator, per R50; the membership helpers follow T107.
+- [ ] T107 [US12] `internal/neutron/ports.go` (`ResolveSecurityGroup`, `requireGroupsOfProject`) and their callers in `internal/nova/handlers.go` and `internal/nova/advanced_actions.go`: an administrator's id matches any project's group; names unchanged (makes T105 green; R52).
+
+**Checkpoint**: US12 green on both backends.
+
+---
+
+## Phase 18: The network node and the node call (FR-033, FR-034; R26, R27)
+
+### Tests (write first, confirm RED)
+
+- [ ] T108 [P] `internal/neutron/node_call_test.go` (new): a node token (audience `lightstack-node`, `node`, `exp`, `body_sha256`) is accepted by `/internal/v1/converge`; expired, wrong audience, wrong node, tampered body → `401`; a user token → `401`; a node token on any `/v2.0` route → `401`; a unit the target does not hold (not the network node; a port bound elsewhere) → `409`; a target that blocks → the caller fails within one second, and the target itself gives up within 900 ms of receipt, lock wait included; `absent` for a port no longer bound to the target is accepted; a call to self bypasses HTTP; the body carries only unit, ids and `absent`.
+- [ ] T109 [P] `internal/neutron/network_node_test.go` (new): which node holds which unit (routers and DHCP the network node; ports their `binding_host_id`), the caller resolving a node's address from the registry's tunnel IP and the Neutron port, and a missing or inactive node failing the step.
+
+### Implementation
+
+- [ ] T110 `internal/neutron/node_call.go` (new): the token's minting and checking with `keystone.jwt_secret`, signing inline with `golang-jwt` as `internal/keystone/auth.go:397` does (keystone exports no helper; no new module), the HTTP client with a one-second timeout, the `/internal/v1/converge` handler (unit lock, read, render, apply, all within one 900 ms deadline from receipt), routing in `internal/neutron/network.go`'s route setup outside `/v2.0`, and the real `nodeCaller` over the registry. `internal/middleware/auth.go` refuses tokens with the node audience.
+- [ ] T111 `cmd/lightstack/main.go`: pass the network node name, the node name, the registry (nil without VXLAN) and the Neutron port to `neutron.NewService`; refuse to start with VXLAN on and no network node (T064).
+
+---
+
+## Phase 19: The router unit — namespace, legs, NAT, port forwarding (FR-033, FR-035, FR-037, FR-038, FR-049; R28, R37)
+
+### Tests (write first, confirm RED)
+
+- [ ] T112 [P] `pkg/networking/router_namespace_test.go` (new), pure renderers: for a router with a gateway, two interfaces, two floating IPs and a port forwarding, the namespace's nat and mangle `iptables-restore` payloads equal `contracts/router-namespace-dataplane.md`'s rules (chain names, `lightstack` comments, SNAT exception, hairpin mark, `ls-pf-<id[:8]>`); devices and addresses (`qg-`/`lg-`, `qr-`/`lr-`, `/32` floating addresses, default route); host routes and proxy entries; SNAT off drops the two SNAT rules; a port-forwarding range as upstream.
+- [ ] T113 [P] `pkg/networking/router_namespace_apply_test.go` (new), with the fake command runner: adding applies namespace, legs, addresses, one restore per table, then floating addresses, then host routes and proxy entries; removing the reverse; an unchanged router runs reads only; every command gets at most one second; a failing or blocking command fails the call within about a second; stub mode runs nothing.
+- [ ] T114 [P] `internal/neutron/router_unit_test.go` (new), against the fakes: a floating-IP create, update, move, disassociate and delete, a port forwarding's create, update and delete, an interface add and remove, and a gateway set, change and clear each converge their router on the network node before the answer (through the fake node caller when served by another node); a failing router unit gives `500` and the compare-and-set undo of R20 (FR-008) or the re-apply of FR-040; a floating IP deleted with port forwardings removes their rules with it.
+- [ ] T115 [P] Rework `internal/neutron/floating_ip_dataplane_test.go` and `internal/neutron/ingress_refresh_test.go`: their floating-IP NAT and filter assertions move to the router unit (T114) and the port unit (T127); keep only what still holds, or delete the file, and say which in this task's note.
+
+### Implementation
+
+- [ ] T116 `pkg/networking/router_namespace.go` (new): the renderers and the real-mode converge through `rm.run` (bounded), per the contract. It adds the new code beside the old and removes nothing; T118 removes the old functions once nothing calls them.
+- [ ] T117 `internal/neutron/units.go`: the router unit — read a router's records (router, gateway port, interfaces with their ports and subnets, floating IPs, port forwardings), render, converge through `routerDataplane` under the router lock; and `convergeRouter(ctx, id, absent)` routed through the node caller to the network node.
+- [ ] T118 Switch every caller to the router unit and remove the old functions in the same task, so the build never breaks: `internal/neutron/reconciler.go` (its floating-IP and egress passes; the router-unit pass itself is T147), `internal/neutron/teardown.go` (the old calls go; the new purge is the teardown task), `internal/neutron/network.go` (the NAT methods of `floatingIPDataplane`; its filter methods, the `dataplane` field and `lockNode` stay until T132, which still has `RefreshPortFilters` and `removeOrphanFilter` using them), `internal/neutron/floatingip.go` (create, update, delete, `ConvergeFloatingIPs`, replacing `convergeFloatingIP*` and the node lock), `internal/neutron/port_forwarding.go` (create, update, delete; checks in their transactions: the floating IP's router, the internal port's project and address, duplicates), `internal/neutron/router.go` (interfaces, gateway; replacing `configureExternalGateway`, `withdrawEgressSNAT`, the namespace calls), `internal/neutron/ports.go` (`convergeDisassociated`), `internal/nova/handlers.go` (`ConvergeFloatingIPs` after server deletion). Remove `EnsureFloatingIP`, `WithdrawFloatingIP`, `EnsureEgressSNAT`, `RemoveEgressSNAT` and the host-namespace parts of `NorthSouthState` from `pkg/networking/northsouth.go`, and `CreateRouterNamespace`, `AttachInterfaceToRouter`, `DetachInterfaceFromRouter`, `AddPortForwarding`, `RemovePortForwarding` and the unused `SetDefaultGateway`/`AddRoute`/`DeleteRoute` from `pkg/networking/router.go`, with their tests.
+
+---
+
+## Phase 20: The DHCP unit and metadata (FR-037; R29)
+
+### Tests (write first, confirm RED)
+
+- [ ] T119 [P] `pkg/networking/dhcp_namespace_test.go` (new): `dnsmasq`'s rendered configuration for a network with two DHCP subnets: static ranges per subnet with tags, a host entry per port, option 3 the gateway, option 121 `169.254.169.254/32,<DHCP address>` and `0.0.0.0/0,<gateway>`, DNS; a gatewayless subnet gets the metadata route only; the namespace and device plan (`qdhcp-<N>`, `tap<port[:11]>`, the addresses and `169.254.169.254/32`); real-mode apply through the fake runner, bounded, stub mode inert.
+- [ ] T120 [P] `internal/neutron/dhcp_unit_test.go` (new), against the fakes, the DHCP port's host end `ld-<port[:11]>`: the network's first DHCP subnet creates a `network:dhcp` port with the lowest free pool address and the network's project; a second subnet adds an address; the last one removed deletes the port; subnet create, update and delete, and port create and delete (reservations), converge the DHCP unit on the network node before the answer; a failing unit gives `500` and the undo (create, update) or re-apply (delete).
+- [ ] T121 [P] `internal/metadata/network_identity_test.go` (new): the handler resolves an instance by network and source address; two networks with the same address resolve to their own instances; the existing loopback and trusted-header rules stay (lock).
+
+### Implementation
+
+- [ ] T122 `pkg/networking/dhcp_namespace.go` (new): renderers and real-mode converge, beside the old code; it removes nothing (T123 does) (namespace, veth to the bridge, addresses, `dnsmasq` started and stopped inside the namespace, its files under the state path).
+- [ ] T123 `internal/neutron/units.go`, `internal/neutron/network.go`, `internal/neutron/ports.go` (`AllocatePortForInstance`, `ReleaseInstancePorts`) and `internal/neutron/reconciler.go` (`reconcileSubnets`): the DHCP unit and its triggers (subnet create, update, delete; port create, delete; `AllocatePortForInstance`, `ReleaseInstancePorts`), the DHCP port's lifecycle, under the network's lock, through the node caller. Replace `applyDHCPForNetwork`'s callers. In the same task, retire `pkg/networking/metadata_redirect.go`'s per-bridge DNAT and the bridge addressing in `pkg/networking/dhcp.go`, with every caller, so the build never breaks.
+- [ ] T124 `internal/metadata/service.go` and a new `internal/metadata/netns_listener.go`: a listener per `qdhcp-*` namespace on `169.254.169.254:80`, opened by entering the namespace on a locked OS thread, serving the handler with its network; identity by network and source address. The DHCP unit opens and closes it through an interface Neutron receives from `main.go`.
+
+---
+
+## Phase 21: The port firewall (FR-041–FR-043, FR-047; R32, R33)
+
+### Tests (write first, confirm RED)
+
+- [ ] T125 [P] `pkg/networking/port_firewall_test.go` (new), pure: for ports with groups, rules, a remote group with members, IPv4 and IPv6, the rendered `iptables-restore` and `ip6tables-restore` payloads equal `contracts/port-firewall.md` (dispatch, `ls-i`/`ls-o`/`ls-s` chains, DHCP and neighbour-discovery allowances, spoof per fixed IP and MAC, the rule block with `RELATED,ESTABLISHED`, de-duplicated `RETURN`s, `INVALID` drop, fallback; remote groups expanded excluding the port's own addresses; trusted ports accepted; raw zone rules; a port with stateless groups gets `CT --notrack` and no `RELATED,ESTABLISHED`/`INVALID` rules (FR-051)); trusted ports accepted by `lr-`/`ld-` device name; a port with no group renders the block without rules; the payload removes a deleted port's chains and dispatch.
+- [ ] T126 [P] `pkg/networking/port_firewall_apply_test.go` (new), fake runner: compares with `-S` per chain and restores only on a difference, one commit per family, bounded at one second; stub mode inert.
+- [ ] T127 [P] `internal/neutron/port_unit_test.go` (new), against the fakes, two services and the fake node caller: a membership change, a rule add and delete, a change to a remote group's members, and a port's binding change each converge the affected ports' chains on their bound nodes before the answer, one call per node; a failure gives `500` and the existing compare-and-set undo (FR-008); an unbound port has no chains; a port whose binding moves sends `absent` to the old node and presence to the new one in the same request; the same converges happen in `ebpf` mode (FR-047); `CreatePort` no longer calls the eBPF manager (FR-045); the network's `ct_zone` is assigned at creation, lowest free from 4097.
+- [ ] T128 [P] `pkg/hypervisor/xml_template_test.go` (extend): the interface element carries `<target dev='tap<port id[:11]>'/>`.
+- [ ] T129 [P] `internal/nova/port_binding_test.go` (new), FR-041 and FR-056: boot sets the ports' `binding_host_id` to the node name and converges their chains before `DomainCreate` (the fake `NeutronService` records the order); a failing converge puts the server in `ERROR` with a fault and starts no domain; interface attach binds and converges before `AttachDevice`, and answers `500` and unbinds on failure; detach clears the binding and converges the old node `absent`; `GET /v2.0/ports/{id}` reports `binding:host_id` to an administrator only.
+- [ ] T130 [P] Rework the round-1 filter tests: `internal/neutron/security_group_rule_refresh_test.go`, `internal/nova/security_group_actions_test.go`'s failure cases and `pkg/networking/ingress_filter_test.go` assert the port unit instead of the floating-IP filter (FR-042); `reconcile_dataplane_test.go`'s filter cases move to T146. Note per file what changed.
+
+### Implementation
+
+- [ ] T131 `pkg/networking/port_firewall.go` (new): renderers and real-mode converge through `rm.run`, beside the old code; it removes nothing (T132 does).
+- [ ] T132 `internal/neutron/units.go`: the port unit — read each port's groups, rules, remote members, addresses, MAC and network zone; group by `binding_host_id`; one node call per node. `RefreshPortFilters` and `rebuildGroupFilters` converge port units; `portIngressRules` and `floatingFixedIPs` go. Remove the LS-SG chain calls from `CreateSecurityGroup`, `DeleteSecurityGroup`, `CreateSecurityGroupRule`, `DeleteSecurityGroupRule`. In the same task, update every remaining caller (`internal/neutron/floatingip.go`, `internal/neutron/teardown.go`, `internal/neutron/reconciler.go`) and delete `RenderIngressFilter`, `EnsureIngressFilter`, `RemoveIngressFilter` and the `LS-NSI` helpers from `pkg/networking/northsouth.go`, and the `LS-SG-*` chain code in `pkg/networking/security_groups.go`, so the build never breaks. Remove what is left of `floatingIPDataplane`, the `dataplane` field, `lockNode` and the old fake in `internal/neutron/network.go` and its tests.
+- [ ] T133 `internal/neutron/network.go`: assign `ct_zone` in `CreateNetwork`'s transaction. `internal/neutron/ports.go`: report `binding:host_id` (administrators), accept it from Nova's calls; stop creating `tap-<port8>` in `CreatePort` and `AllocatePortForInstance` (libvirt owns the TAP), and remove `CreatePort`'s eBPF step with it (`ports.go:215-241`; FR-045, FR-047).
+- [ ] T134 `pkg/hypervisor/xml_template.go` and `internal/nova` (boot, attach, detach): the TAP name in the domain XML; `binding_host_id` set and cleared, and the chains converged, through `NeutronService` (new method `BindPort(ctx, portID, node string) error`, converging before it returns; faked in `boot_failure_test.go`'s `fakeNeutron`), before `DomainCreate`/`AttachDevice`, with T129's failure handling.
+
+---
+
+## Phase 22: Deletions and the remaining Article II paths (FR-040, FR-045; R34, R40)
+
+### Tests (write first, confirm RED)
+
+- [ ] T135 [P] `internal/neutron/deletion_order_test.go` (new), against the fakes: for a port, a router interface, a router, a gateway clear, a subnet, a network and a port forwarding — the refusal checks run first; the affected units converge to absent before the record goes; a failing unit → `500`, the record kept, the units converged from it again; a refusal in the final transaction (a dependant added in between) → that refusal and the units re-applied; the fake records the order.
+- [ ] T136 [P] `internal/neutron/network_create_undo_test.go` (new): a failing bridge on create removes the row compare-and-set on `updated_at`; a row updated in between stays; a row another request built on (a subnet added) stays, with its subnet.
+- [ ] T137 [P] `internal/neutron/port_fdb_test.go` (new), FR-045 and R51: with VXLAN on, a port create writes its FDB row in the port's own transaction; a failing FDB insert answers `500` and leaves no port; a pre-076 network without `ct_zone` gets the lowest free zone the first time one of its ports is rendered.
+- [ ] T138 [P] `internal/nova/server_delete_ports_test.go` (new): server deletion runs its ports' deletion through FR-040 after libvirt; a failing port unit → `500`, the server and its ports kept, a second delete succeeds; `forceDelete` the same.
+- [ ] T139 [P] `internal/neutron/auto_allocated_topology_unit_test.go` (new): a failing unit during auto-allocation answers `500` and leaves no half topology.
+
+### Implementation
+
+- [ ] T140 `internal/neutron/ports.go` (`DeletePort`, `ReleaseInstancePorts`, `teardownPortHost` reduced to the units), `internal/neutron/router.go` (`DeleteRouter`, `RemoveRouterInterface`, gateway clear), `internal/neutron/network.go` (`DeleteSubnet`, `DeleteNetwork`, `teardownNetworkHost`, network create's undo: one `DELETE … WHERE id AND updated_at AND NOT EXISTS (dependants)` statement), `internal/neutron/port_forwarding.go` (delete), `internal/neutron/auto_allocated_topology.go`: FR-040's order through the units, and FR-008's undo on every create and update path named in R40. Port creation's FDB row moves into the port's transaction (`CreatePort`, `AllocatePortForInstance`), and the null-`ct_zone` assignment of R51 goes into the port unit's read (makes T137 green).
+- [ ] T141 `internal/nova/handlers.go` `deleteServer`: the ports' deletion through Neutron's FR-040 path after libvirt; a failure answers `500` and keeps the instance.
+
+---
+
+## Phase 23: Reconciliation by role (FR-010 restated, FR-033, FR-042, FR-044; R26, R28–R33)
+
+### Tests (write first, confirm RED)
+
+- [ ] T142 [P] `internal/neutron/reconcile_units_test.go` (new): on the network node a pass converges every router and DHCP unit with a record, restarting a network's `dnsmasq` whose process is gone (after a restart), and removes namespaces, legs, proxy entries and listeners of units without one, only after a complete read; a matching unit is left untouched; on another node a pass removes any `qrouter-*`/`qdhcp-*` it finds; every node converges its bound ports' chains and removes `ls-` chains no bound port holds, after a complete read.
+- [ ] T143 [P] `internal/neutron/reconcile_retired_test.go` (new): the retired state of FR-044 is removed where recognised — `LS-NSI-*` chains and jumps, marked host floating-IP NAT, `/32` uplink addresses of floating IPs with a record, bridge addresses, per-bridge metadata DNAT, host `dnsmasq`, `LS-SG-*` chains — and nothing unmarked without a record.
+- [ ] T144 [P] `internal/neutron/vxlan_coordinator_test.go` (new): FDB entries whose row is gone are removed; a deleted network's VXLAN device is removed (`DeleteVXLAN` gains its caller).
+- [ ] T145 [P] `internal/neutron/teardown_test.go` and `internal/teardown/teardown_test.go` (extend), R48: the purge converges every router and DHCP unit to absent and removes every `ls-` port chain and dispatch on the node, with a fake runner; the database-less fallback removes `qrouter-*` and `qdhcp-*` namespaces and `ls-` chains by prefix; it never touches what it does not recognise.
+- [ ] T146 [P] Rework `internal/neutron/reconcile_dataplane_test.go`: its floating-IP cases become router-unit cases in T142; delete what no longer applies, and note it.
+
+### Implementation
+
+- [ ] T147 `internal/neutron/reconciler.go`: roles (network node or not), the units' passes with the complete-read rule, the retired-state removal, and the FDB/VXLAN removal in `internal/neutron/vxlan_coordinator.go`. `reconcileNAT`, `reconcileFloatingIPs`, `removeOrphanFilter`, `reconcileSubnets`' host DHCP and the egress SNAT pass go.
+
+- [ ] T148 `internal/neutron/teardown.go` (`PurgeRealModeNetworkState`) and `internal/teardown/teardown.go` (the fallback), R48: purge the new layout as T145 pins it.
+
+---
+
+## Phase 24: The node — namespaces across restarts, bridge netfilter, deployment (FR-036, FR-046; R35)
+
+### Tests (write first, confirm RED)
+
+- [ ] T149 [P] `pkg/networking/nodesettings_test.go` (new): the check runs `modprobe br_netfilter` through the runner, writes `1` to both `/proc/sys/net/bridge/bridge-nf-call-*` files under a test root, reads them back, and reports which failed; stub mode runs nothing.
+- [ ] T150 [P] `internal/health/health_test.go` (extend): a `bridge-netfilter` check failing makes `/readyz` `503` naming it; passing makes it ready.
+- [ ] T151 [P] Chart tests `charts/lightstack/tests/netns_mount_test.yaml` (new) and `teardown_test.yaml` (extend): in real mode the pod and the teardown job mount `hostPath` `/run/netns` at `/run/netns` with `mountPropagation: Bidirectional` and `/lib/modules` read-only; stub mode mounts neither.
+
+### Implementation
+
+- [ ] T152 `pkg/networking/nodesettings.go` (new) and `cmd/lightstack/main.go`: the start-up check after `neutron.NewService` in real mode, its result as a `health.Check` (`internal/health/health.go` gains `AddCheck` or the checker moves after the check).
+- [ ] T153 [P] `charts/lightstack/templates/_helpers.tpl` (pod spec volumes and mounts), `templates/teardown-purge-job.yaml`, and `deployments/docker-compose-kvm.yml` (`/run/netns:/run/netns:rshared`, `/lib/modules:/lib/modules:ro`).
+
+---
+
+## Phase 25: Round 2 polish
+
+- [ ] T154 [P] `docs/UPGRADING.md`: a section for round 2 — the clean break (run `lightstack cleanup` and start fresh; no conversion), and a before/after table of every answer FR-020's round-2 bullets list (FR-019a–b, FR-024–FR-058, administrators' listings, shows and writes included).
+- [ ] T155 [P] `docs/EBPF_STATUS.md`: the port chains enforce in both modes; Neutron's TAP is gone, so eBPF's attach point is too; the decision is the user's.
+- [ ] T156 [P] `docs/NETWORKING_MODES.md`, `docs/VXLAN_IMPLEMENTATION.md`: the network node, namespaces, the port firewall, the node call.
+- [ ] T157 [P] `docs/CONFIGURATION.md`: `neutron.network_node`; `docs/TROUBLESHOOTING.md`: remove the manual `/var/run/netns` step; `docs/SCALING.md`: the bridge sysctls are set by Lightstack; FR-035's underlay note (allow the floating range where the underlay delivers only assigned addresses).
+- [ ] T158 [P] `charts/lightstack/README.md`: the mounts, multi-node's network node, the underlay note.
+- [ ] T159 [P] `docs/specs/033-sg-port-membership/contracts/network-api.md` and `server-report.md`: point to `network-api-round2.md` where round 2 changes them. (`compute-security-groups.md` was restated during the round-2 analysis.)
+- [ ] T160 Re-run T058's gates and append "Round 2 results" to `baseline-gates.md`, compared with T058 (build, lint, vet, gofmt, unit on both backends, contract on both backends, `helm unittest charts/lightstack`, `./test/security_groups_test.sh` with Test 11 passing).
+- [ ] T161 Mutation-check round 2 off the worktree (`go test -overlay` or a scratch clone) and record it in `baseline-gates.md`: each listing filter ignored (T071); each `default` refusal removed (T078); the ambiguity check removed (T082); the migrator's foreign-key check removed (T061); starting rules not inserted (T079); pools ignored by the allocator, the gateway or floating IPs not excluded, each validation removed (T086, T087); the allocation lock removed (T097); the router lookup's floating-network check removed, the gateway-interface preference removed, FR-029's check removed (T098); gateway port or one-transaction interface reverted (T093); FR-039's checks removed (T094); the node token's audience, expiry, node or digest check removed (T108); the router unit's add or remove order swapped, the SNAT exception or hairpin rule dropped (T112, T113); the DHCP static range made dynamic, option 121's metadata route dropped (T119); metadata identity by address only (T121); the spoof chain, `INVALID` drop, remote-group expansion or zone rules dropped (T125); the TAP name dropped (T128); a deletion's record deleted before its units (T135); the re-apply on failure removed (T135); the complete-read rule removed from a removal (T142); `br_netfilter` failure not failing readiness (T150); the administrator branch of `projectScope` removed, and a show's administrator bypass removed (T102); a write's administrator target removed (T104); an administrator's foreign group id refused again (T105).
+- [ ] T162 [P] Update `docs/specs/033-sg-port-membership/follow-ups.md` only if round 2 leaves something out; otherwise leave it as it is.
+- [ ] T163 [P] The ticket's checklist (cloud-storage#579): draft the round-2 items in `docs/specs/033-sg-port-membership/ticket-checklist-round2.md` for the user to post or approve; do not post.
+- [ ] T164 [P] Update `CLAUDE.md`'s Neutron real-mode paragraph and its Project Isolation bullet ("Listings never widen implicitly" is Compute's `all_tenants` rule; Networking API listings show administrators every project, FR-057) ("Project Isolation" and "Neutron real mode") for the network node, namespaces and the port firewall, replacing statements the layout change makes false.
+- [ ] T165 Generate the round-2 host runbook `docs/specs/033-sg-port-membership/HOST_TESTING.md` with `/cl.hosttest docs/specs/033-sg-port-membership/`: two runs per quickstart §5 and research R45 — (i) the chart on one Kubernetes node, opening with FR-023's checks as restated in §5 (one connection attempt per second included), (ii) two nodes with a shared PostgreSQL and VXLAN — each with read-only prerequisites (`br_netfilter` loadable, `ip netns`, `iptables -m physdev --help`, `-m comment`, `ip6tables`), setup, steps with desired outcomes, and teardown; zsh-paste-safe. Replaces T053.
+- [ ] T166 Run (i) on a Kubernetes node, its Horizon *Edit Security Groups* step included, and record each step's outcome in `HOST_TESTING.md`. Replaces T054.
+- [ ] T167 Run (ii) on two hosts and record each step's outcome in `HOST_TESTING.md`.
+- [ ] T168 FR-021: once (i)'s Horizon step has passed, record instance *Edit Security Groups* as verified in `docs/compatibility/HORIZON_COMPATIBILITY_REPORT.md`, with the date. Replaces T055.
+
+T057 (the rebase and renumbering to v1.6.0) stays last, after T168.
+
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase dependencies
@@ -709,7 +1016,7 @@ No tasks of its own. Both scenarios are covered where they first fail:
 - **US5**: no tasks. Covered by T006 and T010.
 - **US6 (T030–T034)**: needs T004 and US1's T014–T015 (refresh, lock, seam). T033 → T034, which share `ports.go`.
 - **US7 (T035–T048)**: needs US1's T013–T016. Tests T035–T041 run in parallel; T036 extends T009's fake. T042 needs T035. T043 needs T042. T044, T045 and T046 come after US6's T033–T034, which share `ports.go`. T046 needs T043. T047 needs T046 and comes after US4's T028–T029, which share `internal/nova/handlers.go`. T048 needs T043.
-- **Polish (T049–T057)**: after the stories. T051 comes after all code; T052 after T051; T053 before T054; T055 after T054. T057 runs at the rebase onto a `main` that carries the other v1.5.0 amendment, before review, whenever that happens.
+- **Polish (T049–T057)**: after the stories; T057 waits for `main` to carry the other amendment, and runs last, after T168, before review. T051 comes after all code; T052 after T051; T053 before T054; T055 after T054. T057 runs at the rebase onto a `main` that carries the other v1.5.0 amendment, before review, whenever that happens.
 
 ### Story completion order
 
@@ -805,3 +1112,36 @@ Each increment leaves the earlier stories' tests green.
 - 57 tasks: Setup 2, Foundational 5, US1 11, US2 3, US3 3, US4 5, US5 0 (covered by T006 and T010), US6 5, US7 14, Polish 9.
 - Nothing here commits. The user commits.
 - `server_security_groups` stays in the schema, unused (R1). No task drops it.
+
+---
+
+## Round 2: dependencies and execution order
+
+- **T058 → T059** before any round-2 test. **Phase 12** (T060–T070) blocks every later round-2 phase.
+- **US8** (Phase 13) and **US9** (Phase 14) depend only on Phase 12, and can run in parallel with each other.
+- **US11** (Phase 15) before the router API (Phase 16), which allocates gateway addresses, and before **US10** (Phase 17), whose allocation uses T090's allocator and whose router lookup needs Phase 16's gateway ports. FR-039's checks (Phase 16) read floating IPs' `router_id` as stored today.
+- **US12** (Phase 17a) after Phase 12; it touches every listing handler, so it runs after US10's edits to `floatingip.go` and before Phase 18.
+- **Phase 18** (node call) after Phase 12; **Phases 19–21** (router, DHCP, port units) after Phase 18. Phase 19 after Phases 16 and 17. Phases 20 and 21 can run in parallel with 19 except where files overlap (`internal/neutron/units.go`: sequential).
+- **Phase 22** (deletions) after Phases 19–21. **Phase 23** (reconciliation) after Phase 22. **Phase 24** (node) after Phase 20 (its `main.go` change follows T124's); its chart work (T151, T153) any time after Phase 12.
+- **Phase 25** after everything; T165 → T166 → T167 → T168 → T057.
+
+**Parallel within round 2**: every `[P]` test task of a phase together (different files); US8 ∥ US9; T068 ∥ T069 ∥ T070; T112 ∥ T113 ∥ T119 ∥ T125 ∥ T126 (pure `pkg/networking` tests); T154–T159 docs together.
+
+**Shared files (implementation tasks touching them run in this order, never together)**:
+
+| File | Tasks, in order |
+|---|---|
+| `internal/neutron/ports.go` | T076 → T077 → T083 → T085 → T090 → T106 → T107 → T118 → T123 → T132 → T133 → T140 |
+| `internal/neutron/network.go` | T065 → T077 → T091 → T106 → T110 → T118 → T123 → T133 → T140 |
+| `internal/neutron/floatingip.go` | T100 → T101 → T106 → T118 → T132 |
+| `internal/neutron/router.go` | T096 → T106 → T118 → T140 |
+| `internal/neutron/port_forwarding.go` | T106 → T118 → T140 |
+| `internal/neutron/units.go` | T065 → T117 → T123 → T132 → T140 |
+| `internal/neutron/reconciler.go` | T118 → T123 → T132 → T147 |
+| `internal/neutron/teardown.go` | T118 → T132 → T148 |
+| `pkg/networking/northsouth.go` | T118 → T132 |
+| `cmd/lightstack/main.go` | T070 → T111 → T124 → T152 |
+| `internal/nova/handlers.go` | T077 → T085 → T107 → T118 → T134 → T141 |
+
+
+**Strategy**: round 2's first useful increment is Phases 11–17a — the four API findings, the router API and administrators' access, no layout change, deployable on its own. Phases 18–24 change the real-mode layout together; they are one increment, since a router namespace without the port firewall or DHCP namespace would leave the node half on each layout.

@@ -1,10 +1,12 @@
 # Follow-ups — SPEC-033
 
-Four tickets for the user to file (research R17). None is filed from here. Locations are at `d81f081`, the commit this feature is based on, unless they say otherwise.
+Drafted as four tickets for the user to file (research R17). On 2026-11-19 the user moved all four into this feature instead (spec.md, Clarifications, Session 2026-11-19), so none is to be filed. Each section says where it went. Locations are at `d81f081`, the commit this feature is based on, unless they say otherwise.
 
 ---
 
 ## 1. The security-group listing's other filters
+
+**Status.** In scope: User Story 8, FR-019a, FR-019b.
 
 **Problem.** `GET /v2.0/security-groups` honours `id` and `name` since SPEC-033 (FR-019a). Every other attribute filter is ignored, and the whole project is listed instead: `description`, `project_id`/`tenant_id`, `tags`, `shared`, `stateful`, `revision_number`. Upstream applies them, so the divergence is silent.
 
@@ -15,6 +17,8 @@ Four tickets for the user to file (research R17). None is filed from here. Locat
 ---
 
 ## 2. Request paths that log a failed node-local step and answer success
+
+**Status.** In scope: FR-033–FR-049 (spec.md, Session 2026-11-20). The user also decided to wire the router namespace into the traffic path. In real mode it is on none today: the host end of a router interface's veth is on no bridge, so port forwarding's DNAT, which goes into the namespace, is likely never reached. The list below is the input to that clarification.
 
 **Problem.** Constitution v1.5.0's Article II has a request either apply its node-local work or undo its change and answer `500`. Its migration plan names the paths that still log a failure and answer success:
 - `CreateAutoAllocatedTopology` (`auto_allocated_topology.go:119`);
@@ -38,6 +42,8 @@ Network creation's undo (`network.go:631-637`) also deletes the row unconditiona
 
 ## 3. Deleting `default` as a non-administrator
 
+**Status.** In scope: User Story 9, FR-024–FR-026. Renaming `default`, creating a second one, and duplicate names answering `500` were found while checking it.
+
 **Problem.** Upstream refuses to delete a project's `default` group with `409` (`SecurityGroupCannotRemoveDefault`), even when no port carries it. Lightstack deletes it with `204` when no port carries it; since SPEC-033 a carried `default` answers `409 SecurityGroupInUse`. `test/security_groups_test.sh` Test 11 already expects a refusal. Today it skips itself, because the script reads `GROUPS`, a bash builtin (`baseline-gates.md`).
 
 **Proposal.** Refuse it with `409 SecurityGroupCannotRemoveDefault` for a non-administrator, as upstream. Decide whether an administrator may.
@@ -47,6 +53,8 @@ Network creation's undo (`network.go:631-637`) also deletes the row unconditiona
 ---
 
 ## 4. Floating IPs beyond their dataplane
+
+**Status.** In scope: User Stories 10 and 11, FR-027–FR-032a. Checking it found a fourth divergence: addresses ignore allocation pools, which Lightstack does not store, and a network without a subnet hands out `192.0.2.x`.
 
 **Problem.** Three divergences from upstream remain outside SPEC-033's scope:
 - Two creates can race for one address. The address is chosen before the transaction, and the unique constraint turns the loser into a `500`.

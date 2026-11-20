@@ -365,6 +365,8 @@ The amendment's migration plan names, as departures it does not permit, the requ
 
 ## R22 — A group that a port carries cannot be deleted
 
+> **Round 2**: the LS-SG departure this section records is gone; the chains are replaced by the port firewall (R32, FR-045).
+
 **Decision**: `DeleteSecurityGroup` runs one transaction.
 1. It locks the group's row with `SELECT … FROM security_groups WHERE id = $1 AND project_id = $2 FOR UPDATE`. No row → `404` (`SecurityGroupNotFound`).
 2. Any `port_security_groups` row for the group → `409`, through `common.NewResourceInUseError("security group", …)`, as network and router deletion answer theirs (`network.go:1092`, `router.go:427`). `neutronInUseTypes` (`internal/common/neutron_errors.go:81`) gains `"security group": "SecurityGroupInUse"`, so the envelope's type is upstream's.
@@ -449,6 +451,8 @@ For speed, the pass compares against its one listing. For each associated floati
 
 ## R25 — A deleted port takes its floating IPs' association with it
 
+> **Superseded in part by R34 (round 2)**: a failed removal no longer leaves the deletion standing; the deletion answers `500` and keeps the port (FR-008d, FR-040).
+
 **Decision** (added in the fourth analysis, paths and locks corrected in the fifth, `forceDelete` added in the sixth): every path that deletes a port clears the association of the floating IPs that name it, in the deleting transaction, and converges them after it. Three paths delete ports:
 - `DeletePort` (`ports.go:516`): `DELETE /v2.0/ports/{id}`;
 - Nova's `DeleteServer` (`internal/nova/handlers.go:2021`), which deletes the server's boot ports with its own SQL in its own transaction (`:2175`);
@@ -486,3 +490,288 @@ After the commit, the Neutron service converges each address (R23). Nova reaches
 - Leave `forceDelete` as it is and narrow SC-014: the ports and volumes it leaks today would stay leaked, and a client-visible difference from upstream would stay unrecorded.
 - Disassociate and converge first, then delete the port in a second transaction: the deletion would be stored after the node work, the shape R20 rejects for a floating IP's deletion.
 - Undo the port deletion when the convergence fails: the rest of the teardown has no undo, so the port would come back without its TAP.
+
+---
+
+# Round 2 (2026-11-20): the follow-ups and the router namespace
+
+Research for spec Sessions 2026-11-19 and 2026-11-20 (US8–US11, FR-019a–b, FR-024–FR-049). Four read-only surveys fed it: today's host networking state, deployment and node identity, the Neutron API code, and upstream's dataplane read in source (neutron and neutron-lib master: `agent/linux/iptables_firewall.py`, `agent/l3/router_info.py`, `agent/linux/dhcp.py`, `db/l3_db.py`, `ipam/`, `db/securitygroups_db.py`). Locations are at `dcda565`.
+
+**What the surveys found that the spec did not know**:
+- **VMs do not use Neutron's TAP.** The libvirt XML names a bridge and no `<target dev>` (`pkg/hypervisor/xml_template.go:126-131`), so libvirt creates `vnetN`. Neutron's `tap-<port8>` (`ports.go:135`, `:2150`) carries no traffic; eBPF's XDP program attaches to it.
+- **No record says where a VM runs.** There is no instance host column and no `binding:host_id`; Nova's `host` answers are constants (`handlers.go:3340-3362`).
+- **Nodes never call each other.** The registry stores hostname and tunnel IP only (`migrations/004_add_vxlan.up.sql:5-14`), exists only with VXLAN on, and `node_id: auto` is a new UUID on every start (`node_registry.go:28-62`).
+- **Every node does everything.** Every node builds every bridge with the gateway address, runs `dnsmasq` for every network, adds every egress SNAT and floating-IP NAT, and puts every floating address on its uplink (`reconciler.go`, no node filter).
+- **Overlapping tenant CIDRs cannot work in the host namespace**: two networks with `10.0.0.0/24` put two gateway addresses for one subnet in one routing table. Upstream's namespaces exist for this.
+- **Three address ranges disagree**: the reported pool (`.2`–last), the allocator (`.1`–last minus the gateway, `ports.go:867`) and `dnsmasq`'s range (`.10`–`.250`, `reconciler.go:633`).
+- **Router interfaces**: the port and interface rows are inserted outside one transaction, a duplicate surfaces as `500` after the port row exists, a subnet without a gateway is a `500` (`router.go:482-523`). `DeleteSubnet` has no in-use check (`network.go:1863`).
+- **Port forwarding** writes DNAT matching `-i qg-ext-<router7>`, an interface nothing creates (`pkg/networking/router.go:204-228`); `RemovePortForwarding` returns nil whatever happens.
+- **VXLAN**: `DeleteVXLAN` has no callers; `syncPorts` never removes an FDB entry whose row is gone.
+- **Only the floating-IP part of the dataplane has a seam** (`floatingIPDataplane`, `network.go:52`); routers, bridges, DHCP and SNAT are concrete types that do nothing in stub mode.
+- **The chart** mounts no `/run/netns`, no `/lib/modules`; there is no `mountPropagation` anywhere (`charts/lightstack/templates/_helpers.tpl:403-627`). `docs/TROUBLESHOOTING.md:13-27` tells users to add a shared `/var/run/netns` mount by hand.
+- **Upstream detail the spec had wrong**: a requested address already in use is IPAM's `IpAddressAlreadyAllocated` (`409`), and `external_fixed_ips` is administrator-only by policy. FR-038 is corrected.
+
+## R26 — The network node and node identity (FR-033)
+
+**Decision**:
+- `neutron.network_node` names the network node by its **node name**, the hostname the registry keys on. One source of node names for the whole process: `LIGHTSTACK_NODE_NAME` when set (the chart sets it from the pod's node), else `os.Hostname()`. The registry, today on `os.Hostname()` only, uses the same function (`internal/common/nodename.go:9`).
+- With VXLAN off, the setting is ignored and the node is its own network node. With VXLAN on, an empty setting refuses to start, naming the key; a node name that never registers makes every north-south change fail (FR-034), which is visible.
+- **Roles**: the network node holds every `qrouter-*` and `qdhcp-*` namespace and everything in them. Every node holds the bridges, the VXLAN devices and FDB entries, and the port chains of the ports bound to it (R32).
+- The reconciler runs on every node and converges only its node's roles.
+
+**Rationale**: hostnames are stable across restarts; the registry's ids are not. Refusing to start on an ambiguous multi-node setup is Article III's fail-fast.
+
+**Alternatives**: the registry's `id` (regenerated each start); electing a leader (a coordination protocol Lightstack has none of); the first node to register (silent and order-dependent).
+
+## R27 — The node-to-node apply call (FR-034, FR-041)
+
+**Decision**:
+- **Transport**: HTTP on each node's existing Neutron listener, route group `/internal/v1/` outside `/v2.0`, at `<tunnel_ip>:<neutron port>` from the registry. On the target node itself the call is a function call.
+- **Body**: names a **unit** and its ids — `router <id>`, `dhcp <network id>`, `ports <ids…>` — never state. The target reads the records itself and converges the unit (R28–R32), so the call is stateless and idempotent, and carries nothing a stale caller could get wrong.
+- **Authentication**: an HS256 token signed with the shared `keystone.jwt_secret`, audience `lightstack-node`, expiry 10 s, and a claim holding the SHA-256 of the body. The internal group accepts only that audience; `AuthMiddleware` refuses it, so a node token is never a user token and the reverse.
+- **Bound**: the call has one second end to end (client timeout). The target's lock wait and its apply share one deadline, 900 ms from receipt, so the target has given up before the caller does; a caller that times out undoes, and anything the target finished after is converged back by the caller's undo (it re-applies the unit from the restored records) or by the next pass. A timeout, a refused connection, a non-2xx answer or a target that is not the node it was asked to be is a failed step (FR-008).
+- **Who is asked**: north-south units go to the network node; `ports` units to each port's `binding:host_id` (R32), one call per node with all of that node's ports, applied in one commit. A port whose binding moves or is cleared is also sent, as `absent`, to its old node; a node accepts `absent` for any port whose chains it holds, bound there or not, so the `409` of a wrong target applies to presence only.
+
+**Rationale**: a synchronous call with no retry, no record and no queue is Article II's own shape; the constitution only needs to say which node applies (R42). Units that re-read the records are how convergence already works (`convergeFloatingIPLocked` re-reads its record, R24).
+
+**Alternatives**: mTLS (certificate distribution the chart has no story for); a database-polling handshake (a queue by another name); sending desired state in the body (two sources of truth).
+
+## R28 — The router namespace (FR-033, FR-035, FR-037–FR-039)
+
+**Decision** — upstream's legacy L3 layout (`agent/l3/router_info.py`, `legacy_router.py`), named and marked as Lightstack's:
+- **Namespace** `qrouter-<router id>` on the network node, with `net.ipv4.ip_forward=1`, `arp_ignore=1`, `arp_announce=2`, `nf_conntrack_tcp_be_liberal=1`, as upstream's `Namespace.create`.
+- **External leg**: a veth, `qg-<gateway port id[:11]>` in the namespace, `lg-<same>` on the host. `qg-` holds the gateway port's address with the external subnet's prefix and each floating address as `/32`; the namespace's default route goes to the external subnet's gateway. On the host, `lg-` has `proxy_arp=1` (the namespace reaches the LAN through it), each router or floating address has a `/32` route via `lg-` and a proxy neighbour entry on the uplink (`ip neigh add proxy <addr> dev <uplink>`), and the forward rules between the uplink and `lg-` live in a Lightstack chain jumped from `FORWARD`. The uplink's own configuration is never touched.
+- **Internal legs**: per router interface a veth, `qr-<interface port id[:11]>` in the namespace holding the subnet's gateway address and prefix, its host end `lr-<same>` on the network's bridge.
+- **NAT inside the namespace**, upstream's rules under Lightstack chain names (`ls-l3-PREROUTING`, `ls-l3-OUTPUT`, `ls-l3-snat`, `ls-l3-float-snat`, `ls-l3-POSTROUTING`), every rule marked `-m comment --comment lightstack`:
+  - per floating IP: `PREROUTING`/`OUTPUT -d F/32 -j DNAT --to-destination X`, `float-snat -s X/32 -j SNAT --to-source F`;
+  - per gateway with SNAT on: `POSTROUTING ! -o qg-… -m conntrack ! --ctstate DNAT -j ACCEPT`, `snat -o qg-… -j SNAT --to-source G`, and the hairpin rule for a VM reaching another's floating IP (`-m mark ! --mark 0x2/0xffff -m conntrack --ctstate DNAT -j SNAT --to-source G`, with mangle marking traffic in from `qg-`);
+  - port forwardings (R37).
+- **The unit is the router.** Converging a router renders its whole desired state from the records — devices, addresses, routes, the namespace's nat and mangle tables, the host's routes, proxy entries and forward rules — compares it with what is there, and applies the difference: the namespace's tables in one `iptables-restore` commit (atomic per table), address and route changes after it when adding and before it when removing (the address last in, first out, as R23). Every command is bounded at one second through the command runner (R6).
+- **Lock**: one in-process lock per router on the network node, acquired within the node call's shared deadline (900 ms from receipt, lock wait and apply together; R27), replacing the per-address node lock (R8). A floating IP's change converges its router.
+- **No gratuitous ARP**: each address has one owner, the network node, and neighbours learn it on first ARP. Upstream sends it because addresses move between agents; here they do not.
+- **Floating IPs without a router** cannot exist after FR-028; a router whose gateway is cleared carries none (FR-039).
+
+**Rationale**: it is upstream's layout, it keeps the Kubernetes node's network untouched (FR-035), and each tenant's addresses live in their own routing table, so overlapping CIDRs work.
+
+**Alternatives** were settled in clarification (external bridge, macvlan, a dedicated card). Per-address units, as today: a router's NAT rules interact (SNAT exceptions, hairpin), so the router is the smallest unit that renders consistently.
+
+## R29 — DHCP and metadata (FR-037)
+
+**Decision** — upstream's DHCP agent layout with `force_metadata`:
+- **A DHCP port per network**: `device_owner` `network:dhcp`, `device_id` `dhcp<network id>`, the network's project, one fixed IP per DHCP subnet: the lowest free address of the subnet's pools, as upstream's `PreferNextAddressRequest`. Created with the first DHCP subnet, removed with the last.
+- **Namespace** `qdhcp-<network id>` on the network node; a veth, `tap<dhcp port id[:11]>` inside holding the DHCP addresses and `169.254.169.254/32`, its host end `ld-<dhcp port id[:11]>` on the network's bridge.
+- **`dnsmasq`**, one per network, inside the namespace, upstream's options: static ranges per subnet (`--dhcp-range=set:subnet-<id>,<net>,static,<mask>,<lease>`), so only ports with a reservation get a lease; option 3 the gateway when there is one; option 121 `169.254.169.254/32,<DHCP address>` and `0.0.0.0/0,<gateway>`; DNS as today. Replaces the dynamic `.10`–`.250` range.
+- **Metadata**: Lightstack itself listens on `169.254.169.254:80` inside each `qdhcp-*` namespace. Go opens a socket in a namespace by entering it on a locked OS thread; the socket keeps its namespace afterwards. Each listener serves the metadata handler knowing its network, and identifies the instance by **network and source address**, which stays unambiguous with overlapping CIDRs. Listeners, and the `dnsmasq` processes, which die with the pod, are recreated by the reconciler's first pass after a restart; until then DHCP and metadata are unavailable, routed traffic is not, and leases already granted run on.
+- **The unit is the network's DHCP**: namespace, device, addresses, `dnsmasq`'s configuration and process, and the listener, converged under a per-network lock.
+- The bridge addresses, the per-bridge metadata DNAT and the host `dnsmasq` processes go (removed by reconciliation where it recognises them, FR-044).
+
+**Rationale**: one owner per address, overlapping CIDRs, and a metadata identity that does not depend on CIDRs being unique. Upstream's isolated/forced metadata mode serves metadata from the DHCP address exactly so.
+
+**Alternatives**: haproxy in the namespace forwarding to a socket, as upstream (a new binary in the image); DNAT from the namespace to the host's metadata port (the host would need a route back into each namespace, and identity stays ambiguous).
+
+## R30 — Allocation pools (FR-030–FR-032a)
+
+**Decision**:
+- **Schema** (migration 076, a `.postgres`/`.sqlite` pair because it creates a table): `subnet_allocation_pools (id, subnet_id → subnets ON DELETE CASCADE, first_ip, last_ip)`, and `subnets.pools_stored` (nullable integer, plain `ADD COLUMN`, no rebuild of `subnets`, which others reference).
+- **Meaning**: `pools_stored` true → the rows are the pools, none meaning none, as upstream's `allocation_pools: []`. False or null → the default pool, which is how the subnets that exist before the migration read (FR-032a), with no data migration.
+- **Validation**, upstream's order: malformed or start after end → `400 InvalidAllocationPool`; IP version mismatch → `400 InvalidAllocationPool`; outside the subnet's usable range → `400 OutOfBoundsAllocationPool`; pairwise overlap → `409 OverlappingAllocationPools`; the gateway inside a pool → `409 GatewayConflictWithAllocationPools`, also on a gateway change against the stored pools. An update replaces the pools whole and leaves existing allocations alone.
+- **Default pool**, upstream's `generate_pools`: IPv4 up to `/30` from the second to the next-to-last address, `/31` and `/32` whole; the gateway removed, which can split the range. The responses' `subnetAllocationPools` becomes this.
+- **Allocation**: every allocation on a subnet, of any owner, holds the subnet's row lock (`LockSubnet`, `FOR UPDATE`; SQLite serialises writers) and, for a floating IP, the allocation lock of R36 first, so no two allocations can choose one address. One function for every automatic address on a subnet — a port's fixed IP (random among free pool addresses, as upstream), the DHCP port and a floating IP (lowest free), a router's gateway address (random). Free means: in a pool, not the gateway, not held by a port's fixed IP, not held by a floating IP on the network. A requested address need only be inside the subnet, not the network or broadcast address, and free.
+
+**Rationale**: upstream's semantics, one allocator instead of three ranges that disagree.
+
+**Alternatives**: a JSON column on `subnets` (needs a table rebuild on SQLite, which the README forbids for referenced tables); a data migration computing default pools (SQLite has no address functions; nothing is deployed to preserve).
+
+## R31 — Router ports: interfaces and the gateway (FR-038, FR-045)
+
+**Decision**:
+- **AddRouterInterface** stores its port (`network:router_interface`, the subnet's gateway address) and the interface row in **one transaction**, refusing a duplicate subnet with upstream's `400` and a subnet without a gateway with upstream's `400`, then converges the router (R28; FR-008).
+- **Gateway set** creates a `network:router_gateway` port with no project (as upstream's has none), on the external network, with the requested address (administrator-only, `403` otherwise) or one from the pools (R30), in the router's transaction; `external_gateway_info` renders `external_fixed_ips` from that port. Gateway clear deletes it (FR-040's order: host first). A changed requested address updates the port, as upstream's `_update_current_gw_port`.
+- **SNAT source** is the gateway port's first IPv4 address, as upstream.
+- **FR-039** checks run in the transaction that removes the interface or clears the gateway: a floating IP with this router whose fixed IP is on the interface's subnet, or any floating IP with this router.
+- **DeleteSubnet** refuses a subnet that a port other than the DHCP port uses (`409 SubnetInUse`, as upstream), closing the stale-`fixed_ips` gap the survey found; it is in FR-045's path set.
+
+**Rationale**: these are the records the router unit renders from; a half-stored interface would render half a router.
+
+## R32 — The port firewall (FR-041, FR-042, FR-047)
+
+**Decision** — upstream's iptables driver for Linux bridges (`IptablesFirewallDriver`), under Lightstack names:
+- **The TAP is the port's**: Nova's libvirt XML gets `<target dev='tap<port id[:11]>'/>`, upstream's name, so the firewall knows the device. Neutron stops creating its own unused `tap-<port8>`.
+- **Binding**: `ports.binding_host_id` (migration 076, plain nullable `TEXT`), set by Nova to the node that defines the domain, at boot and at interface attach, and cleared at detach; reported as `binding:host_id` as upstream. A port's chains live on that node; a port without a binding has none.
+- **Chains** (filter table, IPv4 and IPv6): `ls-filter-top` at the top of `FORWARD` and `INPUT`; `ls-sg-chain` dispatching by `-m physdev --physdev-out tapX --physdev-is-bridged` (ingress) and `--physdev-in` (egress); per port `ls-i<port[:10]>`, `ls-o<port[:10]>`, `ls-s<port[:10]>`; `ls-sg-fallback` with only `DROP`. Rule content as upstream: egress allows the port's DHCP request and its ICMPv6 neighbour discovery, then the spoof chain (its fixed IPs with its MAC, nothing else), drops a DHCP server answer from the VM, then replies (`RELATED,ESTABLISHED`), one `RETURN` per egress rule, `INVALID` dropped, fallback. Ingress allows DHCP answers to the port's addresses and ICMPv6 as upstream, then the same block for ingress rules.
+- **Remote groups** expand to one `/32` (or `/128`) per member address, excluding the port's own, as upstream does with `enable_ipset=false`. The image already ships `ipset` (`build/package/Dockerfile:47`); expansion is chosen because a member change then rebuilds only the chains of ports that name the group, inside the same atomic restore, with no second kind of state for reconciliation to keep.
+- **Trusted ports** (`network:*`) are accepted unfiltered, as upstream, by their host-side device: `lr-<port[:11]>` for a router interface, `ld-<port[:11]>` for a DHCP port.
+- **Stateless groups** (R47): a port whose groups are stateless gets `-j CT --notrack` in `raw` instead of its zone, and its chains carry no `RELATED,ESTABLISHED` or `INVALID` rule, as upstream's `_get_jump_rules` and rule conversion do.
+- **Connection tracking zones** per network, as upstream's bridge driver, so overlapping CIDRs on one node do not share entries: `raw PREROUTING` sets `-j CT --zone <n>` per bridge and TAP. `networks.ct_zone` (migration 076, plain integer column plus a unique index) is assigned at network creation, the lowest free from 4097.
+- **Apply**: the unit is a node's set of ports in one call (R27). The node renders their chains, compares with `iptables -S`/`ip6tables -S` per chain, and replaces the changed ones in one `iptables-restore --noflush` and one `ip6tables-restore --noflush` commit, within the node call's shared 900 ms deadline (R27). Removed ports' chains and jumps go in the same commit.
+- **Triggers**: a port's membership change, a rule change of any of its groups, a change of a remote group's members (membership of a port carrying that group, or a port's addresses), a port's binding change (the old node gets `absent`, R27), and a port's deletion (FR-040).
+- **Boot and attach order**: Nova binds the port and converges its chains on the node before `DomainCreate` (boot) or `AttachDevice` (attach). A failure fails the boot as a libvirt failure does (`markInstanceError`, a fault) and the attach with `500`, unbinding the port.
+- **Reconciliation** on every node converges the chains of its bound ports both ways; port chains (`ls-i`, `ls-o`, `ls-s` followed by ten characters of a port id) that no bound port holds are removed after a complete read, with their dispatch and zone rules; the fixed chains (`ls-filter-top`, `ls-local`, `ls-sg-chain`, `ls-sg-fallback`, `ls-l3-*`) are never removed by this rule.
+- **Both modes**: `ebpf` mode runs the same chains (FR-047). The eBPF manager's attach point, Neutron's own TAP, no longer exists, so `CreatePort`'s eBPF step (`ports.go:215-241`) is removed with it; the rest of eBPF stays as it is, unloaded in a stock build, until the user's separate decision.
+
+**Rationale**: upstream's driver, read in source, with the two choices that avoid a new binary (no ipset) and keep overlapping CIDRs safe (zones).
+
+**Alternatives**: ipset for remote groups (a new image package; rebuilding member rules is cheap at Lightstack's scale); nftables (the image and every other rule are iptables); per-port zones as the hybrid driver (needs per-port bookkeeping for no gain on a bridge).
+
+## R33 — Retiring the floating-IP filter (FR-042)
+
+**Decision**: the `LS-NSI-*` chains, their `FORWARD` jumps, `RefreshPortFilters`' per-fixed-IP rebuild and `rebuildGroupFilters` are replaced by the port units (R32). `RefreshPortFilters` keeps its name in `NeutronService` and now converges the ports' chains on their nodes. The floating-IP NAT functions move into the router unit (R28). The host-namespace NAT, filters and addresses this feature's first round wrote are removed by reconciliation (recognised: marked rules, `LS-NSI-` chains, `/32` addresses with a record), under FR-044.
+
+## R34 — Deletions remove host state first (FR-040)
+
+**Decision**: every unit's converge function takes the desired state from the records **or "absent"**. A deletion:
+1. checks its refusals in a short transaction (`404`, in use, FR-039);
+2. converges the affected units as if the record were absent, through the node call where needed, under the unit locks;
+3. deletes the record in a transaction that checks the refusals again;
+4. on a failure in 2 or a refusal or failure in 3: converges the units from the records again — they still hold the deleted thing — and answers `500` (or the refusal). If that fails too, reconciliation converges within one pass.
+
+The order per resource: a port → its node's port unit and, if it has a floating IP, its router; a router interface → the router; a router → its namespace; a subnet → the DHCP unit (a router interface on it refuses the deletion first, FR-052); a network → DHCP, then bridges and VXLAN on every node by reconciliation (state on nodes other than the network node, as FR-040 allows); a port forwarding → the router. Server deletion runs its ports' deletion after libvirt, as today (FR-008d, FR-008e). Floating-IP deletion keeps R20's restore.
+
+**Rationale**: the record is the undo. No per-resource restore code, and the reconciler already rebuilds from records.
+
+## R35 — Namespaces and settings on the node (FR-036, FR-046)
+
+**Decision**:
+- **Chart**: in real mode, a `hostPath` `/run/netns` (`DirectoryOrCreate`) mounted at `/run/netns` with `mountPropagation: Bidirectional` (it requires `privileged`, which real mode already has), and `/lib/modules` read-only; the same on the teardown job. `charts/lightstack/tests` gains assertions; `values.schema.json` needs no new key. `docs/TROUBLESHOOTING.md`'s manual step goes.
+- **Compose** (`deployments/docker-compose-kvm.yml`): `/run/netns:/run/netns:rshared` and `/lib/modules:/lib/modules:ro`.
+- **Start-up check**, in real mode, after `neutron.NewService` and before the reconciler (`cmd/lightstack/main.go:175`): `modprobe br_netfilter` (BusyBox's, in the image), then `1` into `/proc/sys/net/bridge/bridge-nf-call-iptables` and `-ip6tables`, then read them back. The result is a `health.Check` named `bridge-netfilter`: readiness fails naming the reason while it does not hold. The checker's construction moves after the check, or gains an `AddCheck`.
+- **Restart**: namespaces, devices and rules outlive the pod; the reconciler's first pass compares and changes nothing when nothing changed (R7's rule, kept). Metadata listeners (R29) are re-opened.
+
+**Alternatives**: rebuilding on start (settled in clarification); `nsenter` into PID 1's mount namespace (needs `hostPID`, a wider grant than a mount).
+
+## R36 — Floating-IP allocation and association (FR-027–FR-029, FR-031)
+
+**Decision**:
+- **Serialisation**: the create's transaction takes `pg_advisory_xact_lock` on a fixed key for floating-IP allocation (SQLite: the registered no-op, its writers are serialised already), so creates on any external network never race, including two networks with overlapping subnets against the global unique constraint; then the subnet locks of R30, which a router gateway's or an external port's allocation also takes. No retry.
+- **Address**: R30's allocator, lowest free across the network's IPv4 subnets in creation order; `subnet_id` and `floating_ip_address` in the request are honoured as upstream (the survey found `subnet_id` parsed and unused).
+- **Router**: upstream's `get_router_for_floatingip` — routers with an interface port on the fixed IP's subnet and a gateway port on the floating network; the one whose interface address is the subnet's gateway, else the first; none → `404 ExternalGatewayForFloatingIPNotFound`, on create and update.
+- **One per fixed IP per network**: in the same transaction, another floating IP of the network with that fixed IP → `409 FloatingIPPortAlreadyAssociated`.
+- `portFixedIP` checks that a requested fixed IP is the port's (`400` as upstream otherwise).
+
+## R37 — Port forwarding (FR-049)
+
+**Decision**: upstream's rules inside the router namespace: `ls-l3-PREROUTING -j ls-l3-fip-pf`, `ls-l3-fip-pf -j ls-pf-<id[:8]>`, `ls-pf-<id> -d F/32 -p <proto> -m <proto> --dport <ext> -j DNAT --to-destination <ip>:<int>`, ranges as upstream. Part of the router unit's rendering (R28), so applied, undone and reconciled with it. A floating IP with port forwardings keeps its `/32` on `qg-`. Create and update follow FR-008, delete FR-040; their checks (the floating IP's router, the internal port's project and address, duplicates) run in their transaction.
+
+## R38 — The group listing's filters (FR-019a, FR-019b)
+
+**Decision**: `securityGroupListFilter` adds, each with `= ANY($n)` over its repeated values: `description`; `project_id`/`tenant_id` (merged; for an administrator they replace the own-project scope with the named projects, as upstream; for anyone else they narrow within the own project). `shared`, `stateful`: strict boolean parse (`400` otherwise); `shared=true` makes the filter `false`; `stateful` compares the stored column (R47). `revision_number`: equality on the stored column (R46). `tags`/`tags-any`: `false`; `not-tags`/`not-tags-any`: no condition. Responses gain `stateful` and `revision_number` (stored), `shared: false`, `tags: []`.
+
+## R39 — `default`, names and starting rules (FR-024–FR-026, FR-043)
+
+**Decision**:
+- **Errors with upstream's type names**: `internal/common/neutron_errors.go` maps a 409's type by resource, so every 409 on "security group" renders `SecurityGroupInUse` (the survey's catch). The error type gains an explicit Neutron type that the mapping honours first; `SecurityGroupCannotRemoveDefault`, `SecurityGroupCannotUpdateDefault`, `SecurityGroupDefaultAlreadyExists` use it. Duplicate names are allowed, as upstream (R53).
+- **Checks**: delete reads the group `FOR UPDATE`: in use first (FR-008c), then `default` and not administrator → `409`. Create and update check the name case-insensitively against `default` first, and no longer refuse a duplicate name (R53). Update of `default` with any `name` → `409`.
+- **Starting rules**: create inserts upstream's two egress rules in its transaction; `EnsureDefaultSecurityGroup` seeds the four. Migration 076 adds the two member rules to the seeded project's `default` (seeded by `002`, which a deployed database never re-runs), so a fresh install matches; no other group is changed (FR-043, FR-044). The comment on cloud-storage#528 stays true: no rule open to every address.
+- `test/security_groups_test.sh` renames `GROUPS` to `SG_LIST`.
+
+## R40 — The remaining Article II paths (FR-045)
+
+**Decision**: with R27–R34, each path in the constitution's migration plan becomes a converge of a unit with FR-008's undo or FR-040's order:
+- network create: the bridge on the serving node; the undo deletes the row only if `updated_at` still holds what the create wrote and no subnet, port or router interface references it (`DELETE … WHERE id = $1 AND updated_at = $2 AND NOT EXISTS (…)`, one statement); bridges elsewhere by reconciliation. A network another request changed or built on stays;
+- auto-allocated topology: its network, subnet and router through the same functions;
+- subnet create, update (gateway, pools), delete: the DHCP unit and the routers on the subnet;
+- routers, interfaces, gateways: the router unit;
+- port forwarding: the router unit;
+- port create: the DB-side FDB row in the port's transaction; kernel FDB on every node is reconciliation's (other nodes' state, as FR-040 allows), which now also removes entries whose row is gone and calls `DeleteVXLAN` for deleted networks;
+- port and instance-port teardown: FR-040 through the port unit;
+- the eBPF step: removed with the Neutron TAP it attaches to (R32; FR-045, FR-047);
+- group and rule changes: the port units (R32).
+`RemoveEgressSNAT`, `RemovePortForwarding` and the host-namespace SNAT go: they are replaced by the router unit. `ensureRule` callers that remain get the bounded runner.
+
+## R41 — Seams for tests (FR-022)
+
+**Decision**: the Neutron service gets four interfaces, each with an in-memory fake that holds state and can record, block or fail calls, as `fakeDataplane` does (R9):
+- `routerDataplane`: converge a router to a rendered state or absent; list a node's routers.
+- `dhcpDataplane`: converge a network's DHCP; list.
+- `portFirewall`: converge a set of ports' chains; list.
+- `nodeCaller`: call a unit on a named node; the fake routes to another in-process service, so two-node tests run in one process.
+The renderers in `pkg/networking` are pure functions tested on their output; the real-mode paths run against the fake command runner (R6). `floatingIPDataplane` and its fake are replaced.
+
+## R42 — Constitution (amends v1.5.0 in place, not yet on `main`; v1.6.0 at the rebase, T057)
+
+**Decision**:
+- **Article II, the request rule**: "applies it on the node that serves it" becomes "applies it on the node that holds that state, asked synchronously by the serving node through a bounded call when that is another node". The loop's third case ("the nodes that did not serve a change") narrows to state on nodes other than the one a change applies on.
+- **A new exception, "a removal applied before its record goes"** (FR-040): checks, host removal, record deletion with re-checks; a failure re-applies from the records and answers as one transaction would have.
+- **Register entry 6** was added here and withdrawn by the third round-2 analysis: names follow upstream (R53).
+- **Migration plan**: no departure remains (FR-045).
+- **Forbidden patterns** unchanged: the node call is synchronous, has no retry, no record and no queue.
+- `CLAUDE.md`'s runtime guidance line on Article II is updated to match.
+
+## R43 — Test strategy, round 2 (FR-022)
+
+**Decision**: test-first per user story as in R16. New red tests:
+- `internal/neutron`: listing filters, `default` refusals and duplicate names, starting rules, pools (validation, default, allocation for every owner), floating-IP allocation under concurrency (10 goroutines, both backends), router lookup and `404`, the `409`s of FR-029 and FR-039, router ports, DHCP port, every unit's apply and undo against the fakes, deletions' order and re-apply, the node call's routing, auth, bound and failure.
+- `pkg/networking`: renderers for the router namespace, DHCP and port chains (pure), the real-mode paths with the fake runner.
+- `internal/nova`: the TAP name in the domain XML, `binding_host_id` at boot, attach and detach.
+- `internal/common`, `cmd/lightstack`: the node name, the network-node setting, the start-up check and its health check.
+- Migration 076 through `TestSchemaParity` and `TestMigrationsRoundTrip`.
+- Chart: helm-unittest for the mounts. Contract: the API changes. Bash: `test/security_groups_test.sh` Test 11.
+- Mutation check as T052, extended.
+
+## R44 — Documentation (FR-020, FR-035, FR-044, FR-047)
+
+`docs/UPGRADING.md`: the clean break (reset networking with `lightstack cleanup` before running this release) and every new answer. `docs/EBPF_STATUS.md`: the port chains enforce in both modes; the attach point is gone. `docs/NETWORKING_MODES.md`, `docs/VXLAN_IMPLEMENTATION.md`, `docs/CONFIGURATION.md` (`neutron.network_node`), `charts/lightstack/README.md` (the mounts; multi-node now has a network node), `docs/TROUBLESHOOTING.md` (the manual netns step goes), `docs/SCALING.md` (the bridge sysctls are set by Lightstack). The underlay note of FR-035: where an underlay delivers only addresses assigned to the node, the operator allows the floating range there.
+
+## R45 — Host validation, round 2 (FR-048)
+
+Two runs in `HOST_TESTING.md` (T161, generated by `/cl.hosttest`; it replaces T053):
+- **Single node, the chart on Kubernetes**, real mode: router namespace and legs, DHCP and metadata through the DHCP address, the gateway address and SNAT, a floating IP and a port forwarding, the port firewall (between VMs, through floating IPs, egress), one deletion of each kind, FR-039's refusals, the pod deleted mid-traffic with an established connection surviving, and readiness failing while `br_netfilter` is held unloadable.
+- **Two nodes**, a shared PostgreSQL, VXLAN, `neutron.network_node` set: only the network node holds router and floating addresses; a change served by the second node in force on the network node at the answer, and `500` with the network node stopped; a VM on the second node reaching out and reached through its floating IP; its port chains on the second node.
+
+## R46 — Security-group revision numbers (FR-019a, FR-050)
+
+**Decision**: `security_groups.revision_number` (migration 076, integer, default 0), as upstream's standard attribute (`neutron/db/standard_attr.py`: `server_default='0'`, bumped by the revision plugin). One more on every `UPDATE` of the group's own row and on every rule inserted or deleted for it — upstream's `SecurityGroupRule.revises_on_change = ('security_group',)` — in the same transaction as the change. An undo (R21, FR-008) puts the revision back compare-and-set with the rest of the change, as upstream's rolled-back transaction leaves it. A group's creation with its starting rules leaves it at 0, as upstream skips bumps for a new object. Reported and filterable (R38). `PUT` and `DELETE` of a security group honour `If-Match: revision_number=<n>`: a different stored revision answers `412` (`RevisionNumberConstraintFailed`), nothing changed, as upstream's `_enforce_if_match_constraints` (`neutron/services/revisions/revision_plugin.py`). Only security groups carry a revision here, so only they honour it. The extension list adds `stateful-security-group` (R47), which openstacksdk and the CLI check before sending `stateful`; `standard-attr-revisions` and `revision-if-match` are not advertised, since they promise revisions on every resource.
+
+## R47 — Stateless security groups (FR-051)
+
+**Decision**, read in upstream source (`db/securitygroups_db.py`, `agent/linux/iptables_firewall.py`):
+- `security_groups.stateful` (migration 076, integer boolean, default 1). Create accepts `stateful`; absent → true (upstream's per-project default statefulness is not part of this feature).
+- Update: a changed `stateful` while any port carries the group → `409 SecurityGroupInUse`, as `update_security_group`.
+- A port with both kinds: port create and update → `409 SecurityGroupConflict` ("Cannot apply both stateful and stateless security groups on the same port at the same time"), as `_validate_sgs_for_port`; `addSecurityGroup`, when it would make any port mix them → `409`, as upstream Nova's `SecurityGroupConnectionStateConflict`; the check is per port, so an interface attach is never refused for it (`nova/exception.py`, code 409); a server create whose groups mix both → the boot's port allocation fails and the server ends `ERROR` with a fault, as upstream's build. Checked in the transaction that stores the membership.
+- Chains (R32): `CT --notrack` instead of the zone; no `RELATED,ESTABLISHED`, no `INVALID` rule; replies must be allowed by the rules themselves, as upstream.
+- `?stateful=` compares the column (R38).
+
+## R48 — Teardown (FR-036, FR-041, FR-044)
+
+**Decision**: `internal/neutron/teardown.go`'s `PurgeRealModeNetworkState` removes the new layout, not the old: the router units and DHCP units converged to absent for every record (namespaces `qrouter-*` and `qdhcp-*`, `lg-`/`lr-`/`ld-` veths, host routes, proxy neighbour entries, `ls-l3-fwd`, metadata listeners, `dnsmasq`), every node's `ls-` port chains and dispatch, and the retired state of FR-044 it recognises. Its calls to `RemoveIngressFilter`, `RemoveEgressSNAT` and `DeleteSecurityGroupChain` go with those functions (R32, R33, R40). `internal/teardown/teardown.go`'s database-less fallback also deletes `qdhcp-*` namespaces and the `ls-` chains by prefix. The chart's teardown job gets the `/run/netns` mount (R35), so it sees the host's namespaces.
+
+## R49 — Answers that had no requirement (FR-052–FR-056)
+
+**Decision**, each upstream's: `DeleteSubnet` with a non-DHCP port on it → `409 SubnetInUse`; a requested network or broadcast address → `400 InvalidIpForSubnet` (upstream's `check_subnet_ip`); a floating IP's `fixed_ip_address` not on the port → `400`; a taken `floating_ip_address` → `409 IpAddressAlreadyAllocated`; a duplicate router interface or a gatewayless subnet → `400`; `binding:host_id` reported to administrators. Each is tested where its task names it, and listed in `docs/UPGRADING.md` (FR-020).
+
+## R50 — Administrators' Networking API listings, shows and writes (FR-057, FR-058)
+
+**Finding**: all sixteen Networking API listings (`internal/neutron`: `ListNetworks`, `ListSubnets`, `ListPorts`, `ListSecurityGroups`, `ListSecurityGroupRules`, `ListRouters`, `ListFloatingIPs`, `ListPortForwardings`, `ListQoSPolicies`, `ListRBACPolicies`, `ListTrunks`, `ListAddressScopes`, `ListSubnetPools`, `ListNetworkIPAvailabilities`, `ListMeteringLabels`, `ListMeteringLabelRules`) scope to the caller's project and none checks the administrator role. Upstream's policy lets an administrator list and show every project's resources (`admin_or_owner` reads; the project filters narrow). The difference cannot be registered: an unfiltered listing gives no sign of what it leaves out (Article I, limit 4). Article V already permits cross-project access behind an explicit administrator check.
+
+**Decision**:
+- One helper in `internal/neutron`, `projectScope(c, f, column)`, used by every listing: for an administrator (`common.HasRole(c, common.RoleAdmin)`), no project condition, then `project_id`/`tenant_id` as `= ANY` over their values; for anyone else, the existing scope (own project; networks also shared and external) narrowed by the filters. Each listing's own filters and paging are unchanged.
+- Shows by id: the handlers' `project_id = $n` read condition is skipped for an administrator when the path is an id. Where a handler also accepts a name (`GetSecurityGroup`'s `id::text = $1 OR name = $1`), the name branch keeps the caller's project, as Nova's `targetInstance` does for server names.
+- **Writes (FR-058)**: the same helper decides a write's target: for an administrator, a resource addressed by id is found in any project; for anyone else, in their own. Every update, delete and action handler (network, subnet, port, security group, rule, router with its interface and gateway actions, floating IP, port forwarding, QoS, RBAC, trunk, address scope, subnet pool, metering) uses it, and so do a create's references by id (a network, port, subnet or router of another project). A created resource belongs to the request's named project (SPEC-024 B11) or the administrator's own. Nova's administrator override for servers (SPEC-023) is the same shape.
+- Register entry 5 narrows to names (R52): an administrator may apply any project's group by id, as upstream.
+
+**Alternatives**: groups only (leaves fifteen listings silently divergent); registering (impossible under limit 4).
+
+## R51 — Round-2 analysis, second pass (2026-11-20)
+
+- **Connection-tracking zones for older networks**: a network whose `ct_zone` is null (created before migration 076) gets the lowest free zone, in a transaction that takes the network's row lock, the first time a port unit or a pass renders one of its ports. No data migration (FR-044).
+- **Port creation's FDB step** (FR-045, R40): the FDB row is written in the port's own transaction, so a failure rolls the port back; kernel entries on other nodes are reconciliation's, which also removes stale ones (R40).
+- **Removing functions safely**: tasks that introduce a new renderer add it beside the old code; the task that switches callers to the unit removes the old functions and updates every caller in one step, so the build never breaks between tasks (tasks.md).
+- **Gateway port and SNAT**: until the router unit (Phase 19) applies it, the gateway port's address is stored and reported only; egress keeps today's host SNAT, so the API increment (Phases 11–17a) is deployable alone.
+
+## R52 — Register entry 5 narrowed to names (FR-004, FR-018, FR-021a)
+
+**Finding** (second round-2 analysis, D1): entry 5's id half rested on administrators being unable to see other projects' groups. FR-057 lets them; and "a port never carries a group its owner cannot list" is a safety argument, not one of limit 1's two grounds (not implementable; would break callers that work today). No caller applies another project's group by id today, so matching upstream breaks none.
+
+**Decision**: ids follow upstream. `neutron.ResolveSecurityGroup` and the port API's `requireGroupsOfProject` take whether the caller is an administrator: an administrator's id matches a group of any project; a member's, only their own project's (`404` otherwise, as upstream, which hides other projects' groups from members). Names keep resolving in the server's project (entry 5, names only): an administrator adding a tenant's group by name keeps working. Server create, `addSecurityGroup`/`removeSecurityGroup` and port create and update all go through these two helpers. Round 1's tests that pin `404` for an administrator's foreign id are changed to pin the upstream answer. The port firewall renders a foreign group's rules and remote members like any other; nothing in the dataplane assumes a group shares its port's project.
+
+## R53 — Duplicate group names, as upstream (FR-026)
+
+**Finding** (third round-2 analysis): entry 6 had no ground Article I's limit 1 accepts. `migrations/README.md` says the first rebuild of a referenced table "comes with a change to the migrator" — effort, not impossibility — and no caller relies on a duplicate being refused, since today it answers `500`.
+
+**Decision**:
+- **Migration 077** (a pair). PostgreSQL: `ALTER TABLE security_groups DROP CONSTRAINT security_groups_project_id_name_key` (the default name of `001`'s `UNIQUE (project_id, name)`; the file looks it up and fails loudly if absent). SQLite: rebuild `security_groups` without the constraint — new table, copy, drop, rename — which drops through `ON DELETE CASCADE` into `port_security_groups` and `security_group_rules` unless foreign keys are off. Both: `CREATE UNIQUE INDEX security_groups_one_default ON security_groups (project_id) WHERE name = 'default'`.
+- **The migrator change** `migrations/README.md` foresees: a file whose first line is `-- lightstack:no-transaction` runs outside a transaction with `PRAGMA foreign_keys = OFF`; after it, `PRAGMA foreign_key_check` must return nothing, else the migration fails; then `foreign_keys` goes back on. PostgreSQL ignores the marker. The README documents it; `TestMigrationsRoundTrip` and `TestSchemaParity` cover 077, and a test proves the rebuild keeps every referencing row.
+- **`EnsureDefaultSecurityGroup`** targets the partial index: `ON CONFLICT (project_id) WHERE name = 'default' DO NOTHING`, accepted by both backends.
+- **Name resolution**: `neutron.ResolveSecurityGroup` returns an ambiguity error when a name matches more than one group in the project it resolves in; server create (`internal/nova/handlers.go`), `addSecurityGroup` and `removeSecurityGroup` (`internal/nova/advanced_actions.go`) answer `409` with upstream Nova's `NoUniqueMatch` message. `GetSecurityGroup` by a name several groups share answers `404`, so a client falls back to listing by name, as with upstream, which answers any name there with `404`. An id always wins.
+- **No register entry 6.** `CreateSecurityGroup`/`UpdateSecurityGroup` lose the unique-violation mapping.
+
