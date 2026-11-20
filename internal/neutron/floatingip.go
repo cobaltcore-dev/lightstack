@@ -3,10 +3,8 @@ package neutron
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -27,7 +25,11 @@ type CreateFloatingIPRequest struct {
 		PortID            string `json:"port_id"`
 		FixedIPAddress    string `json:"fixed_ip_address"`
 		SubnetID          string `json:"subnet_id"`
+		FloatingIPAddress string `json:"floating_ip_address"`
 		Description       string `json:"description"`
+		// The project the floating IP belongs to: an administrator's to name (SPEC-033 FR-058).
+		ProjectID *string `json:"project_id"`
+		TenantID  *string `json:"tenant_id"`
 	} `json:"floatingip"`
 }
 
@@ -40,7 +42,8 @@ type UpdateFloatingIPRequest struct {
 	} `json:"floatingip"`
 }
 
-// ListFloatingIPs lists all floating IPs for the project
+// ListFloatingIPs lists the caller's project's floating IPs, every project's for an administrator,
+// narrowed by project_id/tenant_id (SPEC-033 FR-057).
 func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
@@ -61,21 +64,7 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	}
 
 	f := &common.SQLFilter{}
-	// The caller's project — unless an administrator filters by tenant:
-	// upstream honours the filter for admin tokens, and it was silently
-	// ignored before, so `floating ip list --project X` presented the
-	// ADMIN's addresses as project X's (SPEC-031; mirrors
-	// buildNetworkListFilter's tenant bypass). ::text so a non-UUID value
-	// narrows to nothing instead of failing the cast.
-	fipTenant := c.Query("tenant_id")
-	if fipTenant == "" {
-		fipTenant = c.Query("project_id")
-	}
-	if fipTenant != "" && common.HasRole(c, common.RoleAdmin) {
-		f.Eq("project_id::text", fipTenant)
-	} else {
-		f.Eq("project_id", projectID)
-	}
+	projectScope(c, f, "project_id", ownedBy("project_id"))
 
 	// Standard Neutron list filters (neutron-lib FloatingIPDbMixin):
 	// floating_network_id, port_id, router_id, status, fixed_ip_address,
@@ -117,20 +106,15 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
 	// only those before it — a page walk silently dropped them. id is the primary key, so
 	// (created_at, id) is total (as #549 established for compute). The marker resolves under the
-	// listing's own scope (see the tenant bypass above): an unresolvable marker would silently
-	// drop the condition and make the walk restart from the first page forever.
-	fipAdminBypass := fipTenant != "" && common.HasRole(c, common.RoleAdmin)
+	// listing's own scope — an administrator's spans every project: an unresolvable marker would
+	// silently drop the condition and make the walk restart from the first page forever.
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
-		markerQuery := "SELECT created_at, id FROM floating_ips WHERE id = $1"
-		markerArgs := []any{marker}
-		if !fipAdminBypass {
-			markerQuery += " AND project_id = $2"
-			markerArgs = append(markerArgs, projectID)
-		}
-		err := svc.pool.QueryRow(c.Request.Context(), markerQuery, markerArgs...).
-			Scan(&markerCreatedAt, &markerID)
+		err := svc.pool.QueryRow(c.Request.Context(),
+			"SELECT created_at, id FROM floating_ips WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+			marker, projectID, isAdmin(c),
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
 			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
@@ -224,7 +208,7 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	projectID := c.GetString("project_id")
+	caller, admin := c.GetString("project_id"), isAdmin(c)
 	floatingIPID := uuid.New().String()
 	networkID := req.FloatingIP.FloatingNetworkID
 	// The body's own checks, before anything is read.
@@ -232,62 +216,66 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 		common.SendError(c, refusal)
 		return
 	}
-
-	// Get external network subnet to allocate IP from
-	var subnetCIDR string
-	err := svc.pool.QueryRow(ctx,
-		"SELECT cidr FROM subnets WHERE network_id = $1 LIMIT 1",
-		networkID,
-	).Scan(&subnetCIDR)
-
-	if errors.Is(err, database.ErrNoRows) {
-		// No subnet exists - use default external IP pool (RFC 5737 TEST-NET-1)
-		subnetCIDR = "192.0.2.0/24"
-	} else if err != nil {
-		log.Error().Err(err).Str("operation", "create_floatingip_subnet_lookup").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to allocate floating IP"))
+	// The floating IP's project: the one an administrator names, or the caller's. An administrator may
+	// also associate it with another project's port, as upstream's _internal_fip_assoc_data lets them
+	// (SPEC-033 FR-058).
+	projectID, ok := svc.ownerOf(c, req.FloatingIP.ProjectID, req.FloatingIP.TenantID)
+	if !ok {
 		return
 	}
-
-	// The address is chosen before the transaction, as before; the insert's unique constraint
-	// re-checks it.
-	floatingIP, err := svc.allocateFloatingIP(ctx, subnetCIDR)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "allocate_floatingip").Msg("failed to allocate floating IP")
-		common.SendError(c, common.NewInternalServerError("failed to allocate floating IP"))
+	// Choosing the address is an administrator's or the project manager's, as upstream's
+	// create_floatingip:floating_ip_address (FR-054). A non-administrator's floating IP is their own
+	// project's, which their token's roles are held on. null, as absent, asks for none.
+	if req.FloatingIP.FloatingIPAddress != "" && !admin && !common.HasRole(c, common.RoleManager) {
+		common.SendError(c, common.NewNeutronError(http.StatusForbidden, "PolicyNotAuthorized",
+			"(rule:create_floatingip:floating_ip_address) is disallowed by policy"))
 		return
 	}
 
 	// Determine status and associated details
 	status := "DOWN"
 	var fixedIP, portID, routerID *string
+	var floatingIP string
 	now := time.Now()
 
-	// One transaction makes the checks and stores the row; nothing is programmed before it commits
-	// (constitution v1.5.0, limit 2; research R20).
-	err = database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
-		// 1. The floating network, locked: it must stay external until the row is in.
-		if err := externalNetworkRefusal(ctx, tx, networkID, projectID, "a floating-IP pool", true); err != nil {
+	// One transaction makes the checks, chooses the address and stores the row; nothing is programmed
+	// before it commits (constitution v1.5.0, limit 2; research R20, R36). Its locks, in order: the
+	// allocation lock, which every floating-IP create takes first (FR-027); the port, which serialises
+	// two associations of one fixed IP (FR-029); the router, as a gateway change takes it before its
+	// subnets; the subnets the address is chosen from (FR-032); and last the floating network, which must
+	// stay external until the row is in. The network comes last because every port or gateway insert on
+	// it holds a subnet's lock and then a key-share lock on the network through its foreign key, which a
+	// FOR UPDATE taken before the subnets would deadlock with. It is checked first, unlocked, so its
+	// refusal still comes before any other.
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		if err := takeFloatingIPAllocationLock(ctx, tx); err != nil {
+			return err
+		}
+		if err := externalNetworkRefusal(ctx, tx, networkID, caller, "a floating-IP pool", admin, false); err != nil {
 			return err
 		}
 		if req.FloatingIP.PortID != "" {
-			// 2. The port, the caller's, with its fixed IP. No lock: a port's project never changes,
-			// and the foreign key re-checks that it still exists at the insert.
-			fixed, portNetwork, err := portFixedIP(ctx, tx, req.FloatingIP.PortID, projectID, req.FloatingIP.FixedIPAddress, false)
+			port, err := portFixedIP(ctx, tx, req.FloatingIP.PortID, caller, req.FloatingIP.FixedIPAddress, admin, true)
 			if err != nil {
 				return err
 			}
-			portID, fixedIP, status = &req.FloatingIP.PortID, &fixed, "ACTIVE"
-			// 3. The router, found as before and then locked by id. Without one the floating IP is
-			// associated all the same; the node's NAT does not route through it.
-			if rID, ok, err := lockGatewayRouter(ctx, tx, portNetwork); err != nil {
+			router, err := routerForFloatingIP(ctx, tx, port, networkID)
+			if err != nil {
 				return err
-			} else if ok {
-				routerID = &rID
 			}
+			if err := requireOneFloatingIPPerFixedIP(ctx, tx, networkID, port, "", ""); err != nil {
+				return err
+			}
+			portID, fixedIP, routerID, status = &port.id, &port.fixedIP, &router, "ACTIVE"
 		}
-		// 4. The row.
-		_, err := tx.Exec(ctx, `
+		var err error
+		if floatingIP, err = allocateFloatingAddress(ctx, tx, networkID, req.FloatingIP.SubnetID, req.FloatingIP.FloatingIPAddress); err != nil {
+			return err
+		}
+		if err := externalNetworkRefusal(ctx, tx, networkID, caller, "a floating-IP pool", admin, true); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
 			INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, fixed_ip_address, port_id, router_id, status, description, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		`, floatingIPID, projectID, networkID, floatingIP, fixedIP, portID, routerID, status, req.FloatingIP.Description, now, now)
@@ -373,69 +361,6 @@ func sendFloatingIPStoreError(c *gin.Context, err error, operation string) {
 	}
 }
 
-// portFixedIP reads a port of the caller's project and the fixed IP a floating IP reaches on it: the
-// one requested, or the port's first. It returns the port's network too. forUpdate locks the port.
-func portFixedIP(ctx context.Context, q subnetQuerier, portID, projectID, requested string, forUpdate bool) (fixedIP, networkID string, err error) {
-	query := "SELECT network_id::text, fixed_ips FROM ports WHERE id::text = $1 AND project_id = $2"
-	if forUpdate {
-		query += " FOR UPDATE"
-	}
-	var raw []byte
-	err = q.QueryRow(ctx, query, portID, projectID).Scan(&networkID, &raw)
-	if errors.Is(err, database.ErrNoRows) {
-		return "", "", common.NewNotFoundError("port")
-	}
-	if err != nil {
-		return "", "", fmt.Errorf("read port %s: %w", portID, err)
-	}
-	if requested != "" {
-		return requested, networkID, nil
-	}
-	var fixedIPs []struct {
-		IPAddress string `json:"ip_address"`
-	}
-	if err := json.Unmarshal(raw, &fixedIPs); err != nil {
-		return "", "", fmt.Errorf("parse the fixed IPs of port %s: %w", portID, err)
-	}
-	for _, f := range fixedIPs {
-		if f.IPAddress != "" {
-			return f.IPAddress, networkID, nil
-		}
-	}
-	return "", "", common.NewBadRequestError("port has no fixed IP addresses")
-}
-
-// lockGatewayRouter finds the router with an external gateway that has an interface on networkID, as
-// before, and locks it by id in a query of its own: FOR UPDATE OF is outside the shared SQL subset
-// (internal/database/doc.go). ok is false when there is none, or its gateway went meanwhile.
-func lockGatewayRouter(ctx context.Context, tx database.Tx, networkID string) (string, bool, error) {
-	var routerID string
-	err := tx.QueryRow(ctx, `
-		SELECT DISTINCT r.id::text
-		FROM routers r
-		JOIN router_interfaces ri ON ri.router_id = r.id
-		JOIN ports p ON p.id = ri.port_id
-		WHERE p.network_id::text = $1 AND r.external_gateway_info IS NOT NULL
-		LIMIT 1
-	`, networkID).Scan(&routerID)
-	if errors.Is(err, database.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("find the router of network %s: %w", networkID, err)
-	}
-	err = tx.QueryRow(ctx,
-		"SELECT id::text FROM routers WHERE id::text = $1 AND external_gateway_info IS NOT NULL FOR UPDATE", routerID,
-	).Scan(&routerID)
-	if errors.Is(err, database.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("lock router %s: %w", routerID, err)
-	}
-	return routerID, true, nil
-}
-
 // GetFloatingIP retrieves a single floating IP
 func (svc *Service) GetFloatingIP(c *gin.Context) {
 	floatingIPID := c.Param("id")
@@ -444,22 +369,19 @@ func (svc *Service) GetFloatingIP(c *gin.Context) {
 	var fip FloatingIP
 	var fixedIP, portID, routerID, description sql.NullString
 
-	// Administrators may address any floating IP by id. Address lookups stay
-	// in the caller's project so they cannot select another tenant's row.
-	fipQuery := `
+	// id::text comparison resolves by UUID or floating-IP address without
+	// crashing on a non-UUID identifier — the CLI looks a FIP up by its address
+	// (e.g. `server add floating ip <vm> <address>`). By id an administrator reaches any project's
+	// (SPEC-033 FR-057); an address, like a name, resolves in the caller's project.
+	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, project_id, floating_network_id, floating_ip_address,
 		       fixed_ip_address, port_id, router_id, status, description,
 		       created_at, updated_at
 		FROM floating_ips
-		WHERE (id::text = $1 AND `
-	idScope := `project_id = $2`
-	if common.HasRole(c, common.RoleAdmin) {
-		idScope = `TRUE`
-	}
-	fipQuery += idScope + `) OR (floating_ip_address = $1 AND project_id = $2)`
-	err := svc.pool.QueryRow(c.Request.Context(), fipQuery+" LIMIT 1", floatingIPID, projectID).
-		Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
-			&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
+		WHERE ((id::text = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`) OR (floating_ip_address = $1 AND project_id = $2))
+		LIMIT 1
+	`, floatingIPID, projectID, isAdmin(c)).Scan(&fip.ID, &fip.ProjectID, &fip.FloatingNetworkID, &fip.FloatingIPAddress,
+		&fixedIP, &portID, &routerID, &fip.Status, &description, &fip.CreatedAt, &fip.UpdatedAt)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
@@ -523,7 +445,7 @@ func nullable(s string) sql.NullString { return sql.NullString{String: s, Valid:
 // (SPEC-033 FR-008a, research R20).
 func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 	floatingIPID := c.Param("id")
-	projectID := c.GetString("project_id")
+	projectID, admin := c.GetString("project_id"), isAdmin(c)
 	ctx := c.Request.Context()
 
 	// Parse raw JSON to detect if port_id key is present
@@ -559,25 +481,37 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
 		next := fipAssociation{status: "DOWN"}
 		if newPort != "" {
+			// The floating IP's network and address, read unlocked: neither ever changes.
+			var network, current string
+			err := tx.QueryRow(ctx, "SELECT floating_network_id::text, floating_ip_address FROM floating_ips WHERE id::text = $1 AND "+
+				ownerOrAdmin("project_id", "$2", "$3"), floatingIPID, projectID, admin).Scan(&network, &current)
+			if errors.Is(err, database.ErrNoRows) {
+				return common.NewNotFoundError("floating IP")
+			}
+			if err != nil {
+				return fmt.Errorf("read floating IP: %w", err)
+			}
 			// The new port first, then its router, and only then the row (research R20): a port's
 			// deletion holds the port before it clears the floating IPs that name it, so the
-			// opposite order could deadlock with it.
-			fixed, portNetwork, err := portFixedIP(ctx, tx, newPort, projectID, requestedFixed, true)
+			// opposite order could deadlock with it. The router is upstream's choice (FR-028), and
+			// the fixed IP may have no other floating IP of the network (FR-029). An administrator may
+			// name any project's port (FR-058).
+			port, err := portFixedIP(ctx, tx, newPort, projectID, requestedFixed, admin, true)
 			if err != nil {
 				return err
 			}
-			routerID, ok, err := lockGatewayRouter(ctx, tx, portNetwork)
+			routerID, err := routerForFloatingIP(ctx, tx, port, network)
 			if err != nil {
 				return err
 			}
-			if !ok {
-				return common.NewBadRequestError("no router with external gateway found for this network")
+			if err := requireOneFloatingIPPerFixedIP(ctx, tx, network, port, floatingIPID, current); err != nil {
+				return err
 			}
-			next = fipAssociation{port: nullable(newPort), fixed: nullable(fixed), router: nullable(routerID), status: "ACTIVE"}
+			next = fipAssociation{port: nullable(newPort), fixed: nullable(port.fixedIP), router: nullable(routerID), status: "ACTIVE"}
 		}
 		err := tx.QueryRow(ctx, `
 			SELECT id::text, floating_ip_address, port_id::text, fixed_ip_address, router_id::text, COALESCE(status, '')
-			FROM floating_ips WHERE id::text = $1 AND project_id = $2 FOR UPDATE`, floatingIPID, projectID,
+			FROM floating_ips WHERE id::text = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+` FOR UPDATE`, floatingIPID, projectID, admin,
 		).Scan(&id, &address, &old.port, &old.fixed, &old.router, &old.status)
 		if errors.Is(err, database.ErrNoRows) {
 			return common.NewNotFoundError("floating IP")
@@ -694,7 +628,7 @@ func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 		err := tx.QueryRow(ctx, `
 			SELECT id::text, floating_ip_address, project_id::text, floating_network_id::text, fixed_ip_address,
 			       port_id::text, router_id::text, status, description, created_at, updated_at
-			FROM floating_ips WHERE id::text = $1 AND project_id = $2 FOR UPDATE`, floatingIPID, projectID,
+			FROM floating_ips WHERE id::text = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+` FOR UPDATE`, floatingIPID, projectID, isAdmin(c),
 		).Scan(&row.id, &row.address, &row.project, &row.network, &row.fixed, &row.port, &row.router,
 			&row.status, &row.descr, &row.created, &row.updated)
 		if errors.Is(err, database.ErrNoRows) {
@@ -1110,50 +1044,4 @@ func (svc *Service) rebuildGroupFilters(ctx context.Context, sgID string) error 
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// Helper function to allocate a floating IP from subnet
-func (svc *Service) allocateFloatingIP(ctx context.Context, subnetCIDR string) (string, error) {
-	_, ipNet, err := net.ParseCIDR(subnetCIDR)
-	if err != nil {
-		return "", err
-	}
-
-	// Get all allocated floating IPs in this subnet
-	rows, err := svc.pool.Query(ctx,
-		"SELECT floating_ip_address FROM floating_ips",
-	)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-
-	allocatedIPs := make(map[string]bool)
-	for rows.Next() {
-		var ip string
-		if err := rows.Scan(&ip); err != nil {
-			log.Warn().Err(err).Str("operation", "allocateFloatingIP").Msg("failed to scan row")
-			continue
-		}
-		allocatedIPs[ip] = true
-	}
-	// A partial read leaves allocatedIPs incomplete, which would hand out an IP that
-	// is already allocated — fail instead of risking a duplicate floating IP.
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("floating IP allocation: rows iteration error")
-		return "", fmt.Errorf("failed to read allocated floating IPs: %w", err)
-	}
-
-	// Find first available IP in range
-	// Start from .100 to avoid gateway and DHCP range
-	ip := incrementIP(ipNet.IP, 100)
-	for ipNet.Contains(ip) {
-		ipStr := ip.String()
-		if !allocatedIPs[ipStr] {
-			return ipStr, nil
-		}
-		ip = incrementIP(ip, 1)
-	}
-
-	return "", fmt.Errorf("no available IPs in subnet %s", subnetCIDR)
 }

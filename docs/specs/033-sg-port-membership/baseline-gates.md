@@ -230,3 +230,70 @@ Each fix was reverted off the worktree, one at a time, through `go test -overlay
 Two items of T052's list are not overlay mutations, because `main` is that code. Their tests were run against `main` and failed:
 - add writing `server_security_groups` only (T010, the earlier-release case): `TestAddSecurityGroup_EarlierReleaseServer` failed on `main`, before T018;
 - create programming before its insert (T036, failure on create): `TestFloatingIPDataplane_Failures`'s create cases failed on `main`, which programs the NAT before the insert, before T043.
+
+# Round 2
+
+## Round 2 baseline (T058)
+
+**When**: 2026-11-20. **Code**: `bugfix/579` at `1517716`. That is round 1's code (`dcda565`) plus round 2's planning: this spec directory, the constitution and `CLAUDE.md`. **Host**: the same openSUSE development host.
+
+The method is round 1's (above), with three changes:
+- `go vet ./...`, `gofmt -l` and `helm unittest charts/lightstack` were added.
+- `test/nova_server_actions_test.sh` is gone; round 1 deleted it. Of the bash scripts, only `test/security_groups_test.sh` runs.
+- The PostgreSQL database was recreated with `make db-down && make db-up` before the run. The suites' `TestMain` migrated the new one to 75. The eleven `spec020-…` to `spec025…` projects it had held are fixtures the unit suites create on every run and keep; they came back during this run.
+
+T160 must use the same method.
+
+| Gate | Result |
+|---|---|
+| Build | passes |
+| Lint | `0 issues` |
+| `go vet ./...` / `gofmt -l` | clean / clean |
+| Unit, PostgreSQL | 2212 passed, 0 failed, 6 skipped |
+| Unit, SQLite | 2186 passed, 0 failed, 22 skipped |
+| Contract, PostgreSQL | 367 passed, 0 failed, 12 skipped |
+| Contract, SQLite | 367 passed, 0 failed, 12 skipped |
+| `helm unittest charts/lightstack` | 24 suites, 169 tests, all pass |
+| `test/security_groups_test.sh` | 12 of 13: Test 1 fails, and Test 11 skips itself without saying so |
+
+The unit counts match T051's per package, so the per-package tables under T051 hold for this baseline too.
+
+Contract on PostgreSQL has 27 fewer passes than T051 recorded, and one more skip. All 27 are `TestNovaActionsByName_Contract` with its 26 subtests. It now skips on PostgreSQL too, with `no active image available to boot from`. The recreated database holds no image, as the SQLite stack's never does. Round 1's database still had one active image. No code change is involved. Per package, contract, on both backends:
+
+| Package | PostgreSQL | SQLite |
+|---|---|---|
+| `test/contract` | 5/0/9 | 5/0/9 |
+| `test/contract/cinder` | 65/0/0 | 65/0/0 |
+| `test/contract/glance` | 29/0/0 | 29/0/0 |
+| `test/contract/keystone` | 66/0/0 | 66/0/0 |
+| `test/contract/neutron` | 74/0/0 | 74/0/0 |
+| `test/contract/nova` | 128/0/3 | 128/0/3 |
+
+Failures that predate round 2: only `test/security_groups_test.sh`, for the reason recorded under T001 (the `GROUPS` builtin). T081 renames the variable. Nothing was fixed here.
+
+## Round 2 test strategy approval (T059)
+
+**Approved by the user on 2026-11-20, as written**: research R43 and every round-2 test task in `tasks.md` (T060–T151), with `test/security_groups_test.sh`'s rename (T081).
+
+The user also set a checkpoint. Implementation stops after Phase 17a, the API increment, for review and a commit, and resumes with Phase 18.
+
+## Phase 17a checkpoint (after T107)
+
+**When**: 2026-11-20. **Code**: the working tree on `1517716` with Phases 11–17a, uncommitted. The method is the baseline's, run by `gates.sh`. Its unit run found eight older Neutron tests that pinned the old administrator scope (recorded under T106). After those changes, the unit suites ran again in full on both backends, and `test/security_groups_test.sh` ran again against the PostgreSQL stack. The contract results are from the gate run: no code outside tests changed after it.
+
+| Gate | Baseline (T058) | Phase 17a |
+|---|---|---|
+| Build | passes | passes |
+| Lint | `0 issues` | `0 issues` |
+| `go vet ./...` / `gofmt -l` | clean / clean | clean / clean |
+| Unit, PostgreSQL | 2212 passed, 0 failed, 6 skipped | 2453 passed, 0 failed, 6 skipped |
+| Unit, SQLite | 2186 passed, 0 failed, 22 skipped | 2414 passed, 0 failed, 24 skipped |
+| Contract, PostgreSQL | 367 passed, 0 failed, 12 skipped | 392 passed, 0 failed, 12 skipped |
+| Contract, SQLite | 367 passed, 0 failed, 12 skipped | 392 passed, 0 failed, 12 skipped |
+| `helm unittest charts/lightstack` | 24 suites, 169 tests, all pass | 24 suites, 171 tests, all pass (T070's two cases) |
+| `test/security_groups_test.sh` | 12 of 13 | 13 of 13 |
+
+Contract per package moved only in `test/contract/neutron` (74 → 98) and `test/contract/nova` (128 → 129). `test/security_groups_test.sh`'s Test 1 passes now because the seeded project's `default` existed when it ran. Lightstack does not create a project's `default` when it is listed, as upstream's `get_security_groups` does, so the test still depends on what ran before it. That predates this feature.
+
+Afterwards the shared database was cleaned of what the runs leave behind: three pending `image_tasks` rows and two backup images from the Glance contract tests, and ten `md-net`/`md-null-net` networks with their ports from `internal/metadata`'s cleanup, which runs with a cancelled context (round 1 recorded it).
+

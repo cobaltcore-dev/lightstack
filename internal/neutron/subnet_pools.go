@@ -15,17 +15,17 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ListSubnetPools lists subnet pools
+// ListSubnetPools lists the subnet pools the caller sees — their project's and the shared ones, every
+// project's for an administrator — narrowed by project_id/tenant_id (SPEC-033 FR-057).
 func (svc *Service) ListSubnetPools(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
+	f := &common.SQLFilter{}
+	projectScope(c, f, "project_id", ownedOrShared)
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT id, project_id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
-		       shared, is_default, ip_version, COALESCE(description, ''), created_at, updated_at
-		FROM subnet_pools
-		WHERE project_id = $1 OR shared = true
+		SELECT id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
+		       shared, is_default, ip_version, COALESCE(description, ''), created_at, updated_at, COALESCE(project_id::text, '')
+		FROM subnet_pools`+f.Where()+`
 		ORDER BY created_at DESC
-	`, projectID)
+	`, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_subnet_pools").Msg("failed to query subnet pools")
@@ -36,15 +36,15 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 
 	pools := []gin.H{}
 	for rows.Next() {
-		var id, ownerID, name, description string
+		var id, name, owner, description string
 		var prefixes []string
 		var minPrefixlen, maxPrefixlen, ipVersion int
 		var defaultPrefixlen *int
 		var shared, isDefault bool
 		var createdAt, updatedAt time.Time
 
-		err := rows.Scan(&id, &ownerID, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
-			&shared, &isDefault, &ipVersion, &description, &createdAt, &updatedAt)
+		err := rows.Scan(&id, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
+			&shared, &isDefault, &ipVersion, &description, &createdAt, &updatedAt, &owner)
 		if err != nil {
 			continue
 		}
@@ -61,7 +61,8 @@ func (svc *Service) ListSubnetPools(c *gin.Context) {
 			// The row's OWN project, not the caller's: the shared visibility
 			// clause above returns other projects' pools, and `tenant_id` must
 			// name the owner, as the other resource lists do.
-			"tenant_id":   ownerID,
+			"tenant_id":   owner,
+			"project_id":  owner,
 			"description": description,
 			"created_at":  createdAt.Format(time.RFC3339),
 			"updated_at":  updatedAt.Format(time.RFC3339),
@@ -95,6 +96,9 @@ func (svc *Service) CreateSubnetPool(c *gin.Context) {
 			IsDefault        *bool    `json:"is_default"`
 			IPVersion        *int     `json:"ip_version"`
 			Description      *string  `json:"description"`
+			// The project the pool belongs to: an administrator's to name (SPEC-033 FR-058).
+			ProjectID *string `json:"project_id"`
+			TenantID  *string `json:"tenant_id"`
 		} `json:"subnetpool"`
 	}
 
@@ -113,7 +117,10 @@ func (svc *Service) CreateSubnetPool(c *gin.Context) {
 		}
 	}
 
-	projectID := c.GetString("project_id")
+	projectID, ok := svc.ownerOf(c, req.SubnetPool.ProjectID, req.SubnetPool.TenantID)
+	if !ok {
+		return
+	}
 	poolID := uuid.New().String()
 
 	minPrefixlen := 8
@@ -166,6 +173,7 @@ func (svc *Service) CreateSubnetPool(c *gin.Context) {
 		"is_default":    isDefault,
 		"ip_version":    ipVersion,
 		"tenant_id":     projectID,
+		"project_id":    projectID,
 		"description":   derefOr(req.SubnetPool.Description, ""),
 		"created_at":    now.Format(time.RFC3339),
 		"updated_at":    now.Format(time.RFC3339),
@@ -191,7 +199,7 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 		return
 	}
 
-	var id, ownerID, name string
+	var id, name, owner string
 	var prefixes []string
 	var minPrefixlen, maxPrefixlen, ipVersion int
 	var defaultPrefixlen *int
@@ -200,12 +208,12 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 	var createdAt, updatedAt time.Time
 
 	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT id, project_id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
-		       shared, is_default, ip_version, description, created_at, updated_at
+		SELECT id, name, prefixes, min_prefixlen, max_prefixlen, default_prefixlen,
+		       shared, is_default, ip_version, description, created_at, updated_at, COALESCE(project_id::text, '')
 		FROM subnet_pools
-		WHERE id = $1 AND (project_id = $2 OR shared = true)
-	`, poolID, projectID).Scan(&id, &ownerID, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
-		&shared, &isDefault, &ipVersion, &description, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+scopeOrAdmin(ownedOrShared("$2"), "$3")+`
+	`, poolID, projectID, isAdmin(c)).Scan(&id, &name, &prefixes, &minPrefixlen, &maxPrefixlen, &defaultPrefixlen,
+		&shared, &isDefault, &ipVersion, &description, &createdAt, &updatedAt, &owner)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("subnet pool"))
@@ -228,7 +236,8 @@ func (svc *Service) GetSubnetPool(c *gin.Context) {
 		"ip_version":    ipVersion,
 		// See ListSubnetPools: shared rows belong to another project, so
 		// rendering the caller's id here is false attribution.
-		"tenant_id":   ownerID,
+		"tenant_id":   owner,
+		"project_id":  owner,
 		"description": description.String,
 		"created_at":  createdAt.Format(time.RFC3339),
 		"updated_at":  updatedAt.Format(time.RFC3339),
@@ -311,7 +320,7 @@ func (svc *Service) UpdateSubnetPool(c *gin.Context) {
 	u.Set("updated_at", time.Now())
 
 	query := "UPDATE subnet_pools SET " + u.Assignments() +
-		" WHERE id = " + u.Arg(poolID) + " AND project_id = " + u.Arg(projectID)
+		" WHERE id = " + u.Arg(poolID) + " AND " + ownerOrAdmin("project_id", u.Arg(projectID), u.Arg(isAdmin(c)))
 
 	result, err := svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
@@ -336,8 +345,8 @@ func (svc *Service) DeleteSubnetPool(c *gin.Context) {
 
 	result, err := svc.pool.Exec(c.Request.Context(), `
 		DELETE FROM subnet_pools
-		WHERE id = $1 AND project_id = $2
-	`, poolID, projectID)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, poolID, projectID, isAdmin(c))
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_subnet_pool").Msg("failed to delete subnet pool")

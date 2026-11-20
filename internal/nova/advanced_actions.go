@@ -737,8 +737,10 @@ func (svc *Service) LiveMigrateInstance(c *gin.Context, instanceID, projectID st
 // upstream's fallback. A server whose ports carry no group has no entry.
 //
 // The ports are the only list of a server's groups and the one its filter is built from, so a server
-// reports exactly what filters it (SPEC-033 FR-014, FR-015; research R10). Every group on a port
-// belongs to the port's project, so no visibility filter is needed.
+// reports exactly what filters it (SPEC-033 FR-014, FR-015; research R10). A server's ports are those
+// naming it that are its project's, as the address map reads them: device_id is any port creator's to
+// set (branch review SRC-8). Every group on such a port belongs to that project, so no other visibility
+// filter is needed.
 func securityGroupNamesForServers(ctx context.Context, pool database.DB, serverIDs []string) (map[string][]string, error) {
 	result := make(map[string][]string, len(serverIDs))
 	if len(serverIDs) == 0 {
@@ -747,6 +749,7 @@ func securityGroupNamesForServers(ctx context.Context, pool database.DB, serverI
 	rows, err := pool.Query(ctx, `
 		SELECT p.device_id::text, COALESCE(NULLIF(sg.name, ''), sg.id::text)
 		FROM ports p
+		JOIN instances i ON i.id = p.device_id AND i.project_id = p.project_id
 		JOIN port_security_groups psg ON psg.port_id = p.id
 		JOIN security_groups sg ON sg.id = psg.security_group_id
 		WHERE p.device_id = ANY($1::uuid[])
@@ -819,7 +822,8 @@ func (svc *Service) changeServerSecurityGroup(c *gin.Context, instanceID, projec
 	var change *serverGroupChange
 	err := database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		var err error
-		change, err = storeServerGroupChange(c.Request.Context(), tx, instanceID, projectID, ref, add)
+		change, err = storeServerGroupChange(c.Request.Context(), tx, instanceID, projectID, ref, add,
+			common.HasRole(c, common.RoleAdmin))
 		return err
 	})
 	var refusal *common.OpenStackError
@@ -845,10 +849,11 @@ func (svc *Service) changeServerSecurityGroup(c *gin.Context, instanceID, projec
 }
 
 // storeServerGroupChange is the change's transaction. It locks the server, then its ports in id order
-// (research R3); resolves the group in the server's project, which for an administrator acting on a
-// tenant's server is the tenant's (constitution register, entry 5); checks; and stores the change on
-// the ports. A refusal is returned as the *common.OpenStackError to answer with, and rolls back.
-func storeServerGroupChange(ctx context.Context, tx database.Tx, instanceID, projectID, ref string, add bool) (*serverGroupChange, error) {
+// (research R3); resolves the group — a name in the server's project, which for an administrator acting
+// on a tenant's server is the tenant's (constitution register, entry 5), an id in any project for an
+// administrator, as upstream (FR-004, research R52); checks; and stores the change on the ports. A
+// refusal is returned as the *common.OpenStackError to answer with, and rolls back.
+func storeServerGroupChange(ctx context.Context, tx database.Tx, instanceID, projectID, ref string, add, admin bool) (*serverGroupChange, error) {
 	var one int
 	err := tx.QueryRow(ctx, "SELECT 1 FROM instances WHERE id = $1 AND project_id = $2 FOR UPDATE",
 		instanceID, projectID).Scan(&one)
@@ -858,13 +863,19 @@ func storeServerGroupChange(ctx context.Context, tx database.Tx, instanceID, pro
 	if err != nil {
 		return nil, fmt.Errorf("lock instance %s: %w", instanceID, err)
 	}
-	ports, err := lockPorts(ctx, tx, "device_id = $1", instanceID)
+	// The server's ports are those naming it that are its project's: device_id is any port creator's to
+	// set (branch review SRC-8).
+	ports, err := lockPorts(ctx, tx, "device_id = $1 AND project_id = $2", instanceID, projectID)
 	if err != nil {
 		return nil, err
 	}
-	groupID, err := neutron.ResolveSecurityGroup(ctx, tx, ref, projectID)
+	groupID, err := neutron.ResolveSecurityGroup(ctx, tx, ref, projectID, admin)
 	if errors.Is(err, neutron.ErrSecurityGroupNotFound) {
 		return nil, common.NewNotFoundError("security group")
+	}
+	var ambiguous *neutron.AmbiguousSecurityGroupError
+	if errors.As(err, &ambiguous) {
+		return nil, common.NewConflictError(ambiguous.Error()) // upstream Nova's NoUniqueMatch (FR-026)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve security group %q: %w", ref, err)
@@ -908,6 +919,11 @@ func addGroupToPorts(ctx context.Context, tx database.Tx, change *serverGroupCha
 		if errors.Is(err, neutron.ErrSecurityGroupNotFound) {
 			return common.NewNotFoundError("security group") // deleted since it was resolved
 		}
+		if errors.Is(err, neutron.ErrSecurityGroupConflict) {
+			// A port would carry stateful and stateless groups. Upstream Nova raises
+			// SecurityGroupConnectionStateConflict, 409, with the network service's reason (FR-051).
+			return common.NewConflictError(err.Error())
+		}
 		if err != nil {
 			return fmt.Errorf("add security group %s to port %s: %w", change.groupID, p, err)
 		}
@@ -937,8 +953,8 @@ func removeGroupFromPorts(ctx context.Context, tx database.Tx, change *serverGro
 
 // lockPorts locks the ports matching where ($1 bound to arg) in id order, the order every change to a
 // port's groups takes them in (research R3), and returns their ids.
-func lockPorts(ctx context.Context, tx database.Tx, where string, arg any) ([]string, error) {
-	rows, err := tx.Query(ctx, "SELECT id FROM ports WHERE "+where+" ORDER BY id FOR UPDATE", arg)
+func lockPorts(ctx context.Context, tx database.Tx, where string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, "SELECT id FROM ports WHERE "+where+" ORDER BY id FOR UPDATE", args...)
 	if err != nil {
 		return nil, fmt.Errorf("lock ports: %w", err)
 	}

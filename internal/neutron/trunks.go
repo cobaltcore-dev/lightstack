@@ -10,15 +10,14 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ListTrunks handles GET /v2.0/trunks
+// ListTrunks handles GET /v2.0/trunks: the caller's project's trunks, every project's for an
+// administrator, narrowed by project_id/tenant_id (SPEC-033 FR-057).
 func (svc *Service) ListTrunks(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
+	f := &common.SQLFilter{}
+	projectScope(c, f, "project_id", ownedBy("project_id"))
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, description, project_id, port_id, admin_state_up, status, created_at, updated_at
-		FROM trunks
-		WHERE project_id = $1
-	`, projectID)
+		FROM trunks`+f.Where(), f.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_trunks").Msg("failed to query trunks")
 		common.SendError(c, common.NewInternalServerError("failed to list trunks"))
@@ -90,21 +89,26 @@ func (svc *Service) ListTrunks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"trunks": trunks})
 }
 
-// CreateTrunk handles POST /v2.0/trunks
+// CreateTrunk handles POST /v2.0/trunks. The trunk belongs to the project an administrator names, or
+// else to the caller's (SPEC-033 FR-058).
 func (svc *Service) CreateTrunk(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
 	var req struct {
 		Trunk struct {
-			Name         string `json:"name"`
-			Description  string `json:"description"`
-			PortID       string `json:"port_id" binding:"required"`
-			AdminStateUp *bool  `json:"admin_state_up"`
+			Name         string  `json:"name"`
+			Description  string  `json:"description"`
+			PortID       string  `json:"port_id" binding:"required"`
+			AdminStateUp *bool   `json:"admin_state_up"`
+			ProjectID    *string `json:"project_id"`
+			TenantID     *string `json:"tenant_id"`
 		} `json:"trunk" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+	projectID, ok := svc.ownerOf(c, req.Trunk.ProjectID, req.Trunk.TenantID)
+	if !ok {
 		return
 	}
 
@@ -162,8 +166,8 @@ func (svc *Service) GetTrunk(c *gin.Context) {
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, project_id, port_id, admin_state_up, status, created_at, updated_at
 		FROM trunks
-		WHERE id = $1 AND project_id = $2
-	`, trunkID, projectID).Scan(&id, &name, &description, &projectIDStr, &portID, &adminStateUp, &status, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, trunkID, projectID, isAdmin(c)).Scan(&id, &name, &description, &projectIDStr, &portID, &adminStateUp, &status, &createdAt, &updatedAt)
 
 	if err != nil {
 		common.SendError(c, common.NewNotFoundError("trunk"))
@@ -231,8 +235,8 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 	// Verify trunk exists
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM trunks WHERE id = $1 AND project_id = $2)",
-		trunkID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM trunks WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		trunkID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -259,7 +263,7 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 		u.Set("updated_at", time.Now())
 
 		query := "UPDATE trunks SET " + u.Assignments() +
-			" WHERE id = " + u.Arg(trunkID) + " AND project_id = " + u.Arg(projectID)
+			" WHERE id = " + u.Arg(trunkID) + " AND " + ownerOrAdmin("project_id", u.Arg(projectID), u.Arg(isAdmin(c)))
 
 		_, err = svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 		if err != nil {
@@ -279,8 +283,8 @@ func (svc *Service) UpdateTrunk(c *gin.Context) {
 	err = svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, project_id, port_id, admin_state_up, status, created_at, updated_at
 		FROM trunks
-		WHERE id = $1 AND project_id = $2
-	`, trunkID, projectID).Scan(&id, &name, &description, &projectIDStr, &portID, &adminStateUp, &status, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, trunkID, projectID, isAdmin(c)).Scan(&id, &name, &description, &projectIDStr, &portID, &adminStateUp, &status, &createdAt, &updatedAt)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_trunk_fetch").Msg("failed to fetch updated trunk")
@@ -338,8 +342,8 @@ func (svc *Service) DeleteTrunk(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	result, err := svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM trunks WHERE id = $1 AND project_id = $2",
-		trunkID, projectID,
+		"DELETE FROM trunks WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+		trunkID, projectID, isAdmin(c),
 	)
 
 	if err != nil {
@@ -378,8 +382,8 @@ func (svc *Service) AddSubports(c *gin.Context) {
 	// Verify trunk exists
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM trunks WHERE id = $1 AND project_id = $2)",
-		trunkID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM trunks WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		trunkID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -423,8 +427,8 @@ func (svc *Service) AddSubports(c *gin.Context) {
 	err = svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, project_id, port_id, admin_state_up, status, created_at, updated_at
 		FROM trunks
-		WHERE id = $1 AND project_id = $2
-	`, trunkID, projectID).Scan(&id, &name, &description, &projectIDStr, &portID, &adminStateUp, &status, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, trunkID, projectID, isAdmin(c)).Scan(&id, &name, &description, &projectIDStr, &portID, &adminStateUp, &status, &createdAt, &updatedAt)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "add_subports_fetch").Msg("failed to fetch trunk after adding subports")
@@ -495,8 +499,8 @@ func (svc *Service) RemoveSubports(c *gin.Context) {
 	// Verify trunk exists
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM trunks WHERE id = $1 AND project_id = $2)",
-		trunkID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM trunks WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		trunkID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -534,8 +538,8 @@ func (svc *Service) RemoveSubports(c *gin.Context) {
 	err = svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, project_id, port_id, admin_state_up, status, created_at, updated_at
 		FROM trunks
-		WHERE id = $1 AND project_id = $2
-	`, trunkID, projectID).Scan(&id, &name, &description, &projectIDStr, &portID, &adminStateUp, &status, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, trunkID, projectID, isAdmin(c)).Scan(&id, &name, &description, &projectIDStr, &portID, &adminStateUp, &status, &createdAt, &updatedAt)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "remove_subports_fetch").Msg("failed to fetch trunk after removing subports")

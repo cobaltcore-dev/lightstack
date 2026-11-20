@@ -2,15 +2,12 @@ package neutron
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net"
 	"net/http"
-	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,6 +31,9 @@ type CreatePortRequest struct {
 		DeviceOwner  string `json:"device_owner"`
 		// Read raw: absent, null and a list mean different things (parseSecurityGroupsField).
 		SecurityGroups json.RawMessage `json:"security_groups"`
+		// The project the port belongs to: an administrator's to name (SPEC-033 FR-058).
+		ProjectID *string `json:"project_id"`
+		TenantID  *string `json:"tenant_id"`
 	} `json:"port"`
 }
 
@@ -52,7 +52,10 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		return
 	}
 
-	projectID := c.GetString("project_id")
+	projectID, ok := svc.ownerOf(c, req.Port.ProjectID, req.Port.TenantID)
+	if !ok {
+		return
+	}
 	portID := uuid.New().String()
 	tapName := tapNameFor(portID)
 	macAddress := generateMAC()
@@ -63,11 +66,13 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	}
 
 	// Get network and subnet info to allocate IP
-	var networkID string
+	var networkID, networkProject string
+	// The port's project's network, a shared one, or for an administrator any project's, by id
+	// (SPEC-033 FR-058).
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id FROM networks WHERE id = $1 AND (project_id = $2 OR shared = true)",
-		req.Port.NetworkID, projectID,
-	).Scan(&networkID)
+		"SELECT id, COALESCE(project_id::text, '') FROM networks WHERE id = $1 AND "+scopeOrAdmin("(project_id = $2 OR shared = true)", "$3"),
+		req.Port.NetworkID, c.GetString("project_id"), isAdmin(c),
+	).Scan(&networkID, &networkProject)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -82,6 +87,10 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	if err != nil {
 		log.Warn().Err(err).Str("network_id", req.Port.NetworkID).Msg("port create: unusable network_id")
 		common.SendError(c, common.NewNotFoundError("network"))
+		return
+	}
+	if refusal := networkDeviceOwnerRefusal("create_port", req.Port.DeviceOwner, networkProject, c.GetString("project_id"), isAdmin(c)); refusal != nil {
+		common.SendError(c, refusal)
 		return
 	}
 
@@ -103,7 +112,7 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	// is absent. null and [] give none (SPEC-033 FR-017). Resolved before anything is created, so a
 	// refused group leaves nothing behind.
 	if groupsGiven {
-		if err := requireGroupsOfProject(c.Request.Context(), svc.pool, securityGroups, projectID); err != nil {
+		if err := requireGroupsOfProject(c.Request.Context(), svc.pool, securityGroups, projectID, isAdmin(c)); err != nil {
 			sendGroupLookupError(c, err)
 			return
 		}
@@ -166,11 +175,10 @@ func (svc *Service) CreatePort(c *gin.Context) {
 	now := time.Now()
 	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		if subnetID != "" {
-			cidr, err := LockSubnet(c.Request.Context(), tx, subnetID)
-			if err != nil {
+			if _, err := LockSubnet(c.Request.Context(), tx, subnetID); err != nil {
 				return err
 			}
-			ip, err := AllocateFreeIP(c.Request.Context(), tx, subnetID, cidr)
+			ip, err := AllocateFreeIP(c.Request.Context(), tx, subnetID)
 			if err != nil {
 				return err
 			}
@@ -196,6 +204,10 @@ func (svc *Service) CreatePort(c *gin.Context) {
 		}
 		if errors.Is(err, ErrSecurityGroupNotFound) {
 			common.SendError(c, common.NewNotFoundError("security group")) // deleted since it was checked
+			return
+		}
+		if errors.Is(err, ErrSecurityGroupConflict) {
+			common.SendError(c, errSecurityGroupConflict()) // stateful and stateless together (FR-051)
 			return
 		}
 		log.Error().Err(err).Str("operation", "create_port").Msg("database error")
@@ -293,16 +305,18 @@ func (svc *Service) CreatePort(c *gin.Context) {
 }
 
 // portReadScope is the predicate under which a caller may READ a port (aliased p, its network n): its
-// own, or one on a shared network. GetPort, the listing and the listing's marker share it so the three
-// cannot disagree. caller is the placeholder carrying the caller's project id.
+// project's, or one on a network of its project — upstream's get_port (PROJECT_READER,
+// NET_OWNER_READER). A shared network is every project's to read, the ports on it are not: they are
+// their projects' and the network owner's (SPEC-033 FR-061). A router's gateway port, which has no
+// project, is thereby the administrator's and the external network owner's, as upstream's. GetPort,
+// the listing and the listing's marker share it so the three cannot disagree. caller is the
+// placeholder carrying the caller's project id.
 func portReadScope(caller string) string {
-	return "(p.project_id = " + caller + " OR n.shared = true)"
+	return "(p.project_id = " + caller + " OR n.project_id = " + caller + ")"
 }
 
 // ListPorts lists all ports
 func (svc *Service) ListPorts(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
 	// Parse pagination parameters. No default cap: without `limit` every visible row is returned,
 	// as upstream does (pagination_max_limit defaults to -1); a nil limit binds LIMIT NULL, which
 	// Postgres reads as no limit.
@@ -320,42 +334,17 @@ func (svc *Service) ListPorts(c *gin.Context) {
 	}
 
 	pf := &common.SQLFilter{}
-
-	// The caller's read scope (see portReadScope) — dropped for an
-	// administrator who filters by tenant, network, or device. Each is an
-	// explicit cross-project pointer (the network or device id comes
-	// straight out of a body the admin was allowed to read), and upstream
-	// honours all of them for admin tokens; scoping them again would answer
-	// 200 for the network and [] for its ports. Mirrors
-	// buildNetworkListFilter's tenant bypass (SPEC-031). A non-admin keeps
-	// the scope AND filter intersection.
-	tenant := c.Query("tenant_id")
-	if tenant == "" {
-		tenant = c.Query("project_id")
-	}
-	adminBypass := common.HasRole(c, common.RoleAdmin) &&
-		(tenant != "" || c.Query("network_id") != "" || c.Query("device_id") != "")
-	if !adminBypass {
-		pf.Cond(portReadScope(pf.Arg(projectID)))
-	}
-	if tenant != "" {
-		pf.Eq("p.project_id::text", tenant)
-	}
+	// The caller's scope, every project's for an administrator, narrowed by project_id/tenant_id
+	// (SPEC-033 FR-057).
+	projectScope(c, pf, "p.project_id", portReadScope)
 
 	// Marker paging over a TOTAL order. p.created_at alone is not unique, so the order was undefined
 	// among ties AND `p.created_at < $n` excluded every port sharing the marker's timestamp rather
 	// than only those before it — ports created by one boot share it (as #549 established for
 	// compute).
-	// The marker itself resolves as resolveListMarker describes — under the listing's own scope.
-	var m *listMarker
-	var ok bool
-	if adminBypass {
-		m, ok = svc.resolveListMarker(c, limit, "port",
-			"SELECT p.created_at, p.id FROM ports p JOIN networks n ON p.network_id = n.id WHERE p.id::text = $1")
-	} else {
-		m, ok = svc.resolveListMarker(c, limit, "port",
-			"SELECT p.created_at, p.id FROM ports p JOIN networks n ON p.network_id = n.id WHERE p.id::text = $1 AND "+portReadScope("$2"), projectID)
-	}
+	// The marker itself resolves as resolveListMarker describes.
+	m, ok := svc.resolveListMarker(c, limit, "port",
+		"SELECT p.created_at, p.id FROM ports p JOIN networks n ON p.network_id = n.id WHERE p.id::text = $1 AND "+scopeOrAdmin(portReadScope("$2"), "$3"))
 	if !ok {
 		return
 	}
@@ -394,7 +383,8 @@ func (svc *Service) ListPorts(c *gin.Context) {
 	where := pf.Where()
 	limitOffset := fmt.Sprintf(" LIMIT %s OFFSET %s", pf.Arg(limit), pf.Arg(offset))
 	rows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT p.id, p.name, p.network_id, p.project_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
+		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at,
+		       COALESCE(p.project_id::text, '')
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id`+where+`
 		ORDER BY p.created_at DESC, p.id DESC`+limitOffset, pf.Args()...)
@@ -408,18 +398,14 @@ func (svc *Service) ListPorts(c *gin.Context) {
 
 	var ports []gin.H
 	for rows.Next() {
-		var id, name, networkID string
+		var id, name, networkID, owner string
 		var deviceID, deviceOwner sql.NullString
 		var macAddress, status string
 		var adminStateUp bool
 		var fixedIPsJSON []byte
 		var createdAt, updatedAt time.Time
-		// The row's OWN project, not the caller's: the admin cross-project
-		// listing serves foreign ports, and stamping them with the admin's
-		// project would tell a client a resource is theirs when it is not.
-		var ownerID string
 
-		if err := rows.Scan(&id, &name, &networkID, &ownerID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &name, &networkID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt, &owner); err != nil {
 			log.Warn().Err(err).Msg("failed to scan port row")
 			continue
 		}
@@ -448,11 +434,14 @@ func (svc *Service) ListPorts(c *gin.Context) {
 			sgRows.Close()
 		}
 
+		// The port's own project, not the caller's: an administrator's listing spans every project,
+		// and a member's includes ports on shared networks (SPEC-033 FR-057).
 		ports = append(ports, gin.H{
 			"id":              id,
 			"name":            name,
 			"network_id":      networkID,
-			"tenant_id":       ownerID,
+			"tenant_id":       owner,
+			"project_id":      owner,
 			"device_id":       deviceID.String,
 			"device_owner":    deviceOwner.String,
 			"mac_address":     macAddress,
@@ -491,31 +480,20 @@ func (svc *Service) GetPort(c *gin.Context) {
 		return
 	}
 
-	var id, name, networkID string
+	var id, name, networkID, owner string
 	var deviceID, deviceOwner sql.NullString
 	var macAddress, status string
 	var adminStateUp bool
 	var fixedIPsJSON []byte
 	var createdAt, updatedAt time.Time
 
-	// An administrator may show any port — the same carve-out GetNetwork and
-	// GetSubnet have (upstream's get_port policy is admin_or_owner; the
-	// admin's cross-project visibility the listings grant must not 404 on
-	// the follow-up show). Non-admins keep the read scope. The row's OWN
-	// project is selected and rendered as tenant_id — never the caller's.
-	portQuery := `
-		SELECT p.id, p.name, p.network_id, p.project_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at
+	err := svc.pool.QueryRow(c.Request.Context(), `
+		SELECT p.id, p.name, p.network_id, p.device_id, p.device_owner, p.mac_address, p.admin_state_up, p.status, p.fixed_ips, p.created_at, p.updated_at,
+		       COALESCE(p.project_id::text, '')
 		FROM ports p
 		JOIN networks n ON p.network_id = n.id
-		WHERE p.id = $1`
-	portArgs := []any{portID}
-	if !common.HasRole(c, common.RoleAdmin) {
-		portQuery += ` AND ` + portReadScope("$2")
-		portArgs = append(portArgs, projectID)
-	}
-	var ownerID string
-	err := svc.pool.QueryRow(c.Request.Context(), portQuery, portArgs...).
-		Scan(&id, &name, &networkID, &ownerID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt)
+		WHERE p.id::text = $1 AND `+scopeOrAdmin(portReadScope("$2"), "$3")+`
+	`, portID, projectID, isAdmin(c)).Scan(&id, &name, &networkID, &deviceID, &deviceOwner, &macAddress, &adminStateUp, &status, &fixedIPsJSON, &createdAt, &updatedAt, &owner)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
@@ -556,7 +534,8 @@ func (svc *Service) GetPort(c *gin.Context) {
 			"id":              id,
 			"name":            name,
 			"network_id":      networkID,
-			"tenant_id":       ownerID,
+			"tenant_id":       owner,
+			"project_id":      owner,
 			"device_id":       deviceID.String,
 			"device_owner":    deviceOwner.String,
 			"mac_address":     macAddress,
@@ -587,8 +566,8 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	// that one did not reach its siblings.
 	var resolvedID string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id::text FROM ports WHERE id::text = $1 AND project_id = $2",
-		portID, projectID,
+		"SELECT id::text FROM ports WHERE id::text = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+		portID, projectID, isAdmin(c),
 	).Scan(&resolvedID)
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
@@ -610,7 +589,7 @@ func (svc *Service) DeletePort(c *gin.Context) {
 	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		var locked string
 		err := tx.QueryRow(c.Request.Context(),
-			"SELECT id::text FROM ports WHERE id = $1 AND project_id = $2 FOR UPDATE", portID, projectID,
+			"SELECT id::text FROM ports WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+" FOR UPDATE", portID, projectID, isAdmin(c),
 		).Scan(&locked)
 		if errors.Is(err, database.ErrNoRows) {
 			return common.NewNotFoundError("port")
@@ -752,19 +731,36 @@ func (svc *Service) UpdatePort(c *gin.Context) {
 	err := database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		// Check 3: the port is the caller's. Its lock is the check, and serialises this change with
 		// every other change to the port's groups.
+		var owner *string
 		err := tx.QueryRow(c.Request.Context(),
-			"SELECT id::text FROM ports WHERE id::text = $1 AND project_id = $2 FOR UPDATE",
-			portID, projectID).Scan(&portID)
+			"SELECT id::text, project_id::text FROM ports WHERE id::text = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+" FOR UPDATE",
+			portID, projectID, isAdmin(c)).Scan(&portID, &owner)
 		if errors.Is(err, database.ErrNoRows) {
 			return common.NewNotFoundError("port")
 		}
 		if err != nil {
 			return fmt.Errorf("lock port: %w", err)
 		}
+		if req.Port.DeviceOwner != nil && strings.HasPrefix(*req.Port.DeviceOwner, "network:") {
+			var networkProject string
+			if err := tx.QueryRow(c.Request.Context(), `
+				SELECT COALESCE(n.project_id::text, '') FROM ports p JOIN networks n ON n.id = p.network_id
+				 WHERE p.id::text = $1`, portID).Scan(&networkProject); err != nil {
+				return fmt.Errorf("read the port's network: %w", err)
+			}
+			if refusal := networkDeviceOwnerRefusal("update_port", *req.Port.DeviceOwner, networkProject, projectID, isAdmin(c)); refusal != nil {
+				return refusal
+			}
+		}
 		if groupsGiven {
-			// Check 4, in the same transaction, after the port's lock: each group is the port's
-			// project's, administrators included (constitution register, entry 5).
-			if err := requireGroupsOfProject(c.Request.Context(), tx, groups, projectID); err != nil {
+			// Check 4, in the same transaction, after the port's lock: each group is one the caller can
+			// see — the port's project's for a member, any project's for an administrator, as
+			// upstream (SPEC-033 FR-018, research R52).
+			portProject := projectID
+			if owner != nil {
+				portProject = *owner
+			}
+			if err := requireGroupsOfProject(c.Request.Context(), tx, groups, portProject, isAdmin(c)); err != nil {
 				return err
 			}
 			if previous, err = PortSecurityGroupIDs(c.Request.Context(), tx, portID); err != nil {
@@ -882,14 +878,15 @@ func invalidSecurityGroups(reason string) *common.OpenStackError {
 	return common.NewBadRequestError("Invalid input for security_groups. Reason: " + reason + ".")
 }
 
-// requireGroupsOfProject answers 404 for the first id that names no group of projectID. A group's
-// project never changes, so the read needs no lock; the foreign key re-checks each group's existence
-// at the write, where its loss is ErrSecurityGroupNotFound.
-func requireGroupsOfProject(ctx context.Context, q subnetQuerier, ids []string, projectID string) error {
+// requireGroupsOfProject answers 404 for the first id that names no group the caller can see: a group
+// of projectID, or for an administrator a group of any project, as upstream (SPEC-033 FR-018, research
+// R52). A group's project never changes, so the read needs no lock; the foreign key re-checks each
+// group's existence at the write, where its loss is ErrSecurityGroupNotFound.
+func requireGroupsOfProject(ctx context.Context, q subnetQuerier, ids []string, projectID string, admin bool) error {
 	for _, id := range ids {
 		var ok bool
 		if err := q.QueryRow(ctx,
-			"SELECT EXISTS(SELECT 1 FROM security_groups WHERE id = $1 AND project_id = $2)", id, projectID,
+			"SELECT EXISTS(SELECT 1 FROM security_groups WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")", id, projectID, admin,
 		).Scan(&ok); err != nil {
 			return fmt.Errorf("look up security group %s: %w", id, err)
 		}
@@ -902,6 +899,18 @@ func requireGroupsOfProject(ctx context.Context, q subnetQuerier, ids []string, 
 	return nil
 }
 
+// networkDeviceOwnerRefusal is upstream's create_port:device_owner and update_port:device_owner: a
+// device_owner starting "network:" gives a port a role its network plays — its DHCP port, a router's
+// port — so only an administrator or a member of the network's own project may set one (SPEC-033
+// FR-062). It is nil for any other owner, and for a caller who may.
+func networkDeviceOwnerRefusal(action, deviceOwner, networkProject, caller string, admin bool) *common.OpenStackError {
+	if !strings.HasPrefix(deviceOwner, "network:") || admin || networkProject == caller {
+		return nil
+	}
+	return common.NewNeutronError(http.StatusForbidden, "PolicyNotAuthorized",
+		fmt.Sprintf("(rule:%s:device_owner) is disallowed by policy", action))
+}
+
 // sendGroupLookupError answers a failed port change: a refusal as it is, a group deleted since it was
 // checked as 404, anything else as 500.
 func sendGroupLookupError(c *gin.Context, err error) {
@@ -911,63 +920,12 @@ func sendGroupLookupError(c *gin.Context, err error) {
 		common.SendError(c, refusal)
 	case errors.Is(err, ErrSecurityGroupNotFound):
 		common.SendError(c, common.NewNotFoundError("security group"))
+	case errors.Is(err, ErrSecurityGroupConflict):
+		common.SendError(c, errSecurityGroupConflict())
 	default:
 		log.Error().Err(err).Str("operation", "port_security_groups").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update port"))
 	}
-}
-
-// allocateIP allocates an IP from a CIDR range using a cryptographically
-// random offset. It mirrors upstream Neutron's generate_pools(): /30, /31 and
-// /32 (and every IPv6 subnet) are valid pools, network/broadcast are excluded
-// where they exist, and only an exhausted/invalid pool yields "" — the
-// callers' "no usable address". It must never panic: rand.Int panics on a
-// non-positive bound, so every span is guarded.
-func allocateIP(cidr string) string {
-	_, ipNet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return ""
-	}
-
-	ones, bits := ipNet.Mask.Size()
-	hostBits := bits - ones
-	if hostBits < 0 {
-		return ""
-	}
-
-	// Match upstream Neutron's generate_pools(): a /32 and a /31 have no
-	// network/broadcast pair to exclude, IPv4 larger than /31 excludes both,
-	// and IPv6 is handled normally. A small pool is never refused as
-	// "untenable" — exhaustion is what fails, in AllocateFreeIP.
-	isV4 := ipNet.IP.To4() != nil
-	var lo, span int64
-	switch {
-	case isV4 && hostBits == 0: // /32: single address
-		lo, span = 0, 1
-	case isV4 && ones >= 31: // /31: both addresses usable
-		lo, span = 0, 2
-	case isV4: // exclude network and broadcast
-		lo, span = 1, (int64(1)<<uint(hostBits))-2
-	case hostBits == 0: // IPv6 /128
-		lo, span = 0, 1
-	case hostBits >= 32: // IPv6: bounded random window inside the subnet
-		// The offset must fit incrementIP's uint and int64 arithmetic; a /64
-		// has far more host bits than this, so sample a window rather than
-		// shifting by 64 (which overflows int64 and used to panic).
-		lo, span = 1, 1<<32
-	default: // small IPv6 subnet: first+1 .. last
-		lo, span = 1, (int64(1)<<uint(hostBits))-1
-	}
-	if span <= 0 {
-		return ""
-	}
-
-	n, err := rand.Int(rand.Reader, big.NewInt(span))
-	offset := lo
-	if err == nil {
-		offset += n.Int64()
-	}
-	return incrementIP(ipNet.IP, uint(offset)).String()
 }
 
 type subnetQuerier interface {
@@ -982,23 +940,47 @@ var ErrNoAvailableIP = errors.New("no IP address available in the subnet")
 // belong to: unknown by name or id, another project's, or deleted after it was resolved.
 var ErrSecurityGroupNotFound = errors.New("security group not found")
 
-// ResolveSecurityGroup finds a group of projectID by id or by name. An id match wins, so a group named
-// after another's id cannot shadow it. It is the one resolver for server create, addSecurityGroup and
-// removeSecurityGroup (SPEC-033 R2). The id is compared as text, so a malformed id is simply not found.
-func ResolveSecurityGroup(ctx context.Context, q subnetQuerier, ref, projectID string) (string, error) {
+// ResolveSecurityGroup finds a group by id or by name. An id match wins, so a group named after
+// another's id cannot shadow it. An id names a group of projectID, or for an administrator a group of
+// any project, as upstream (SPEC-033 FR-004, FR-018, research R52); a name resolves in projectID only,
+// administrators included (constitution register, entry 5). It is the one resolver for server create,
+// addSecurityGroup and removeSecurityGroup (SPEC-033 R2). The id is compared as text, so a malformed id
+// is simply not found. Names may repeat, as upstream's may: a name several of the project's groups share
+// resolves to none of them, as an *AmbiguousSecurityGroupError, which compute answers 409 as upstream's
+// NoUniqueMatch (FR-026).
+func ResolveSecurityGroup(ctx context.Context, q subnetQuerier, ref, projectID string, admin bool) (string, error) {
 	var id string
-	err := q.QueryRow(ctx, `
-		SELECT id FROM security_groups
-		WHERE (id::text = $1 OR name = $1) AND project_id = $2
-		ORDER BY (id::text = $1) DESC
-		LIMIT 1`, ref, projectID).Scan(&id)
-	if errors.Is(err, database.ErrNoRows) {
-		return "", ErrSecurityGroupNotFound
+	err := q.QueryRow(ctx,
+		"SELECT id FROM security_groups WHERE id::text = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"), ref, projectID, admin).Scan(&id)
+	if err == nil {
+		return id, nil
 	}
+	if !errors.Is(err, database.ErrNoRows) {
+		return "", fmt.Errorf("resolving security group %q: %w", ref, err)
+	}
+	rows, err := q.Query(ctx,
+		"SELECT id FROM security_groups WHERE name = $1 AND project_id = $2 LIMIT 2", ref, projectID)
 	if err != nil {
 		return "", fmt.Errorf("resolving security group %q: %w", ref, err)
 	}
-	return id, nil
+	defer rows.Close()
+	var found []string
+	for rows.Next() {
+		if err := rows.Scan(&id); err != nil {
+			return "", fmt.Errorf("resolving security group %q: %w", ref, err)
+		}
+		found = append(found, id)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("resolving security group %q: %w", ref, err)
+	}
+	switch len(found) {
+	case 0:
+		return "", ErrSecurityGroupNotFound
+	case 1:
+		return found[0], nil
+	}
+	return "", &AmbiguousSecurityGroupError{Name: ref}
 }
 
 // PortSecurityGroupIDs returns the groups a port carries: the only list of a port's groups, which the
@@ -1026,9 +1008,13 @@ func PortSecurityGroupIDs(ctx context.Context, q subnetQuerier, portID string) (
 
 // AddPortSecurityGroup puts a group on a port and moves the port's updated_at, as upstream's
 // update_port does. The caller holds the port's row lock, so a foreign-key violation can only mean the
-// group: it is reported as ErrSecurityGroupNotFound, a group deleted after it was resolved.
+// group: it is reported as ErrSecurityGroupNotFound, a group deleted after it was resolved. A port left
+// with stateful and stateless groups is refused with ErrSecurityGroupConflict (FR-051).
 func AddPortSecurityGroup(ctx context.Context, tx database.Tx, portID, groupID string) error {
 	if err := insertPortSecurityGroup(ctx, tx, portID, groupID); err != nil {
+		return err
+	}
+	if err := requireOneStatefulness(ctx, tx, portID); err != nil {
 		return err
 	}
 	return touchPort(ctx, tx, portID)
@@ -1049,7 +1035,8 @@ func RemovePortSecurityGroup(ctx context.Context, tx database.Tx, portID, groupI
 }
 
 // SetPortSecurityGroups replaces a port's groups with groupIDs, which may be empty, and moves its
-// updated_at. The caller has checked the ids for format and repeats.
+// updated_at. The caller has checked the ids for format and repeats. A list mixing stateful and
+// stateless groups is refused with ErrSecurityGroupConflict (FR-051).
 func SetPortSecurityGroups(ctx context.Context, tx database.Tx, portID string, groupIDs []string) error {
 	if _, err := tx.Exec(ctx, "DELETE FROM port_security_groups WHERE port_id = $1", portID); err != nil {
 		return fmt.Errorf("clearing the security groups of port %s: %w", portID, err)
@@ -1058,6 +1045,9 @@ func SetPortSecurityGroups(ctx context.Context, tx database.Tx, portID string, g
 		if err := insertPortSecurityGroup(ctx, tx, portID, g); err != nil {
 			return err
 		}
+	}
+	if err := requireOneStatefulness(ctx, tx, portID); err != nil {
+		return err
 	}
 	return touchPort(ctx, tx, portID)
 }
@@ -1093,117 +1083,6 @@ func LockSubnet(ctx context.Context, tx database.Tx, subnetID string) (string, e
 	return cidr, err
 }
 
-// usedSubnetAddresses includes port addresses and the gateway, canonicalized so
-// compressed/expanded IPv6 spellings refer to the same address.
-func usedSubnetAddresses(ctx context.Context, pool subnetQuerier, subnetID string) (map[string]bool, error) {
-	used := map[string]bool{}
-	rows, err := pool.Query(ctx, `
-		SELECT fixed_ips FROM ports
-		WHERE network_id = (SELECT network_id FROM subnets WHERE id = $1)
-	`, subnetID)
-	if err != nil {
-		return nil, fmt.Errorf("reading the subnet's used addresses: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var fixedIPs common.FixedIPs
-		if err := rows.Scan(&fixedIPs); err != nil {
-			return nil, fmt.Errorf("scanning a port's fixed addresses: %w", err)
-		}
-		for _, entry := range fixedIPs {
-			if entry.SubnetID != subnetID {
-				continue
-			}
-			if addr := net.ParseIP(entry.IPAddress); addr != nil {
-				used[addr.String()] = true
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating ports in the subnet's network: %w", err)
-	}
-
-	// The gateway belongs to the subnet, not to any port.
-	var gateway sql.NullString
-	if err := pool.QueryRow(ctx,
-		"SELECT gateway_ip FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err != nil {
-		return nil, fmt.Errorf("reading the subnet's gateway: %w", err)
-	}
-	if addr := net.ParseIP(gateway.String); addr != nil {
-		used[addr.String()] = true
-	}
-	return used, nil
-}
-
-// IPAvailable reports whether no port in the subnet holds the address (and it
-// is not the subnet's gateway). Exported for Nova's os-interface path, which
-// accepts a caller-specified fixed_ip and must refuse one another port holds —
-// the explicit side of the N-4 collision rule the allocator covers for
-// generated addresses.
-func IPAvailable(ctx context.Context, pool subnetQuerier, subnetID, ip string) (bool, error) {
-	addr := net.ParseIP(ip)
-	if addr == nil {
-		return false, fmt.Errorf("invalid IP address %q", ip)
-	}
-	used, err := usedSubnetAddresses(ctx, pool, subnetID)
-	if err != nil {
-		return false, err
-	}
-	return !used[addr.String()], nil
-}
-
-// AllocateFreeIP picks a random usable address in the subnet that no port in
-// it already holds: allocateIP drew purely at random,
-// so two ports in one subnet landed on the same address at birthday-problem
-// rates — two MACs claiming one IP, dnsmasq handing it to one of them, and a
-// guest that could not reliably reach anything. The subnet's gateway (when
-// set) is excluded too: a port claiming it breaks routing for the whole
-// subnet.
-//
-// Exported and pool-taking because Nova's os-interface path allocates against
-// the same subnets and used to run its own next-free scan — two allocators
-// over one subnet is how they hand out the same address (round 2 of this
-// review).
-//
-// Writers must LockSubnet and insert the port in the same transaction.
-func AllocateFreeIP(ctx context.Context, pool subnetQuerier, subnetID, cidr string) (string, error) {
-	prefix, err := netip.ParsePrefix(cidr)
-	if err != nil {
-		return "", fmt.Errorf("invalid subnet CIDR: %w", err)
-	}
-	used, err := usedSubnetAddresses(ctx, pool, subnetID)
-	if err != nil {
-		return "", err
-	}
-
-	// Random candidates make sparse subnets cheap. Dense subnets get a complete
-	// search below, so the last free address is never missed by chance.
-	for range 100 {
-		candidate := allocateIP(cidr)
-		if candidate == "" {
-			return "", fmt.Errorf("subnet %s has no usable addresses", subnetID)
-		}
-		if !used[candidate] {
-			return candidate, nil
-		}
-	}
-	// At most len(used)+1 candidates are visited, even on a huge IPv6 range.
-	candidate := prefix.Masked().Addr()
-	if (candidate.Is4() && prefix.Bits() < 31) || (candidate.Is6() && prefix.Bits() < 128) {
-		candidate = candidate.Next()
-	}
-	for candidate.IsValid() && prefix.Contains(candidate) {
-		if candidate.Is4() && prefix.Bits() < 31 && !prefix.Contains(candidate.Next()) {
-			break // IPv4 broadcast address
-		}
-		if !used[candidate.String()] {
-			return candidate.String(), nil
-		}
-		candidate = candidate.Next()
-	}
-	return "", fmt.Errorf("%w: %s", ErrNoAvailableIP, subnetID)
-}
-
 // Security Groups implementation
 
 // CreateSecurityGroupRequest represents a security group creation request
@@ -1211,18 +1090,37 @@ type CreateSecurityGroupRequest struct {
 	SecurityGroup struct {
 		Name        string `json:"name" binding:"required"`
 		Description string `json:"description"`
+		// Absent means stateful, as upstream's default (FR-051).
+		Stateful *bool `json:"stateful"`
+		// The project the group belongs to: an administrator's to name (SPEC-033 FR-058).
+		ProjectID *string `json:"project_id"`
+		TenantID  *string `json:"tenant_id"`
 	} `json:"security_group"`
 }
 
-// CreateSecurityGroup creates a new security group
+// CreateSecurityGroup creates a security group with upstream's starting rules, in one transaction
+// (FR-043). Its name may repeat another group's, as upstream's may; only default is reserved, in any
+// case (FR-025, FR-026). It may be stateless (FR-051). Its revision starts at 0: upstream does not
+// count a new group's own starting rules (FR-050).
 func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 	var req CreateSecurityGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
+	if isDefaultName(req.SecurityGroup.Name) {
+		common.SendError(c, errDefaultAlreadyExists())
+		return
+	}
+	stateful := true
+	if req.SecurityGroup.Stateful != nil {
+		stateful = *req.SecurityGroup.Stateful
+	}
 
-	projectID := c.GetString("project_id")
+	projectID, ok := svc.ownerOf(c, req.SecurityGroup.ProjectID, req.SecurityGroup.TenantID)
+	if !ok {
+		return
+	}
 	sgID := uuid.New().String()
 
 	// Create iptables chain for security group
@@ -1234,48 +1132,32 @@ func (svc *Service) CreateSecurityGroup(c *gin.Context) {
 		}
 	}
 
-	// Neutron gives every new group the IPv4 and IPv6 default egress rules.
-	// Insert the group and its rules atomically so no successful create can
-	// return a rule-less group.
+	ctx := c.Request.Context()
 	now := time.Now()
-	err := database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
-		if _, err := tx.Exec(c.Request.Context(), `
-			INSERT INTO security_groups (id, name, project_id, description, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, sgID, req.SecurityGroup.Name, projectID, req.SecurityGroup.Description, now, now); err != nil {
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO security_groups (id, name, project_id, description, stateful, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			sgID, req.SecurityGroup.Name, projectID, req.SecurityGroup.Description, stateful, now, now); err != nil {
 			return err
 		}
-		return seedDefaultSecurityGroupRules(c.Request.Context(), tx, sgID)
+		return seedDefaultSecurityGroupRules(ctx, tx, sgID)
 	})
-
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_security_group").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create security group"))
 		return
 	}
 
-	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), svc.pool, []string{sgID})
+	g := securityGroupRow{id: sgID, name: req.SecurityGroup.Name, description: req.SecurityGroup.Description,
+		projectID: projectID, stateful: stateful, createdAt: now, updatedAt: now}
+	body, err := renderSecurityGroup(ctx, svc.pool, g)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "create_security_group_rules").Str("security_group_id", sgID).Msg("failed to read default rules")
-		common.SendError(c, common.NewInternalServerError("failed to create security group"))
+		log.Error().Err(err).Str("operation", "create_security_group").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to read the created security group"))
 		return
 	}
-	rules := rulesByGroup[sgID]
-	if rules == nil {
-		rules = []gin.H{}
-	}
-
-	c.JSON(http.StatusCreated, gin.H{
-		"security_group": gin.H{
-			"id":                   sgID,
-			"name":                 req.SecurityGroup.Name,
-			"tenant_id":            projectID,
-			"description":          req.SecurityGroup.Description,
-			"security_group_rules": rules,
-			"created_at":           now.Format(time.RFC3339),
-			"updated_at":           now.Format(time.RFC3339),
-		},
-	})
+	c.JSON(http.StatusCreated, gin.H{"security_group": body})
 }
 
 // securityGroupRulesByGroup loads the rules of the given security groups, keyed by
@@ -1342,43 +1224,33 @@ func securityGroupRulesByGroup(ctx context.Context, pool database.DB, sgIDs []st
 	return byGroup, nil
 }
 
-// securityGroupRow is one row of security_groups as the list view needs it.
-type securityGroupRow struct {
-	id, name, description string
-	createdAt, updatedAt  time.Time
-}
-
-// listSecurityGroupRows loads a project's security groups.
+// listSecurityGroupRows loads the groups filter selects (securityGroupListFilter).
 //
 // This lives in its own function so that its `defer rows.Close()` returns the pooled
 // connection when it returns — before the caller issues the rules query. Scanning
 // inline in ListSecurityGroups would hold two pool connections per in-flight request,
 // which a busy endpoint can turn into pool exhaustion rather than mere slowness.
-//
-// filter narrows the project's groups: it always carries the project, and the listing adds the
-// query's id and name filters (securityGroupListFilter).
-func listSecurityGroupRows(ctx context.Context, pool database.DB, projectID string, filter *common.SQLFilter) ([]securityGroupRow, error) {
+func listSecurityGroupRows(ctx context.Context, pool database.DB, filter *common.SQLFilter) ([]securityGroupRow, error) {
 	rows, err := pool.Query(ctx, `
-		SELECT id, name, description, created_at, updated_at
+		SELECT `+securityGroupColumns+`
 		FROM security_groups`+filter.Where()+`
 		ORDER BY created_at DESC, id DESC
 	`, filter.Args()...)
 	if err != nil {
-		return nil, fmt.Errorf("query security groups for project %s: %w", projectID, err)
+		return nil, fmt.Errorf("query security groups: %w", err)
 	}
 	defer rows.Close()
 
 	var out []securityGroupRow
 	for rows.Next() {
-		var r securityGroupRow
-		if err := rows.Scan(&r.id, &r.name, &r.description, &r.createdAt, &r.updatedAt); err != nil {
-			log.Warn().Err(err).Msg("failed to scan security group row")
-			continue
+		g, err := scanSecurityGroup(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan security group row: %w", err)
 		}
-		out = append(out, r)
+		out = append(out, g)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate security groups for project %s: %w", projectID, err)
+		return nil, fmt.Errorf("iterate security groups: %w", err)
 	}
 	return out, nil
 }
@@ -1392,9 +1264,12 @@ func listSecurityGroupRows(ctx context.Context, pool database.DB, projectID stri
 // the panel and the launch wizard's security-group step both died with
 // "'NoneType' object is not iterable".
 func (svc *Service) ListSecurityGroups(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
-	sgRows, err := listSecurityGroupRows(c.Request.Context(), svc.pool, projectID, securityGroupListFilter(c, projectID))
+	filter, refusal := securityGroupListFilter(c)
+	if refusal != nil {
+		common.SendError(c, refusal)
+		return
+	}
+	sgRows, err := listSecurityGroupRows(c.Request.Context(), svc.pool, filter)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_security_groups").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list security groups"))
@@ -1415,40 +1290,44 @@ func (svc *Service) ListSecurityGroups(c *gin.Context) {
 
 	securityGroups := []gin.H{}
 	for _, r := range sgRows {
-		groupRules := rulesByGroup[r.id]
-		if groupRules == nil {
-			groupRules = []gin.H{}
-		}
-		securityGroups = append(securityGroups, gin.H{
-			"id":                   r.id,
-			"name":                 r.name,
-			"project_id":           projectID,
-			"tenant_id":            projectID,
-			"description":          r.description,
-			"created_at":           r.createdAt.Format(time.RFC3339),
-			"updated_at":           r.updatedAt.Format(time.RFC3339),
-			"security_group_rules": groupRules,
-		})
+		securityGroups = append(securityGroups, r.render(rulesByGroup[r.id]))
 	}
 
 	c.JSON(http.StatusOK, gin.H{"security_groups": securityGroups})
 }
 
-// securityGroupListFilter scopes the listing to the caller's project and applies the query's `id`,
-// which may repeat, and `name` (SPEC-033 FR-019a, research R13). Horizon's Edit Security Groups sends
-// a repeated ?id=; Terraform's data source sends ?name= and refuses more than one result. id::text
-// keeps a malformed id from erroring the query: it matches nothing, so the answer is an empty list.
-// Other query parameters are ignored, as before.
-func securityGroupListFilter(c *gin.Context, projectID string) *common.SQLFilter {
-	f := &common.SQLFilter{}
-	f.Eq("project_id", projectID)
-	if ids := c.QueryArray("id"); len(ids) > 0 {
-		f.Cond("id::text = ANY(" + f.Arg(ids) + ")")
+// lookupSecurityGroup finds a group by id — of projectID, or for an administrator of any project
+// (SPEC-033 FR-057) — or, failing that, by name in projectID. The CLI looks a group
+// up by name (e.g. `... rule create ... default`). A name several groups share names none of them, as
+// upstream's group path answers any name with 404, so a client falls back to listing by name (FR-026).
+// The id is compared as text, so a malformed one is simply not found.
+func lookupSecurityGroup(ctx context.Context, q subnetQuerier, ref, projectID string, admin bool) (securityGroupRow, error) {
+	g, err := scanSecurityGroup(q.QueryRow(ctx,
+		"SELECT "+securityGroupColumns+" FROM security_groups WHERE id::text = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"), ref, projectID, admin))
+	if !errors.Is(err, database.ErrNoRows) {
+		return g, err
 	}
-	if name, ok := c.GetQuery("name"); ok {
-		f.Eq("name", name)
+	rows, err := q.Query(ctx,
+		"SELECT "+securityGroupColumns+" FROM security_groups WHERE name = $1 AND project_id = $2 LIMIT 2", ref, projectID)
+	if err != nil {
+		return securityGroupRow{}, err
 	}
-	return f
+	defer rows.Close()
+	var found []securityGroupRow
+	for rows.Next() {
+		g, err := scanSecurityGroup(rows)
+		if err != nil {
+			return securityGroupRow{}, err
+		}
+		found = append(found, g)
+	}
+	if err := rows.Err(); err != nil {
+		return securityGroupRow{}, err
+	}
+	if len(found) != 1 {
+		return securityGroupRow{}, database.ErrNoRows
+	}
+	return found[0], nil
 }
 
 // GetSecurityGroup returns a single security group
@@ -1456,18 +1335,7 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 	sgID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	var id, name, description string
-	var createdAt, updatedAt time.Time
-
-	// id::text resolves by UUID or name without crashing on a non-UUID
-	// identifier — the CLI looks an SG up by name (e.g. `... rule create ... default`).
-	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT id, name, description, created_at, updated_at
-		FROM security_groups
-		WHERE (id::text = $1 OR name = $1) AND project_id = $2
-		LIMIT 1
-	`, sgID, projectID).Scan(&id, &name, &description, &createdAt, &updatedAt)
-
+	g, err := lookupSecurityGroup(c.Request.Context(), svc.pool, sgID, projectID, isAdmin(c))
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group"))
 		return
@@ -1478,75 +1346,77 @@ func (svc *Service) GetSecurityGroup(c *gin.Context) {
 		return
 	}
 
-	// Fetch associated rules — keyed by the resolved UUID (id), not the
-	// possibly-by-name request param (sgID).
-	rulesByGroup, err := securityGroupRulesByGroup(c.Request.Context(), svc.pool, []string{id})
+	// Rules keyed by the resolved id, not the possibly-by-name request param.
+	body, err := renderSecurityGroup(c.Request.Context(), svc.pool, g)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_sg_rules").Str("sg_id", sgID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get security group rules"))
 		return
 	}
-	rules := rulesByGroup[id]
-	if rules == nil {
-		rules = []gin.H{}
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"security_group": gin.H{
-			"id":                   id,
-			"name":                 name,
-			"project_id":           projectID,
-			"tenant_id":            projectID,
-			"description":          description,
-			"created_at":           createdAt.Format(time.RFC3339),
-			"updated_at":           updatedAt.Format(time.RFC3339),
-			"security_group_rules": rules,
-		},
-	})
+	c.JSON(http.StatusOK, gin.H{"security_group": body})
 }
 
-// DeleteSecurityGroup deletes a security group
-//
-// A group a port carries is not deleted, as upstream: 409 SecurityGroupInUse. So deleting a group
-// never changes a port's list, and no filter needs rebuilding (SPEC-033 FR-008c, research R22). A
-// group that is not the caller's project's is 404, administrators included (register entry 5).
+// lockSecurityGroup reads a group of projectID by id with its row lock. FOR UPDATE, not the weaker
+// lock an UPDATE takes: a port's membership insert holds a key-share lock on the group through its
+// foreign key, and only FOR UPDATE waits for it, so an in-use check made under this lock cannot miss a
+// membership being written.
+func lockSecurityGroup(ctx context.Context, tx database.Tx, id, projectID string, admin bool) (securityGroupRow, error) {
+	g, err := scanSecurityGroup(tx.QueryRow(ctx,
+		"SELECT "+securityGroupColumns+" FROM security_groups WHERE id::text = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+" FOR UPDATE",
+		id, projectID, admin))
+	if errors.Is(err, database.ErrNoRows) {
+		return g, common.NewNotFoundError("security group")
+	}
+	return g, err
+}
+
+func securityGroupInUse(ctx context.Context, tx database.Tx, id string) (bool, error) {
+	var inUse bool
+	err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM port_security_groups WHERE security_group_id = $1)", id).Scan(&inUse)
+	return inUse, err
+}
+
+// DeleteSecurityGroup deletes a security group, refusing as upstream does, in upstream's order: a group
+// a port carries is in use, for everyone (FR-008c); a project's default may be deleted by an
+// administrator only (FR-024). If-Match: revision_number=<n> must name the group's revision (FR-050).
+// A group that is not the caller's project's is 404 (register entry 5).
 func (svc *Service) DeleteSecurityGroup(c *gin.Context) {
 	sgID := c.Param("id")
 	projectID := c.GetString("project_id")
 	ctx := c.Request.Context()
+	ifMatch, constrained, refusal := ifMatchRevision(c)
+	if refusal != nil {
+		common.SendError(c, refusal)
+		return
+	}
 
 	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
-		// The group's lock: on PostgreSQL a membership insert takes a key-share lock on it through
-		// the foreign key, so this delete and a concurrent add serialise.
-		var id string
-		err := tx.QueryRow(ctx,
-			"SELECT id::text FROM security_groups WHERE id::text = $1 AND project_id = $2 FOR UPDATE", sgID, projectID,
-		).Scan(&id)
-		if errors.Is(err, database.ErrNoRows) {
-			return common.NewNotFoundError("security group")
-		}
+		g, err := lockSecurityGroup(ctx, tx, sgID, projectID, isAdmin(c))
 		if err != nil {
 			return err
 		}
-		sgID = id
-		var inUse bool
-		if err := tx.QueryRow(ctx,
-			"SELECT EXISTS(SELECT 1 FROM port_security_groups WHERE security_group_id = $1)", id,
-		).Scan(&inUse); err != nil {
+		sgID = g.id
+		inUse, err := securityGroupInUse(ctx, tx, g.id)
+		if err != nil {
 			return err
 		}
 		if inUse {
-			return common.NewResourceInUseError("security group", "delete security group",
-				fmt.Sprintf("Security Group %s in use.", id))
+			return errSecurityGroupInUse("delete security group", g.id)
+		}
+		if g.name == "default" && !common.HasRole(c, common.RoleAdmin) {
+			return errCannotRemoveDefault()
+		}
+		if constrained && ifMatch != g.revision {
+			return errRevisionConstraint(ifMatch, g.revision)
 		}
 		// Its rules, and other groups' rules that name it as their remote group, go with it
 		// (the foreign keys cascade), as upstream.
-		_, err = tx.Exec(ctx, "DELETE FROM security_groups WHERE id = $1", id)
+		_, err = tx.Exec(ctx, "DELETE FROM security_groups WHERE id = $1", g.id)
 		return err
 	})
-	var refusal *common.OpenStackError
-	if errors.As(err, &refusal) {
-		common.SendError(c, refusal)
+	var osErr *common.OpenStackError
+	if errors.As(err, &osErr) {
+		common.SendError(c, osErr)
 		return
 	}
 	if err != nil {
@@ -1567,65 +1437,98 @@ func (svc *Service) DeleteSecurityGroup(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// UpdateSecurityGroup updates a security group
+// UpdateSecurityGroup changes a group's name, description and statefulness, refusing as upstream does:
+// default as the new name, in any case, before anything is looked up (FR-025); a change of
+// statefulness while a port carries the group (FR-051); a new name for default (FR-025). If-Match:
+// revision_number=<n> must name the group's revision. A change adds one to the revision; a request
+// that changes nothing writes nothing (FR-050).
 func (svc *Service) UpdateSecurityGroup(c *gin.Context) {
 	sgID := c.Param("id")
 	projectID := c.GetString("project_id")
+	ctx := c.Request.Context()
 
 	var req struct {
 		SecurityGroup struct {
 			Name        *string `json:"name"`
 			Description *string `json:"description"`
+			Stateful    *bool   `json:"stateful"`
 		} `json:"security_group"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
-
-	// Check security group exists
-	var currentName, currentDesc string
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT name, description FROM security_groups WHERE id = $1 AND project_id = $2",
-		sgID, projectID,
-	).Scan(&currentName, &currentDesc)
-
-	if errors.Is(err, database.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("security group"))
+	update := req.SecurityGroup
+	if update.Name != nil && isDefaultName(*update.Name) {
+		common.SendError(c, errDefaultAlreadyExists())
 		return
 	}
-	if err != nil {
-		log.Error().Err(err).Str("operation", "update_security_group").Str("sg_id", sgID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to update security group"))
+	ifMatch, constrained, refusal := ifMatchRevision(c)
+	if refusal != nil {
+		common.SendError(c, refusal)
 		return
 	}
 
-	// Apply updates
-	if req.SecurityGroup.Name != nil {
-		currentName = *req.SecurityGroup.Name
-	}
-	if req.SecurityGroup.Description != nil {
-		currentDesc = *req.SecurityGroup.Description
-	}
-
-	_, err = svc.pool.Exec(c.Request.Context(),
-		"UPDATE security_groups SET name = $1, description = $2 WHERE id = $3",
-		currentName, currentDesc, sgID,
-	)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "update_security_group").Str("sg_id", sgID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to update security group"))
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"security_group": gin.H{
-			"id":          sgID,
-			"name":        currentName,
-			"description": currentDesc,
-			"tenant_id":   projectID,
-		},
+	var g securityGroupRow
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		var err error
+		if g, err = lockSecurityGroup(ctx, tx, sgID, projectID, isAdmin(c)); err != nil {
+			return err
+		}
+		if update.Stateful != nil && *update.Stateful != g.stateful {
+			inUse, err := securityGroupInUse(ctx, tx, g.id)
+			if err != nil {
+				return err
+			}
+			if inUse {
+				return errSecurityGroupInUse("update security group", g.id)
+			}
+		}
+		if g.name == "default" && update.Name != nil {
+			return errCannotUpdateDefault()
+		}
+		if constrained && ifMatch != g.revision {
+			return errRevisionConstraint(ifMatch, g.revision)
+		}
+		changed := false
+		if update.Name != nil && *update.Name != g.name {
+			g.name, changed = *update.Name, true
+		}
+		if update.Description != nil && *update.Description != g.description {
+			g.description, changed = *update.Description, true
+		}
+		if update.Stateful != nil && *update.Stateful != g.stateful {
+			g.stateful, changed = *update.Stateful, true
+		}
+		if !changed {
+			return nil
+		}
+		g.updatedAt = time.Now()
+		return tx.QueryRow(ctx, `
+			UPDATE security_groups
+			   SET name = $1, description = $2, stateful = $3, updated_at = $4, revision_number = revision_number + 1
+			 WHERE id = $5
+			RETURNING revision_number`,
+			g.name, g.description, g.stateful, g.updatedAt, g.id).Scan(&g.revision)
 	})
+	var osErr *common.OpenStackError
+	if errors.As(err, &osErr) {
+		common.SendError(c, osErr)
+		return
+	}
+	if err != nil {
+		log.Error().Err(err).Str("operation", "update_security_group").Str("sg_id", sgID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to update security group"))
+		return
+	}
+
+	body, err := renderSecurityGroup(ctx, svc.pool, g)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "update_security_group").Str("sg_id", sgID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to read the updated security group"))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"security_group": body})
 }
 
 // CreateSecurityGroupRuleRequest represents a security group rule creation request
@@ -1643,7 +1546,7 @@ type CreateSecurityGroupRuleRequest struct {
 }
 
 // securityGroupOwnedByCaller reports whether a security group belongs to the caller's
-// project. It is the ownership gate for the rule handlers, which address a rule (or its
+// project — or, for an administrator, exists in any project (SPEC-033 FR-058). It is the ownership gate for the rule handlers, which address a rule (or its
 // group) by id supplied in the request and would otherwise operate on any tenant's
 // firewall state.
 //
@@ -1652,11 +1555,11 @@ type CreateSecurityGroupRuleRequest struct {
 // compared as text so a malformed id simply fails to match instead of raising
 // "invalid input syntax for type uuid" as a 500 — that includes the empty project id an
 // unscoped token carries.
-func securityGroupOwnedByCaller(ctx context.Context, pool subnetQuerier, sgID, projectID string) (bool, error) {
+func securityGroupOwnedByCaller(ctx context.Context, pool subnetQuerier, sgID, projectID string, admin bool) (bool, error) {
 	var owned bool
 	err := pool.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM security_groups WHERE id::text = $1 AND project_id::text = $2)",
-		sgID, projectID).Scan(&owned)
+		"SELECT EXISTS(SELECT 1 FROM security_groups WHERE id::text = $1 AND "+ownerOrAdmin("project_id::text", "$2", "$3")+")",
+		sgID, projectID, admin).Scan(&owned)
 	return owned, err
 }
 
@@ -1672,7 +1575,7 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 	// steps below write the caller's rule into another tenant's iptables chain and
 	// security_group_rules row without ever consulting project_id otherwise.
 	owned, err := securityGroupOwnedByCaller(c.Request.Context(), svc.pool,
-		req.SecurityGroupRule.SecurityGroupID, c.GetString("project_id"))
+		req.SecurityGroupRule.SecurityGroupID, c.GetString("project_id"), isAdmin(c))
 	if err != nil {
 		log.Error().Err(err).Str("operation", "create_sg_rule").
 			Str("sg_id", req.SecurityGroupRule.SecurityGroupID).Msg("ownership check failed")
@@ -1695,7 +1598,7 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("remote_group_id is not a valid security group id"))
 			return
 		}
-		remoteOwned, err := securityGroupOwnedByCaller(c.Request.Context(), svc.pool, *rg, c.GetString("project_id"))
+		remoteOwned, err := securityGroupOwnedByCaller(c.Request.Context(), svc.pool, *rg, c.GetString("project_id"), isAdmin(c))
 		if err != nil {
 			log.Error().Err(err).Str("operation", "create_sg_rule").
 				Str("remote_group_id", *rg).Msg("remote group check failed")
@@ -1760,13 +1663,14 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 	// and the foreign keys re-check that both still exist at the insert (SPEC-033 research R21).
 	now := time.Now()
 	sgID := req.SecurityGroupRule.SecurityGroupID
+	var revision int
 	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		groups := []string{sgID}
 		if remoteGroup != nil && *remoteGroup != "" {
 			groups = append(groups, *remoteGroup)
 		}
 		for _, g := range groups {
-			owned, err := securityGroupOwnedByCaller(c.Request.Context(), tx, g, c.GetString("project_id"))
+			owned, err := securityGroupOwnedByCaller(c.Request.Context(), tx, g, c.GetString("project_id"), isAdmin(c))
 			if err != nil {
 				return err
 			}
@@ -1781,6 +1685,11 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 			nullStringFrom(protocol), nullInt32From(portMin), nullInt32From(portMax),
 			nullStringFrom(remoteIP), nullStringFrom(remoteGroup),
 			now)
+		if err != nil {
+			return err
+		}
+		// A rule added revises its group, as upstream's (FR-050).
+		revision, err = bumpRevision(c.Request.Context(), tx, sgID)
 		return err
 	})
 	if err != nil {
@@ -1789,10 +1698,16 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 	}
 
 	// Stored. Every filter of a port carrying the group is rebuilt before the answer; when one
-	// cannot be, the rule is removed again (SPEC-033 FR-008b).
+	// cannot be, the rule is removed again, and the revision put back with it (SPEC-033 FR-008b, FR-050).
 	ctx := context.WithoutCancel(c.Request.Context())
 	if err := svc.rebuildGroupFilters(ctx, sgID); err != nil {
-		if _, uerr := svc.pool.Exec(ctx, "DELETE FROM security_group_rules WHERE id = $1", ruleID); uerr != nil {
+		if uerr := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+			tag, err := tx.Exec(ctx, "DELETE FROM security_group_rules WHERE id = $1", ruleID)
+			if err != nil || tag.RowsAffected() == 0 {
+				return err // deleted meanwhile, with its group or by another request: nothing to put back
+			}
+			return unbumpRevision(ctx, tx, sgID, revision)
+		}); uerr != nil {
 			log.Error().Err(uerr).Str("rule_id", ruleID).Msg("remove a rule the node could not apply; the reconciliation pass applies it")
 		}
 		if rerr := svc.rebuildGroupFilters(ctx, sgID); rerr != nil {
@@ -1823,14 +1738,16 @@ func (svc *Service) CreateSecurityGroupRule(c *gin.Context) {
 
 // ListSecurityGroupRules lists all security group rules
 func (svc *Service) ListSecurityGroupRules(c *gin.Context) {
-	projectID := c.GetString("project_id")
+	// A rule is its group's project's: the group's project scopes the listing, every project's for an
+	// administrator, and project_id/tenant_id narrow it (SPEC-033 FR-057).
+	f := &common.SQLFilter{}
+	projectScope(c, f, "sg.project_id", ownedBy("sg.project_id"))
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT sgr.id, sgr.security_group_id, sgr.direction, sgr.ethertype, sgr.protocol, sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id, sgr.created_at
 		FROM security_group_rules sgr
-		JOIN security_groups sg ON sg.id = sgr.security_group_id
-		WHERE sg.project_id = $1
+		JOIN security_groups sg ON sg.id = sgr.security_group_id`+f.Where()+`
 		ORDER BY sgr.created_at DESC
-	`, projectID)
+	`, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_sg_rules").Msg("database error")
@@ -1901,8 +1818,8 @@ func (svc *Service) GetSecurityGroupRule(c *gin.Context) {
 		       sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id, sgr.created_at
 		FROM security_group_rules sgr
 		JOIN security_groups sg ON sg.id = sgr.security_group_id
-		WHERE sgr.id::text = $1 AND sg.project_id::text = $2
-	`, ruleID, c.GetString("project_id")).Scan(&id, &sgID, &direction, &ethertype, &protocol, &portRangeMin, &portRangeMax,
+		WHERE sgr.id::text = $1 AND `+ownerOrAdmin("sg.project_id::text", "$2", "$3")+`
+	`, ruleID, c.GetString("project_id"), isAdmin(c)).Scan(&id, &sgID, &direction, &ethertype, &protocol, &portRangeMin, &portRangeMax,
 		&remoteIPPrefix, &remoteGroupID, &createdAt)
 
 	if errors.Is(err, database.ErrNoRows) {
@@ -1947,8 +1864,8 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 		SELECT sgr.security_group_id, sgr.direction, sgr.ethertype, sgr.protocol, sgr.port_range_min, sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id
 		FROM security_group_rules sgr
 		JOIN security_groups sg ON sg.id = sgr.security_group_id
-		WHERE sgr.id::text = $1 AND sg.project_id::text = $2
-	`, ruleID, projectID).Scan(&sgID, &direction, &etherType, &protocol, &portMin, &portMax, &remoteIP, &remoteGroup)
+		WHERE sgr.id::text = $1 AND `+ownerOrAdmin("sg.project_id::text", "$2", "$3")+`
+	`, ruleID, projectID, isAdmin(c)).Scan(&sgID, &direction, &etherType, &protocol, &portMin, &portMax, &remoteIP, &remoteGroup)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("security group rule"))
@@ -1981,14 +1898,15 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 	// The row is kept for the undo (SPEC-033 research R21). A concurrent delete surfaces as 404
 	// rather than a misleading 204.
 	var row ruleRecord
+	var revision int
 	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
 		err := tx.QueryRow(c.Request.Context(), `
 			SELECT sgr.id::text, sgr.security_group_id::text, sgr.direction, sgr.ethertype, sgr.protocol, sgr.port_range_min,
 			       sgr.port_range_max, sgr.remote_ip_prefix, sgr.remote_group_id::text, sgr.created_at
 			FROM security_group_rules sgr
 			WHERE sgr.id::text = $1
-			  AND sgr.security_group_id IN (SELECT id FROM security_groups WHERE project_id::text = $2)
-			FOR UPDATE`, ruleID, projectID,
+			  AND sgr.security_group_id IN (SELECT id FROM security_groups WHERE `+ownerOrAdmin("project_id::text", "$2", "$3")+`)
+			FOR UPDATE`, ruleID, projectID, isAdmin(c),
 		).Scan(&row.id, &row.group, &row.direction, &row.ethertype, &row.protocol, &row.portMin, &row.portMax,
 			&row.remoteIP, &row.remoteGroup, &row.created)
 		if errors.Is(err, database.ErrNoRows) {
@@ -1997,7 +1915,11 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(c.Request.Context(), "DELETE FROM security_group_rules WHERE id = $1", row.id)
+		if _, err = tx.Exec(c.Request.Context(), "DELETE FROM security_group_rules WHERE id = $1", row.id); err != nil {
+			return err
+		}
+		// A rule deleted revises its group, as upstream's (FR-050).
+		revision, err = bumpRevision(c.Request.Context(), tx, row.group)
 		return err
 	})
 	if err != nil {
@@ -2006,10 +1928,10 @@ func (svc *Service) DeleteSecurityGroupRule(c *gin.Context) {
 	}
 
 	// Stored. Every filter of a port carrying the group is rebuilt before the answer; when one
-	// cannot be, the rule is restored (SPEC-033 FR-008b).
+	// cannot be, the rule is restored, and the revision put back with it (SPEC-033 FR-008b, FR-050).
 	ctx := context.WithoutCancel(c.Request.Context())
 	if err := svc.rebuildGroupFilters(ctx, row.group); err != nil {
-		if rerr := svc.restoreRule(ctx, row); rerr != nil {
+		if rerr := svc.restoreRule(ctx, row, revision); rerr != nil {
 			log.Error().Err(rerr).Str("rule_id", row.id).Msg("restore a rule the node could not remove; the reconciliation pass applies what the records hold")
 		}
 		if rerr := svc.rebuildGroupFilters(ctx, row.group); rerr != nil {
@@ -2033,8 +1955,9 @@ type ruleRecord struct {
 
 // restoreRule re-inserts a deleted rule with every column as it was, if its group, and its remote
 // group when it names one, still exist and its id is free: a rule whose group went meanwhile would
-// have gone with it (research R21).
-func (svc *Service) restoreRule(ctx context.Context, r ruleRecord) error {
+// have gone with it (research R21). The group's revision, which the deletion bumped to bumped, is put
+// back compare-and-set with it (FR-050).
+func (svc *Service) restoreRule(ctx context.Context, r ruleRecord, bumped int) error {
 	return database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
 		var ok bool
 		if err := tx.QueryRow(ctx, `
@@ -2047,11 +1970,13 @@ func (svc *Service) restoreRule(ctx context.Context, r ruleRecord) error {
 		if !ok {
 			return nil
 		}
-		_, err := tx.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO security_group_rules (id, security_group_id, direction, ethertype, protocol, port_range_min, port_range_max, remote_ip_prefix, remote_group_id, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-			r.id, r.group, r.direction, r.ethertype, r.protocol, r.portMin, r.portMax, r.remoteIP, r.remoteGroup, r.created)
-		return err
+			r.id, r.group, r.direction, r.ethertype, r.protocol, r.portMin, r.portMax, r.remoteIP, r.remoteGroup, r.created); err != nil {
+			return err
+		}
+		return unbumpRevision(ctx, tx, r.group, bumped)
 	})
 }
 
@@ -2285,11 +2210,10 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 				return fmt.Errorf("read the groups of port %s: %w", copyGroupsFrom, err)
 			}
 		}
-		cidr, err = LockSubnet(ctx, tx, subnetID)
-		if err != nil {
+		if _, err = LockSubnet(ctx, tx, subnetID); err != nil {
 			return err
 		}
-		allocatedIP, err = AllocateFreeIP(ctx, tx, subnetID, cidr)
+		allocatedIP, err = AllocateFreeIP(ctx, tx, subnetID)
 		if errors.Is(err, ErrNoAvailableIP) {
 			return &tenantVisibleError{msg: fmt.Sprintf("failed to allocate a free IP from subnet %s", subnetID)}
 		}
@@ -2312,7 +2236,9 @@ func (svc *Service) AllocatePortForInstance(ctx context.Context, networkID, proj
 				return fmt.Errorf("associate security group %s: %w", sgID, err)
 			}
 		}
-		return nil
+		// A boot whose groups mix both kinds fails here, as upstream's port creation does; the
+		// server ends ERROR with this as its fault (FR-051).
+		return requireOneStatefulness(ctx, tx, portID)
 	}); err != nil {
 		releaseTAP("port insert failure")
 		return nil, fmt.Errorf("failed to insert port into database: %w", err)

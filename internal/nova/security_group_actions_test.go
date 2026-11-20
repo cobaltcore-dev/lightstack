@@ -224,8 +224,12 @@ func TestSecurityGroupActions_UnknownOrForeignGroup_404(t *testing.T) {
 	}
 }
 
-// Register entry 5: an administrator acting on a tenant's server resolves the group in the server's
-// project, so the tenant's group resolves by name and the administrator's own group does not.
+// Register entry 5, narrowed to names (SPEC-033 round 2, T105; FR-004, research R52): an administrator
+// acting on a tenant's server resolves a name in the server's project, so the tenant's group resolves
+// by name and the administrator's own group does not; an id names any project's group, as upstream's.
+// Server create keeps resolving an id in the server's project: upstream's boot matches the requested
+// groups against the instance's project's (nova/network/neutron.py, _process_security_groups), so
+// another project's group never reaches a booted server there either.
 func TestSecurityGroupActions_Administrator(t *testing.T) {
 	requireDB(t)
 	r, rec := newSGActionRig(t)
@@ -233,7 +237,8 @@ func TestSecurityGroupActions_Administrator(t *testing.T) {
 	tenantDefault := defaultGroup(t, tenant)
 	webName := "spec033-web-" + uuid.NewString()[:6]
 	tenantWeb := createTestGroup(t, tenant, webName)
-	adminOwn := createTestGroup(t, seededProjectID, "spec033-admin-"+uuid.NewString()[:6])
+	adminOwnName := "spec033-admin-" + uuid.NewString()[:6]
+	adminOwn := createTestGroup(t, seededProjectID, adminOwnName)
 	server, ports := serverWithPorts(t, r, rec, tenant, 1)
 	admin := testAuthHdr(seededProjectID, seededUserID)
 
@@ -242,11 +247,33 @@ func TestSecurityGroupActions_Administrator(t *testing.T) {
 	if got := groupsOf(t, ports[0]); !slices.Equal(got, ids(tenantDefault, tenantWeb)) {
 		t.Errorf("port groups: %v; want the tenant's default and web", got)
 	}
-	code, body = sgAction(t, r, admin, server, "addSecurityGroup", adminOwn)
-	wantStatus(t, "administrator adds their own group by id", code, body, http.StatusNotFound)
+	code, body = sgAction(t, r, admin, server, "addSecurityGroup", adminOwnName)
+	wantStatus(t, "administrator adds their own group by name", code, body, http.StatusNotFound)
 	if got := groupsOf(t, ports[0]); !slices.Equal(got, ids(tenantDefault, tenantWeb)) {
 		t.Errorf("port groups after the refused add: %v; want unchanged", got)
 	}
+	code, body = sgAction(t, r, admin, server, "addSecurityGroup", adminOwn)
+	wantStatus(t, "administrator adds their own group by id", code, body, http.StatusAccepted)
+	if got := groupsOf(t, ports[0]); !slices.Equal(got, ids(tenantDefault, tenantWeb, adminOwn)) {
+		t.Errorf("port groups: %v; want the tenant's default and web, and the administrator's group", got)
+	}
+	code, body = sgAction(t, r, admin, server, "removeSecurityGroup", adminOwn)
+	wantStatus(t, "administrator removes their own group by id", code, body, http.StatusAccepted)
+	if got := groupsOf(t, ports[0]); !slices.Equal(got, ids(tenantDefault, tenantWeb)) {
+		t.Errorf("port groups after the remove: %v; want the tenant's default and web", got)
+	}
+
+	t.Run("server create resolves an id in the server's project", func(t *testing.T) {
+		before := countServers(t, seededProjectID)
+		code, body := doReq(r, http.MethodPost, "/v2.1/servers", withImage(t, seededProjectID,
+			`{"server":{"name":"spec033-admin-foreign","flavorRef":"m1.small","security_groups":[{"name":"`+tenantWeb+`"}]}}`), admin)
+		if want := "Security group " + tenantWeb + " not found."; code != http.StatusBadRequest || !strings.Contains(body, want) {
+			t.Errorf("administrator creates a server with another project's group by id: code=%d body=%s; want 400 %q", code, body, want)
+		}
+		if after := countServers(t, seededProjectID); after != before {
+			t.Errorf("a refused create left %d server(s)", after-before)
+		}
+	})
 }
 
 func TestSecurityGroupActions_ServerWithoutPorts_404(t *testing.T) {

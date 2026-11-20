@@ -17,7 +17,8 @@
 //   - SELECT, INSERT, UPDATE and DELETE; joins and subqueries; EXISTS; IN with a literal
 //     list; CASE; GROUP BY, HAVING, ORDER BY, LIMIT and OFFSET; RETURNING; UPDATE … FROM;
 //     WITH and WITH RECURSIVE; ON CONFLICT (cols) DO NOTHING or DO UPDATE SET … =
-//     excluded.…; ROW_NUMBER() OVER (PARTITION BY … ORDER BY …); IS [NOT] DISTINCT FROM;
+//     excluded.…, with WHERE … after (cols) to name a partial unique index;
+//     ROW_NUMBER() OVER (PARTITION BY … ORDER BY …); IS [NOT] DISTINCT FROM;
 //     TRUE and FALSE;
 //   - the functions count, sum, min, max, avg (with DISTINCT and FILTER (WHERE …)),
 //     coalesce, nullif, lower, upper, length, abs, round, replace, now, gen_random_uuid,

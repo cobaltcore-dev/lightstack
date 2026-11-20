@@ -36,7 +36,8 @@ func TestRouterAttachmentRollbackAndExhaustion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM routers WHERE id=$1", routerID) })
-	if _, err := testPool.Exec(ctx, "UPDATE subnets SET cidr='10.99.0.5/32', gateway_ip=NULL WHERE id=$1", subnetID); err != nil {
+	// The subnet's one address is its gateway, and a port holds it.
+	if _, err := testPool.Exec(ctx, "UPDATE subnets SET cidr='10.99.0.5/32', gateway_ip='10.99.0.5' WHERE id=$1", subnetID); err != nil {
 		t.Fatal(err)
 	}
 	fixed := fmt.Sprintf(`[{"subnet_id":"%s","ip_address":"10.99.0.5"}]`, subnetID)
@@ -48,7 +49,7 @@ func TestRouterAttachmentRollbackAndExhaustion(t *testing.T) {
 	path := "/v2.0/routers/" + routerID + "/add_router_interface"
 	body := fmt.Sprintf(`{"subnet_id":"%s"}`, subnetID)
 	if code, resp := doReqBody(r, http.MethodPut, path, body, hdr); code != 409 {
-		t.Fatalf("exhausted subnet: %d %s", code, resp)
+		t.Fatalf("subnet whose gateway a port holds: %d %s", code, resp)
 	}
 	body = fmt.Sprintf(`{"port_id":"%s","subnet_id":"%s"}`, portID, subnetID)
 	if code, resp := doReqBody(r, http.MethodPut, path, body, hdr); code != 400 {

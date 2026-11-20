@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/openstack/identity/v3/projects"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
 	"github.com/stretchr/testify/assert"
@@ -116,6 +119,37 @@ func TestNovaAddSecurityGroupByID_Contract(t *testing.T) {
 		assert.Contains(t, p.SecurityGroups, sgID, "port %s does not carry the added group", p.ID)
 	}
 	assert.Contains(t, reportedGroups(t, server), sgName)
+}
+
+// TestNovaAddSecurityGroupOfAnotherProject_Contract (SPEC-033 round 2, T105; FR-004, research R52): the
+// administrator adds another project's group by id, as upstream's; by name it is not found, since a
+// name resolves in the server's project (register entry 5).
+func TestNovaAddSecurityGroupOfAnotherProject_Contract(t *testing.T) {
+	skipIfLightstackNotRunning(t)
+	token := issueToken(t)
+	identity, err := openstack.NewIdentityV3(contract.SetupOpenStackClient(t), gophercloud.EndpointOpts{})
+	require.NoError(t, err)
+	project, err := projects.Create(identity, projects.CreateOpts{
+		Name: "spec033-sg-owner-" + uuid.NewString()[:8], DomainID: "default",
+	}).Extract()
+	require.NoError(t, err, "creating the group's project")
+	t.Cleanup(func() { _ = projects.Delete(identity, project.ID).ExtractErr() })
+	netClient := contract.SetupNeutronClient(t)
+	name := "contract-sg-foreign-" + uuid.NewString()[:8]
+	sg, err := groups.Create(netClient, groups.CreateOpts{Name: name, ProjectID: project.ID}).Extract()
+	require.NoError(t, err, "creating the other project's group")
+	t.Cleanup(func() { _ = groups.Delete(netClient, sg.ID).ExtractErr() })
+	server := serverOnNetwork(t, token, "spec033-sg-foreign", "10.244.104.0/24")
+
+	code, body := postAction(t, token, server, sgActionBody("addSecurityGroup", name))
+	assert.Equal(t, http.StatusNotFound, code, "by name: %s", body)
+	code, body = postAction(t, token, server, sgActionBody("addSecurityGroup", sg.ID))
+	require.Equal(t, http.StatusAccepted, code, "by id: %s", body)
+	for _, p := range serverPorts(t, server) {
+		assert.Contains(t, p.SecurityGroups, sg.ID, "port %s does not carry the other project's group", p.ID)
+	}
+	code, body = postAction(t, token, server, sgActionBody("removeSecurityGroup", sg.ID))
+	require.Equal(t, http.StatusAccepted, code, "remove by id: %s", body)
 }
 
 // TestNovaAddSecurityGroupDuplicate_Contract: adding a group a port already carries answers 400.

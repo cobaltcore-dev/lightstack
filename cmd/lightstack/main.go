@@ -77,6 +77,10 @@ func main() {
 	if err := checkDatabaseConfig(cfg, true); err != nil {
 		log.Fatalf("%v", err)
 	}
+	// With VXLAN on, one named node holds every router and DHCP namespace (SPEC-033 FR-033).
+	if err := cfg.Neutron.CheckNetworkNode(); err != nil {
+		log.Fatalf("%v", err)
+	}
 	// The name this node reserves block-storage rows under while it creates them (FR-033).
 	nodeName, err := common.NodeName()
 	if err != nil {

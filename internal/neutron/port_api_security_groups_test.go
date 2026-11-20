@@ -132,8 +132,6 @@ func TestUpdatePortSecurityGroups(t *testing.T) {
 			{"repeated", port, sgBody(quoted(web, web)), hdr, http.StatusBadRequest, "Duplicate items in the list"},
 			{"a missing port", uuid.NewString(), sgBody(quoted(web)), hdr, http.StatusNotFound, "PortNotFound"},
 			{"another project's group", port, sgBody(quoted(foreign)), hdr, http.StatusNotFound, "SecurityGroupNotFound"},
-			{"another project's group, as an administrator", port, sgBody(quoted(foreign)),
-				map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}, http.StatusNotFound, "SecurityGroupNotFound"},
 		} {
 			code, body := putPort(t, r, tc.hdr, tc.port, tc.body)
 			if code != tc.code || !strings.Contains(body, tc.says) {
@@ -145,6 +143,22 @@ func TestUpdatePortSecurityGroups(t *testing.T) {
 		}
 		if at := sgTestUpdatedAt(t, port); at.After(spec033Epoch) {
 			t.Errorf("updated_at moved: %v", at)
+		}
+	})
+
+	// SPEC-033 round 2, T105 (FR-018; research R52): an administrator's id names any project's group,
+	// as upstream's (neutron/db/securitygroups_db.py, _get_security_groups_on_port: context.is_admin).
+	t.Run("an administrator names another project's group by id", func(t *testing.T) {
+		r, _, _ := newPortAPIRig(t)
+		port := sgTestPort(t)
+		other := createTestProject(t, "spec033-other")
+		foreign := sgTestGroup(t, other, "spec033-foreign-"+uuid.NewString()[:6])
+		admin := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}
+		if code, body := putPort(t, r, admin, port, sgBody(quoted(foreign))); code != http.StatusOK {
+			t.Fatalf("PUT another project's group as an administrator: code=%d body=%s; want 200", code, body)
+		}
+		if got := sgTestGroupsOf(t, port); !equalIDs(got, []string{foreign}) {
+			t.Errorf("groups: %v; want [foreign]", got)
 		}
 	})
 }
@@ -318,5 +332,16 @@ func TestCreatePortSecurityGroups(t *testing.T) {
 	}
 	if after != before {
 		t.Errorf("ports on the network: %d after the refusals, %d before; want none created", after, before)
+	}
+
+	// SPEC-033 round 2, T105 (FR-018; research R52): an administrator's id names any project's group.
+	admin := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}
+	code, body := doJSONReq(r, http.MethodPost, "/v2.0/ports",
+		`{"port":{"network_id":"`+netID+`","security_groups":`+quoted(foreign)+`}}`, admin)
+	if code != http.StatusCreated {
+		t.Fatalf("an administrator creating a port with another project's group: code=%d body=%s; want 201", code, body)
+	}
+	if got := sgTestGroupsOf(t, portID(t, body)); !equalIDs(got, []string{foreign}) {
+		t.Errorf("groups: %v; want [foreign]", got)
 	}
 }

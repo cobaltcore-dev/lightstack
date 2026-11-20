@@ -44,18 +44,24 @@ func newFIPFixture(t *testing.T) *fipFixture {
 	fx.external = seedExternalNetwork(t, "spec033-ext-"+short, seededProjectID, false, true)
 	seedSubnet(t, fx.external, "spec033-ext-subnet-"+short, fmt.Sprintf("198.19.%d.0/24", rand.IntN(256)), nil, 4, false)
 	fx.network = seedNetwork(t, "spec033-fip-net-"+short)
-	fx.subnet = seedSubnet(t, fx.network, "spec033-fip-subnet-"+short, "10.36.0.0/16", nil, 4, true)
+	gateway := "10.36.0.1" // a floating IP needs a router holding its subnet's gateway (FR-028)
+	fx.subnet = seedSubnet(t, fx.network, "spec033-fip-subnet-"+short, "10.36.0.0/16", &gateway, 4, true)
 	fx.router = seedRouterOn(t, fx.network, fx.subnet, fx.external)
 	fx.portX, fx.fixedX = seedPortWithIP(t, fx.network, fx.subnet)
 	fx.portY, fx.fixedY = seedPortWithIP(t, fx.network, fx.subnet)
 	return fx
 }
 
-// seedRouterOn creates a router with a gateway on external and an interface on the network.
+// seedRouterOn creates a router with a gateway on external — its gateway port — and an interface on the
+// subnet holding the subnet's gateway, as the router API writes them (SPEC-033 FR-028, FR-038).
 func seedRouterOn(t *testing.T, networkID, subnetID, external string) string {
 	t.Helper()
 	ctx := context.Background()
 	routerID, portID := uuid.NewString(), uuid.NewString()
+	var gateway string
+	if err := testPool.QueryRow(ctx, "SELECT COALESCE(gateway_ip, '') FROM subnets WHERE id = $1", subnetID).Scan(&gateway); err != nil {
+		t.Fatalf("read the subnet's gateway: %v", err)
+	}
 	for _, q := range []struct {
 		sql  string
 		args []any
@@ -63,8 +69,11 @@ func seedRouterOn(t *testing.T, networkID, subnetID, external string) string {
 		{`INSERT INTO routers (id, name, project_id, external_gateway_info) VALUES ($1, $2, $3, $4)`,
 			[]any{routerID, "spec033-router-" + routerID[:8], seededProjectID, `{"network_id":"` + external + `"}`}},
 		{`INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, fixed_ips)
-		  VALUES ($1, 'spec033-rif', $2, $3, $4, 'network:router_interface', 'fa:16:3e:33:36:01', '[]'::jsonb)`,
-			[]any{portID, networkID, seededProjectID, routerID}},
+		  VALUES ($1, '', $2, NULL, $3, 'network:router_gateway', 'fa:16:3e:33:36:00', '[]'::jsonb)`,
+			[]any{uuid.NewString(), external, routerID}},
+		{`INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, fixed_ips)
+		  VALUES ($1, 'spec033-rif', $2, $3, $4, 'network:router_interface', 'fa:16:3e:33:36:01', $5::jsonb)`,
+			[]any{portID, networkID, seededProjectID, routerID, `[{"subnet_id":"` + subnetID + `","ip_address":"` + gateway + `"}]`}},
 		{`INSERT INTO router_interfaces (router_id, port_id, subnet_id) VALUES ($1, $2, $3)`,
 			[]any{routerID, portID, subnetID}},
 	} {
@@ -73,7 +82,8 @@ func seedRouterOn(t *testing.T, networkID, subnetID, external string) string {
 		}
 	}
 	t.Cleanup(func() {
-		testPool.Exec(context.Background(), "DELETE FROM routers WHERE id = $1", routerID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(context.Background(), "DELETE FROM ports WHERE device_id = $1", routerID) //nolint:errcheck // best-effort cleanup
+		testPool.Exec(context.Background(), "DELETE FROM routers WHERE id = $1", routerID)      //nolint:errcheck // best-effort cleanup
 	})
 	return routerID
 }
@@ -130,7 +140,13 @@ func readFIP(t *testing.T, id string) (fipRow, bool) {
 
 func (fx *fipFixture) create(t *testing.T, portID string) (string, string) {
 	t.Helper()
-	body := `{"floatingip":{"floating_network_id":"` + fx.external + `"`
+	return fx.createOn(t, fx.external, portID)
+}
+
+// createOn creates a floating IP on an external network, associated with portID when it is not "".
+func (fx *fipFixture) createOn(t *testing.T, external, portID string) (string, string) {
+	t.Helper()
+	body := `{"floatingip":{"floating_network_id":"` + external + `"`
 	if portID != "" {
 		body += `,"port_id":"` + portID + `"`
 	}
@@ -223,7 +239,12 @@ func TestFloatingIPDataplane_Lifecycle(t *testing.T) {
 			fx := newFIPFixture(t)
 			id, _ := fx.create(t, fx.portX)
 			if keep == "a second floating IP" {
-				fx.create(t, fx.portX)
+				// One floating IP per fixed IP per external network (SPEC-033 FR-029): the second is
+				// another network's, through a second router joining the subnet to it.
+				other := seedExternalNetwork(t, "spec033-ext2-"+uuid.NewString()[:8], seededProjectID, false, true)
+				seedSubnet(t, other, "spec033-ext2-subnet", fmt.Sprintf("198.20.%d.0/24", rand.IntN(256)), nil, 4, false)
+				seedRouterOn(t, fx.network, fx.subnet, other)
+				fx.createOn(t, other, fx.portX)
 			} else {
 				fx.fake.seedNAT("198.18.250.1", fx.fixedX, false)
 			}

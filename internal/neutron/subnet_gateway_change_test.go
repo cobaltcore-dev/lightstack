@@ -28,6 +28,9 @@ func TestSubnetGatewayIsValidated(t *testing.T) {
 	gw := "10.93.0.1"
 	updated := seedNetwork(t, "spec024-gw-update-"+uuid.NewString()[:8])
 	subnetID := seedSubnet(t, updated, "spec024-gw-update", "10.93.0.0/24", &gw, 4, false)
+	// Pools that leave room for the new gateway: a gateway may not move into the subnet's pools, as
+	// upstream's may not (SPEC-033 FR-030).
+	storeTestPools(t, subnetID, [2]string{"10.93.0.2", "10.93.0.100"})
 	created := seedNetwork(t, "spec024-gw-create-"+uuid.NewString()[:8])
 	createBody := func(gateway string) string {
 		return fmt.Sprintf(`{"subnet":{"network_id":%q,"cidr":"10.93.0.0/24","ip_version":4,"gateway_ip":%q}}`, created, gateway)
@@ -56,20 +59,23 @@ func TestSubnetGatewayIsValidated(t *testing.T) {
 		})
 	}
 
-	t.Run("a valid explicit gateway is accepted on create", func(t *testing.T) {
+	t.Run("a valid explicit gateway is accepted", func(t *testing.T) {
 		if code, subnet := createSubnet(t, r, hdr, createBody("10.93.0.254")); code != http.StatusCreated {
 			t.Errorf("create: code=%d body=%v, want 201", code, subnet)
 		}
-		if code, raw := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.93.0.1"}}`, hdr); code != http.StatusOK {
-			t.Errorf("update: code=%d body=%s, want 200", code, raw)
-		}
-		if got := storedGateway(t, subnetID); got == nil || *got != gw {
-			t.Errorf("stored gateway = %s, want %s", derefOr(got, "null"), gw)
+		// Out of the pools, and back.
+		for _, moved := range []string{"10.93.0.200", gw} {
+			if code, raw := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, fmt.Sprintf(`{"subnet":{"gateway_ip":%q}}`, moved), hdr); code != http.StatusOK {
+				t.Errorf("update to %s: code=%d body=%s, want 200", moved, code, raw)
+			}
+			if got := storedGateway(t, subnetID); got == nil || *got != moved {
+				t.Errorf("stored gateway = %s, want %s", derefOr(got, "null"), moved)
+			}
 		}
 	})
 
-	t.Run("update into the existing allocation pool is refused", func(t *testing.T) {
-		code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.93.0.200"}}`, hdr)
+	t.Run("update into the allocation pool is refused", func(t *testing.T) {
+		code, body := doReqBody(r, http.MethodPut, "/v2.0/subnets/"+subnetID, `{"subnet":{"gateway_ip":"10.93.0.50"}}`, hdr)
 		if code != http.StatusConflict {
 			t.Fatalf("code=%d body=%s, want 409", code, body)
 		}
@@ -103,6 +109,7 @@ func TestSubnetGatewayHeldByARouterIsNotChanged(t *testing.T) {
 	gw := "fd00:92::1"
 	netID := seedNetwork(t, "spec024-gw-router-"+uuid.NewString()[:8])
 	subnetID := seedSubnet(t, netID, "spec024-gw-router", "fd00:92::/64", &gw, 6, false)
+	storeTestPools(t, subnetID, [2]string{"fd00:92::2", "fd00:92::100"}) // room for the new gateway (FR-030)
 
 	routerID := uuid.NewString()
 	mustExec(t, `INSERT INTO routers (id, name, project_id) VALUES ($1, 'spec024-gw-router', $2)`, routerID, seededProjectID)
@@ -150,6 +157,7 @@ func TestSubnetGatewayIsMatchedWholeAgainstRouterPorts(t *testing.T) {
 	gw := "fd00:93::1"
 	netID := seedNetwork(t, "spec028-gw-prefix-"+uuid.NewString()[:8])
 	subnetID := seedSubnet(t, netID, "spec028-gw-prefix", "fd00:93::/64", &gw, 6, false)
+	storeTestPools(t, subnetID, [2]string{"fd00:93::2", "fd00:93::100"}) // room for the new gateway (FR-030)
 	routerID := uuid.NewString()
 	mustExec(t, `INSERT INTO routers (id, name, project_id) VALUES ($1, 'spec028-gw-prefix', $2)`, routerID, seededProjectID)
 	cleanupRows(t, "routers", routerID)

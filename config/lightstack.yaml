@@ -104,6 +104,11 @@ neutron:
   vni_range_end: 10000
   coordination_poll_interval: 1s
   vxlan_mtu: 1450
+  # The one node that holds every router and DHCP namespace and carries north-south
+  # traffic, named by its node name (LIGHTSTACK_NODE_NAME, else its host name). Required
+  # with vxlan_enabled: true; ignored without VXLAN, where a node is its own network node.
+  # Overridden by LIGHTSTACK_NEUTRON_NETWORK_NODE.
+  # network_node: node-a
 
   # Real-mode network-state reconciler (WS-2): resync interval for rebuilding
   # DHCP/namespaces/bridges/security-group rules from the database on startup

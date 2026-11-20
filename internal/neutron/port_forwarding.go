@@ -54,7 +54,9 @@ type PortForwarding struct {
 	UpdatedAt         time.Time
 }
 
-// ListPortForwardings handles GET /v2.0/floatingips/:id/port_forwardings
+// ListPortForwardings handles GET /v2.0/floatingips/:id/port_forwardings: the forwardings of a
+// floating IP of the caller's project, of any project's for an administrator, narrowed by
+// project_id/tenant_id (SPEC-033 FR-057).
 func (svc *Service) ListPortForwardings(c *gin.Context) {
 	floatingIPID := c.Param("id")
 	projectID := c.GetString("project_id")
@@ -62,8 +64,8 @@ func (svc *Service) ListPortForwardings(c *gin.Context) {
 	// Verify floating IP exists and belongs to project
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM floating_ips WHERE id = $1 AND project_id = $2)",
-		floatingIPID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM floating_ips WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		floatingIPID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -72,14 +74,16 @@ func (svc *Service) ListPortForwardings(c *gin.Context) {
 	}
 
 	// List port forwardings
+	f := &common.SQLFilter{}
+	f.Eq("floatingip_id", floatingIPID)
+	projectScope(c, f, "project_id", ownedBy("project_id"))
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, project_id, floatingip_id, internal_port_id, internal_ip_address,
 		       external_port, internal_port, protocol, status, description,
 		       created_at, updated_at
-		FROM port_forwardings
-		WHERE floatingip_id = $1 AND project_id = $2
+		FROM port_forwardings`+f.Where()+`
 		ORDER BY external_port ASC
-	`, floatingIPID, projectID)
+	`, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_port_forwardings").Msg("failed to query port forwardings")
@@ -155,13 +159,16 @@ func (svc *Service) CreatePortForwarding(c *gin.Context) {
 		return
 	}
 
-	// Fetch floating IP details (for NAT configuration)
+	// Fetch floating IP details (for NAT configuration). An administrator reaches any project's; the
+	// forwarding belongs to the floating IP's project, whose owner lists and changes it (SPEC-033
+	// FR-058).
 	var floatingIP, routerID sql.NullString
+	var owner string
 	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT floating_ip_address, router_id
+		SELECT floating_ip_address, router_id, project_id::text
 		FROM floating_ips
-		WHERE id = $1 AND project_id = $2
-	`, floatingIPID, projectID).Scan(&floatingIP, &routerID)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, floatingIPID, projectID, isAdmin(c)).Scan(&floatingIP, &routerID, &owner)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("floating IP"))
@@ -204,7 +211,7 @@ func (svc *Service) CreatePortForwarding(c *gin.Context) {
 			internal_ip_address, external_port, internal_port, protocol, status, description,
 			created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, pfID, projectID, floatingIPID, req.PortForwarding.InternalPortID,
+	`, pfID, owner, floatingIPID, req.PortForwarding.InternalPortID,
 		req.PortForwarding.InternalIPAddress, req.PortForwarding.ExternalPort,
 		req.PortForwarding.InternalPort, protocol, "ACTIVE",
 		req.PortForwarding.Description, now, now)
@@ -260,8 +267,8 @@ func (svc *Service) GetPortForwarding(c *gin.Context) {
 		       external_port, internal_port, protocol, status, description,
 		       created_at, updated_at
 		FROM port_forwardings
-		WHERE id = $1 AND floatingip_id = $2 AND project_id = $3
-	`, pfID, floatingIPID, projectID).Scan(&pf.ID, &pf.ProjectID, &pf.FloatingIPID,
+		WHERE id = $1 AND floatingip_id = $2 AND `+ownerOrAdmin("project_id", "$3", "$4")+`
+	`, pfID, floatingIPID, projectID, isAdmin(c)).Scan(&pf.ID, &pf.ProjectID, &pf.FloatingIPID,
 		&pf.InternalPortID, &pf.InternalIPAddress, &pf.ExternalPort, &pf.InternalPort,
 		&pf.Protocol, &pf.Status, &pf.Description, &pf.CreatedAt, &pf.UpdatedAt)
 
@@ -313,8 +320,8 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 		       pf.internal_port, pf.protocol, fi.floating_ip_address, fi.router_id
 		FROM port_forwardings pf
 		JOIN floating_ips fi ON pf.floatingip_id = fi.id
-		WHERE pf.id = $1 AND pf.floatingip_id = $2 AND pf.project_id = $3
-	`, pfID, floatingIPID, projectID).Scan(&currentPF.ID, &currentPF.InternalPortID,
+		WHERE pf.id = $1 AND pf.floatingip_id = $2 AND `+ownerOrAdmin("pf.project_id", "$3", "$4")+`
+	`, pfID, floatingIPID, projectID, isAdmin(c)).Scan(&currentPF.ID, &currentPF.InternalPortID,
 		&currentPF.InternalIPAddress, &currentPF.ExternalPort, &currentPF.InternalPort,
 		&currentPF.Protocol, &floatingIP, &routerID)
 
@@ -398,7 +405,7 @@ func (svc *Service) UpdatePortForwarding(c *gin.Context) {
 	query := "UPDATE port_forwardings SET " + u.Assignments() +
 		" WHERE id = " + u.Arg(pfID) +
 		" AND floatingip_id = " + u.Arg(floatingIPID) +
-		" AND project_id = " + u.Arg(projectID)
+		" AND " + ownerOrAdmin("project_id", u.Arg(projectID), u.Arg(isAdmin(c)))
 
 	_, err = svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 	if err != nil {
@@ -427,8 +434,8 @@ func (svc *Service) DeletePortForwarding(c *gin.Context) {
 		       fi.floating_ip_address, fi.router_id
 		FROM port_forwardings pf
 		JOIN floating_ips fi ON pf.floatingip_id = fi.id
-		WHERE pf.id = $1 AND pf.floatingip_id = $2 AND pf.project_id = $3
-	`, pfID, floatingIPID, projectID).Scan(&externalPort, &internalPort, &protocol,
+		WHERE pf.id = $1 AND pf.floatingip_id = $2 AND `+ownerOrAdmin("pf.project_id", "$3", "$4")+`
+	`, pfID, floatingIPID, projectID, isAdmin(c)).Scan(&externalPort, &internalPort, &protocol,
 		&internalIP, &floatingIP, &routerID)
 
 	if errors.Is(err, database.ErrNoRows) {
@@ -459,8 +466,8 @@ func (svc *Service) DeletePortForwarding(c *gin.Context) {
 
 	// Delete from database
 	_, err = svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM port_forwardings WHERE id = $1 AND floatingip_id = $2 AND project_id = $3",
-		pfID, floatingIPID, projectID,
+		"DELETE FROM port_forwardings WHERE id = $1 AND floatingip_id = $2 AND "+ownerOrAdmin("project_id", "$3", "$4"),
+		pfID, floatingIPID, projectID, isAdmin(c),
 	)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_port_forwarding").Msg("failed to delete port forwarding")

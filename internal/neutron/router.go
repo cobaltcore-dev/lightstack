@@ -58,6 +58,9 @@ type CreateRouterRequest struct {
 		ExternalGatewayInfo map[string]any `json:"external_gateway_info"`
 		Distributed         *bool          `json:"distributed"`
 		HA                  *bool          `json:"ha"`
+		// The project the router belongs to: an administrator's to name (SPEC-033 FR-058).
+		ProjectID *string `json:"project_id"`
+		TenantID  *string `json:"tenant_id"`
 	} `json:"router"`
 }
 
@@ -72,7 +75,8 @@ type UpdateRouterRequest struct {
 	} `json:"router"`
 }
 
-// ListRouters lists all routers for the project
+// ListRouters lists the caller's project's routers, every project's for an administrator, narrowed
+// by project_id/tenant_id (SPEC-033 FR-057).
 func (svc *Service) ListRouters(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
@@ -93,22 +97,7 @@ func (svc *Service) ListRouters(c *gin.Context) {
 	}
 
 	f := &common.SQLFilter{}
-	// The caller's project — unless an administrator filters by tenant:
-	// upstream honours the filter for admin tokens, and it was silently
-	// ignored before, so `router list --project X` presented the admin's
-	// routers as project X's (SPEC-031; mirrors buildNetworkListFilter's
-	// tenant bypass). ::text so a non-UUID value narrows to nothing instead
-	// of failing the cast.
-	routerTenant := c.Query("tenant_id")
-	if routerTenant == "" {
-		routerTenant = c.Query("project_id")
-	}
-	routerAdminBypass := routerTenant != "" && common.HasRole(c, common.RoleAdmin)
-	if routerAdminBypass {
-		f.Eq("project_id::text", routerTenant)
-	} else {
-		f.Eq("project_id", projectID)
-	}
+	projectScope(c, f, "project_id", ownedBy("project_id"))
 
 	// Marker paging over a TOTAL order. created_at alone is not unique, so the order was undefined
 	// among ties AND `created_at < $n` excluded every row sharing the marker's timestamp rather than
@@ -119,14 +108,10 @@ func (svc *Service) ListRouters(c *gin.Context) {
 	if marker := c.Query("marker"); marker != "" {
 		var markerCreatedAt time.Time
 		var markerID string
-		markerQuery := "SELECT created_at, id FROM routers WHERE id = $1"
-		markerArgs := []any{marker}
-		if !routerAdminBypass {
-			markerQuery += " AND project_id = $2"
-			markerArgs = append(markerArgs, projectID)
-		}
-		err := svc.pool.QueryRow(c.Request.Context(), markerQuery, markerArgs...).
-			Scan(&markerCreatedAt, &markerID)
+		err := svc.pool.QueryRow(c.Request.Context(),
+			"SELECT created_at, id FROM routers WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+			marker, projectID, isAdmin(c),
+		).Scan(&markerCreatedAt, &markerID)
 		if err == nil {
 			f.Cond(fmt.Sprintf("(created_at, id) < (%s, %s)", f.Arg(markerCreatedAt), f.Arg(markerID)))
 		}
@@ -148,7 +133,7 @@ func (svc *Service) ListRouters(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var routers []gin.H
+	var found []Router
 	for rows.Next() {
 		var r Router
 		var gatewayInfo sql.NullString
@@ -157,41 +142,98 @@ func (svc *Service) ListRouters(c *gin.Context) {
 			&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			continue
 		}
-
-		// Parse external gateway info. A malformed value leaves
-		// ExternalGatewayInfo nil — the API response then omits it,
-		// which is the right behavior for a corrupt row.
-		if gatewayInfo.Valid {
-			if err := json.Unmarshal([]byte(gatewayInfo.String), &r.ExternalGatewayInfo); err != nil {
-				log.Warn().Err(err).Str("router_id", r.ID).Msg("failed to unmarshal external_gateway_info; treating as unset")
-			}
-		}
-
-		routers = append(routers, gin.H{
-			"id":                    r.ID,
-			"name":                  r.Name,
-			"tenant_id":             r.ProjectID,
-			"project_id":            r.ProjectID,
-			"admin_state_up":        r.AdminStateUp,
-			"status":                r.Status,
-			"external_gateway_info": r.ExternalGatewayInfo,
-			"distributed":           r.Distributed,
-			"ha":                    r.HA,
-			"created_at":            r.CreatedAt.Format(time.RFC3339),
-			"updated_at":            r.UpdatedAt.Format(time.RFC3339),
-		})
+		r.ExternalGatewayInfo = parseStoredGateway(r.ID, gatewayInfo)
+		found = append(found, r)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error")
 		common.SendError(c, common.NewInternalServerError("failed to read results"))
 		return
 	}
 
-	if routers == nil {
-		routers = []gin.H{}
+	// The gateway ports, read after the rows are closed, in one query (SPEC-033 FR-038).
+	ids := make([]string, 0, len(found))
+	for _, r := range found {
+		ids = append(ids, r.ID)
+	}
+	ports, err := gatewayPortsOf(c.Request.Context(), svc.pool, ids)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "list_routers").Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to list routers"))
+		return
+	}
+	routers := []gin.H{}
+	for _, r := range found {
+		var port *gatewayPort
+		if p, ok := ports[r.ID]; ok {
+			port = &p
+		}
+		routers = append(routers, renderRouter(r, port))
 	}
 
 	c.JSON(http.StatusOK, gin.H{"routers": routers})
+}
+
+// parseStoredGateway reads routers.external_gateway_info. A malformed value is treated as unset — the
+// response then reports no gateway, the right behaviour for a corrupt row.
+func parseStoredGateway(routerID string, raw sql.NullString) map[string]any {
+	if !raw.Valid {
+		return nil
+	}
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(raw.String), &stored); err != nil {
+		log.Warn().Err(err).Str("router_id", routerID).Msg("failed to unmarshal external_gateway_info; treating as unset")
+		return nil
+	}
+	return stored
+}
+
+// renderRouter is a router as upstream reports it, its gateway's addresses read from its port.
+func renderRouter(r Router, port *gatewayPort) gin.H {
+	gateway := renderGatewayInfo(r.ExternalGatewayInfo, port)
+	return gin.H{
+		"id":                    r.ID,
+		"name":                  r.Name,
+		"tenant_id":             r.ProjectID,
+		"project_id":            r.ProjectID,
+		"admin_state_up":        r.AdminStateUp,
+		"status":                r.Status,
+		"external_gateway_info": gateway,
+		"distributed":           r.Distributed,
+		"ha":                    r.HA,
+		"created_at":            r.CreatedAt.Format(time.RFC3339),
+		"updated_at":            r.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+// readRouterView reads a router by id or name, with its gateway port, for a response: by id a router
+// of projectID, or of any project for an administrator (SPEC-033 FR-057); by name one of projectID.
+func (svc *Service) readRouterView(ctx context.Context, routerID, projectID string, admin bool) (gin.H, error) {
+	var r Router
+	var gatewayInfo sql.NullString
+	// id::text comparison resolves by UUID or name without crashing on a non-UUID identifier — the CLI
+	// looks a router up by name this way (consistent with GetNetwork/GetSubnet).
+	if err := svc.pool.QueryRow(ctx, `
+		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
+		       distributed, ha, created_at, updated_at
+		FROM routers
+		WHERE ((id::text = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`) OR (name = $1 AND project_id = $2))
+		LIMIT 1
+	`, routerID, projectID, admin).Scan(&r.ID, &r.Name, &r.ProjectID, &r.AdminStateUp, &r.Status,
+		&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		return nil, err
+	}
+	r.ExternalGatewayInfo = parseStoredGateway(r.ID, gatewayInfo)
+	ports, err := gatewayPortsOf(ctx, svc.pool, []string{r.ID})
+	if err != nil {
+		return nil, err
+	}
+	var port *gatewayPort
+	if p, ok := ports[r.ID]; ok {
+		port = &p
+	}
+	return renderRouter(r, port), nil
 }
 
 // CreateRouter creates a new L3 router
@@ -202,7 +244,10 @@ func (svc *Service) CreateRouter(c *gin.Context) {
 		return
 	}
 
-	projectID := c.GetString("project_id")
+	projectID, ok := svc.ownerOf(c, req.Router.ProjectID, req.Router.TenantID)
+	if !ok {
+		return
+	}
 	routerID := uuid.New().String()
 
 	adminStateUp := true
@@ -220,14 +265,21 @@ func (svc *Service) CreateRouter(c *gin.Context) {
 		ha = *req.Router.HA
 	}
 
-	// Serialize external gateway info to JSON
+	// The gateway: an external network, and the addresses an administrator may request (FR-038).
 	var gatewayInfoJSON []byte
+	var gateway *gatewayRequest
 	if req.Router.ExternalGatewayInfo != nil {
 		networkID, ok := gatewayNetworkID(c, req.Router.ExternalGatewayInfo)
 		if !ok || !requireExternalNetwork(c, svc.pool, networkID, "a router gateway") {
 			return
 		}
-		gatewayInfoJSON, _ = json.Marshal(req.Router.ExternalGatewayInfo)
+		parsed, refusal := parseGatewayRequest(req.Router.ExternalGatewayInfo, common.HasRole(c, common.RoleAdmin), "create_router")
+		if refusal != nil {
+			common.SendError(c, refusal)
+			return
+		}
+		gateway = &parsed
+		gatewayInfoJSON, _ = json.Marshal(parsed.stored())
 	}
 
 	// Create router namespace
@@ -237,17 +289,30 @@ func (svc *Service) CreateRouter(c *gin.Context) {
 		return
 	}
 
-	// Insert into database
+	// Insert into database: the router and its gateway port in one transaction.
 	now := time.Now()
-	_, err := svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO routers (id, name, project_id, admin_state_up, status, external_gateway_info, distributed, ha, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, routerID, req.Router.Name, projectID, adminStateUp, "ACTIVE", gatewayInfoJSON, distributed, ha, now, now)
+	err := database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		if _, err := tx.Exec(c.Request.Context(), `
+			INSERT INTO routers (id, name, project_id, admin_state_up, status, external_gateway_info, distributed, ha, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`, routerID, req.Router.Name, projectID, adminStateUp, "ACTIVE", gatewayInfoJSON, distributed, ha, now, now); err != nil {
+			return err
+		}
+		if gateway == nil {
+			return nil
+		}
+		return setRouterGateway(c.Request.Context(), tx, routerID, gateway)
+	})
 
 	if err != nil {
 		// Cleanup on error (best-effort; the DB error is the user-facing one)
 		if cleanupErr := svc.routerManager.DeleteRouterNamespace(routerID); cleanupErr != nil {
 			log.Warn().Err(cleanupErr).Str("router_id", routerID).Msg("rollback: failed to delete router namespace after DB insert failure")
+		}
+		var refusal *common.OpenStackError
+		if errors.As(err, &refusal) {
+			common.SendError(c, refusal)
+			return
 		}
 		log.Error().Err(err).Str("operation", "create_router").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to create router"))
@@ -262,47 +327,19 @@ func (svc *Service) CreateRouter(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"router": gin.H{
-			"id":                    routerID,
-			"name":                  req.Router.Name,
-			"tenant_id":             projectID,
-			"project_id":            projectID,
-			"admin_state_up":        adminStateUp,
-			"status":                "ACTIVE",
-			"external_gateway_info": req.Router.ExternalGatewayInfo,
-			"distributed":           distributed,
-			"ha":                    ha,
-			"created_at":            now.Format(time.RFC3339),
-			"updated_at":            now.Format(time.RFC3339),
-		},
-	})
+	view, err := svc.readRouterView(c.Request.Context(), routerID, projectID, false)
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_router").Str("router_id", routerID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to read the created router"))
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"router": view})
 }
 
 // GetRouter retrieves a single router
 func (svc *Service) GetRouter(c *gin.Context) {
 	routerID := c.Param("id")
-	projectID := c.GetString("project_id")
-
-	var r Router
-	var gatewayInfo sql.NullString
-
-	// Administrators may address any router by id. Name lookups stay in the
-	// caller's project so a duplicate name cannot select another tenant's row.
-	routerQuery := `
-		SELECT id, name, project_id, admin_state_up, status, external_gateway_info,
-		       distributed, ha, created_at, updated_at
-		FROM routers
-		WHERE (id::text = $1 AND `
-	idScope := `project_id = $2`
-	if common.HasRole(c, common.RoleAdmin) {
-		idScope = `TRUE`
-	}
-	routerQuery += idScope + `) OR (name = $1 AND project_id = $2)`
-	err := svc.pool.QueryRow(c.Request.Context(), routerQuery+" LIMIT 1", routerID, projectID).
-		Scan(&r.ID, &r.Name, &r.ProjectID, &r.AdminStateUp, &r.Status,
-			&gatewayInfo, &r.Distributed, &r.HA, &r.CreatedAt, &r.UpdatedAt)
-
+	view, err := svc.readRouterView(c.Request.Context(), routerID, c.GetString("project_id"), isAdmin(c))
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("router"))
 		return
@@ -312,31 +349,7 @@ func (svc *Service) GetRouter(c *gin.Context) {
 		common.SendError(c, common.NewInternalServerError("failed to get router"))
 		return
 	}
-
-	// Parse external gateway info. A malformed value leaves
-	// ExternalGatewayInfo nil — the API response then omits it, which
-	// is the right behavior for a corrupt row.
-	if gatewayInfo.Valid {
-		if err := json.Unmarshal([]byte(gatewayInfo.String), &r.ExternalGatewayInfo); err != nil {
-			log.Warn().Err(err).Str("router_id", r.ID).Msg("failed to unmarshal external_gateway_info; treating as unset")
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"router": gin.H{
-			"id":                    r.ID,
-			"name":                  r.Name,
-			"tenant_id":             r.ProjectID,
-			"project_id":            r.ProjectID,
-			"admin_state_up":        r.AdminStateUp,
-			"status":                r.Status,
-			"external_gateway_info": r.ExternalGatewayInfo,
-			"distributed":           r.Distributed,
-			"ha":                    r.HA,
-			"created_at":            r.CreatedAt.Format(time.RFC3339),
-			"updated_at":            r.UpdatedAt.Format(time.RFC3339),
-		},
-	})
+	c.JSON(http.StatusOK, gin.H{"router": view})
 }
 
 // UpdateRouter updates an existing router
@@ -359,7 +372,7 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 	// Authorise first. The gateway's host side used to run before anything confirmed the caller owns
 	// the router: a project that knew another's router id could install egress SNAT for that router's
 	// subnets — egress its owner never configured — and was then told 404.
-	id, ok := svc.resolveOwnRouter(c, routerID, projectID)
+	id, ok := svc.resolveRouter(c, routerID, projectID)
 	if !ok {
 		return
 	}
@@ -374,6 +387,7 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 		u.Set("admin_state_up", *req.Router.AdminStateUp)
 	}
 
+	var request *gatewayRequest
 	if gatewayGiven {
 		if gateway == nil {
 			u.Set("external_gateway_info", nil)
@@ -382,7 +396,13 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 			if !ok || !requireExternalNetwork(c, svc.pool, networkID, "a router gateway") {
 				return
 			}
-			gatewayInfoJSON, _ := json.Marshal(gateway)
+			parsed, refusal := parseGatewayRequest(gateway, common.HasRole(c, common.RoleAdmin), "update_router")
+			if refusal != nil {
+				common.SendError(c, refusal)
+				return
+			}
+			request = &parsed
+			gatewayInfoJSON, _ := json.Marshal(parsed.stored())
 			u.Set("external_gateway_info", gatewayInfoJSON)
 		}
 	}
@@ -394,18 +414,35 @@ func (svc *Service) UpdateRouter(c *gin.Context) {
 
 	u.Set("updated_at", time.Now())
 
-	query := "UPDATE routers SET " + u.Assignments() +
-		" WHERE id = " + u.Arg(id) + " AND project_id = " + u.Arg(projectID)
-
-	tag, err := svc.pool.Exec(ctx, query, u.Args()...)
+	// The row and its gateway port in one transaction, under the router's lock: a gateway a floating IP
+	// goes through is not removed or moved (FR-039), and a gateway's address is checked and taken there
+	// (FR-038).
+	err = database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		var locked string
+		err := tx.QueryRow(ctx, "SELECT id::text FROM routers WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+" FOR UPDATE",
+			id, projectID, isAdmin(c)).Scan(&locked)
+		if errors.Is(err, database.ErrNoRows) {
+			return common.NewNotFoundError("router") // deleted since it was authorised
+		}
+		if err != nil {
+			return err
+		}
+		if gatewayGiven {
+			if err := setRouterGateway(ctx, tx, id, request); err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, "UPDATE routers SET "+u.Assignments()+" WHERE id = "+u.Arg(id), u.Args()...)
+		return err
+	})
+	var refusal *common.OpenStackError
+	if errors.As(err, &refusal) {
+		common.SendError(c, refusal)
+		return
+	}
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_router").Str("router_id", id).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to update router"))
-		return
-	}
-	// Ownership was settled above, so matching no row here means a concurrent delete got there first.
-	if tag.RowsAffected() == 0 {
-		common.SendError(c, common.NewNotFoundError("router"))
 		return
 	}
 
@@ -435,33 +472,45 @@ func (svc *Service) DeleteRouter(c *gin.Context) {
 	// Authorise first. The namespace used to go before the owner-scoped delete, which then answered
 	// 204 whatever it matched, and the unscoped in-use count answered 409 for a router the caller
 	// could not even see.
-	id, ok := svc.resolveOwnRouter(c, routerID, projectID)
+	id, ok := svc.resolveRouter(c, routerID, projectID)
 	if !ok {
 		return
 	}
 
-	var interfaceCount int
-	if err := svc.pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM router_interfaces WHERE router_id = $1", id,
-	).Scan(&interfaceCount); err != nil {
-		log.Error().Err(err).Str("operation", "delete_router_check").Str("router_id", id).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to check router interfaces"))
+	// The row, its gateway port with it (SPEC-033 FR-038), in one transaction that also counts the
+	// interfaces, under the router's lock.
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		var locked string
+		err := tx.QueryRow(ctx, "SELECT id::text FROM routers WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+" FOR UPDATE",
+			id, projectID, isAdmin(c)).Scan(&locked)
+		if errors.Is(err, database.ErrNoRows) {
+			return common.NewNotFoundError("router")
+		}
+		if err != nil {
+			return err
+		}
+		var interfaceCount int
+		if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM router_interfaces WHERE router_id = $1", id).Scan(&interfaceCount); err != nil {
+			return err
+		}
+		if interfaceCount > 0 {
+			return common.NewResourceInUseError("router", "delete router",
+				fmt.Sprintf("router %s still has %d interface(s) attached", id, interfaceCount))
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM ports WHERE device_id = $1 AND device_owner = $2", id, ownerRouterGateway); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, "DELETE FROM routers WHERE id = $1", id)
+		return err
+	})
+	var refusal *common.OpenStackError
+	if errors.As(err, &refusal) {
+		common.SendError(c, refusal)
 		return
 	}
-	if interfaceCount > 0 {
-		common.SendError(c, common.NewResourceInUseError("router", "delete router",
-			fmt.Sprintf("router %s still has %d interface(s) attached", id, interfaceCount)))
-		return
-	}
-
-	tag, err := svc.pool.Exec(ctx, "DELETE FROM routers WHERE id = $1 AND project_id = $2", id, projectID)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_router").Str("router_id", id).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to delete router"))
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		common.SendError(c, common.NewNotFoundError("router"))
 		return
 	}
 
@@ -474,11 +523,12 @@ func (svc *Service) DeleteRouter(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// AddRouterInterface adds an interface (subnet) to a router
+// AddRouterInterface adds an interface to a router: on a subnet, its port made with the subnet's gateway,
+// or with a port the caller names, which keeps its address — upstream's _add_interface_by_subnet and
+// _add_interface_by_port.
 func (svc *Service) AddRouterInterface(c *gin.Context) {
 	routerID := c.Param("id")
 	projectID := c.GetString("project_id")
-	ctx := c.Request.Context()
 
 	var req struct {
 		SubnetID string `json:"subnet_id"`
@@ -489,223 +539,66 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
-	if (req.SubnetID == "") == (req.PortID == "") {
-		common.SendError(c, common.NewBadRequestError("exactly one of subnet_id or port_id must be specified"))
+	// The handler once ignored port_id and read the empty subnet_id, so 'router add port' answered 500
+	// (SPEC-031).
+	if refusal := interfaceRequestRefusal(req.SubnetID, req.PortID); refusal != nil {
+		common.SendError(c, refusal)
 		return
 	}
 
-	// Authorise through the same resolver RemoveRouterInterface uses: the
-	// raw EXISTS lookup here did the same job for a UUID, but went unwrapped
-	// for the ownership question this answer now settles the same way.
-	id, ok := svc.resolveOwnRouter(c, routerID, projectID)
-	if !ok {
-		return
-	}
-
-	var subnetID, networkID, cidr, portID string
-	var gatewayIP *string
-	var interfaceIP string
-	if req.PortID != "" {
-		// port_id path — attach a port the caller already owns. The handler
-		// used to ignore the field entirely and read the (empty) subnet_id
-		// instead, so 'router add port' answered 500 "failed to get subnet"
-		// (SPEC-031).
-		if _, err := uuid.Parse(req.PortID); err != nil {
-			common.SendError(c, common.NewNotFoundError("port"))
-			return
-		}
-		var fixedIPs common.FixedIPs
-		var deviceID sql.NullString
-		err := svc.pool.QueryRow(ctx, `
-			SELECT id::text, network_id::text, fixed_ips, device_id
-			FROM ports
-			WHERE id = $1 AND project_id = $2
-		`, req.PortID, projectID).Scan(&portID, &networkID, &fixedIPs, &deviceID)
+	// One transaction checks and stores the interface's port and its router_interfaces row, so a router
+	// never has half an interface (SPEC-033 FR-045, research R31): a port made or taken goes back with a
+	// failed insert, rather than staying behind to block its network's deletion (SPEC-031). By subnet
+	// the port is made (makeInterfacePort), by port it is taken (takeInterfacePort).
+	ctx := c.Request.Context()
+	admin := isAdmin(c)
+	var portID, address string
+	var subnet interfaceSubnet
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		var routerProject *string
+		err := tx.QueryRow(ctx, "SELECT id::text, project_id::text FROM routers WHERE id::text = $1 AND "+
+			ownerOrAdmin("project_id", "$2", "$3")+" FOR UPDATE",
+			routerID, projectID, admin).Scan(&routerID, &routerProject)
 		if errors.Is(err, database.ErrNoRows) {
-			common.SendError(c, common.NewNotFoundError("port"))
-			return
+			return common.NewNotFoundError("router")
 		}
 		if err != nil {
-			log.Error().Err(err).Str("operation", "add_router_interface_port_lookup").Str("port_id", req.PortID).Msg("database error")
-			common.SendError(c, common.NewInternalServerError("failed to get port"))
-			return
+			return err
 		}
-		if deviceID.Valid && deviceID.String != "" {
-			common.SendError(c, common.NewResourceInUseError("port", "attach port to router",
-				"Port "+portID+" already has a device assigned and cannot be attached to a router."))
-			return
-		}
-		if len(fixedIPs) != 1 || fixedIPs[0].SubnetID == "" || net.ParseIP(fixedIPs[0].IPAddress) == nil {
-			common.SendError(c, common.NewBadRequestError("router port must have exactly one valid fixed IP"))
-			return
-		}
-		subnetID = fixedIPs[0].SubnetID
-		interfaceIP = fixedIPs[0].IPAddress
-	}
-
-	// Subnet row — reached from either path (the caller's subnet_id, or the
-	// subnet the port's first fixed IP comes from).
-	if req.PortID == "" {
-		if _, err := uuid.Parse(req.SubnetID); err != nil {
-			common.SendError(c, common.NewNotFoundError("subnet"))
-			return
-		}
-		subnetID = req.SubnetID
-	}
-	// The subnet must be the caller's, or sit on a network the caller can
-	// legitimately use — their own (an admin may have created the subnet
-	// on it, which subnetReadScope allows) or a shared/external one,
-	// mirroring the port path's project scoping.
-	err := svc.pool.QueryRow(ctx, `
-		SELECT s.id::text, s.network_id::text, s.cidr, s.gateway_ip
-		FROM subnets s
-		JOIN networks n ON n.id = s.network_id
-		WHERE s.id = $1
-		  AND (s.project_id = $2 OR n.project_id = $2 OR n.shared = true OR n.external = true)
-	`, subnetID, projectID).Scan(&subnetID, &networkID, &cidr, &gatewayIP)
-	if errors.Is(err, database.ErrNoRows) {
-		// Not-found for both a bogus id and another project's private subnet:
-		// the port path above is project-scoped the same way, and answering
-		// 404 rather than 403 keeps the resource's existence private.
-		common.SendError(c, common.NewNotFoundError("subnet"))
-		return
-	}
-	if err != nil {
-		log.Error().Err(err).Str("operation", "add_router_interface_subnet_lookup").Str("subnet_id", subnetID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to get subnet"))
-		return
-	}
-
-	// Serialize allocation with port/VM creation. The port claim and interface
-	// record commit together, including rollback on request cancellation.
-	tx, err := svc.pool.Begin(ctx)
-	if err != nil {
-		common.SendError(c, common.NewInternalServerError("failed to begin router attachment"))
-		return
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := LockSubnet(ctx, tx, subnetID); err != nil {
-		common.SendError(c, common.NewInternalServerError("failed to lock subnet"))
-		return
-	}
-	if req.PortID == "" {
-		if gatewayIP != nil {
-			interfaceIP = *gatewayIP
+		if req.PortID != "" {
+			portID, subnet, address, err = takeInterfacePort(ctx, tx, routerID, req.PortID, projectID, admin)
 		} else {
-			interfaceIP, err = AllocateFreeIP(ctx, tx, subnetID, cidr)
-			if err != nil {
-				if errors.Is(err, ErrNoAvailableIP) {
-					common.SendError(c, common.NewConflictError("subnet has no available IP address"))
-				} else {
-					common.SendError(c, common.NewInternalServerError("failed to allocate router address"))
-				}
-				return
-			}
+			portID, subnet, err = makeInterfacePort(ctx, tx, routerID, routerProject, req.SubnetID, projectID, admin)
+			address = subnet.gateway
 		}
-	}
-
-	// A second interface for the same (router, subnet) is upstream's 400 —
-	// and it must be refused BEFORE anything is written: the unique
-	// constraint used to turn it into a 500 that left the freshly created
-	// interface port behind, which then blocked the network's deletion with
-	// a 409 nobody could 'router remove port' away (the interface row had
-	// never been inserted, so the remove lookup found nothing; SPEC-031).
-	var alreadyAttached bool
-	err = tx.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM router_interfaces WHERE router_id = $1 AND subnet_id = $2)",
-		id, subnetID).Scan(&alreadyAttached)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "add_router_interface_duplicate_check").Str("router_id", id).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to check router interface"))
-		return
-	}
-	if alreadyAttached {
-		common.SendError(c, common.NewBadRequestError("Router already has a port on subnet "+subnetID))
-		return
-	}
-
-	now := time.Now()
-	if req.PortID == "" {
-		// Create a port for the router interface
-		portID = uuid.New().String()
-		macAddress := generateMAC()
-
-		fixedIPs := []map[string]string{
-			{
-				"subnet_id":  subnetID,
-				"ip_address": interfaceIP,
-			},
+		if err != nil {
+			return err
 		}
-		fixedIPsJSON, _ := json.Marshal(fixedIPs)
-
 		_, err = tx.Exec(ctx, `
-			INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		`, portID, "router-interface-"+id[:8], networkID, projectID, id, "network:router_interface",
-			macAddress, true, "ACTIVE", fixedIPsJSON, now, now)
-
-		if err != nil {
-			log.Error().Err(err).Str("operation", "add_router_interface_port").Msg("database error")
-			common.SendError(c, common.NewInternalServerError("failed to create router interface port"))
-			return
-		}
-	} else {
-		// Claim the caller's port for the router — CONDITIONALLY. The
-		// device_id read earlier is only a check, not a reservation: two
-		// concurrent attaches of the same port to different routers both
-		// pass it, and an unconditional UPDATE lets both claims win (last
-		// write leaves the port owned by a router whose interface row also
-		// points at it). The WHERE keeps the claim atomic in the row lock;
-		// zero rows affected means someone claimed it in between. (The
-		// column is UUID: an unclaimed port is NULL, never ''.)
-		ct, err := tx.Exec(ctx, `
-			UPDATE ports SET device_id = $1, device_owner = 'network:router_interface', updated_at = $2
-			WHERE id = $3 AND device_id IS NULL
-		`, id, now, portID)
-		if err != nil {
-			log.Error().Err(err).Str("operation", "add_router_interface_port_claim").Str("port_id", portID).Msg("database error")
-			common.SendError(c, common.NewInternalServerError("failed to attach port to router"))
-			return
-		}
-		if ct.RowsAffected() == 0 {
-			common.SendError(c, common.NewResourceInUseError("port", "attach port to router",
-				"Port "+portID+" already has a device assigned and cannot be attached to a router."))
-			return
-		}
+			INSERT INTO router_interfaces (id, router_id, port_id, subnet_id, created_at)
+			VALUES ($1, $2, $3, $4, $5)
+		`, uuid.New().String(), routerID, portID, subnet.id, time.Now())
+		return err
+	})
+	var refusal *common.OpenStackError
+	if errors.As(err, &refusal) {
+		common.SendError(c, refusal)
+		return
 	}
-
-	// Create router interface record
-	_, err = tx.Exec(ctx, `
-		INSERT INTO router_interfaces (id, router_id, port_id, subnet_id, created_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`, uuid.New().String(), id, portID, subnetID, now)
-
 	if err != nil {
-		if database.IsUniqueViolation(err) {
-			// The constraint is the duplicate-interface backstop: the
-			// EXISTS check above can lose a race with a concurrent attach
-			// of the same (router, subnet). Answer the same 400 the check
-			// produces instead of surfacing the race as a 500.
-			common.SendError(c, common.NewBadRequestError("Router already has a port on subnet "+subnetID))
-			return
-		}
-		log.Error().Err(err).Str("operation", "add_router_interface_record").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to create router interface record"))
+		log.Error().Err(err).Str("operation", "add_router_interface").Str("router_id", routerID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to add the router interface"))
 		return
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		common.SendError(c, common.NewInternalServerError("failed to commit router attachment"))
-		return
-	}
+	cidr := subnet.cidr
 
 	// WS-3: if this router already has an external gateway, masquerade the
 	// just-attached subnet's egress out the uplink now (real mode), so egress
 	// works whether the gateway was set before or after this interface.
 	if svc.mode != "stub" {
 		var snatOn bool
-		if err := svc.pool.QueryRow(c.Request.Context(),
-			"SELECT EXISTS (SELECT 1 FROM routers rt WHERE rt.id = $1 AND "+snatOnPredicate+")", id).Scan(&snatOn); err == nil && snatOn {
+		if err := svc.pool.QueryRow(ctx,
+			"SELECT EXISTS (SELECT 1 FROM routers rt WHERE rt.id = $1 AND "+snatOnPredicate+")", routerID).Scan(&snatOn); err == nil && snatOn {
 			if uplink, uerr := networking.DefaultUplinkInterface(); uerr == nil {
 				if err := svc.routerManager.EnsureEgressSNAT(cidr, uplink); err != nil {
 					log.Warn().Err(err).Str("router_id", routerID).Str("cidr", cidr).Msg("WS-3: egress SNAT on interface attach failed")
@@ -724,14 +617,117 @@ func (svc *Service) AddRouterInterface(c *gin.Context) {
 	maskBits, _ := ipNet.Mask.Size()
 	cidrSuffix := fmt.Sprintf("%d", maskBits)
 
-	if err := svc.routerManager.AttachInterfaceToRouter(id, interfaceName, interfaceIP, cidrSuffix); err != nil {
+	if err := svc.routerManager.AttachInterfaceToRouter(routerID, interfaceName, address, cidrSuffix); err != nil {
 		log.Warn().Err(err).Str("router_id", routerID).Str("interface", interfaceName).Msg("failed to attach interface to router")
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"subnet_id": subnetID,
+		"subnet_id": subnet.id,
 		"port_id":   portID,
 	})
+}
+
+// interfaceRequestRefusal is upstream's _validate_interface_info for an add: a subnet or a port, not both.
+func interfaceRequestRefusal(subnetID, portID string) *common.OpenStackError {
+	switch {
+	case subnetID == "" && portID == "":
+		return common.NewBadRequestError("Bad router request: Either subnet_id or port_id must be specified.")
+	case subnetID != "" && portID != "":
+		return common.NewBadRequestError("Bad router request: Cannot specify both subnet-id and port-id.")
+	}
+	return nil
+}
+
+// makeInterfacePort makes an interface's port on a subnet the caller can see, any project's for an
+// administrator (404 otherwise), after upstream's refusals (checkInterfaceSubnet, SPEC-033 FR-055). It holds
+// the subnet's gateway and is the router's project's, as upstream's (SPEC-033 FR-058).
+func makeInterfacePort(ctx context.Context, tx database.Tx, routerID string, routerProject *string, subnetRef, caller string, admin bool) (string, interfaceSubnet, error) {
+	var s interfaceSubnet
+	var project, gateway *string
+	err := tx.QueryRow(ctx, `
+		SELECT s.id::text, s.network_id::text, s.project_id::text, s.cidr, s.gateway_ip
+		  FROM subnets s JOIN networks n ON s.network_id = n.id
+		 WHERE s.id::text = $1 AND `+scopeOrAdmin(subnetReadScope("$2"), "$3"),
+		subnetRef, caller, admin).Scan(&s.id, &s.networkID, &project, &s.cidr, &gateway)
+	if errors.Is(err, database.ErrNoRows) {
+		return "", s, common.NewNotFoundError("subnet")
+	}
+	if err != nil {
+		return "", s, err
+	}
+	s.project, s.gateway = derefOr(project, ""), derefOr(gateway, "")
+	if err := checkInterfaceSubnet(ctx, tx, routerID, s, caller, admin); err != nil {
+		return "", s, err
+	}
+	portID := uuid.New().String()
+	fixedIPsJSON, _ := json.Marshal(common.FixedIPs{{SubnetID: s.id, IPAddress: s.gateway}})
+	now := time.Now()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, admin_state_up, status, fixed_ips, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, portID, "router-interface-"+routerID[:8], s.networkID, routerProject, routerID, ownerRouterInterface,
+		generateMAC(), true, "ACTIVE", fixedIPsJSON, now, now)
+	return portID, s, err
+}
+
+// takeInterfacePort makes a port the router's interface, as upstream's _add_interface_by_port: one the
+// caller can see, any project's for an administrator (404), attached to nothing (409 PortInUse), with a
+// fixed IP and at most one IPv4 subnet, on a subnet the router has no port on and none of its interfaces'
+// overlaps (400). It keeps its project and its address, the first fixed IP's being the interface's.
+func takeInterfacePort(ctx context.Context, tx database.Tx, routerID, portRef, caller string, admin bool) (string, interfaceSubnet, string, error) {
+	var portID, networkID string
+	var device *string
+	var fixed common.FixedIPs
+	err := tx.QueryRow(ctx, "SELECT id::text, network_id::text, device_id, fixed_ips FROM ports WHERE id::text = $1 AND "+
+		ownerOrAdmin("project_id", "$2", "$3")+" FOR UPDATE", portRef, caller, admin,
+	).Scan(&portID, &networkID, &device, &fixed)
+	if errors.Is(err, database.ErrNoRows) {
+		return "", interfaceSubnet{}, "", common.NewNotFoundError("port")
+	}
+	if err != nil {
+		return "", interfaceSubnet{}, "", err
+	}
+	if derefOr(device, "") != "" {
+		return "", interfaceSubnet{}, "", common.NewNeutronError(http.StatusConflict, "PortInUse", fmt.Sprintf(
+			"Unable to complete operation on port %s for network %s. Port already has an attached device %s.",
+			portID, networkID, *device))
+	}
+	if len(fixed) == 0 {
+		return "", interfaceSubnet{}, "", common.NewBadRequestError("Bad router request: Router port must have at least one fixed IP.")
+	}
+	subnets, err := interfacePortSubnets(ctx, tx, fixed)
+	if err != nil {
+		return "", interfaceSubnet{}, "", err
+	}
+	for _, s := range subnets {
+		if err := checkRouterSubnets(ctx, tx, routerID, s); err != nil {
+			return "", interfaceSubnet{}, "", err
+		}
+	}
+	_, err = tx.Exec(ctx, "UPDATE ports SET device_id = $1, device_owner = $2, updated_at = $3 WHERE id::text = $4",
+		routerID, ownerRouterInterface, time.Now(), portID)
+	return portID, subnets[0], fixed[0].IPAddress, err
+}
+
+// interfacePortSubnets reads the subnets of a port's fixed IPs, refusing a second IPv4 one as upstream's
+// _validate_router_port_info does.
+func interfacePortSubnets(ctx context.Context, tx database.Tx, fixed common.FixedIPs) ([]interfaceSubnet, error) {
+	var out []interfaceSubnet
+	v4 := 0
+	for _, f := range fixed {
+		var s interfaceSubnet
+		if err := tx.QueryRow(ctx, "SELECT id::text, network_id::text, cidr FROM subnets WHERE id::text = $1", f.SubnetID).
+			Scan(&s.id, &s.networkID, &s.cidr); err != nil {
+			return nil, fmt.Errorf("read subnet %s of the port: %w", f.SubnetID, err)
+		}
+		if prefix, err := parsePrefix(s.cidr); err == nil && prefix.Addr().Is4() {
+			if v4++; v4 > 1 {
+				return nil, common.NewBadRequestError("Bad router request: Cannot have multiple IPv4 subnets on router port.")
+			}
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // RemoveRouterInterface removes an interface from a router
@@ -758,36 +754,52 @@ func (svc *Service) RemoveRouterInterface(c *gin.Context) {
 	// owns the router: the lookup, the host detach and the row delete were all unscoped, so any project
 	// that knew a router id could take an interface off it — and a port id shorter than ten characters,
 	// or none at all, panicked the slice that names the device.
-	id, ok := svc.resolveOwnRouter(c, routerID, projectID)
+	id, ok := svc.resolveRouter(c, routerID, projectID)
 	if !ok {
 		return
 	}
 
+	// One transaction under the router's lock finds the interface, refuses while a floating IP of the
+	// router reaches a fixed IP on its subnet (FR-039), and deletes the interface's port, which takes its
+	// router_interfaces row with it (the foreign key cascades). The host follows.
 	var portID, subnetID, cidr string
-	err := svc.pool.QueryRow(ctx, `
-		SELECT ri.port_id::text, ri.subnet_id::text, s.cidr
-		FROM router_interfaces ri
-		JOIN subnets s ON s.id = ri.subnet_id
-		WHERE ri.router_id = $1
-		  AND ($2 = '' OR ri.subnet_id::text = $2)
-		  AND ($3 = '' OR ri.port_id::text = $3)
-		LIMIT 1
-	`, id, req.SubnetID, req.PortID).Scan(&portID, &subnetID, &cidr)
-	if errors.Is(err, database.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("router interface"))
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		var locked string
+		if err := tx.QueryRow(ctx, "SELECT id::text FROM routers WHERE id = $1 FOR UPDATE", id).Scan(&locked); err != nil {
+			if errors.Is(err, database.ErrNoRows) {
+				return common.NewNotFoundError("router")
+			}
+			return err
+		}
+		err := tx.QueryRow(ctx, `
+			SELECT ri.port_id::text, ri.subnet_id::text, s.cidr
+			FROM router_interfaces ri
+			JOIN subnets s ON s.id = ri.subnet_id
+			WHERE ri.router_id = $1
+			  AND ($2 = '' OR ri.subnet_id::text = $2)
+			  AND ($3 = '' OR ri.port_id::text = $3)
+			LIMIT 1
+		`, id, req.SubnetID, req.PortID).Scan(&portID, &subnetID, &cidr)
+		if errors.Is(err, database.ErrNoRows) {
+			return common.NewNotFoundError("router interface")
+		}
+		if err != nil {
+			return err
+		}
+		if err := requireInterfaceUnused(ctx, tx, id, subnetID, cidr); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, "DELETE FROM ports WHERE id = $1", portID)
+		return err
+	})
+	var refusal *common.OpenStackError
+	if errors.As(err, &refusal) {
+		common.SendError(c, refusal)
 		return
 	}
 	if err != nil {
-		log.Error().Err(err).Str("operation", "remove_router_interface_lookup").Str("router_id", id).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to find router interface"))
-		return
-	}
-
-	// The row first: deleting the interface's port takes its router_interfaces row with it (the
-	// foreign key cascades), and the host follows.
-	if _, err := svc.pool.Exec(ctx, "DELETE FROM ports WHERE id = $1", portID); err != nil {
-		log.Error().Err(err).Str("operation", "remove_router_interface_port").Str("port_id", portID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to delete router interface port"))
+		log.Error().Err(err).Str("operation", "remove_router_interface").Str("router_id", id).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to remove the router interface"))
 		return
 	}
 
@@ -872,14 +884,16 @@ func (svc *Service) configureExternalGateway(ctx context.Context, routerID strin
 	return nil
 }
 
-// resolveOwnRouter returns the stored id of the caller's router named by routerID, writing the
-// refusal itself — 404, as for any router the caller cannot see — so the handler only has to return.
-// Router writes authorise through it before they touch anything, the host included. By id only, as
-// upstream; a client resolves a name to an id before it writes.
-func (svc *Service) resolveOwnRouter(c *gin.Context, routerID, projectID string) (string, bool) {
+// resolveRouter returns the stored id of the router routerID names, if the caller may write it — their
+// own project's, any project's for an administrator (SPEC-033 FR-058) — writing the refusal itself:
+// 404, as for any router the caller cannot see, so the handler only has to return. Router writes
+// authorise through it before they touch anything, the host included. By id only, as upstream; a
+// client resolves a name to an id before it writes.
+func (svc *Service) resolveRouter(c *gin.Context, routerID, projectID string) (string, bool) {
 	var id string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id::text FROM routers WHERE id::text = $1 AND project_id = $2", routerID, projectID,
+		"SELECT id::text FROM routers WHERE id::text = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+		routerID, projectID, isAdmin(c),
 	).Scan(&id)
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("router"))
@@ -1003,7 +1017,7 @@ func (svc *Service) withdrawRouterEgressSNAT(ctx context.Context, routerID strin
 // It takes the id rather than the gateway blob so the floating-IP caller, which has a plain string,
 // does not have to wrap it in a throwaway map (branch review 2026-08-13, SRC-7).
 func requireExternalNetwork(c *gin.Context, pool database.DB, networkID, use string) bool {
-	err := externalNetworkRefusal(c.Request.Context(), pool, networkID, c.GetString("project_id"), use, false)
+	err := externalNetworkRefusal(c.Request.Context(), pool, networkID, c.GetString("project_id"), use, isAdmin(c), false)
 	var refusal *common.OpenStackError
 	switch {
 	case err == nil:
@@ -1019,9 +1033,11 @@ func requireExternalNetwork(c *gin.Context, pool database.DB, networkID, use str
 
 // externalNetworkRefusal is requireExternalNetwork's check on a querier: nil when networkID names an
 // external network the caller can see, the *common.OpenStackError to answer with when it does not, or
-// a database error. forUpdate locks the network's row, for a transaction that relies on it staying
-// external until it commits (SPEC-033 research R20).
-func externalNetworkRefusal(ctx context.Context, q subnetQuerier, networkID, projectID, use string, forUpdate bool) error {
+// a database error. An administrator sees every network (SPEC-033 FR-057), so another project's
+// internal network is "not external" to them rather than unknown, as upstream's. forUpdate locks the
+// network's row, for a transaction that relies on it staying external until it commits (SPEC-033
+// research R20).
+func externalNetworkRefusal(ctx context.Context, q subnetQuerier, networkID, projectID, use string, admin, forUpdate bool) error {
 	if refusal := networkIDRefusal(networkID, use); refusal != nil {
 		return refusal
 	}
@@ -1033,12 +1049,12 @@ func externalNetworkRefusal(ctx context.Context, q subnetQuerier, networkID, pro
 	// Nothing usable is hidden by this: a network that qualifies as a gateway is external, and external
 	// is itself one of the three ways to be visible (FR-033a).
 	query := `SELECT external FROM networks
-		WHERE id::text = $1 AND (project_id = $2 OR shared = true OR external = true)`
+		WHERE id::text = $1 AND ` + scopeOrAdmin(networkReadScope("$2"), "$3")
 	if forUpdate {
 		query += " FOR UPDATE"
 	}
 	var external bool
-	err := q.QueryRow(ctx, query, networkID, projectID).Scan(&external)
+	err := q.QueryRow(ctx, query, networkID, projectID, admin).Scan(&external)
 	if errors.Is(err, database.ErrNoRows) {
 		return common.NewNotFoundError("network")
 	}

@@ -922,8 +922,18 @@ func (svc *Service) CreateServer(c *gin.Context) {
 		// "Security group <uuid> not found." once the SG list started populating.
 		// An id match wins, so a group perversely named after another's UUID cannot
 		// shadow it. The resolver is the one addSecurityGroup and removeSecurityGroup
-		// use, so the three cannot drift apart (SPEC-033 research R2).
-		sgID, sgErr := neutron.ResolveSecurityGroup(c.Request.Context(), svc.pool, name, projectID)
+		// use, so the three cannot drift apart (SPEC-033 research R2). Unlike theirs, an
+		// administrator's id resolves here in the server's project only: upstream's boot
+		// matches the requested groups against the instance's project's (nova/network/
+		// neutron.py, _process_security_groups), so another project's group never
+		// reaches a booted server there either.
+		sgID, sgErr := neutron.ResolveSecurityGroup(c.Request.Context(), svc.pool, name, projectID, false)
+		var ambiguous *neutron.AmbiguousSecurityGroupError
+		if errors.As(sgErr, &ambiguous) {
+			// Names may repeat, as upstream's may; upstream Nova answers NoUniqueMatch (SPEC-033 FR-026).
+			common.SendError(c, common.NewConflictError(ambiguous.Error()))
+			return
+		}
 		if errors.Is(sgErr, neutron.ErrSecurityGroupNotFound) {
 			if name == "default" {
 				if sgID, sgErr = neutron.EnsureDefaultSecurityGroup(c.Request.Context(), svc.pool, projectID); sgErr != nil {

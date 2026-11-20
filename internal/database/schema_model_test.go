@@ -44,6 +44,9 @@ var (
 	uniqueDef   = regexp.MustCompile(`^UNIQUE \((.*)\)$`)
 	foreignDef  = regexp.MustCompile(`^FOREIGN KEY \((.*?)\) REFERENCES ([\w."]+)\((.*?)\)(.*)$`)
 	onDelete    = regexp.MustCompile(`ON DELETE (CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION)`)
+	// varcharCasts drops, from a normalised expression, the casts PostgreSQL adds to VARCHAR
+	// comparisons.
+	varcharCasts = strings.NewReplacer("::charactervarying", "", "::text", "")
 )
 
 // normalizeExpr reduces an SQL expression to a form both backends' spellings share.
@@ -197,7 +200,9 @@ func modelIndex(unique bool, name, cols, where string) string {
 	}
 	s += strings.ToLower(name) + "(" + normalizeExpr(strings.ReplaceAll(cols, ",", "|")) + ")"
 	if where != "" {
-		s += " where " + normalizeExpr(where)
+		// PostgreSQL renders a predicate on a VARCHAR column with casts SQLite has no word
+		// for: name = 'default' comes back as ((name)::text = 'default'::text).
+		s += " where " + varcharCasts.Replace(normalizeExpr(where))
 	}
 	return s
 }

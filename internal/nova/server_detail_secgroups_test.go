@@ -391,17 +391,17 @@ func TestEnsureDefaultSecurityGroup_SeedsOnlyWhenCreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure (fresh): %v", err)
 	}
-	if n := ruleCountForSG(t, id); n != 2 {
-		t.Errorf("fresh default: rules=%d; want 2 seeded", n)
+	if n := ruleCountForSG(t, id); n != 4 {
+		t.Errorf("fresh default: rules=%d; want 4 seeded (SPEC-033 FR-043)", n)
 	}
 
-	// Second call on the now-existing group: still 2, and the same id.
+	// Second call on the now-existing group: still 4, and the same id.
 	id2, err := neutron.EnsureDefaultSecurityGroup(ctx, testPool, freshProjectID)
 	if err != nil || id2 != id {
 		t.Fatalf("ensure (again): id=%s err=%v; want same id %s", id2, err, id)
 	}
-	if n := ruleCountForSG(t, id); n != 2 {
-		t.Errorf("re-ensure: rules=%d; want 2 (unchanged)", n)
+	if n := ruleCountForSG(t, id); n != 4 {
+		t.Errorf("re-ensure: rules=%d; want 4 (unchanged)", n)
 	}
 
 	// Operator empties the group: ensure must NOT restore the rules.
@@ -416,12 +416,12 @@ func TestEnsureDefaultSecurityGroup_SeedsOnlyWhenCreated(t *testing.T) {
 	}
 }
 
-// The seeded rules of a lazily-created `default` group are egress-only. Upstream's
-// default security group denies all inbound traffic, and an ingress rule carrying
-// neither remote_ip_prefix nor remote_group_id is enforced as 0.0.0.0/0 by both
-// dataplanes — so seeding one here would open that port to the world for every
-// project that ever boots a server (cloud-storage#528).
-func TestEnsureDefaultSecurityGroup_SeedsNoIngress(t *testing.T) {
+// The seeded rules of a lazily-created `default` group open nothing to every address. Upstream's
+// default security group admits inbound traffic only from its own members, and an ingress rule
+// carrying neither remote_ip_prefix nor remote_group_id is enforced as 0.0.0.0/0 — so seeding one here
+// would open that port to the world for every project that ever boots a server (cloud-storage#528).
+// Since SPEC-033 FR-043 the two ingress rules name the group itself as their remote.
+func TestEnsureDefaultSecurityGroup_SeedsNoIngressOpenToEveryAddress(t *testing.T) {
 	requireDB(t)
 	cleanupReadback(t)
 	defer cleanupReadback(t)
@@ -432,27 +432,52 @@ func TestEnsureDefaultSecurityGroup_SeedsNoIngress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if got, want := sgRuleShapes(t, id), []string{"egress/IPv4//0-0", "egress/IPv6//0-0"}; !slices.Equal(got, want) {
-		t.Errorf("fresh default rules=%v; want %v (egress allow-all only, no ingress)", got, want)
+	want := []string{"egress/IPv4//0-0", "egress/IPv6//0-0", "ingress/IPv4//0-0", "ingress/IPv6//0-0"}
+	if got := sgRuleShapes(t, id); !slices.Equal(got, want) {
+		t.Errorf("fresh default rules=%v; want %v (egress allow-all, ingress from members)", got, want)
+	}
+	var open int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM security_group_rules
+		WHERE security_group_id = $1 AND direction = 'ingress'
+		  AND (remote_group_id IS NULL OR remote_group_id <> $1 OR remote_ip_prefix IS NOT NULL)`, id).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 0 {
+		t.Errorf("fresh default has %d ingress rule(s) admitting more than its own members; want none", open)
 	}
 }
 
-// The seeded project's `default` group (migration 002) is egress-only for the same
-// reason. Needs a database migrated from scratch: a database that ran the earlier
-// 002 keeps the ingress rule it inserted, since migrations are not re-applied.
-func TestSeededDefaultSecurityGroup_HasNoIngress(t *testing.T) {
+// The seeded project's `default` group (migration 002) opens nothing to every address, for the
+// same reason. Since migration 084 it admits its own members, as upstream's default does
+// (SPEC-033 FR-043): two ingress rules whose remote group is `default` itself, and no other
+// ingress rule. Needs a database migrated from scratch: a database that ran the earlier 002
+// keeps the ingress rule it inserted, since migrations are not re-applied.
+func TestSeededDefaultSecurityGroup_NoIngressOpenToEveryAddress(t *testing.T) {
 	requireDB(t)
 	ctx := t.Context()
 
 	const seededDefaultSGID = "00000000-0000-0000-0000-000000000030"
-	var n int
-	if err := testPool.QueryRow(ctx,
-		"SELECT count(*) FROM security_group_rules WHERE security_group_id = $1 AND direction = 'ingress'",
-		seededDefaultSGID,
-	).Scan(&n); err != nil {
-		t.Fatalf("count ingress rules of the seeded default group: %v", err)
+	rows, err := testPool.Query(ctx,
+		`SELECT ethertype, COALESCE(remote_group_id::text, ''), COALESCE(remote_ip_prefix, '')
+		   FROM security_group_rules WHERE security_group_id = $1 AND direction = 'ingress'
+		  ORDER BY ethertype`, seededDefaultSGID)
+	if err != nil {
+		t.Fatalf("read ingress rules of the seeded default group: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("seeded default group has %d ingress rule(s); want 0 (cloud-storage#528)", n)
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var ethertype, remoteGroup, prefix string
+		if err := rows.Scan(&ethertype, &remoteGroup, &prefix); err != nil {
+			t.Fatal(err)
+		}
+		if remoteGroup != seededDefaultSGID || prefix != "" {
+			t.Errorf("seeded default has an ingress rule %s from group %q, prefix %q; want only its own members (cloud-storage#528)",
+				ethertype, remoteGroup, prefix)
+		}
+		got = append(got, ethertype)
+	}
+	if want := []string{"IPv4", "IPv6"}; !slices.Equal(got, want) {
+		t.Errorf("seeded default's ingress rules = %v; want the two member rules %v (FR-043)", got, want)
 	}
 }

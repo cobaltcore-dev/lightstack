@@ -23,6 +23,13 @@ type OpenStackError struct {
 	// Optional and purely additive: empty for the errors that are not about a specific resource,
 	// and read by nothing except the Neutron type table.
 	Resource string
+
+	// NeutronType, when set, is the upstream exception class Neutron's envelope names, ahead of
+	// anything the tables in neutron_errors.go derive from Resource or Code. Upstream raises
+	// several conditions about one resource with one status — a security group in use, the
+	// default group that cannot be removed, renamed or repeated — which the resource table alone
+	// cannot tell apart (SPEC-033 research R39). Read by nothing else.
+	NeutronType string
 }
 
 func (e *OpenStackError) Error() string {
@@ -67,6 +74,39 @@ func SendError(c *gin.Context, err *OpenStackError) {
 }
 
 // Common error constructors
+
+// NewNeutronError returns an error that Neutron's envelope renders as upstream's exception class
+// neutronType, with the given status and message. Every other envelope renders it as any error of
+// that status. Use it where upstream's class cannot be derived from the resource alone.
+func NewNeutronError(status int, neutronType, message string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode:  status,
+		Code:        codeForStatus(status),
+		Message:     message,
+		NeutronType: neutronType,
+	}
+}
+
+// codeForStatus is the default envelope's key for a status, as the constructors below spell it.
+func codeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "badRequest"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "itemNotFound"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusPreconditionFailed:
+		return "preconditionFailed"
+	case http.StatusServiceUnavailable:
+		return "serviceUnavailable"
+	}
+	return "computeFault"
+}
 
 func NewUnauthorizedError(message string) *OpenStackError {
 	return &OpenStackError{

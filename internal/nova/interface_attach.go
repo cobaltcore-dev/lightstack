@@ -169,7 +169,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("network has no subnet"))
 			return
 		}
-		subnetID, cidr := subnets[0].id, subnets[0].cidr
+		subnetID := subnets[0].id
 
 		// Use provided fixed_ip or allocate one
 		if req.InterfaceAttachment.FixedIP != "" {
@@ -189,7 +189,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			for _, subnet := range subnets {
 				_, ipNet, cidrErr := net.ParseCIDR(subnet.cidr)
 				if cidrErr == nil && ipNet.Contains(ip) {
-					subnetID, cidr = subnet.id, subnet.cidr
+					subnetID = subnet.id
 					matchedSubnet = true
 					break
 				}
@@ -215,8 +215,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		// Allocate/check and insert while holding the subnet lock shared with
 		// Neutron's port-create and server-boot paths.
 		err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
-			cidr, err = neutron.LockSubnet(c.Request.Context(), tx, subnetID)
-			if err != nil {
+			if _, err := neutron.LockSubnet(c.Request.Context(), tx, subnetID); err != nil {
 				return err
 			}
 			if fixedIP != "" {
@@ -228,7 +227,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 					return neutron.ErrNoAvailableIP
 				}
 			} else {
-				fixedIP, err = neutron.AllocateFreeIP(c.Request.Context(), tx, subnetID, cidr)
+				fixedIP, err = neutron.AllocateFreeIP(c.Request.Context(), tx, subnetID)
 				if err != nil {
 					return err
 				}
@@ -245,6 +244,13 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			return neutron.AddPortSecurityGroup(c.Request.Context(), tx, portID, defaultGroupID)
 		})
 		if err != nil {
+			var invalid *neutron.InvalidIPForSubnetError
+			if errors.As(err, &invalid) {
+				// The subnet's network or broadcast address, as upstream's check_subnet_ip refuses it
+				// (SPEC-033 FR-053).
+				common.SendError(c, common.NewBadRequestError(invalid.Error()))
+				return
+			}
 			if errors.Is(err, neutron.ErrNoAvailableIP) {
 				message := "no IP address available in the network's subnet"
 				if req.InterfaceAttachment.FixedIP != "" {

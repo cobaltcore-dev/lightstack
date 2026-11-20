@@ -28,8 +28,15 @@ func TestConcurrentPortWritersReserveOneAddress(t *testing.T) {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM interface_attachments WHERE port_id IN (SELECT id FROM ports WHERE network_id=$1)`, networkID)
 		_, _ = testPool.Exec(context.Background(), "DELETE FROM networks WHERE id=$1", networkID)
 	})
-	if _, err := testPool.Exec(t.Context(), `INSERT INTO subnets (id, name, network_id, project_id, cidr)
-		VALUES ($1, 'one-address', $2, $3, '192.0.2.7/32')`, subnetID, networkID, seededProjectID); err != nil {
+	// One free address: a /30 whose stored pool is its .5 alone (SPEC-033 FR-030). A /32 cannot serve:
+	// its one address is its network address, which upstream's check_subnet_ip refuses a request for
+	// (FR-053).
+	if _, err := testPool.Exec(t.Context(), `INSERT INTO subnets (id, name, network_id, project_id, cidr, pools_stored)
+		VALUES ($1, 'one-address', $2, $3, '192.0.2.4/30', $4)`, subnetID, networkID, seededProjectID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(t.Context(), `INSERT INTO subnet_allocation_pools (subnet_id, first_ip, last_ip)
+		VALUES ($1, '192.0.2.5', '192.0.2.5')`, subnetID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := neutron.EnsureDefaultSecurityGroup(t.Context(), testPool, seededProjectID); err != nil {
@@ -71,7 +78,7 @@ func TestConcurrentPortWritersReserveOneAddress(t *testing.T) {
 			router, path, body := portRouter, "/v2.0/ports", fmt.Sprintf(`{"port":{"network_id":%q}}`, networkID)
 			if i%3 == 1 {
 				router, path = novaRouter, "/v2.1/servers/"+serverID+"/os-interface"
-				body = fmt.Sprintf(`{"interfaceAttachment":{"net_id":%q,"fixed_ip":"192.0.2.7"}}`, networkID)
+				body = fmt.Sprintf(`{"interfaceAttachment":{"net_id":%q,"fixed_ip":"192.0.2.5"}}`, networkID)
 			}
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)).WithContext(ctx)
 			req.Header.Set("Content-Type", "application/json")

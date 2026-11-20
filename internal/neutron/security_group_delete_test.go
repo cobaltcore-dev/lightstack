@@ -63,7 +63,7 @@ func TestDeleteSecurityGroup(t *testing.T) {
 		}
 	})
 
-	t.Run("no such group, or another project's: 404, administrators included", func(t *testing.T) {
+	t.Run("no such group, or another project's as a member: 404", func(t *testing.T) {
 		other := createTestProject(t, "spec033-del-other")
 		foreign := sgTestGroup(t, other, "spec033-foreign-"+uuid.NewString()[:6])
 		admin := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}
@@ -74,7 +74,7 @@ func TestDeleteSecurityGroup(t *testing.T) {
 			{"no such group", uuid.NewString(), hdr},
 			{"a malformed id", "not-a-uuid", hdr},
 			{"another project's", foreign, hdr},
-			{"another project's, as an administrator", foreign, admin},
+			{"no such group, as an administrator", uuid.NewString(), admin},
 		} {
 			if code, body := del(tc.id, tc.hdr); code != http.StatusNotFound {
 				t.Errorf("%s: code=%d body=%s; want 404", tc.name, code, body)
@@ -82,6 +82,13 @@ func TestDeleteSecurityGroup(t *testing.T) {
 		}
 		if !groupExists(t, foreign) {
 			t.Error("another project's group was deleted")
+		}
+		// An administrator deletes any project's group by id, as upstream's (SPEC-033 FR-058).
+		if code, body := del(foreign, admin); code != http.StatusNoContent {
+			t.Errorf("another project's, as an administrator: code=%d body=%s; want 204", code, body)
+		}
+		if groupExists(t, foreign) {
+			t.Error("another project's group is still there after an administrator deleted it")
 		}
 	})
 

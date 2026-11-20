@@ -252,7 +252,7 @@ func TestResolveSecurityGroup(t *testing.T) {
 
 	t.Run("by name and by id", func(t *testing.T) {
 		for _, ref := range []string{webName, web} {
-			got, err := ResolveSecurityGroup(ctx, testPool, ref, seededProjectID)
+			got, err := ResolveSecurityGroup(ctx, testPool, ref, seededProjectID, false)
 			if err != nil || got != web {
 				t.Fatalf("resolve %q: got %q, %v; want %q", ref, got, err, web)
 			}
@@ -261,25 +261,37 @@ func TestResolveSecurityGroup(t *testing.T) {
 
 	t.Run("an id match wins over a group named after that id", func(t *testing.T) {
 		impostor := sgTestGroup(t, seededProjectID, web) // named after web's id
-		got, err := ResolveSecurityGroup(ctx, testPool, web, seededProjectID)
+		got, err := ResolveSecurityGroup(ctx, testPool, web, seededProjectID, false)
 		if err != nil || got != web {
 			t.Fatalf("resolve %q: got %q, %v; want the group with that id (%q), not %q", web, got, err, web, impostor)
 		}
 	})
 
-	t.Run("another project's group, by name or by id, is not found", func(t *testing.T) {
-		other := createTestProject(t, "spec033-other")
-		foreignName := "spec033-foreign-" + uuid.NewString()[:6]
-		foreign := sgTestGroup(t, other, foreignName)
+	other := createTestProject(t, "spec033-other")
+	foreignName := "spec033-foreign-" + uuid.NewString()[:6]
+	foreign := sgTestGroup(t, other, foreignName)
+
+	t.Run("a member: another project's group, by name or by id, is not found", func(t *testing.T) {
 		for _, ref := range []string{foreignName, foreign} {
-			if _, err := ResolveSecurityGroup(ctx, testPool, ref, seededProjectID); !errors.Is(err, ErrSecurityGroupNotFound) {
+			if _, err := ResolveSecurityGroup(ctx, testPool, ref, seededProjectID, false); !errors.Is(err, ErrSecurityGroupNotFound) {
 				t.Fatalf("resolve %q from the seeded project: got %v, want ErrSecurityGroupNotFound", ref, err)
 			}
 		}
 	})
 
+	// SPEC-033 round 2, T105 (FR-004, FR-018; research R52): an administrator's id names any project's
+	// group, as upstream's; a name still resolves only in the project given (register entry 5).
+	t.Run("an administrator: another project's group by id resolves, by name it does not", func(t *testing.T) {
+		if got, err := ResolveSecurityGroup(ctx, testPool, foreign, seededProjectID, true); err != nil || got != foreign {
+			t.Fatalf("resolve another project's id as an administrator: got %q, %v; want %q", got, err, foreign)
+		}
+		if _, err := ResolveSecurityGroup(ctx, testPool, foreignName, seededProjectID, true); !errors.Is(err, ErrSecurityGroupNotFound) {
+			t.Fatalf("resolve another project's name as an administrator: got %v, want ErrSecurityGroupNotFound", err)
+		}
+	})
+
 	t.Run("a malformed id is not found, not a query error", func(t *testing.T) {
-		if _, err := ResolveSecurityGroup(ctx, testPool, "not-a-uuid", seededProjectID); !errors.Is(err, ErrSecurityGroupNotFound) {
+		if _, err := ResolveSecurityGroup(ctx, testPool, "not-a-uuid", seededProjectID, true); !errors.Is(err, ErrSecurityGroupNotFound) {
 			t.Fatalf("resolve a malformed id: got %v, want ErrSecurityGroupNotFound", err)
 		}
 	})

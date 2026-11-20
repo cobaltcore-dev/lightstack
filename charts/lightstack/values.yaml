@@ -108,6 +108,12 @@ nova:
 neutron:
   networkingMode: stub        # stub | iptables | ebpf
   securityGroupMode: stub     # stub | iptables | ebpf
+  # -- Multi-node with VXLAN: the one node that holds every router and DHCP namespace
+  #    and carries north-south traffic (SPEC-033 FR-033), by its node name — the
+  #    Kubernetes node name, which the chart passes as LIGHTSTACK_NODE_NAME. Required
+  #    there: Lightstack refuses to start without it. Ignored in single-node mode, where
+  #    the node is its own network node.
+  networkNode: ""
 cinder:
   storageMode: stub           # stub | local | rbd | local,rbd
 glance:

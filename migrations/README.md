@@ -91,12 +91,25 @@ every `CREATE TABLE`, and any column that is a boolean, timestamp, id/uuid, JSON
   express these, and the `.sqlite` file rebuilds the table — create the new table, copy the rows,
   drop the old one, rename the new one.
 
-**Never rebuild a table other tables reference in a `.sqlite` file.** Each file runs in a
-transaction with foreign keys on, and `DROP TABLE` then deletes the rows that reference the dropped
+**Never rebuild a table other tables reference in an ordinary `.sqlite` file.** Each file runs in
+a transaction with foreign keys on, and `DROP TABLE` then deletes the rows that reference the dropped
 one through every `ON DELETE CASCADE` — the migration succeeds and the data is gone. SQLite's safe
-procedure turns foreign keys off, which works only outside a transaction, and the migrator gives
-every file one. The first migration that needs such a rebuild comes with a change to the migrator
-that lets one file run outside a transaction.
+procedure turns foreign keys off, which works only outside a transaction.
+
+Such a rebuild goes in a `.sqlite` file whose **first line** is the marker
+
+```sql
+-- lightstack:no-transaction
+```
+
+For a marked file the migrator follows SQLite's own procedure (`internal/database/migrate_notx.go`):
+it turns foreign keys off on its connection, runs the file in a transaction of its own, runs
+`PRAGMA foreign_key_check` before that transaction commits, and turns foreign keys back on. A row
+the check finds — a reference to a parent row that is no longer there — fails the migration and
+rolls the file back, naming each such row; so a marked file is still all or nothing. Write the
+rebuild as SQLite documents it: create the new table, copy the rows, drop the old table, rename the
+new one, then create its indexes again. PostgreSQL never reads the marker, so a `.postgres` file has
+no use for it. `085_security_group_names` is the first marked file.
 
 ## Checking
 

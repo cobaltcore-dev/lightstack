@@ -185,7 +185,8 @@
       "description": "Network service modes.",
       "properties": {
         "networkingMode": { "type": "string", "enum": ["stub", "iptables", "ebpf"], "description": "Networking backend." },
-        "securityGroupMode": { "type": "string", "enum": ["stub", "iptables", "ebpf"], "description": "Security-group backend." }
+        "securityGroupMode": { "type": "string", "enum": ["stub", "iptables", "ebpf"], "description": "Security-group backend." },
+        "networkNode": { "type": "string", "description": "Multi-node with VXLAN: the node name of the one node that holds every router and DHCP namespace (SPEC-033 FR-033). Required there; ignored in single-node mode." }
       }
     },
     "cinder": {

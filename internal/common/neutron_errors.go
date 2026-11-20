@@ -115,6 +115,9 @@ var neutronCodeTypes = map[string]string{
 // from an absent port; everything else is resolved from the envelope key, which already carries the
 // semantic. An unrecognized value falls back to the generic rather than inventing a name.
 func neutronType(e *OpenStackError) string {
+	if e.NeutronType != "" {
+		return e.NeutronType // named at the call site, where the tables cannot tell (R39)
+	}
 	resource := strings.ToLower(strings.TrimSpace(e.Resource))
 
 	switch e.StatusCode {

@@ -18,6 +18,9 @@ import (
 // Reported on PR #79 as SEC-1/SEC-2/SEC-3. Pre-existing rather than introduced there: the
 // base commit has the same zero project_id references in all three.
 //
+// The caller is a member: an administrator reaches every project's groups and rules, as upstream's
+// admin_or_owner policy lets them (SPEC-033 FR-057, FR-058; admin_write_test.go).
+//
 // A foreign group or rule must read as ABSENT (404), never Forbidden — a 403 confirms the
 // id exists, which is the same cross-tenant disclosure being closed.
 
@@ -58,7 +61,7 @@ func TestCreateSecurityGroupRule_RejectsForeignGroup(t *testing.T) {
 	code, body := doReqBody(r, http.MethodPost, "/v2.0/security-group-rules",
 		`{"security_group_rule":{"security_group_id":"`+foreignSG+`","direction":"ingress",`+
 			`"ethertype":"IPv4","protocol":"tcp","port_range_min":80,"port_range_max":80}}`,
-		neutronAuthHdr(seededProjectID, true))
+		neutronAuthHdr(seededProjectID, false))
 	if code != http.StatusNotFound {
 		t.Errorf("create rule in a foreign group: code=%d body=%s; want 404", code, body)
 	}
@@ -79,7 +82,7 @@ func TestCreateSecurityGroupRule_RejectsForeignGroup(t *testing.T) {
 func TestCreateSecurityGroupRule_AllowsOwnGroup(t *testing.T) {
 	requireDB(t)
 	r := newNeutronTestRouter()
-	hdr := neutronAuthHdr(seededProjectID, true)
+	hdr := neutronAuthHdr(seededProjectID, false)
 	ownSG := seededDefaultGroupID(t, r, hdr)
 
 	code, body := doReqBody(r, http.MethodPost, "/v2.0/security-group-rules",
@@ -107,7 +110,7 @@ func TestGetSecurityGroupRule_HidesForeignRule(t *testing.T) {
 	_, foreignRule := foreignSecurityGroup(t)
 
 	code, body := doReq(r, http.MethodGet, "/v2.0/security-group-rules/"+foreignRule,
-		neutronAuthHdr(seededProjectID, true))
+		neutronAuthHdr(seededProjectID, false))
 	if code != http.StatusNotFound {
 		t.Errorf("get a foreign rule: code=%d body=%s; want 404 (its ports and remote CIDR are firewall config)", code, body)
 	}
@@ -121,7 +124,7 @@ func TestDeleteSecurityGroupRule_RejectsForeignRule(t *testing.T) {
 	_, foreignRule := foreignSecurityGroup(t)
 
 	code, body := doReq(r, http.MethodDelete, "/v2.0/security-group-rules/"+foreignRule,
-		neutronAuthHdr(seededProjectID, true))
+		neutronAuthHdr(seededProjectID, false))
 	if code != http.StatusNotFound {
 		t.Errorf("delete a foreign rule: code=%d body=%s; want 404", code, body)
 	}
@@ -141,7 +144,7 @@ func TestDeleteSecurityGroupRule_RejectsForeignRule(t *testing.T) {
 func TestDeleteSecurityGroupRule_OwnRuleAndUnknownID(t *testing.T) {
 	requireDB(t)
 	r := newNeutronTestRouter()
-	hdr := neutronAuthHdr(seededProjectID, true)
+	hdr := neutronAuthHdr(seededProjectID, false)
 	ownSG := seededDefaultGroupID(t, r, hdr)
 
 	_, body := doReqBody(r, http.MethodPost, "/v2.0/security-group-rules",
@@ -172,7 +175,7 @@ func TestCreateSecurityGroupRule_RemoteGroupMustBeCallers(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
 	r := newNeutronTestRouter()
-	hdr := neutronAuthHdr(seededProjectID, true)
+	hdr := neutronAuthHdr(seededProjectID, false)
 	ownSG := seededDefaultGroupID(t, r, hdr)
 	foreignSG, _ := foreignSecurityGroup(t)
 

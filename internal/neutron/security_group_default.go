@@ -18,28 +18,28 @@ import (
 // port creation.
 //
 // Idempotence rests on one statement: INSERT … ON CONFLICT DO NOTHING RETURNING id.
-// A returned row means this call created the group, and only then are the seed
-// rules written (mirroring migrations/002_seed_data.up.sql: egress IPv4/IPv6
-// allow-all, and no ingress at all). No row means the group already existed —
-// created by a concurrent caller, via the API, or seeded — and it is left exactly
-// as found: an operator who removed rules from `default` keeps that decision.
-// Concurrent first use is serialized by the unique index on (project_id, name):
-// the second inserter blocks until the first commits, then takes the "existing"
-// branch.
+// A returned row means this call created the group, and only then are its rules
+// written. No row means the group already existed — created by a concurrent caller,
+// via the API, or seeded — and it is left exactly as found: an operator who removed
+// rules from `default` keeps that decision. Concurrent first use is serialized by the
+// partial unique index that allows one `default` per project (migration 085,
+// security_groups_one_default): the second inserter blocks until the first commits,
+// then takes the "existing" branch. Other names may repeat, as upstream's do (SPEC-033
+// FR-026).
 //
-// No ingress rule is seeded, deliberately: upstream's default security group denies
-// all inbound traffic, and a rule carrying neither remote_ip_prefix nor
-// remote_group_id is enforced as 0.0.0.0/0 by both dataplanes (ingressRuleSpec in
-// pkg/networking/northsouth.go, and pkg/networking/security_groups_ebpf.go), so
-// seeding one would open that port to the world for every project
-// (cloud-storage#528).
+// The rules are upstream's for a default group (SPEC-033 FR-043): egress open to
+// everything, IPv4 and IPv6, and ingress from the group's own members, IPv4 and IPv6.
+// No ingress rule is open to every address: upstream's default denies inbound traffic
+// from anywhere else, and a rule carrying neither remote_ip_prefix nor remote_group_id
+// would be enforced as 0.0.0.0/0, opening that port to the world for every project
+// (cloud-storage#528). The member rules name the group itself as their remote.
 func EnsureDefaultSecurityGroup(ctx context.Context, pool database.DB, projectID string) (string, error) {
 	var sgID string
 	if err := database.WithTx(ctx, pool, func(tx database.Tx) error {
 		err := tx.QueryRow(ctx,
 			`INSERT INTO security_groups (id, name, project_id, description)
 			 VALUES ($1, 'default', $2, 'Default security group')
-			 ON CONFLICT (project_id, name) DO NOTHING
+			 ON CONFLICT (project_id) WHERE name = 'default' DO NOTHING
 			 RETURNING id`,
 			uuid.New().String(), projectID).Scan(&sgID)
 		if errors.Is(err, database.ErrNoRows) {
@@ -55,8 +55,16 @@ func EnsureDefaultSecurityGroup(ctx context.Context, pool database.DB, projectID
 		if err != nil {
 			return fmt.Errorf("insert default security group: %w", err)
 		}
+		// Freshly created by this call: seed its rules. No ON CONFLICT
+		// here — security_group_rules has no unique constraint on the rule shape —
+		// and none is needed, because only the creating transaction reaches this.
 		if err := seedDefaultSecurityGroupRules(ctx, tx, sgID); err != nil {
 			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO security_group_rules (security_group_id, direction, ethertype, remote_group_id)
+			VALUES ($1, 'ingress', 'IPv4', $1), ($1, 'ingress', 'IPv6', $1)`, sgID); err != nil {
+			return fmt.Errorf("seed default member rules for %s: %w", sgID, err)
 		}
 		return nil
 	}); err != nil {
@@ -65,9 +73,10 @@ func EnsureDefaultSecurityGroup(ctx context.Context, pool database.DB, projectID
 	return sgID, nil
 }
 
-// seedDefaultSecurityGroupRules applies Neutron's default-rule templates to
-// a newly created group: unrestricted egress for IPv4 and IPv6, with no ingress.
-// Callers run it in the same transaction as group creation.
+// seedDefaultSecurityGroupRules writes upstream's starting rules for a newly created group: egress
+// open to everything, IPv4 and IPv6, and no ingress (SPEC-033 FR-043). A project's default also admits
+// its own members, which EnsureDefaultSecurityGroup adds after these. Callers run it in the same
+// transaction as group creation, so no successful create returns a group without its rules.
 func seedDefaultSecurityGroupRules(ctx context.Context, tx database.Tx, sgID string) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO security_group_rules (security_group_id, direction, ethertype, protocol, port_range_min, port_range_max)

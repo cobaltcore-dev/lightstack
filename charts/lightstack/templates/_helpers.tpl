@@ -267,6 +267,7 @@ neutron:
   networking_mode: {{ .Values.neutron.networkingMode | quote }}
   security_group_mode: {{ .Values.neutron.securityGroupMode | quote }}
   vxlan_enabled: {{ if eq .Values.deploymentMode "multi-node" }}{{ .Values.multiNode.vxlanEnabled }}{{ else }}false{{ end }}
+  network_node: {{ .Values.neutron.networkNode | quote }}
 cinder:
   port: 8776
   storage_mode: {{ .Values.cinder.storageMode | quote }}
