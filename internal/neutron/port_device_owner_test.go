@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Branch review SRC-7 (2026-11-23-review.md): port create and update stored any device_owner a member
+// SPEC-033 T179: port create and update stored any device_owner a member
 // sent. A network: owner gives a port a role its network plays — the network's DHCP port, a router's
 // port — so on a shared network a member could plant the network's DHCP port, and deleting it took DHCP
 // and metadata from every tenant there. Upstream's create_port:device_owner and update_port:device_owner

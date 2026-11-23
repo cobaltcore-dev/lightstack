@@ -31,7 +31,7 @@ type refreshRecorder struct {
 	failFirst error
 }
 
-func (r *refreshRecorder) RefreshPortFilters(ctx context.Context, portIDs []string) error {
+func (r *refreshRecorder) RefreshPortFilters(ctx context.Context, portIDs, groupIDs []string) error {
 	r.mu.Lock()
 	r.calls = append(r.calls, slices.Clone(portIDs))
 	first := len(r.calls) == 1
@@ -44,7 +44,7 @@ func (r *refreshRecorder) RefreshPortFilters(ctx context.Context, portIDs []stri
 			return r.failFirst
 		}
 	}
-	return r.Service.RefreshPortFilters(ctx, portIDs)
+	return r.Service.RefreshPortFilters(ctx, portIDs, groupIDs)
 }
 
 func (r *refreshRecorder) recorded() [][]string {
@@ -221,6 +221,32 @@ func TestSecurityGroupActions_UnknownOrForeignGroup_404(t *testing.T) {
 	}
 	if calls := rec.recorded(); len(calls) != 0 {
 		t.Errorf("RefreshPortFilters calls: %v; want none", calls)
+	}
+}
+
+// SPEC-033 T238: a group named by nothing but blanks, or not named, is refused before any
+// lookup with upstream's 400s (nova's security_groups _parse): "Security group name cannot be empty" for
+// a name that strips to empty, "Security group not specified" for none.
+func TestSecurityGroupActions_BlankOrMissingName_400(t *testing.T) {
+	requireDB(t)
+	r, rec := newSGActionRig(t)
+	server, ports := serverWithPorts(t, r, rec, seededProjectID, 1)
+	def := defaultGroup(t, seededProjectID)
+	for _, verb := range []string{"addSecurityGroup", "removeSecurityGroup"} {
+		for _, tc := range []struct{ body, message string }{
+			{`{"` + verb + `":{"name":"   "}}`, "Security group name cannot be empty"},
+			{`{"` + verb + `":{"name":""}}`, "Security group name cannot be empty"},
+			{`{"` + verb + `":{}}`, "Security group not specified"},
+		} {
+			code, body := doReq(r, http.MethodPost, "/v2.1/servers/"+server+"/action", tc.body, tenantHdr(seededProjectID))
+			wantStatus(t, tc.body, code, body, http.StatusBadRequest)
+			if !strings.Contains(body, tc.message) {
+				t.Errorf("%s: %s; want the message %q", tc.body, body, tc.message)
+			}
+		}
+	}
+	if got := groupsOf(t, ports[0]); !slices.Equal(got, []string{def}) {
+		t.Errorf("port groups: %v; want default only, unchanged", got)
 	}
 }
 
@@ -448,6 +474,32 @@ func TestSecurityGroupActions_UndoIsCompareAndSet(t *testing.T) {
 			t.Errorf("the other port: %v; want web put back", got)
 		}
 	})
+}
+
+// SPEC-033 T207 (FR-008): a port deleted between the change and its undo is not walked.
+// The removal emptied it, so its list read [] — what the change left — and putting the group back hit the
+// foreign key, which rolled the whole undo back: the server's other ports kept the removal while the client
+// got 500. The undo walks the ports it locked, and the others get the group back.
+func TestSecurityGroupActions_UndoSkipsAPortDeletedMeanwhile(t *testing.T) {
+	requireDB(t)
+	r, rec := newSGActionRig(t)
+	web := createTestGroup(t, seededProjectID, "spec033-web-"+uuid.NewString()[:6])
+	server, ports := serverWithPorts(t, r, rec, seededProjectID, 2)
+	for _, p := range ports {
+		setGroups(t, p, web)
+	}
+	rec.before = func() {
+		if _, err := testPool.Exec(context.Background(), "DELETE FROM ports WHERE id = $1", ports[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec.failFirst = errors.New("iptables-restore: line 4 failed")
+
+	code, body := sgAction(t, r, tenantHdr(seededProjectID), server, "removeSecurityGroup", groupName(t, web))
+	wantStatus(t, "remove with a failed rebuild", code, body, http.StatusInternalServerError)
+	if got := groupsOf(t, ports[1]); !slices.Equal(got, []string{web}) {
+		t.Errorf("the port that stayed: %v; want web put back", got)
+	}
 }
 
 // SPEC-033 US2 (FR-005): removing a server's last group answers 202, as upstream, and its ports then

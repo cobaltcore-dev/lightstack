@@ -210,41 +210,48 @@ fi
 # Upstream refuses a non-administrator's delete of `default` with 409
 # SecurityGroupCannotRemoveDefault, even when no port carries it; an administrator
 # may delete an unused one (SPEC-033 FR-024). This script's token is the seeded
-# administrator's, so the delete is made as a member of the same project.
+# administrator's, so the delete is made as a member — of a fresh project, whose `default` no
+# port carries: a group a port carries is refused as SecurityGroupInUse first, as upstream
+# checks use before the name, so only the body's type tells FR-024's refusal apart
+# (SPEC-033 T236).
 log_test "Try to delete default security group (should fail)"
-DEFAULT_SG_ID=$(echo "$SG_LIST" | jq -r '.security_groups[] | select(.name=="default") | .id' 2>/dev/null)
+MEMBER_NAME="sg-test-member-$$-$RANDOM"
+MEMBER_PROJECT_ID=$(curl -s -X POST "http://localhost:35357/v3/projects" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"project":{"name":"'"$MEMBER_NAME"'","domain_id":"default"}}' \
+    | jq -r '.project.id')
+MEMBER_ID=$(curl -s -X POST "http://localhost:35357/v3/users" \
+    -H "X-Auth-Token: $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"user":{"name":"'"$MEMBER_NAME"'","password":"sg-test-member","domain_id":"default"}}' \
+    | jq -r '.user.id')
+trap 'curl -s -o /dev/null -X DELETE "http://localhost:35357/v3/users/$MEMBER_ID" -H "X-Auth-Token: $TOKEN"; curl -s -o /dev/null -X DELETE "http://localhost:35357/v3/projects/$MEMBER_PROJECT_ID" -H "X-Auth-Token: $TOKEN"' EXIT
+MEMBER_ROLE_ID=$(curl -s -X GET "http://localhost:35357/v3/roles" \
+    -H "X-Auth-Token: $TOKEN" | jq -r '.roles[] | select(.name=="member") | .id')
+curl -s -o /dev/null -X PUT \
+    "http://localhost:35357/v3/projects/$MEMBER_PROJECT_ID/users/$MEMBER_ID/roles/$MEMBER_ROLE_ID" \
+    -H "X-Auth-Token: $TOKEN"
+MEMBER_TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
+    -H "Content-Type: application/json" \
+    -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"'"$MEMBER_NAME"'","password":"sg-test-member","domain":{"name":"Default"}}}},"scope":{"project":{"id":"'"$MEMBER_PROJECT_ID"'"}}}}' \
+    | grep -i "X-Subject-Token:" | awk '{print $2}' | tr -d '\r')
+# Listing the project's groups gives it its default, as upstream's does.
+MEMBER_DEFAULT_ID=$(curl -s -X GET "http://localhost:9696/v2.0/security-groups" \
+    -H "X-Auth-Token: $MEMBER_TOKEN" | jq -r '.security_groups[] | select(.name=="default") | .id' 2>/dev/null)
 
-if [ -z "$DEFAULT_SG_ID" ] || [ -z "$PROJECT_ID" ]; then
-    log_fail "No default security group to try to delete"
+if [ -z "$MEMBER_TOKEN" ] || [ -z "$MEMBER_DEFAULT_ID" ]; then
+    log_fail "Could not get a member's token and the fresh project's default group to try the delete with"
 else
-    MEMBER_NAME="sg-test-member-$$-$RANDOM"
-    MEMBER_ID=$(curl -s -X POST "http://localhost:35357/v3/users" \
-        -H "X-Auth-Token: $TOKEN" \
-        -H "Content-Type: application/json" \
-        -d '{"user":{"name":"'"$MEMBER_NAME"'","password":"sg-test-member","domain_id":"default"}}' \
-        | jq -r '.user.id')
-    trap 'curl -s -o /dev/null -X DELETE "http://localhost:35357/v3/users/$MEMBER_ID" -H "X-Auth-Token: $TOKEN"' EXIT
-    MEMBER_ROLE_ID=$(curl -s -X GET "http://localhost:35357/v3/roles" \
-        -H "X-Auth-Token: $TOKEN" | jq -r '.roles[] | select(.name=="member") | .id')
-    curl -s -o /dev/null -X PUT \
-        "http://localhost:35357/v3/projects/$PROJECT_ID/users/$MEMBER_ID/roles/$MEMBER_ROLE_ID" \
-        -H "X-Auth-Token: $TOKEN"
-    MEMBER_TOKEN=$(curl -i -s -X POST "http://localhost:35357/v3/auth/tokens" \
-        -H "Content-Type: application/json" \
-        -d '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"'"$MEMBER_NAME"'","password":"sg-test-member","domain":{"name":"Default"}}}},"scope":{"project":{"id":"'"$PROJECT_ID"'"}}}}' \
-        | grep -i "X-Subject-Token:" | awk '{print $2}' | tr -d '\r')
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE "http://localhost:9696/v2.0/security-groups/$MEMBER_DEFAULT_ID" \
+        -H "X-Auth-Token: $MEMBER_TOKEN")
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    ERROR_TYPE=$(echo "$RESPONSE" | sed '$d' | jq -r '.NeutronError.type' 2>/dev/null)
 
-    if [ -z "$MEMBER_TOKEN" ]; then
-        log_fail "Could not get a member's token to try the delete with"
+    if [ "$HTTP_CODE" == "409" ] && [ "$ERROR_TYPE" == "SecurityGroupCannotRemoveDefault" ]; then
+        log_pass "Correctly rejected a member's deletion of the default security group (HTTP $HTTP_CODE, $ERROR_TYPE)"
     else
-        HTTP_CODE=$(curl -s -w "%{http_code}" -o /dev/null -X DELETE "http://localhost:9696/v2.0/security-groups/$DEFAULT_SG_ID" \
-            -H "X-Auth-Token: $MEMBER_TOKEN")
-
-        if [ "$HTTP_CODE" == "409" ]; then
-            log_pass "Correctly rejected a member's deletion of the default security group (HTTP $HTTP_CODE)"
-        else
-            log_fail "Should have rejected a member's default group deletion with 409 (got HTTP $HTTP_CODE)"
-        fi
+        log_fail "Should have rejected a member's default group deletion with 409 SecurityGroupCannotRemoveDefault (got HTTP $HTTP_CODE, $ERROR_TYPE)"
     fi
 fi
 

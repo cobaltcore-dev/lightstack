@@ -22,8 +22,8 @@
 //     TRUE and FALSE;
 //   - the functions count, sum, min, max, avg (with DISTINCT and FILTER (WHERE …)),
 //     coalesce, nullif, lower, upper, length, abs, round, replace, now, gen_random_uuid,
-//     and pg_advisory_xact_lock(hashtext($1)) — a no-op on SQLite, whose immediate
-//     transactions serialise writers;
+//     and pg_advisory_xact_lock(hashtext($1)), which AdvisoryLock takes — a no-op on SQLite,
+//     whose immediate transactions serialise writers;
 //   - || on text, LIKE for prefix filters (SQLite's LIKE ignores ASCII case), ~ for a
 //     regular-expression match (each backend's own dialect), and ->> and -> on JSON;
 //   - $1 … $N placeholders.

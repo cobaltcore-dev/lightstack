@@ -27,6 +27,7 @@ tests:
       - templates/daemonset.yaml
     set:
       deploymentMode: multi-node
+      neutron.networkNode: node-a
     asserts:
       - exists:
           path: spec.template.metadata.annotations["checksum/config"]

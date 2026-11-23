@@ -1,6 +1,7 @@
--- lightstack:no-transaction
+-- lightstack:foreign-keys-off
 -- Rebuilds security_groups with UNIQUE (project_id, name) again, as the up file rebuilt it
 -- without. Fails while two groups of one project share a name: those must be renamed first.
+DROP INDEX idx_security_groups_project_name;
 DROP INDEX security_groups_one_default;
 CREATE TABLE "security_groups_rebuilt" (
     "id" TEXT NOT NULL DEFAULT (gen_random_uuid()),

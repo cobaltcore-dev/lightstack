@@ -94,7 +94,7 @@ func createTestServer(t *testing.T, r *gin.Engine, projectID, body string) strin
 // groupIDs (none gives the project's default).
 func allocateTestPort(t *testing.T, network *neutron.Service, networkID, projectID, serverID string, groupIDs []string) string {
 	t.Helper()
-	info, err := network.AllocatePortForInstance(t.Context(), networkID, projectID, serverID, groupIDs, "", false)
+	info, err := network.AllocatePortForInstance(t.Context(), neutron.InstancePort{NetworkID: networkID, ProjectID: projectID, InstanceID: serverID, SecurityGroupIDs: groupIDs, CopyGroupsFrom: "", Admin: false})
 	if err != nil {
 		t.Fatalf("allocate port: %v", err)
 	}

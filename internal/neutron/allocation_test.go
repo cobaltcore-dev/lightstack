@@ -129,7 +129,7 @@ func TestRequestedAddresses(t *testing.T) {
 		{"10.87.4.4", true, false},
 		{"10.87.4.5", false, false}, // a port's
 		{"10.87.4.6", false, false}, // a floating IP's
-		{"10.87.4.1", false, false}, // the gateway
+		{"10.87.4.1", true, false},  // the gateway, held by nothing: upstream's IPAM gives it (SPEC-033 T198)
 		{"10.87.4.0", false, true},  // the network address
 		{"10.87.4.15", false, true}, // the broadcast address
 		{"10.99.0.1", false, true},  // outside the subnet
@@ -159,7 +159,7 @@ func TestConcurrentPortAllocationsAreDistinct(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			info, err := svc.AllocatePortForInstance(context.Background(), networkID, seededProjectID, uuid.NewString(), nil, "", false)
+			info, err := svc.AllocatePortForInstance(context.Background(), InstancePort{NetworkID: networkID, ProjectID: seededProjectID, InstanceID: uuid.NewString(), SecurityGroupIDs: nil, CopyGroupsFrom: "", Admin: false})
 			if err != nil {
 				t.Errorf("allocate: %v", err)
 				return

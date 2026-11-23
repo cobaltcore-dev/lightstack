@@ -11,9 +11,9 @@ import (
 
 // SPEC-033 round 2, T062 (research R39): an error can carry the exact upstream exception class
 // Neutron's envelope names. Upstream raises several 409s about one resource — a security group in
-// use, the default group that cannot be removed, renamed or repeated — and the resource table maps
-// every 409 on "security group" to SecurityGroupInUse. An explicit type wins over the tables;
-// errors without one render as before.
+// use, the default group that cannot be removed, renamed or repeated — so a 409 is named at the call
+// site, and one without a type is a Conflict whatever its resource (SPEC-033 T216). An explicit
+// type wins over the tables; errors without one render as before.
 
 // renderNeutron runs SendError through a request marked for Neutron's envelope and returns the
 // status and the NeutronError object.
@@ -96,7 +96,7 @@ func TestNeutronTypeWithoutExplicitTypeUnchanged(t *testing.T) {
 		err      *OpenStackError
 		wantType string
 	}{
-		{"in use, by resource", NewResourceInUseError("security group", "delete security group", "in use"), "SecurityGroupInUse"},
+		{"a resource's conflict", &OpenStackError{StatusCode: http.StatusConflict, Code: "conflictingRequest", Message: "in use", Resource: "security group"}, "Conflict"},
 		{"not found, by resource", NewNotFoundError("security group"), "SecurityGroupNotFound"},
 		{"plain conflict", NewConflictError("nope"), "Conflict"},
 		{"bad request", NewBadRequestError("nope"), "BadRequest"},

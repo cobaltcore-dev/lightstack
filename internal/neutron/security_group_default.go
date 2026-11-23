@@ -6,8 +6,37 @@ import (
 	"fmt"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+// ensureDefaultOf ensures the default group of the project a group or rule listing, or a group's create,
+// concerns, as upstream's get_security_groups, get_security_group_rules and create_security_group do
+// (SPEC-033 T193). A project that does not exist has none.
+func (svc *Service) ensureDefaultOf(ctx context.Context, projectID string) error {
+	var exists bool
+	if err := svc.pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM projects WHERE id::text = $1)", projectID).Scan(&exists); err != nil {
+		return fmt.Errorf("read project %s: %w", projectID, err)
+	}
+	if !exists {
+		return nil
+	}
+	_, err := EnsureDefaultSecurityGroup(ctx, svc.pool, projectID)
+	return err
+}
+
+// listedProject is the project a group or rule listing concerns, upstream's: the first one an
+// administrator names (project_id, else tenant_id), else the caller's.
+func listedProject(c *gin.Context) string {
+	if isAdmin(c) {
+		for _, key := range []string{"project_id", "tenant_id"} {
+			if named := nonEmpty(c.QueryArray(key)); len(named) > 0 {
+				return named[0]
+			}
+		}
+	}
+	return c.GetString("project_id")
+}
 
 // EnsureDefaultSecurityGroup returns the id of the project's `default` security
 // group, creating it — with its default rules — only if it does not exist yet.
@@ -34,7 +63,16 @@ import (
 // would be enforced as 0.0.0.0/0, opening that port to the world for every project
 // (cloud-storage#528). The member rules name the group itself as their remote.
 func EnsureDefaultSecurityGroup(ctx context.Context, pool database.DB, projectID string) (string, error) {
+	// Read first, outside a transaction: once the group exists, a listing that ensures it writes nothing
+	// and, on SQLite, takes no write lock (SPEC-033 T193).
 	var sgID string
+	err := pool.QueryRow(ctx, "SELECT id::text FROM security_groups WHERE name = 'default' AND project_id::text = $1", projectID).Scan(&sgID)
+	if err == nil {
+		return sgID, nil
+	}
+	if !errors.Is(err, database.ErrNoRows) {
+		return "", fmt.Errorf("read default security group: %w", err)
+	}
 	if err := database.WithTx(ctx, pool, func(tx database.Tx) error {
 		err := tx.QueryRow(ctx,
 			`INSERT INTO security_groups (id, name, project_id, description)

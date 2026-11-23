@@ -2,44 +2,44 @@ package neutron
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"maps"
-	"net"
+	"net/netip"
 	"slices"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
-
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/rs/zerolog/log"
 )
 
-// NetworkReconciler rebuilds real-mode network state from the database on
-// startup and periodically, so VM networking survives a Lightstack control-plane
-// restart/upgrade (SPEC-009 WS-2). On a pod restart the kernel objects
-// (bridges, netns, taps, iptables) persist, but dnsmasq is a Lightstack child process
-// that dies with the pod — so the operative job is re-spawning DHCP, with a
-// best-effort bridge ensure. Reconciliation is idempotent and best-effort per
-// resource: one bad tenant never blocks the others or control-plane readiness.
-// Modeled on the VXLAN coordinator.
+// NetworkReconciler keeps this node's real-mode network state matching the records, in both directions,
+// at start and on every interval (SPEC-033 FR-010 as FR-042 restates it, FR-036, FR-044; research R24,
+// R26, R28, R29, R32). It runs on every node and converges only what its node holds (R26):
+//
+//   - every node: the networks' bridges; once, the retired state of earlier layouts (FR-044); the uplink's
+//     proxy entries no router's leg routes; the chains of the ports bound to it;
+//   - the network node: every router and every network's DHCP with a record — which restarts a
+//     dnsmasq that died with an earlier process and re-opens its metadata listener — and every one it
+//     holds without a record removed;
+//   - any other node: every router and DHCP namespace it holds removed, records or not, since only the
+//     network node holds them (it was the network node once, say).
+//
+// It lists the node before it reads the records, and removes by "no record" only after a complete read
+// (R24): every path commits a record before it makes the state, so what the listing found has a record
+// the read can see, and an incomplete read proves nothing. What it did read it still converges. A unit
+// that already matches its records is only read (R7). Best-effort per unit: one that fails is logged and
+// the next pass tries again.
 type NetworkReconciler struct {
 	svc          *Service
 	pollInterval time.Duration
 	stopChan     chan struct{}
-	// readFloatingIPs reads every floating IP's record, associated or not, and whether the read was
-	// complete (SPEC-033 research R24). A field so that a test can return a partial read: a pass
-	// that only checked for an error would remove after one.
-	readFloatingIPs func(context.Context) ([]reconcileFIP, bool, error)
+	// readIDs reads a column of ids, and whether every row was read. A field so a test can scope a pass
+	// to its own records, or make a read partial.
+	readIDs func(ctx context.Context, query string, args ...any) (ids []string, complete bool, err error)
+	// retiredRemoved is set once the retired state is gone: nothing writes it again (FR-044).
+	retiredRemoved bool
 }
-
-// reconcileFIP is a floating IP's record as a reconciliation pass reads it.
-type reconcileFIP struct {
-	address, fixed, port string
-}
-
-func (f reconcileFIP) associated() bool { return f.fixed != "" && f.port != "" }
 
 // NewNetworkReconciler binds a reconciler to the Neutron service's managers.
 // A zero/negative interval defaults to 30s.
@@ -47,13 +47,14 @@ func NewNetworkReconciler(svc *Service, pollInterval time.Duration) *NetworkReco
 	if pollInterval <= 0 {
 		pollInterval = 30 * time.Second
 	}
-	r := &NetworkReconciler{
+	return &NetworkReconciler{
 		svc:          svc,
 		pollInterval: pollInterval,
 		stopChan:     make(chan struct{}),
+		readIDs: func(ctx context.Context, query string, args ...any) ([]string, bool, error) {
+			return readIDs(ctx, svc.pool, query, args...)
+		},
 	}
-	r.readFloatingIPs = r.readFloatingIPRecords
-	return r
 }
 
 // Start runs an initial reconcile, then re-reconciles on the poll interval until
@@ -86,201 +87,48 @@ func (r *NetworkReconciler) PollInterval() time.Duration { return r.pollInterval
 // Stop ends the reconcile loop.
 func (r *NetworkReconciler) Stop() { close(r.stopChan) }
 
+// reconcile is one pass. On the network node the stray proxy entries go before the routers are
+// converged: a router whose address a racing request gave it, and whose convergence found the stray
+// entry and kept it, gets it back in the same pass. On another node the routers it holds go first, with
+// the entries their legs route.
 func (r *NetworkReconciler) reconcile(ctx context.Context) {
 	r.reconcileNetworks(ctx)
-	r.reconcileSubnets(ctx)
-	r.reconcileNAT(ctx)
-}
-
-// reconcileNAT re-asserts egress SNAT for every router with an external gateway
-// (per attached internal subnet) and converges the node's floating-IP state with the
-// records both ways — so VM internet access and floating-IP reachability survive a
-// Lightstack control-plane restart (SPEC-009 WS-3 / T035), and state no record holds
-// goes within a pass (SPEC-033 FR-010). Idempotent.
-func (r *NetworkReconciler) reconcileNAT(ctx context.Context) {
+	r.removeRetired(ctx)
+	if r.svc.isNetworkNode() {
+		r.reconcileDHCP(ctx)
+		r.removeStrayProxies(ctx)
+		r.reconcileRouters(ctx)
+	} else {
+		r.removeNetworkNodeUnits(ctx)
+		r.removeStrayProxies(ctx)
+	}
+	r.reconcilePorts(ctx)
 	r.reportGrandfatheredGateways(ctx)
-
-	// Egress: internal subnets behind a router whose gateway masquerades them. enable_snat is honoured
-	// here as everywhere (egressSNATCIDRs); it used not to be, so a range withdrawn when SNAT was
-	// turned off came straight back on this pass.
-	cidrs, err := r.svc.egressSNATCIDRs(ctx)
-	if err != nil {
-		log.Error().Err(err).Msg("reconcile: egress subnets read incomplete; ensuring what was read this pass")
-	}
-
-	uplink, err := r.svc.uplink()
-	if err != nil {
-		log.Error().Err(err).Msg("reconcile: no uplink; egress SNAT and floating IPs skipped this pass")
-		return
-	}
-	for _, cidr := range cidrs {
-		if err := r.svc.routerManager.EnsureEgressSNAT(cidr, uplink); err != nil {
-			log.Debug().Err(err).Str("cidr", cidr).Msg("reconcile: egress SNAT")
-		}
-	}
-	r.reconcileFloatingIPs(ctx, uplink)
 }
 
-// reconcileFloatingIPs converges this node's floating-IP state with the records, both ways (SPEC-033
-// research R24). It lists the node first, then reads every floating IP's record: every path commits its
-// record before it creates node state, so whatever the listing found belongs to a record this read can
-// see, and has none only when the record is gone. Then, one address at a time under the node lock:
-//   - every floating IP with a record or a marked rule is converged where the listing differs; one with
-//     only a marked rule is converged only after a complete read, and one with only unmarked rules and
-//     no record is left alone, as an operator's;
-//   - an associated floating IP whose NAT matches has its filter compared and kept (research R7);
-//   - after a complete read only, each filter that no association names and no rule of the shape
-//     reaches is removed.
-//
-// An address whose lock is held is skipped until the next pass: the holder is changing it anyway.
-func (r *NetworkReconciler) reconcileFloatingIPs(ctx context.Context, uplink string) {
-	state, err := r.svc.dataplane.NorthSouthState(uplink)
-	if err != nil {
-		log.Error().Err(err).Msg("reconcile: listing the node's floating-IP state failed; skipped this pass")
-		return
-	}
-	records, complete, err := r.readFloatingIPs(ctx)
-	if err != nil {
-		log.Error().Err(err).Msg("reconcile: reading the floating IPs failed")
-		complete = false
-	}
-	if !complete {
-		log.Error().Msg("reconcile: floating-IP read incomplete; ensuring what was read, removing nothing this pass")
-	}
-
-	byAddress := make(map[string]reconcileFIP, len(records))
-	for _, rec := range records {
-		byAddress[rec.address] = rec
-	}
-	natByAddress := map[string][]networking.FloatingNAT{}
-	for _, n := range state.NAT {
-		natByAddress[n.FloatingIP] = append(natByAddress[n.FloatingIP], n)
-	}
-	onUplink := make(map[string]bool, len(state.Addresses))
-	for _, a := range state.Addresses {
-		onUplink[a] = true
-	}
-	candidates := make(map[string]bool, len(records))
-	for _, rec := range records {
-		candidates[rec.address] = true
-	}
-	for _, n := range state.NAT {
-		if n.Marked {
-			candidates[n.FloatingIP] = true
-		}
-	}
-
-	removed := map[string]bool{}
-	for _, f := range slices.Sorted(maps.Keys(candidates)) {
-		rec, hasRecord := byAddress[f]
-		if !hasRecord && !complete {
-			continue
-		}
-		if !natDiffers(rec, hasRecord, natByAddress[f], onUplink[f]) {
-			if hasRecord && rec.associated() {
-				if err := r.svc.ensureIngressFilter(ctx, rec.fixed, uplink, rec.port); errors.Is(err, errNodeBusy) {
-					log.Debug().Err(err).Str("fixed_ip", rec.fixed).Msg("reconcile: ingress filter skipped this pass, the node lock is held")
-				} else if err != nil {
-					log.Error().Err(err).Str("fixed_ip", rec.fixed).Msg("reconcile: ingress filter")
-				}
-			}
-			continue
-		}
-		release, err := r.svc.lockNode()
-		if err != nil {
-			log.Debug().Err(err).Str("floating_ip", f).Msg("reconcile: floating IP skipped this pass, the node lock is held")
-			continue
-		}
-		gone, err := r.svc.convergeFloatingIPLocked(ctx, f, uplink)
-		release()
-		for _, x := range gone {
-			removed[x] = true
-		}
-		if err != nil {
-			log.Error().Err(err).Str("floating_ip", f).Msg("reconcile: converge floating IP")
-		}
-	}
-	if !complete {
-		return
-	}
-
-	associated := map[string]bool{}
-	for _, rec := range records {
-		if rec.associated() {
-			associated[rec.fixed] = true
-		}
-	}
-	for _, x := range state.Filters {
-		if removed[x] || associated[x] || natReaches(state.NAT, x) {
-			continue
-		}
-		r.removeOrphanFilter(ctx, x)
-	}
-}
-
-// removeOrphanFilter removes a filter that the pass found no association for, under the node lock,
-// after checking the records again: a request that associated a floating IP with it since the pass's
-// read has committed its record before converging.
-func (r *NetworkReconciler) removeOrphanFilter(ctx context.Context, fixedIP string) {
-	release, err := r.svc.lockNode()
-	if err != nil {
-		log.Debug().Err(err).Str("fixed_ip", fixedIP).Msg("reconcile: filter skipped this pass, the node lock is held")
-		return
-	}
-	defer release()
-	held, err := r.svc.fixedIPAssociated(ctx, fixedIP)
-	if err == nil && !held {
-		err = r.svc.dataplane.RemoveIngressFilter(fixedIP)
-	}
-	if err != nil {
-		log.Error().Err(err).Str("fixed_ip", fixedIP).Msg("reconcile: remove an orphan ingress filter")
-	}
-}
-
-// natDiffers reports whether a floating IP's NAT and address on the node differ from its record: an
-// associated one needs exactly its marked rule to its fixed IP in each hook and its address; an
-// unassociated one, or a marked rule without a record, needs nothing at all.
-func natDiffers(rec reconcileFIP, hasRecord bool, rules []networking.FloatingNAT, hasAddress bool) bool {
-	if !hasRecord || !rec.associated() {
-		return len(rules) > 0 || hasAddress
-	}
-	if !hasAddress {
-		return true
-	}
-	hooks := map[string]int{}
-	for _, n := range rules {
-		if !n.Marked || n.FixedIP != rec.fixed {
-			return true
-		}
-		hooks[n.Chain]++
-	}
-	return hooks["PREROUTING"] != 1 || hooks["OUTPUT"] != 1
-}
-
-// readFloatingIPRecords reads every floating IP's record. complete is false when a row could not be
-// read: such a list is safe to ensure from and unsafe to remove from, as readNetworkIDs.
-func (r *NetworkReconciler) readFloatingIPRecords(ctx context.Context) ([]reconcileFIP, bool, error) {
-	rows, err := r.svc.pool.Query(ctx,
-		"SELECT floating_ip_address, COALESCE(fixed_ip_address, ''), COALESCE(port_id::text, '') FROM floating_ips")
+// readIDs reads a single column of ids. complete is false when a row could not be read: such a list is
+// safe to converge from and unsafe to remove by.
+func readIDs(ctx context.Context, q subnetQuerier, query string, args ...any) (ids []string, complete bool, err error) {
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, err
 	}
 	defer rows.Close()
-	complete := true
-	var out []reconcileFIP
+	complete = true
 	for rows.Next() {
-		var f reconcileFIP
-		if err := rows.Scan(&f.address, &f.fixed, &f.port); err != nil {
-			log.Warn().Err(err).Str("operation", "reconcileFloatingIPs").Msg("failed to scan floating IP row")
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			log.Warn().Err(err).Msg("reconcile: an unreadable row")
 			complete = false
 			continue
 		}
-		out = append(out, f)
+		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return out, false, err
+		log.Warn().Err(err).Msg("reconcile: a read ended early")
+		complete = false
 	}
-	return out, complete, nil
+	return ids, complete, nil
 }
 
 // reconcileNetworks ensures each network's bridge exists. Best-effort: bridges
@@ -288,7 +136,7 @@ func (r *NetworkReconciler) readFloatingIPRecords(ctx context.Context) ([]reconc
 // "already exists" outcome is expected and logged at debug.
 func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 	// A short list is safe to ENSURE from — only the prune needs a complete one.
-	ids, _, err := r.readNetworkIDs(ctx)
+	ids, _, err := r.readIDs(ctx, `SELECT id::text FROM networks`)
 	if err != nil {
 		log.Error().Err(err).Msg("reconcile: failed to query networks")
 		return
@@ -302,63 +150,31 @@ func (r *NetworkReconciler) reconcileNetworks(ctx context.Context) {
 	r.pruneDeletedNetworks(ctx)
 }
 
-// readNetworkIDs reads every network id. complete is false when a row could not be read: such a list
-// is safe to ENSURE from and unsafe to PRUNE from. This used to skip only on rows.Err(), which left
-// the more likely case — one unreadable row, logged and stepped over — feeding a short list straight
-// into the prune.
-func (r *NetworkReconciler) readNetworkIDs(ctx context.Context) (ids []string, complete bool, err error) {
-	rows, err := r.svc.pool.Query(ctx, `SELECT id FROM networks`)
-	if err != nil {
-		return nil, false, err
-	}
-	complete = true
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			log.Warn().Err(err).Str("operation", "reconcileNetworks").Msg("failed to scan row")
-			complete = false
-			continue
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("reconcile: networks rows error")
-		complete = false
-	}
-	return ids, complete, nil
-}
-
-// pruneDeletedNetworks removes real-mode state for networks that no longer exist: a deleted network's
-// bridge persists in the kernel and keeps claiming its subnet gateway IP, colliding with a later
-// network on the same CIDR (the recurring single-node stale-bridge problem), and its dnsmasq keeps
-// running.
+// pruneDeletedNetworks removes the bridges of networks that no longer exist: a deleted network's bridge
+// persists in the kernel, colliding with a later network that draws the same bridge name. A network's
+// DHCP leaves the network node with its delete (DeleteNetwork); the DHCP pass removes any it left.
 //
-// The host state is LISTED FIRST and the networks read after it. Every path commits a network's row
-// before creating host state for it, so whatever the listing found belongs to a row this read can
-// see. The pass used to read once, before ensuring and listing, and a network created in between lost
-// its bridge and its DHCP right after its 201.
+// The bridges are LISTED FIRST and the networks read after them. Every path commits a network's row
+// before creating its bridge, so whatever the listing found belongs to a row this read can see. The
+// pass used to read once, before ensuring and listing, and a network created in between lost its
+// bridge right after its 201.
 //
-// Both steps read "not in the list" as "deleted", so neither may run against a list known to be
-// short: a network that was merely unread would lose its bridge and have its dnsmasq stopped — taking
-// DHCP away from running guests. Skipping only defers the hygiene to the next pass, which is the same
-// trade reconcileSubnets makes for the metadata redirect.
+// The prune reads "not in the list" as "deleted", so it may not run against a list known to be short:
+// a network that was merely unread would lose its bridge, taking its guests off the network. Skipping
+// only defers the hygiene to the next pass.
 func (r *NetworkReconciler) pruneDeletedNetworks(ctx context.Context) {
 	bridges, listErr := r.svc.brManager.ListManagedBridges()
 	if listErr != nil {
 		log.Debug().Err(listErr).Msg("reconcile: list bridges for prune")
 	}
-	served := r.svc.dhcpManager.ServedNetworks()
 
-	ids, complete, err := r.readNetworkIDs(ctx)
+	ids, complete, err := r.readIDs(ctx, `SELECT id::text FROM networks`)
 	if err != nil || !complete {
-		log.Warn().Err(err).Msg("reconcile: network enumeration incomplete; skipping bridge and DHCP prune this pass")
+		log.Warn().Err(err).Msg("reconcile: network enumeration incomplete; skipping the bridge prune this pass")
 		return
 	}
-	active := make(map[string]bool, len(ids))
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		active[id] = true
 		want[networking.BridgeNameForNetwork(id)] = true
 	}
 
@@ -372,293 +188,302 @@ func (r *NetworkReconciler) pruneDeletedNetworks(ctx context.Context) {
 			log.Info().Str("bridge", b).Msg("reconcile: pruned stale bridge (network deleted)")
 		}
 	}
-	for _, networkID := range served {
-		if !active[networkID] {
-			_ = r.svc.dhcpManager.StopDHCP(networkID)
-		}
-	}
 }
 
-// reconcileSubnets re-applies DHCP for every network that has a DHCP-enabled
-// subnet but is not currently serving — the part that does not survive a pod
-// restart. It delegates to applyDHCPForNetwork(restart=false), which is
-// idempotent (IsRunning guard) while still self-healing a dnsmasq that was
-// killed out-of-band (SC-010) and re-asserting the bridge IP + metadata DNAT
-// every pass (SPEC-009 WS-4 / T029). It then prunes the metadata DNAT rules that
-// pass did NOT assert, reclaiming what the delete paths leaked.
-func (r *NetworkReconciler) reconcileSubnets(ctx context.Context) {
-	rows, err := r.svc.pool.Query(ctx,
-		`SELECT DISTINCT network_id FROM subnets WHERE enable_dhcp = true`)
+// removeRetired removes what earlier layouts left on this node and this one never writes (FR-044), once
+// per process: a failed removal is made again the next pass, a done one never, since nothing writes that
+// state again. It hands the node no records, so only what a mark or a name makes Lightstack's goes: a
+// tenant chooses a subnet's CIDR, and an operator's own masquerade or DNAT has the earlier layout's
+// shape (SPEC-033 T190). The records are the operator's teardown's (lightstack cleanup).
+func (r *NetworkReconciler) removeRetired(ctx context.Context) {
+	if r.retiredRemoved {
+		return
+	}
+	uplink, err := r.svc.uplink()
 	if err != nil {
-		log.Error().Err(err).Msg("reconcile: failed to query subnets")
+		log.Debug().Err(err).Msg("reconcile: no uplink; the retired state only it makes recognisable stays")
+		uplink = ""
+	}
+	if err := r.svc.retired.Remove(ctx, uplink, networking.RetiredRecords{}); err != nil {
+		log.Warn().Err(err).Msg("reconcile: remove the retired state of an earlier layout; the next pass tries again")
 		return
 	}
-	var networkIDs []string
-	scanFailed := false
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			// Logged so the bad row is discoverable (#549), and recorded so the prune below cannot
-			// treat a short list as authoritative (#546). Both halves are needed: the log alone
-			// leaves the prune destructive, the flag alone leaves the cause invisible.
-			log.Warn().Err(err).Str("operation", "reconcileSubnets").Msg("failed to scan row")
-			scanFailed = true
-			continue
-		}
-		networkIDs = append(networkIDs, id)
-	}
-	rows.Close()
-	// A short list is safe to ASSERT from and unsafe to PRUNE from, so the two halves of this pass
-	// are treated differently rather than the whole pass being abandoned (#549 returned here).
-	// Re-applying DHCP for the networks that were read is idempotent and only ever adds; the ones
-	// missed are picked up next pass. Pruning against the same short list would delete the
-	// metadata redirect out from under a network that was merely unread.
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("reconcile: subnets rows error")
-		scanFailed = true
-	}
+	r.retiredRemoved = true
+}
 
-	// bridge -> the address applyDHCPForNetwork pointed the redirect at. Collected from the calls
-	// themselves rather than re-derived from a second query, so the two can never disagree about
-	// which address a gatewayless subnet got and prune a rule that was just asserted.
-	desired := make(map[string]string, len(networkIDs))
-	for _, networkID := range networkIDs {
-		bridge, addr, err := r.svc.applyDHCPForNetwork(ctx, networkID, false)
-		if err != nil {
-			log.Warn().Err(err).Str("network_id", networkID).Msg("reconcile: failed to read DHCP state")
-			scanFailed = true
-			continue
-		}
-		if bridge != "" && addr != "" {
-			desired[bridge] = addr
-		}
-	}
-
-	// A partial read is not a prune input: pruning against a set that is missing a network — one
-	// the enumeration skipped, or one whose subnet could not be read — deletes the metadata redirect
-	// out from under it, which breaks cloud-init for its guests until the next clean pass. Skipping
-	// a pass only defers hygiene.
-	if scanFailed {
-		log.Warn().Msg("reconcile: subnet state incomplete; skipping metadata DNAT prune this pass")
-		return
-	}
-	// Prune lists the rules before it calls this, so a network whose subnet was created after the
-	// enumeration above — its handler having added the redirect since — is in the picture too.
-	if removed, err := r.svc.mdRedirect.Prune(func() (map[string]string, error) {
-		return r.svc.desiredRedirectsNow(ctx, desired)
-	}); err != nil {
-		log.Debug().Err(err).Msg("reconcile: metadata DNAT prune")
-	} else if removed > 0 {
-		log.Info().Int("rules", removed).Msg("reconcile: pruned stale metadata DNAT rules (network or gateway gone)")
+// converge converges a unit this node holds within the node call's deadline, logging a failure.
+func (r *NetworkReconciler) converge(ctx context.Context, req unitRequest) {
+	uctx, cancel := context.WithTimeout(ctx, nodeApplyDeadline)
+	defer cancel()
+	if err := r.svc.convergeUnit(uctx, req); err != nil {
+		log.Warn().Err(err).Str("unit", string(req.Unit)).Strs("ids", req.IDs).Msg("reconcile: converge a unit")
 	}
 }
 
-// desiredRedirectsNow returns the pass's redirects plus that of every network with a DHCP-enabled
-// subnet the pass did not reach: one whose subnet was created after the pass enumerated them. It reads
-// when called, which Prune does after listing the rules, so the network of every listed rule is in
-// the result. The pass's own entries are kept as asserted; an added one is derived as
-// applyDHCPForNetwork derives it, from the network's first DHCP-enabled subnet.
-func (svc *Service) desiredRedirectsNow(ctx context.Context, pass map[string]string) (map[string]string, error) {
-	rows, err := svc.pool.Query(ctx, `
-		SELECT network_id::text, cidr, gateway_ip
-		FROM (SELECT network_id, cidr, gateway_ip,
-		             ROW_NUMBER() OVER (PARTITION BY network_id ORDER BY created_at, id) AS position
-		        FROM subnets
-		       WHERE enable_dhcp = true) AS dhcp_subnets
-		WHERE position = 1`)
+// heldWithout is what the node holds and the records do not name, once.
+func heldWithout(held, records []string) []string {
+	var out []string
+	for _, id := range held {
+		if !slices.Contains(records, id) && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// reconcileDHCP converges, on the network node, the DHCP of every network with a DHCP subnet or a DHCP
+// port (R29), each brought in line with its subnets first, and after a complete read every network's
+// DHCP the node holds, or serves metadata for, without one: converged as its records say, which is to
+// absent.
+func (r *NetworkReconciler) reconcileDHCP(ctx context.Context) {
+	held, err := r.svc.dhcp.HeldNetworks(ctx)
+	listed := err == nil
+	if err != nil {
+		log.Warn().Err(err).Msg("reconcile: list the networks' DHCP namespaces")
+	}
+	if r.svc.listeners != nil {
+		held = append(held, r.svc.listeners.Serving()...)
+	}
+	networks, complete, err := r.readIDs(ctx, `
+		SELECT network_id::text FROM subnets WHERE enable_dhcp = true AND ip_version = 4
+		UNION
+		SELECT network_id::text FROM ports WHERE device_owner = '`+ownerDHCP+`' AND network_id IS NOT NULL`)
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: read the networks with DHCP")
+		return
+	}
+	for _, networkID := range networks {
+		r.reconcileNetworkDHCP(ctx, networkID)
+	}
+	if !listed || !complete {
+		log.Warn().Msg("reconcile: the networks with DHCP were not all read; removing no network's DHCP this pass")
+		return
+	}
+	for _, networkID := range heldWithout(held, networks) {
+		r.converge(ctx, unitRequest{Unit: unitDHCP, IDs: []string{networkID}})
+	}
+}
+
+// reconcileNetworkDHCP brings a network's DHCP port in line with its DHCP subnets, locking nothing when
+// it is, and converges the network's DHCP on this, the network node.
+func (r *NetworkReconciler) reconcileNetworkDHCP(ctx context.Context, networkID string) {
+	inLine, err := dhcpPortInLine(ctx, r.svc.pool, networkID)
+	if err == nil && !inLine {
+		err = realignDHCPPort(ctx, r.svc.pool, networkID)
+	}
+	if err != nil {
+		if !errors.Is(err, database.ErrNoRows) { // no row: deleted since it was read
+			log.Warn().Err(err).Str("network_id", networkID).Msg("reconcile: bring the network's DHCP port in line with its subnets")
+		}
+		return
+	}
+	r.converge(ctx, unitRequest{Unit: unitDHCP, IDs: []string{networkID}})
+}
+
+// reconcileRouters converges, on the network node, every router with a record (R28), and after a
+// complete read every router the node holds without one: converged as its records say, which is to
+// absent — its namespace, legs, host routes and proxy entries.
+func (r *NetworkReconciler) reconcileRouters(ctx context.Context) {
+	held, err := r.svc.routers.HeldRouters(ctx)
+	listed := err == nil
+	if err != nil {
+		log.Warn().Err(err).Msg("reconcile: list the routers' namespaces")
+	}
+	routers, complete, err := r.readIDs(ctx, `SELECT id::text FROM routers`)
+	if err != nil {
+		log.Error().Err(err).Msg("reconcile: read the routers")
+		return
+	}
+	for _, routerID := range routers {
+		r.converge(ctx, unitRequest{Unit: unitRouter, IDs: []string{routerID}})
+	}
+	if !listed || !complete {
+		log.Warn().Msg("reconcile: the routers were not all read; removing no router this pass")
+		return
+	}
+	for _, routerID := range heldWithout(held, routers) {
+		r.converge(ctx, unitRequest{Unit: unitRouter, IDs: []string{routerID}})
+	}
+}
+
+// removeNetworkNodeUnits removes, from a node that is not the network node, every router and every
+// network's DHCP it holds, with their metadata listeners: only the network node holds them (FR-033).
+// No record is read, so none can be missing. No request converges them here, so no unit lock is needed.
+// Only while the node network_node names is an active node: a name that matches none would otherwise
+// take every router and DHCP away from every node (SPEC-033 T276). Without a registry — VXLAN off — every
+// node is its own network node and never gets here.
+func (r *NetworkReconciler) removeNetworkNodeUnits(ctx context.Context) {
+	if r.svc.nodes.Registry != nil {
+		if _, err := r.svc.nodeAddress(ctx, r.svc.networkNodeName()); err != nil {
+			log.Error().Err(err).Str("network_node", r.svc.networkNodeName()).
+				Msg("reconcile: the network node is no active node; this node removes no router or DHCP until it is")
+			return
+		}
+	}
+	uplink, err := r.svc.uplink()
+	if err != nil {
+		uplink = "" // the routes, legs and namespace still go; the entries on an unknown uplink cannot
+	}
+	routers, err := r.svc.routers.HeldRouters(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("reconcile: list the routers' namespaces")
+	}
+	for _, routerID := range routers {
+		uctx, cancel := context.WithTimeout(ctx, nodeApplyDeadline)
+		if err := r.svc.routers.ConvergeRouter(uctx, routerID, nil, uplink); err != nil {
+			log.Warn().Err(err).Str("router_id", routerID).Msg("reconcile: remove a router from a node that is not the network node")
+		}
+		cancel()
+	}
+	networks, err := r.svc.dhcp.HeldNetworks(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("reconcile: list the networks' DHCP namespaces")
+	}
+	if r.svc.listeners != nil {
+		networks = append(networks, r.svc.listeners.Serving()...)
+	}
+	for _, networkID := range heldWithout(networks, nil) {
+		if r.svc.listeners != nil {
+			if err := r.svc.listeners.Close(networkID); err != nil {
+				log.Warn().Err(err).Str("network_id", networkID).Msg("reconcile: close a metadata listener")
+			}
+		}
+		uctx, cancel := context.WithTimeout(ctx, nodeApplyDeadline)
+		if err := r.svc.dhcp.ConvergeDHCP(uctx, networkID, nil); err != nil {
+			log.Warn().Err(err).Str("network_id", networkID).Msg("reconcile: remove a network's DHCP from a node that is not the network node")
+		}
+		cancel()
+	}
+}
+
+// removeStrayProxies removes the uplink's proxy entries that no router's leg routes, when a record makes
+// their address Lightstack's (contracts/router-namespace-dataplane.md, Reconciliation): an entry a
+// router's namespace left when it went — out of band, or on a node that is no longer the network node,
+// where no router is left to route any. An address no record knows is not Lightstack's to remove.
+func (r *NetworkReconciler) removeStrayProxies(ctx context.Context) {
+	uplink, err := r.svc.uplink()
+	if err != nil || uplink == "" {
+		return
+	}
+	ours, err := lightstackAddresses(ctx, r.svc.pool)
+	if err != nil {
+		log.Warn().Err(err).Msg("reconcile: read the addresses Lightstack hands out; removing no proxy entry this pass")
+		return
+	}
+	removed, err := r.svc.routers.RemoveStrayProxies(ctx, uplink, ours)
+	if err != nil {
+		log.Warn().Err(err).Msg("reconcile: remove stray proxy entries")
+	}
+	if len(removed) > 0 {
+		log.Info().Strs("addresses", removed).Msg("reconcile: removed proxy entries no router routes")
+	}
+}
+
+// lightstackAddresses recognises the addresses Lightstack hands out on its external networks: every
+// floating IP's, every router gateway's, and every one in the pools of an external network's IPv4
+// subnets (FR-031, FR-038). It reads them all, or fails.
+func lightstackAddresses(ctx context.Context, q subnetQuerier) (func(string) bool, error) {
+	held := map[netip.Addr]bool{}
+	floating, err := queryStrings(ctx, q, `SELECT floating_ip_address FROM floating_ips`)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range floating {
+		if ip, err := netip.ParseAddr(a); err == nil {
+			held[ip.Unmap()] = true
+		}
+	}
+	gateways, err := readFixedIPs(ctx, q, `SELECT fixed_ips FROM ports WHERE `+gatewayPortWhere(""))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range gateways {
+		if ip, err := netip.ParseAddr(f.IPAddress); err == nil {
+			held[ip.Unmap()] = true
+		}
+	}
+	pools, err := externalPools(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return func(a string) bool {
+		ip, err := netip.ParseAddr(a)
+		if err != nil {
+			return false
+		}
+		ip = ip.Unmap()
+		return held[ip] || slices.ContainsFunc(pools, func(p ipRange) bool { return p.contains(ip) })
+	}, nil
+}
+
+// readFixedIPs reads every fixed IP of the ports a query selects by their fixed_ips column.
+func readFixedIPs(ctx context.Context, q subnetQuerier, query string) (common.FixedIPs, error) {
+	rows, err := q.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	want := maps.Clone(pass)
-	if want == nil {
-		want = map[string]string{}
-	}
+	var out common.FixedIPs
 	for rows.Next() {
-		var networkID, cidr string
-		var gatewayIP *string
-		if err := rows.Scan(&networkID, &cidr, &gatewayIP); err != nil {
-			return nil, err // a short picture is not a prune input
+		var fixed common.FixedIPs
+		if err := rows.Scan(&fixed); err != nil {
+			return nil, err
 		}
-		bridge := networking.BridgeNameForNetwork(networkID)
-		if _, asserted := want[bridge]; asserted {
-			continue
-		}
-		if addr := bridgeAddrFor(gatewayIP, cidr); addr != "" {
-			want[bridge] = addr
-		}
+		out = append(out, fixed...)
 	}
-	return want, rows.Err()
+	return out, rows.Err()
 }
 
-// applyDHCPForNetwork (re)asserts the bridge gateway IP, the metadata DNAT, and
-// the dnsmasq server (with MAC->IP reservations from the DB) for a network's
-// DHCP-enabled subnet. With restart=true it reloads dnsmasq so a newly allocated
-// port's reservation takes effect *before* its VM boots — dnsmasq must hand out
-// the exact fixed IP neutron assigned the port, or OpenStack's view and the
-// guest disagree (breaks metadata identity). This is the synchronous path called
-// from port allocation and subnet create (Constitution II). With restart=false
-// (the reconciler) it only starts dnsmasq if it is not already running, but
-// always re-asserts the bridge IP and metadata redirect. Best-effort.
-//
-// Returns the bridge and the address it pointed the metadata redirect at, or two empty strings when
-// it asserted nothing (stub mode, no DHCP-enabled subnet, unusable CIDR). The reconciler collects
-// these into the desired set it prunes against, so what gets kept is exactly what got asserted.
-// The error reports a subnet that could not be READ, which is not the same as there being none: the
-// reconciler must not prune against a set missing a network it merely failed to read.
-func (svc *Service) applyDHCPForNetwork(ctx context.Context, networkID string, restart bool) (string, string, error) {
-	if svc.mode == "stub" {
-		return "", "", nil
-	}
-	var cidr string
-	// gateway_ip is nullable and a subnet may legitimately have none. Scanning it into a plain string
-	// made this Scan fail on such a subnet, and the early return then left it with NO DHCP at all —
-	// silently (SPEC-024 / cloud-storage#546 FR-023a).
-	var gatewayIP *string
-	var dns []string
-	err := svc.pool.QueryRow(ctx, `
-		SELECT cidr, gateway_ip, dns_nameservers FROM subnets
-		WHERE network_id = $1 AND enable_dhcp = true
-		ORDER BY created_at, id LIMIT 1`, networkID).Scan(&cidr, &gatewayIP, &dns)
-	if errors.Is(err, database.ErrNoRows) {
-		return "", "", nil // no DHCP-enabled subnet for this network — nothing to do
-	}
+// externalPools reads the allocation pools of every external network's IPv4 subnets.
+func externalPools(ctx context.Context, q subnetQuerier) ([]ipRange, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.id::text, s.cidr, s.gateway_ip, s.pools_stored FROM subnets s JOIN networks n ON n.id = s.network_id
+		 WHERE n.external = true AND s.ip_version = 4`)
 	if err != nil {
-		return "", "", fmt.Errorf("read DHCP subnet of network %s: %w", networkID, err)
+		return nil, err
 	}
-	_, ipNet, perr := net.ParseCIDR(cidr)
-	if perr != nil {
-		log.Warn().Err(perr).Str("network_id", networkID).Str("cidr", cidr).Msg("dhcp apply: bad subnet CIDR; skipping")
-		return "", "", nil
+	type subnet struct {
+		id, cidr string
+		gateway  *string
+		stored   *bool
 	}
-	bridgeName := networking.BridgeNameForNetwork(networkID)
-
-	// The bridge needs an address in the subnet whether or not the subnet advertises a gateway:
-	// dnsmasq binds to it, and the metadata DNAT hangs off it. With a gateway that address IS the
-	// gateway; without one we still take the first host address, but only as the bridge's own
-	// on-link address — it is never advertised as a default route (FR-023a).
-	bridgeAddr := bridgeAddrFor(gatewayIP, cidr)
-
-	ones, _ := ipNet.Mask.Size()
-	if err := svc.brManager.EnsureBridgeIP(bridgeName, fmt.Sprintf("%s/%d", bridgeAddr, ones)); err != nil {
-		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: bridge IP ensure")
-	}
-	if err := svc.mdRedirect.Ensure(bridgeName, bridgeAddr); err != nil {
-		log.Debug().Err(err).Str("bridge", bridgeName).Msg("dhcp apply: metadata redirect ensure")
-	}
-
-	if !restart && svc.dhcpManager.IsRunning(networkID) {
-		return bridgeName, bridgeAddr, nil // already serving — idempotent, but the redirect above is ours
-	}
-
-	dhcpStart, dhcpEnd := dhcpRange(ipNet)
-	cfg := networking.DHCPConfig{
-		NetworkID:  networkID,
-		BridgeName: bridgeName,
-		SubnetCIDR: cidr,
-		// Empty when the subnet has no gateway: no default route is advertised. The metadata route
-		// is carried separately so it survives that case (FR-023a).
-		GatewayIP:        derefOr(gatewayIP, ""),
-		MetadataNextHop:  bridgeAddr,
-		DNSServers:       dns,
-		DHCPRangeStart:   dhcpStart,
-		DHCPRangeEnd:     dhcpEnd,
-		LeaseTime:        "24h",
-		HostReservations: svc.dhcpReservations(ctx, networkID),
-	}
-	// restart=true reloads to pick up a newly allocated port's reservation: kill
-	// and respawn dnsmasq WITHOUT dropping leases, serialized so concurrent boots
-	// on this network can't interleave the kill/start (SPEC-009 WS-2).
-	var dhcpErr error
-	if restart {
-		dhcpErr = svc.dhcpManager.RestartDHCP(cfg)
-	} else {
-		dhcpErr = svc.dhcpManager.EnsureDHCP(cfg)
-	}
-	if dhcpErr != nil {
-		log.Warn().Err(dhcpErr).Str("network_id", networkID).Msg("dhcp apply: failed to (re)start DHCP")
-	} else {
-		log.Info().Str("network_id", networkID).Int("reservations", len(cfg.HostReservations)).Bool("restart", restart).Msg("dhcp apply: server (re)started from DB state")
-	}
-	// The redirect was asserted before DHCP and stands whether or not dnsmasq came up.
-	return bridgeName, bridgeAddr, nil
-}
-
-// dhcpReservations builds MAC->IP dnsmasq reservations from the network's ports
-// so dnsmasq hands each VM the exact fixed IP neutron allocated to its port
-// (SPEC-009 WS-2 / FR-006). The port's fixed_ip in the DB is authoritative.
-func (svc *Service) dhcpReservations(ctx context.Context, networkID string) []networking.DHCPHostReservation {
-	rows, err := svc.pool.Query(ctx,
-		`SELECT mac_address, fixed_ips FROM ports WHERE network_id = $1 AND mac_address <> ''`, networkID)
-	if err != nil {
-		log.Warn().Err(err).Str("network_id", networkID).Msg("dhcp reservations: query ports failed")
-		return nil
-	}
-	defer rows.Close()
-
-	var res []networking.DHCPHostReservation
+	var subnets []subnet
 	for rows.Next() {
-		var mac string
-		var fixedIPsRaw []byte
-		if err := rows.Scan(&mac, &fixedIPsRaw); err != nil {
-			log.Warn().Err(err).Str("operation", "dhcpReservations").Msg("failed to scan row")
-			continue
+		var s subnet
+		if err := rows.Scan(&s.id, &s.cidr, &s.gateway, &s.stored); err != nil {
+			rows.Close()
+			return nil, err
 		}
-		var fixedIPs []struct {
-			IPAddress string `json:"ip_address"`
-		}
-		if err := json.Unmarshal(fixedIPsRaw, &fixedIPs); err != nil {
-			continue
-		}
-		for _, f := range fixedIPs {
-			if f.IPAddress != "" {
-				res = append(res, networking.DHCPHostReservation{MAC: mac, IP: f.IPAddress})
-				break // pin the port's primary fixed IP
-			}
-		}
+		subnets = append(subnets, s)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
-		log.Warn().Err(err).Str("network_id", networkID).Msg("dhcp reservations: ports rows error")
+		return nil, err
 	}
-	return res
-}
-
-// dhcpRange returns a DHCP pool [start,end] that always stays inside the subnet.
-// It preserves the conventional .10–.250 window for a /24 and clamps to fit
-// smaller prefixes: the start falls back past the network and gateway addresses
-// when .10 doesn't fit, and the end is capped at the last usable address
-// (broadcast-1). Without this a non-/24 subnet produced a range outside the
-// subnet (e.g. .250 in a /26), which dnsmasq rejects (SPEC-009 WS-2).
-func dhcpRange(ipNet *net.IPNet) (string, string) {
-	last := decrementIP(broadcast(ipNet), 1) // last usable address (broadcast - 1)
-	start := incrementIP(ipNet.IP, 10)
-	if !ipNet.Contains(start) {
-		start = incrementIP(ipNet.IP, 2) // tiny subnet: skip network (.0) and gateway (.1)
+	ids := make([]string, 0, len(subnets))
+	for _, s := range subnets {
+		ids = append(ids, s.id)
 	}
-	end := incrementIP(ipNet.IP, 250)
-	if !ipNet.Contains(end) {
-		end = last
-	}
-	return start.String(), end.String()
-}
-
-// bridgeAddrFor returns the address the network's bridge carries for a subnet: the gateway when the
-// subnet has one, otherwise the first host address of its CIDR.
-//
-// The bridge needs an address in the subnet regardless — dnsmasq binds to it and the metadata DNAT
-// hangs off it — but for a gatewayless subnet that address is the bridge's own and is never
-// advertised as a default route (SPEC-024 FR-023a). Shared by the apply and teardown paths so both
-// agree on which address to add and remove.
-func bridgeAddrFor(gatewayIP *string, cidr string) string {
-	if gatewayIP != nil && *gatewayIP != "" {
-		return *gatewayIP
-	}
-	_, ipNet, err := net.ParseCIDR(cidr)
+	stored, err := storedPools(ctx, q, ids)
 	if err != nil {
-		return ""
+		return nil, err
 	}
-	return incrementIP(ipNet.IP, 1).String()
+	var pools []ipRange
+	for _, s := range subnets {
+		prefix, err := parsePrefix(s.cidr)
+		if err != nil {
+			continue
+		}
+		pools = append(pools, poolsFor(prefix, parseGateway(s.gateway), s.stored != nil && *s.stored, stored[s.id])...)
+	}
+	return pools, nil
+}
+
+// reconcilePorts converges the chains of every port bound to this node, which removes the chains of
+// any port that is not (R32): a port whose binding moved while this node was down, say. Its read of
+// the bound ports fails whole or not at all, so it never removes after a partial one.
+func (r *NetworkReconciler) reconcilePorts(ctx context.Context) {
+	r.converge(ctx, unitRequest{Unit: unitPorts})
 }
 
 // reportGrandfatheredGateways logs any router whose gateway network is not marked external.

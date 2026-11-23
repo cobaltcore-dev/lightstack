@@ -1,6 +1,7 @@
 package neutron
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -20,6 +21,8 @@ func TestListSecurityGroupsFilters(t *testing.T) {
 	c := sgTestGroup(t, project, "c")
 	x := sgTestGroup(t, other, "x")
 	hdr := projectHdr(project)
+	// A listing ensures the project's default group, as upstream's (SPEC-033 T193).
+	def := ensuredDefault(t, project)
 
 	list := func(t *testing.T, query string) []string {
 		t.Helper()
@@ -53,7 +56,7 @@ func TestListSecurityGroupsFilters(t *testing.T) {
 		{"?id=" + a + "&name=b", nil},
 		{"?id=" + x, nil},
 		{"?id=not-a-uuid", nil},
-		{"", []string{a, b, c}}, // lock: no query lists the caller's groups
+		{"", []string{a, b, c, def}}, // lock: no query lists the caller's groups, its default among them
 	} {
 		if got, want := list(t, tc.query), sorted(tc.want...); !equalIDs(got, want) {
 			t.Errorf("GET /v2.0/security-groups%s: %v; want %v", tc.query, got, want)
@@ -78,6 +81,9 @@ func TestListSecurityGroupsAttributeFilters(t *testing.T) {
 	mustExec(t, "UPDATE security_groups SET stateful = $1, revision_number = 2 WHERE id = $2", false, c)
 	member := map[string]string{"X-Test-Project": project, "X-Test-Roles": "member"}
 	admin := map[string]string{"X-Test-Project": project, "X-Test-Roles": "admin"}
+	// A listing ensures the default group of the project it concerns, as upstream's (branch review
+	// T193): every query that matches it lists it.
+	defP, defO := ensuredDefault(t, project), ensuredDefault(t, other)
 
 	list := func(t *testing.T, hdr map[string]string, query string) (int, []string) {
 		t.Helper()
@@ -102,6 +108,7 @@ func TestListSecurityGroupsAttributeFilters(t *testing.T) {
 	}
 
 	all := []string{a, b, c}
+	allP := []string{a, b, c, defP}
 	for _, tc := range []struct {
 		name  string
 		hdr   map[string]string
@@ -111,23 +118,25 @@ func TestListSecurityGroupsAttributeFilters(t *testing.T) {
 		{"description", member, "?description=alpha", []string{a, c}},
 		{"description, repeated", member, "?description=alpha&description=beta", all},
 		{"a repeated name", member, "?name=a&name=b", []string{a, b}},
-		{"own project_id", member, "?project_id=" + project, all},
-		{"own tenant_id", member, "?tenant_id=" + project, all},
+		{"own project_id", member, "?project_id=" + project, allP},
+		{"own tenant_id", member, "?tenant_id=" + project, allP},
 		{"another project as a member", member, "?project_id=" + other, nil},
 		{"another project's tenant_id as a member", member, "?tenant_id=" + other, nil},
-		{"another project as an administrator", admin, "?project_id=" + other, []string{x}},
-		{"two projects as an administrator", admin, "?project_id=" + project + "&tenant_id=" + other, append([]string{x}, all...)},
-		{"shared=false", member, "?shared=false", all},
-		{"shared=False", member, "?shared=False", all},
+		{"another project as an administrator", admin, "?project_id=" + other, []string{x, defO}},
+		{"two projects as an administrator", admin, "?project_id=" + project + "&tenant_id=" + other, append([]string{x, defO}, allP...)},
+		{"shared=false", member, "?shared=false", allP},
+		{"shared=False", member, "?shared=False", allP},
+		{"shared=no", member, "?shared=no", allP},
+		{"stateful=yes", member, "?stateful=yes", []string{a, b, defP}},
 		{"shared=true", member, "?shared=true", nil},
-		{"stateful=true", member, "?stateful=true", []string{a, b}},
+		{"stateful=true", member, "?stateful=true", []string{a, b, defP}},
 		{"stateful=false", member, "?stateful=false", []string{c}},
 		{"revision_number", member, "?revision_number=2", []string{c}},
-		{"revision_number, repeated", member, "?revision_number=0&revision_number=2", all},
+		{"revision_number, repeated", member, "?revision_number=0&revision_number=2", allP},
 		{"tags", member, "?tags=blue", nil},
 		{"tags-any", member, "?tags-any=blue", nil},
-		{"not-tags", member, "?not-tags=blue", all},
-		{"not-tags-any", member, "?not-tags-any=blue", all},
+		{"not-tags", member, "?not-tags=blue", allP},
+		{"not-tags-any", member, "?not-tags-any=blue", allP},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, got := list(t, tc.hdr, tc.query)
@@ -211,4 +220,16 @@ func TestSecurityGroupBodiesCarryUpstreamFields(t *testing.T) {
 		t.Fatalf("update: code=%d body=%s", code, body)
 	}
 	check(t, "update", decode(t, body, "security_group"), true, 1)
+}
+
+// ensuredDefault ensures project's default group, as a listing does, and removes the project's groups
+// after the test.
+func ensuredDefault(t *testing.T, project string) string {
+	t.Helper()
+	id, err := EnsureDefaultSecurityGroup(context.Background(), testPool, project)
+	if err != nil {
+		t.Fatalf("ensure the default group of %s: %v", project, err)
+	}
+	t.Cleanup(func() { mustExec(t, "DELETE FROM security_groups WHERE project_id = $1", project) })
+	return id
 }

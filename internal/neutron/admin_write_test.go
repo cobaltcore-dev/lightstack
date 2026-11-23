@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -257,6 +258,9 @@ func adminWrites(external string) []adminWrite {
 		}},
 		{name: "create a port forwarding on another project's floating IP", want: http.StatusCreated, table: "port_forwardings", key: "port_forwarding",
 			request: func(t *testing.T, _ *gin.Engine, _, b res) adminRequest {
+				// The router joins the port's subnet to the floating network, which a forwarding needs
+				// (SPEC-033 FR-049, T256): its gateway port on the external network and its interface.
+				joinRouter(t, b, external)
 				mustExec(t, "UPDATE floating_ips SET router_id = $1 WHERE id = $2", b.router, b.floatingIP)
 				return post("/v2.0/floatingips/"+b.floatingIP+"/port_forwardings", `{"port_forwarding":{"internal_port_id":"`+b.port+
 					`","internal_ip_address":"`+b.address+`","external_port":1500,"internal_port":22,"protocol":"tcp"}}`)
@@ -458,4 +462,18 @@ func TestAdministratorCreatesForANamedProject(t *testing.T) {
 			}
 		})
 	}
+}
+
+// joinRouter gives b's router a gateway port on external and an interface on b's subnet, as the router code
+// writes them.
+func joinRouter(t *testing.T, b projectResources, external string) {
+	t.Helper()
+	gateway, iface := uuid.NewString(), uuid.NewString()
+	mustExec(t, `INSERT INTO ports (id, name, network_id, device_id, device_owner, mac_address, status, fixed_ips)
+		VALUES ($1, '', $2, $3, 'network:router_gateway', 'fa:16:3e:57:00:02', 'ACTIVE', '[]'::jsonb)`, gateway, external, b.router)
+	mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, status, fixed_ips)
+		VALUES ($1, '', $2, $3, $4, 'network:router_interface', 'fa:16:3e:57:00:03', 'ACTIVE', $5::jsonb)`,
+		iface, b.network, b.project, b.router, `[{"subnet_id":"`+b.subnet+`","ip_address":"`+strings.TrimSuffix(b.address, ".5")+`.1"}]`)
+	mustExec(t, `INSERT INTO router_interfaces (router_id, port_id, subnet_id) VALUES ($1, $2, $3)`, b.router, iface, b.subnet)
+	t.Cleanup(func() { mustExec(t, "DELETE FROM ports WHERE id IN ($1, $2)", gateway, iface) })
 }

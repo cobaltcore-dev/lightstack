@@ -3,28 +3,30 @@ package neutron
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/rs/zerolog/log"
 )
 
-// PurgeRealModeNetworkState removes the real-mode host network state this node
-// created — the inverse of the reconciler (SPEC-010 teardown / cloud-storage#472,
-// Lightstack#53). It enumerates from the database (read-only; the DB is operator-owned and
-// is never reset by teardown) and calls the existing Remove* helpers, in reverse of
-// how the reconciler asserts them:
+// PurgeRealModeNetworkState removes the real-mode host network state this node holds — the inverse of
+// the reconciler (SPEC-010 teardown / cloud-storage#472, Lightstack#53; SPEC-033 research R48). It
+// enumerates from the database (read-only; the DB is operator-owned and is never reset by teardown) and
+// from the node, so state whose record is gone goes too:
 //
-//  1. floating-IP DNAT (+ the /32 on the uplink) and per-VM ingress SG filters
-//  2. egress SNAT for internal subnets behind an external-gateway router
-//     2b. per-security-group iptables chains (LS-SG-*), best-effort
-//  3. every 169.254.169.254 DNAT this node wrote, then per network: stop dnsmasq, delete the bridge
-//  4. router namespaces, then tenant/project namespaces
+//  1. the node's whole port firewall: every port's chains, the fixed chains, the routers' forward chain
+//  2. the retired state of earlier layouts, as reconciliation removes it (FR-044)
+//  3. every network's DHCP the records name or the node holds, converged to absent: dnsmasq, its device
+//     and namespace
+//  4. every router the records name or the node holds, converged to absent: the host's proxy entries and
+//     routes, its legs, its namespace
+//  5. the networks' bridges, then the project namespaces of older deployments
 //
-// Best-effort per resource (an already-absent rule is fine and not counted); returns
-// an error if any removal actually failed, so the blocking teardown hook can
-// fail-closed (FR-001/016). Stub mode is a no-op. Networked backends (RBD/S3) are
-// never touched (operator-owned, C4). The global net.ipv4.ip_forward sysctl is left
-// as-is (host-wide; other workloads depend on it).
+// Metadata listeners are the running server's and go with it. Best-effort per resource (an
+// already-absent rule is fine and not counted); returns an error if any removal actually failed, so the
+// blocking teardown hook can fail-closed (FR-001/016). Stub mode is a no-op. Networked backends (RBD/S3)
+// are never touched (operator-owned, C4). The global net.ipv4.ip_forward sysctl is left as-is
+// (host-wide; other workloads depend on it).
 func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 	if svc.mode == "stub" {
 		return nil
@@ -38,108 +40,54 @@ func (svc *Service) PurgeRealModeNetworkState(ctx context.Context) error {
 		}
 	}
 
-	uplink, uerr := networking.DefaultUplinkInterface()
+	uplink, uerr := svc.uplink()
 	if uerr != nil {
-		log.Warn().Err(uerr).Msg("teardown network: no uplink detected — skipping north-south NAT removal")
+		log.Warn().Err(uerr).Msg("teardown network: no uplink detected — skipping the routers' proxy entries")
+		uplink = ""
 	}
 
-	if uplink != "" {
-		// 1. Floating-IP NAT + per-VM ingress SG filter (inverse of reconcileNAT's FIP loop).
-		if rows, err := svc.pool.Query(ctx, `
-			SELECT floating_ip_address, fixed_ip_address
-			FROM floating_ips
-			WHERE port_id IS NOT NULL AND fixed_ip_address IS NOT NULL`); err == nil {
-			type fip struct{ floating, fixed string }
-			var fips []fip
-			for rows.Next() {
-				var f fip
-				if rows.Scan(&f.floating, &f.fixed) == nil && f.floating != "" && f.fixed != "" {
-					fips = append(fips, f)
-				}
-			}
-			if e := rows.Err(); e != nil {
-				fail(e, "iterate floating IPs")
-			}
-			rows.Close()
-			for _, f := range fips {
-				_, err := svc.routerManager.WithdrawFloatingIP(f.floating, uplink)
-				fail(err, "withdraw floating IP")
-				fail(svc.routerManager.RemoveIngressFilter(f.fixed), "remove ingress filter")
-			}
-		} else {
-			fail(err, "query floating IPs")
-		}
+	fail(svc.firewall.RemoveAll(ctx), "remove the port firewall")
 
-		// 2. Egress SNAT per internal subnet behind an external-gateway router.
-		if cidrs, err := queryStrings(ctx, svc.pool, `
-			SELECT DISTINCT s.cidr
-			FROM routers rt
-			JOIN router_interfaces ri ON ri.router_id = rt.id
-			JOIN subnets s ON s.id = ri.subnet_id
-			WHERE rt.external_gateway_info IS NOT NULL
-			  AND rt.external_gateway_info::text <> 'null'`); err != nil {
-			fail(err, "enumerate egress subnets")
-		} else {
-			for _, c := range cidrs {
-				fail(svc.routerManager.RemoveEgressSNAT(c, uplink), "remove egress SNAT")
-			}
-		}
+	var records networking.RetiredRecords
+	var err error
+	if records.FloatingIPs, err = queryStrings(ctx, svc.pool, `SELECT floating_ip_address FROM floating_ips`); err != nil {
+		fail(err, "enumerate floating IPs")
+	}
+	if records.SubnetCIDRs, err = queryStrings(ctx, svc.pool, `SELECT cidr FROM subnets`); err != nil {
+		fail(err, "enumerate subnets")
+	}
+	fail(svc.retired.Remove(ctx, uplink, records), "remove the retired state of an earlier layout")
+
+	netIDs, err := queryStrings(ctx, svc.pool, `SELECT id::text FROM networks`)
+	fail(err, "enumerate networks")
+	held, err := svc.dhcp.HeldNetworks(ctx)
+	fail(err, "list the networks' DHCP namespaces")
+	for _, id := range heldWithout(slices.Concat(netIDs, held), nil) {
+		fail(svc.dhcp.ConvergeDHCP(ctx, id, nil), "remove a network's DHCP")
 	}
 
-	// 2b. Per-security-group iptables chains (lightstack-SG-*, east-west SG in iptables mode).
-	// Best-effort: a chain that was never materialized (stub/ebpf) or is still
-	// referenced by a port jump is logged, NOT counted — it must not abort the
-	// teardown (issue #53 topic 3 / option b). A DB query failure IS a real error.
-	if svc.sgManager != nil {
-		if sgs, err := queryStrings(ctx, svc.pool, `SELECT id FROM security_groups`); err != nil {
-			fail(err, "enumerate security groups")
-		} else {
-			for _, id := range sgs {
-				if e := svc.sgManager.DeleteSecurityGroupChain(id); e != nil {
-					log.Debug().Err(e).Str("sg", id).Msg("teardown network: SG chain absent or still referenced (best-effort)")
-				}
-			}
-		}
+	routerIDs, err := queryStrings(ctx, svc.pool, `SELECT id::text FROM routers`)
+	fail(err, "enumerate routers")
+	heldRouters, err := svc.routers.HeldRouters(ctx)
+	fail(err, "list the routers' namespaces")
+	for _, id := range heldWithout(slices.Concat(routerIDs, heldRouters), nil) {
+		fail(svc.routers.ConvergeRouter(ctx, id, nil, uplink), "remove a router")
 	}
 
-	// 3. Every metadata DNAT this node wrote, in one sweep.
-	//
-	// Not enumerated per network like everything else here: the rules outlive the rows, so a
-	// database that was recreated (or a network deleted by a path that leaked) would leave rules no
-	// enumeration can name. Pruning against an empty desired set removes exactly the rules matching
-	// the shape Ensure writes, which is what "the host footprint goes away with the product" means
-	// (SPEC-024 host pass, finding 1).
-	if removed, err := svc.mdRedirect.Prune(func() (map[string]string, error) { return nil, nil }); err != nil {
-		fail(err, "remove metadata DNAT rules")
-	} else if removed > 0 {
-		log.Info().Int("rules", removed).Msg("teardown network: reclaimed metadata DNAT rules")
+	bridges, err := svc.brManager.ListManagedBridges()
+	fail(err, "list the bridges")
+	for _, id := range netIDs {
+		bridges = append(bridges, networking.BridgeNameForNetwork(id))
+	}
+	for _, b := range heldWithout(bridges, nil) {
+		fail(svc.brManager.DeleteBridge(b), "delete a bridge")
 	}
 
-	// 3b. Per network: stop dnsmasq, delete the host bridge.
-	if netIDs, err := queryStrings(ctx, svc.pool, `SELECT id FROM networks`); err != nil {
-		fail(err, "enumerate networks")
-	} else {
-		for _, id := range netIDs {
-			fail(svc.dhcpManager.StopDHCP(id), "stop dnsmasq")
-			if len(id) >= 8 {
-				fail(svc.brManager.DeleteBridge(networking.BridgeNameForNetwork(id)), "delete bridge")
-			}
-		}
-	}
-
-	// 4. Router namespaces, then tenant/project namespaces.
-	if ids, err := queryStrings(ctx, svc.pool, `SELECT id FROM routers`); err != nil {
-		fail(err, "enumerate routers")
-	} else {
-		for _, id := range ids {
-			fail(svc.routerManager.DeleteRouterNamespace(id), "delete router namespace")
-		}
-	}
 	if pids, err := queryStrings(ctx, svc.pool, `SELECT DISTINCT project_id::text FROM networks WHERE project_id IS NOT NULL`); err != nil {
 		fail(err, "enumerate project namespaces")
 	} else {
 		for _, pid := range pids {
-			fail(svc.nsManager.DeleteNamespace(pid), "delete project namespace")
+			fail(svc.nsManager.DeleteNamespace(ctx, pid), "delete project namespace")
 		}
 	}
 

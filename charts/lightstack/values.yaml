@@ -108,11 +108,11 @@ nova:
 neutron:
   networkingMode: stub        # stub | iptables | ebpf
   securityGroupMode: stub     # stub | iptables | ebpf
-  # -- Multi-node with VXLAN: the one node that holds every router and DHCP namespace
-  #    and carries north-south traffic (SPEC-033 FR-033), by its node name — the
-  #    Kubernetes node name, which the chart passes as LIGHTSTACK_NODE_NAME. Required
-  #    there: Lightstack refuses to start without it. Ignored in single-node mode, where
-  #    the node is its own network node.
+  # -- Multi-node: the one node that holds every router and DHCP namespace and carries
+  #    north-south traffic (SPEC-033 FR-033), by its node name — the Kubernetes node
+  #    name, which the chart passes as LIGHTSTACK_NODE_NAME. Required there: the chart
+  #    refuses to render without it, as Lightstack refuses to start. Ignored in
+  #    single-node mode, where the node is its own network node.
   networkNode: ""
 cinder:
   storageMode: stub           # stub | local | rbd | local,rbd
@@ -142,7 +142,6 @@ extraEnv: []
 #    real-mode VM e2e is gated on the post-conditions (issue #52).
 realMode:
   enabled: false
-  privileged: false
   # -- Host networking. Renders dnsPolicy: ClusterFirstWithHostNet on the Lightstack pod and
   #    the purge Job, so in-cluster Service names (database, RGW, Redis) still resolve.
   hostNetwork: false
@@ -161,7 +160,7 @@ realMode:
   #    it) and an initContainer moves its contents into hostStoragePath once, before
   #    the subdirs are pre-created. Empty renders nothing — fresh installs need it not.
   legacyStatePath: ""
-  floatingIpPool: ""          # operator-supplied pool routed to nodes (FR-009c)
+  floatingIpPool: ""          # the floating pool: the network node answers for it; route it there only
 
 # -- noVNC console proxy (SPEC-021). Real mode only: stub mode has no guest, so
 #    the console API refuses at request time and no proxy is deployed.
@@ -246,6 +245,8 @@ podSecurity:
 # -- Multi-node (DaemonSet) — authored; cross-node behavior gated on issue #52.
 multiNode:
   nodeSelectorLabel: "lightstack.io/compute=true"
+  # -- Required in multi-node; the chart refuses false (SPEC-033 FR-033): without VXLAN
+  #    every node would be its own network node, and the nodes could not reach each other.
   vxlanEnabled: true
   vxlanPort: 4789
   minProductVersion: ""       # FR-010 — set when the placement post-condition (WS-1) ships

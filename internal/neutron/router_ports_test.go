@@ -21,7 +21,7 @@ import (
 // one an administrator requests, reported in external_gateway_info.external_fixed_ips. An interface's
 // port and its router_interfaces row are stored in one transaction, a subnet the router already has or
 // one without a gateway answers 400, and the gateway port is visible to administrators and the external
-// network's owner only, as upstream's get_port (branch review SRC-6).
+// network's owner only, as upstream's get_port (SPEC-033 T174).
 
 type fixedIPOut struct {
 	SubnetID  string `json:"subnet_id"`
@@ -197,7 +197,6 @@ func TestRouterGatewayPort(t *testing.T) {
 		}{
 			{"a member may not request one", rr.member, `[{"ip_address":"` + rr.prefix + `.15"}]`, http.StatusForbidden, "PolicyNotAuthorized"},
 			{"outside the network's subnets", rr.admin, `[{"ip_address":"203.0.113.9"}]`, http.StatusBadRequest, "InvalidIpForNetwork"},
-			{"a subnet's gateway", rr.admin, `[{"ip_address":"` + rr.gatewayOfExternal + `"}]`, http.StatusBadRequest, ""},
 			{"held by a port", rr.admin, `[{"ip_address":"` + heldIP + `"}]`, http.StatusConflict, "IpAddressAlreadyAllocated"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {

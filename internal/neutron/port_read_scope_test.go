@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Branch review SRC-6 (2026-11-23-review.md): a member read every project's ports on a shared network —
+// SPEC-033 T174: a member read every project's ports on a shared network —
 // their names, MACs, addresses, the servers they belong to (device_id) and their security groups.
 // Upstream's get_port admits the port's project and the network's (PROJECT_READER, NET_OWNER_READER):
 // a shared network is readable by every project, the ports on it are not (SPEC-033 FR-061).

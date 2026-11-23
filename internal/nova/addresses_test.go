@@ -140,7 +140,8 @@ func TestAddressesIncludeFloatingIPs(t *testing.T) {
 }
 
 // T072 (FR-037, FR-038): unchanged shape without a floating address; an unassociated
-// floating address appears nowhere; two on one port both appear.
+// floating address appears nowhere; two on one port both appear — from two external
+// networks, the only way one fixed IP holds two (SPEC-033 FR-029).
 func TestAddressesFloatingEdgeCases(t *testing.T) {
 	requireDB(t)
 	_, _, mgr := newLifecycleService(t)
@@ -195,9 +196,10 @@ func TestAddressesFloatingEdgeCases(t *testing.T) {
 	t.Run("two floating addresses on one port both appear", func(t *testing.T) {
 		instanceID, _ := seedLifecycleInstance(t, mgr, "spec025-addr-two")
 		netID, _ := addrFixture(t, seededProjectID, "spec025-two-net", "10.244.13.5")
+		otherExternal, _ := addrFixture(t, seededProjectID, "spec025-two-ext", "")
 		portID := attachPort(t, netID, seededProjectID, instanceID, "10.244.13.5")
 		associateFloatingIP(t, seededProjectID, netID, portID, "203.0.113.211", "10.244.13.5")
-		associateFloatingIP(t, seededProjectID, netID, portID, "203.0.113.212", "10.244.13.5")
+		associateFloatingIP(t, seededProjectID, otherExternal, portID, "203.0.113.212", "10.244.13.5")
 
 		addresses, err := svc.getInstanceAddresses(t.Context(), instanceID, seededProjectID)
 		if err != nil {

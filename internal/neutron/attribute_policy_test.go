@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Branch review SRC-11, T183 (FR-038, FR-054): upstream's policies give two attributes to fewer callers
+// SPEC-033 T183 (FR-038, FR-054): upstream's policies give two attributes to fewer callers
 // than their action. A floating IP's floating_ip_address is an administrator's or the project manager's
 // to choose (create_floatingip:floating_ip_address); a router gateway's enable_snat is an
 // administrator's, on create and on update (create_router and update_router:

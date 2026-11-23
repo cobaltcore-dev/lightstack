@@ -70,11 +70,16 @@ func TestIPAvailableCanonicalIPv6(t *testing.T) {
 	requireDB(t)
 	networkID, subnetID := seedN4Subnet(t, "2001:db8::/64", "2001:0db8:0:0:0:0:0:1")
 	seedN4Port(t, networkID, subnetID, "2001:0db8:0:0:0:0:0:2")
-	for _, ip := range []string{"2001:db8::1", "2001:db8::2", "2001:DB8::2"} {
+	// The port's address, stored uncanonically, is held in every spelling. The gateway, held by
+	// nothing, is not: upstream's IPAM gives it (SPEC-033 T198).
+	for _, ip := range []string{"2001:db8::2", "2001:DB8::2", "2001:0db8:0:0:0:0:0:2"} {
 		available, err := IPAvailable(t.Context(), testPool, subnetID, ip)
 		if err != nil || available {
 			t.Errorf("IPAvailable(%s)=%v, %v; want occupied", ip, available, err)
 		}
+	}
+	if available, err := IPAvailable(t.Context(), testPool, subnetID, "2001:db8::1"); err != nil || !available {
+		t.Errorf("IPAvailable of the free gateway = %v, %v; want available", available, err)
 	}
 }
 

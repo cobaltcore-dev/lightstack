@@ -293,30 +293,6 @@ func TestEvacuateAdmin_Contract(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "evacuate with admin should succeed")
 }
 
-// TestAddSecurityGroup_Contract tests adding security group to instance
-//
-// The server carries "default" from create, so the group added is one the test creates. It boots on
-// a network: a server's groups are its ports' groups, so a server without a port has none to change
-// (SPEC-033).
-func TestAddSecurityGroup_Contract(t *testing.T) {
-	skipIfLightstackNotRunning(t)
-	token := issueToken(t)
-	sgName, _ := newTestSecurityGroup(t)
-	server := serverOnNetwork(t, token, "sg-test-server", "10.244.95.0/24")
-
-	code, body := postAction(t, token, server, sgActionBody("addSecurityGroup", sgName))
-	assert.Equal(t, http.StatusAccepted, code, "addSecurityGroup should succeed: %s", body)
-}
-
-// TestRemoveSecurityGroup_Contract tests removing security group from instance
-//
-// The server boots on a network with only "default" on its port.
-func TestRemoveSecurityGroup_Contract(t *testing.T) {
-	skipIfLightstackNotRunning(t)
-	token := issueToken(t)
-	server := serverOnNetwork(t, token, "sg-remove-test-server", "10.244.96.0/24")
-
-	// Removing the only group is allowed, as upstream: the server's ports then carry none (SPEC-033).
-	code, body := postAction(t, token, server, sgActionBody("removeSecurityGroup", "default"))
-	assert.Equal(t, http.StatusAccepted, code, "removeSecurityGroup should succeed: %s", body)
-}
+// Adding and removing a security group: TestNovaAddSecurityGroup_Contract and
+// TestNovaRemoveLastSecurityGroup_Contract (security_group_actions_test.go), which also check every port
+// and the server's report.

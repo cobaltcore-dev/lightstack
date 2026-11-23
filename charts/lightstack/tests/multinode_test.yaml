@@ -6,6 +6,7 @@ set:
   secrets.adminPassword: pw
   database.url: postgres://lightstack@db/lightstack
   deploymentMode: multi-node
+  neutron.networkNode: node-a
 tests:
   - it: renders a DaemonSet scheduled on the designation label
     templates:
@@ -29,3 +30,64 @@ tests:
       - matchRegex:
           path: stringData["lightstack.yaml"]
           pattern: "vxlan_enabled: true"
+  # SPEC-033 FR-033, T176: with VXLAN, one named node holds every router and DHCP namespace, and the
+  # binary refuses to start without its name, so the render refuses it first.
+  - it: refuses multi-node VXLAN without neutron.networkNode
+    templates:
+      - templates/service.yaml # the one template that includes lightstack.validate
+    set:
+      neutron.networkNode: "  "
+    asserts:
+      - failedTemplate:
+          errorPattern: "multi-node with multiNode.vxlanEnabled requires neutron.networkNode"
+  # SPEC-033 FR-033, T242: without VXLAN every node is its own network node, and no node keeps the
+  # registry the node-to-node call needs, so a change to ports bound on two nodes answers 500. Stub mode
+  # binds ports and makes that call too, so it is refused there as well as in real mode.
+  - it: refuses multi-node real mode without VXLAN
+    templates:
+      - templates/service.yaml
+    set:
+      multiNode.vxlanEnabled: false
+      realMode.enabled: true
+      glance.storageMode: s3
+      cinder.storageMode: rbd
+    asserts:
+      - failedTemplate:
+          errorPattern: "multi-node requires multiNode.vxlanEnabled"
+  - it: refuses multi-node stub mode without VXLAN
+    templates:
+      - templates/service.yaml
+    set:
+      multiNode.vxlanEnabled: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "multi-node requires multiNode.vxlanEnabled"
+  - it: names VXLAN first when the network node is missing too
+    templates:
+      - templates/service.yaml
+    set:
+      multiNode.vxlanEnabled: false
+      neutron.networkNode: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "multi-node requires multiNode.vxlanEnabled"
+  # SPEC-033 FR-033, T243: with secrets.existingSecret the operator's own lightstack.yaml is the
+  # configuration, and the chart renders none, so it validates nothing that would go into one.
+  - it: leaves the network node to an existing secret's configuration
+    templates:
+      - templates/service.yaml
+    set:
+      secrets.existingSecret: my-lightstack-config
+      neutron.networkNode: ""
+    asserts:
+      - isKind:
+          of: Service
+  - it: leaves VXLAN to an existing secret's configuration
+    templates:
+      - templates/service.yaml
+    set:
+      secrets.existingSecret: my-lightstack-config
+      multiNode.vxlanEnabled: false
+    asserts:
+      - isKind:
+          of: Service

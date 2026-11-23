@@ -809,6 +809,16 @@ func TestLoadConfigNeutronNetworkNode(t *testing.T) {
 		}
 	})
 
+	// SPEC-033 T276: read trimmed, as the check that refuses an empty one reads it — a trailing space or an
+	// environment value's newline named no node, and every node removed every router and DHCP.
+	t.Run("trimmed", func(t *testing.T) {
+		for body, env := range map[string]string{"neutron:\n  vxlan_enabled: true\n  network_node: \"node-a \"\n": "", "neutron: {}\n": "node-a\n"} {
+			if cfg := load(t, body, env); cfg.Neutron.NetworkNode != "node-a" {
+				t.Errorf("NetworkNode from %q / env %q = %q; want node-a", body, env, cfg.Neutron.NetworkNode)
+			}
+		}
+	})
+
 	t.Run("VXLAN on without the key", func(t *testing.T) {
 		cfg := load(t, "neutron:\n  vxlan_enabled: true\n", "")
 		err := cfg.Neutron.CheckNetworkNode()

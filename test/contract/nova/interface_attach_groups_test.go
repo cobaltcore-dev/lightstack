@@ -53,17 +53,10 @@ func TestNovaInterfaceAttachOnNetworkGetsDefault_Contract(t *testing.T) {
 	s, err := servers.Get(setupNovaClient(t), server).Extract()
 	require.NoError(t, err)
 	netClient := contract.SetupNeutronClient(t)
-	// Filtered here: the listing does not apply query filters.
-	pages, err := groups.List(netClient, groups.ListOpts{}).AllPages()
+	pages, err := groups.List(netClient, groups.ListOpts{Name: "default", ProjectID: s.TenantID}).AllPages()
 	require.NoError(t, err)
-	all, err := groups.ExtractGroups(pages)
+	defaults, err := groups.ExtractGroups(pages)
 	require.NoError(t, err)
-	var defaults []groups.SecGroup
-	for _, g := range all {
-		if g.Name == "default" && (g.TenantID == s.TenantID || g.ProjectID == s.TenantID) {
-			defaults = append(defaults, g)
-		}
-	}
 	require.Len(t, defaults, 1, "the project's default group")
 
 	port, err := ports.Get(netClient, out.InterfaceAttachment.PortID).Extract()
@@ -75,23 +68,5 @@ func TestNovaInterfaceAttachOnNetworkGetsDefault_Contract(t *testing.T) {
 // createServerOnNetworkInGroup boots a server on a network in one security group.
 func createServerOnNetworkInGroup(t *testing.T, token, name, networkID, group string) string {
 	t.Helper()
-	body := `{"server":{"name":"` + name + `","flavorRef":"m1.small","imageRef":"` + firstImageID(t, token) +
-		`","networks":[{"uuid":"` + networkID + `"}],"security_groups":[{"name":"` + group + `"}]}}`
-	code, resp := createServerRaw(t, token, body)
-	require.Equal(t, http.StatusAccepted, code, "creating a server in %s: %s", group, resp)
-	var out struct {
-		Server struct {
-			ID string `json:"id"`
-		} `json:"server"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(resp), &out))
-	require.NotEmpty(t, out.Server.ID)
-	t.Cleanup(func() {
-		req, _ := http.NewRequest(http.MethodDelete, novaRootURL(t)+"/v2.1/servers/"+out.Server.ID, nil)
-		req.Header.Set("X-Auth-Token", token)
-		if r, err := http.DefaultClient.Do(req); err == nil {
-			_ = r.Body.Close()
-		}
-	})
-	return out.Server.ID
+	return createServer(t, token, name, `,"networks":[{"uuid":"`+networkID+`"}],"security_groups":[{"name":"`+group+`"}]`)
 }

@@ -3,7 +3,7 @@ SYNC IMPACT REPORT — constitution amendment
 ===========================================
 Version change: 1.5.0 → 1.6.0 (MINOR — two new permitted exceptions; one exception's scope stated to
 match the component it was written for; one divergence registered). Refined in place on
-2026-11-18 and 2026-11-20, before reaching `main`.
+2026-11-18 and 2026-11-20, and editorially on 2026-11-24, before reaching `main`.
 
 Modified principles:
   - I. OpenStack Flamingo API Compatibility — rules unchanged. Known Divergences gains entry 5:
@@ -37,6 +37,8 @@ Modified principles:
 Changed sections:
   - Technology Constraints → Forbidden Patterns: the async-worker exemption names loops that make
     node-local state match the record.
+  - Technology Constraints → Required Dependencies (editorial refinement, 2026-11-24): iptables is run
+    as commands; the go-iptables binding is gone (SPEC-033 T232).
   - Known Divergences from Upstream: entry 5 (entry 6 added and withdrawn on 2026-11-20).
   - Amendment Log: entry for v1.6.0.
 
@@ -55,11 +57,12 @@ Runtime guidance updated in the repo:
   - docs/specs/033-sg-port-membership/ — spec (both analysis sessions; FR-007b, FR-008, FR-008a–c,
     FR-010, FR-021a), plan (the Constitution Check cites v1.6.0), research (R5, R8, R19–R24) and
     tasks.
-  - CLAUDE.md — Project Isolation: security groups resolve only in their own project (register
-    entry 5); since 2026-11-20, a name in an administrator's server action resolves in the server's
-    project, an id may name any group the caller can see. Two database backends: a change to security-group membership or rules, or to a
-    floating IP's association, stores, applies and, on failure, undoes. Refined 2026-11-20: the
-    node that holds the state applies it; deletions remove host state before their record.
+  - CLAUDE.md — Project Isolation: security groups resolve only in their own project (register entry 5);
+    since 2026-11-20, a name in an administrator's server action resolves in the server's project, an id
+    may name any group the caller can see. Two database backends: a change to security-group membership
+    or rules, or to a floating IP's association, stores, applies and, on failure, undoes. Refined
+    2026-11-20: the node that holds the state applies it; deletions remove host state before their
+    record.
 
 Follow-up TODOs:
   - ✅ (2026-11-20) The Neutron request paths that logged a failed node-local step and answered
@@ -134,11 +137,11 @@ removes nothing on a read of the records it knows to be incomplete. Either way:
   synchronous, bounded call — or fails and undoes it ("a change undone when its external work fails",
   below); a deletion removes that state before its record ("a removal applied before its record
   goes", below).
-- It exists only to correct drift: a guest that crashed, a resource removed out of band, a record
-  that has aged past its retention, or node-local state lost to a restart or edited by hand. For
-  node-local state it also covers three cases no request can reach without a queue: state on the
-  nodes other than the one a change applies on, a request whose process stopped after storing its change, and a node whose
-  own undo could not restore its state after the request had already answered with an error.
+- It exists only to correct drift: a guest that crashed, a resource removed out of band, a record that
+  has aged past its retention, or node-local state lost to a restart or edited by hand. For node-local
+  state it also covers three cases no request can reach without a queue: state on the nodes other than
+  the one a change applies on, a request whose process stopped after storing its change, and a node
+  whose own undo could not restore its state after the request had already answered with an error.
 
 A loop that accepts work from a request, or that an API response waits on, remains forbidden.
 
@@ -355,7 +358,8 @@ undocumented divergence does not merely go unfixed; it silently bounds the value
 - **Real Mode** (Linux only):
   - libvirt + KVM (github.com/digitalocean/go-libvirt)
   - netlink (github.com/vishvananda/netlink)
-  - iptables (github.com/coreos/go-iptables)
+  - iptables, ip6tables and their `-save`/`-restore`, and iproute2's `ip`, run as commands with a
+    one-second bound (no Go binding; SPEC-033 removed github.com/coreos/go-iptables)
   - Optional: Ceph RBD (github.com/ceph/go-ceph), S3 (AWS SDK v2)
 
 ### Forbidden Patterns
@@ -426,7 +430,7 @@ Amendments require:
 
 ## Amendment Log
 
-### v1.6.0 — 2026-11-17, refined 2026-11-18 and 2026-11-20 — a change undone when its external work fails; a removal applied before its record goes; loops that make node-local state match the record (Article II); register entry 5 (Article I)
+### v1.6.0 — 2026-11-17, refined 2026-11-18 and 2026-11-20, editorially 2026-11-24 — a change undone when its external work fails; a removal applied before its record goes; loops that make node-local state match the record (Article II); register entry 5 (Article I)
 
 **Rationale**: SPEC-033 (cloud-storage#579) makes security-group membership reach the ports and the
 firewall built from them. Its analysis found the plan justifying two departures from Article II
@@ -479,6 +483,14 @@ node-local step and answered success — network, subnet and DHCP changes, route
 interfaces and gateways, port forwarding, port creation's FDB and eBPF steps, port and instance-port
 teardown, the LS-SG chains, network creation's undo — is brought in line by the same feature (FR-045),
 so this amendment names no departure. No deployment exists; the layout change is a clean break.
+Article V's network-isolation bullet, which described per-project namespaces that no longer exist,
+names the layout instead: one bridge per network, router and DHCP namespaces on the network node, and
+per-port firewall chains. Its rules are unchanged; it records what isolates projects.
+
+**Editorial refinement 2026-11-24** (SPEC-033 T232, before reaching `main`): Required Dependencies
+named `github.com/coreos/go-iptables`, which SPEC-033 removed from `go.mod`. They now name iptables,
+ip6tables and their `-save`/`-restore`, and iproute2's `ip`, run as commands with a one-second bound.
+No principle, rule or limit changes.
 
 ### v1.5.0 — 2026-11-06 — re-establishing a dependency in the background (Article III); no runtime fallback to stub (Article IV)
 

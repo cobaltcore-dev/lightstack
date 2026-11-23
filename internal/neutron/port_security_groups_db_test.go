@@ -327,7 +327,7 @@ func TestAllocatePortForInstanceGroups(t *testing.T) {
 	}
 
 	alloc := func(instance string, groups []string, copyFrom string) (string, error) {
-		info, err := svc.AllocatePortForInstance(ctx, netID, seededProjectID, instance, groups, copyFrom, false)
+		info, err := svc.AllocatePortForInstance(ctx, InstancePort{NetworkID: netID, ProjectID: seededProjectID, InstanceID: instance, SecurityGroupIDs: groups, CopyGroupsFrom: copyFrom, Admin: false})
 		if err != nil {
 			return "", err
 		}

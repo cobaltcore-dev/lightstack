@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 	"github.com/rs/zerolog/log"
 )
@@ -24,7 +25,9 @@ type VMSpec struct {
 	CloudInit *CloudInitConfig
 }
 
-// NetworkConfig defines network interface configuration
+// NetworkConfig defines network interface configuration. The interface's TAP is its port's, named as
+// Neutron names it (networking.PortDevice), so the port's firewall finds it (SPEC-033 FR-041): an
+// interface is never left to libvirt's own vnetN, which the firewall would neither filter nor drop.
 type NetworkConfig struct {
 	PortID     string
 	MACAddress string
@@ -126,9 +129,10 @@ func GenerateVMXML(spec VMSpec) string {
     <interface type='bridge'>
       <mac address='%s'/>
       <source bridge='%s'/>
+      <target dev='%s'/>
       <model type='virtio'/>
     </interface>
-`, net.MACAddress, net.BridgeName)
+`, net.MACAddress, net.BridgeName, networking.PortDevice(net.PortID))
 	}
 
 	// Serial console — capture output to a per-instance log file so

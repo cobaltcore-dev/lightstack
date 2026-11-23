@@ -36,8 +36,10 @@ func TestRouterAttachmentRollbackAndExhaustion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM routers WHERE id=$1", routerID) })
-	// The subnet's one address is its gateway, and a port holds it.
-	if _, err := testPool.Exec(ctx, "UPDATE subnets SET cidr='10.99.0.5/32', gateway_ip='10.99.0.5' WHERE id=$1", subnetID); err != nil {
+	// The subnet's gateway is one of its two host addresses, and a port holds it. A /30, not a /32: a
+	// /32's one address is its network and broadcast address, which upstream's check_subnet_ip refuses
+	// as an interface's address (400) before it asks who holds it.
+	if _, err := testPool.Exec(ctx, "UPDATE subnets SET cidr='10.99.0.4/30', gateway_ip='10.99.0.5' WHERE id=$1", subnetID); err != nil {
 		t.Fatal(err)
 	}
 	fixed := fmt.Sprintf(`[{"subnet_id":"%s","ip_address":"10.99.0.5"}]`, subnetID)

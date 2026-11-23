@@ -10,21 +10,33 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-// SPEC-033 T030 (FR-017, FR-018, FR-019; contracts/network-api.md; research R12): security_groups on
-// POST and PUT /v2.0/ports. Absent keeps the list on an update and gives default on a create; null
-// and [] give none; a list gives exactly that list. A change reaches the port's floating-IP filter
-// before the answer, and is undone, compare-and-set, when the node cannot apply it.
+// SPEC-033 T030, reworked by T130 (FR-017, FR-018, FR-019; contracts/network-api.md; research R12,
+// R32): security_groups on POST and PUT /v2.0/ports. Absent keeps the list on an update and gives
+// default on a create; null and [] give none; a list gives exactly that list. A change reaches the
+// firewall of the port on its node before the answer, and is undone, compare-and-set, when the node
+// cannot apply it.
 
-func newPortAPIRig(t *testing.T) (*gin.Engine, *Service, *fakeDataplane) {
+func newPortAPIRig(t *testing.T) (*gin.Engine, *Service, *fakeFirewall) {
 	t.Helper()
 	r, svc := newNeutronTestRouterWithService()
-	fake := newFakeDataplane()
-	svc.dataplane = fake
-	return r, svc, fake
+	fw := newFakeFirewall()
+	svc.firewall = fw
+	return r, svc, fw
+}
+
+// sgTestRule adds an ingress rule of protocol and port to a group.
+func sgTestRule(t *testing.T, groupID, protocol string, port int) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO security_group_rules (security_group_id, direction, ethertype, protocol, port_range_min, port_range_max)
+		VALUES ($1, 'ingress', 'IPv4', $2, $3, $3)`, groupID, protocol, port); err != nil {
+		t.Fatalf("seed rule %s/%d: %v", protocol, port, err)
+	}
 }
 
 func projectHdr(projectID string) map[string]string {
@@ -164,39 +176,37 @@ func TestUpdatePortSecurityGroups(t *testing.T) {
 }
 
 // A port with a floating IP: the change reaches the filter before the answer, or is undone.
-func TestUpdatePortSecurityGroups_FloatingIP(t *testing.T) {
+func TestUpdatePortSecurityGroups_BoundPort(t *testing.T) {
 	requireDB(t)
 	hdr := projectHdr(seededProjectID)
 
-	setup := func(t *testing.T) (r *gin.Engine, svc *Service, fake *fakeDataplane, port, fixed, web, db string) {
+	setup := func(t *testing.T) (r *gin.Engine, svc *Service, fw *fakeFirewall, port, web, db string) {
 		t.Helper()
-		r, svc, fake = newPortAPIRig(t)
+		r, svc, fw = newPortAPIRig(t)
 		port = sgTestPort(t)
 		old := sgTestGroup(t, seededProjectID, "spec033-old-"+uuid.NewString()[:6])
 		sgTestAttach(t, port, old)
 		web = sgTestGroup(t, seededProjectID, "spec033-web-"+uuid.NewString()[:6])
 		sgTestRule(t, web, "tcp", 80)
 		db = sgTestGroup(t, seededProjectID, "spec033-db-"+uuid.NewString()[:6])
-		fixed = testFixedIP()
-		seedFloatingIP(t, port, fixed)
-		return r, svc, fake, port, fixed, web, db
+		bind(t, port, svc.nodes.Name)
+		return r, svc, fw, port, web, db
 	}
 
-	t.Run("the filter gets the new rules", func(t *testing.T) {
-		r, _, fake, port, fixed, web, _ := setup(t)
+	t.Run("the port's firewall gets the new rules", func(t *testing.T) {
+		r, _, fw, port, web, _ := setup(t)
 		if code, body := putPort(t, r, hdr, port, sgBody(quoted(web))); code != http.StatusOK {
 			t.Fatalf("PUT: code=%d body=%s", code, body)
 		}
-		got, ok := fake.filterOf(fixed)
-		if !ok || len(got) != 1 || got[0].Protocol != "tcp" || got[0].PortMin != 80 {
-			t.Errorf("the filter of %s: %+v (present %v); want web's tcp/80", fixed, got, ok)
+		if p, ok := fw.port(port); !ok || !allows(p, "ingress", "tcp", 80, "") {
+			t.Errorf("the port's firewall: %+v (held %v); want web's tcp/80", p.Rules, ok)
 		}
 	})
 
-	t.Run("a failed rebuild answers 500 and puts the list back", func(t *testing.T) {
-		r, _, fake, port, _, web, _ := setup(t)
+	t.Run("a failed convergence answers 500 and puts the list back", func(t *testing.T) {
+		r, _, fw, port, web, _ := setup(t)
 		before := sgTestGroupsOf(t, port)
-		fake.failWith(errors.New("iptables-restore: line 4 failed"))
+		fw.failFirst(1, errors.New("iptables-restore: line 4 failed"))
 		if code, body := putPort(t, r, hdr, port, sgBody(quoted(web))); code != http.StatusInternalServerError {
 			t.Fatalf("PUT: code=%d body=%s; want 500", code, body)
 		}
@@ -206,9 +216,9 @@ func TestUpdatePortSecurityGroups_FloatingIP(t *testing.T) {
 	})
 
 	t.Run("the undo leaves a list another request wrote meanwhile", func(t *testing.T) {
-		r, _, fake, port, _, web, db := setup(t)
+		r, _, fw, port, web, db := setup(t)
 		first := true
-		fake.setHook(func(dataplaneCall) error {
+		fw.hook = func([]networking.FirewallPort) error {
 			if !first {
 				return nil
 			}
@@ -219,7 +229,7 @@ func TestUpdatePortSecurityGroups_FloatingIP(t *testing.T) {
 				t.Errorf("the other request: %v", err)
 			}
 			return errors.New("iptables-restore: line 4 failed")
-		})
+		}
 		if code, body := putPort(t, r, hdr, port, sgBody(quoted(web))); code != http.StatusInternalServerError {
 			t.Fatalf("PUT: code=%d body=%s; want 500", code, body)
 		}
@@ -229,15 +239,12 @@ func TestUpdatePortSecurityGroups_FloatingIP(t *testing.T) {
 	})
 
 	t.Run("a busy node answers 500 within about a second and puts the list back", func(t *testing.T) {
-		r, svc, fake, port, _, web, _ := setup(t)
+		r, svc, _, port, web, _ := setup(t)
 		before := sgTestGroupsOf(t, port)
-		otherPort, otherFixed, _ := portWithFloatingIP(t, 22)
-		entered, release := fake.blockFirst(otherFixed)
-		t.Cleanup(release)
-		done := make(chan error, 1)
-		go func() { done <- svc.RefreshPortFilters(context.Background(), []string{otherPort}) }()
-		waitEntered(t, entered)
-
+		release, err := svc.units.acquire(context.Background(), unitRequest{Unit: unitPorts}.lockKey())
+		if err != nil {
+			t.Fatal(err)
+		}
 		start := time.Now()
 		code, body := putPort(t, r, hdr, port, sgBody(quoted(web)))
 		elapsed := time.Since(start)
@@ -246,13 +253,10 @@ func TestUpdatePortSecurityGroups_FloatingIP(t *testing.T) {
 			t.Fatalf("PUT on a busy node: code=%d body=%s; want 500", code, body)
 		}
 		if elapsed < 900*time.Millisecond || elapsed > 3*time.Second {
-			t.Errorf("PUT took %v; want about one second, for the lock and then the rebuild after the undo", elapsed)
+			t.Errorf("PUT took %v; want about one second, for the lock and then the convergence after the undo", elapsed)
 		}
 		if got := sgTestGroupsOf(t, port); !equalIDs(got, before) {
 			t.Errorf("groups: %v; want %v back", got, before)
-		}
-		if err := <-done; err != nil {
-			t.Errorf("the blocked rebuild: %v", err)
 		}
 	})
 }

@@ -47,9 +47,12 @@ type Service struct {
 	// shutdownTimeout is how long a guest gets to shut down cleanly before a stop
 	// forces it off. Zero means the package default; see SetShutdownTimeout.
 	shutdownTimeout time.Duration
-	wg              sync.WaitGroup
-	ctx             context.Context
-	cancel          context.CancelFunc
+	// node is the node this service runs guests on, to which a guest's ports are bound (SPEC-033
+	// FR-041). An instance records no node: a guest runs where its boot ran.
+	node   string
+	wg     sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 const (
@@ -59,7 +62,7 @@ const (
 
 // NeutronService defines the interface for Neutron operations Nova needs.
 type NeutronService interface {
-	AllocatePortForInstance(ctx context.Context, networkID, projectID, instanceID string, securityGroupIDs []string, copyGroupsFrom string, admin bool) (any, error)
+	AllocatePortForInstance(ctx context.Context, req neutron.InstancePort) (any, error)
 	// ReleaseInstancePorts is AllocatePortForInstance's rollback: it deletes the
 	// ports Neutron allocated for a boot that failed after allocating them
 	// — the port rows, their host plumbing and their
@@ -76,22 +79,41 @@ type NeutronService interface {
 	// bad network BEFORE anything is created (FR-017), which is the half of a network
 	// failure that IS knowable up front.
 	NetworkUsableBy(ctx context.Context, networkID, projectID string, admin bool) error
-	// RefreshPortFilters rebuilds the floating-IP filters of the given ports from what the database
-	// now holds, on the node serving the request only; the other nodes converge in their
-	// reconciliation pass. In stub mode nothing is programmed. An error means the change has not
-	// reached the dataplane and the old filters still stand, so the caller undoes its change
-	// (SPEC-033 FR-008).
-	RefreshPortFilters(ctx context.Context, portIDs []string) error
-	// ConvergeFloatingIPs makes this node hold what each floating IP's record now says. A server's
-	// deletion calls it for the floating IPs it disassociated (neutron.DisassociatePortFloatingIPs),
-	// after its commit; a failure is logged and the deletion stands (SPEC-033 research R25).
-	ConvergeFloatingIPs(ctx context.Context, floatingIPs []string) error
+	// RefreshPortFilters converges the firewall of ports whose groups changed, on the nodes they are
+	// bound to, and of every port whose rules expand one of groups, whose members changed with them.
+	// In stub mode nothing is programmed. An error means the change has not reached the dataplane, so
+	// the caller undoes its change (SPEC-033 FR-008).
+	RefreshPortFilters(ctx context.Context, portIDs, groups []string) error
+	// BindPort binds a port to the node its guest runs on, or unbinds it with node "", and converges
+	// its firewall there before it returns: present on the new node, gone from the old. An error means
+	// the binding was put back (SPEC-033 FR-041).
+	BindPort(ctx context.Context, portID, node string) error
+	// RebindPort binds a port back to node after a deletion or detach that unbound it did not stand, only
+	// while the port still names instanceID and is unbound. An error means node was not converged; the
+	// binding stays for the reconciliation pass (SPEC-033 FR-040).
+	RebindPort(ctx context.Context, portID, instanceID, node string) error
+	// WithdrawPorts converges every unit ports touch as if they were gone, before their records go
+	// (SPEC-033 FR-040). An error means the units were converged from the records again; otherwise it
+	// returns how to do that, should the deletion not stand.
+	WithdrawPorts(ctx context.Context, portIDs []string) (restore func(), err error)
+	// ConvergeDisassociated makes the disassociation of floating IPs in force: their routers on the
+	// network node. A server's deletion calls it for the floating IPs it disassociated
+	// (neutron.ReleaseDeletedPorts), after its commit; a failure is logged there and the deletion
+	// stands (SPEC-033 research R25).
+	ConvergeDisassociated(ctx context.Context, was []neutron.FloatingIPAssociation)
 }
 
 // NewService creates a new Nova service
 func NewService(pool database.DB, libvirtURI, libvirtMode string, cacheInstance *cache.Cache) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
+	// The node's name, as Neutron's (neutron.NewService): its guests' ports are bound to it. A host
+	// without one binds none, and a boot that needs a binding fails.
+	node, err := common.NodeName()
+	if err != nil {
+		log.Warn().Err(err).Msg("this node has no name; a boot with networks will fail")
+	}
 	return &Service{
+		node:        node,
 		pool:        pool,
 		libvirtURI:  libvirtURI,
 		libvirtMode: libvirtMode,
@@ -102,6 +124,115 @@ func NewService(pool database.DB, libvirtURI, libvirtMode string, cacheInstance 
 		ctx:            ctx,
 		cancel:         cancel,
 	}
+}
+
+// bindBootPorts binds a booting guest's ports to this node, converging their firewall here.
+func (svc *Service) bindBootPorts(ctx context.Context, networks []hypervisor.NetworkConfig) error {
+	if svc.neutronSvc == nil || len(networks) == 0 {
+		return nil
+	}
+	if svc.node == "" {
+		return errors.New("this node has no name to bind ports to")
+	}
+	for _, n := range networks {
+		if err := svc.neutronSvc.BindPort(ctx, n.PortID, svc.node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rebindPorts binds each port back to the node it was bound to before a deletion or a detach of the server
+// unbound it, when that does not stand, compare-and-set: a port another request has detached or bound since
+// stays (SPEC-033 FR-040, T218, T252). A node that cannot be converged keeps the binding in the records, which
+// the reconciliation pass converges it from (T261).
+func (svc *Service) rebindPorts(ctx context.Context, instanceID string, bindings map[string]string) {
+	ctx = context.WithoutCancel(ctx)
+	for port, node := range bindings {
+		if err := svc.neutronSvc.RebindPort(ctx, port, instanceID, node); err != nil {
+			log.Error().Err(err).Str("port_id", port).Str("node", node).
+				Msg("bind a port back after a failed deletion or detach: bound in the records; the reconciliation pass converges the node")
+		}
+	}
+}
+
+// withdrawServerPorts takes a deleted server's ports from their units before their records change
+// (SPEC-033 FR-040): it unbinds the ports attached by id, which stay the tenant's, and withdraws the
+// ports its boot made, which go. It answers errors itself; restore converges the withdrawn ports' units
+// from the records again and binds the attached ports back, should the deletion not stand.
+func (svc *Service) withdrawServerPorts(c *gin.Context, instanceID string) (restore func(), ok bool) {
+	restore = func() {}
+	if svc.neutronSvc == nil {
+		return restore, true
+	}
+	ctx := c.Request.Context()
+	ports, err := readServerPorts(ctx, svc.pool, instanceID, false)
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("delete: read the server's ports")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return restore, false
+	}
+	unbound := map[string]string{}
+	rebind := func() { svc.rebindPorts(ctx, instanceID, unbound) }
+	for _, p := range ports.attached {
+		if err := svc.neutronSvc.BindPort(ctx, p, ""); err != nil {
+			log.Error().Err(err).Str("port_id", p).Msg("delete: an attached port could not be unbound; the server stays")
+			rebind()
+			common.SendError(c, common.NewInternalServerError("failed to delete server"))
+			return restore, false
+		}
+		unbound[p] = ports.nodes[p]
+	}
+	if len(ports.boot) == 0 {
+		return rebind, true
+	}
+	withdrawn, err := svc.neutronSvc.WithdrawPorts(ctx, ports.boot)
+	if err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("delete: the server's ports could not be withdrawn; the server stays")
+		rebind()
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+		return func() {}, false
+	}
+	return func() { withdrawn(); rebind() }, true
+}
+
+// serverPorts are a server's ports, split by who owns them.
+type serverPorts struct {
+	boot     []string          // made by its boot (device_owner compute:nova): the server's, deleted with it
+	attached []string          // attached by id: the tenant's, detached
+	nodes    map[string]string // the node each attached port is bound to, "" for none
+}
+
+// readServerPorts reads a server's ports — those naming it that are its project's, as the address map
+// reads them: device_id is any port creator's to set (SPEC-033 T180) — in id order, the order
+// every change to a server's ports takes them in (SPEC-033 research R3, R25). lock locks them, in a
+// transaction.
+func readServerPorts(ctx context.Context, q database.Querier, instanceID string, lock bool) (serverPorts, error) {
+	query := "SELECT id::text, COALESCE(device_owner, ''), COALESCE(binding_host_id, '') FROM ports WHERE device_id = $1 AND project_id = (SELECT project_id FROM instances WHERE id = $1) ORDER BY id"
+	if lock {
+		query += " FOR UPDATE"
+	}
+	ports := serverPorts{nodes: map[string]string{}}
+	rows, err := q.Query(ctx, query, instanceID)
+	if err != nil {
+		return ports, fmt.Errorf("read the ports of server %s: %w", instanceID, err)
+	}
+	// Closed before returning, not deferred past the caller's next command: pgx refuses a second
+	// command on a connection while a result set is open ("conn busy").
+	defer rows.Close()
+	for rows.Next() {
+		var id, owner, node string
+		if err := rows.Scan(&id, &owner, &node); err != nil {
+			return ports, fmt.Errorf("read the ports of server %s: %w", instanceID, err)
+		}
+		if owner == "compute:nova" {
+			ports.boot = append(ports.boot, id)
+		} else {
+			ports.attached = append(ports.attached, id)
+			ports.nodes[id] = node
+		}
+	}
+	return ports, rows.Err()
 }
 
 // Shutdown signals all background goroutines to stop and waits for them.
@@ -1184,7 +1315,8 @@ func (svc *Service) CreateServer(c *gin.Context) {
 					if firstPortID != "" {
 						groups = nil
 					}
-					portInfoRaw, err := svc.neutronSvc.AllocatePortForInstance(ctx, network.UUID, projectID, instanceID, groups, firstPortID, isAdmin)
+					portInfoRaw, err := svc.neutronSvc.AllocatePortForInstance(ctx, neutron.InstancePort{NetworkID: network.UUID,
+						ProjectID: projectID, InstanceID: instanceID, SecurityGroupIDs: groups, CopyGroupsFrom: firstPortID, Admin: isAdmin})
 					if err != nil {
 						// FAIL the boot. This used to log and `continue`, so the
 						// server reached ACTIVE with an empty address map and no
@@ -1375,6 +1507,19 @@ func (svc *Service) CreateServer(c *gin.Context) {
 
 			log.Debug().Str("image_path", spec.ImagePath).Int("network_count", len(spec.Networks)).Msg("VM spec prepared")
 			xml := hypervisor.GenerateVMXML(spec)
+
+			// Each port is bound to this node and its firewall converged here before the domain exists,
+			// so the guest's first packet meets its chains (SPEC-033 FR-041, contracts/port-firewall.md).
+			// A port that cannot be bound fails the boot as a libvirt failure does; the release above
+			// takes the ports back.
+			if err := svc.bindBootPorts(ctx, networks); err != nil {
+				log.Error().Err(err).Str("instance_id", instanceID).Msg("binding the server's ports failed; failing the boot")
+				// The tenant reads the fault: why the binding failed — a node's name and URL, its answer,
+				// iptables' output — is the log line's above, as allocationFault keeps a host's error out
+				// (SPEC-033 T181).
+				svc.markInstanceError(instanceID, "failed to bind the server's ports")
+				return
+			}
 
 			// Create VM
 			log.Debug().Str("instance_id", instanceID).Msg("Calling CreateVM")
@@ -1716,7 +1861,7 @@ func (svc *Service) ListServersDetail(c *gin.Context) {
 
 	// security_groups: the groups each server's ports carry, in one batched query (no N+1, FR-007).
 	// A server whose ports carry none has no security_groups key (SPEC-033 FR-014, FR-015).
-	sgMap, err := securityGroupNamesForServers(c.Request.Context(), svc.pool, ids)
+	sgMap, err := securityGroupNamesForServers(c.Request.Context(), svc.pool, ids, common.HasRole(c, common.RoleAdmin))
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_servers_detail_sgs").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list security groups"))
@@ -2014,7 +2159,7 @@ func (svc *Service) GetServer(c *gin.Context) {
 
 	// security_groups: the groups the server's ports carry, the list its filter is built from. The key
 	// is absent when the ports carry none (SPEC-033 FR-014, FR-015).
-	sgMap, err := securityGroupNamesForServers(c.Request.Context(), svc.pool, []string{id})
+	sgMap, err := securityGroupNamesForServers(c.Request.Context(), svc.pool, []string{id}, common.HasRole(c, common.RoleAdmin))
 	if err != nil {
 		log.Error().Err(err).Str("operation", "get_server_sgs").Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to get security groups"))
@@ -2087,32 +2232,16 @@ func (svc *Service) DeleteServer(c *gin.Context) {
 
 // deleteServer deletes a server for DELETE /servers/{id} and for the forceDelete action alike, as
 // upstream's two share one deletion (SPEC-033 FR-008e, research R25). In order: the console tokens; the
-// libvirt domain; one transaction that locks the instance, then its ports in id order, releases or
+// libvirt domain; the ports withdrawn from their units — those attached by id unbound, those the boot made
+// withdrawn (FR-040); one transaction that locks the instance, then its ports in id order, releases or
 // deletes its volumes, disassociates the floating IPs of the ports its boot created, detaches the ports
 // attached by id and deletes the boot ports and the instance; then, before the answer, the floating IPs
 // are converged; then the files are cleaned up. force tolerates a libvirt domain that cannot be deleted,
 // as forceDelete always has. It answers errors itself and reports whether the deletion happened; the
 // caller answers success in its own way.
 func (svc *Service) deleteServer(c *gin.Context, instanceID, projectID string, force bool) bool {
-	logger := middleware.GetLogger(c)
-	var instanceUUID string
-	var libvirtDomainID sql.NullString
-	var instanceImageID sql.NullString
-	queryStart := time.Now()
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id, libvirt_domain_id, image_id FROM instances WHERE id = $1 AND project_id = $2",
-		instanceID, projectID,
-	).Scan(&instanceUUID, &libvirtDomainID, &instanceImageID)
-	middleware.LogDatabaseQuery(c, "SELECT libvirt_domain_id", time.Since(queryStart), err)
-
-	if errors.Is(err, database.ErrNoRows) {
-		logger.Warn().Str("instance_id", instanceID).Msg("Instance not found")
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return false
-	}
-	if err != nil {
-		logger.Error().Err(err).Str("instance_id", instanceID).Msg("delete: read instance failed")
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+	instanceUUID, libvirtDomainID, instanceImageID, ok := svc.readServerForDelete(c, instanceID, projectID)
+	if !ok {
 		return false
 	}
 
@@ -2127,26 +2256,18 @@ func (svc *Service) deleteServer(c *gin.Context, instanceID, projectID string, f
 		return false
 	}
 
-	// Delete VM from libvirt (if available)
-	if svc.vmManager != nil && libvirtDomainID.Valid && libvirtDomainID.String != "" {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
-		defer cancel()
+	if !svc.deleteDomain(c, libvirtDomainID, force) {
+		return false
+	}
 
-		libvirtStart := time.Now()
-		if err := svc.vmManager.DeleteVM(ctx, libvirtDomainID.String); err != nil {
-			middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(libvirtStart), err)
-			if !force {
-				logger.Error().Err(err).Str("libvirt_domain_id", libvirtDomainID.String).Msg("Failed to delete VM from libvirt")
-				common.SendError(c, common.NewInternalServerError("failed to delete server"))
-				return false
-			}
-			// Best-effort for forceDelete: a leftover libvirt domain is hygiene, not
-			// correctness — the instance row is about to be deleted.
-			logger.Warn().Err(err).Str("libvirt_domain_id", libvirtDomainID.String).Msg("forceDelete: failed to delete libvirt domain")
-		} else {
-			middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(libvirtStart), nil)
-			logger.Info().Str("libvirt_domain_id", libvirtDomainID.String).Msg("VM deleted from libvirt")
-		}
+	// The server's ports leave their units before their records change (SPEC-033 FR-040, R34): a port
+	// attached by id, which stays the tenant's, is unbound; the ports the boot made, which go, are
+	// withdrawn. When that or the transaction below fails, the server stays, its ports converged from
+	// the records again, and a second deletion, the domain gone already, finishes.
+	ctx := c.Request.Context()
+	restore, ok := svc.withdrawServerPorts(c, instanceUUID)
+	if !ok {
+		return false
 	}
 
 	// SPEC-009 FR-023: release (or, for delete-on-termination, delete) the volumes
@@ -2155,130 +2276,180 @@ func (svc *Service) deleteServer(c *gin.Context, instanceID, projectID string, f
 	// leave split state (e.g. a volume deleted while the server still exists).
 	// Filesystem cleanup (volume backing, overlay dir) is best-effort and runs only
 	// after the transaction commits.
-	ctx := c.Request.Context()
-	var dotVolumes, floatingIPs []string
-	err = database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
-		// The instance first, then its ports in id order, the order every change to a server's
-		// ports takes them in (SPEC-033 research R3, R25). No row means a concurrent deletion won:
-		// 404, upstream's answer.
-		var one int
-		if err := tx.QueryRow(ctx, "SELECT 1 FROM instances WHERE id = $1 FOR UPDATE", instanceUUID).Scan(&one); err != nil {
-			if errors.Is(err, database.ErrNoRows) {
-				return common.NewNotFoundError("instance")
-			}
-			return fmt.Errorf("lock instance: %w", err)
-		}
-		var bootPorts []string
-		rows, err := tx.Query(ctx,
-			"SELECT id::text, COALESCE(device_owner, '') FROM ports WHERE device_id = $1 ORDER BY id FOR UPDATE", instanceUUID)
-		if err != nil {
-			return fmt.Errorf("lock ports: %w", err)
-		}
-		for rows.Next() {
-			var id, owner string
-			if err := rows.Scan(&id, &owner); err != nil {
-				rows.Close()
-				return fmt.Errorf("lock ports: %w", err)
-			}
-			if owner == "compute:nova" {
-				bootPorts = append(bootPorts, id)
-			}
-		}
-		// Closed eagerly, not deferred: pgx refuses a second command on a connection while a
-		// result set is open ("conn busy").
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("lock ports: %w", err)
-		}
-
-		if dotVolumes, err = releaseServerVolumes(ctx, tx, instanceUUID); err != nil {
-			return err
-		}
-
-		// The floating IPs of the ports the boot created lose their association with them, in
-		// this transaction, as upstream's port deletion does (FR-008d). A port attached by id is
-		// only detached below, so it keeps its floating IP.
-		if floatingIPs, err = neutron.DisassociatePortFloatingIPs(ctx, tx, bootPorts); err != nil {
-			return err
-		}
-
-		// The instance's ports, split by who owns them:
-		//
-		// - Ports Neutron allocated for the boot (device_owner 'compute:nova') are
-		//   Nova's to delete. Without this they linger after the server is gone and
-		//   deleting the network then fails with "network has active ports" — which
-		//   breaks `terraform destroy` (SPEC-009 / SC-007) and leaks ports.
-		//
-		// - A port the tenant created and attached (os-interface with port_id) is
-		//   the tenant's resource, not the server's: upstream detaches it — clears
-		//   the device, parks it DOWN — rather than deleting it. The blanket
-		//   `DELETE ... WHERE device_id = $1` used to destroy it: the tenant lost a
-		//   port they made, with its fixed IP, by deleting a server.
-		if _, err := tx.Exec(ctx, `
-			UPDATE ports
-			SET device_id = NULL, device_owner = NULL, status = 'DOWN', updated_at = NOW()
-			WHERE device_id = $1 AND COALESCE(device_owner, '') <> 'compute:nova'
-		`, instanceUUID); err != nil {
-			return fmt.Errorf("detach tenant ports: %w", err)
-		}
-		if _, err := tx.Exec(ctx,
-			"DELETE FROM ports WHERE device_id = $1 AND device_owner = 'compute:nova'", instanceUUID); err != nil {
-			return fmt.Errorf("remove instance ports: %w", err)
-		}
-
-		// Delete the instance row — by its resolved id alone: matching the name too
-		// would also delete a server named after this one's id, and leave its ports
-		// and attachments behind.
-		tag, err := tx.Exec(ctx, "DELETE FROM instances WHERE id = $1 AND project_id = $2", instanceID, projectID)
-		if err != nil {
-			return fmt.Errorf("delete instance: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			return common.NewNotFoundError("instance")
-		}
-		return nil
+	var deleted deletedServer
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		var err error
+		deleted, err = deleteServerRecords(ctx, tx, instanceUUID, projectID)
+		return err
 	})
+	if err != nil {
+		// The ports go back to their units, compare-and-set: after a concurrent deletion won, they stay
+		// as it left them (rebindPorts).
+		restore()
+		answerDeleteFailure(c, instanceUUID, err)
+		return false
+	}
+
+	// The disassociated floating IPs are withdrawn from their routers before the answer; a failure is
+	// logged and the deletion stands (SPEC-033 research R25).
+	if svc.neutronSvc != nil {
+		svc.neutronSvc.ConvergeDisassociated(context.WithoutCancel(ctx), deleted.floatingIPs)
+	}
+	svc.cleanUpDeletedServer(c, instanceUUID, deleted.volumes, instanceImageID)
+	return true
+}
+
+// readServerForDelete reads the server a deletion deletes: its id, libvirt domain and image. It answers a
+// failure itself — 404 for none — and reports whether it found the server.
+func (svc *Service) readServerForDelete(c *gin.Context, instanceID, projectID string) (id string, domain, image sql.NullString, ok bool) {
+	queryStart := time.Now()
+	err := svc.pool.QueryRow(c.Request.Context(),
+		"SELECT id, libvirt_domain_id, image_id FROM instances WHERE id = $1 AND project_id = $2",
+		instanceID, projectID,
+	).Scan(&id, &domain, &image)
+	middleware.LogDatabaseQuery(c, "SELECT libvirt_domain_id", time.Since(queryStart), err)
+	switch {
+	case errors.Is(err, database.ErrNoRows):
+		middleware.GetLogger(c).Warn().Str("instance_id", instanceID).Msg("Instance not found")
+		common.SendError(c, common.NewNotFoundError("instance"))
+	case err != nil:
+		middleware.GetLogger(c).Error().Err(err).Str("instance_id", instanceID).Msg("delete: read instance failed")
+		common.SendError(c, common.NewInternalServerError("failed to delete server"))
+	}
+	return id, domain, image, err == nil
+}
+
+// answerDeleteFailure answers a deletion whose transaction failed: the refusal it returned — 404 when a
+// concurrent deletion won — or 500.
+func answerDeleteFailure(c *gin.Context, instanceID string, err error) {
 	var refusal *common.OpenStackError
 	if errors.As(err, &refusal) {
-		logger.Warn().Str("instance_id", instanceUUID).Msg("delete: instance already gone (concurrent delete)")
+		middleware.GetLogger(c).Warn().Str("instance_id", instanceID).Msg("delete: instance already gone (concurrent delete)")
 		common.SendError(c, refusal)
-		return false
+		return
 	}
-	if err != nil {
-		logger.Error().Err(err).Str("instance_id", instanceUUID).Msg("delete: transaction failed")
-		log.Error().Err(err).Str("operation", "delete_instance").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to delete server"))
-		return false
-	}
+	middleware.GetLogger(c).Error().Err(err).Str("instance_id", instanceID).Msg("delete: transaction failed")
+	common.SendError(c, common.NewInternalServerError("failed to delete server"))
+}
 
-	// The disassociated floating IPs leave this node before the answer. A failure is logged and the
-	// deletion stands: the ports are gone and their teardown has no undo, so the reconciliation pass
-	// removes what is left (SPEC-033 research R25, a recorded departure).
-	if len(floatingIPs) > 0 && svc.neutronSvc != nil {
-		if err := svc.neutronSvc.ConvergeFloatingIPs(context.WithoutCancel(ctx), floatingIPs); err != nil {
-			logger.Error().Err(err).Strs("floating_ips", floatingIPs).
-				Msg("delete: withdraw the floating IPs of the deleted ports; the reconciliation pass removes what is left")
+// deleteDomain removes a server's libvirt domain, when it has one and libvirt is there. A domain
+// already gone is deleted: an earlier deletion that stopped after it is finished here. A failure
+// answers 500 and keeps the server, except for forceDelete, which goes on: a leftover libvirt domain is
+// hygiene, not correctness — the instance row is about to be deleted.
+func (svc *Service) deleteDomain(c *gin.Context, domainID sql.NullString, force bool) bool {
+	if svc.vmManager == nil || !domainID.Valid || domainID.String == "" {
+		return true
+	}
+	logger := middleware.GetLogger(c)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := svc.vmManager.DeleteVM(ctx, domainID.String)
+	if err != nil && !errors.Is(err, hypervisor.ErrDomainNotFound) {
+		middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(start), err)
+		if !force {
+			logger.Error().Err(err).Str("libvirt_domain_id", domainID.String).Msg("Failed to delete VM from libvirt")
+			common.SendError(c, common.NewInternalServerError("failed to delete server"))
+			return false
 		}
+		logger.Warn().Err(err).Str("libvirt_domain_id", domainID.String).Msg("forceDelete: failed to delete libvirt domain")
+		return true
 	}
-
-	// Post-commit, best-effort filesystem cleanup: delete-on-termination volume
-	// backings and the per-instance overlay directory (a missing dir is fine — e.g.
-	// stub mode never staged one). SPEC-009 WS-0/WS-5/FR-005/FR-023.
-	for _, id := range dotVolumes {
-		if e := storage.RemoveLocalVolume(id); e != nil {
-			logger.Warn().Err(e).Str("volume_id", id).Msg("delete: remove local volume backing (post-commit)")
-		}
-	}
-	if rmErr := hypervisor.RemoveInstanceDir(instanceUUID); rmErr != nil {
-		logger.Warn().Err(rmErr).Str("instance_id", instanceUUID).Msg("failed to remove per-instance disk directory")
-	}
-
-	// Reclaim the node-local image base once nothing references it, so lazily
-	// fetched bases don't accumulate unbounded (SPEC-014 FR-016).
-	if instanceImageID.Valid {
-		svc.reclaimImageBaseIfUnused(instanceImageID.String)
-	}
+	middleware.LogExternalService(c, "libvirt", "delete_vm", time.Since(start), nil)
+	logger.Info().Str("libvirt_domain_id", domainID.String).Msg("VM deleted from libvirt")
 	return true
+}
+
+// deletedServer is what a server's deletion leaves for after its commit: the delete-on-termination
+// volumes whose backing goes, and the floating IPs its boot ports took with them.
+type deletedServer struct {
+	volumes     []string
+	floatingIPs []neutron.FloatingIPAssociation
+}
+
+// deleteServerRecords deletes a server's records in its deletion's transaction: the instance first,
+// then its ports in id order, the order every change to a server's ports takes them in (SPEC-033
+// research R3, R25); its volumes released, or deleted on termination; the floating IPs of the ports
+// its boot made disassociated (FR-008d); those ports deleted and the ones attached by id detached; and
+// the instance row. No row means a concurrent deletion won: 404, upstream's answer.
+func deleteServerRecords(ctx context.Context, tx database.Tx, instanceID, projectID string) (deletedServer, error) {
+	var deleted deletedServer
+	var one int
+	if err := tx.QueryRow(ctx, "SELECT 1 FROM instances WHERE id = $1 FOR UPDATE", instanceID).Scan(&one); err != nil {
+		if errors.Is(err, database.ErrNoRows) {
+			return deleted, common.NewNotFoundError("instance")
+		}
+		return deleted, fmt.Errorf("lock instance: %w", err)
+	}
+	ports, err := readServerPorts(ctx, tx, instanceID, true)
+	if err != nil {
+		return deleted, err
+	}
+	if deleted.volumes, err = releaseServerVolumes(ctx, tx, instanceID); err != nil {
+		return deleted, err
+	}
+	// The floating IPs and port forwardings of the ports the boot created let go of them, in this
+	// transaction, as a port's deletion does (FR-008d, FR-049). A port attached by id is only detached
+	// below, so it keeps both.
+	if deleted.floatingIPs, err = neutron.ReleaseDeletedPorts(ctx, tx, ports.boot); err != nil {
+		return deleted, err
+	}
+	if err := releaseServerPortRecords(ctx, tx, instanceID); err != nil {
+		return deleted, err
+	}
+	// By its resolved id alone: matching the name too would also delete a server named after this
+	// one's id, and leave its ports and attachments behind.
+	tag, err := tx.Exec(ctx, "DELETE FROM instances WHERE id = $1 AND project_id = $2", instanceID, projectID)
+	if err != nil {
+		return deleted, fmt.Errorf("delete instance: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return deleted, common.NewNotFoundError("instance")
+	}
+	return deleted, nil
+}
+
+// releaseServerPortRecords lets a deleted server's ports go, split by who owns them:
+//
+//   - Ports Neutron allocated for the boot (device_owner 'compute:nova') are Nova's to delete. Without
+//     this they linger after the server is gone and deleting the network then fails with "network has
+//     active ports" — which breaks `terraform destroy` (SPEC-009 / SC-007) and leaks ports.
+//   - A port the tenant created and attached (os-interface with port_id) is the tenant's resource, not
+//     the server's: upstream detaches it — clears the device, parks it DOWN — rather than deleting it.
+//     The blanket `DELETE ... WHERE device_id = $1` used to destroy it: the tenant lost a port they
+//     made, with its fixed IP, by deleting a server.
+func releaseServerPortRecords(ctx context.Context, tx database.Tx, instanceID string) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE ports
+		SET device_id = NULL, device_owner = NULL, binding_host_id = NULL, status = 'DOWN', updated_at = NOW()
+		WHERE device_id = $1 AND project_id = (SELECT project_id FROM instances WHERE id = $1) AND COALESCE(device_owner, '') <> 'compute:nova'
+	`, instanceID); err != nil {
+		return fmt.Errorf("detach tenant ports: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		"DELETE FROM ports WHERE device_id = $1 AND project_id = (SELECT project_id FROM instances WHERE id = $1) AND device_owner = 'compute:nova'", instanceID); err != nil {
+		return fmt.Errorf("remove instance ports: %w", err)
+	}
+	return nil
+}
+
+// cleanUpDeletedServer is a deletion's best-effort filesystem cleanup after its commit: the backing of
+// its delete-on-termination volumes and the per-instance overlay directory (a missing one is fine —
+// stub mode never staged one; SPEC-009 WS-0/WS-5/FR-005/FR-023), and the node-local image base once
+// nothing references it, so lazily fetched bases don't accumulate unbounded (SPEC-014 FR-016).
+func (svc *Service) cleanUpDeletedServer(c *gin.Context, instanceID string, volumes []string, imageID sql.NullString) {
+	logger := middleware.GetLogger(c)
+	for _, id := range volumes {
+		if err := storage.RemoveLocalVolume(id); err != nil {
+			logger.Warn().Err(err).Str("volume_id", id).Msg("delete: remove local volume backing (post-commit)")
+		}
+	}
+	if err := hypervisor.RemoveInstanceDir(instanceID); err != nil {
+		logger.Warn().Err(err).Str("instance_id", instanceID).Msg("failed to remove per-instance disk directory")
+	}
+	if imageID.Valid {
+		svc.reclaimImageBaseIfUnused(imageID.String)
+	}
 }
 
 // releaseServerVolumes releases the volumes attached to a server being deleted, or deletes those
@@ -2286,8 +2457,10 @@ func (svc *Service) deleteServer(c *gin.Context, instanceID, projectID string, f
 // the deleted volumes' ids, whose backing files go after the commit (filesystem work cannot be
 // transactional).
 func releaseServerVolumes(ctx context.Context, tx database.Tx, instanceID string) ([]string, error) {
+	// The attachments are locked before their volumes are touched: a volume's detach deletes its
+	// attachment, then updates the volume, and the opposite order deadlocks with it (SPEC-033 T209).
 	rows, err := tx.Query(ctx,
-		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1", instanceID)
+		"SELECT volume_id, delete_on_termination FROM volume_attachments WHERE instance_id = $1 ORDER BY id FOR UPDATE", instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("query volume attachments: %w", err)
 	}

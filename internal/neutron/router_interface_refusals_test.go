@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Branch review SRC-3 (2026-11-23-review.md): adding a router interface took any subnet the caller can
+// SPEC-033 T171: adding a router interface took any subnet the caller can
 // read — a shared network's, an external one's — and gave the router's port the subnet's gateway
 // address, whoever held it. On the network node an interface is a leg with that address on the
 // network's bridge, so a member's router answered for another project's gateway, or became it.

@@ -29,18 +29,6 @@ func listedIDs(t *testing.T, client *gophercloud.ServiceClient, opts groups.List
 	return sortedIDs(ids...)
 }
 
-// rawListStatus sends GET /v2.0/security-groups with the raw query and returns the status.
-func rawListStatus(t *testing.T, client *gophercloud.ServiceClient, query string) int {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, client.ServiceURL("security-groups")+query, nil)
-	require.NoError(t, err)
-	req.Header.Set("X-Auth-Token", client.TokenID)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	return resp.StatusCode
-}
-
 func TestNeutronSecurityGroupFilters_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 	client := contract.SetupNetworkV2Client(t)
@@ -93,14 +81,20 @@ func TestNeutronSecurityGroupFilters_Contract(t *testing.T) {
 		assert.Equal(t, []string{alpha.ID}, listedIDs(t, client, groups.ListOpts{TenantID: project, Description: "alpha-" + tag}))
 	})
 	t.Run("a boolean that is not one is 400", func(t *testing.T) {
-		assert.Equal(t, http.StatusBadRequest, rawListStatus(t, client, "?shared=maybe"))
-		assert.Equal(t, http.StatusBadRequest, rawListStatus(t, client, "?stateful=maybe"))
+		for _, query := range []string{"?shared=maybe", "?stateful=maybe"} {
+			code, _ := rawNeutronGET(t, client, client.ServiceURL("security-groups")+query)
+			assert.Equal(t, http.StatusBadRequest, code, query)
+		}
 	})
+	// Read raw: gophercloud v1.14.1's SecGroup has no shared or revision_number.
 	t.Run("every group reports shared, tags, stateful and revision_number", func(t *testing.T) {
-		got, err := groups.Get(client, alpha.ID).Extract()
-		require.NoError(t, err)
-		assert.True(t, got.Stateful)
-		assert.NotNil(t, got.Tags, "tags is [] rather than absent")
-		assert.Empty(t, got.Tags)
+		code, body := rawNeutronGET(t, client, client.ServiceURL("security-groups", alpha.ID))
+		require.Equal(t, http.StatusOK, code)
+		group, ok := body["security_group"].(map[string]any)
+		require.True(t, ok, "security_group in %v", body)
+		assert.Equal(t, false, group["shared"])
+		assert.Equal(t, true, group["stateful"])
+		assert.Equal(t, float64(1), group["revision_number"], "one update since the create")
+		assert.Equal(t, []any{}, group["tags"], "tags is [] rather than absent")
 	})
 }

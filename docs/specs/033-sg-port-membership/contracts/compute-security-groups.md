@@ -1,6 +1,7 @@
 # Contract: security groups through the compute API
 
-`POST /v2.1/servers/{id}/action` with `addSecurityGroup` or `removeSecurityGroup`, interface attach, and the boot. Errors use the compute error envelope (`itemNotFound`, `badRequest`, `computeFault`).
+`POST /v2.1/servers/{id}/action` with `addSecurityGroup` or `removeSecurityGroup`, interface attach, and the boot.
+Errors use the compute error envelope (`itemNotFound`, `badRequest`, `computeFault`).
 
 ## Request
 
@@ -9,14 +10,17 @@
 {"removeSecurityGroup": {"name": "<name or id>"}}
 ```
 
-`name` holds a group's name or its id. An id match wins over a name match, as at server create. An id names any group the caller can see: a member's own project's, an administrator's any project's, as upstream. A name is resolved in the **server's** project; for an administrator acting on another project's server that is constitution register entry 5, while upstream resolves a name in the caller's own project.
+`name` holds a group's name or its id. An id match wins over a name match, as at server create. An id names any group
+the caller can see: a member's own project's, an administrator's any project's, as upstream. A name is resolved in the
+**server's** project; for an administrator acting on another project's server that is constitution register entry 5,
+while upstream resolves a name in the caller's own project.
 
 ## Answers
 
 | Situation | `addSecurityGroup` | `removeSecurityGroup` | Effect |
 |---|---|---|---|
 | Server not found, or not visible to the caller | `404` | `404` | none |
-| `name` missing or empty | `400` | `400` | none |
+| `name` missing, or empty once its blanks are stripped ("Security group not specified", "Security group name cannot be empty", as upstream's; SPEC-033 T238) | `400` | `400` | none |
 | The group does not resolve: a name not in the server's project, or an id of no group the caller can see (for a member, another project's group; FR-004) | `404` | `404` | none |
 | The server has no port (no network, or the boot has not created one yet) | `404`, "instance_id `<id>` could not be found as device id on any ports" | same | none |
 | Add: some port already carries the group | `400` | n/a | none |

@@ -13,13 +13,14 @@ import (
 )
 
 // SPEC-033 round 2, T061 (research R53): a SQLite migration file whose first line is
-// "-- lightstack:no-transaction" runs with foreign keys off, so it can rebuild a table other
+// "-- lightstack:foreign-keys-off" runs with foreign keys off, so it can rebuild a table other
 // tables reference without SQLite's DROP TABLE deleting their rows through ON DELETE CASCADE.
 // PRAGMA foreign_keys cannot change inside a transaction, so the migrator turns them off first;
 // PRAGMA foreign_key_check must find nothing before the file's work is kept, and foreign keys
-// are on again for whatever runs next. Every other file runs as before.
+// are on again for whatever runs next. Every other file runs as before. SPEC-033 T226:
+// the marker is named for what it does — the file still runs in a transaction, of the migrator's own.
 
-const notxMarker = "-- lightstack:no-transaction"
+const notxMarker = foreignKeysOffMarker
 
 // notxBaseline is a SQLite baseline with a parent table that a child references.
 var notxBaseline = map[string]string{
@@ -75,7 +76,7 @@ func notxCount(t *testing.T, path, query string) int {
 	return n
 }
 
-func TestNoTransactionMarkerRebuildsAReferencedTable(t *testing.T) {
+func TestForeignKeysOffMarkerRebuildsAReferencedTable(t *testing.T) {
 	dir, url, path := notxFolder(t, map[string]string{
 		"002_rebuild.sqlite.up.sql":   notxMarker + "\n" + notxRebuild,
 		"002_rebuild.sqlite.down.sql": notxMarker + "\n" + strings.ReplaceAll(notxRebuild, "name TEXT NOT NULL)", "name TEXT NOT NULL, UNIQUE (name))"),
@@ -110,7 +111,7 @@ func TestNoTransactionMarkerRebuildsAReferencedTable(t *testing.T) {
 	}
 }
 
-func TestNoTransactionMarkerTurnsForeignKeysBackOn(t *testing.T) {
+func TestForeignKeysOffMarkerTurnsForeignKeysBackOn(t *testing.T) {
 	dir, url, path := notxFolder(t, map[string]string{
 		"002_rebuild.sqlite.up.sql":   notxMarker + "\n" + notxRebuild,
 		"002_rebuild.sqlite.down.sql": notxMarker + "\n" + notxRebuild,
@@ -128,7 +129,7 @@ func TestNoTransactionMarkerTurnsForeignKeysBackOn(t *testing.T) {
 	}
 }
 
-func TestNoTransactionMarkerChecksForeignKeys(t *testing.T) {
+func TestForeignKeysOffMarkerChecksForeignKeys(t *testing.T) {
 	dir, url, path := notxFolder(t, map[string]string{
 		// With foreign keys off, deleting p1 leaves c1 without its parent.
 		"002_orphans.sqlite.up.sql":   notxMarker + "\nDELETE FROM parent WHERE id = 'p1';\n",
@@ -149,6 +150,42 @@ func TestNoTransactionMarkerChecksForeignKeys(t *testing.T) {
 	}
 	if n := notxCount(t, path, `SELECT count(*) FROM child`); n != 2 {
 		t.Errorf("%d child rows after the refused migration; want 2", n)
+	}
+}
+
+// SPEC-033 T225: the marker is read on the file's first line, a UTF-8 byte-order mark
+// before it ignored; anywhere else it refuses the file, which would otherwise take the ordinary path,
+// cascade the rebuild's DROP TABLE through the referencing rows, and succeed.
+func TestForeignKeysOffMarkerOnlyOnTheFirstLine(t *testing.T) {
+	t.Run("after a byte-order mark", func(t *testing.T) {
+		dir, url, path := notxFolder(t, map[string]string{
+			"002_rebuild.sqlite.up.sql":   "\ufeff" + notxMarker + "\n" + notxRebuild,
+			"002_rebuild.sqlite.down.sql": notxMarker + "\n" + notxRebuild,
+		})
+		if err := MigrateUp(url, dir); err != nil {
+			t.Fatalf("up: %v", err)
+		}
+		if n := notxCount(t, path, `SELECT count(*) FROM child`); n != 2 {
+			t.Errorf("%d child rows after the rebuild; want both kept", n)
+		}
+	})
+	for name, body := range map[string]string{
+		"below a comment":    "-- rebuild parent without its unique name\n" + notxMarker + "\n" + notxRebuild,
+		"below a blank line": "\n" + notxMarker + "\n" + notxRebuild,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, url, path := notxFolder(t, map[string]string{
+				"002_rebuild.sqlite.up.sql":   body,
+				"002_rebuild.sqlite.down.sql": notxRebuild,
+			})
+			err := MigrateUp(url, dir)
+			if err == nil || !strings.Contains(err.Error(), "must be the file's first line") {
+				t.Fatalf("up through a file with the marker below its first line = %v; want it refused", err)
+			}
+			if n := notxCount(t, path, `SELECT count(*) FROM child`); n != 2 {
+				t.Errorf("%d child rows after the refused file; want both kept", n)
+			}
+		})
 	}
 }
 
@@ -184,7 +221,7 @@ func TestMigrationsWithoutTheMarkerRunInATransaction(t *testing.T) {
 
 // PostgreSQL ignores the marker: the file runs as every PostgreSQL file does, in one
 // transaction, so a failing statement takes the whole file with it.
-func TestNoTransactionMarkerIgnoredByPostgres(t *testing.T) {
+func TestForeignKeysOffMarkerIgnoredByPostgres(t *testing.T) {
 	env := os.Getenv("LIGHTSTACK_TEST_DB_URL")
 	if !strings.HasPrefix(env, "postgres://") && !strings.HasPrefix(env, "postgresql://") {
 		t.Skip("needs LIGHTSTACK_TEST_DB_URL set to a postgres:// URL")
@@ -217,5 +254,20 @@ func TestNoTransactionMarkerIgnoredByPostgres(t *testing.T) {
 	}
 	if half {
 		t.Error("notx_half exists after its file failed; want the whole file rolled back, as without the marker")
+	}
+}
+
+// SPEC-033 T260: a marked file whose statement fails keeps nothing it did, and the failure names it.
+func TestForeignKeysOffMarkerRollsBackAFailedFile(t *testing.T) {
+	dir, url, path := notxFolder(t, map[string]string{
+		"002_broken.sqlite.up.sql":   notxMarker + "\nDELETE FROM child WHERE id = 'c1';\nSELECT * FROM no_such_table;\n",
+		"002_broken.sqlite.down.sql": notxMarker + "\nSELECT 1;\n",
+	})
+	err := MigrateUp(url, dir)
+	if err == nil || !strings.Contains(err.Error(), "no_such_table") {
+		t.Fatalf("up through a failing marked file = %v; want the failure, naming no_such_table", err)
+	}
+	if n := notxCount(t, path, `SELECT count(*) FROM child WHERE id = 'c1'`); n != 1 {
+		t.Errorf("c1 is gone after the failed migration; want the file's work rolled back")
 	}
 }

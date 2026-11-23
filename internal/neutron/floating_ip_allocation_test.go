@@ -142,7 +142,7 @@ func TestFloatingIPAllocation(t *testing.T) {
 		second := seedSubnet(t, network, "spec033-fipnet-2", prefix+".128/25", nil, 4, false)
 		storeTestPools(t, second, [2]string{prefix + ".200", prefix + ".210"})
 		cleanupFloatingIPsOn(t, network)
-		// Choosing the address is a manager's or an administrator's (branch review SRC-11).
+		// Choosing the address is a manager's or an administrator's (SPEC-033 T183).
 		manager := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member,manager"}
 
 		if code, body, address := createFloatingIP(r, hdr, `{"floatingip":{"floating_network_id":"`+network+`","subnet_id":"`+second+`"}}`); code != http.StatusCreated || address != prefix+".200" {

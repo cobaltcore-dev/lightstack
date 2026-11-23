@@ -57,9 +57,7 @@ func TestStatelessSecurityGroups(t *testing.T) {
 		if code != http.StatusConflict {
 			t.Fatalf("flip while in use: code=%d body=%s; want 409", code, body)
 		}
-		if typ := neutronErrorType(t, body); typ != "SecurityGroupInUse" {
-			t.Errorf("type = %q; want SecurityGroupInUse", typ)
-		}
+		assertNeutronError(t, body, "SecurityGroupInUse", "Security Group "+id+" in use.") // SPEC-033 T216
 		if !groupStateful(t, id) {
 			t.Error("a refused flip changed the group")
 		}

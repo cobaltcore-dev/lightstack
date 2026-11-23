@@ -18,3 +18,7 @@ BEGIN
 END $$;
 
 CREATE UNIQUE INDEX security_groups_one_default ON security_groups (project_id) WHERE name = 'default';
+
+-- The constraint's index was the only one led by project_id: a project's groups by name, and its
+-- listings, read through this one now.
+CREATE INDEX idx_security_groups_project_name ON security_groups (project_id, name);

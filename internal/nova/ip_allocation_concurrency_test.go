@@ -63,7 +63,7 @@ func TestConcurrentPortWritersReserveOneAddress(t *testing.T) {
 		go func() {
 			<-start
 			if i%3 == 0 {
-				_, err := networkSvc.AllocatePortForInstance(ctx, networkID, seededProjectID, serverID, nil, "", false)
+				_, err := networkSvc.AllocatePortForInstance(ctx, neutron.InstancePort{NetworkID: networkID, ProjectID: seededProjectID, InstanceID: serverID, SecurityGroupIDs: nil, CopyGroupsFrom: "", Admin: false})
 				if err == nil {
 					results <- result{http.StatusCreated, ""}
 					return

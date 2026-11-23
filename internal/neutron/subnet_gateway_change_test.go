@@ -125,7 +125,8 @@ func TestSubnetGatewayHeldByARouterIsNotChanged(t *testing.T) {
 			if code != http.StatusConflict {
 				t.Fatalf("code=%d body=%s, want 409", code, body)
 			}
-			assertNeutronShape(t, neutronError(t, body), "GatewayIpInUse")
+			assertNeutronError(t, body, "GatewayIpInUse",
+				"Current gateway ip "+gw+" already in use by port "+portID+". Unable to update.") // SPEC-033 T216
 			if got := storedGateway(t, subnetID); got == nil || *got != gw {
 				t.Errorf("stored gateway after a refused update = %s, want %s", derefOr(got, "null"), gw)
 			}

@@ -1,6 +1,15 @@
 # Contract: the Networking API
 
-> **Round 2** (2026-11-20): where this file differs from `network-api-round2.md` — the listing's filters, administrators' access (FR-057, FR-058), ids of other projects' groups (FR-018) — round 2 holds. T155 folds the pointers in.
+> **Round 2** (2026-11-20): where this file differs from round 2's contracts, they hold.
+> - `network-api-round2.md`: the listing's filters and a group's representation (FR-019a, FR-019b), `default` and names
+> (FR-024–FR-026), starting rules (FR-043), administrators' access (FR-057, FR-058), ids of other projects' groups
+> (FR-018).
+> - `port-firewall.md`: the floating-IP filters this file names are retired (FR-042). A port's chains on the node it is
+> bound to enforce its groups instead, for all its traffic; a rule change converges the chains of every port carrying
+> the group or naming it as a remote group (FR-008b).
+> - `router-namespace-dataplane.md`: a floating IP's NAT and address live in its router's namespace on the network node.
+> - `node-apply.md`: "the serving node" below is the node that holds the state — the network node for floating IPs and
+> routers, the port's node for its chains — reached by the node call; its failure is the request's.
 
 Errors use the Neutron error envelope (`NeutronError` with `type`, `message`, `detail`).
 
@@ -23,7 +32,8 @@ Errors use the Neutron error envelope (`NeutronError` with `type`, `message`, `d
 | Success (`POST`) | `201` with the port | As today, with the list above |
 | `PUT`: the serving node cannot rebuild the filter (a command fails or overruns one second, or the lock wait does) | `500` | The list goes back to what it was, unless another request has changed it since (compare-and-set); the old filter stays whole |
 
-`security_groups` sent with other fields (`name`, `admin_state_up`, …) applies together with them. A `PUT` body carrying only `security_groups` is a valid update, no longer `400 no updates provided`.
+`security_groups` sent with other fields (`name`, `admin_state_up`, …) applies together with them. A `PUT` body carrying
+only `security_groups` is a valid update, no longer `400 no updates provided`.
 
 ## `GET /v2.0/security-groups`
 
@@ -36,11 +46,14 @@ Errors use the Neutron error envelope (`NeutronError` with `type`, `message`, `d
 | `?id=…&name=…` | the groups matching both |
 | An id or a name that matches nothing, a malformed id, or another project's id | `200` with `[]` |
 
-Other query parameters are ignored, as today. Consumers: Horizon's *Edit Security Groups* and instance page (`?id=` repeated) and Terraform's `openstack_networking_secgroup_v2` data source (`?name=`).
+Other query parameters are ignored, as today. Consumers: Horizon's *Edit Security Groups* and instance page (`?id=`
+repeated) and Terraform's `openstack_networking_secgroup_v2` data source (`?name=`).
 
 ## Floating IPs: `POST`, `PUT` and `DELETE /v2.0/floatingips`
 
-Every answer that exists today keeps its shape. What changes is when a success is given: only once the serving node has applied the change (`contracts/floating-ip-dataplane.md`). A network, port or router the request names that another request deletes while it runs answers `404`, never `500`.
+Every answer that exists today keeps its shape. What changes is when a success is given: only once the serving node has
+applied the change (`contracts/floating-ip-dataplane.md`). A network, port or router the request names that another
+request deletes while it runs answers `404`, never `500`.
 
 | Request | Success, as today | When the serving node cannot apply it (a command fails or overruns one second, or the lock wait does) |
 |---|---|---|
@@ -65,13 +78,15 @@ A group that a rule's `POST` names and that another request deletes while it run
 
 | Situation | Answer | Effect |
 |---|---|---|
-| A port carries the group | `409`, type `SecurityGroupInUse`, the group's id in `detail`, as network and router deletion answer theirs (was `204`, and the group was dropped from every port) | none |
+| A port carries the group | `409`, type `SecurityGroupInUse`, message upstream's `Security Group <id> in use.` and `detail` empty, as network and router deletion answer theirs (was `204`, and the group was dropped from every port; SPEC-033 T216) | none |
 | The id names no group the caller can see: for a member, none of the caller's project; for an administrator, none at all (round 2, FR-058) | `404` (was `204`) | none |
 | Otherwise | `204`, as today | The group and its rules are deleted. Rules of other groups that name it as their remote group go with it, as upstream |
 
 ## Deleting a port or a server: its floating IPs
 
-`DELETE /v2.0/ports/{id}` and a server's deletion keep their answers. A server's deletion is `DELETE /v2.1/servers/{id}`, or the `forceDelete` action, which now deletes the same way, as upstream's does; either deletes the ports its boot created. What changes is what happens to a floating IP associated with a deleted port.
+`DELETE /v2.0/ports/{id}` and a server's deletion keep their answers. A server's deletion is `DELETE
+/v2.1/servers/{id}`, or the `forceDelete` action, which now deletes the same way, as upstream's does; either deletes the
+ports its boot created. What changes is what happens to a floating IP associated with a deleted port.
 
 | | Before | After |
 |---|---|---|

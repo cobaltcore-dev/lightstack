@@ -21,6 +21,11 @@ ALTER TABLE ports ADD COLUMN binding_host_id TEXT;
 ALTER TABLE networks ADD COLUMN ct_zone INTEGER;
 CREATE UNIQUE INDEX networks_ct_zone ON networks (ct_zone);
 
+-- One floating IP of a network per fixed IP of a port (FR-029), as upstream's
+-- uniq_floatingips0floatingnetworkid0fixedportid0fixedipaddress. An unassociated floating IP holds
+-- NULLs there, which a unique index never takes for equal.
+CREATE UNIQUE INDEX floating_ips_one_per_fixed_ip ON floating_ips (floating_network_id, port_id, fixed_ip_address);
+
 -- Upstream's revision number (FR-050) and stateless groups (FR-051).
 ALTER TABLE security_groups ADD COLUMN revision_number INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE security_groups ADD COLUMN stateful BOOLEAN NOT NULL DEFAULT true;

@@ -3,6 +3,7 @@ package networking
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 
@@ -104,34 +105,59 @@ func (m *VXLANManager) createVXLANReal(networkID string, vni int, localIP string
 	return nil
 }
 
-// DeleteVXLAN deletes a VXLAN interface
-func (m *VXLANManager) DeleteVXLAN(networkID string) error {
+// DeleteVXLANDevice deletes a VXLAN device by its name, with the entries on it. The reconciliation of a
+// deleted network's device calls it: the name is the only trace of the network left on the node, since
+// its VNI and forwarding rows went with its record (SPEC-033 T144). A device already gone is not an
+// error.
+func (m *VXLANManager) DeleteVXLANDevice(name string) error {
 	if m.mode == "stub" {
-		return m.deleteVXLANStub(networkID)
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		for networkID := range m.stubVXLANs {
+			if m.GetVXLANName(networkID) == name {
+				delete(m.stubVXLANs, networkID)
+				delete(m.stubFDBs, networkID)
+			}
+		}
+		return nil
 	}
-	return m.deleteVXLANReal(networkID)
-}
-
-// deleteVXLANStub simulates VXLAN deletion
-func (m *VXLANManager) deleteVXLANStub(networkID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	delete(m.stubVXLANs, networkID)
-	delete(m.stubFDBs, networkID)
-	return nil
-}
-
-// deleteVXLANReal deletes an actual VXLAN interface
-func (m *VXLANManager) deleteVXLANReal(networkID string) error {
-	vxlanName := m.GetVXLANName(networkID)
-
-	link, err := netlink.LinkByName(vxlanName)
+	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return nil // Already deleted
+		return nil // already deleted
 	}
-
 	return netlink.LinkDel(link)
+}
+
+// VXLANDevices lists the names of the node's VXLAN devices Lightstack made: vxlan- and eight characters
+// of a network id.
+func (m *VXLANManager) VXLANDevices() ([]string, error) {
+	var names []string
+	if m.mode == "stub" {
+		m.mu.Lock()
+		for networkID := range m.stubVXLANs {
+			names = append(names, m.GetVXLANName(networkID))
+		}
+		m.mu.Unlock()
+	} else {
+		links, err := netlink.LinkList()
+		if err != nil {
+			return nil, fmt.Errorf("list the devices: %w", err)
+		}
+		for _, l := range links {
+			if l.Type() == "vxlan" && isVXLANDevice(l.Attrs().Name) {
+				names = append(names, l.Attrs().Name)
+			}
+		}
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
+// isVXLANDevice reports whether a device name is one GetVXLANName gives a network: vxlan- and eight
+// lower-case hexadecimal characters.
+func isVXLANDevice(name string) bool {
+	suffix, ok := strings.CutPrefix(name, "vxlan-")
+	return ok && isLowerHex(suffix, 8)
 }
 
 // AddFDBEntry adds a forwarding database entry (MAC -> remote VTEP IP mapping)
@@ -243,9 +269,9 @@ func (m *VXLANManager) removeFDBEntryReal(networkID, macAddress string) error {
 // the tunnel.
 //
 // There is deliberately no namespace parameter. Every other method on this type — CreateVXLAN,
-// DeleteVXLAN, AddFDBEntry, RemoveFDBEntry — resolves the interface with netlink.LinkByName in the
+// DeleteVXLANDevice, AddFDBEntry, RemoveFDBEntry — resolves the interface with netlink.LinkByName in the
 // namespace Lightstack runs in, so moving it elsewhere put it beyond its own manager's reach: FDB entries
-// could not be installed at all, DeleteVXLAN reported success while leaking the device, and
+// could not be installed at all, the device's deletion reported success while leaking it, and
 // CreateVXLAN's existence check missed it and rebuilt it on the next pass (SPEC-024 /
 // cloud-storage#546 F10).
 func (m *VXLANManager) AttachToBridge(networkID, bridgeName string) error {
@@ -271,7 +297,6 @@ func (m *VXLANManager) attachToBridgeReal(networkID, bridgeName string) error {
 
 	// Checked assertion: an unchecked one panics when the name resolves to something that is not a
 	// bridge, which is reachable now that both links are looked up in the shared root namespace.
-	// BridgeManager.AttachToBridge already guards this the same way.
 	br, ok := bridgeLink.(*netlink.Bridge)
 	if !ok {
 		return fmt.Errorf("link %s is not a bridge (got %T)", bridgeName, bridgeLink)
@@ -293,7 +318,8 @@ func (m *VXLANManager) GetVXLANName(networkID string) string {
 	return "vxlan-" + networkID
 }
 
-// ListFDBEntries lists all FDB entries for a network (for debugging)
+// ListFDBEntries lists the forwarding entries Lightstack wrote on a network's device: MAC to remote
+// tunnel address. The kernel's own, learned from traffic, are not listed; they age out by themselves.
 func (m *VXLANManager) ListFDBEntries(networkID string) (map[string]string, error) {
 	if m.mode == "stub" {
 		m.mu.Lock()
@@ -322,7 +348,7 @@ func (m *VXLANManager) ListFDBEntries(networkID string) (map[string]string, erro
 
 	entries := make(map[string]string)
 	for _, neigh := range neighbors {
-		if neigh.HardwareAddr != nil && neigh.IP != nil {
+		if neigh.State&NUD_PERMANENT != 0 && neigh.HardwareAddr != nil && neigh.IP != nil {
 			entries[neigh.HardwareAddr.String()] = neigh.IP.String()
 		}
 	}

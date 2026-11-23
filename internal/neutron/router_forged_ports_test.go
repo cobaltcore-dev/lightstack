@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Branch review SRC-2 (2026-11-23-review.md): a router's ports were found by device_owner and
+// SPEC-033 T170: a router's ports were found by device_owner and
 // device_id, and port create and update store both as any member sends them. A member's port claiming
 // to be their router's gateway became its gateway — setting the gateway kept it, at the address the
 // member chose, where only an administrator chooses one (FR-038) — and a floating IP found its router
@@ -132,5 +132,76 @@ func TestFloatingIPNeverFindsARouterThroughAMembersPort(t *testing.T) {
 		seedInterfacePort(t, routerID, network, subnet, gateway)
 		forgeRouterPort(t, ownerRouterGateway, routerID, external, extSubnet, prefix+".50")
 		wantNotFound(t, external)
+	})
+}
+
+// SPEC-033 T317 (FR-038, FR-065; T170's rule): every query meaning "this router's gateway port" asks for the
+// port only the router code writes — the owner, the router as device, and no project. A gateway change the
+// network node could not apply was undone from snapshots read without the project: a member's port naming
+// the router was taken for the gateway, deleted and written back without a project, as a gateway the node
+// then routed and proxied on the uplink. A router's deletion deleted a member's port naming it, and the
+// reconciler took a member's port's address for one Lightstack hands out.
+func TestARouterNeverTakesAMembersPortForItsGateway(t *testing.T) {
+	requireDB(t)
+	ctx := context.Background()
+	admin := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "admin"}
+	// bare is a router without a gateway, and a member's network with a port naming it as its gateway.
+	bare := func(t *testing.T, rig *unitRig, octet int) (router, forged string) {
+		t.Helper()
+		router = createdID(t, rig.must(t, http.StatusCreated, http.MethodPost, "/v2.0/routers", `{"router":{"name":"spec033-t317"}}`), "router")
+		t.Cleanup(func() {
+			mustExec(t, "DELETE FROM ports WHERE device_id = $1 AND project_id IS NULL", router)
+			mustExec(t, "DELETE FROM routers WHERE id = $1", router)
+		})
+		network := seedNetwork(t, "spec033-t317-"+uuid.NewString()[:6])
+		prefix := fmt.Sprintf("100.64.%d", octet)
+		gateway := prefix + ".254"
+		subnet := seedSubnet(t, network, "spec033-t317", prefix+".0/24", &gateway, 4, false)
+		return router, forgeRouterPort(t, ownerRouterGateway, router, network, subnet, prefix+".1")
+	}
+	projectOf := func(t *testing.T, port string) (string, bool) {
+		t.Helper()
+		var project string
+		err := testPool.QueryRow(ctx, "SELECT COALESCE(project_id::text, '') FROM ports WHERE id = $1", port).Scan(&project)
+		return project, err == nil
+	}
+
+	t.Run("an undone gateway change never writes a member's port back as the gateway", func(t *testing.T) {
+		rig := newUnitRig(t)
+		router, forged := bare(t, rig, 77)
+		failOnceDuring(rig, func() {})
+		if code, body := doJSONReq(rig.r, http.MethodPut, "/v2.0/routers/"+router,
+			`{"router":{"external_gateway_info":{"network_id":"`+rig.external+`"}}}`, admin); code != http.StatusInternalServerError {
+			t.Fatalf("set the gateway with a failing router unit: code=%d body=%s; want 500", code, body)
+		}
+		if project, ok := projectOf(t, forged); !ok || project != seededProjectID {
+			t.Errorf("the member's port: project %q (present %v); want it kept in %s", project, ok, seededProjectID)
+		}
+		for _, p := range gatewayPorts(t, router) {
+			if p.project == "" {
+				t.Errorf("gateway port %s (%s) after the undo; want none: the router had no gateway before", p.id, p.fixedIPs)
+			}
+		}
+	})
+
+	t.Run("a router's deletion leaves a member's port naming it", func(t *testing.T) {
+		rig := newUnitRig(t)
+		router, forged := bare(t, rig, 78)
+		rig.must(t, http.StatusNoContent, http.MethodDelete, "/v2.0/routers/"+router, "")
+		if project, ok := projectOf(t, forged); !ok || project != seededProjectID {
+			t.Errorf("the member's port after the router's deletion: project %q (present %v); want it kept", project, ok)
+		}
+	})
+
+	t.Run("a member's port's address is not one Lightstack hands out", func(t *testing.T) {
+		rig := newUnitRig(t)
+		bare(t, rig, 79)
+		recognise, err := lightstackAddresses(ctx, testPool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recognise("100.64.79.1") {
+			t.Error("the reconciler takes a member's port's address for a gateway's")
+		}
 	})
 }

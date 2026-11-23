@@ -54,6 +54,7 @@ tests:
     template: templates/daemonset.yaml
     set:
       deploymentMode: multi-node
+      neutron.networkNode: node-a
       realMode.enabled: true
       glance.storageMode: rbd   # multi-node gates (FR-012e): image + volume storage must be
       cinder.storageMode: rbd   # cluster-shared; the node-local subdirs are still created
@@ -82,6 +83,16 @@ tests:
           content:
             name: host-storage
             mountPath: /data/lightstack
+  # T245: only SQLite has a node-local database. On PostgreSQL nothing opens or purges a database
+  # directory, so creating one left an empty directory behind every delete-policy teardown.
+  - it: real mode on PostgreSQL creates no database directory
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: /var/lib/lightstack/db"
   - it: stub mode renders no initContainer (FR-009 — non-real deploys unaffected)
     template: templates/deployment.yaml
     asserts:

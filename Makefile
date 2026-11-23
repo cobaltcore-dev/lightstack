@@ -119,11 +119,13 @@ test-compose-identity:
 
 # Check that the KVM Compose stack mounts the whole state root at the same path inside and out,
 # with the root, the config directory and the database URL overridable, so one file runs either
-# backend (SPEC-028). Renders the stack with `compose config`; nothing is started.
+# backend (SPEC-028), and that the turnkey stack mounts the host's /run/netns and /lib/modules
+# (SPEC-033 T246). Renders the stacks; nothing is started.
 test-compose-kvm:
 	@echo "Running KVM Compose stack tests..."
 	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' not found." && exit 1)
 	@bash test/compose_kvm_state_test.sh
+	@bash test/compose_turnkey_mounts_test.sh
 
 # Run the OpenStack CLI conformance suite against this checkout's binary.
 # Rebuild every time and force the isolated binary-test Compose stack so a

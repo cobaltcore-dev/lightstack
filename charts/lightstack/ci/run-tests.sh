@@ -14,7 +14,7 @@ helm template r "$CHART" -f "$VALS" >/dev/null
 
 echo "== helm template: TLS + real-mode permutations render =="
 helm template r "$CHART" -f "$VALS" --set tls.enabled=true --set tls.secretName=c --set ingress.enabled=true >/dev/null
-helm template r "$CHART" -f "$VALS" --set realMode.enabled=true --set realMode.privileged=true >/dev/null
+helm template r "$CHART" -f "$VALS" --set realMode.enabled=true >/dev/null
 
 echo "== schema rejection: invalid value sets must be rejected before execution (US1 / FR-003) =="
 INVALID_DIR="$CHART/ci/invalid-values"

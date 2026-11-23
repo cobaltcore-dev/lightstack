@@ -12,16 +12,17 @@ import (
 	migratedb "github.com/golang-migrate/migrate/v4/database"
 )
 
-// noTransactionMarker, as the first line of a SQLite migration file, has the migrator run that
-// file with foreign keys off (migrations/README.md, SPEC-033 research R53). It exists for one job:
+// foreignKeysOffMarker, as the first line of a SQLite migration file, has the migrator run that file
+// with foreign keys off (migrations/README.md, SPEC-033 research R53). It exists for one job:
 // rebuilding a table that other tables reference. SQLite's DROP TABLE deletes the referencing rows
 // through every ON DELETE CASCADE while foreign keys are on, and PRAGMA foreign_keys cannot change
-// inside a transaction — which is where the migrator runs every other file. PostgreSQL never reads
-// it: there it is a comment.
-const noTransactionMarker = "-- lightstack:no-transaction"
+// inside a transaction — which is where the migrator runs every other file; a marked file runs in a
+// transaction too, of the migrator's own, begun once foreign keys are off. PostgreSQL never reads it:
+// there it is a comment.
+const foreignKeysOffMarker = "-- lightstack:foreign-keys-off"
 
 // sqliteMigrationDriver is golang-migrate's SQLite driver with one change: a file marked with
-// noTransactionMarker runs as SQLite's documented table-rebuild procedure has it — foreign keys
+// foreignKeysOffMarker runs as SQLite's documented table-rebuild procedure has it — foreign keys
 // turned off outside any transaction, the file in a transaction of the migrator's own, PRAGMA
 // foreign_key_check run before that transaction commits and refusing the file if it finds a row
 // that references nothing, then foreign keys on again. So a marked file is still all or nothing,
@@ -37,16 +38,32 @@ func (d *sqliteMigrationDriver) Run(migration io.Reader) error {
 	if err != nil {
 		return err
 	}
-	if !hasNoTransactionMarker(body) {
+	marked, err := hasForeignKeysOffMarker(body)
+	if err != nil {
+		return err
+	}
+	if !marked {
 		return d.Driver.Run(bytes.NewReader(body))
 	}
 	return runWithForeignKeysOff(context.Background(), d.db, string(body))
 }
 
-// hasNoTransactionMarker reports whether the file's first line is the marker.
-func hasNoTransactionMarker(body []byte) bool {
-	first, _, _ := bytes.Cut(body, []byte("\n"))
-	return strings.TrimSpace(string(first)) == noTransactionMarker
+// hasForeignKeysOffMarker reports whether the file's first line is the marker, a UTF-8 byte-order mark
+// before it ignored. The marker on any other line is an error: the file would take the ordinary path,
+// where the rebuild it marks deletes the referencing rows through ON DELETE CASCADE, and succeed
+// (SPEC-033 T225).
+func hasForeignKeysOffMarker(body []byte) (bool, error) {
+	lines := strings.Split(strings.TrimPrefix(string(body), "\ufeff"), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != foreignKeysOffMarker {
+			continue
+		}
+		if i > 0 {
+			return false, fmt.Errorf("%q is on line %d; it must be the file's first line", foreignKeysOffMarker, i+1)
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // runWithForeignKeysOff runs query on one connection of db with foreign keys off, in a

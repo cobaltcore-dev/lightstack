@@ -96,6 +96,7 @@ neutron:
 
   # VXLAN overlay networking (multi-node)
   vxlan_enabled: false
+  network_node: ""           # with VXLAN: the node holding every router and DHCP
   vni_range_start: 1000
   vni_range_end: 10000
   coordination_poll_interval: 1s
@@ -140,7 +141,8 @@ The binary honors exactly these environment variables:
 |----------|----------------------|------------------|
 | `LIGHTSTACK_DB_URL` | `database.url`: `postgres://…` or `sqlite:///absolute/path` (see [Database Configuration](#database-configuration)) | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_DB_BACKEND` | the backend the deployment expects, `postgres` or `sqlite`. When set, a `database.url` that selects the other one is refused at startup | startup (`cmd/lightstack/main.go`, `cmd/lightstack-migrate`) |
-| `LIGHTSTACK_NODE_NAME` | the name this node reserves volumes and snapshots under while it creates them; the startup sweep resolves only its own. Defaults to the host name. Set it where the host name changes across restarts — a pod without host networking; the Helm chart sets it to the pod's node name | startup (`internal/common/nodename.go`) |
+| `LIGHTSTACK_NODE_NAME` | the name this node goes by: it registers under it in the node registry, which the other nodes' calls find it by; the ports its guests use are bound to it (`binding:host_id`), so their firewall is built here; `neutron.network_node` names the network node by it; and it reserves volumes and snapshots under it while it creates them, the startup sweep resolving only its own. Defaults to the host name. Set it where the host name changes across restarts — a pod without host networking; the Helm chart sets it to the pod's node name | startup (`internal/common/nodename.go`) |
+| `LIGHTSTACK_NEUTRON_NETWORK_NODE` | `neutron.network_node`: the node, by its `LIGHTSTACK_NODE_NAME`, that holds every router's and every network's DHCP namespace (SPEC-033 FR-033). Required with VXLAN, where the server refuses to start while it is empty; ignored without VXLAN, a single node that is its own network node; read trimmed | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` in OpenStack's dash-free form in the `/v3/auth/tokens` responses; `/v3/s3tokens` already uses that historical form. The EC2 mint accepts dash-free or alternate UUID encodings as input and stores the canonical database id. Enabling the flag therefore unifies Swift with the existing S3 tenant namespace without re-keying S3 data. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host — a **fallback**, see below | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
@@ -525,6 +527,7 @@ neutron:
 
   # VXLAN overlay (multi-node)
   vxlan_enabled: false               # Enable VXLAN overlay
+  network_node: ""                   # Required with VXLAN: the network node's name
   vni_range_start: 1000              # VNI range start
   vni_range_end: 10000               # VNI range end
   coordination_poll_interval: 1s     # Coordination check interval
@@ -533,12 +536,21 @@ neutron:
 
 **networking_mode:**
 - `stub` - Mock networking (no actual networks)
-- `iptables` - iptables-based security groups (production)
-- `ebpf` - east-west XDP filtering on top of the iptables north-south filter — partial, and it does not
-  load in a stock build (see [EBPF_STATUS.md](EBPF_STATUS.md))
+- `iptables` - every port firewalled by iptables chains on the node its guest runs on, as upstream's
+  iptables driver (production)
+- `ebpf` - the same as `iptables` today: the eBPF filter is not wired (see [EBPF_STATUS.md](EBPF_STATUS.md))
+
+**The network node** (SPEC-033): one node holds every router and every network's DHCP and metadata,
+in namespaces `qrouter-<id>` and `qdhcp-<id>`, and alone answers for router and floating addresses on its
+uplink. Without VXLAN, which is a single node (the chart refuses several), the node is its own network node
+and `network_node` is ignored. With VXLAN, `network_node` names it — by the node name every node goes by, `LIGHTSTACK_NODE_NAME` when set (the chart
+sets it to the Kubernetes node's name), else the host name — and the server refuses to start while it is
+empty. A node that never registers makes every north-south change answer `500`, and the other nodes keep the
+routers and DHCP they hold until it is active: a name that matches no node takes nothing away.
 
 **VXLAN configuration** (multi-node only):
 - `vxlan_enabled: true` - Enable VXLAN overlay networking
+- `network_node` - The network node's name; required with VXLAN
 - `vni_range` - VXLAN Network Identifier range (1000-10000)
 - `vxlan_mtu: 1450` - Accounts for VXLAN overhead (50 bytes)
 

@@ -12,7 +12,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -198,8 +197,9 @@ func (svc *Service) ListFloatingIPs(c *gin.Context) {
 }
 
 // CreateFloatingIP allocates a new floating IP. With a port, the record is stored first and then
-// converged on this node before the answer; when the node cannot apply it, the record is removed
-// again, compare-and-set, and the request answers 500 (SPEC-033 FR-008a, research R20).
+// converged before the answer: its router on the network node, its fixed IP's filter here. When that
+// fails, the record is removed again, compare-and-set, and the request answers 500 (SPEC-033 FR-008a,
+// research R20).
 func (svc *Service) CreateFloatingIP(c *gin.Context) {
 	var req CreateFloatingIPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -232,6 +232,11 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 		return
 	}
 
+	if req.FloatingIP.FixedIPAddress != "" && req.FloatingIP.PortID == "" {
+		common.SendError(c, errFixedIPWithoutPort())
+		return
+	}
+
 	// Determine status and associated details
 	status := "DOWN"
 	var fixedIP, portID, routerID *string
@@ -248,14 +253,14 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 	// FOR UPDATE taken before the subnets would deadlock with. It is checked first, unlocked, so its
 	// refusal still comes before any other.
 	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
-		if err := takeFloatingIPAllocationLock(ctx, tx); err != nil {
+		if err := database.AdvisoryLock(ctx, tx, floatingIPAllocationLock); err != nil {
 			return err
 		}
-		if err := externalNetworkRefusal(ctx, tx, networkID, caller, "a floating-IP pool", admin, false); err != nil {
+		if err := externalNetworkRefusal(ctx, tx, networkID, "a floating-IP pool", callerScope{project: caller, admin: admin}); err != nil {
 			return err
 		}
 		if req.FloatingIP.PortID != "" {
-			port, err := portFixedIP(ctx, tx, req.FloatingIP.PortID, caller, req.FloatingIP.FixedIPAddress, admin, true)
+			port, err := portFixedIP(ctx, tx, callerScope{project: caller, admin: admin}, req.FloatingIP.PortID, req.FloatingIP.FixedIPAddress)
 			if err != nil {
 				return err
 			}
@@ -263,7 +268,7 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 			if err != nil {
 				return err
 			}
-			if err := requireOneFloatingIPPerFixedIP(ctx, tx, networkID, port, "", ""); err != nil {
+			if err := requireOneFloatingIPPerFixedIP(ctx, tx, networkID, port, floatingIPRef{}); err != nil {
 				return err
 			}
 			portID, fixedIP, routerID, status = &port.id, &port.fixedIP, &router, "ACTIVE"
@@ -272,7 +277,7 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 		if floatingIP, err = allocateFloatingAddress(ctx, tx, networkID, req.FloatingIP.SubnetID, req.FloatingIP.FloatingIPAddress); err != nil {
 			return err
 		}
-		if err := externalNetworkRefusal(ctx, tx, networkID, caller, "a floating-IP pool", admin, true); err != nil {
+		if err := lockExternalNetwork(ctx, tx, networkID, "a floating-IP pool"); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, `
@@ -289,14 +294,15 @@ func (svc *Service) CreateFloatingIP(c *gin.Context) {
 	if portID != nil {
 		// Stored. From here the change is applied or undone, whether or not the client is still there.
 		cctx := context.WithoutCancel(ctx)
-		if err := svc.convergeFloatingIP(cctx, floatingIP); err != nil {
+		routers := []string{*routerID}
+		if err := svc.convergeRouterUnits(cctx, routers...); err != nil {
 			if uerr := svc.undoFloatingIPCreate(cctx, floatingIPID, *portID, *fixedIP, req.FloatingIP.Description); uerr != nil {
 				log.Error().Err(uerr).Str("floating_ip", floatingIP).Msg("remove a floating IP the node could not apply; the reconciliation pass applies its record")
 			}
-			if cerr := svc.convergeFloatingIP(cctx, floatingIP); cerr != nil {
+			if cerr := svc.convergeRouterUnits(cctx, routers...); cerr != nil {
 				log.Error().Err(cerr).Str("floating_ip", floatingIP).Msg("converge a floating IP after an undo; the reconciliation pass converges it")
 			}
-			log.Error().Err(err).Str("floating_ip", floatingIP).Msg("this node could not apply the floating IP; the change was undone")
+			log.Error().Err(err).Str("floating_ip", floatingIP).Msg("this node could not apply the floating IP; the change was not applied")
 			common.SendError(c, common.NewInternalServerError("failed to apply the floating IP"))
 			return
 		}
@@ -349,16 +355,11 @@ func (svc *Service) undoFloatingIPCreate(ctx context.Context, id, portID, fixedI
 // sendFloatingIPStoreError answers a floating-IP change whose transaction failed: a refusal as it is,
 // a row the request named that another request deleted meanwhile as 404, anything else as 500.
 func sendFloatingIPStoreError(c *gin.Context, err error, operation string) {
-	var refusal *common.OpenStackError
-	switch {
-	case errors.As(err, &refusal):
-		common.SendError(c, refusal)
-	case database.IsForeignKeyViolation(err):
+	if database.IsForeignKeyViolation(err) {
 		common.SendError(c, common.NewNotFoundError("network, port or router"))
-	default:
-		log.Error().Err(err).Str("operation", operation+"_floatingip").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to "+operation+" floating IP"))
+		return
 	}
+	sendChangeError(c, err, operation, "floating IP")
 }
 
 // GetFloatingIP retrieves a single floating IP
@@ -437,12 +438,62 @@ type fipAssociation struct {
 	status              string
 }
 
+// disassociate clears the association, as a port's deletion leaves a floating IP: no port, fixed IP or
+// router, DOWN.
+func (a *fipAssociation) disassociate() { *a = fipAssociation{status: "DOWN"} }
+
 func nullable(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
 
+// floatingIPUpdate is a floating IP update's body: the port to associate, "" with portGiven to
+// disassociate; the fixed IP requested on it; a description to set.
+type floatingIPUpdate struct {
+	port, fixedIP string
+	portGiven     bool
+	description   *string
+}
+
+// parseFloatingIPUpdate reads a floating IP update's body as upstream's attribute validators and
+// _check_and_get_fip_assoc read it: a fixed_ip_address or a description that is not a string, and a
+// fixed_ip_address without a port_id, are 400 (SPEC-033 FR-071, T271).
+func parseFloatingIPUpdate(data map[string]any) (floatingIPUpdate, *common.OpenStackError) {
+	var u floatingIPUpdate
+	var value any
+	if value, u.portGiven = data["port_id"]; u.portGiven && value != nil {
+		s, ok := value.(string)
+		if !ok {
+			return u, common.NewBadRequestError("port_id must be a string or null")
+		}
+		u.port = s
+	}
+	if value, given := data["fixed_ip_address"]; given && value != nil {
+		s, ok := value.(string)
+		if !ok {
+			return u, invalidAttribute("fixed_ip_address", fmt.Sprintf("'%v' is not a valid IP address", value))
+		}
+		u.fixedIP = s
+	}
+	if value, given := data["description"]; given {
+		s, ok := value.(string)
+		if !ok {
+			return u, invalidAttribute("description", fmt.Sprintf("'%v' is not a valid string", value))
+		}
+		u.description = &s
+	}
+	if u.fixedIP != "" && u.port == "" {
+		return u, errFixedIPWithoutPort()
+	}
+	return u, nil
+}
+
+// errFixedIPWithoutPort is upstream's refusal of a fixed_ip_address without a port_id.
+func errFixedIPWithoutPort() *common.OpenStackError {
+	return badRequest("floatingip", "fixed_ip_address cannot be specified without a port_id")
+}
+
 // UpdateFloatingIP associates, moves or disassociates a floating IP, and sets its description. A
-// change to port_id is stored, then converged on this node before the answer; when the node cannot
-// apply it, the old association is put back, compare-and-set, and the request answers 500
-// (SPEC-033 FR-008a, research R20).
+// change to port_id is stored, then converged before the answer (applyFloatingIPChange); when that
+// fails, the old association is put back, compare-and-set, and the request answers 500 (SPEC-033
+// FR-008a, research R20).
 func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 	floatingIPID := c.Param("id")
 	projectID, admin := c.GetString("project_id"), isAdmin(c)
@@ -454,35 +505,20 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
 		return
 	}
-	data := rawReq["floatingip"]
-	portValue, portGiven := data["port_id"]
-	newPort := ""
-	if portGiven && portValue != nil {
-		s, ok := portValue.(string)
-		if !ok {
-			common.SendError(c, common.NewBadRequestError("port_id must be a string or null"))
-			return
-		}
-		newPort = s
+	update, refusal := parseFloatingIPUpdate(rawReq["floatingip"])
+	if refusal != nil {
+		common.SendError(c, refusal)
+		return
 	}
-	requestedFixed := ""
-	if v, ok := data["fixed_ip_address"]; ok && v != nil {
-		requestedFixed, _ = v.(string)
-	}
-	var description *string
-	if v, ok := data["description"]; ok {
-		if s, ok := v.(string); ok {
-			description = &s
-		}
-	}
+	newPort, portGiven, requestedFixed, description := update.port, update.portGiven, update.fixedIP, update.description
 
-	var id, address string
+	var id, address, network string
 	var old, written fipAssociation
 	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
 		next := fipAssociation{status: "DOWN"}
 		if newPort != "" {
 			// The floating IP's network and address, read unlocked: neither ever changes.
-			var network, current string
+			var current string
 			err := tx.QueryRow(ctx, "SELECT floating_network_id::text, floating_ip_address FROM floating_ips WHERE id::text = $1 AND "+
 				ownerOrAdmin("project_id", "$2", "$3"), floatingIPID, projectID, admin).Scan(&network, &current)
 			if errors.Is(err, database.ErrNoRows) {
@@ -496,7 +532,7 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 			// opposite order could deadlock with it. The router is upstream's choice (FR-028), and
 			// the fixed IP may have no other floating IP of the network (FR-029). An administrator may
 			// name any project's port (FR-058).
-			port, err := portFixedIP(ctx, tx, newPort, projectID, requestedFixed, admin, true)
+			port, err := portFixedIP(ctx, tx, callerScope{project: projectID, admin: admin}, newPort, requestedFixed)
 			if err != nil {
 				return err
 			}
@@ -504,23 +540,38 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 			if err != nil {
 				return err
 			}
-			if err := requireOneFloatingIPPerFixedIP(ctx, tx, network, port, floatingIPID, current); err != nil {
+			if err := requireOneFloatingIPPerFixedIP(ctx, tx, network, port, floatingIPRef{id: floatingIPID, address: current}); err != nil {
 				return err
 			}
 			next = fipAssociation{port: nullable(newPort), fixed: nullable(port.fixedIP), router: nullable(routerID), status: "ACTIVE"}
 		}
 		err := tx.QueryRow(ctx, `
-			SELECT id::text, floating_ip_address, port_id::text, fixed_ip_address, router_id::text, COALESCE(status, '')
+			SELECT id::text, floating_ip_address, floating_network_id::text, port_id::text, fixed_ip_address, router_id::text, COALESCE(status, '')
 			FROM floating_ips WHERE id::text = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+` FOR UPDATE`, floatingIPID, projectID, admin,
-		).Scan(&id, &address, &old.port, &old.fixed, &old.router, &old.status)
+		).Scan(&id, &address, &network, &old.port, &old.fixed, &old.router, &old.status)
 		if errors.Is(err, database.ErrNoRows) {
 			return common.NewNotFoundError("floating IP")
 		}
 		if err != nil {
 			return fmt.Errorf("lock floating IP: %w", err)
 		}
+		// A floating IP its port forwardings use is theirs, as upstream's: a port for it is refused
+		// (FipInUseByPortForwarding), and a null port_id leaves it and its router as they are
+		// (SPEC-033 T192).
+		associates := portGiven && (newPort != "" || old.port.Valid)
+		if newPort != "" {
+			var forwarded bool
+			if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM port_forwardings WHERE floatingip_id::text = $1)", id).Scan(&forwarded); err != nil {
+				return fmt.Errorf("read the port forwardings of floating IP %s: %w", id, err)
+			}
+			if forwarded {
+				return common.NewNeutronError(http.StatusConflict, "FipInUseByPortForwarding",
+					fmt.Sprintf("Floating IP %s in use by Port Forwarding resources.", id))
+			}
+		}
+		written = old
 		u := &common.SQLUpdate{}
-		if portGiven {
+		if associates {
 			u.Set("port_id", nullOrValue(next.port))
 			u.Set("fixed_ip_address", nullOrValue(next.fixed))
 			u.Set("router_id", nullOrValue(next.router))
@@ -536,7 +587,9 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 		if _, err := tx.Exec(ctx, "UPDATE floating_ips SET "+u.Assignments()+" WHERE id = "+u.Arg(id), u.Args()...); err != nil {
 			return err
 		}
-		written = next
+		if associates {
+			written = next
+		}
 		return nil
 	})
 	if err != nil {
@@ -546,15 +599,17 @@ func (svc *Service) UpdateFloatingIP(c *gin.Context) {
 
 	if portGiven {
 		// Stored. From here the change is applied or undone, whether or not the client is still there.
+		// The routers it went and goes through both change.
 		cctx := context.WithoutCancel(ctx)
-		if err := svc.convergeFloatingIP(cctx, address); err != nil {
-			if uerr := svc.undoFloatingIPAssociation(cctx, id, written, old); uerr != nil {
+		routers := []string{old.router.String, written.router.String}
+		if err := svc.convergeRouterUnits(cctx, routers...); err != nil {
+			if uerr := svc.undoFloatingIPAssociation(cctx, network, floatingIPRef{id: id, address: address}, written, old); uerr != nil {
 				log.Error().Err(uerr).Str("floating_ip", address).Msg("put a floating IP's association back; the reconciliation pass applies its record")
 			}
-			if cerr := svc.convergeFloatingIP(cctx, address); cerr != nil {
+			if cerr := svc.convergeRouterUnits(cctx, routers...); cerr != nil {
 				log.Error().Err(cerr).Str("floating_ip", address).Msg("converge a floating IP after an undo; the reconciliation pass converges it")
 			}
-			log.Error().Err(err).Str("floating_ip", address).Msg("this node could not apply the floating IP's association; the change was undone")
+			log.Error().Err(err).Str("floating_ip", address).Msg("this node could not apply the floating IP's association; the change was not applied")
 			common.SendError(c, common.NewInternalServerError("failed to apply the floating IP"))
 			return
 		}
@@ -572,13 +627,19 @@ func nullOrValue(s sql.NullString) any {
 }
 
 // undoFloatingIPAssociation puts a floating IP's old association back if its row still holds the one
-// this request wrote: an association another request has written since stays (research R20).
-func (svc *Service) undoFloatingIPAssociation(ctx context.Context, id string, written, old fipAssociation) error {
+// this request wrote: an association another request has written since stays (research R20). The old
+// association comes back only where the rules still allow it (keepRestorableAssociation), its port and
+// router locked before the floating IP's row, as an association locks them; otherwise the floating IP is
+// left unassociated, and the change made meanwhile stays (SPEC-033 T313).
+func (svc *Service) undoFloatingIPAssociation(ctx context.Context, network string, fip floatingIPRef, written, old fipAssociation) error {
 	return database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		if err := keepRestorableAssociation(ctx, tx, network, fip, &old); err != nil {
+			return err
+		}
 		var now fipAssociation
 		err := tx.QueryRow(ctx, `
 			SELECT port_id::text, fixed_ip_address, router_id::text, COALESCE(status, '')
-			FROM floating_ips WHERE id = $1 FOR UPDATE`, id).Scan(&now.port, &now.fixed, &now.router, &now.status)
+			FROM floating_ips WHERE id = $1 FOR UPDATE`, fip.id).Scan(&now.port, &now.fixed, &now.router, &now.status)
 		if errors.Is(err, database.ErrNoRows) {
 			return nil // deleted since
 		}
@@ -586,24 +647,66 @@ func (svc *Service) undoFloatingIPAssociation(ctx context.Context, id string, wr
 			return err
 		}
 		if now != written {
-			log.Info().Str("floatingip_id", id).Msg("undo: another change reached the floating IP since; it keeps that change")
+			log.Info().Str("floatingip_id", fip.id).Msg("undo: another change reached the floating IP since; it keeps that change")
 			return nil
 		}
 		_, err = tx.Exec(ctx, `
 			UPDATE floating_ips SET port_id = $1, fixed_ip_address = $2, router_id = $3, status = $4, updated_at = $5
-			WHERE id = $6`, nullOrValue(old.port), nullOrValue(old.fixed), nullOrValue(old.router), old.status, time.Now(), id)
+			WHERE id = $6`, nullOrValue(old.port), nullOrValue(old.fixed), nullOrValue(old.router), old.status, time.Now(), fip.id)
 		return err
 	})
 }
 
 // floatingIPRecord is a floating IP's whole row, kept to restore a deletion the node could not apply.
 type floatingIPRecord struct {
-	id, address                                          string
-	project, network, fixed, port, router, status, descr sql.NullString
-	created, updated                                     time.Time
+	id, address             string
+	project, network, descr sql.NullString
+	fipAssociation
+	created, updated time.Time
 }
 
-func (r floatingIPRecord) associated() bool { return r.port.Valid && r.fixed.Valid }
+// keepRestorableAssociation keeps an association floating IP self of network is to get back — a deletion's
+// restore, an update's undo — only where the rules still allow it, checked as an association checks them and
+// under its locks, in its order: the port, holding the fixed IP (portFixedIP); a router joining the fixed
+// IP's subnet to the network (FR-028); and no other floating IP of the network on the fixed IP (FR-029).
+// Otherwise — the port gone, the fixed IP off it, no router, another floating IP — the floating IP gets it
+// back unassociated, and the change made meanwhile stays (SPEC-033 T270, T313). An association without a
+// port, a port forwarding's router, is kept as it is.
+func keepRestorableAssociation(ctx context.Context, tx database.Tx, network string, self floatingIPRef, a *fipAssociation) error {
+	if !a.port.Valid || !a.fixed.Valid {
+		return nil
+	}
+	// The floating IP's own association, which passed an association's checks once: its port, whichever
+	// project holds it, locked as an association locks it.
+	port := floatingPort{id: a.port.String}
+	var fixed common.FixedIPs
+	err := tx.QueryRow(ctx, "SELECT network_id::text, fixed_ips FROM ports WHERE id::text = $1 FOR UPDATE", port.id).Scan(&port.networkID, &fixed)
+	if errors.Is(err, database.ErrNoRows) {
+		a.disassociate() // the port is gone
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock port %s: %w", port.id, err)
+	}
+	port, err = port.withFixedIP(fixed, a.fixed.String)
+	var router string
+	if err == nil {
+		router, err = routerForFloatingIP(ctx, tx, port, network)
+	}
+	if err == nil {
+		err = requireOneFloatingIPPerFixedIP(ctx, tx, network, port, self)
+	}
+	var refusal *common.OpenStackError
+	if errors.As(err, &refusal) {
+		a.disassociate()
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	a.router = nullable(router)
+	return nil
+}
 
 // portForwardingRecord is a port forwarding's whole row, deleted with its floating IP.
 type portForwardingRecord struct {
@@ -614,9 +717,9 @@ type portForwardingRecord struct {
 }
 
 // DeleteFloatingIP releases a floating IP. One transaction deletes the row and, through the foreign
-// key, its port forwardings. An associated floating IP is then converged on this node before the
-// answer; when the node cannot apply it, the row and its port forwardings are restored and the request
-// answers 500 (SPEC-033 FR-008a, research R20).
+// key, its port forwardings. A floating IP through a router — on a port, or with port forwardings — is
+// then converged away before the answer; when that fails, the row and its port forwardings are
+// restored and the request answers 500 (SPEC-033 FR-008a, research R20).
 func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 	floatingIPID := c.Param("id")
 	projectID := c.GetString("project_id")
@@ -627,7 +730,7 @@ func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
 		err := tx.QueryRow(ctx, `
 			SELECT id::text, floating_ip_address, project_id::text, floating_network_id::text, fixed_ip_address,
-			       port_id::text, router_id::text, status, description, created_at, updated_at
+			       port_id::text, router_id::text, COALESCE(status, ''), description, created_at, updated_at
 			FROM floating_ips WHERE id::text = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+` FOR UPDATE`, floatingIPID, projectID, isAdmin(c),
 		).Scan(&row.id, &row.address, &row.project, &row.network, &row.fixed, &row.port, &row.router,
 			&row.status, &row.descr, &row.created, &row.updated)
@@ -648,17 +751,19 @@ func (svc *Service) DeleteFloatingIP(c *gin.Context) {
 		return
 	}
 
-	if row.associated() {
+	if row.router.Valid {
 		// Stored. From here the change is applied or undone, whether or not the client is still there.
+		// Its router changes, its port forwardings' rules going with it.
 		cctx := context.WithoutCancel(ctx)
-		if err := svc.convergeFloatingIP(cctx, row.address); err != nil {
+		routers := []string{row.router.String}
+		if err := svc.convergeRouterUnits(cctx, routers...); err != nil {
 			if rerr := svc.restoreFloatingIP(cctx, row, forwardings); rerr != nil {
 				log.Error().Err(rerr).Str("floating_ip", row.address).Msg("restore a floating IP the node could not withdraw; the reconciliation pass removes it")
 			}
-			if cerr := svc.convergeFloatingIP(cctx, row.address); cerr != nil {
+			if cerr := svc.convergeRouterUnits(cctx, routers...); cerr != nil {
 				log.Error().Err(cerr).Str("floating_ip", row.address).Msg("converge a floating IP after its restore; the reconciliation pass converges it")
 			}
-			log.Error().Err(err).Str("floating_ip", row.address).Msg("this node could not withdraw the floating IP; the deletion was undone")
+			log.Error().Err(err).Str("floating_ip", row.address).Msg("this node could not withdraw the floating IP; the deletion was not applied")
 			common.SendError(c, common.NewInternalServerError("failed to withdraw the floating IP"))
 			return
 		}
@@ -692,10 +797,14 @@ func readPortForwardings(ctx context.Context, tx database.Tx, floatingIPID strin
 // What other requests deleted meanwhile is applied as the foreign keys would have applied it
 // (research R20): without its project or network nothing comes back; without its port it comes back
 // unassociated, as a port's deletion leaves a floating IP; without its router, without one; a port
-// forwarding whose internal port is gone stays deleted; and an address allocated again keeps it
-// deleted, since that later change stays.
+// forwarding whose internal port is gone stays deleted; and an address something holds again — a
+// floating IP, a port — keeps it deleted, since that later change stays: the
+// allocator's locks are taken and addressHeldError answered (SPEC-033 T188).
 func (svc *Service) restoreFloatingIP(ctx context.Context, row floatingIPRecord, forwardings []portForwardingRecord) error {
 	return database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		if err := database.AdvisoryLock(ctx, tx, floatingIPAllocationLock); err != nil {
+			return err
+		}
 		exists := func(table string, id sql.NullString) (bool, error) {
 			if !id.Valid {
 				return false, nil
@@ -716,18 +825,13 @@ func (svc *Service) restoreFloatingIP(ctx context.Context, row floatingIPRecord,
 				return nil // its project or network is gone: the floating IP would have gone with it
 			}
 		}
-		var taken bool
-		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM floating_ips WHERE floating_ip_address = $1)", row.address).Scan(&taken); err != nil {
+		// The association first, its port and router locked before the address's subnet, as a create
+		// locks them (SPEC-033 T313).
+		if err := keepRestorableAssociation(ctx, tx, row.network.String, floatingIPRef{id: row.id, address: row.address}, &row.fipAssociation); err != nil {
 			return err
 		}
-		if taken {
-			return nil
-		}
-		if ok, err := exists("ports", row.port); err != nil {
+		if err := requireAddressesFree(ctx, tx, row.network.String, []string{row.address}); err != nil {
 			return err
-		} else if row.port.Valid && !ok {
-			row.port, row.fixed, row.router = sql.NullString{}, sql.NullString{}, sql.NullString{}
-			row.status = sql.NullString{String: "DOWN", Valid: true}
 		}
 		if ok, err := exists("routers", row.router); err != nil {
 			return err
@@ -738,7 +842,7 @@ func (svc *Service) restoreFloatingIP(ctx context.Context, row floatingIPRecord,
 			INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, fixed_ip_address, port_id, router_id, status, description, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			row.id, nullOrValue(row.project), nullOrValue(row.network), row.address, nullOrValue(row.fixed),
-			nullOrValue(row.port), nullOrValue(row.router), nullOrValue(row.status), nullOrValue(row.descr),
+			nullOrValue(row.port), nullOrValue(row.router), nullOrValue(nullable(row.status)), nullOrValue(row.descr),
 			row.created, row.updated); err != nil {
 			return fmt.Errorf("restore floating IP %s: %w", row.address, err)
 		}
@@ -762,286 +866,44 @@ func (svc *Service) restoreFloatingIP(ctx context.Context, row floatingIPRecord,
 	})
 }
 
-// ConvergeFloatingIPs converges each floating IP on this node (convergeFloatingIP) and joins the
-// failures. A server's deletion calls it after the transaction that disassociated them (SPEC-033
-// research R25).
-func (svc *Service) ConvergeFloatingIPs(ctx context.Context, floatingIPs []string) error {
-	var errs []error
-	for _, f := range floatingIPs {
-		if err := svc.convergeFloatingIP(ctx, f); err != nil {
-			errs = append(errs, err)
-		}
+// FloatingIPAssociation is a floating IP's association as it stood before a change took it away: the
+// fixed IP it reached, through which router.
+type FloatingIPAssociation struct{ Address, FixedIP, RouterID string }
+
+// ConvergeDisassociated makes the disassociation of a deleted port's floating IPs in force: their
+// routers, on the network node. A port's deletion, a failed boot's release and a server's deletion call
+// it after the transaction that disassociated them (SPEC-033 research R25). The guests' own firewall does
+// not change with a floating IP: its traffic reaches them through the router, and their ports' chains
+// filter it (R32). A failure is logged, naming the floating IPs, and the deletion stands: the ports'
+// teardown has run without an undo, and the reconciliation pass removes what is left (R25, a recorded
+// departure).
+func (svc *Service) ConvergeDisassociated(ctx context.Context, was []FloatingIPAssociation) {
+	if len(was) == 0 {
+		return
 	}
-	return errors.Join(errs...)
+	routers := make([]string, 0, len(was))
+	addresses := make([]string, 0, len(was))
+	for _, a := range was {
+		routers = append(routers, a.RouterID)
+		addresses = append(addresses, a.Address)
+	}
+	if err := svc.convergeRouterUnits(ctx, routers...); err != nil {
+		log.Error().Err(err).Strs("floating_ips", addresses).
+			Msg("withdraw the floating IPs of a deleted port; the reconciliation pass removes what is left")
+	}
 }
 
-// convergeFloatingIP makes this node hold what floating IP F's record says (SPEC-033 research R23),
-// under the node lock, with the uplink from svc.uplink(), whose error is a failed change. F
-// associated with X: X's filter, then F's NAT to X and F's address. Otherwise, or without a record:
-// F withdrawn, the address first. Then each fixed IP the NAT pointed at before loses its filter,
-// unless a record still associates a floating IP with it or a rule of the shape on the node still
-// reaches it. Errors name the floating IP and the address.
-func (svc *Service) convergeFloatingIP(ctx context.Context, floatingIP string) error {
-	release, err := svc.lockNode()
-	if err != nil {
-		return fmt.Errorf("floating IP %s: %w", floatingIP, err)
-	}
-	defer release()
-	uplink, err := svc.uplink()
-	if err != nil {
-		return fmt.Errorf("floating IP %s: no uplink: %w", floatingIP, err)
-	}
-	_, err = svc.convergeFloatingIPLocked(ctx, floatingIP, uplink)
-	return err
+// RefreshPortFilters converges the firewall of ports whose groups changed, on the nodes they are bound
+// to, and of every port whose rules expand a group in groups, whose members changed with them
+// (SPEC-033 FR-007, research R32, R33). A change to a port's groups calls it after committing, so the
+// change is in force before the request answers; an error means it is not, and the caller undoes the
+// change (FR-008).
+func (svc *Service) RefreshPortFilters(ctx context.Context, portIDs, groups []string) error {
+	return svc.convergePorts(ctx, portChange{ports: portIDs, members: groups})
 }
 
-// convergeFloatingIPLocked is convergeFloatingIP for a caller that holds the node lock. It reads the
-// record itself, under that lock, so it acts on the record as it is then. It reports the fixed IPs
-// whose filters it removed.
-func (svc *Service) convergeFloatingIPLocked(ctx context.Context, floatingIP, uplink string) ([]string, error) {
-	var fixed, port sql.NullString
-	err := svc.pool.QueryRow(ctx,
-		"SELECT fixed_ip_address, port_id::text FROM floating_ips WHERE floating_ip_address = $1", floatingIP,
-	).Scan(&fixed, &port)
-	if err != nil && !errors.Is(err, database.ErrNoRows) {
-		return nil, fmt.Errorf("floating IP %s: read its record: %w", floatingIP, err)
-	}
-	var replaced []string
-	if fixed.Valid && fixed.String != "" && port.Valid {
-		rules, err := svc.portIngressRules(ctx, port.String)
-		if err != nil {
-			return nil, fmt.Errorf("floating IP %s: read the rules of port %s: %w", floatingIP, port.String, err)
-		}
-		if err := svc.dataplane.EnsureIngressFilter(fixed.String, uplink, rules); err != nil {
-			return nil, fmt.Errorf("floating IP %s: filter of %s: %w", floatingIP, fixed.String, err)
-		}
-		if replaced, err = svc.dataplane.EnsureFloatingIP(floatingIP, fixed.String, uplink); err != nil {
-			return nil, fmt.Errorf("floating IP %s: NAT to %s: %w", floatingIP, fixed.String, err)
-		}
-	} else if replaced, err = svc.dataplane.WithdrawFloatingIP(floatingIP, uplink); err != nil {
-		return nil, fmt.Errorf("floating IP %s: withdraw: %w", floatingIP, err)
-	}
-	removed, err := svc.removeUnreachedFilters(ctx, uplink, replaced)
-	if err != nil {
-		return removed, fmt.Errorf("floating IP %s: %w", floatingIP, err)
-	}
-	return removed, nil
-}
-
-// removeUnreachedFilters removes the filter of each fixed IP that no record associates a floating IP
-// with and that no rule of the shape on the node still reaches, marked or not (research R23): a filter
-// removed while something still forwards to its fixed IP would hand that traffic to the host's FORWARD
-// policy. The caller holds the node lock. It reports the fixed IPs whose filters it removed.
-func (svc *Service) removeUnreachedFilters(ctx context.Context, uplink string, fixedIPs []string) ([]string, error) {
-	if len(fixedIPs) == 0 {
-		return nil, nil
-	}
-	state, err := svc.dataplane.NorthSouthState(uplink)
-	if err != nil {
-		return nil, fmt.Errorf("list the node: %w", err)
-	}
-	var removed []string
-	for _, x := range fixedIPs {
-		if natReaches(state.NAT, x) {
-			continue
-		}
-		held, err := svc.fixedIPAssociated(ctx, x)
-		if err != nil {
-			return removed, err
-		}
-		if held {
-			continue
-		}
-		if err := svc.dataplane.RemoveIngressFilter(x); err != nil {
-			return removed, fmt.Errorf("fixed IP %s: remove its filter: %w", x, err)
-		}
-		removed = append(removed, x)
-	}
-	return removed, nil
-}
-
-// fixedIPAssociated reports whether a record associates any floating IP with fixedIP.
-func (svc *Service) fixedIPAssociated(ctx context.Context, fixedIP string) (bool, error) {
-	var held bool
-	if err := svc.pool.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM floating_ips WHERE fixed_ip_address = $1 AND port_id IS NOT NULL)", fixedIP,
-	).Scan(&held); err != nil {
-		return false, fmt.Errorf("fixed IP %s: read its associations: %w", fixedIP, err)
-	}
-	return held, nil
-}
-
-// natReaches reports whether any listed rule of the shape points at fixedIP.
-func natReaches(nat []networking.FloatingNAT, fixedIP string) bool {
-	for _, r := range nat {
-		if r.FixedIP == fixedIP {
-			return true
-		}
-	}
-	return false
-}
-
-// portIngressRules returns the IP-based ingress rules of a port's security
-// groups (skipping same-group / remote_group_id rules, which are east-west) —
-// what the north-south ingress filter enforces for a floating IP (T034).
-// portIngressRules returns the ingress rules to program for a port. It reports an error
-// rather than a short list when the read fails: callers replace the port's whole filter
-// with what they get back, so a truncated list would silently drop firewall allowances.
-// On error the caller must leave the existing filter in place.
-func (svc *Service) portIngressRules(ctx context.Context, portID string) ([]networking.IngressRule, error) {
-	rows, err := svc.pool.Query(ctx, `
-		SELECT r.protocol, r.port_range_min, r.port_range_max, r.remote_ip_prefix
-		FROM security_group_rules r
-		JOIN port_security_groups psg ON psg.security_group_id = r.security_group_id
-		WHERE psg.port_id = $1 AND r.direction = 'ingress'
-		  AND (r.ethertype = 'IPv4' OR r.ethertype IS NULL)
-		  AND r.remote_group_id IS NULL`, portID)
-	if err != nil {
-		log.Warn().Err(err).Str("port_id", portID).Msg("WS-3: failed to query ingress rules")
-		return nil, err
-	}
-	defer rows.Close()
-	var out []networking.IngressRule
-	for rows.Next() {
-		var proto, remote sql.NullString
-		var pmin, pmax sql.NullInt32
-		if err := rows.Scan(&proto, &pmin, &pmax, &remote); err != nil {
-			log.Warn().Err(err).Str("operation", "portIngressRules").Msg("failed to scan row")
-			continue
-		}
-		out = append(out, networking.IngressRule{
-			Protocol: proto.String,
-			PortMin:  int(pmin.Int32),
-			PortMax:  int(pmax.Int32),
-			Remote:   remote.String,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Str("port_id", portID).Msg("WS-3: ingress rules rows iteration error; refusing to program a partial filter")
-		return nil, err
-	}
-	return out, nil
-}
-
-// ensureIngressFilter rebuilds the filter of one fixed IP from the port's groups, under the node
-// lock: the rules are read inside it, so a reconciliation pass never applies rules it read before a
-// change the node has since applied (SPEC-033 research R8). A rule set that cannot be read in full
-// leaves the existing filter in place. A lock not acquired within a second is an error naming the
-// address, wrapping errNodeBusy.
-func (svc *Service) ensureIngressFilter(ctx context.Context, fixedIP, uplink, portID string) error {
-	release, err := svc.lockNode()
-	if err != nil {
-		return fmt.Errorf("ingress filter for %s: %w", fixedIP, err)
-	}
-	defer release()
-	rules, err := svc.portIngressRules(ctx, portID)
-	if err != nil {
-		return err
-	}
-	return svc.dataplane.EnsureIngressFilter(fixedIP, uplink, rules)
-}
-
-// RefreshPortFilters rebuilds, on this node, the filter of every fixed IP the ports' floating IPs
-// reach, from what the database now holds (SPEC-033 FR-007, research R9). A change to a port's
-// groups calls it after committing, so the change reaches the dataplane before the request answers.
-// A port without a floating IP has nothing to rebuild.
-//
-// It tries every address and returns the failures joined, each naming its port and address. An
-// error means the change has not reached the dataplane, and the old filter still stands: the caller
-// undoes its change (FR-008). It never skips the work, so a node without an uplink is a failure. In
-// stub mode nothing is programmed, and only a database error can fail it.
-func (svc *Service) RefreshPortFilters(ctx context.Context, portIDs []string) error {
-	var errs []error
-	var uplink string
-	var uplinkErr error
-	uplinkRead := false
-	for _, portID := range portIDs {
-		addrs, err := svc.floatingFixedIPs(ctx, portID)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("port %s: read its floating IPs: %w", portID, err))
-			continue
-		}
-		if len(addrs) == 0 {
-			continue
-		}
-		if !uplinkRead {
-			uplink, uplinkErr = svc.uplink()
-			uplinkRead = true
-		}
-		if uplinkErr != nil {
-			errs = append(errs, fmt.Errorf("port %s: no uplink to filter its floating IPs on: %w", portID, uplinkErr))
-			continue
-		}
-		for _, addr := range addrs {
-			if err := svc.ensureIngressFilter(ctx, addr, uplink, portID); err != nil {
-				errs = append(errs, fmt.Errorf("port %s, address %s: %w", portID, addr, err))
-			}
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// floatingFixedIPs returns the fixed IPs of a port that a floating IP reaches.
-func (svc *Service) floatingFixedIPs(ctx context.Context, portID string) ([]string, error) {
-	rows, err := svc.pool.Query(ctx, `
-		SELECT DISTINCT fixed_ip_address FROM floating_ips
-		WHERE port_id = $1 AND fixed_ip_address IS NOT NULL
-		ORDER BY fixed_ip_address`, portID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var addr string
-		if err := rows.Scan(&addr); err != nil {
-			return nil, err
-		}
-		out = append(out, addr)
-	}
-	return out, rows.Err()
-}
-
-// rebuildGroupFilters rebuilds, on this node, the filter of every fixed IP whose floating IP's port
-// carries the group, one address at a time under the node lock, with the uplink from svc.uplink(),
-// whose error is a failed change (SPEC-033 research R21). It returns the failures joined, each naming
-// its address. A read that fails is a failed change too: it never skips the work.
-func (svc *Service) rebuildGroupFilters(ctx context.Context, sgID string) error {
-	rows, err := svc.pool.Query(ctx, `
-		SELECT DISTINCT f.fixed_ip_address, f.port_id::text
-		FROM floating_ips f
-		JOIN port_security_groups psg ON psg.port_id = f.port_id
-		WHERE psg.security_group_id::text = $1 AND f.port_id IS NOT NULL AND f.fixed_ip_address IS NOT NULL
-		ORDER BY f.fixed_ip_address`, sgID)
-	if err != nil {
-		return fmt.Errorf("read the floating IPs of group %s: %w", sgID, err)
-	}
-	type target struct{ fixed, port string }
-	var targets []target
-	for rows.Next() {
-		var t target
-		if err := rows.Scan(&t.fixed, &t.port); err != nil {
-			rows.Close()
-			return fmt.Errorf("read a floating IP of group %s: %w", sgID, err)
-		}
-		targets = append(targets, t)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the floating IPs of group %s: %w", sgID, err)
-	}
-	if len(targets) == 0 {
-		return nil
-	}
-	uplink, err := svc.uplink()
-	if err != nil {
-		return fmt.Errorf("no uplink to rebuild the filters of group %s on: %w", sgID, err)
-	}
-	var errs []error
-	for _, t := range targets {
-		if err := svc.ensureIngressFilter(ctx, t.fixed, uplink, t.port); err != nil {
-			errs = append(errs, fmt.Errorf("port %s, address %s: %w", t.port, t.fixed, err))
-		}
-	}
-	return errors.Join(errs...)
+// convergeGroupRules converges the firewall of every bound port carrying a group whose rules changed,
+// on its node (R32).
+func (svc *Service) convergeGroupRules(ctx context.Context, sgID string) error {
+	return svc.convergePorts(ctx, portChange{carrying: []string{sgID}})
 }

@@ -83,6 +83,13 @@ func insertNetworkAndSubnet(t *testing.T, db DB) (networkID, subnetID string) {
 	return networkID, subnetID
 }
 
+// insertFloatingIP gives network a floating IP at address, on port's fixed IP, or unassociated for nils.
+func insertFloatingIP(db DB, network, address string, port, fixed any) error {
+	_, err := db.Exec(context.Background(), `INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, port_id, fixed_ip_address)
+		VALUES ($1, $2, $3, $4, $5, $6)`, uuid.NewString(), m084Project, network, address, port, fixed)
+	return err
+}
+
 func TestMigration084(t *testing.T) {
 	ctx := context.Background()
 	for _, leg := range migrationLegs(t, "m084") {
@@ -205,6 +212,36 @@ func TestMigration084(t *testing.T) {
 				}
 			})
 
+			// The network and port of the fixed IP the next subtest gives a floating IP, for down to check.
+			var fipNetwork, fipPort string
+			t.Run("a fixed IP has one floating IP of a network", func(t *testing.T) {
+				// As upstream's uniq_floatingips0floatingnetworkid0fixedportid0fixedipaddress (FR-029, SPEC-033 T313).
+				fipNetwork, _ = insertNetworkAndSubnet(t, db)
+				other, _ := insertNetworkAndSubnet(t, db)
+				fipPort = uuid.NewString()
+				mustExec(t, db, `INSERT INTO ports (id, network_id, project_id) VALUES ($1, $2, $3)`, fipPort, fipNetwork, m084Project)
+				if err := insertFloatingIP(db, fipNetwork, "203.0.113.1", fipPort, "10.84.0.5"); err != nil {
+					t.Fatalf("the first floating IP on the fixed IP: %v", err)
+				}
+				if err := insertFloatingIP(db, fipNetwork, "203.0.113.2", fipPort, "10.84.0.5"); !IsUniqueViolation(err) {
+					t.Errorf("a second floating IP of the network on the fixed IP = %v; want a unique violation", err)
+				}
+				if err := insertFloatingIP(db, other, "203.0.113.3", fipPort, "10.84.0.5"); err != nil {
+					t.Errorf("a floating IP of another network on the fixed IP: %v; want it allowed", err)
+				}
+				// Overlapping internal networks: the same address on another port is another fixed IP.
+				twin := uuid.NewString()
+				mustExec(t, db, `INSERT INTO ports (id, network_id, project_id) VALUES ($1, $2, $3)`, twin, other, m084Project)
+				if err := insertFloatingIP(db, fipNetwork, "203.0.113.7", twin, "10.84.0.5"); err != nil {
+					t.Errorf("a floating IP of the network on another port's same address: %v; want it allowed", err)
+				}
+				for _, address := range []string{"203.0.113.4", "203.0.113.5"} {
+					if err := insertFloatingIP(db, fipNetwork, address, nil, nil); err != nil {
+						t.Errorf("an unassociated floating IP beside another: %v; want unassociated ones never to collide", err)
+					}
+				}
+			})
+
 			db.Close()
 
 			t.Run("down removes all of it", func(t *testing.T) {
@@ -237,6 +274,9 @@ func TestMigration084(t *testing.T) {
 				}
 				if _, err := db.Exec(ctx, `INSERT INTO ports (id, project_id) VALUES ($1, NULL)`, uuid.NewString()); err == nil {
 					t.Error("a port without a project is accepted after 084's down; want 079's refusal back")
+				}
+				if err := insertFloatingIP(db, fipNetwork, "203.0.113.6", fipPort, "10.84.0.5"); err != nil {
+					t.Errorf("a second floating IP of a network on one fixed IP after 084's down: %v; want the index gone", err)
 				}
 			})
 		})
@@ -310,6 +350,26 @@ func TestMigration085(t *testing.T) {
 				mustExec(t, db, `INSERT INTO projects (id, name) VALUES ($1, $2)`, other, "m085-"+other[:8])
 				mustExec(t, db, `INSERT INTO security_groups (id, name, project_id) VALUES ($1, 'default', $2)`, uuid.NewString(), other)
 			})
+		})
+	}
+}
+
+// SPEC-033 T227: dropping UNIQUE (project_id, name) took the only index on
+// security_groups led by project_id, which the lookups of a project's group by name and the
+// per-project listings use; 085 creates one in its place on both backends.
+func TestMigration085KeepsAProjectIndexOnGroups(t *testing.T) {
+	for _, leg := range migrationLegs(t, "m085idx") {
+		t.Run(leg.name, func(t *testing.T) {
+			migrateLegTo(t, leg.url, 85)
+			db := openLeg(t, leg.url)
+			defer db.Close()
+			query := `SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'security_groups' AND sql LIKE '%(project_id, name)'`
+			if leg.name == "postgres" {
+				query = `SELECT count(*) FROM pg_indexes WHERE tablename = 'security_groups' AND indexdef LIKE '%(project_id, name)'`
+			}
+			if n := countLegRows(t, db, query); n != 1 {
+				t.Errorf("%d index(es) on security_groups (project_id, name) after 085; want one", n)
+			}
 		})
 	}
 }

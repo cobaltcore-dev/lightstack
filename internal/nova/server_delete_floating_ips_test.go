@@ -3,7 +3,6 @@ package nova
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -22,24 +21,18 @@ import (
 // action, disassociates the floating IPs of the ports its boot created in the deleting transaction, and
 // converges them on this node before the answer. A port attached by id keeps its floating IP.
 
-// convergeRecorder is the Neutron service with ConvergeFloatingIPs observed and, when fail is set,
-// failed.
+// convergeRecorder is the Neutron service with ConvergeDisassociated observed.
 type convergeRecorder struct {
 	*neutron.Service
 	mu    sync.Mutex
 	calls [][]string
-	fail  error
 }
 
-func (r *convergeRecorder) ConvergeFloatingIPs(ctx context.Context, floatingIPs []string) error {
+func (r *convergeRecorder) ConvergeDisassociated(ctx context.Context, was []neutron.FloatingIPAssociation) {
 	r.mu.Lock()
-	r.calls = append(r.calls, slices.Clone(floatingIPs))
-	fail := r.fail
+	r.calls = append(r.calls, floatingAddresses(was))
 	r.mu.Unlock()
-	if fail != nil {
-		return fail
-	}
-	return r.Service.ConvergeFloatingIPs(ctx, floatingIPs)
+	r.Service.ConvergeDisassociated(ctx, was)
 }
 
 func (r *convergeRecorder) converged() [][]string {
@@ -132,7 +125,7 @@ func TestServerDeletion_FloatingIPs(t *testing.T) {
 		}
 		wantDisassociated(t, fip)
 		if calls := rec.converged(); len(calls) != 1 || !slices.Equal(calls[0], []string{addr}) {
-			t.Errorf("ConvergeFloatingIPs calls: %v; want one with %s", calls, addr)
+			t.Errorf("ConvergeDisassociated calls: %v; want one with %s", calls, addr)
 		}
 	})
 
@@ -152,19 +145,6 @@ func TestServerDeletion_FloatingIPs(t *testing.T) {
 		if s := readFIPState(t, fip); s.port == nil || *s.port != tenantPort || s.status != "ACTIVE" {
 			t.Errorf("the tenant port's floating IP: %+v; want it still associated", s)
 		}
-	})
-
-	t.Run("a failed convergence: still 204, and the floating IP stays disassociated", func(t *testing.T) {
-		r, rec := newDeleteRig(t)
-		rec.fail = errors.New("floating IP 198.18.0.1: withdraw: iptables-restore: line 2 failed")
-		server, netID := spec033Server(t, r, seededProjectID)
-		port := allocateTestPort(t, rec.Service, netID, seededProjectID, server, nil)
-		fip, _ := associateFIP(t, port)
-
-		if code, body := deleteServerReq(r, server); code != http.StatusNoContent {
-			t.Fatalf("delete: code=%d body=%s; want 204", code, body)
-		}
-		wantDisassociated(t, fip)
 	})
 
 	t.Run("forceDelete deletes as DELETE does", func(t *testing.T) {
@@ -194,7 +174,7 @@ func TestServerDeletion_FloatingIPs(t *testing.T) {
 		}
 		wantDisassociated(t, fip)
 		if calls := rec.converged(); len(calls) != 1 || !slices.Equal(calls[0], []string{addr}) {
-			t.Errorf("ConvergeFloatingIPs calls: %v; want one with %s", calls, addr)
+			t.Errorf("ConvergeDisassociated calls: %v; want one with %s", calls, addr)
 		}
 		var status string
 		var attached *string

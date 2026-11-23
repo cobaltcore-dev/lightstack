@@ -8,38 +8,47 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 	"github.com/cobaltcore-dev/lightstack/internal/database/dbtest"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-// SPEC-033 T036 (FR-007a, FR-008, FR-008a, FR-008d; research R20, R23, R25;
-// contracts/floating-ip-dataplane.md): every floating-IP change is stored, converged on the serving
-// node before the answer, and undone, compare-and-set, when the node cannot apply it. Stub mode, with
-// the service's dataplane replaced by the fake.
+// SPEC-033 T036, reworked by T115 and T130 (FR-007a, FR-008, FR-008a, FR-008d; research R20, R23, R25,
+// R28): every floating-IP change is stored, then made in force before the answer — its router
+// converged on the network node — and undone, compare-and-set, when that fails. One node, which is its
+// own network node, in stub mode, with its routers replaced by the fake. The router's NAT itself is the
+// router unit's (router_unit_test.go); the guests' firewall does not change with a floating IP (R32).
 
 type fipFixture struct {
 	r               *gin.Engine
 	svc             *Service
-	fake            *fakeDataplane
+	routers         *fakeRouters
 	external        string
 	network, subnet string
 	router          string
 	portX, fixedX   string
 	portY, fixedY   string
 	hdr             map[string]string
+
+	mu     sync.Mutex
+	events []string             // every router call, in order: "Router R"
+	fail   func(e string) error // decides each call's outcome; nil lets every call through
 }
 
 func newFIPFixture(t *testing.T) *fipFixture {
 	t.Helper()
 	r, svc := newNeutronTestRouterWithService()
-	fake := newFakeDataplane()
-	svc.dataplane = fake
-	fx := &fipFixture{r: r, svc: svc, fake: fake, hdr: projectHdr(seededProjectID)}
+	routers := newFakeRouters()
+	svc.routers = routers
+	fx := &fipFixture{r: r, svc: svc, routers: routers, hdr: projectHdr(seededProjectID)}
+	routers.hook = func(c routerCall) error { return fx.event("Router " + c.ID) }
 	short := uuid.NewString()[:8]
 	fx.external = seedExternalNetwork(t, "spec033-ext-"+short, seededProjectID, false, true)
 	seedSubnet(t, fx.external, "spec033-ext-subnet-"+short, fmt.Sprintf("198.19.%d.0/24", rand.IntN(256)), nil, 4, false)
@@ -88,7 +97,7 @@ func seedRouterOn(t *testing.T, networkID, subnetID, external string) string {
 	return routerID
 }
 
-// seedPortWithIP creates a port with one fixed IP, in a group with a tcp/22 rule.
+// seedPortWithIP creates a port with one fixed IP, in a group of its own.
 func seedPortWithIP(t *testing.T, networkID, subnetID string) (string, string) {
 	t.Helper()
 	id := uuid.NewString()
@@ -101,7 +110,6 @@ func seedPortWithIP(t *testing.T, networkID, subnetID string) (string, string) {
 		t.Fatalf("seed port: %v", err)
 	}
 	g := sgTestGroup(t, seededProjectID, "spec033-fip-sg-"+id[:6])
-	sgTestRule(t, g, "tcp", 22)
 	sgTestAttach(t, id, g)
 	return id, ip
 }
@@ -138,15 +146,11 @@ func readFIP(t *testing.T, id string) (fipRow, bool) {
 	return r, true
 }
 
+// create creates a floating IP on the fixture's external network, associated with portID when it is
+// not "".
 func (fx *fipFixture) create(t *testing.T, portID string) (string, string) {
 	t.Helper()
-	return fx.createOn(t, fx.external, portID)
-}
-
-// createOn creates a floating IP on an external network, associated with portID when it is not "".
-func (fx *fipFixture) createOn(t *testing.T, external, portID string) (string, string) {
-	t.Helper()
-	body := `{"floatingip":{"floating_network_id":"` + external + `"`
+	body := `{"floatingip":{"floating_network_id":"` + fx.external + `"`
 	if portID != "" {
 		body += `,"port_id":"` + portID + `"`
 	}
@@ -169,6 +173,56 @@ func (fx *fipFixture) createOn(t *testing.T, external, portID string) (string, s
 	return out.FloatingIP.ID, out.FloatingIP.Address
 }
 
+// event records a call to either fake and returns what fail decides for it.
+func (fx *fipFixture) event(e string) error {
+	fx.mu.Lock()
+	fx.events = append(fx.events, e)
+	fail := fx.fail
+	fx.mu.Unlock()
+	if fail == nil {
+		return nil
+	}
+	return fail(e)
+}
+
+// eventsSince returns the calls from position n on.
+func (fx *fipFixture) eventsSince(n int) []string {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	return slices.Clone(fx.events[n:])
+}
+
+func (fx *fipFixture) eventCount() int {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	return len(fx.events)
+}
+
+// held is the router as the network node holds it.
+func (fx *fipFixture) held(t *testing.T) networking.RouterState {
+	t.Helper()
+	s, ok := fx.routers.state(fx.router)
+	if !ok {
+		t.Fatalf("the network node holds no router %s", fx.router)
+	}
+	return s
+}
+
+// floatingOf is where the router forwards a floating address: its fixed IP, or "" for nowhere.
+func (fx *fipFixture) floatingOf(t *testing.T, address string) string {
+	t.Helper()
+	s, ok := fx.routers.state(fx.router)
+	if !ok {
+		return ""
+	}
+	for _, f := range s.FloatingIPs {
+		if f.Address == address {
+			return f.FixedIP
+		}
+	}
+	return ""
+}
+
 func (fx *fipFixture) put(id, body string) (int, string) {
 	return doJSONReq(fx.r, http.MethodPut, "/v2.0/floatingips/"+id, body, fx.hdr)
 }
@@ -177,11 +231,14 @@ func (fx *fipFixture) del(path string) (int, string) {
 	return doJSONReq(fx.r, http.MethodDelete, path, "", fx.hdr)
 }
 
-// failFirst makes the first call of method fail with err, after running before.
-func (fx *fipFixture) failFirst(method string, err error, before func()) {
+// failFirst makes the first call whose event starts with prefix ("Router") fail with err, after
+// running before.
+func (fx *fipFixture) failFirst(prefix string, err error, before func()) {
 	failed := false
-	fx.fake.setHook(func(c dataplaneCall) error {
-		if c.Method != method || failed {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	fx.fail = func(e string) error {
+		if failed || !strings.HasPrefix(e, prefix) {
 			return nil
 		}
 		failed = true
@@ -189,7 +246,7 @@ func (fx *fipFixture) failFirst(method string, err error, before func()) {
 			before()
 		}
 		return err
-	})
+	}
 }
 
 var errNode = errors.New("iptables-restore: line 3 failed")
@@ -197,82 +254,56 @@ var errNode = errors.New("iptables-restore: line 3 failed")
 func TestFloatingIPDataplane_Lifecycle(t *testing.T) {
 	requireDB(t)
 
-	t.Run("create on a port: the filter, then the NAT and the address", func(t *testing.T) {
+	t.Run("create on a port: the router", func(t *testing.T) {
 		fx := newFIPFixture(t)
 		_, addr := fx.create(t, fx.portX)
-		want := []string{"EnsureIngressFilter " + fx.fixedX, "EnsureFloatingIP " + addr + "->" + fx.fixedX}
-		if got := fx.fake.writes(); !slices.Equal(got, want) {
-			t.Errorf("writes %q; want %q", got, want)
+		want := []string{"Router " + fx.router}
+		if got := fx.eventsSince(0); !slices.Equal(got, want) {
+			t.Errorf("calls %q; want %q", got, want)
 		}
-		if !fx.fake.hasAddress(addr) {
-			t.Errorf("the address %s is not on the uplink", addr)
+		if got := fx.floatingOf(t, addr); got != fx.fixedX {
+			t.Errorf("the router forwards %s to %q; want %s", addr, got, fx.fixedX)
 		}
 	})
 
 	t.Run("create without a port touches nothing", func(t *testing.T) {
 		fx := newFIPFixture(t)
 		fx.create(t, "")
-		if got := fx.fake.writes(); len(got) != 0 {
-			t.Errorf("writes %q; want none", got)
+		if got := fx.eventsSince(0); len(got) != 0 {
+			t.Errorf("calls %q; want none", got)
 		}
 	})
 
-	t.Run("move: the new filter and NAT, the old filter gone", func(t *testing.T) {
+	t.Run("move: the router", func(t *testing.T) {
 		fx := newFIPFixture(t)
 		id, addr := fx.create(t, fx.portX)
 		if code, body := fx.put(id, `{"floatingip":{"port_id":"`+fx.portY+`"}}`); code != http.StatusOK {
 			t.Fatalf("move: code=%d body=%s", code, body)
 		}
-		if nat := fx.fake.natOf(addr); len(nat) != 1 || nat[0].fixed != fx.fixedY {
-			t.Errorf("NAT of %s: %+v; want to %s only", addr, nat, fx.fixedY)
-		}
-		if _, ok := fx.fake.filterOf(fx.fixedY); !ok {
-			t.Errorf("no filter for the new fixed IP %s", fx.fixedY)
-		}
-		if _, ok := fx.fake.filterOf(fx.fixedX); ok {
-			t.Errorf("the old fixed IP %s keeps its filter", fx.fixedX)
+		if got := fx.floatingOf(t, addr); got != fx.fixedY {
+			t.Errorf("the router forwards %s to %q; want %s", addr, got, fx.fixedY)
 		}
 	})
 
-	t.Run("move: the old filter stays while something still reaches it", func(t *testing.T) {
-		for _, keep := range []string{"a second floating IP", "an unmarked rule"} {
-			fx := newFIPFixture(t)
-			id, _ := fx.create(t, fx.portX)
-			if keep == "a second floating IP" {
-				// One floating IP per fixed IP per external network (SPEC-033 FR-029): the second is
-				// another network's, through a second router joining the subnet to it.
-				other := seedExternalNetwork(t, "spec033-ext2-"+uuid.NewString()[:8], seededProjectID, false, true)
-				seedSubnet(t, other, "spec033-ext2-subnet", fmt.Sprintf("198.20.%d.0/24", rand.IntN(256)), nil, 4, false)
-				seedRouterOn(t, fx.network, fx.subnet, other)
-				fx.createOn(t, other, fx.portX)
-			} else {
-				fx.fake.seedNAT("198.18.250.1", fx.fixedX, false)
-			}
-			if code, body := fx.put(id, `{"floatingip":{"port_id":"`+fx.portY+`"}}`); code != http.StatusOK {
-				t.Fatalf("%s: move: code=%d body=%s", keep, code, body)
-			}
-			if _, ok := fx.fake.filterOf(fx.fixedX); !ok {
-				t.Errorf("%s: the old fixed IP's filter was removed", keep)
-			}
-		}
-	})
-
-	t.Run("disassociate: the address and NAT, then the filter; description only: nothing", func(t *testing.T) {
+	t.Run("disassociate: the router; description only: nothing", func(t *testing.T) {
 		fx := newFIPFixture(t)
 		id, addr := fx.create(t, fx.portX)
-		before := len(fx.fake.writes())
+		before := fx.eventCount()
 		if code, body := fx.put(id, `{"floatingip":{"description":"spec033"}}`); code != http.StatusOK {
 			t.Fatalf("description: code=%d body=%s", code, body)
 		}
-		if got := fx.fake.writes(); len(got) != before {
-			t.Errorf("a description-only update wrote %q", got[before:])
+		if got := fx.eventsSince(before); len(got) != 0 {
+			t.Errorf("a description-only update called %q", got)
 		}
 		if code, body := fx.put(id, `{"floatingip":{"port_id":null}}`); code != http.StatusOK {
 			t.Fatalf("disassociate: code=%d body=%s", code, body)
 		}
-		want := []string{"WithdrawFloatingIP " + addr, "RemoveIngressFilter " + fx.fixedX}
-		if got := fx.fake.writes()[before:]; !slices.Equal(got, want) {
-			t.Errorf("writes %q; want %q", got, want)
+		want := []string{"Router " + fx.router}
+		if got := fx.eventsSince(before); !slices.Equal(got, want) {
+			t.Errorf("calls %q; want %q", got, want)
+		}
+		if got := fx.floatingOf(t, addr); got != "" {
+			t.Errorf("the router still forwards %s to %s", addr, got)
 		}
 	})
 
@@ -280,7 +311,7 @@ func TestFloatingIPDataplane_Lifecycle(t *testing.T) {
 		fx := newFIPFixture(t)
 		id, addr := fx.create(t, fx.portX)
 		pf := seedPortForwarding(t, id, fx.portX, fx.fixedX)
-		before := len(fx.fake.writes())
+		before := fx.eventCount()
 		if code, body := fx.del("/v2.0/floatingips/" + id); code != http.StatusNoContent {
 			t.Fatalf("delete: code=%d body=%s", code, body)
 		}
@@ -290,18 +321,21 @@ func TestFloatingIPDataplane_Lifecycle(t *testing.T) {
 		if portForwardingExists(t, pf) {
 			t.Error("its port forwarding is still there")
 		}
-		want := []string{"WithdrawFloatingIP " + addr, "RemoveIngressFilter " + fx.fixedX}
-		if got := fx.fake.writes()[before:]; !slices.Equal(got, want) {
-			t.Errorf("writes %q; want %q", got, want)
+		want := []string{"Router " + fx.router}
+		if got := fx.eventsSince(before); !slices.Equal(got, want) {
+			t.Errorf("calls %q; want %q", got, want)
+		}
+		if s := fx.held(t); fx.floatingOf(t, addr) != "" || len(s.PortForwardings) != 0 {
+			t.Errorf("the router still holds the floating IP or its port forwarding: %+v", s)
 		}
 
 		unassociated, _ := fx.create(t, "")
-		before = len(fx.fake.writes())
+		before = fx.eventCount()
 		if code, body := fx.del("/v2.0/floatingips/" + unassociated); code != http.StatusNoContent {
 			t.Fatalf("delete unassociated: code=%d body=%s", code, body)
 		}
-		if got := fx.fake.writes()[before:]; len(got) != 0 {
-			t.Errorf("deleting an unassociated floating IP wrote %q", got)
+		if got := fx.eventsSince(before); len(got) != 0 {
+			t.Errorf("deleting a floating IP through no router called %q", got)
 		}
 	})
 }
@@ -326,38 +360,36 @@ func portForwardingExists(t *testing.T, id string) bool {
 func TestFloatingIPDataplane_Failures(t *testing.T) {
 	requireDB(t)
 
-	for _, method := range []string{"EnsureIngressFilter", "EnsureFloatingIP"} {
-		t.Run("create, failing "+method+": no row, and the node converged again", func(t *testing.T) {
-			fx := newFIPFixture(t)
-			fx.failFirst(method, errNode, nil)
-			body := `{"floatingip":{"floating_network_id":"` + fx.external + `","port_id":"` + fx.portX + `"}}`
-			code, resp := doJSONReq(fx.r, http.MethodPost, "/v2.0/floatingips", body, fx.hdr)
-			if code != http.StatusInternalServerError {
-				t.Fatalf("create: code=%d body=%s; want 500", code, resp)
-			}
-			var n int
-			if err := testPool.QueryRow(context.Background(), "SELECT count(*) FROM floating_ips WHERE port_id = $1", fx.portX).Scan(&n); err != nil {
-				t.Fatal(err)
-			}
-			if n != 0 {
-				t.Errorf("%d rows left for the port; want none", n)
-			}
-			if writes := fx.fake.writes(); !hasPrefixAny(writes, "WithdrawFloatingIP ") {
-				t.Errorf("writes %q; want the floating IP withdrawn again after the undo", writes)
-			}
-		})
-	}
+	t.Run("create, failing the router: no row, and the router converged again", func(t *testing.T) {
+		fx := newFIPFixture(t)
+		fx.failFirst("Router", errNode, nil)
+		body := `{"floatingip":{"floating_network_id":"` + fx.external + `","port_id":"` + fx.portX + `"}}`
+		code, resp := doJSONReq(fx.r, http.MethodPost, "/v2.0/floatingips", body, fx.hdr)
+		if code != http.StatusInternalServerError {
+			t.Fatalf("create: code=%d body=%s; want 500", code, resp)
+		}
+		var n int
+		if err := testPool.QueryRow(context.Background(), "SELECT count(*) FROM floating_ips WHERE port_id = $1", fx.portX).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%d rows left for the port; want none", n)
+		}
+		if s, ok := fx.routers.state(fx.router); !ok || len(s.FloatingIPs) != 0 {
+			t.Errorf("the router after the undo: %+v (held %v); want it converged without the floating IP", s.FloatingIPs, ok)
+		}
+	})
 
-	for _, method := range []string{"EnsureIngressFilter", "EnsureFloatingIP", "WithdrawFloatingIP"} {
-		t.Run("move and disassociate, failing "+method+": the old association is back", func(t *testing.T) {
+	for _, change := range []string{"move", "disassociate"} {
+		t.Run(change+", failing the router: the old association is back", func(t *testing.T) {
 			fx := newFIPFixture(t)
 			id, addr := fx.create(t, fx.portX)
 			before, _ := readFIP(t, id)
 			body := `{"floatingip":{"port_id":"` + fx.portY + `"}}`
-			if method == "WithdrawFloatingIP" {
+			if change == "disassociate" {
 				body = `{"floatingip":{"port_id":null}}`
 			}
-			fx.failFirst(method, errNode, nil)
+			fx.failFirst("Router", errNode, nil)
 			if code, resp := fx.put(id, body); code != http.StatusInternalServerError {
 				t.Fatalf("PUT %s: code=%d body=%s; want 500", body, code, resp)
 			}
@@ -365,18 +397,18 @@ func TestFloatingIPDataplane_Failures(t *testing.T) {
 			if after.Port != before.Port || after.Fixed != before.Fixed || after.Router != before.Router || after.Status != before.Status {
 				t.Errorf("row %+v; want the old association %+v", after, before)
 			}
-			if nat := fx.fake.natOf(addr); len(nat) != 1 || nat[0].fixed != fx.fixedX {
-				t.Errorf("NAT of %s: %+v; want converged back to %s", addr, nat, fx.fixedX)
+			if got := fx.floatingOf(t, addr); got != fx.fixedX {
+				t.Errorf("the router forwards %s to %q; want it converged back to %s", addr, got, fx.fixedX)
 			}
 		})
 	}
 
-	t.Run("delete, failing the withdrawal: the row and its port forwarding are back as they were", func(t *testing.T) {
+	t.Run("delete, failing the router: the row and its port forwarding are back as they were", func(t *testing.T) {
 		fx := newFIPFixture(t)
 		id, addr := fx.create(t, fx.portX)
 		pf := seedPortForwarding(t, id, fx.portX, fx.fixedX)
 		before, _ := readFIP(t, id)
-		fx.failFirst("WithdrawFloatingIP", errNode, nil)
+		fx.failFirst("Router", errNode, nil)
 		if code, resp := fx.del("/v2.0/floatingips/" + id); code != http.StatusInternalServerError {
 			t.Fatalf("delete: code=%d body=%s; want 500", code, resp)
 		}
@@ -386,8 +418,8 @@ func TestFloatingIPDataplane_Failures(t *testing.T) {
 		if !portForwardingExists(t, pf) {
 			t.Error("the port forwarding did not come back")
 		}
-		if nat := fx.fake.natOf(addr); len(nat) != 1 || nat[0].fixed != fx.fixedX {
-			t.Errorf("NAT of %s: %+v; want converged back to %s", addr, nat, fx.fixedX)
+		if got := fx.floatingOf(t, addr); got != fx.fixedX {
+			t.Errorf("the router forwards %s to %q; want it converged back to %s", addr, got, fx.fixedX)
 		}
 	})
 
@@ -396,7 +428,7 @@ func TestFloatingIPDataplane_Failures(t *testing.T) {
 			fx := newFIPFixture(t)
 			id, _ := fx.create(t, fx.portX)
 			pf := seedPortForwarding(t, id, fx.portX, fx.fixedX)
-			fx.failFirst("WithdrawFloatingIP", errNode, func() { mustExec(t, "DELETE FROM ports WHERE id = $1", fx.portX) })
+			fx.failFirst("Router", errNode, func() { mustExec(t, "DELETE FROM ports WHERE id = $1", fx.portX) })
 			if code, resp := fx.del("/v2.0/floatingips/" + id); code != http.StatusInternalServerError {
 				t.Fatalf("delete: code=%d body=%s; want 500", code, resp)
 			}
@@ -412,7 +444,7 @@ func TestFloatingIPDataplane_Failures(t *testing.T) {
 			fx := newFIPFixture(t)
 			id, addr := fx.create(t, fx.portX)
 			other := uuid.NewString()
-			fx.failFirst("WithdrawFloatingIP", errNode, func() {
+			fx.failFirst("Router", errNode, func() {
 				mustExec(t, `INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, status)
 					VALUES ($1, $2, $3, $4, 'DOWN')`, other, seededProjectID, fx.external, addr)
 			})
@@ -432,7 +464,7 @@ func TestFloatingIPDataplane_Failures(t *testing.T) {
 	t.Run("compare-and-set: a change another request made meanwhile stays", func(t *testing.T) {
 		t.Run("create, its description changed", func(t *testing.T) {
 			fx := newFIPFixture(t)
-			fx.failFirst("EnsureFloatingIP", errNode, func() {
+			fx.failFirst("Router", errNode, func() {
 				mustExec(t, "UPDATE floating_ips SET description = 'other request' WHERE port_id = $1", fx.portX)
 			})
 			body := `{"floatingip":{"floating_network_id":"` + fx.external + `","port_id":"` + fx.portX + `"}}`
@@ -449,7 +481,7 @@ func TestFloatingIPDataplane_Failures(t *testing.T) {
 		t.Run("move, moved again", func(t *testing.T) {
 			fx := newFIPFixture(t)
 			id, _ := fx.create(t, fx.portX)
-			fx.failFirst("EnsureFloatingIP", errNode, func() {
+			fx.failFirst("Router", errNode, func() {
 				mustExec(t, "UPDATE floating_ips SET port_id = $1, fixed_ip_address = $2 WHERE id = $3", fx.portX, fx.fixedX, id)
 				mustExec(t, "UPDATE floating_ips SET port_id = $1, fixed_ip_address = $2 WHERE id = $3", fx.portY, "10.36.255.254", id)
 			})
@@ -490,23 +522,20 @@ func TestFloatingIPDataplane_Failures(t *testing.T) {
 		}
 	})
 
-	t.Run("a busy node answers 500 within about a second and puts the association back", func(t *testing.T) {
+	t.Run("a busy router answers 500 within about a second and puts the association back", func(t *testing.T) {
 		fx := newFIPFixture(t)
 		id, _ := fx.create(t, fx.portX)
 		before, _ := readFIP(t, id)
-		otherPort, otherFixed, _ := portWithFloatingIP(t, 22)
-		entered, release := fx.fake.blockFirst(otherFixed)
-		t.Cleanup(release)
-		done := make(chan error, 1)
-		go func() { done <- fx.svc.RefreshPortFilters(context.Background(), []string{otherPort}) }()
-		waitEntered(t, entered)
-
+		release, err := fx.svc.units.acquire(context.Background(), unitRequest{Unit: unitRouter, IDs: []string{fx.router}}.lockKey())
+		if err != nil {
+			t.Fatal(err)
+		}
 		start := time.Now()
 		code, resp := fx.put(id, `{"floatingip":{"port_id":"`+fx.portY+`"}}`)
 		elapsed := time.Since(start)
 		release()
 		if code != http.StatusInternalServerError {
-			t.Fatalf("PUT on a busy node: code=%d body=%s; want 500", code, resp)
+			t.Fatalf("PUT on a busy router: code=%d body=%s; want 500", code, resp)
 		}
 		if elapsed < 900*time.Millisecond || elapsed > 3*time.Second {
 			t.Errorf("PUT took %v; want about one second per lock wait", elapsed)
@@ -514,19 +543,7 @@ func TestFloatingIPDataplane_Failures(t *testing.T) {
 		if after, _ := readFIP(t, id); after.Port != before.Port {
 			t.Errorf("row %+v; want the association back", after)
 		}
-		if err := <-done; err != nil {
-			t.Errorf("the blocked rebuild: %v", err)
-		}
 	})
-}
-
-func hasPrefixAny(ss []string, prefix string) bool {
-	for _, s := range ss {
-		if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
-			return true
-		}
-	}
-	return false
 }
 
 // SPEC-033 R25 (FR-008d): a deleted port takes its floating IPs' association with it, in the
@@ -549,11 +566,8 @@ func TestFloatingIPDataplane_PortDeletion(t *testing.T) {
 			t.Fatalf("delete port: code=%d body=%s; want 204", code, resp)
 		}
 		assertDisassociated(t, id)
-		if fx.fake.hasAddress(addr) || len(fx.fake.natOf(addr)) != 0 {
-			t.Errorf("the node still forwards %s", addr)
-		}
-		if _, ok := fx.fake.filterOf(fx.fixedX); ok {
-			t.Errorf("the filter of %s is still there", fx.fixedX)
+		if got := fx.floatingOf(t, addr); got != "" {
+			t.Errorf("the router still forwards %s to %s", addr, got)
 		}
 	})
 
@@ -596,6 +610,55 @@ func TestFloatingIPDataplane_PortDeletion(t *testing.T) {
 		assertDisassociated(t, second)
 	})
 
+	// SPEC-033 T223: a floating IP associated with the port after its withdrawal, while the
+	// delete awaits the port's lock, is in its router by then; the delete disassociates it, and the
+	// convergence after the commit takes it out of the router before the answer.
+	t.Run("an association made meanwhile leaves the router after the commit", func(t *testing.T) {
+		dbtest.RequirePostgres(t)
+		fx := newFIPFixture(t)
+		ctx := context.Background()
+		tx, err := testPool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck // a no-op after the commit
+		// NO KEY UPDATE holds the delete's FOR UPDATE off and lets a floating IP name the port.
+		var locked string
+		if err := tx.QueryRow(ctx, "SELECT id::text FROM ports WHERE id = $1 FOR NO KEY UPDATE", fx.portX).Scan(&locked); err != nil {
+			t.Fatal(err)
+		}
+		type result struct {
+			code int
+			body string
+		}
+		done := make(chan result, 1)
+		go func() {
+			code, body := fx.del("/v2.0/ports/" + fx.portX)
+			done <- result{code, body}
+		}()
+		dbtest.WaitUntilBlocked(t, testPool, dbtest.HolderPID(t, tx))
+		second, address := uuid.NewString(), fmt.Sprintf("198.18.%d.%d", rand.IntN(256), 1+rand.IntN(254))
+		mustExec(t, `INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address, fixed_ip_address, port_id, router_id, status)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE')`, second, seededProjectID, fx.external, address, fx.fixedX, fx.portX, fx.router)
+		t.Cleanup(func() { testPool.Exec(context.Background(), "DELETE FROM floating_ips WHERE id = $1", second) }) //nolint:errcheck // best-effort cleanup
+		if err := fx.svc.convergeRouterUnit(ctx, fx.router); err != nil {
+			t.Fatal(err)
+		}
+		if got := fx.floatingOf(t, address); got != fx.fixedX {
+			t.Fatalf("the router forwards %s to %q before the delete goes on; want %s", address, got, fx.fixedX)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if r := <-done; r.code != http.StatusNoContent {
+			t.Fatalf("delete port: code=%d body=%s; want 204", r.code, r.body)
+		}
+		assertDisassociated(t, second)
+		if got := fx.floatingOf(t, address); got != "" {
+			t.Errorf("the router still forwards %s to %s after the delete", address, got)
+		}
+	})
+
 	t.Run("a failed boot's release does the same", func(t *testing.T) {
 		fx := newFIPFixture(t)
 		instance := sgTestInstance(t)
@@ -605,18 +668,26 @@ func TestFloatingIPDataplane_PortDeletion(t *testing.T) {
 			t.Fatalf("ReleaseInstancePorts: %v", err)
 		}
 		assertDisassociated(t, id)
-		if fx.fake.hasAddress(addr) {
-			t.Errorf("the node still holds %s", addr)
+		if got := fx.floatingOf(t, addr); got != "" {
+			t.Errorf("the router still forwards %s to %s", addr, got)
 		}
 	})
 
-	t.Run("a failed removal: the deletion stands, the floating IP stays disassociated", func(t *testing.T) {
+	// The port leaves its floating IP's router before its record goes (SPEC-033 FR-040, R34): a router
+	// that cannot be converged keeps the port and the association, and converges the router again.
+	t.Run("a failed withdrawal: 500, the port and its floating IP kept", func(t *testing.T) {
 		fx := newFIPFixture(t)
-		id, _ := fx.create(t, fx.portX)
-		fx.fake.failMethod("WithdrawFloatingIP", errNode)
-		if code, resp := fx.del("/v2.0/ports/" + fx.portX); code != http.StatusNoContent {
-			t.Fatalf("delete port: code=%d body=%s; want 204", code, resp)
+		id, addr := fx.create(t, fx.portX)
+		before, _ := readFIP(t, id)
+		fx.failFirst("Router", errNode, nil)
+		if code, resp := fx.del("/v2.0/ports/" + fx.portX); code != http.StatusInternalServerError {
+			t.Fatalf("delete port: code=%d body=%s; want 500", code, resp)
 		}
-		assertDisassociated(t, id)
+		if after, ok := readFIP(t, id); !ok || after.Port != before.Port || after.Fixed != before.Fixed {
+			t.Errorf("floating IP %+v (present %v); want its association kept", after, ok)
+		}
+		if got := fx.floatingOf(t, addr); got != fx.fixedX {
+			t.Errorf("the router forwards %s to %q; want it converged back to %s", addr, got, fx.fixedX)
+		}
 	})
 }

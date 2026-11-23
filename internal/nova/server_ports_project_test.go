@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Branch review SRC-8 (2026-11-23-review.md): a server's ports were the ports naming it in device_id,
+// SPEC-033 T180: a server's ports were the ports naming it in device_id,
 // whichever project made them, and device_id is any port creator's to set. Another project's port naming
 // the server was changed by the server's group actions, could veto them, and showed in the server's
 // report. A server's ports are those of its project, as the address map and the self-heal read them.

@@ -3,7 +3,6 @@ package neutron
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -46,8 +45,10 @@ func TestDeleteSecurityGroup(t *testing.T) {
 		sgTestAttach(t, port, web)
 
 		code, body := del(web, hdr)
-		if code != http.StatusConflict || !strings.Contains(body, "SecurityGroupInUse") || !strings.Contains(body, web) {
+		if code != http.StatusConflict {
 			t.Errorf("delete: code=%d body=%s; want 409 SecurityGroupInUse naming the group", code, body)
+		} else {
+			assertNeutronError(t, body, "SecurityGroupInUse", "Security Group "+web+" in use.") // SPEC-033 T216
 		}
 		if !groupExists(t, web) || ruleCount(t, "security_group_id = $1", web) != 1 {
 			t.Error("the group or its rule is gone")

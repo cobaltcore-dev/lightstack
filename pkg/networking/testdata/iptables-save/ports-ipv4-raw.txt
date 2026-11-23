@@ -1,0 +1,13 @@
+# iptables v1.8.13 (nf_tables), captured by TestCaptureIPTablesSave
+*raw
+:PREROUTING ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:ls-ct - [0:0]
+-A PREROUTING -j ls-ct
+-A ls-ct -m physdev --physdev-in tapaaaaaaaa-11 -j CT --zone 4097
+-A ls-ct -m physdev --physdev-in tapbbbbbbbb-22 -j CT --notrack
+-A ls-ct -m physdev --physdev-in tapcccccccc-33 -j CT --zone 4098
+-A ls-ct -m physdev --physdev-in tapdddddddd-44 -j CT --zone 4098
+-A ls-ct -i br-net1 -j CT --zone 4097
+-A ls-ct -i br-net2 -j CT --zone 4098
+COMMIT

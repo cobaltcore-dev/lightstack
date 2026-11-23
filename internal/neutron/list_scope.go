@@ -31,6 +31,18 @@ import (
 // isAdmin reports whether the caller holds the administrator role.
 func isAdmin(c *gin.Context) bool { return common.HasRole(c, common.RoleAdmin) }
 
+// callerScope is whose request it is: the project it acts in, and whether it is an administrator's, which
+// reaches another project's resource by id (ownerOrAdmin).
+type callerScope struct {
+	project string
+	admin   bool
+}
+
+// scopeOf is the request's caller scope.
+func scopeOf(c *gin.Context) callerScope {
+	return callerScope{project: c.GetString("project_id"), admin: isAdmin(c)}
+}
+
 // projectFilters are the listing's project_id and tenant_id values, merged, as upstream merges them.
 func projectFilters(c *gin.Context) []string {
 	return append(c.QueryArray("project_id"), c.QueryArray("tenant_id")...)

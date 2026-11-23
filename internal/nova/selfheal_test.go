@@ -2,10 +2,13 @@ package nova
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // SPEC-025 US4 / FR-025: starting a server whose guest has vanished must re-create it
@@ -254,6 +257,7 @@ func TestStoredNetworkConfigsRebuildsEachInterface(t *testing.T) {
 		}
 		if got[i].PortID == "" {
 			t.Errorf("interface %d has no port id; the guest's interface could not be matched back to its port", i)
+			continue
 		}
 	}
 }
@@ -292,5 +296,62 @@ func TestStoredNetworkConfigsIgnoresAnotherProjectsPort(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].MACAddress != "52:54:00:aa:cc:01" {
 		t.Errorf("revived guest's interfaces = %+v; want only the server's own port (52:54:00:aa:cc:01)", got)
+	}
+}
+
+// SPEC-033 T173: a revived guest's ports are bound to this node before its
+// domain is made, as a booting guest's are, so their firewall is here when the guest starts; when one
+// cannot be bound, the guest is not revived and the start is refused, as any self-heal that cannot
+// complete (FR-025c).
+func TestSelfHealBindsTheGuestsPorts(t *testing.T) {
+	requireDB(t)
+	cases := []struct {
+		name       string
+		bindErr    error
+		wantCode   int
+		wantStatus string
+	}{
+		{"bound, then revived", nil, http.StatusAccepted, "ACTIVE"},
+		{"not bound, not revived", errors.New("the node could not converge the port's firewall"), http.StatusConflict, "ERROR"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, r, mgr := newLifecycleService(t)
+			fake := &fakeNeutron{bindErr: tc.bindErr}
+			svc.neutronSvc, svc.node = fake, "src5-heal-node"
+			id, domainID := seedLifecycleInstance(t, mgr, "src5-heal-"+uuid.NewString()[:6])
+			withInstanceDisk(t, id)
+
+			network := uuid.NewString()
+			if _, err := testPool.Exec(t.Context(), `INSERT INTO networks (id, name, project_id, status, admin_state_up)
+				 VALUES ($1, 'src5-heal-net', $2, 'ACTIVE', true)`, network, seededProjectID); err != nil {
+				t.Fatalf("seeding network: %v", err)
+			}
+			t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM networks WHERE id = $1`, network) })
+			var port string
+			if err := testPool.QueryRow(t.Context(), `INSERT INTO ports (network_id, project_id, device_id, mac_address, status, admin_state_up)
+				 VALUES ($1, $2, $3, 'fa:16:3e:55:00:01', 'ACTIVE', true) RETURNING id::text`,
+				network, seededProjectID, id).Scan(&port); err != nil {
+				t.Fatalf("seeding port: %v", err)
+			}
+
+			if err := mgr.DeleteVM(t.Context(), domainID); err != nil {
+				t.Fatalf("removing the stub guest: %v", err)
+			}
+			if _, err := testPool.Exec(t.Context(), `UPDATE instances SET status = 'SHUTOFF', power_state = 4 WHERE id = $1`, id); err != nil {
+				t.Fatalf("pre-setting the stopped state: %v", err)
+			}
+
+			code, body := doReq(r, http.MethodPost, "/v2.1/servers/"+id+"/action", `{"os-start": null}`, lifecycleHdr())
+			if code != tc.wantCode {
+				t.Fatalf("os-start: code=%d body=%s; want %d", code, body, tc.wantCode)
+			}
+			if bound := fake.bindings(); len(bound) != 1 || bound[0].port != port || bound[0].node != "src5-heal-node" {
+				t.Errorf("bindings %+v; want port %s bound to this node", bound, port)
+			}
+			if status, _ := readInstanceState(t, id); status != tc.wantStatus {
+				t.Errorf("status %q; want %q", status, tc.wantStatus)
+			}
+		})
 	}
 }

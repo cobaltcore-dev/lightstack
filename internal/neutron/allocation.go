@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -155,7 +156,7 @@ func parsePoolsField(raw json.RawMessage) (pools []ipRange, given bool, refusal 
 		first, err1 := netip.ParseAddr(strings.TrimSpace(item.Start))
 		last, err2 := netip.ParseAddr(strings.TrimSpace(item.End))
 		name := item.Start + "-" + item.End
-		if err1 != nil || err2 != nil || first.Is4() != last.Is4() || first.Compare(last) > 0 {
+		if err1 != nil || err2 != nil || first.Zone() != "" || last.Zone() != "" || first.Is4() != last.Is4() || first.Compare(last) > 0 {
 			return nil, true, errInvalidAllocationPool(name)
 		}
 		pools = append(pools, ipRange{first.Unmap(), last.Unmap()})
@@ -251,24 +252,6 @@ func poolsFor(prefix netip.Prefix, gateway netip.Addr, stored bool, rows []ipRan
 	return rows
 }
 
-// subnetPoolsFor renders a subnet row's pools for a response, reading the stored ones when it has
-// them. A CIDR that does not parse has none.
-func subnetPoolsFor(ctx context.Context, q subnetQuerier, subnetID, cidr string, gateway *string, stored *bool) ([]gin.H, error) {
-	prefix, err := parsePrefix(cidr)
-	if err != nil {
-		return []gin.H{}, nil
-	}
-	var rows []ipRange
-	if stored != nil && *stored {
-		byID, err := storedPools(ctx, q, []string{subnetID})
-		if err != nil {
-			return nil, err
-		}
-		rows = byID[subnetID]
-	}
-	return renderPools(poolsFor(prefix, parseGateway(gateway), stored != nil && *stored, rows)), nil
-}
-
 // storedPools reads the stored pools of the given subnets, keyed by subnet and sorted.
 func storedPools(ctx context.Context, q subnetQuerier, subnetIDs []string) (map[string][]ipRange, error) {
 	out := map[string][]ipRange{}
@@ -319,15 +302,12 @@ func storePools(ctx context.Context, tx database.Tx, subnetID string, pools []ip
 	return nil
 }
 
-// usedAddresses is every address of the subnet that is not free: the gateway, a port's fixed IP on the
-// subnet, and a floating IP's address on the subnet's network (FR-032).
-func usedAddresses(ctx context.Context, q subnetQuerier, s subnetRecord) (map[netip.Addr]bool, error) {
-	used, err := portAddresses(ctx, q, s.network, s.id)
+// heldAddresses is every address of the subnet something holds: a port's fixed IP, a floating IP of the
+// network. A requested address is free when it is none of them (addressRequest.refusal).
+func heldAddresses(ctx context.Context, q subnetQuerier, s subnetRecord) (map[netip.Addr]bool, error) {
+	held, err := portAddresses(ctx, q, s.network, s.id)
 	if err != nil {
 		return nil, err
-	}
-	if s.gateway.IsValid() {
-		used[s.gateway] = true
 	}
 	fips, err := q.Query(ctx, "SELECT floating_ip_address FROM floating_ips WHERE floating_network_id::text = $1", s.network)
 	if err != nil {
@@ -340,10 +320,95 @@ func usedAddresses(ctx context.Context, q subnetQuerier, s subnetRecord) (map[ne
 			return nil, fmt.Errorf("scanning a floating address: %w", err)
 		}
 		if a, err := netip.ParseAddr(address); err == nil && s.prefix.Contains(a.Unmap()) {
-			used[a.Unmap()] = true
+			held[a.Unmap()] = true
 		}
 	}
-	return used, fips.Err()
+	return held, fips.Err()
+}
+
+// usedAddresses is what an automatic allocation leaves out: what something holds, and the subnet's
+// gateway, which upstream's pools leave out.
+func usedAddresses(ctx context.Context, q subnetQuerier, s subnetRecord) (map[netip.Addr]bool, error) {
+	used, err := heldAddresses(ctx, q, s)
+	if err != nil {
+		return nil, err
+	}
+	if s.gateway.IsValid() {
+		used[s.gateway] = true
+	}
+	return used, nil
+}
+
+// refusal is upstream's check of an address requested on a subnet, IPAM's _verify_ip: a host address of
+// the subnet (400 InvalidIpForSubnet, naming the address as requested; a router port may take an IPv6
+// subnet's network address) that nothing but the port's held addresses holds (409
+// IpAddressAlreadyAllocated). A port, a router's gateway, a floating IP and Nova's interface check all
+// pass it (SPEC-033 T198). The subnet's gateway is no exception: only the pools leave it out, and a router
+// interface normally holds it.
+func (a addressRequest) refusal(ctx context.Context, q subnetQuerier, s subnetRecord, addr netip.Addr, requested string) error {
+	if !checkSubnetIP(s.prefix, addr, a.routerPort) {
+		return common.NewNeutronError(http.StatusBadRequest, "InvalidIpForSubnet", (&InvalidIPForSubnetError{IP: requested}).Error())
+	}
+	if a.held.Holds(addr.String()) {
+		return nil
+	}
+	taken, err := heldAddresses(ctx, q, s)
+	if err != nil {
+		return err
+	}
+	if taken[addr] {
+		return common.NewNeutronError(http.StatusConflict, "IpAddressAlreadyAllocated",
+			fmt.Sprintf("IP address %s already allocated in subnet %s", addr, s.id))
+	}
+	return nil
+}
+
+// addressHeldError stops an undo or a restore whose address something took while the node call failed:
+// the later change stays, and the address keeps one holder (SPEC-033 T188).
+type addressHeldError struct{ address string }
+
+func (e addressHeldError) Error() string {
+	return "address " + e.address + " is held since; the later change stays"
+}
+
+// requireAddressesFree takes the allocator's locks on the subnets of network that contain any of
+// addresses, which an undo or a restore is about to put back, and answers addressHeldError when
+// something holds one of them meanwhile: a port or a floating IP (heldAddresses). The caller has taken
+// the floating-IP allocation lock first, as every allocation of a floating address does, so the locks
+// come in the allocator's order.
+func requireAddressesFree(ctx context.Context, tx database.Tx, networkID string, addresses []string) error {
+	subnets, err := networkSubnets(ctx, tx, networkID)
+	if err != nil {
+		return err
+	}
+	for _, s := range subnets {
+		var inside []netip.Addr
+		for _, address := range addresses {
+			if a, err := netip.ParseAddr(address); err == nil && s.prefix.Contains(a.Unmap()) {
+				inside = append(inside, a.Unmap())
+			}
+		}
+		if len(inside) == 0 {
+			continue
+		}
+		if _, err := LockSubnet(ctx, tx, s.id); err != nil {
+			return fmt.Errorf("lock subnet %s: %w", s.id, err)
+		}
+		record, err := readSubnet(ctx, tx, s.id)
+		if err != nil {
+			return err
+		}
+		used, err := heldAddresses(ctx, tx, record)
+		if err != nil {
+			return err
+		}
+		for _, a := range inside {
+			if used[a] {
+				return addressHeldError{a.String()}
+			}
+		}
+	}
+	return nil
 }
 
 // portAddresses is every address of the subnet that a port of its network holds.
@@ -524,24 +589,29 @@ func checkSubnetIP(prefix netip.Prefix, a netip.Addr, routerPort bool) bool {
 	return routerPort || a != network
 }
 
-// IPAvailable reports whether a requested address may be given to a port on the subnet. One that is
-// not a host address of the subnet is an *InvalidIPForSubnetError, as upstream's check_subnet_ip
-// refuses it (FR-053). Otherwise it is available when nothing holds it: not the gateway, a port's fixed
-// IP or a floating IP of the network. It need not lie in a pool (FR-032).
+// IPAvailable reports whether a requested address may be given to a port on the subnet, as
+// addressRequest.refusal decides: false when something holds it, an *InvalidIPForSubnetError when it is
+// not a host address of the subnet (FR-053). It need not lie in a pool (FR-032).
 func IPAvailable(ctx context.Context, q subnetQuerier, subnetID, ip string) (bool, error) {
 	s, err := readSubnet(ctx, q, subnetID)
 	if err != nil {
 		return false, err
 	}
 	a, err := netip.ParseAddr(strings.TrimSpace(ip))
-	if err != nil || !checkSubnetIP(s.prefix, a.Unmap(), false) {
+	if err != nil {
 		return false, &InvalidIPForSubnetError{IP: ip}
 	}
-	used, err := usedAddresses(ctx, q, s)
-	if err != nil {
-		return false, err
+	err = addressRequest{}.refusal(ctx, q, s, a.Unmap(), ip)
+	var refusal *common.OpenStackError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &refusal) && refusal.NeutronType == "IpAddressAlreadyAllocated":
+		return false, nil
+	case errors.As(err, &refusal) && refusal.NeutronType == "InvalidIpForSubnet":
+		return false, &InvalidIPForSubnetError{IP: ip}
 	}
-	return !used[a.Unmap()], nil
+	return false, err
 }
 
 // errSubnetInUse is upstream's SubnetInUse for a subnet a port other than its network's DHCP port has
@@ -551,28 +621,44 @@ func errSubnetInUse(subnetID string) *common.OpenStackError {
 		fmt.Sprintf("Unable to complete operation on subnet %s: One or more ports have an IP allocation from this subnet.", subnetID))
 }
 
-// subnetInUse reports whether a port other than the network's DHCP port has an address on the subnet.
+// subnetInUse reports whether something other than the network's DHCP port holds an address of the
+// subnet: a port, or a floating IP. Lightstack's floating IP is a row of its own, where upstream's is a
+// network:floatingip port that its in-use check counts (SPEC-033 T186).
 func subnetInUse(ctx context.Context, q subnetQuerier, subnetID, networkID string) (bool, error) {
 	rows, err := q.Query(ctx,
 		"SELECT COALESCE(device_owner, ''), fixed_ips FROM ports WHERE network_id::text = $1", networkID)
 	if err != nil {
 		return false, fmt.Errorf("reading the ports of network %s: %w", networkID, err)
 	}
-	defer rows.Close()
-	for rows.Next() {
+	held := false
+	for !held && rows.Next() {
 		var owner string
 		var fixed common.FixedIPs
 		if err := rows.Scan(&owner, &fixed); err != nil {
+			rows.Close()
 			return false, fmt.Errorf("reading a port of network %s: %w", networkID, err)
 		}
-		if owner == "network:dhcp" {
-			continue
-		}
 		for _, entry := range fixed {
-			if entry.SubnetID == subnetID {
-				return true, nil
-			}
+			held = held || (owner != ownerDHCP && entry.SubnetID == subnetID)
 		}
 	}
-	return false, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil || held {
+		return held, err
+	}
+	s, err := readSubnet(ctx, q, subnetID)
+	if err != nil {
+		return false, err
+	}
+	floating, err := queryStrings(ctx, q,
+		"SELECT floating_ip_address FROM floating_ips WHERE floating_network_id::text = $1", networkID)
+	if err != nil {
+		return false, fmt.Errorf("reading the floating IPs of network %s: %w", networkID, err)
+	}
+	for _, address := range floating {
+		if a, err := netip.ParseAddr(address); err == nil && s.prefix.Contains(a.Unmap()) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

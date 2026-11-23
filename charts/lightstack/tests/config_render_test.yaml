@@ -76,6 +76,7 @@ tests:
       database.url: postgres://lightstack@db/lightstack
       realMode.enabled: true
       deploymentMode: multi-node
+      neutron.networkNode: node-a
       glance.storageMode: rbd
       cinder.storageMode: rbd
     asserts:

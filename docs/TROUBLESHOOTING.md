@@ -2,34 +2,32 @@
 
 ## TAP Device and Bridge Networking Issues
 
-### Issue: "setting the network namespace failed: Invalid argument"
+### Issue: routers or DHCP gone after a restart of Lightstack
 
-**Symptom**: VM creation fails with TAP device errors like:
-```
-failed to create TAP device tap-xxx in namespace light-ns-xxx: exit status 255,
-output: setting the network namespace "light-ns-xxx" failed: Invalid argument
-```
+**Symptom**: after the container or pod restarts, `ip netns list` on the network node shows no
+`qrouter-*` or `qdhcp-*`, and north-south traffic stops until the reconciler rebuilds them.
 
-**Root Cause**: When using Docker with host networking mode (`network_mode: host`), network namespaces must be created on the host filesystem, not inside the container. The `/var/run/netns` directory must be shared between host and container.
+**Root Cause**: the namespaces were made inside the container's own `/run/netns`, which went with it.
+Lightstack's namespaces must be the host's.
 
-**Solution**:
-1. Create `/var/run/netns` on the host:
-   ```bash
-   sudo mkdir -p /var/run/netns
-   sudo chmod 755 /var/run/netns
-   ```
+**Solution**: run with the host's `/run/netns` mounted shared both ways. The KVM Compose file mounts
+`/run/netns:/run/netns:rshared`, and the chart mounts it with `mountPropagation: Bidirectional`; nothing
+needs creating by hand, except under Podman, which does not create a missing bind source:
+`sudo mkdir -p /run/netns` once. The host's `/run` must be a shared mount, as systemd makes it
+(`findmnt -o TARGET,PROPAGATION /run`).
 
-2. Mount it in docker-compose.yml:
-   ```yaml
-   lightstack:
-     volumes:
-       - /var/run/netns:/var/run/netns:shared
-   ```
+### Issue: readiness fails with `bridge-netfilter unavailable`
 
-3. Restart the container:
-   ```bash
-   docker compose up -d lightstack
-   ```
+**Symptom**: `/readyz` answers `503 bridge-netfilter unavailable`; the log says which setting does not
+hold.
+
+**Root Cause**: the ports' chains see bridged traffic only with the `br_netfilter` module loaded and
+`net.bridge.bridge-nf-call-iptables` and `-ip6tables` at `1`. Lightstack loads and sets them at start;
+without `/lib/modules` mounted, or on a kernel without the module, it cannot.
+
+**Solution**: mount `/lib/modules` read-only (the chart and the KVM Compose file do), or load the module
+on the host: `sudo modprobe br_netfilter`. Readiness follows the settings, so it recovers without a
+restart once they hold.
 
 ### Issue: "Cannot get interface MTU on 'br-xxx': No such device"
 
@@ -40,22 +38,18 @@ Cannot get interface MTU on 'br-3426f435': No such device
 
 **Root Cause**: Bridges were created inside project network namespaces, but libvirt runs on the host and cannot access namespaced bridges.
 
-**Solution**: TAP devices and bridges are created in the namespace Lightstack itself runs in, for libvirt access. This is the correct architecture:
-- TAP devices, bridges, dnsmasq, VXLAN devices and egress NAT: all in the namespace Lightstack runs in
+**Solution**: bridges are created in the namespace Lightstack itself runs in, for libvirt access. This is
+the correct architecture:
+- Bridges, the guests' TAPs (libvirt's, `tap<port id[:11]>`) and VXLAN devices: all in the namespace
+  Lightstack runs in; no bridge holds an address
 - VMs: connect via those bridges
 - Per-network layer-2 isolation: one bridge per network — not a namespace per project
+- Routers and each network's DHCP live in `qrouter-*` and `qdhcp-*` namespaces on the network node
 - Nothing creates `light-ns-<project>` any more; teardown only reclaims what older deployments left
 
-**Code Change** (already implemented in ports.go and network.go):
-```go
-// Create TAP and bridge where libvirt can reach them
-svc.tapManager.CreateTAPDevice(tapName)
-svc.brManager.CreateBridge(bridgeName)
-```
-
-`TAPDeviceManager`, `BridgeManager` and `VXLANManager.AttachToBridge` take **no namespace argument** —
-the in-namespace variants were removed once their last callers went away, so these devices can only be
-placed beside each other. Router namespaces (`qrouter-*`) are separate and still in use.
+`BridgeManager` and `VXLANManager.AttachToBridge` take **no namespace argument** — the in-namespace
+variants were removed once their last callers went away, so these devices can only be placed beside
+each other.
 
 ### Issue: "Failed to get write lock: Is another process using the image"
 
@@ -144,15 +138,19 @@ sudo virsh list --all
 # Check bridges
 sudo brctl show
 
-# Check TAP devices
-sudo ip link show | grep tap-
+# Check the guests' TAP devices (libvirt's, tap<port id[:11]>)
+sudo ip link show | grep tap
 
 # Check interfaces in bridge
 sudo brctl show br-3426f435
 
-# Check namespace (if using namespaces)
+# Check the routers' and networks' DHCP namespaces (on the network node)
 sudo ip netns list
-sudo ip netns exec light-ns-xxx ip link show
+sudo ip netns exec qrouter-<router id> ip addr show
+sudo ip netns exec qdhcp-<network id> ip addr show
+
+# Check a port's chains (on the node its guest runs on)
+sudo iptables -S | grep -- 'ls-[ios]'
 ```
 
 ### Check Lightstack Logs
@@ -198,8 +196,8 @@ docker logs lightstack 2>&1 | grep DEBUG
    # Image directory
    ls -la /var/lib/lightstack/images/
    
-   # netns directory
-   ls -la /var/run/netns/
+   # the host's namespaces, as Lightstack sees them
+   ls -la /run/netns/
    ```
 
 4. **Review recent changes**:

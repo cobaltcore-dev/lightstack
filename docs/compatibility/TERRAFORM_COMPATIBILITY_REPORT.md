@@ -114,7 +114,9 @@ each") proved optimistic: neither value was persisted, so the fix also persists 
 `key_name` via migration `063` (`instances.key_name`), security groups via `server_security_groups`
 — validates them synchronously (unknown keypair / non-default group → `400`, matching Nova v2.1),
 ensures the project `default` group on demand, and defaults `security_groups` to
-`[{"name":"default"}]`. A repeated `terraform plan` is now a no-op — confirmed on a host run
+`[{"name":"default"}]`. (Since SPEC-033 the groups are the server's ports', `server_security_groups` is
+retired, and a server reports the groups its ports carry; a boot without groups still gives its ports
+`default`, FR-011.) A repeated `terraform plan` is now a no-op — confirmed on a host run
 (2026-07-21, all-stub mode, unmodified provider 3.4.0): `apply` → `plan -detailed-exitcode` **0** →
 `destroy`. Covered by DB-backed unit tests in `internal/nova` that assert both fields on show +
 list-detail and run in CI. Real mode is not covered by that run.

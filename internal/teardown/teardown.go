@@ -5,9 +5,9 @@
 // It removes everything Lightstack generated on the node and leaves the database to its
 // operator (the DB is read to enumerate what to purge, but never reset). Order:
 //   - compute: destroy + undefine the release's libvirt domains
-//   - network: remove all host network state (egress SNAT, floating-IP DNAT + the
-//     /32 on the uplink, security-group filters, metadata DNAT, dnsmasq, bridges,
-//     namespaces) — delegated to neutron.PurgeRealModeNetworkState
+//   - network: remove all host network state (the port firewall, the routers' and the
+//     networks' DHCP namespaces with their dnsmasq, proxy entries and host routes,
+//     bridges, and what earlier layouts left) — delegated to neutron.PurgeRealModeNetworkState
 //   - storage: remove every node-local tree under /var/lib/lightstack (images, volumes,
 //     instances [VM disks], cloud-init ISOs, dhcp)
 //
@@ -15,7 +15,7 @@
 // but fail-closed overall: it returns an error if any required class could not be
 // purged, so the blocking hook fails and uninstall halts (FR-001/016). An
 // unreachable database is ignored, not fatal (C9): host state is then purged
-// best-effort (storage trees + a netns prefix scan). It runs in the existing single
+// best-effort (storage trees + what the network fallback recognises by name). It runs in the existing single
 // binary as `lightstack cleanup` (FR-010), is Kubernetes-API-free (research R1), and is
 // stub-safe (Constitution IV). Networked backends (RBD/S3) and the global
 // net.ipv4.ip_forward sysctl are deliberately left alone (operator-owned / host-wide).
@@ -26,7 +26,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -54,12 +53,12 @@ type Inventory struct {
 
 // deps are the side-effecting operations execute() drives. They are function fields,
 // not concrete managers, for two reasons: purgeNetwork has two real implementations
-// (neutron.PurgeRealModeNetworkState when the DB is reachable; the netns-prefix
+// (neutron.PurgeRealModeNetworkState when the DB is reachable; the by-name
 // fallback when it is not, C9), and tests replace all three with fakes so execute()
 // runs without libvirt/netlink/DB (the deliberate test seam, Constitution IV).
 type deps struct {
 	deleteDomain func(ctx context.Context, id string) error
-	purgeNetwork func() error // remove all host network state (DB-driven, or netns-prefix fallback)
+	purgeNetwork func() error // remove all host network state (DB-driven, or the by-name fallback)
 	purgeStorage func() error // RemoveAll the node-local /var/lib/lightstack trees (never RBD/S3 — C4/FR-015)
 	// purgeDatabase RemoveAll's the node-local SQLite db/ directory. execute() calls it ONLY
 	// after every other class purged cleanly, so a failed teardown leaves the database — the
@@ -98,12 +97,11 @@ func Run(ctx context.Context, cfg *common.Config, opts Options) error {
 	dbReachable := false
 	if pool, connErr := database.Open(ctx, cfg.Database.URL, database.Options{MustExist: true}); connErr != nil {
 		log.Warn().Err(connErr).Msg("teardown: database unreachable — ignoring it (operator-owned); host cleanup is best-effort (C9)")
-		nsMgr := networking.NewNetworkNamespaceManager(netMode)
-		routerMgr := networking.NewRouterManager(netMode)
-		d.purgeNetwork = func() error { return purgeNamespacesByPrefix(nsMgr, routerMgr) }
+		fallback := nodePrefixPurge(netMode)
+		d.purgeNetwork = func() error { return fallback.run(ctx) }
 		// DomainIDs stay empty: without the DB we can't enumerate domains, so compute
 		// (libvirt domains) is NOT purged on this path — they are left for the operator
-		// (C9, accepted limitation). Storage trees + a netns-prefix scan still run.
+		// (C9, accepted limitation). Storage trees + the by-name network fallback still run.
 	} else {
 		dbReachable = true
 		// execute() closes this before the storage purge so the SQLite db/ directory can be
@@ -316,46 +314,78 @@ func enumerateDomainIDs(ctx context.Context, pool database.DB) ([]string, error)
 	return ids, rows.Err()
 }
 
-// purgeNamespacesByPrefix is the DB-unreachable network fallback (C9): it deletes
-// Lightstack network namespaces by their well-known prefixes. Host bridges and iptables
-// can't be precisely enumerated without the DB and are left for the operator (logged).
-func purgeNamespacesByPrefix(nsMgr *networking.NetworkNamespaceManager, routerMgr *networking.RouterManager) error {
-	out, err := exec.Command("ip", "netns", "list").Output()
-	if err != nil {
-		// Can't enumerate host namespaces → can't run the fallback; fail the network
-		// class (fail-closed) rather than silently report a clean purge.
-		return fmt.Errorf("namespace fallback: ip netns list: %w", err)
+// prefixPurge is the DB-unreachable network fallback (C9, SPEC-033 research R48): it removes what it
+// recognises by name alone, and nothing else — the namespaces the managers hold, named light-ns-,
+// qrouter- or qdhcp- and a lower-case UUID, as the reconciler recognises them (SPEC-033 T222).
+// An older deployment's project namespace is deleted; a router's or a network's DHCP namespace is
+// converged to absent with what hangs off it on the host — the router's proxy entries and routes, the
+// DHCP's dnsmasq; then the node's whole port firewall goes. Host bridges cannot be told from others
+// without the database and are left for the operator (logged).
+type prefixPurge struct {
+	uplink  string
+	routers interface {
+		HeldRouters(ctx context.Context) ([]string, error)
+		ConvergeRouter(ctx context.Context, routerID string, state *networking.RouterState, uplink string) error
 	}
-	failures := 0
-	for _, n := range parseNetnsList(string(out)) {
-		switch {
-		case strings.HasPrefix(n, "light-ns-"):
-			if err := nsMgr.DeleteNamespace(strings.TrimPrefix(n, "light-ns-")); err != nil {
-				failures++
-				log.Warn().Err(err).Str("ns", n).Msg("teardown: delete namespace (fallback)")
-			}
-		case strings.HasPrefix(n, "qrouter-"):
-			if err := routerMgr.DeleteRouterNamespace(strings.TrimPrefix(n, "qrouter-")); err != nil {
-				failures++
-				log.Warn().Err(err).Str("ns", n).Msg("teardown: delete router namespace (fallback)")
-			}
-		}
+	dhcp interface {
+		HeldNetworks(ctx context.Context) ([]string, error)
+		ConvergeDHCP(ctx context.Context, networkID string, state *networking.DHCPState) error
 	}
-	log.Warn().Msg("teardown: DB-unreachable fallback purged namespaces by prefix; host bridges + iptables not enumerable without the DB")
-	if failures > 0 {
-		return fmt.Errorf("namespace fallback: %d delete(s) failed", failures)
+	projects interface {
+		HeldProjects(ctx context.Context) ([]string, error)
+		DeleteNamespace(ctx context.Context, projectID string) error
 	}
-	return nil
+	firewall interface {
+		RemoveAll(ctx context.Context) error
+	}
 }
 
-// parseNetnsList extracts namespace names from `ip netns list` output (each line is
-// "<name>" or "<name> (id: N)").
-func parseNetnsList(out string) []string {
-	var names []string
-	for line := range strings.SplitSeq(out, "\n") {
-		if f := strings.Fields(line); len(f) > 0 {
-			names = append(names, f[0])
+// nodePrefixPurge wires the fallback to the node.
+func nodePrefixPurge(netMode string) prefixPurge {
+	uplink, err := networking.DefaultUplinkInterface()
+	if err != nil {
+		log.Warn().Err(err).Msg("teardown: no uplink detected — the routers' proxy entries stay (fallback)")
+	}
+	return prefixPurge{
+		uplink:   uplink,
+		routers:  networking.NewRouterManager(netMode),
+		dhcp:     networking.NewDHCPManager(netMode),
+		projects: networking.NewNetworkNamespaceManager(netMode),
+		firewall: networking.NewFirewallManager(netMode),
+	}
+}
+
+// run removes every namespace it recognises, then the port firewall. Each removal is independent: a
+// failure fails the purge (fail-closed) and the rest still go.
+func (p prefixPurge) run(ctx context.Context) error {
+	failures := 0
+	fail := func(err error, what, name string) {
+		if err != nil {
+			failures++
+			log.Warn().Err(err).Str("name", name).Msg("teardown: " + what + " (fallback)")
 		}
 	}
-	return names
+	// A listing that fails cannot be removed from; it fails the network class (fail-closed) rather
+	// than report a clean purge, and the rest still goes.
+	projects, err := p.projects.HeldProjects(ctx)
+	fail(err, "list the project namespaces", "")
+	for _, id := range projects {
+		fail(p.projects.DeleteNamespace(ctx, id), "delete a project namespace", id)
+	}
+	routers, err := p.routers.HeldRouters(ctx)
+	fail(err, "list the routers' namespaces", "")
+	for _, id := range routers {
+		fail(p.routers.ConvergeRouter(ctx, id, nil, p.uplink), "remove a router", id)
+	}
+	networks, err := p.dhcp.HeldNetworks(ctx)
+	fail(err, "list the networks' DHCP namespaces", "")
+	for _, id := range networks {
+		fail(p.dhcp.ConvergeDHCP(ctx, id, nil), "remove a network's DHCP", id)
+	}
+	fail(p.firewall.RemoveAll(ctx), "remove the port firewall", "")
+	log.Warn().Msg("teardown: DB-unreachable fallback purged by name; host bridges are not enumerable without the DB")
+	if failures > 0 {
+		return fmt.Errorf("network fallback: %d removal(s) failed", failures)
+	}
+	return nil
 }

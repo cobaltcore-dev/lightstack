@@ -279,7 +279,8 @@ func TestSubnetAllocationPools(t *testing.T) {
 
 	t.Run("an update replaces the pools; ports keep their addresses; the next comes from the new pools", func(t *testing.T) {
 		pre := p.prefix()
-		id, network := p.mustCreate(t, pre, fmt.Sprintf(`,"allocation_pools":[{"start":"%[1]s.10","end":"%[1]s.10"}]`, pre))
+		// Without DHCP: a DHCP port would take the pool's only address, as upstream's does.
+		id, network := p.mustCreate(t, pre, fmt.Sprintf(`,"enable_dhcp":false,"allocation_pools":[{"start":"%[1]s.10","end":"%[1]s.10"}]`, pre))
 		first := createPortAddress(t, p.r, p.hdr, network)
 		if first != pre+".10" {
 			t.Fatalf("the first port got %s; want %s.10, the pool's only address", first, pre)

@@ -182,3 +182,27 @@ func TestDatabaseCheck_Name(t *testing.T) {
 		t.Fatalf("DatabaseCheck(nil).Name = %q, want database", got)
 	}
 }
+
+// SPEC-033 round 2, T150 (FR-046; research R35): the node's bridge netfilter, a second check beside the
+// database's, gates readiness like it: failing, /readyz answers 503 naming it; holding again, it is ready.
+func TestBridgeNetfilterCheck_GatesReadiness(t *testing.T) {
+	holds := false
+	c := startedChecker(okCheck("database"), Check{Name: "bridge-netfilter", Probe: func(context.Context) error {
+		if holds {
+			return nil
+		}
+		return errors.New("br_netfilter is not loaded")
+	}})
+
+	w := doReq(c, http.MethodGet, "/readyz")
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "bridge-netfilter") {
+		t.Fatalf("/readyz = %d %q; want 503 naming bridge-netfilter", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "br_netfilter is not loaded") {
+		t.Errorf("/readyz = %q; the reason names the check, never its error text", w.Body.String())
+	}
+	holds = true
+	if w := doReq(c, http.MethodGet, "/readyz"); w.Code != http.StatusOK {
+		t.Errorf("/readyz = %d %q; want 200 once the settings hold", w.Code, w.Body.String())
+	}
+}

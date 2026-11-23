@@ -162,30 +162,7 @@ func createNetworkWithSubnet(t *testing.T, token, name, cidr string) string {
 // createNamedServerOnNetwork boots a server attached to a network.
 func createNamedServerOnNetwork(t *testing.T, token, name, networkID string) string {
 	t.Helper()
-	image := firstImageID(t, token)
-	body := `{"server":{"name":"` + name + `","flavorRef":"m1.small","imageRef":"` + image +
-		`","networks":[{"uuid":"` + networkID + `"}]}}`
-
-	code, resp := createServerRaw(t, token, body)
-	require.Contains(t, []int{http.StatusAccepted, http.StatusCreated, http.StatusOK}, code,
-		"creating a server on %s: %s", networkID, resp)
-
-	var out struct {
-		Server struct {
-			ID string `json:"id"`
-		} `json:"server"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(resp), &out))
-	require.NotEmpty(t, out.Server.ID)
-
-	t.Cleanup(func() {
-		req, _ := http.NewRequest(http.MethodDelete, novaRootURL(t)+"/v2.1/servers/"+out.Server.ID, nil)
-		req.Header.Set("X-Auth-Token", token)
-		if r, err := http.DefaultClient.Do(req); err == nil {
-			_ = r.Body.Close()
-		}
-	})
-	return out.Server.ID
+	return createServer(t, token, name, `,"networks":[{"uuid":"`+networkID+`"}]`)
 }
 
 // awaitAddresses polls a server's address map until it is populated, because the boot

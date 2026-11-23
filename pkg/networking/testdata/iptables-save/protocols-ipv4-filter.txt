@@ -1,0 +1,305 @@
+# iptables v1.8.13 (nf_tables), captured by TestCaptureIPTablesSave
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:ls-bound-in - [0:0]
+:ls-bound-out - [0:0]
+:ls-filter-top - [0:0]
+:ls-iffffffff-6 - [0:0]
+:ls-local - [0:0]
+:ls-offffffff-6 - [0:0]
+:ls-sffffffff-6 - [0:0]
+:ls-sg-chain - [0:0]
+:ls-sg-fallback - [0:0]
+-A INPUT -j ls-filter-top
+-A FORWARD -j ls-filter-top
+-A ls-bound-in -m physdev --physdev-in tapffffffff-66 -j RETURN
+-A ls-bound-in -j DROP
+-A ls-bound-out -m physdev --physdev-out tapffffffff-66 -j RETURN
+-A ls-bound-out -j DROP
+-A ls-filter-top -j ls-local
+-A ls-iffffffff-6 -d 10.0.0.10/32 -p udp -m udp --sport 67 --dport 68 -j RETURN
+-A ls-iffffffff-6 -d 255.255.255.255/32 -p udp -m udp --sport 67 --dport 68 -j RETURN
+-A ls-iffffffff-6 -m state --state RELATED,ESTABLISHED -j RETURN
+-A ls-iffffffff-6 -j RETURN
+-A ls-iffffffff-6 -p 10 -j RETURN
+-A ls-iffffffff-6 -p 100 -j RETURN
+-A ls-iffffffff-6 -p 101 -j RETURN
+-A ls-iffffffff-6 -p 102 -j RETURN
+-A ls-iffffffff-6 -p 103 -j RETURN
+-A ls-iffffffff-6 -p 104 -j RETURN
+-A ls-iffffffff-6 -p 105 -j RETURN
+-A ls-iffffffff-6 -p 106 -j RETURN
+-A ls-iffffffff-6 -p 107 -j RETURN
+-A ls-iffffffff-6 -p 109 -j RETURN
+-A ls-iffffffff-6 -p 11 -j RETURN
+-A ls-iffffffff-6 -p 110 -j RETURN
+-A ls-iffffffff-6 -p 111 -j RETURN
+-A ls-iffffffff-6 -p 112 -j RETURN
+-A ls-iffffffff-6 -p 113 -j RETURN
+-A ls-iffffffff-6 -p 114 -j RETURN
+-A ls-iffffffff-6 -p 115 -j RETURN
+-A ls-iffffffff-6 -p 116 -j RETURN
+-A ls-iffffffff-6 -p 117 -j RETURN
+-A ls-iffffffff-6 -p 118 -j RETURN
+-A ls-iffffffff-6 -p 119 -j RETURN
+-A ls-iffffffff-6 -p 12 -j RETURN
+-A ls-iffffffff-6 -p 120 -j RETURN
+-A ls-iffffffff-6 -p 121 -j RETURN
+-A ls-iffffffff-6 -p 122 -j RETURN
+-A ls-iffffffff-6 -p 123 -j RETURN
+-A ls-iffffffff-6 -p 124 -j RETURN
+-A ls-iffffffff-6 -p 125 -j RETURN
+-A ls-iffffffff-6 -p 126 -j RETURN
+-A ls-iffffffff-6 -p 127 -j RETURN
+-A ls-iffffffff-6 -p 128 -j RETURN
+-A ls-iffffffff-6 -p 129 -j RETURN
+-A ls-iffffffff-6 -p 13 -j RETURN
+-A ls-iffffffff-6 -p 130 -j RETURN
+-A ls-iffffffff-6 -p 131 -j RETURN
+-A ls-iffffffff-6 -p 133 -j RETURN
+-A ls-iffffffff-6 -p 134 -j RETURN
+-A ls-iffffffff-6 -p 137 -j RETURN
+-A ls-iffffffff-6 -p 138 -j RETURN
+-A ls-iffffffff-6 -p 139 -j RETURN
+-A ls-iffffffff-6 -p 14 -j RETURN
+-A ls-iffffffff-6 -p 140 -j RETURN
+-A ls-iffffffff-6 -p 141 -j RETURN
+-A ls-iffffffff-6 -p 142 -j RETURN
+-A ls-iffffffff-6 -p 143 -j RETURN
+-A ls-iffffffff-6 -p 144 -j RETURN
+-A ls-iffffffff-6 -p 145 -j RETURN
+-A ls-iffffffff-6 -p 146 -j RETURN
+-A ls-iffffffff-6 -p 147 -j RETURN
+-A ls-iffffffff-6 -p 148 -j RETURN
+-A ls-iffffffff-6 -p 149 -j RETURN
+-A ls-iffffffff-6 -p 15 -j RETURN
+-A ls-iffffffff-6 -p 150 -j RETURN
+-A ls-iffffffff-6 -p 151 -j RETURN
+-A ls-iffffffff-6 -p 152 -j RETURN
+-A ls-iffffffff-6 -p 153 -j RETURN
+-A ls-iffffffff-6 -p 154 -j RETURN
+-A ls-iffffffff-6 -p 155 -j RETURN
+-A ls-iffffffff-6 -p 156 -j RETURN
+-A ls-iffffffff-6 -p 157 -j RETURN
+-A ls-iffffffff-6 -p 158 -j RETURN
+-A ls-iffffffff-6 -p 159 -j RETURN
+-A ls-iffffffff-6 -p 16 -j RETURN
+-A ls-iffffffff-6 -p 160 -j RETURN
+-A ls-iffffffff-6 -p 161 -j RETURN
+-A ls-iffffffff-6 -p 162 -j RETURN
+-A ls-iffffffff-6 -p 163 -j RETURN
+-A ls-iffffffff-6 -p 164 -j RETURN
+-A ls-iffffffff-6 -p 165 -j RETURN
+-A ls-iffffffff-6 -p 166 -j RETURN
+-A ls-iffffffff-6 -p 167 -j RETURN
+-A ls-iffffffff-6 -p 168 -j RETURN
+-A ls-iffffffff-6 -p 169 -j RETURN
+-A ls-iffffffff-6 -p 170 -j RETURN
+-A ls-iffffffff-6 -p 171 -j RETURN
+-A ls-iffffffff-6 -p 172 -j RETURN
+-A ls-iffffffff-6 -p 173 -j RETURN
+-A ls-iffffffff-6 -p 174 -j RETURN
+-A ls-iffffffff-6 -p 175 -j RETURN
+-A ls-iffffffff-6 -p 176 -j RETURN
+-A ls-iffffffff-6 -p 177 -j RETURN
+-A ls-iffffffff-6 -p 178 -j RETURN
+-A ls-iffffffff-6 -p 179 -j RETURN
+-A ls-iffffffff-6 -p 18 -j RETURN
+-A ls-iffffffff-6 -p 180 -j RETURN
+-A ls-iffffffff-6 -p 181 -j RETURN
+-A ls-iffffffff-6 -p 182 -j RETURN
+-A ls-iffffffff-6 -p 183 -j RETURN
+-A ls-iffffffff-6 -p 184 -j RETURN
+-A ls-iffffffff-6 -p 185 -j RETURN
+-A ls-iffffffff-6 -p 186 -j RETURN
+-A ls-iffffffff-6 -p 187 -j RETURN
+-A ls-iffffffff-6 -p 188 -j RETURN
+-A ls-iffffffff-6 -p 189 -j RETURN
+-A ls-iffffffff-6 -p 19 -j RETURN
+-A ls-iffffffff-6 -p 190 -j RETURN
+-A ls-iffffffff-6 -p 191 -j RETURN
+-A ls-iffffffff-6 -p 192 -j RETURN
+-A ls-iffffffff-6 -p 193 -j RETURN
+-A ls-iffffffff-6 -p 194 -j RETURN
+-A ls-iffffffff-6 -p 195 -j RETURN
+-A ls-iffffffff-6 -p 196 -j RETURN
+-A ls-iffffffff-6 -p 197 -j RETURN
+-A ls-iffffffff-6 -p 198 -j RETURN
+-A ls-iffffffff-6 -p 199 -j RETURN
+-A ls-iffffffff-6 -p 2 -j RETURN
+-A ls-iffffffff-6 -p 20 -j RETURN
+-A ls-iffffffff-6 -p 200 -j RETURN
+-A ls-iffffffff-6 -p 201 -j RETURN
+-A ls-iffffffff-6 -p 202 -j RETURN
+-A ls-iffffffff-6 -p 203 -j RETURN
+-A ls-iffffffff-6 -p 204 -j RETURN
+-A ls-iffffffff-6 -p 205 -j RETURN
+-A ls-iffffffff-6 -p 206 -j RETURN
+-A ls-iffffffff-6 -p 207 -j RETURN
+-A ls-iffffffff-6 -p 208 -j RETURN
+-A ls-iffffffff-6 -p 209 -j RETURN
+-A ls-iffffffff-6 -p 21 -j RETURN
+-A ls-iffffffff-6 -p 210 -j RETURN
+-A ls-iffffffff-6 -p 211 -j RETURN
+-A ls-iffffffff-6 -p 212 -j RETURN
+-A ls-iffffffff-6 -p 213 -j RETURN
+-A ls-iffffffff-6 -p 214 -j RETURN
+-A ls-iffffffff-6 -p 215 -j RETURN
+-A ls-iffffffff-6 -p 216 -j RETURN
+-A ls-iffffffff-6 -p 217 -j RETURN
+-A ls-iffffffff-6 -p 218 -j RETURN
+-A ls-iffffffff-6 -p 219 -j RETURN
+-A ls-iffffffff-6 -p 22 -j RETURN
+-A ls-iffffffff-6 -p 220 -j RETURN
+-A ls-iffffffff-6 -p 221 -j RETURN
+-A ls-iffffffff-6 -p 222 -j RETURN
+-A ls-iffffffff-6 -p 223 -j RETURN
+-A ls-iffffffff-6 -p 224 -j RETURN
+-A ls-iffffffff-6 -p 225 -j RETURN
+-A ls-iffffffff-6 -p 226 -j RETURN
+-A ls-iffffffff-6 -p 227 -j RETURN
+-A ls-iffffffff-6 -p 228 -j RETURN
+-A ls-iffffffff-6 -p 229 -j RETURN
+-A ls-iffffffff-6 -p 23 -j RETURN
+-A ls-iffffffff-6 -p 230 -j RETURN
+-A ls-iffffffff-6 -p 231 -j RETURN
+-A ls-iffffffff-6 -p 232 -j RETURN
+-A ls-iffffffff-6 -p 233 -j RETURN
+-A ls-iffffffff-6 -p 234 -j RETURN
+-A ls-iffffffff-6 -p 235 -j RETURN
+-A ls-iffffffff-6 -p 236 -j RETURN
+-A ls-iffffffff-6 -p 237 -j RETURN
+-A ls-iffffffff-6 -p 238 -j RETURN
+-A ls-iffffffff-6 -p 239 -j RETURN
+-A ls-iffffffff-6 -p 24 -j RETURN
+-A ls-iffffffff-6 -p 240 -j RETURN
+-A ls-iffffffff-6 -p 241 -j RETURN
+-A ls-iffffffff-6 -p 242 -j RETURN
+-A ls-iffffffff-6 -p 243 -j RETURN
+-A ls-iffffffff-6 -p 244 -j RETURN
+-A ls-iffffffff-6 -p 245 -j RETURN
+-A ls-iffffffff-6 -p 246 -j RETURN
+-A ls-iffffffff-6 -p 247 -j RETURN
+-A ls-iffffffff-6 -p 248 -j RETURN
+-A ls-iffffffff-6 -p 249 -j RETURN
+-A ls-iffffffff-6 -p 25 -j RETURN
+-A ls-iffffffff-6 -p 250 -j RETURN
+-A ls-iffffffff-6 -p 251 -j RETURN
+-A ls-iffffffff-6 -p 252 -j RETURN
+-A ls-iffffffff-6 -p 253 -j RETURN
+-A ls-iffffffff-6 -p 254 -j RETURN
+-A ls-iffffffff-6 -p 255 -j RETURN
+-A ls-iffffffff-6 -p 26 -j RETURN
+-A ls-iffffffff-6 -p 27 -j RETURN
+-A ls-iffffffff-6 -p 28 -j RETURN
+-A ls-iffffffff-6 -p 29 -j RETURN
+-A ls-iffffffff-6 -p 3 -j RETURN
+-A ls-iffffffff-6 -p 30 -j RETURN
+-A ls-iffffffff-6 -p 31 -j RETURN
+-A ls-iffffffff-6 -p 32 -j RETURN
+-A ls-iffffffff-6 -p 34 -j RETURN
+-A ls-iffffffff-6 -p 35 -j RETURN
+-A ls-iffffffff-6 -p 36 -j RETURN
+-A ls-iffffffff-6 -p 37 -j RETURN
+-A ls-iffffffff-6 -p 38 -j RETURN
+-A ls-iffffffff-6 -p 39 -j RETURN
+-A ls-iffffffff-6 -p 4 -j RETURN
+-A ls-iffffffff-6 -p 40 -j RETURN
+-A ls-iffffffff-6 -p 41 -j RETURN
+-A ls-iffffffff-6 -p 42 -j RETURN
+-A ls-iffffffff-6 -p 43 -j RETURN
+-A ls-iffffffff-6 -p 44 -j RETURN
+-A ls-iffffffff-6 -p 45 -j RETURN
+-A ls-iffffffff-6 -p 46 -j RETURN
+-A ls-iffffffff-6 -p 47 -j RETURN
+-A ls-iffffffff-6 -p 48 -j RETURN
+-A ls-iffffffff-6 -p 49 -j RETURN
+-A ls-iffffffff-6 -p 5 -j RETURN
+-A ls-iffffffff-6 -p 52 -j RETURN
+-A ls-iffffffff-6 -p 53 -j RETURN
+-A ls-iffffffff-6 -p 54 -j RETURN
+-A ls-iffffffff-6 -p 55 -j RETURN
+-A ls-iffffffff-6 -p 56 -j RETURN
+-A ls-iffffffff-6 -p 57 -j RETURN
+-A ls-iffffffff-6 -p 59 -j RETURN
+-A ls-iffffffff-6 -p 60 -j RETURN
+-A ls-iffffffff-6 -p 61 -j RETURN
+-A ls-iffffffff-6 -p 62 -j RETURN
+-A ls-iffffffff-6 -p 63 -j RETURN
+-A ls-iffffffff-6 -p 64 -j RETURN
+-A ls-iffffffff-6 -p 65 -j RETURN
+-A ls-iffffffff-6 -p 66 -j RETURN
+-A ls-iffffffff-6 -p 67 -j RETURN
+-A ls-iffffffff-6 -p 68 -j RETURN
+-A ls-iffffffff-6 -p 69 -j RETURN
+-A ls-iffffffff-6 -p 7 -j RETURN
+-A ls-iffffffff-6 -p 70 -j RETURN
+-A ls-iffffffff-6 -p 71 -j RETURN
+-A ls-iffffffff-6 -p 72 -j RETURN
+-A ls-iffffffff-6 -p 73 -j RETURN
+-A ls-iffffffff-6 -p 74 -j RETURN
+-A ls-iffffffff-6 -p 75 -j RETURN
+-A ls-iffffffff-6 -p 76 -j RETURN
+-A ls-iffffffff-6 -p 77 -j RETURN
+-A ls-iffffffff-6 -p 78 -j RETURN
+-A ls-iffffffff-6 -p 79 -j RETURN
+-A ls-iffffffff-6 -p 8 -j RETURN
+-A ls-iffffffff-6 -p 80 -j RETURN
+-A ls-iffffffff-6 -p 81 -j RETURN
+-A ls-iffffffff-6 -p 82 -j RETURN
+-A ls-iffffffff-6 -p 83 -j RETURN
+-A ls-iffffffff-6 -p 84 -j RETURN
+-A ls-iffffffff-6 -p 85 -j RETURN
+-A ls-iffffffff-6 -p 86 -j RETURN
+-A ls-iffffffff-6 -p 87 -j RETURN
+-A ls-iffffffff-6 -p 88 -j RETURN
+-A ls-iffffffff-6 -p 89 -j RETURN
+-A ls-iffffffff-6 -p 9 -j RETURN
+-A ls-iffffffff-6 -p 90 -j RETURN
+-A ls-iffffffff-6 -p 91 -j RETURN
+-A ls-iffffffff-6 -p 92 -j RETURN
+-A ls-iffffffff-6 -p 93 -j RETURN
+-A ls-iffffffff-6 -p 94 -j RETURN
+-A ls-iffffffff-6 -p 95 -j RETURN
+-A ls-iffffffff-6 -p 96 -j RETURN
+-A ls-iffffffff-6 -p 97 -j RETURN
+-A ls-iffffffff-6 -p 98 -j RETURN
+-A ls-iffffffff-6 -p 99 -j RETURN
+-A ls-iffffffff-6 -p ah -j RETURN
+-A ls-iffffffff-6 -p dccp -j RETURN
+-A ls-iffffffff-6 -p esp -j RETURN
+-A ls-iffffffff-6 -p icmp -j RETURN
+-A ls-iffffffff-6 -p ipcomp -j RETURN
+-A ls-iffffffff-6 -p ipv6-icmp -j RETURN
+-A ls-iffffffff-6 -p mobility-header -j RETURN
+-A ls-iffffffff-6 -p sctp -j RETURN
+-A ls-iffffffff-6 -p tcp -j RETURN
+-A ls-iffffffff-6 -p udp -j RETURN
+-A ls-iffffffff-6 -p udplite -j RETURN
+-A ls-iffffffff-6 -m state --state INVALID -j DROP
+-A ls-iffffffff-6 -j ls-sg-fallback
+-A ls-local -i br-net1 -m physdev --physdev-in tap+ -j ls-bound-in
+-A ls-local -o br-net1 -m physdev --physdev-out tap+ --physdev-is-bridged -j ls-bound-out
+-A ls-local -m physdev --physdev-out tapffffffff-66 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapffffffff-66 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapffffffff-66 -j ls-offffffff-6
+-A ls-local -m physdev --physdev-out lr+ --physdev-is-bridged -j ACCEPT
+-A ls-local -m physdev --physdev-in lr+ --physdev-is-bridged -j ACCEPT
+-A ls-local -m physdev --physdev-out ld+ --physdev-is-bridged -j ACCEPT
+-A ls-local -m physdev --physdev-in ld+ --physdev-is-bridged -j ACCEPT
+-A ls-offffffff-6 -s 0.0.0.0/32 -d 255.255.255.255/32 -p udp -m udp --sport 68 --dport 67 -j RETURN
+-A ls-offffffff-6 -j ls-sffffffff-6
+-A ls-offffffff-6 -p udp -m udp --sport 68 --dport 67 -j RETURN
+-A ls-offffffff-6 -p udp -m udp --sport 67 --dport 68 -j DROP
+-A ls-offffffff-6 -m state --state RELATED,ESTABLISHED -j RETURN
+-A ls-offffffff-6 -m state --state INVALID -j DROP
+-A ls-offffffff-6 -j ls-sg-fallback
+-A ls-sffffffff-6 -s 10.0.0.10/32 -m mac --mac-source fa:16:3e:ff:00:06 -j RETURN
+-A ls-sffffffff-6 -j DROP
+-A ls-sg-chain -m physdev --physdev-out tapffffffff-66 --physdev-is-bridged -j ls-iffffffff-6
+-A ls-sg-chain -m physdev --physdev-in tapffffffff-66 --physdev-is-bridged -j ls-offffffff-6
+-A ls-sg-chain -j ACCEPT
+-A ls-sg-fallback -j DROP
+COMMIT

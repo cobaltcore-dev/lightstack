@@ -8,9 +8,10 @@ one chart.
 > boot/login, metadata + cloud-init, networking surviving restarts, north-south (egress,
 > floating IPs, security groups), and block storage all work end-to-end on Linux +
 > libvirt — see `docs/specs/009-single-node-real-mode/HOST-TESTING.md`. **Multi-node**
-> (cross-node traffic) and routing a floating-IP **pool** to a *hosting* node remain the
-> v2 ticket ([issue #52](https://github.com/cobaltcore-dev/lightstack/issues/52) Part B). Stub
-> mode (plus optional TLS) remains the zero-dependency default.
+> (cross-node traffic) remains the v2 ticket
+> ([issue #52](https://github.com/cobaltcore-dev/lightstack/issues/52) Part B); floating IPs go
+> to the network node (see [Floating IPs](#floating-ips-real-mode)). Stub mode (plus optional
+> TLS) remains the zero-dependency default.
 
 ## Integration contract (sci-in-a-box)
 
@@ -127,18 +128,19 @@ Defaults target the single-node stub MVP. "Mode" = where the value applies.
 | `nova.libvirtMode` | `stub` | all | `stub` / `real` |
 | `neutron.networkingMode` | `stub` | all | `stub` / `iptables` / `ebpf` |
 | `neutron.securityGroupMode` | `stub` | all | `stub` / `iptables` / `ebpf` |
+| `neutron.networkNode` | `""` | multi-node | the node holding every router and network DHCP: its Kubernetes node name. Required, the render refuses multi-node without it; ignored on a single node, its own network node |
 | `cinder.storageMode` | `stub` | all | `stub` / `local` / `rbd` / `local,rbd` |
 | `glance.storageMode` | `stub` | all | `stub` / `local` / `rbd` / `s3` / hybrids |
 
 ### Real mode (privileged; single-node host-validated — SPEC-009)
 | Key | Default | Mode | Purpose |
 |-----|---------|------|---------|
-| `realMode.enabled` | `false` | real | gate privileged pod + host mounts |
-| `realMode.privileged` / `hostNetwork` | `false` | real | host-level access; host networking also renders `dnsPolicy: ClusterFirstWithHostNet` on the Lightstack pod and the purge Job, so in-cluster Service names (`<service>.<namespace>.svc`) resolve |
+| `realMode.enabled` | `false` | real | gate the privileged pod and host mounts: real mode always runs privileged |
+| `realMode.hostNetwork` | `false` | real | host networking; also renders `dnsPolicy: ClusterFirstWithHostNet` on the Lightstack pod and the purge Job, so in-cluster Service names (`<service>.<namespace>.svc`) resolve |
 | `realMode.libvirtSocketPath` | `/var/run/libvirt/libvirt-sock` | real | host libvirt socket; pods mount its directory (hostPath), so a re-created socket stays reachable. The default lets the binary choose `virtqemud-sock`, else `libvirt-sock`; any other value is also the socket it dials. With `secrets.existingSecret`, your own config's `nova.libvirt_uri` must name the same socket — absolute |
 | `realMode.hostStoragePath` | `/var/lib/lightstack` | real | node-local VM/volume/image data (hostPath); mounted at the same path and passed to the binary as `state_path` — absolute |
 | `realMode.legacyStatePath` | `""` | real | pre-rename root to migrate into `hostStoragePath` once; empty renders nothing ([UPGRADING](../../docs/UPGRADING.md)) |
-| `realMode.floatingIpPool` | `""` | real | operator pool routed to nodes (FR-009c) |
+| `realMode.floatingIpPool` | `""` | real | the operator's floating pool, which the network node answers for: route or allow it to that node only |
 | `podSecurity.applyPrivilegedNamespaceLabel` | `false` | real | label the namespace `privileged` (FR-012d) |
 
 **Single-node real-mode recipe.** Needs a Linux node with a running host `libvirtd` +
@@ -149,18 +151,31 @@ helm install lightstack charts/lightstack \
   --set image.repository=<your-lightstack-image> \
   --set database.url='postgres://lightstack:<pw>@<host>:5432/lightstack?sslmode=disable' \
   --set realMode.enabled=true \
-  --set realMode.privileged=true --set realMode.hostNetwork=true \
+  --set realMode.hostNetwork=true \
   --set podSecurity.applyPrivilegedNamespaceLabel=true
 ```
 Then walk `docs/specs/009-single-node-real-mode/HOST-TESTING.md`: create a network, boot a
 cirros VM, and exercise metadata/keyless-SSH, egress, floating IPs, security groups, and
 volumes (attach, volume-from-image, boot-from-volume).
 
+**Host mounts in real mode.** Besides the libvirt socket's directory and the state root, the pod —
+and the teardown purge Job — mount the host's `/run/netns` with `mountPropagation: Bidirectional`,
+so the routers' and networks' DHCP namespaces Lightstack makes are the host's and outlive the pod
+(SPEC-033 FR-036). The pod also mounts `/lib/modules` read-only, so Lightstack can load
+`br_netfilter` at start (FR-046); the purge Job loads no module and does not. Kubernetes allows
+bidirectional propagation to privileged containers only, which is why real mode always runs
+privileged. Readiness fails, naming `bridge-netfilter`, while the bridge netfilter settings do not
+hold.
+
+**Floating addresses.** The network node answers ARP for the routers' and floating addresses on its
+uplink. On a LAN that delivers them; where an underlay delivers only the addresses assigned to a node,
+allow the floating range for the network node there.
+
 ### Multi-node (e2e deferred — #52)
 | Key | Default | Mode | Purpose |
 |-----|---------|------|---------|
 | `multiNode.nodeSelectorLabel` | `lightstack.io/compute=true` | multi-node | DaemonSet node selector |
-| `multiNode.vxlanEnabled` | `true` | multi-node | VXLAN overlay |
+| `multiNode.vxlanEnabled` | `true` | multi-node | VXLAN overlay; required, the render refuses `false`: every node would be its own network node |
 | `multiNode.vxlanPort` | `4789` | multi-node | node-to-node UDP |
 | `multiNode.minProductVersion` | `""` | multi-node | min product version (FR-010) |
 
@@ -178,7 +193,11 @@ volumes (attach, volume-from-image, boot-from-volume).
 - **Single-node** → a `Deployment`. Stub may scale (`replicaCount`); real pins one replica
   with `Recreate`.
 - **Multi-node** → a `DaemonSet` on nodes labeled `multiNode.nodeSelectorLabel`. Add capacity
-  by labeling a node; remove the label to evict. *(Cross-node function gated on #52.)*
+  by labeling a node; remove the label to evict. One of them is the network node,
+  `neutron.networkNode`, which holds every router and network DHCP; the others reach it over VXLAN.
+  Besides UDP `multiNode.vxlanPort`, the nodes need TCP to each other's Neutron port (9696) on their
+  tunnel IPs: a node has the node holding a unit apply a change there, signed with the one
+  `secrets.jwtSecret`. *(Cross-node function gated on #52.)*
 - **stub vs real** is independent of node count. Stub needs no privileges (passes `restricted`
   PodSecurity). Real needs host access on the labeled/privileged nodes.
 
@@ -271,36 +290,22 @@ oc adm policy add-scc-to-user privileged -z default -n <namespace>
 
 Stub mode needs nothing — it runs under the default `restricted-v2` SCC.
 
-## Floating-IP ingress (real mode, deferred — #52)
+## Floating IPs (real mode)
 
-Floating IPs stay real, API-compatible OpenStack IP objects: Lightstack programs the DNAT on the
-node hosting the VM (FR-009c). Your job as operator is only to **route the pool to the
-nodes** (`realMode.floatingIpPool`, e.g. `192.0.2.128/25`):
+Floating IPs stay real, API-compatible OpenStack IP objects. The network node — `neutron.networkNode`,
+on a single node the node itself — translates them in the routers' namespaces and answers ARP for
+them on its uplink (SPEC-033 FR-035), so traffic for the pool (`realMode.floatingIpPool`, e.g.
+`192.0.2.128/25`) has to reach that node, and that node only:
 
-- **MetalLB (cloud / bare metal):** announce the pool from the Lightstack nodes in L2 mode —
+- **On a LAN**, the network node's ARP answers deliver the pool; nothing else is needed. Take it from
+  addresses no other host uses.
+- **Where an underlay delivers only the addresses assigned to a node** (most clouds, some fabrics),
+  route the pool to the network node, or allow it there.
 
-  ```yaml
-  apiVersion: metallb.io/v1beta1
-  kind: IPAddressPool
-  metadata: { name: lightstack-floating, namespace: metallb-system }
-  spec:
-    addresses: ["192.0.2.128/25"]
-  ---
-  apiVersion: metallb.io/v1beta1
-  kind: L2Advertisement
-  metadata: { name: lightstack-floating, namespace: metallb-system }
-  spec:
-    ipAddressPools: ["lightstack-floating"]
-    nodeSelectors:
-      - matchLabels: { lightstack.io/compute: "true" }
-  ```
-
-- **Routed / L2 subnet (datacenter, lab):** point a static route for the pool at the
-  node uplinks (or place the pool in the nodes' L2 segment). No MetalLB needed.
-
-The chart installs neither MetalLB nor host routes; it only carries the pool value and
-this documentation. End-to-end floating-IP traffic additionally requires the product
-post-condition WS-5 (issue #52).
+Announce the pool from nowhere else: MetalLB, a router or another node answering for it competes
+with the network node's answers. The chart installs neither routes nor announcements; it carries the
+pool value and this documentation. Floating IPs are verified on a single node (SPEC-033's host run,
+2026-11-23); multi-node is not supported yet.
 
 ## Testing
 

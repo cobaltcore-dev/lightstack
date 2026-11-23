@@ -16,6 +16,8 @@ ALTER TABLE ports ADD COLUMN binding_host_id TEXT;
 ALTER TABLE networks ADD COLUMN ct_zone INTEGER;
 CREATE UNIQUE INDEX networks_ct_zone ON networks (ct_zone);
 
+CREATE UNIQUE INDEX floating_ips_one_per_fixed_ip ON floating_ips (floating_network_id, port_id, fixed_ip_address);
+
 ALTER TABLE security_groups ADD COLUMN revision_number INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE security_groups ADD COLUMN stateful INTEGER NOT NULL DEFAULT 1;
 

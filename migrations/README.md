@@ -99,8 +99,11 @@ procedure turns foreign keys off, which works only outside a transaction.
 Such a rebuild goes in a `.sqlite` file whose **first line** is the marker
 
 ```sql
--- lightstack:no-transaction
+-- lightstack:foreign-keys-off
 ```
+
+The marker on any other line fails the migration, naming the line: below a comment or a blank line it
+would otherwise be ignored and the rebuild cascade. A UTF-8 byte-order mark before it is ignored.
 
 For a marked file the migrator follows SQLite's own procedure (`internal/database/migrate_notx.go`):
 it turns foreign keys off on its connection, runs the file in a transaction of its own, runs

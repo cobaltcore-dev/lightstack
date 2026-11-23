@@ -17,6 +17,12 @@ services:
       # LIGHTSTACK_STATE_PATH to the config's state_path when that is not the default.
       - ${LIGHTSTACK_STATE_PATH:-/var/lib/lightstack}:${LIGHTSTACK_STATE_PATH:-/var/lib/lightstack}
       - ${LIGHTSTACK_CONFIG_DIR:-/opt/lightstack/config}:/opt/lightstack/config:ro
+      # The host's network namespaces, shared both ways: the router and DHCP namespaces Lightstack
+      # makes are the host's, so they and the traffic through them outlive the container (SPEC-033
+      # FR-036). The host's /run must be a shared mount, as systemd makes it.
+      - /run/netns:/run/netns:rshared
+      # For `modprobe br_netfilter` at start (FR-046).
+      - /lib/modules:/lib/modules:ro
     environment:
       # Overrides the config's database.url when set — postgres://… or
       # sqlite:///<state_path>/db/lightstack.db; empty keeps the config's.

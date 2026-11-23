@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/gin-gonic/gin"
 )
 
@@ -41,15 +42,14 @@ func doIfMatch(r http.Handler, method, path, body, ifMatch string, hdr map[strin
 
 func neutronErrorType(t *testing.T, body string) string {
 	t.Helper()
-	var out struct {
-		NeutronError struct {
-			Type string `json:"type"`
-		} `json:"NeutronError"`
-	}
-	if err := json.Unmarshal([]byte(body), &out); err != nil {
-		t.Fatalf("decode error body %q: %v", body, err)
-	}
-	return out.NeutronError.Type
+	kind, _ := neutronError(t, body)["type"].(string)
+	return kind
+}
+
+func neutronErrorMessage(t *testing.T, body string) string {
+	t.Helper()
+	message, _ := neutronError(t, body)["message"].(string)
+	return message
 }
 
 // createGroupViaAPI creates a group through POST /v2.0/security-groups and removes it in cleanup.
@@ -158,6 +158,41 @@ func TestSecurityGroupRevisionNumber(t *testing.T) {
 		}
 	})
 
+	// SPEC-033 T215 (FR-050): If-Match is read as upstream reads it — webob's strong etags
+	// (the quoted ones, or the whole value when none is quoted; * and weak ones none) — and only an etag
+	// with the revision_number= prefix constrains: one whose number does not parse, or a second, is a
+	// 400 (check_request_for_revision_constraint).
+	t.Run("If-Match etags other than a revision's", func(t *testing.T) {
+		g := createGroupViaAPI(t, r, hdr, `{"security_group":{"name":"spec033-ifmatch-etags"}}`)
+		id := g["id"].(string)
+		const multiple = "Bad if-match request: Multiple revision_number etags are not supported.."
+		const format = "Bad if-match request: Revision number etag must be in the format of revision_number=<int>."
+		for _, tc := range []struct {
+			ifMatch string
+			want    int
+			message string
+		}{
+			{"*", http.StatusOK, ""},
+			{`W/"abc", "def"`, http.StatusOK, ""},
+			{`W/"revision_number=5"`, http.StatusOK, ""},
+			{`"abc", revision_number=5`, http.StatusOK, ""},
+			{`revision_number=0revision_number=9`, http.StatusOK, ""},
+			{`"revision_number=5"`, http.StatusPreconditionFailed, ""},
+			{`"abc", "revision_number=5"`, http.StatusPreconditionFailed, ""},
+			{`"revision_number=0", "revision_number=0"`, http.StatusBadRequest, multiple},
+			{`revision_number=0, revision_number=9`, http.StatusBadRequest, format},
+			{"revision_number=zero", http.StatusBadRequest, format},
+		} {
+			code, body := doIfMatch(r, http.MethodPut, "/v2.0/security-groups/"+id, `{"security_group":{"description":"etags"}}`, tc.ifMatch, hdr)
+			if code != tc.want {
+				t.Errorf("If-Match %s: code=%d body=%s; want %d", tc.ifMatch, code, body, tc.want)
+			} else if tc.message != "" && neutronErrorMessage(t, body) != tc.message {
+				t.Errorf("If-Match %s: %s; want the message %q", tc.ifMatch, body, tc.message)
+			}
+			mustExec(t, "UPDATE security_groups SET revision_number = 0 WHERE id = $1", id)
+		}
+	})
+
 	t.Run("the extension list advertises stateful-security-group", func(t *testing.T) {
 		code, body := doReq(r, http.MethodGet, "/v2.0/extensions", hdr)
 		if code != http.StatusOK {
@@ -176,7 +211,7 @@ func TestSecurityGroupRevisionUndone(t *testing.T) {
 	t.Run("a failed add leaves the revision where it was", func(t *testing.T) {
 		rf := newRuleFixture(t)
 		before := groupRevision(t, rf.web)
-		rf.failFirstFilter()
+		rf.failFirstApply()
 		if code, body, _ := rf.addRule(t); code != http.StatusInternalServerError {
 			t.Fatalf("add: code=%d body=%s; want 500", code, body)
 		}
@@ -192,8 +227,8 @@ func TestSecurityGroupRevisionUndone(t *testing.T) {
 			t.Fatalf("add: code=%d body=%s", code, body)
 		}
 		before := groupRevision(t, rf.web)
-		rf.failFirstFilter()
-		if code, body := doJSONReq(rf.fx.r, http.MethodDelete, "/v2.0/security-group-rules/"+id, "", rf.fx.hdr); code != http.StatusInternalServerError {
+		rf.failFirstApply()
+		if code, body := doJSONReq(rf.r, http.MethodDelete, "/v2.0/security-group-rules/"+id, "", rf.hdr); code != http.StatusInternalServerError {
 			t.Fatalf("delete: code=%d body=%s; want 500", code, body)
 		}
 		if got := groupRevision(t, rf.web); got != before {
@@ -204,15 +239,16 @@ func TestSecurityGroupRevisionUndone(t *testing.T) {
 	t.Run("the undo keeps a revision another request moved on", func(t *testing.T) {
 		rf := newRuleFixture(t)
 		before := groupRevision(t, rf.web)
-		// The filter rebuild fails; before it does, another request updates the group.
-		rf.fx.fake.setHook(func(c dataplaneCall) error {
-			if c.Method == "EnsureIngressFilter" {
-				mustExec(t, "UPDATE security_groups SET revision_number = revision_number + 1, description = 'moved on' WHERE id = $1", rf.web)
-				rf.fx.fake.setHook(nil)
-				return errNode
+		// The convergence fails; before it does, another request updates the group.
+		first := true
+		rf.fw.hook = func([]networking.FirewallPort) error {
+			if !first {
+				return nil
 			}
-			return nil
-		})
+			first = false
+			mustExec(t, "UPDATE security_groups SET revision_number = revision_number + 1, description = 'moved on' WHERE id = $1", rf.web)
+			return errNode
+		}
 		if code, body, _ := rf.addRule(t); code != http.StatusInternalServerError {
 			t.Fatalf("add: code=%d body=%s; want 500", code, body)
 		}

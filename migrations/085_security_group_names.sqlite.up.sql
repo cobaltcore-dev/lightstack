@@ -1,4 +1,4 @@
--- lightstack:no-transaction
+-- lightstack:foreign-keys-off
 -- See 085_security_group_names.postgres.up.sql. SQLite cannot drop a table constraint, so the
 -- table is rebuilt: new table, copy, drop, rename. security_group_rules and port_security_groups
 -- reference it with ON DELETE CASCADE, so the DROP would delete their rows with foreign keys on.
@@ -22,3 +22,4 @@ DROP TABLE security_groups;
 ALTER TABLE security_groups_rebuilt RENAME TO security_groups;
 
 CREATE UNIQUE INDEX security_groups_one_default ON security_groups (project_id) WHERE name = 'default';
+CREATE INDEX idx_security_groups_project_name ON security_groups (project_id, name);

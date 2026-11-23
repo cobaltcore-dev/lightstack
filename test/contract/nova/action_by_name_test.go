@@ -44,12 +44,17 @@ func postAction(t *testing.T, token, ref, body string) (int, string) {
 // createNamedServer boots a server and returns its id, registering cleanup.
 func createNamedServer(t *testing.T, token, name string) string {
 	t.Helper()
-	image := firstImageID(t, token)
-	body := `{"server":{"name":"` + name + `","flavorRef":"m1.small","imageRef":"` + image + `"}}`
+	return createServer(t, token, name, "")
+}
 
+// createServer boots a server named name from the first image, the server object's extra fields (a JSON
+// fragment, "" for none) added, and returns its id, registering its deletion.
+func createServer(t *testing.T, token, name, extra string) string {
+	t.Helper()
+	body := `{"server":{"name":"` + name + `","flavorRef":"m1.small","imageRef":"` + firstImageID(t, token) + `"` + extra + `}}`
 	code, resp := createServerRaw(t, token, body)
 	require.Contains(t, []int{http.StatusAccepted, http.StatusCreated, http.StatusOK}, code,
-		"creating a server for the by-name test: %s", resp)
+		"creating server %s: %s", name, resp)
 
 	var out struct {
 		Server struct {

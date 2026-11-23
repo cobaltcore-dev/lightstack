@@ -989,10 +989,10 @@ openstack network show ext-net --external
 # Verify provider:network_type is "flat"
 ```
 
-**Verify iptables rules**:
+**Verify iptables rules** (the NAT lives in the router's namespace on the network node):
 ```bash
-sudo iptables -t nat -L -n -v
-# Should see SNAT/DNAT rules for floating IPs
+sudo ip netns exec qrouter-<router-id> iptables -t nat -S
+# Should see the ls-l3-* SNAT/DNAT rules for the router and its floating IPs
 ```
 
 ---

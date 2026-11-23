@@ -38,6 +38,36 @@ type gatewayRequest struct {
 
 type requestedFixedIP struct{ subnetID, ipAddress string }
 
+// address is the entry's requested address, when it names one that parses.
+func (r requestedFixedIP) address() (netip.Addr, bool) {
+	a, err := netip.ParseAddr(strings.TrimSpace(r.ipAddress))
+	return a.Unmap(), err == nil
+}
+
+// names reports whether the entry names subnet s: by its id, or by an address inside it.
+func (r requestedFixedIP) names(s networkSubnet) bool {
+	if r.subnetID != "" {
+		return r.subnetID == s.id
+	}
+	a, ok := r.address()
+	return ok && s.prefix.Contains(a)
+}
+
+// duplicateAddress refuses requested fixed IPs that name one address twice, as upstream's fixed_ips
+// validator, under the attribute that carries them (SPEC-033 FR-032, T254).
+func duplicateAddress(attribute string, requested []requestedFixedIP) *common.OpenStackError {
+	seen := map[netip.Addr]bool{}
+	for _, r := range requested {
+		if a, ok := r.address(); ok {
+			if seen[a] {
+				return invalidAttribute(attribute, fmt.Sprintf("Duplicate IP address '%s'", r.ipAddress))
+			}
+			seen[a] = true
+		}
+	}
+	return nil
+}
+
 // stored is what routers.external_gateway_info keeps.
 func (g gatewayRequest) stored() map[string]any {
 	return map[string]any{"network_id": g.networkID, "enable_snat": g.enableSNAT}
@@ -46,7 +76,7 @@ func (g gatewayRequest) stored() map[string]any {
 // parseGatewayRequest reads a gateway gatewayNetworkID has checked. external_fixed_ips is a list of
 // {subnet_id, ip_address} objects, each naming at least one. Requesting them, and setting enable_snat,
 // is an administrator's, whatever the value, as upstream's policy matches on the key being given
-// (FR-038; branch review SRC-11).
+// (FR-038; SPEC-033 T183).
 func parseGatewayRequest(gateway map[string]any, admin bool, rule string) (gatewayRequest, *common.OpenStackError) {
 	req := gatewayRequest{enableSNAT: gatewaySNATOn(gateway)}
 	req.networkID, _ = gateway["network_id"].(string)
@@ -79,7 +109,33 @@ func parseGatewayRequest(gateway map[string]any, admin bool, rule string) (gatew
 		}
 		req.fixedIPs = append(req.fixedIPs, requestedFixedIP{subnetID: subnet, ipAddress: ip})
 	}
-	return req, nil
+	return req, duplicateAddress("external_gateway_info", req.fixedIPs)
+}
+
+// subnetGatewayRouters reads the routers whose gateway port has an address on the subnet: the subnet's
+// gateway is their default route (SPEC-033 T189). A gateway port is what the router code writes
+// (gatewayPortWhere).
+func subnetGatewayRouters(ctx context.Context, q subnetQuerier, networkID, subnetID string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT device_id::text, fixed_ips FROM ports
+		 WHERE network_id::text = $1 AND `+gatewayPortWhere("")+`
+		 ORDER BY device_id`, networkID)
+	if err != nil {
+		return nil, fmt.Errorf("read the gateway ports of network %s: %w", networkID, err)
+	}
+	defer rows.Close()
+	var routers []string
+	for rows.Next() {
+		var router string
+		var fixed common.FixedIPs
+		if err := rows.Scan(&router, &fixed); err != nil {
+			return nil, fmt.Errorf("read a gateway port of network %s: %w", networkID, err)
+		}
+		if slices.ContainsFunc(fixed, func(f common.FixedIP) bool { return f.SubnetID == subnetID }) {
+			routers = append(routers, router)
+		}
+	}
+	return routers, rows.Err()
 }
 
 // gatewayPort is a router's gateway port as stored.
@@ -88,10 +144,16 @@ type gatewayPort struct {
 	fixedIPs      common.FixedIPs
 }
 
-// gatewayPortsOf reads the gateway ports of the given routers, keyed by router. A gateway port is one
-// only the router code writes: the owner, the router as device, and no project. Any member may give a
-// port of their own that owner and device, and one taken for the gateway would have the network node
-// answer for its address on the uplink (branch review SRC-2).
+// gatewayPortWhere is what makes a port a router's gateway port, for the columns of alias ("" or "g."):
+// one only the router code writes — the owner and no project; the caller names the router as device. Any
+// member may give a port of their own that owner and a router as device, and one taken for a gateway would
+// have the network node answer for its address on the uplink. Every query meaning a router's gateway port
+// asks this (SPEC-033 T170, T317).
+func gatewayPortWhere(alias string) string {
+	return alias + "device_owner = '" + ownerRouterGateway + "' AND " + alias + "project_id IS NULL"
+}
+
+// gatewayPortsOf reads the gateway ports of the given routers, keyed by router (gatewayPortWhere).
 func gatewayPortsOf(ctx context.Context, q subnetQuerier, routerIDs []string) (map[string]gatewayPort, error) {
 	out := map[string]gatewayPort{}
 	if len(routerIDs) == 0 {
@@ -99,7 +161,7 @@ func gatewayPortsOf(ctx context.Context, q subnetQuerier, routerIDs []string) (m
 	}
 	rows, err := q.Query(ctx, `
 		SELECT device_id::text, id::text, network_id::text, fixed_ips FROM ports
-		 WHERE device_owner = 'network:router_gateway' AND project_id IS NULL AND device_id::text = ANY($1)`, routerIDs)
+		 WHERE `+gatewayPortWhere("")+` AND device_id::text = ANY($1)`, routerIDs)
 	if err != nil {
 		return nil, fmt.Errorf("reading the routers' gateway ports: %w", err)
 	}
@@ -158,7 +220,9 @@ func setRouterGateway(ctx context.Context, tx database.Tx, routerID string, req 
 		return nil
 	}
 	if has {
-		if req.fixedIPs == nil {
+		// No list, or an empty one, asks for no change, as upstream's _check_for_external_ip_change
+		// (SPEC-033 T255).
+		if len(req.fixedIPs) == 0 {
 			return nil
 		}
 		fixed, err := gatewayAddresses(ctx, tx, req.networkID, req.fixedIPs, port.fixedIPs)
@@ -176,6 +240,9 @@ func setRouterGateway(ctx context.Context, tx database.Tx, routerID string, req 
 	if err != nil {
 		return err
 	}
+	if err := lockExternalNetwork(ctx, tx, req.networkID, "a router gateway"); err != nil {
+		return err
+	}
 	raw, _ := json.Marshal(fixed)
 	now := time.Now()
 	_, err = tx.Exec(ctx, `
@@ -184,6 +251,44 @@ func setRouterGateway(ctx context.Context, tx database.Tx, routerID string, req 
 		uuid.NewString(), req.networkID, routerID, ownerRouterGateway, generateMAC(), raw, now, now)
 	if err != nil {
 		return fmt.Errorf("create the gateway port of router %s: %w", routerID, err)
+	}
+	return nil
+}
+
+// requireNoGatewayPorts refuses to make a network non-external while a router's gateway port is on it, as
+// upstream's _process_l3_update (409 ExternalNetworkInUse). The network's lock serialises it with a gateway
+// port's creation, which takes that lock and checks the flag again (lockExternalNetwork; SPEC-033 FR-070,
+// T257).
+func requireNoGatewayPorts(ctx context.Context, tx database.Tx, networkID string) error {
+	var locked string
+	if err := tx.QueryRow(ctx, "SELECT id::text FROM networks WHERE id::text = $1 FOR UPDATE", networkID).Scan(&locked); err != nil {
+		if errors.Is(err, database.ErrNoRows) {
+			return common.NewNotFoundError("network")
+		}
+		return fmt.Errorf("lock network %s: %w", networkID, err)
+	}
+	var used bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ports WHERE network_id::text = $1 AND `+gatewayPortWhere("")+`)`,
+		networkID).Scan(&used); err != nil {
+		return fmt.Errorf("read the gateway ports of network %s: %w", networkID, err)
+	}
+	if used {
+		return common.NewNeutronError(http.StatusConflict, "ExternalNetworkInUse", fmt.Sprintf(
+			"External network %s cannot be updated to be made non-external, since it has existing gateway ports.", networkID))
+	}
+	return nil
+}
+
+// lockExternalNetwork locks the external network a gateway port or a floating IP is made on, after its
+// subnets — the order every port insert takes them in, the network's foreign key last — and refuses it when
+// it is no longer external: made non-external since the request checked it (requireNoGatewayPorts).
+func lockExternalNetwork(ctx context.Context, tx database.Tx, networkID, use string) error {
+	var external bool
+	if err := tx.QueryRow(ctx, "SELECT external FROM networks WHERE id::text = $1 FOR UPDATE", networkID).Scan(&external); err != nil {
+		return fmt.Errorf("lock network %s: %w", networkID, err)
+	}
+	if !external {
+		return errNotExternal(networkID, use)
 	}
 	return nil
 }
@@ -203,45 +308,52 @@ func requireGatewayUnused(ctx context.Context, tx database.Tx, routerID, network
 	return nil
 }
 
-// requireInterfaceUnused refuses to remove a router's interface on a subnet whose fixed IPs a floating
-// IP of the router reaches (upstream's RouterInterfaceInUseByFloatingIP, FR-039).
-func requireInterfaceUnused(ctx context.Context, tx database.Tx, routerID, subnetID, cidr string) error {
-	prefix, err := parsePrefix(cidr)
+// requireInterfaceUnused refuses to remove a router's interface on a subnet a floating IP of the router
+// reaches: its fixed IP, or one of its port forwardings' internal address, inside the subnet and held by
+// a port of the subnet's network. That is upstream's RouterInterfaceInUseByFloatingIP, whose words name
+// floating IPs for both (FR-039; SPEC-033 T184).
+func requireInterfaceUnused(ctx context.Context, tx database.Tx, routerID string, subnet interfaceSubnet) error {
+	prefix, err := parsePrefix(subnet.cidr)
 	if err != nil {
 		return err
 	}
-	fixed, err := queryStrings(ctx, tx,
-		"SELECT fixed_ip_address FROM floating_ips WHERE router_id::text = $1 AND fixed_ip_address IS NOT NULL", routerID)
+	reached, err := queryStrings(ctx, tx, `
+		SELECT f.fixed_ip_address FROM floating_ips f JOIN ports p ON p.id = f.port_id
+		 WHERE f.router_id::text = $1 AND p.network_id::text = $2 AND f.fixed_ip_address IS NOT NULL
+		UNION ALL
+		SELECT pf.internal_ip_address FROM port_forwardings pf
+		  JOIN floating_ips f ON f.id = pf.floatingip_id JOIN ports p ON p.id = pf.internal_port_id
+		 WHERE f.router_id::text = $1 AND p.network_id::text = $2`, routerID, subnet.networkID)
 	if err != nil {
-		return fmt.Errorf("read the floating IPs of router %s: %w", routerID, err)
+		return fmt.Errorf("read what the floating IPs of router %s reach: %w", routerID, err)
 	}
-	for _, ip := range fixed {
+	for _, ip := range reached {
 		if a, err := netip.ParseAddr(ip); err == nil && prefix.Contains(a.Unmap()) {
 			return common.NewNeutronError(http.StatusConflict, "RouterInterfaceInUseByFloatingIP",
 				fmt.Sprintf("Router interface for subnet %s on router %s cannot be deleted, as it is required by one or more floating IPs.",
-					subnetID, routerID))
+					subnet.id, routerID))
 		}
 	}
 	return nil
 }
 
-// externalSubnet is one subnet of an external network as gateway addressing needs it.
-type externalSubnet struct {
+// networkSubnet is one subnet of an external network as gateway addressing needs it.
+type networkSubnet struct {
 	id      string
 	prefix  netip.Prefix
 	gateway netip.Addr
 }
 
-func externalSubnets(ctx context.Context, tx database.Tx, networkID string) ([]externalSubnet, error) {
+func networkSubnets(ctx context.Context, tx database.Tx, networkID string) ([]networkSubnet, error) {
 	rows, err := tx.Query(ctx,
 		"SELECT id::text, cidr, gateway_ip FROM subnets WHERE network_id::text = $1 ORDER BY created_at, id", networkID)
 	if err != nil {
 		return nil, fmt.Errorf("read the subnets of network %s: %w", networkID, err)
 	}
 	defer rows.Close()
-	var out []externalSubnet
+	var out []networkSubnet
 	for rows.Next() {
-		var s externalSubnet
+		var s networkSubnet
 		var cidr string
 		var gateway *string
 		if err := rows.Scan(&s.id, &cidr, &gateway); err != nil {
@@ -263,12 +375,12 @@ func externalSubnets(ctx context.Context, tx database.Tx, networkID string) ([]e
 // IpAddressGenerationFailure, as upstream's IPAM does. held is what the port holds now: re-requesting
 // it is not a conflict. Every subnet is locked before its addresses are read (FR-032).
 func gatewayAddresses(ctx context.Context, tx database.Tx, networkID string, requested []requestedFixedIP, held common.FixedIPs) (common.FixedIPs, error) {
-	subnets, err := externalSubnets(ctx, tx, networkID)
+	subnets, err := networkSubnets(ctx, tx, networkID)
 	if err != nil {
 		return nil, err
 	}
 	if len(requested) == 0 {
-		if !slices.ContainsFunc(subnets, func(s externalSubnet) bool { return s.prefix.Addr().Is4() }) {
+		if !slices.ContainsFunc(subnets, func(s networkSubnet) bool { return s.prefix.Addr().Is4() }) {
 			return common.FixedIPs{}, nil
 		}
 		for _, s := range subnets {
@@ -290,81 +402,108 @@ func gatewayAddresses(ctx context.Context, tx database.Tx, networkID string, req
 		return nil, common.NewNeutronError(http.StatusConflict, "IpAddressGenerationFailure",
 			fmt.Sprintf("No more IP addresses available on network %s.", networkID))
 	}
-	var out common.FixedIPs
+	return requestedAddresses(ctx, tx, addressRequest{networkID: networkID, subnets: subnets, held: held, routerPort: true}, requested)
+}
+
+// addressRequest is what a port's requested fixed IPs are resolved against: its network's subnets, the
+// addresses it holds already — re-requesting one is no conflict, and an entry naming only a subnet keeps
+// the one it holds there — and whether it is a router's port, which may take an IPv6 subnet's anycast
+// address.
+type addressRequest struct {
+	networkID  string
+	subnets    []networkSubnet
+	held       common.FixedIPs
+	routerPort bool
+}
+
+// requestedAddresses resolves a port's requested fixed IPs on its network, each as resolve does, in the
+// order requested, each address once: an entry naming only a subnet never takes an address another entry
+// names or an earlier one took (SPEC-033 FR-032, T254). The subnets they name are locked first, in
+// subnets' order — creation order, as every other allocation takes them — so two requests naming them in
+// opposite orders cannot deadlock (T206).
+func requestedAddresses(ctx context.Context, tx database.Tx, a addressRequest, requested []requestedFixedIP) (common.FixedIPs, error) {
+	chosen := map[netip.Addr]bool{}
 	for _, r := range requested {
-		entry, err := requestedGatewayAddress(ctx, tx, networkID, subnets, r, held)
+		if addr, ok := r.address(); ok {
+			chosen[addr] = true
+		}
+	}
+	for _, s := range a.subnets {
+		if slices.ContainsFunc(requested, func(r requestedFixedIP) bool { return r.names(s) }) {
+			if _, err := LockSubnet(ctx, tx, s.id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	out := common.FixedIPs{}
+	for _, r := range requested {
+		entry, err := a.resolve(ctx, tx, r, chosen)
 		if err != nil {
 			return nil, err
+		}
+		if addr, err := netip.ParseAddr(entry.IPAddress); err == nil {
+			chosen[addr] = true
 		}
 		out = append(out, entry)
 	}
 	return out, nil
 }
 
-// requestedGatewayAddress checks one requested entry: an address on one of the network's subnets
-// (InvalidIpForNetwork otherwise), a host address of it (InvalidIpForSubnet), not its gateway, and held
-// by nothing else (IpAddressAlreadyAllocated). An entry naming only a subnet takes a free address of its
-// pools.
-func requestedGatewayAddress(ctx context.Context, tx database.Tx, networkID string, subnets []externalSubnet, r requestedFixedIP, held common.FixedIPs) (common.FixedIP, error) {
-	var subnet *externalSubnet
-	var addr netip.Addr
-	if r.ipAddress != "" {
-		a, err := netip.ParseAddr(strings.TrimSpace(r.ipAddress))
-		if err == nil {
-			addr = a.Unmap()
-			for i := range subnets {
-				if subnets[i].prefix.Contains(addr) && (r.subnetID == "" || subnets[i].id == r.subnetID) {
-					subnet = &subnets[i]
-					break
-				}
-			}
-		}
-		if subnet == nil {
-			return common.FixedIP{}, common.NewNeutronError(http.StatusBadRequest, "InvalidIpForNetwork",
-				fmt.Sprintf("IP address %s is not a valid IP for any of the subnets on the specified network.", r.ipAddress))
-		}
-	} else {
-		for i := range subnets {
-			if subnets[i].id == r.subnetID {
-				subnet = &subnets[i]
-			}
-		}
-		if subnet == nil {
-			return common.FixedIP{}, invalidInput(fmt.Sprintf(
-				"Failed to create port on network %s, because fixed_ips included invalid subnet %s", networkID, r.subnetID))
-		}
+// resolve checks one requested entry of a port's fixed IPs, as upstream's IPAM does: an address on one of
+// the network's subnets (InvalidIpForNetwork otherwise), checked by refusal; it need not lie in a pool
+// (FR-032). An entry naming only a subnet keeps the address the port holds there, as upstream's
+// _get_changed_ips_for_port, unless chosen has it; otherwise it takes a free address of the subnet's pools
+// that chosen does not have.
+func (a addressRequest) resolve(ctx context.Context, tx database.Tx, r requestedFixedIP, chosen map[netip.Addr]bool) (common.FixedIP, error) {
+	subnet, addr, refusal := a.subnetOf(r)
+	if refusal != nil {
+		return common.FixedIP{}, refusal
 	}
 	if _, err := LockSubnet(ctx, tx, subnet.id); err != nil {
 		return common.FixedIP{}, err
 	}
-	if !addr.IsValid() {
-		ip, err := allocateAddress(ctx, tx, subnet.id, pickRandom)
-		if errors.Is(err, ErrNoAvailableIP) {
-			return common.FixedIP{}, common.NewNeutronError(http.StatusConflict, "IpAddressGenerationFailure",
-				fmt.Sprintf("No more IP addresses available for subnet %s.", subnet.id))
-		}
-		return common.FixedIP{SubnetID: subnet.id, IPAddress: ip}, err
-	}
-	if !checkSubnetIP(subnet.prefix, addr, true) {
-		return common.FixedIP{}, common.NewNeutronError(http.StatusBadRequest, "InvalidIpForSubnet",
-			(&InvalidIPForSubnetError{IP: r.ipAddress}).Error())
-	}
-	if subnet.gateway.IsValid() && addr == subnet.gateway {
-		return common.FixedIP{}, invalidInput(fmt.Sprintf("IP address %s is the gateway of subnet %s", addr, subnet.id))
-	}
-	if !held.Holds(addr.String()) {
+	if addr.IsValid() {
 		s, err := readSubnet(ctx, tx, subnet.id)
 		if err != nil {
 			return common.FixedIP{}, err
 		}
-		used, err := usedAddresses(ctx, tx, s)
-		if err != nil {
+		if err := a.refusal(ctx, tx, s, addr, r.ipAddress); err != nil {
 			return common.FixedIP{}, err
 		}
-		if used[addr] {
-			return common.FixedIP{}, common.NewNeutronError(http.StatusConflict, "IpAddressAlreadyAllocated",
-				fmt.Sprintf("IP address %s already allocated in subnet %s", addr, subnet.id))
+		return common.FixedIP{SubnetID: subnet.id, IPAddress: addr.String()}, nil
+	}
+	for _, f := range a.held {
+		if held, err := netip.ParseAddr(f.IPAddress); err == nil && f.SubnetID == subnet.id && !chosen[held] {
+			return f, nil
 		}
 	}
-	return common.FixedIP{SubnetID: subnet.id, IPAddress: addr.String()}, nil
+	ip, err := allocateAddressExcluding(ctx, tx, subnet.id, pickRandom, chosen)
+	if errors.Is(err, ErrNoAvailableIP) {
+		return common.FixedIP{}, common.NewNeutronError(http.StatusConflict, "IpAddressGenerationFailure",
+			fmt.Sprintf("No more IP addresses available for subnet %s.", subnet.id))
+	}
+	return common.FixedIP{SubnetID: subnet.id, IPAddress: ip}, err
+}
+
+// subnetOf finds the subnet an entry names — by its address, or by its id alone — and the address, zero
+// for an entry naming only a subnet.
+func (a addressRequest) subnetOf(r requestedFixedIP) (networkSubnet, netip.Addr, *common.OpenStackError) {
+	if r.ipAddress == "" {
+		for _, s := range a.subnets {
+			if s.id == r.subnetID {
+				return s, netip.Addr{}, nil
+			}
+		}
+		return networkSubnet{}, netip.Addr{}, invalidInput(fmt.Sprintf(
+			"Failed to create port on network %s, because fixed_ips included invalid subnet %s", a.networkID, r.subnetID))
+	}
+	if addr, ok := r.address(); ok {
+		for _, s := range a.subnets {
+			if s.prefix.Contains(addr) && (r.subnetID == "" || s.id == r.subnetID) {
+				return s, addr, nil
+			}
+		}
+	}
+	return networkSubnet{}, netip.Addr{}, common.NewNeutronError(http.StatusBadRequest, "InvalidIpForNetwork",
+		fmt.Sprintf("IP address %s is not a valid IP for any of the subnets on the specified network.", r.ipAddress))
 }

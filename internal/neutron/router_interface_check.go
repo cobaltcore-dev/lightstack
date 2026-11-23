@@ -3,10 +3,8 @@ package neutron
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/netip"
 
-	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
@@ -20,35 +18,31 @@ type interfaceSubnet struct {
 // network shared with every project gives no other project its subnets, as upstream's LP-1757482 has
 // it, and Lightstack shares no network with one project alone; the router has no port on it and none
 // of its interfaces' subnets overlaps it (_check_for_dup_router_subnets); and, under the subnet's lock,
-// no port holds the gateway address, which the interface's port would take (SPEC-033 FR-055; branch
-// review SRC-3).
-func checkInterfaceSubnet(ctx context.Context, tx database.Tx, routerID string, s interfaceSubnet, caller string, admin bool) error {
+// nothing — a port, a floating IP — holds the gateway address, which the interface's port takes as read
+// under that lock (SPEC-033 FR-055, T171, T268, T269). It returns that address.
+func checkInterfaceSubnet(ctx context.Context, tx database.Tx, a interfaceAdd, s interfaceSubnet) (netip.Addr, error) {
+	noGateway := badRequest("router", "Subnet for router interface must have a gateway IP")
 	if s.gateway == "" {
-		return common.NewBadRequestError("Bad router request: Subnet for router interface must have a gateway IP.")
+		return netip.Addr{}, noGateway
 	}
-	if !admin && s.project != caller {
-		return common.NewBadRequestError(fmt.Sprintf(
-			"Bad router request: Cannot add interface to router because subnet %s is not owned by project making the request.", s.id))
+	if !a.admin && s.project != a.caller {
+		return netip.Addr{}, badRequest("router", fmt.Sprintf(
+			"Cannot add interface to router because subnet %s is not owned by project making the request", s.id))
 	}
-	if err := checkRouterSubnets(ctx, tx, routerID, s); err != nil {
-		return err
+	if err := checkRouterSubnets(ctx, tx, a.router, s); err != nil {
+		return netip.Addr{}, err
 	}
 	if _, err := LockSubnet(ctx, tx, s.id); err != nil {
-		return err
+		return netip.Addr{}, err
 	}
-	gateway, err := netip.ParseAddr(s.gateway)
+	locked, err := readSubnet(ctx, tx, s.id)
 	if err != nil {
-		return fmt.Errorf("subnet %s: gateway %q: %w", s.id, s.gateway, err)
+		return netip.Addr{}, err
 	}
-	held, err := portAddresses(ctx, tx, s.networkID, s.id)
-	if err != nil {
-		return err
+	if !locked.gateway.IsValid() {
+		return netip.Addr{}, noGateway
 	}
-	if held[gateway.Unmap()] {
-		return common.NewNeutronError(http.StatusConflict, "IpAddressAlreadyAllocated",
-			fmt.Sprintf("IP address %s already allocated in subnet %s", s.gateway, s.id))
-	}
-	return nil
+	return locked.gateway, addressRequest{routerPort: true}.refusal(ctx, tx, locked, locked.gateway, locked.gateway.String())
 }
 
 // checkRouterSubnets is upstream's _check_for_dup_router_subnets for an interface: no port of the
@@ -56,7 +50,7 @@ func checkInterfaceSubnet(ctx context.Context, tx database.Tx, routerID string, 
 // overlaps it. The router's ports are its records — the gateway port the router code writes and the
 // router_interfaces rows — never a port that merely names the router.
 func checkRouterSubnets(ctx context.Context, tx database.Tx, routerID string, s interfaceSubnet) error {
-	alreadyHas := common.NewBadRequestError(fmt.Sprintf("Bad router request: Router already has a port on subnet %s.", s.id))
+	alreadyHas := badRequest("router", fmt.Sprintf("Router already has a port on subnet %s", s.id))
 	gateways, err := gatewayPortsOf(ctx, tx, []string{routerID})
 	if err != nil {
 		return err
@@ -86,8 +80,8 @@ func checkRouterSubnets(ctx context.Context, tx database.Tx, routerID string, s 
 			return alreadyHas
 		}
 		if other, err := netip.ParsePrefix(cidr); err == nil && other.Overlaps(prefix) {
-			return common.NewBadRequestError(fmt.Sprintf(
-				"Bad router request: Cidr %s of subnet %s overlaps with cidr %s of subnet %s.", s.cidr, s.id, cidr, id))
+			return badRequest("router", fmt.Sprintf(
+				"Cidr %s of subnet %s overlaps with cidr %s of subnet %s", s.cidr, s.id, cidr, id))
 		}
 	}
 	return rows.Err()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -58,7 +59,7 @@ func (g securityGroupRow) render(rules []gin.H) gin.H {
 	}
 }
 
-// renderSecurityGroup renders one group with its rules, read from q.
+// renderSecurityGroup renders one group with its rules, read from pool.
 func renderSecurityGroup(ctx context.Context, pool database.DB, g securityGroupRow) (gin.H, error) {
 	rules, err := securityGroupRulesByGroup(ctx, pool, []string{g.id})
 	if err != nil {
@@ -71,8 +72,7 @@ func renderSecurityGroup(ctx context.Context, pool database.DB, g securityGroupR
 // _validate_name_not_default compares it.
 func isDefaultName(name string) bool { return strings.ToLower(name) == "default" }
 
-// Upstream's refusals for the default group (neutron/extensions/securitygroup.py), with their types:
-// the resource table alone would name every 409 on a group SecurityGroupInUse.
+// Upstream's refusals for the default group (neutron/extensions/securitygroup.py), with their types.
 func errCannotRemoveDefault() *common.OpenStackError {
 	return common.NewNeutronError(http.StatusConflict, "SecurityGroupCannotRemoveDefault",
 		"Insufficient rights for removing default security group.")
@@ -89,9 +89,9 @@ func errDefaultAlreadyExists() *common.OpenStackError {
 }
 
 // errSecurityGroupInUse is upstream's SecurityGroupInUse, for a delete or a change of statefulness of
-// a group a port carries.
-func errSecurityGroupInUse(operation, id string) *common.OpenStackError {
-	return common.NewResourceInUseError("security group", operation, fmt.Sprintf("Security Group %s in use.", id))
+// a group a port carries, raised without a reason as upstream raises it there.
+func errSecurityGroupInUse(id string) *common.OpenStackError {
+	return common.NewNeutronError(http.StatusConflict, "SecurityGroupInUse", fmt.Sprintf("Security Group %s in use.", id))
 }
 
 // conflictReason is upstream's reason for refusing a port both kinds of group
@@ -142,18 +142,14 @@ func invalidInput(message string) *common.OpenStackError {
 	return common.NewNeutronError(http.StatusBadRequest, "InvalidInput", "Invalid input for operation: "+message+".")
 }
 
-// queryBooleans parses repeated boolean query values as upstream's convert_to_boolean does: true,
-// false, 1 and 0, in any case. It returns the distinct values given.
+// queryBooleans parses repeated boolean query values as upstream's convert_to_boolean does —
+// strutils.bool_from_string, strict: the words common.ParseQueryBool knows (SPEC-033 T197) — and
+// returns the distinct values given. Any other answers 400 InvalidInput, as upstream's.
 func queryBooleans(values []string) ([]bool, *common.OpenStackError) {
 	var out []bool
 	for _, v := range values {
-		var b bool
-		switch strings.ToLower(v) {
-		case "true", "1":
-			b = true
-		case "false", "0":
-			b = false
-		default:
+		b, ok := common.ParseQueryBool(v)
+		if !ok {
 			return nil, invalidInput(fmt.Sprintf("'%s' cannot be converted to boolean", v))
 		}
 		if !slices.Contains(out, b) {
@@ -195,10 +191,9 @@ func nonEmpty(values []string) []string {
 func securityGroupListFilter(c *gin.Context) (*common.SQLFilter, *common.OpenStackError) {
 	f := &common.SQLFilter{}
 	projectScope(c, f, "project_id", ownedBy("project_id"))
-	for _, column := range []string{"id", "name", "description"} {
-		if values := c.QueryArray(column); len(values) > 0 {
-			f.Cond(column + "::text = ANY(" + f.Arg(values) + ")")
-		}
+	if refusal := filterByColumns(c, f, columnFilter{param: "id", column: "id"}, columnFilter{param: "name", column: "name"},
+		columnFilter{param: "description", column: "description"}); refusal != nil {
+		return nil, refusal
 	}
 	if values := c.QueryArray("stateful"); len(values) > 0 {
 		kinds, refusal := queryBooleans(values)
@@ -231,20 +226,114 @@ func securityGroupListFilter(c *gin.Context) (*common.SQLFilter, *common.OpenSta
 	return f, nil
 }
 
-// ifMatchRevision reads If-Match: revision_number=<n>, as upstream's revision-if-match extension does
-// (FR-050). ok is false when the header is absent.
+// columnFilter is a query parameter of a listing, the column it compares, and the attribute's converter,
+// nil for none: it gives the value as stored, "" for none, or upstream's refusal.
+type columnFilter struct {
+	param, column string
+	convert       func(string) (string, *common.OpenStackError)
+}
+
+// filterByColumns narrows f by each of filters a query gives, repeatable, matching any of its values:
+// each value converted as upstream's get_filters_from_dict converts it, then the column compared as text,
+// "" for none, so a malformed value matches nothing (FR-019a, T267). The group and rule listings both use
+// it (SPEC-033 T194).
+func filterByColumns(c *gin.Context, f *common.SQLFilter, filters ...columnFilter) *common.OpenStackError {
+	for _, cf := range filters {
+		values := c.QueryArray(cf.param)
+		if len(values) == 0 {
+			continue
+		}
+		if cf.convert != nil {
+			converted := make([]string, len(values))
+			for i, v := range values {
+				var refusal *common.OpenStackError
+				if converted[i], refusal = cf.convert(v); refusal != nil {
+					return refusal
+				}
+			}
+			values = converted
+		}
+		f.Cond("COALESCE(" + cf.column + "::text, '') = ANY(" + f.Arg(values) + ")")
+	}
+	return nil
+}
+
+// securityGroupRuleFilters are upstream's attribute filters of the rule listing, each repeatable, with the
+// converters of the rule's attributes (SPEC-033 T194, T267). project_id and tenant_id narrow by the group's
+// project (projectScope).
+var securityGroupRuleFilters = []columnFilter{
+	{param: "id", column: "sgr.id"}, {param: "security_group_id", column: "sgr.security_group_id"},
+	{param: "direction", column: "sgr.direction"},
+	{param: "ethertype", column: "sgr.ethertype", convert: filterValue(convertEtherType)},
+	{param: "protocol", column: "sgr.protocol", convert: filterValue(convertProtocol)},
+	{param: "port_range_min", column: "sgr.port_range_min", convert: convertPortValue},
+	{param: "port_range_max", column: "sgr.port_range_max", convert: convertPortValue},
+	{param: "remote_ip_prefix", column: "sgr.remote_ip_prefix", convert: func(v string) (string, *common.OpenStackError) {
+		p, _, refusal := convertRemoteIPPrefix(&v)
+		return derefOr(p, ""), refusal
+	}},
+	{param: "remote_group_id", column: "sgr.remote_group_id"},
+}
+
+// filterValue is a rule attribute's converter as a filter value's: none is "".
+func filterValue(convert func(*string) (*string, *common.OpenStackError)) func(string) (string, *common.OpenStackError) {
+	return func(v string) (string, *common.OpenStackError) {
+		converted, refusal := convert(&v)
+		return derefOr(converted, ""), refusal
+	}
+}
+
+// convertPortValue is upstream's convert_validate_port_value: a number from 0 to 65535.
+func convertPortValue(v string) (string, *common.OpenStackError) {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 || n > 65535 {
+		return "", ruleRefusal("SecurityGroupInvalidPortValue", fmt.Sprintf("Invalid value for port %s", v))
+	}
+	return strconv.Itoa(n), nil
+}
+
+// revisionETag prefixes the entity tag that carries a revision constraint.
+const revisionETag = "revision_number="
+
+// quotedETag is webob's _rx_etag: a quoted entity tag, W/ marking a weak one.
+var quotedETag = regexp.MustCompile(`(?:^|\s)(W/)?"((?:\\"|.)*?)"`)
+
+// ifMatchRevision reads an If-Match revision constraint as upstream's
+// check_request_for_revision_constraint does (FR-050): of the header's entity tags, the one with the
+// revision_number= prefix constrains, and a second, or one whose number does not parse, is a 400. ok
+// is false when none constrains.
 func ifMatchRevision(c *gin.Context) (revision int, ok bool, refusal *common.OpenStackError) {
-	header := strings.TrimSpace(c.GetHeader("If-Match"))
-	if header == "" {
-		return 0, false, nil
+	for _, etag := range strongETags(c.GetHeader("If-Match")) {
+		if !strings.HasPrefix(etag, revisionETag) {
+			continue
+		}
+		if ok {
+			return 0, false, badRequest("if-match", "Multiple revision_number etags are not supported.")
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(strings.Split(etag, revisionETag)[1]))
+		if err != nil {
+			return 0, false, badRequest("if-match", "Revision number etag must be in the format of revision_number=<int>")
+		}
+		revision, ok = n, true
 	}
-	value, found := strings.CutPrefix(header, "revision_number=")
-	n, err := strconv.Atoi(strings.TrimSpace(value))
-	if !found || err != nil {
-		return 0, false, common.NewBadRequestError(
-			fmt.Sprintf("Invalid If-Match header %q: expected revision_number=<integer>.", header))
+	return revision, ok, nil
+}
+
+// strongETags lists the entity tags upstream's request.if_match holds, as webob's
+// ETagMatcher.parse(header, strong=True) reads them: the quoted ones but the weak, or the whole header
+// when none is quoted. An absent header and * carry no revision either way.
+func strongETags(header string) []string {
+	quoted := quotedETag.FindAllStringSubmatch(header, -1)
+	if len(quoted) == 0 {
+		return []string{header}
 	}
-	return n, true, nil
+	var etags []string
+	for _, m := range quoted {
+		if m[1] == "" {
+			etags = append(etags, m[2])
+		}
+	}
+	return etags
 }
 
 // errRevisionConstraint is upstream's RevisionNumberConstraintFailed: 412, nothing changed.
