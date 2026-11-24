@@ -50,7 +50,7 @@ jobs:
           test "$(docker image inspect lightstack:sbom --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "${GITHUB_SHA}"
 
       - name: Generate runtime SPDX SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
         with:
           image: lightstack:sbom
           format: spdx-json
