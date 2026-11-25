@@ -16,6 +16,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
 
 suite_begin keystone
 
+# Use a syntactically valid UUID for negative lookups. Name resolution for an
+# unknown Keystone resource is client-side and varies by OSC command; a UUID
+# forces the request through the API and lets these cases assert the HTTP code.
+KE_MISSING_ID="00000000-0000-4000-8000-000000000000"
+
 # --- helpers -----------------------------------------------------------------
 
 # Assert a negative case produced the expected API error, not an unrelated
@@ -107,8 +112,9 @@ osc project delete cli-conf-ke-proj
 t_end
 
 t_begin keystone.project.show.neg
-osc project show cli-conf-ke-missing
+osc project show "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.project.set
@@ -128,25 +134,27 @@ osc project delete cli-conf-ke-proj
 t_end
 
 t_begin keystone.project.set.neg
-osc project set cli-conf-ke-missing --description "nope"
+osc project set "$KE_MISSING_ID" --description "nope"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.project.delete
 osc project delete cli-conf-ke-proj
 osc project create cli-conf-ke-proj
 assert_rc 0
+KE_DELETED_PROJECT_ID="$(printf '%s' "$OSC_OUT" | jq -r '.id')"
 osc project delete cli-conf-ke-proj
 assert_rc 0
-osc project show cli-conf-ke-proj
+osc project show "$KE_DELETED_PROJECT_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.project.delete.neg
-# the CLI resolves the name client-side and never reaches the server, so only
-# the non-zero exit is asserted (same behaviour against upstream Keystone)
-osc project delete cli-conf-ke-missing
+osc project delete "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 # --- users -------------------------------------------------------------------
@@ -205,8 +213,9 @@ osc user delete cli-conf-ke-user
 t_end
 
 t_begin keystone.user.show.neg
-osc user show cli-conf-ke-missing
+osc user show "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.user.set
@@ -228,23 +237,27 @@ osc user delete cli-conf-ke-user2
 t_end
 
 t_begin keystone.user.set.neg
-osc user set cli-conf-ke-missing --email nope@cli-conf.invalid
+osc user set "$KE_MISSING_ID" --email nope@cli-conf.invalid
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.user.delete
 osc user delete cli-conf-ke-user
 osc user create cli-conf-ke-user --password ke-pass-123
 assert_rc 0
+KE_DELETED_USER_ID="$(printf '%s' "$OSC_OUT" | jq -r '.id')"
 osc user delete cli-conf-ke-user
 assert_rc 0
-osc user show cli-conf-ke-user
+osc user show "$KE_DELETED_USER_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.user.delete.neg
-osc user delete cli-conf-ke-missing
+osc user delete "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 # --- groups ------------------------------------------------------------------
@@ -406,8 +419,9 @@ osc role delete cli-conf-ke-role
 t_end
 
 t_begin keystone.role.show.neg
-osc role show cli-conf-ke-missing
+osc role show "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.role.set
@@ -424,23 +438,27 @@ osc role delete cli-conf-ke-role2
 t_end
 
 t_begin keystone.role.set.neg
-osc role set cli-conf-ke-missing --name cli-conf-ke-nope
+osc role set "$KE_MISSING_ID" --name cli-conf-ke-nope
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.role.delete
 osc role delete cli-conf-ke-role
 osc role create cli-conf-ke-role
 assert_rc 0
+KE_DELETED_ROLE_ID="$(printf '%s' "$OSC_OUT" | jq -r '.id')"
 osc role delete cli-conf-ke-role
 assert_rc 0
-osc role show cli-conf-ke-role
+osc role show "$KE_DELETED_ROLE_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.role.delete.neg
-osc role delete cli-conf-ke-missing
+osc role delete "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.role.assignment.add
@@ -474,8 +492,9 @@ osc role delete cli-conf-ke-rar
 t_end
 
 t_begin keystone.role.assignment.add.neg
-osc role add cli-conf-ke-missing --user admin --project default
+osc role add "$KE_MISSING_ID" --user admin --project default
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.role.assignment.remove
@@ -538,7 +557,7 @@ t_begin keystone.role.assignment.list.names
 osc role assignment list --names
 assert_rc 0
 assert_jq_type '.' array
-assert_jq '[.[] | select(.Role == "admin" and .User == "admin" and .Project == "default")] | length >= 1'
+assert_jq '[.[] | select(.Role == "admin" and (.User | split("@")[0]) == "admin" and (.Project | split("@")[0]) == "default")] | length >= 1'
 t_end
 
 # --- domains -----------------------------------------------------------------
@@ -644,8 +663,9 @@ assert_jq_type '(.ID // .id)' string
 t_end
 
 t_begin keystone.service.show.neg
-osc service show cli-conf-ke-missing
+osc service show "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.catalog.list
@@ -686,7 +706,7 @@ assert_jq_type '(.ID // .id)' string
 assert_jq_type '.Secret' string
 # jq's `//` treats false as falsy, so an explicit false fallback is needed here
 assert_jq '(.Unrestricted // .unrestricted // false)' false
-assert_jq '.Roles' '[]'
+assert_jq '.Roles' admin
 osc application credential delete cli-conf-ke-ac
 assert_rc 0
 t_end
@@ -721,29 +741,33 @@ osc application credential show cli-conf-ke-ac
 assert_rc 0
 assert_jq '(.Name // .name)' cli-conf-ke-ac
 assert_jq_type '(.ID // .id)' string
-assert_jq_type '(.Roles // .roles)' array
+assert_jq '(.Roles // .roles)' admin
 osc application credential delete cli-conf-ke-ac
 t_end
 
 t_begin keystone.applicationcredential.show.neg
-osc application credential show cli-conf-ke-missing
+osc application credential show "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.applicationcredential.delete
 osc application credential delete cli-conf-ke-ac
 osc application credential create cli-conf-ke-ac
 assert_rc 0
+KE_APPLICATION_CREDENTIAL_ID="$(printf '%s' "$OSC_OUT" | jq -r '(.ID // .id)')"
 osc application credential delete cli-conf-ke-ac
 assert_rc 0
-# absence proof: the name no longer resolves
-osc application credential show cli-conf-ke-ac
+# Use the returned id so this proves the API no longer has the credential.
+osc application credential show "$KE_APPLICATION_CREDENTIAL_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 t_begin keystone.applicationcredential.delete.neg
-osc application credential delete cli-conf-ke-missing
+osc application credential delete "$KE_MISSING_ID"
 _ke_assert_failed
+_ke_assert_http 404
 t_end
 
 # --- EC2 credentials -----------------------------------------------------------

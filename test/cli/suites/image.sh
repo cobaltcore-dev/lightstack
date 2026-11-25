@@ -60,6 +60,57 @@ _im_create() {
         --disk-format raw --container-format bare --file "$IM_IMG_FILE"
 }
 
+# Resolve the same public endpoint the CLI uses. Glance's catalog URL is the
+# service root; this harness appends /v2 for raw status checks the pinned CLI
+# cannot report faithfully for two negative cases.
+_im_glance_api_base() {
+    osc catalog show glance
+    (( OSC_RC == 0 )) || return 1
+    local endpoint
+    endpoint="$(printf '%s' "$OSC_OUT" | jq -er '([.endpoints[]? | select(.interface == "public") | .url] | first) // ([.endpoints[]?.url] | first)')" || return 1
+    endpoint="$(printf '%s' "$endpoint" | sed 's:/*$::')"
+    [[ "$endpoint" == */v2 ]] || endpoint="$endpoint/v2"
+    printf '%s\n' "$endpoint"
+}
+
+IM_GLANCE_API_BASE="$(_im_glance_api_base)" || IM_GLANCE_API_BASE=""
+
+# Assert the API status directly while preserving the last CLI result for the
+# case report. OSC 7.0.0 omits the HTTP status for an unknown image marker and
+# reports image-delete 404s as its local "Multi Backend support not enabled"
+# message, so CLI stderr alone cannot establish these two server responses.
+_im_assert_api_status() {
+    local expected="$1" method="$2" path="$3"
+    local saved_rc="$OSC_RC" saved_out="$OSC_OUT" saved_err="$OSC_ERR"
+    local saved_cmd="$LAST_CMD" saved_ms="$LAST_CMD_MS"
+    local token body_file status curl_rc=0 response
+
+    if [[ -z "$IM_GLANCE_API_BASE" ]]; then
+        t_fail "could not resolve the public Glance endpoint from the Keystone catalog"
+        return
+    fi
+    osc token issue -f value -c id
+    if (( OSC_RC != 0 )); then
+        t_fail "could not obtain a token for raw Glance status check: $(_snip "$OSC_ERR")"
+        OSC_RC="$saved_rc" OSC_OUT="$saved_out" OSC_ERR="$saved_err"
+        LAST_CMD="$saved_cmd" LAST_CMD_MS="$saved_ms"
+        return
+    fi
+    token="$OSC_OUT"
+    body_file="$IM_TMP_DIR/api-response.json"
+    status="$(curl -sS -o "$body_file" -w '%{http_code}' -X "$method" \
+        -H "X-Auth-Token: $token" "$IM_GLANCE_API_BASE$path" 2>"$IM_TMP_DIR/curl.stderr")" || curl_rc=$?
+    response="$(cat "$body_file" 2>/dev/null || true)"
+    if (( curl_rc != 0 )); then
+        t_fail "raw Glance request failed: $(<"$IM_TMP_DIR/curl.stderr")"
+    elif [[ "$status" != "$expected" ]]; then
+        t_fail "raw Glance $method $path returned HTTP $status, expected $expected; body: $(_snip "$response")"
+    fi
+
+    OSC_RC="$saved_rc" OSC_OUT="$saved_out" OSC_ERR="$saved_err"
+    LAST_CMD="$saved_cmd" LAST_CMD_MS="$saved_ms"
+}
+
 # --- image.create -----------------------------------------------------------
 t_begin image.create
 _im_cleanup_image cli-conf-im-create
@@ -153,8 +204,9 @@ osc image list --marker 00000000-0000-0000-0000-000000000000
 if (( OSC_RC == 0 )); then
     t_fail "list with an unknown marker id must not exit 0"
 else
-    assert_http_error 400
+    assert_err_contains "No Image found for"
 fi
+_im_assert_api_status 400 GET "/images?marker=00000000-0000-0000-0000-000000000000"
 t_end
 
 # --- image.set ---------------------------------------------------------------
@@ -237,9 +289,10 @@ t_begin image.delete.neg
 osc image delete "$IM_MISSING_ID"
 if (( OSC_RC == 0 )); then
     t_fail "delete of a nonexistent image must not exit 0"
-else
-    assert_http_error 404
 fi
+# Glance's API still must return the correct 404, even though the pinned CLI
+# turns that response into its multi-store client message before displaying it.
+_im_assert_api_status 404 DELETE "/images/$IM_MISSING_ID"
 t_end
 
 # --- image.member.add --------------------------------------------------------
