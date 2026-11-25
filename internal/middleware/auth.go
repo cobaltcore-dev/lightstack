@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
@@ -34,8 +35,13 @@ func AuthMiddleware(authService *keystone.AuthService) gin.HandlerFunc {
 		}
 
 		// Validate token
-		claims, err := authService.ValidateToken(token)
+		claims, err := authService.ValidateTokenContext(c.Request.Context(), token)
 		if err != nil {
+			var osErr *common.OpenStackError
+			if errors.As(err, &osErr) && osErr.StatusCode == http.StatusServiceUnavailable {
+				common.AbortWithError(c, osErr)
+				return
+			}
 			common.AbortWithError(c, common.NewUnauthorizedError("invalid or expired token"))
 			return
 		}

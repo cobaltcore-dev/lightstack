@@ -2,6 +2,7 @@ package keystone
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -307,7 +308,7 @@ func (svc *Service) ValidateToken(c *gin.Context) {
 		return
 	}
 
-	claims, err := svc.authService.ValidateToken(tokenString)
+	claims, err := svc.authService.ValidateTokenContext(c.Request.Context(), tokenString)
 	if err != nil {
 		if osErr, ok := err.(*common.OpenStackError); ok {
 			common.SendError(c, osErr)
@@ -330,17 +331,34 @@ func (svc *Service) ValidateToken(c *gin.Context) {
 // RevokeToken revokes a token (DELETE /v3/auth/tokens)
 func (svc *Service) RevokeToken(c *gin.Context) {
 	// Upstream validates the subject token and answers 404 when it names
-	// nothing revocable; the previous unconditional 204 hid typos and
-	// expired ids, so clients could not detect them (SPEC-031). Tokens are
-	// JWTs that expire naturally, so revoking a valid token is acknowledged
-	// with 204 — there is no server-side session to destroy.
+	// nothing revocable. Persist its hash until expiry so every instance
+	// rejects the token immediately after this endpoint returns (SPEC-031).
 	tokenString := c.GetHeader("X-Subject-Token")
 	if tokenString == "" {
 		common.SendError(c, common.NewBadRequestError("X-Subject-Token header required"))
 		return
 	}
-	if _, err := svc.authService.ValidateToken(tokenString); err != nil {
-		common.SendError(c, common.NewIdentityNotFoundError("token", "requested"))
+	claims, err := svc.authService.ValidateTokenContext(c.Request.Context(), tokenString)
+	if err != nil {
+		var osErr *common.OpenStackError
+		if errors.As(err, &osErr) {
+			if osErr.StatusCode == http.StatusUnauthorized {
+				common.SendError(c, common.NewIdentityNotFoundError("token", "requested"))
+			} else {
+				common.SendError(c, osErr)
+			}
+		} else {
+			common.SendError(c, common.NewInternalServerError("failed to validate token"))
+		}
+		return
+	}
+	if err := svc.authService.revokeToken(c.Request.Context(), tokenString, claims.ExpiresAt.Time); err != nil {
+		var osErr *common.OpenStackError
+		if errors.As(err, &osErr) {
+			common.SendError(c, osErr)
+		} else {
+			common.SendError(c, common.NewInternalServerError("failed to revoke token"))
+		}
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -358,9 +376,14 @@ func (svc *Service) ListAuthProjects(c *gin.Context) {
 		return
 	}
 
-	claims, err := svc.authService.ValidateToken(tokenString)
+	claims, err := svc.authService.ValidateTokenContext(c.Request.Context(), tokenString)
 	if err != nil {
-		common.SendError(c, common.NewUnauthorizedError("invalid token"))
+		var osErr *common.OpenStackError
+		if errors.As(err, &osErr) && osErr.StatusCode != http.StatusUnauthorized {
+			common.SendError(c, osErr)
+		} else {
+			common.SendError(c, common.NewUnauthorizedError("invalid token"))
+		}
 		return
 	}
 
