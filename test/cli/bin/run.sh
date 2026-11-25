@@ -3,7 +3,7 @@
 #
 # Usage:
 #   run.sh [--suite <name>]... [--fast] [--strict] [--no-cleanup]
-#          [--keep-server] [--results-dir <dir>] [--help]
+#          [--keep-server] [--force-compose] [--results-dir <dir>] [--help]
 #
 #   --suite <name>     run only the named suite (repeatable). A single
 #                      --suite implies --no-cleanup unless --teardown is
@@ -17,12 +17,13 @@
 #   --no-cleanup       skip the fixture teardown sweep at the end.
 #   --teardown         with --suite: still tear down afterwards.
 #   --keep-server      do not stop a server this script started itself.
+#   --force-compose    start the binary-test stack even if OS_AUTH_URL answers.
 #   --results-dir      where results.json / results.junit.xml go
 #                      (default: test/cli/results)
 #
 # Server selection:
 #   1. If $OS_AUTH_URL (default http://localhost:35357/v3) answers, the
-#      already-running server is used as-is.
+#      already-running server is used as-is, unless --force-compose is set.
 #   2. Otherwise, if docker is available, the binary-test compose stack is
 #      started (deployments/docker-compose.binary-test.yml — the binary built
 #      by `make build`, bind-mounted over the image copy) and stopped on exit.
@@ -48,6 +49,7 @@ STRICT=0
 NO_CLEANUP=0
 TEARDOWN=0
 KEEP_SERVER=0
+FORCE_COMPOSE=0
 RESULTS_DIR="$CLI_ROOT/results"
 
 usage() {
@@ -72,6 +74,7 @@ while (( $# > 0 )); do
         --no-cleanup)  NO_CLEANUP=1; shift ;;
         --teardown)    TEARDOWN=1; shift ;;
         --keep-server) KEEP_SERVER=1; shift ;;
+        --force-compose) FORCE_COMPOSE=1; shift ;;
         --results-dir) _need_arg "$@"; RESULTS_DIR="$2"; shift 2 ;;
         -h|--help)     usage 0 ;;
         *)             log_error "unknown option: $1"; usage 1 ;;
@@ -184,7 +187,13 @@ if (( ${#SUITES[@]} == 1 )) && (( ! TEARDOWN )) && (( ! NO_CLEANUP )); then
     NO_CLEANUP=1
 fi
 
-if ! curl -sf -o /dev/null --max-time 5 "$OS_AUTH_URL"; then
+if (( FORCE_COMPOSE )); then
+    # The Compose stack publishes the local service ports; do not let a caller's
+    # external OS_AUTH_URL redirect readiness checks or the CLI to another server.
+    OS_AUTH_URL="http://localhost:35357/v3"
+    export OS_AUTH_URL
+fi
+if (( FORCE_COMPOSE )) || ! curl -sf -o /dev/null --max-time 5 "$OS_AUTH_URL"; then
     if ! _start_compose_stack; then
         # The EXIT trap is not installed yet — anything the failed start left
         # behind must be torn down HERE, or a half-started stack (up succeeded,

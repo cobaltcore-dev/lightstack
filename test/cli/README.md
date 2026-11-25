@@ -10,9 +10,8 @@ for [issue #105](https://github.com/cobaltcore-dev/lightstack/issues/105).
 ## Quick start
 
 ```bash
-make build                      # the suite tests THIS binary
-make test-cli                   # runs against a running server, or starts one via docker
-# or, with a server already running (stub mode, default creds):
+make test-cli                   # rebuilds and tests this checkout's binary in Docker
+# or, against an already-running server (stub mode, default creds):
 ./test/cli/bin/run.sh
 ./test/cli/bin/coverage.sh      # the coverage gate — see below
 ```
@@ -136,11 +135,16 @@ deployment: `http://localhost:35357/v3`, `admin`/`secret`), plus `OPENSTACK_CLI`
 `OSC_TIMEOUT` (default 30s), `NO_COLOR`, and `CLI_BASELINE_FILE` (override the
 known-failure ledger; used by the harness self-tests).
 
-If no server is at `OS_AUTH_URL` and docker is available, `run.sh` starts
+`make test-cli` always rebuilds `bin/lightstack` and starts the isolated Compose
+stack with `--force-compose`; it cannot silently select an older server already
+answering on the local ports. Docker is required for this target.
+
+When run directly, if no server is at `OS_AUTH_URL` and docker is available, `run.sh` starts
 `deployments/docker-compose.binary-test.yml` — the runtime image with this
 checkout's `bin/lightstack` bind-mounted over the in-image binary, so the suite
 always exercises the artifact `make build` produced, not a container rebuild.
-CI runs the binary natively instead (artifact download + PostgreSQL service).
+If a server already answers at `OS_AUTH_URL`, direct `run.sh` uses it as-is. CI
+runs the binary natively instead (artifact download + PostgreSQL service).
 
 ## Results
 

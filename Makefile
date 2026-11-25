@@ -125,14 +125,12 @@ test-compose-kvm:
 	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' not found." && exit 1)
 	@bash test/compose_kvm_state_test.sh
 
-# Run the OpenStack CLI conformance suite (SPEC-031, issue #105) against a
-# lightstack server. Builds bin/lightstack first if absent — the suite tests
-# the built artifact. Uses a server at OS_AUTH_URL if one is running,
-# otherwise starts the binary-test compose stack (requires docker).
-test-cli:
+# Run the OpenStack CLI conformance suite against this checkout's binary.
+# Rebuild every time and force the isolated binary-test Compose stack so a
+# pre-existing server cannot make the target validate stale code.
+test-cli: build
 	@echo "Running OpenStack CLI conformance suite..."
-	@test -x bin/lightstack || $(MAKE) build
-	@bash test/cli/bin/run.sh
+	@bash test/cli/bin/run.sh --force-compose
 
 # CLI conformance coverage gate (SPEC-031): cross-reference manifest/*.json
 # with results/results.json; fails on untested/failed/skipped tier A+B
