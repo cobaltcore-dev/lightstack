@@ -193,27 +193,6 @@ What to expect after upgrading:
 - **There is deliberately no setting to restore the old order.** Two rules for the same
   question is what produced the defect.
 
-#### `LIGHTSTACK_ENDPOINT_HOST` also decides what the service catalog caches
-
-A second, narrower role. The catalog cache key includes the host a request addressed —
-it has to, or one caller's `Host` header would decide which endpoints another caller in
-the same project is handed, and therefore where that caller sends its token. But the host
-comes from a client-supplied header, so keying on it lets callers choose the key space:
-with `cache.enabled: true`, a tenant varying that one header writes a Redis entry per
-value, each held 24 hours in a store shared across the deployment.
-
-So **only the host named by `LIGHTSTACK_ENDPOINT_HOST` is cached.** A request addressing any
-other name is answered correctly, from the database, uncached.
-
-What that means in practice:
-
-- `cache.enabled` defaults to **false**, so most deployments are unaffected either way.
-- If you enable caching and want catalog lookups served from it, **set
-  `LIGHTSTACK_ENDPOINT_HOST` to the name your clients use.** Left unset, the advertised host is
-  `localhost` and a deployment addressed by any other name caches no catalogs.
-- The endpoints themselves are unaffected: precedence is still request host first, as
-  above. This setting governs caching only.
-
 **The service catalog now follows the same rule** (SPEC-025-followup). It previously did not:
 catalog endpoint URLs were resolved from `LIGHTSTACK_ENDPOINT_HOST` alone, so pointing it at a name
 clients could not resolve made *every* command fail at catalog lookup — one step **before** any
@@ -223,7 +202,7 @@ can reach the deployment at all is now handed a catalog naming the address it us
 `LIGHTSTACK_ENDPOINT_HOST` remains the fallback for both, used when a request carries no usable host, and
 `localhost` is the last resort so an advertised URL is always absolute and parseable.
 
-Two consequences worth knowing:
+One consequence worth knowing:
 
 - **A forwarded-host header is deliberately not trusted.** Lightstack reads `Host`, never
   `X-Forwarded-Host`. On a direct connection a forwarding header is chosen by the client, and the
@@ -232,10 +211,12 @@ Two consequences worth knowing:
   preserve the original `Host`** (nginx: `proxy_set_header Host $host;`); otherwise Lightstack advertises
   whatever name the proxy forwarded, typically the internal service name. That is no worse than the
   old `localhost` default, but it is not automatically better either.
-- **The catalog cache is keyed on the host as well as the project.** Enabling `cache.enabled`
-  (Redis, off by default) with a project-only key would let one caller's `Host` decide the endpoints
-  another caller in the same project receives. Nothing to configure — noted because the cache's
-  24-hour TTL previously rested on the catalog being identical for every caller, and it no longer is.
+
+The catalog is **not cached** (SPEC-034). It is read from the database on every token issue and
+validation, whether or not `cache.enabled` is set. A restart with a changed
+`LIGHTSTACK_ENDPOINT_HOST`, `LIGHTSTACK_ENDPOINT_SCHEME` or `glance.s3_endpoint`, an endpoint created
+or deleted through the Identity API, and a migration that rewrites catalog rows all show in the next
+token.
 
 The advertised **port** is applied consistently now too. It names the port the target
 service is reachable on, and replaces whatever port the request carried — which is what

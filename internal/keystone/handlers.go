@@ -10,7 +10,6 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
-	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -20,15 +19,13 @@ import (
 type Service struct {
 	pool        database.DB
 	authService *AuthService
-	cache       *cache.Cache
 }
 
 // NewService creates a new Keystone service
-func NewService(pool database.DB, authService *AuthService, cacheInstance *cache.Cache) *Service {
+func NewService(pool database.DB, authService *AuthService) *Service {
 	return &Service{
 		pool:        pool,
 		authService: authService,
-		cache:       cacheInstance,
 	}
 }
 

@@ -255,6 +255,37 @@ redis-cli --scan --pattern 'lightstack:image:*'   | xargs -r redis-cli del
 
 Adjust the prefix if `cache.key_prefix` is not the default.
 
+## The service catalog is no longer cached
+
+With `cache.enabled: true`, Keystone kept each project's service catalog, as served to callers
+addressing `LIGHTSTACK_ENDPOINT_HOST` (`localhost` when unset), in Redis for 24 hours, already
+resolved, and nothing ever removed it. So for up to a day:
+
+- a service or endpoint created or deleted, or a service changed, through the Identity API
+  reached no token's catalog, although `openstack endpoint list` showed it;
+- a restart with a different `LIGHTSTACK_ENDPOINT_SCHEME` (for example `tls.enabled` in the chart)
+  or `glance.s3_endpoint` kept handing out the old URLs;
+- a release whose migrations add or fix catalog rows shipped without clients seeing them.
+
+The catalog is now read from the database on every token issue and validation. Every change above
+shows in the next token, on every node. The cache still serves flavors, images and networks, so
+`cache.enabled` keeps its meaning for them. This only matters where caching is enabled; it is off by
+default in both `config/lightstack.yaml` and the chart.
+
+Entries the previous version wrote (`service_catalog:<project>:<host>`) are never read again and
+expire within 24 hours. There is no action to take. To drop them at once:
+
+```bash
+redis-cli --scan --pattern 'lightstack:service_catalog:*' | xargs -r redis-cli del
+```
+
+Adjust the prefix if `cache.key_prefix` is not the default.
+
+The bundled compose stacks (`deployments/docker-compose.yml`, `deployments/docker-compose-sqlite.yml`)
+no longer start a Redis or set `LIGHTSTACK_REDIS_URL` / `LIGHTSTACK_CACHE_ENABLED`. The binary never
+read either variable, so those stacks never ran with the cache on. To use the cache, set `cache:` in
+the configuration file.
+
 ## Quota, limits, security-group, image and volume API changes
 
 Several quota, limits and security-group answers changed, and so did server create and rebuild,
@@ -532,8 +563,8 @@ reach the metadata service.
 
 The binary always served placement on `:8778`, but the catalog never listed it, so clients that look
 it up there, such as Horizon's Hypervisors → *Resource Provider* tab, reported it as unavailable.
-Migration 071 adds it on the next start; nothing to do. Where the catalog is cached in Redis
-(`cache.enabled`), a cached copy lives up to 24 hours, so placement appears once it expires.
+Migration 071 adds it on the next start; nothing to do. Placement appears in the next token's
+catalog.
 
 On a single node placement schedules nothing: Lightstack's placement is a stub that reports no
 resource providers, so Horizon's tab shows an empty table rather than an error.

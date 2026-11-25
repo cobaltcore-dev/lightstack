@@ -50,8 +50,8 @@ func TestServiceRunsOnItsOwnPool(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	auth := NewAuthService(pool, "pool-injection-test-secret", time.Hour, nil)
-	NewService(pool, auth, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
+	auth := NewAuthService(pool, "pool-injection-test-secret", time.Hour)
+	NewService(pool, auth).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))
 		}

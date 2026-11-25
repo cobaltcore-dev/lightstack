@@ -15,7 +15,6 @@ import (
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
-	"github.com/cobaltcore-dev/lightstack/pkg/cache"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -42,7 +41,6 @@ type AuthService struct {
 	pool             database.DB
 	jwtSecret        []byte
 	tokenTTL         time.Duration
-	cache            *cache.Cache
 	glanceS3Endpoint string // resolved cfg.Glance.S3Endpoint, advertised as the `s3` catalog endpoint
 	// rgwCompatTenantIDs is the resolved keystone.rgw_compat_tenant_ids flag:
 	// render token.project.id in OpenStack's established dash-free form in the
@@ -51,12 +49,11 @@ type AuthService struct {
 }
 
 // NewAuthService creates a new auth service
-func NewAuthService(pool database.DB, jwtSecret string, tokenTTL time.Duration, cacheInstance *cache.Cache) *AuthService {
+func NewAuthService(pool database.DB, jwtSecret string, tokenTTL time.Duration) *AuthService {
 	return &AuthService{
 		pool:      pool,
 		jwtSecret: []byte(jwtSecret),
 		tokenTTL:  tokenTTL,
-		cache:     cacheInstance,
 	}
 }
 
@@ -459,7 +456,7 @@ func (s *AuthService) AuthenticatePassword(ctx context.Context, req *AuthRequest
 		}
 
 		// Add service catalog
-		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, requestHost, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, requestHost, s.glanceS3Endpoint)
 	}
 
 	return resp, tokenString, nil
@@ -668,7 +665,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest, r
 		}
 
 		// Add service catalog
-		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, requestHost, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, projectID, requestHost, s.glanceS3Endpoint)
 	}
 
 	return resp, tokenString, nil
@@ -835,7 +832,7 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 		}
 
 		// Service catalog from the CANONICAL project id, like the issue paths.
-		resp.Token.Catalog = BuildServiceCatalog(s.pool, claims.ProjectID, requestHost, s.cache, s.glanceS3Endpoint)
+		resp.Token.Catalog = BuildServiceCatalog(s.pool, claims.ProjectID, requestHost, s.glanceS3Endpoint)
 	}
 
 	return resp
@@ -950,26 +947,9 @@ func (s *AuthService) CheckPassword(password, hash string) bool {
 // broke every command one step *before* the self-links that feature fixed were ever
 // fetched. Empty when a request carries no usable host, in which case the configured host
 // and then "localhost" apply, so an endpoint is always absolute and parseable (FR-032).
-func BuildServiceCatalog(pool database.DB, projectID, requestHost string, cacheInstance *cache.Cache, s3Endpoint string) []CatalogEntry {
+func BuildServiceCatalog(pool database.DB, projectID, requestHost, s3Endpoint string) []CatalogEntry {
 	ctx := context.Background()
 	host := catalogHost(requestHost)
-
-	// The cache key carries the HOST as well as the project (FR-031a).
-	//
-	// Not an optimisation — a correctness requirement, and a security one. Endpoints now
-	// derive from a client-supplied value, so a key naming only the project would let one
-	// caller's Host header decide the endpoints another caller in the same project is
-	// handed, and therefore where that caller sends its token. The comment this replaced
-	// asserted the catalog was immutable, which this feature makes false.
-	// ...but only the deployment's OWN host is cached; see catalogCacheable.
-	cacheable := cacheInstance != nil && catalogCacheable(host)
-	if cacheable {
-		cacheKey := "service_catalog:" + projectID + ":" + host
-		var cached []CatalogEntry
-		if err := cacheInstance.Get(ctx, cacheKey, &cached); err == nil {
-			return cached
-		}
-	}
 
 	catalog := []CatalogEntry{}
 
@@ -1044,11 +1024,10 @@ func BuildServiceCatalog(pool database.DB, projectID, requestHost string, cacheI
 			serviceMap[serviceID].Endpoints = append(serviceMap[serviceID].Endpoints, endpoint)
 		}
 	}
-	// A partial read must not become the served catalog: it would be cached for 24h
-	// (below) and hand every token issued in that window a catalog with endpoints
-	// missing. Fall back to the complete hardcoded catalog and do NOT cache.
+	// A partial read must not become the served catalog: it would hand this token a
+	// catalog with endpoints missing. Fall back to the complete hardcoded catalog.
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("service catalog rows iteration error; serving hardcoded catalog uncached")
+		log.Error().Err(err).Msg("service catalog rows iteration error; serving hardcoded catalog")
 		return buildHardcodedCatalog(projectID, host, s3Endpoint)
 	}
 
@@ -1060,11 +1039,6 @@ func BuildServiceCatalog(pool database.DB, projectID, requestHost string, cacheI
 	// Fall back to hardcoded if query returned nothing
 	if len(catalog) == 0 {
 		return buildHardcodedCatalog(projectID, host, s3Endpoint)
-	}
-
-	// Store in cache (24h TTL per config), for the configured host only.
-	if cacheable {
-		cacheInstance.TrySet(ctx, "service_catalog:"+projectID+":"+host, catalog, 24*time.Hour)
 	}
 
 	return catalog
@@ -1086,25 +1060,6 @@ func BuildServiceCatalog(pool database.DB, projectID, requestHost string, cacheI
 // reads one, and trusting a client-supplied forwarding header raises the same hazard
 // FR-031a exists to close — on a direct connection it is attacker-chosen. A deployment
 // behind a proxy configures the proxy to preserve Host; see docs/CONFIGURATION.md.
-// catalogCacheable reports whether a catalog built for this host may be cached.
-//
-// Only the deployment's OWN advertised host is. The cache key carries the host because it
-// has to (FR-031a: otherwise one caller's Host header decides another's endpoints, and so
-// where that caller sends its token) — but the host comes from a client-supplied header,
-// which means callers choose the key space. With caching enabled, a tenant varying that
-// one header writes a Redis key per value, each held 24 hours in a store shared across the
-// deployment, with no eviction policy this product configures. Restricting the cache to the
-// configured host puts the bound back where it was: one entry per project.
-//
-// THE COST, stated rather than implied: when LIGHTSTACK_ENDPOINT_HOST is unset the configured host
-// is "localhost", so a deployment addressed by any other name caches nothing here. That is
-// deliberate. The catalog is a single joined query, caching is opt-in (cache.enabled
-// defaults to false), and an optional saving is worth less than a bound that cannot be
-// exceeded by a caller.
-func catalogCacheable(host string) bool {
-	return host == catalogHost("")
-}
-
 func catalogHost(requestHost string) string {
 	if h := common.HostWithoutPort(requestHost); h != "" {
 		return h

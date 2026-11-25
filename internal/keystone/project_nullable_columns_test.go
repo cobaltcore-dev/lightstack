@@ -45,7 +45,7 @@ func TestProjectReadsSurviveNullableColumns(t *testing.T) {
 	resetAdmin(t)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	svc := NewService(testPool, NewAuthService(testPool, "null-columns-test-secret", time.Hour, nil), nil)
+	svc := NewService(testPool, NewAuthService(testPool, "null-columns-test-secret", time.Hour))
 	svc.RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		c.Set("user_id", adminUserID)
 		c.Set("roles", []string{"admin"})

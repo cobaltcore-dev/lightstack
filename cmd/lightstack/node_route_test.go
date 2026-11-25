@@ -18,7 +18,7 @@ import (
 func TestNeutronServerRoutesTheNodeCallAheadOfUserAuth(t *testing.T) {
 	svc := neutron.NewService(nil, "stub", nil)
 	svc.SetNodes(neutron.NodeOptions{Name: "node-a", Secret: []byte("node-secret")})
-	srv := createNeutronServer(&common.Config{}, svc, keystone.NewAuthService(nil, "user-secret", time.Hour, nil))
+	srv := createNeutronServer(&common.Config{}, svc, keystone.NewAuthService(nil, "user-secret", time.Hour))
 	do := func(method, path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		srv.Handler.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(`{}`)))

@@ -140,10 +140,10 @@ func main() {
 	}
 
 	// Initialize services
-	authService := keystone.NewAuthService(pool, cfg.Keystone.JWTSecret, cfg.Keystone.TokenTTL, cacheInstance)
+	authService := keystone.NewAuthService(pool, cfg.Keystone.JWTSecret, cfg.Keystone.TokenTTL)
 	authService.SetGlanceS3Endpoint(cfg.Glance.S3Endpoint)             // advertise the RGW endpoint in the s3 catalog
 	authService.SetRGWCompatTenantIDs(cfg.Keystone.RGWCompatTenantIDs) // RGW-safe project ids in token payloads
-	keystoneService := keystone.NewService(pool, authService, cacheInstance)
+	keystoneService := keystone.NewService(pool, authService)
 
 	// Set default libvirt mode if not specified
 	libvirtMode := cfg.Nova.LibvirtMode

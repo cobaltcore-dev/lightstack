@@ -32,7 +32,7 @@ func postAuth(t *testing.T, body string) (int, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	NewService(nil, nil, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) { c.Next() })
+	NewService(nil, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) { c.Next() })
 	req := httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

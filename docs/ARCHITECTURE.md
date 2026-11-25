@@ -227,8 +227,8 @@ Services receive their database through constructors rather than importing a glo
     |
     +-- health.DatabaseCheck(db)
     +-- keystone.BootstrapAdmin(ctx, db, cfg.Keystone)
-    +-- keystone.NewAuthService(db, jwtSecret, ttl, cache)
-    +-- keystone.NewService(db, authService, cache)
+    +-- keystone.NewAuthService(db, jwtSecret, ttl)
+    +-- keystone.NewService(db, authService)
     +-- nova.NewService(db, libvirtURI, mode, cache)
     +-- neutron.NewService(db, mode, cache)
     +-- neutron.NewVXLANCoordinator(db, vxlanManager, nodeRegistry, ...)

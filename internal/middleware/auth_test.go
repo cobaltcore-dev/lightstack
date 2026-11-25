@@ -50,7 +50,7 @@ func mintToken(t *testing.T, secret, userID, projectID string, roles []string, t
 // landed in the context.
 func authTestRouter(secret string, seen map[string]any) *gin.Engine {
 	// No pool: token validation is stateless, so these tests need no database.
-	svc := keystone.NewAuthService(nil, secret, time.Hour, nil)
+	svc := keystone.NewAuthService(nil, secret, time.Hour)
 	r := gin.New()
 	r.Use(AuthMiddleware(svc))
 	record := func(c *gin.Context) {
@@ -211,7 +211,7 @@ func TestAuthMiddlewareSkipsDiscoveryAndTokenIssuance(t *testing.T) {
 // there, Neutron's node call, checks its own node token and is registered ahead of this middleware
 // (cmd/lightstack's createNeutronServer), so a later /internal/ route of any service is not left open.
 func TestAuthMiddlewareExemptsNoInternalPath(t *testing.T) {
-	svc := keystone.NewAuthService(nil, "secret", time.Hour, nil)
+	svc := keystone.NewAuthService(nil, "secret", time.Hour)
 	r := gin.New()
 	r.Use(AuthMiddleware(svc))
 	r.POST("/internal/v1/converge", func(c *gin.Context) { c.Status(http.StatusNoContent) })

@@ -31,7 +31,7 @@ func TestRegisterRoutesMiddlewareWiring(t *testing.T) {
 		}
 		c.Next()
 	}
-	svc := NewService(testPool, nil, nil)
+	svc := NewService(testPool, nil)
 	svc.RegisterRoutes(&r.RouterGroup, stubAuth)
 
 	// Non-gated route (on val): malformed id → middleware 404, handler never runs.

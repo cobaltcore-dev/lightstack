@@ -41,9 +41,9 @@ const (
 func newRGWCompatRouter(rgwCompat bool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour, nil)
+	authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour)
 	authSvc.SetRGWCompatTenantIDs(rgwCompat)
-	NewService(testPool, authSvc, nil).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
+	NewService(testPool, authSvc).RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))
 		}
@@ -164,12 +164,7 @@ type tokenResponseBody struct {
 		Roles []struct {
 			Name string `json:"name"`
 		} `json:"roles"`
-		Catalog []struct {
-			Type      string `json:"type"`
-			Endpoints []struct {
-				URL string `json:"url"`
-			} `json:"endpoints"`
-		} `json:"catalog"`
+		Catalog tokenCatalog `json:"catalog"`
 	} `json:"token"`
 }
 
@@ -222,12 +217,7 @@ type validationResponseBody struct {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"roles"`
-		Catalog []struct {
-			Type      string `json:"type"`
-			Endpoints []struct {
-				URL string `json:"url"`
-			} `json:"endpoints"`
-		} `json:"catalog"`
+		Catalog tokenCatalog `json:"catalog"`
 	} `json:"token"`
 }
 
@@ -260,7 +250,7 @@ func TestDashFreeTenantID(t *testing.T) {
 // TestTokenProjectIDGating: the flag gates the transform; the default is off
 // (canonical hyphenated UUIDs).
 func TestTokenProjectIDGating(t *testing.T) {
-	s := NewAuthService(testPool, "k", time.Hour, nil)
+	s := NewAuthService(testPool, "k", time.Hour)
 	if got := s.tokenProjectID(rgwCompatProjectID); got != rgwCompatProjectID {
 		t.Errorf("flag off (default): tokenProjectID = %q, want canonical %q", got, rgwCompatProjectID)
 	}
@@ -923,9 +913,9 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 		{"flag on: dash-free, matching the Swift token payload", true, dashFree},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour, nil)
+			authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour)
 			authSvc.SetRGWCompatTenantIDs(tc.rgwCompat)
-			svc := NewService(testPool, authSvc, nil)
+			svc := NewService(testPool, authSvc)
 
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
@@ -962,9 +952,9 @@ func TestRenderS3TokenTenantEncoding(t *testing.T) {
 	// braced) — must not split the S3 and Swift tenants. The credential mint
 	// stores the canonical database UUID and the response renders dash-free.
 	t.Run("flag on: alternate UUID encodings canonicalize before encoding", func(t *testing.T) {
-		authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour, nil)
+		authSvc := NewAuthService(testPool, rgwCompatTestSecret, time.Hour)
 		authSvc.SetRGWCompatTenantIDs(true)
-		svc := NewService(testPool, authSvc, nil)
+		svc := NewService(testPool, authSvc)
 
 		for _, raw := range []string{
 			strings.ReplaceAll(rgwCompatProjectID, "-", ""), // 32 hex, no dashes

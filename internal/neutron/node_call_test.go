@@ -156,7 +156,7 @@ func TestNodeCallToken(t *testing.T) {
 	// And a node token is not a user token: every /v2.0 route refuses it, as the services' shared
 	// authentication does.
 	t.Run("a node token on a /v2.0 route", func(t *testing.T) {
-		auth := keystone.NewAuthService(testPool, string(testNodeSecret), time.Hour, nil)
+		auth := keystone.NewAuthService(testPool, string(testNodeSecret), time.Hour)
 		engine := gin.New()
 		engine.Use(middleware.AuthMiddleware(auth))
 		NewService(testPool, "stub", nil).RegisterRoutes(&engine.RouterGroup)

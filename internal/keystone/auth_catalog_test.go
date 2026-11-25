@@ -1,12 +1,20 @@
 package keystone
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
 func setSchemeEnv(t *testing.T, scheme string) {
@@ -83,7 +91,7 @@ func TestHardcodedCatalogScheme(t *testing.T) {
 func TestBuildServiceCatalogScheme(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "https")
-	cat := BuildServiceCatalog(testPool, "proj1", "", nil, "")
+	cat := BuildServiceCatalog(testPool, "proj1", "", "")
 	if len(cat) == 0 {
 		t.Fatal("empty catalog")
 	}
@@ -107,7 +115,7 @@ func TestBuildServiceCatalogS3EndpointFromConfig(t *testing.T) {
 	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // Helm-style: value comes from config, not env
 
 	var got string
-	for _, e := range BuildServiceCatalog(testPool, "proj-s3", "", nil, rgw) { // nil cache => fresh; rgw = cfg value
+	for _, e := range BuildServiceCatalog(testPool, "proj-s3", "", rgw) { // rgw = cfg value
 		if e.Type != "s3" {
 			continue
 		}
@@ -130,7 +138,7 @@ func TestBuildServiceCatalogOmitsS3WhenUnconfigured(t *testing.T) {
 	requireDB(t)
 	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // unconfigured deployment
 
-	cat := BuildServiceCatalog(testPool, "proj-unconf", "", nil, "") // "" = cfg.Glance.S3Endpoint unset
+	cat := BuildServiceCatalog(testPool, "proj-unconf", "", "") // "" = cfg.Glance.S3Endpoint unset
 	if len(cat) == 0 {
 		t.Fatal("empty catalog")
 	}
@@ -227,7 +235,7 @@ func catalogServices(cat []CatalogEntry) []string {
 func TestBuildServiceCatalogListsPlacement(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "")
-	for _, e := range BuildServiceCatalog(testPool, "proj-placement", "", nil, "") {
+	for _, e := range BuildServiceCatalog(testPool, "proj-placement", "", "") {
 		if e.Type != "placement" {
 			continue
 		}
@@ -245,57 +253,191 @@ func TestBuildServiceCatalogListsPlacement(t *testing.T) {
 func TestHardcodedCatalogMatchesTheDatabase(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "")
-	db := catalogServices(BuildServiceCatalog(testPool, "proj-drift", "", nil, ""))
+	db := catalogServices(BuildServiceCatalog(testPool, "proj-drift", "", ""))
 	fallback := catalogServices(buildHardcodedCatalog("proj-drift", catalogHost(""), ""))
 	if !slices.Equal(db, fallback) {
 		t.Errorf("the database catalog lists %v, the fallback %v; they must list the same services", db, fallback)
 	}
 }
 
-// TestCatalogCacheableOnlyForTheConfiguredHost pins the cache-admission policy
-// (branch review SRC-11).
-//
-// The cache key must carry the host (FR-031a) or one caller's Host header decides another
-// caller's endpoints. But the host is client-supplied, so keying on it hands the key space
-// to callers: with caching enabled, a tenant varying one header writes a Redis key per
-// value, each held 24 hours in a store shared across the deployment with no eviction
-// policy the product sets. Admitting only the configured host restores the bound of one
-// entry per project.
-//
-// Asserted as a predicate rather than through the cache because the cache is Redis-backed
-// and no test in this repo has one; the decision is the part with a rule in it.
-func TestCatalogCacheableOnlyForTheConfiguredHost(t *testing.T) {
-	t.Run("with LIGHTSTACK_ENDPOINT_HOST set", func(t *testing.T) {
-		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.example.test")
+// partialReadDB answers the catalog query with one good row and then an iteration error: a read
+// that fails part-way. unreachableDB fails at Query instead, which reaches a different fallback,
+// and a read that yields no rows would fall back as an empty catalog whatever rows.Err said.
+type partialReadDB struct{ unreachableDB }
 
-		if !catalogCacheable("lightstack.example.test") {
-			t.Error("the configured host must be cacheable; otherwise the cache never serves anything")
-		}
-		for _, host := range []string{
-			"attacker.example.test",
-			"lightstack.example.test.evil",
-			"", // no usable host: catalogHost falls back, so this is not the configured name
-			"192.0.2.1",
-			"lightstack.example.test:8774", // a port makes it a different string, and so a different key
-		} {
-			if catalogCacheable(host) {
-				t.Errorf("catalogCacheable(%q) = true; only the configured host may be cached, or a caller "+
-					"chooses the key space", host)
+func (partialReadDB) Query(context.Context, string, ...any) (database.Rows, error) {
+	return &partialRows{}, nil
+}
+
+type partialRows struct{ served bool }
+
+func (r *partialRows) Next() bool {
+	more := !r.served
+	r.served = true
+	return more
+}
+
+func (r *partialRows) Scan(dest ...any) error {
+	*dest[0].(*string), *dest[1].(*string), *dest[2].(*string) = "partial-svc", "partial-read-probe", "partial"
+	for i, v := range []string{"partial-ep", "public", "http://lightstack:1/partial", "RegionOne"} {
+		*dest[3+i].(**string) = &v
+	}
+	return nil
+}
+
+func (*partialRows) Err() error { return errUnreachable }
+func (*partialRows) Close()     {}
+
+// A read that fails part-way must not become a token's catalog: it would hand the token a catalog
+// with endpoints missing. The complete hardcoded catalog is served instead.
+func TestBuildServiceCatalogDiscardsAPartialRead(t *testing.T) {
+	setSchemeEnv(t, "")
+	got := catalogServices(BuildServiceCatalog(partialReadDB{}, "p", "", ""))
+	want := catalogServices(buildHardcodedCatalog("p", catalogHost(""), ""))
+	if !slices.Equal(got, want) {
+		t.Errorf("a read that failed part-way served %v; want the complete hardcoded catalog %v", got, want)
+	}
+}
+
+// catalogAdminHeaders are the stub-middleware headers that make a management call an admin's.
+var catalogAdminHeaders = map[string]string{"X-Test-Roles": "admin", "X-Test-User": rgwCompatSeededAdminID}
+
+// createdID posts body to path as an admin, asserts 201 and returns <key>.id.
+func createdID(t *testing.T, r *gin.Engine, path, key, body string) string {
+	t.Helper()
+	w := postJSON(t, r, http.MethodPost, path, body, catalogAdminHeaders)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST %s: %d %s", path, w.Code, w.Body.String())
+	}
+	var got map[string]struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || got[key].ID == "" {
+		t.Fatalf("POST %s: no %s.id in %s", path, key, w.Body.String())
+	}
+	return got[key].ID
+}
+
+// createProbeEndpoint creates a service of a type nothing else uses, and one public endpoint for
+// it, through the Identity API. Both rows are removed on cleanup, the endpoint first (cleanups run
+// last-in first-out), so a failing run leaves nothing for the parallel packages that read the
+// seeded catalog.
+func createProbeEndpoint(t *testing.T, r *gin.Engine, svcType, url string) (serviceID, endpointID string) {
+	t.Helper()
+	serviceID = createdID(t, r, "/v3/services", "service",
+		fmt.Sprintf(`{"service":{"type":%q,"name":%q}}`, svcType, svcType))
+	cleanupIdentityRow(t, "services", serviceID)
+	endpointID = createdID(t, r, "/v3/endpoints", "endpoint",
+		fmt.Sprintf(`{"endpoint":{"service_id":%q,"interface":"public","region":"RegionOne","url":%q}}`, serviceID, url))
+	cleanupIdentityRow(t, "endpoints", endpointID)
+	return serviceID, endpointID
+}
+
+// tokenCatalog is a token's catalog as tokenResponseBody and validationResponseBody decode it.
+type tokenCatalog []struct {
+	Type      string `json:"type"`
+	Endpoints []struct {
+		URL string `json:"url"`
+	} `json:"endpoints"`
+}
+
+// catalogURLs lists the endpoint URLs a token catalog holds for one service type.
+func catalogURLs(cat tokenCatalog, svcType string) []string {
+	var out []string
+	for _, e := range cat {
+		if e.Type == svcType {
+			for _, ep := range e.Endpoints {
+				out = append(out, ep.URL)
 			}
 		}
-	})
+	}
+	return out
+}
 
-	t.Run("without LIGHTSTACK_ENDPOINT_HOST", func(t *testing.T) {
-		t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "")
+// The catalog freshness tests (SPEC-034 FR-001 to FR-004, contract C1, C2, C4) each issue a token
+// first and then change one thing: a catalog kept between requests would serve the first token's
+// catalog to the second. Before SPEC-034 a Redis-backed copy did exactly that.
 
-		// The documented cost: the configured host is "localhost", so a deployment
-		// addressed by any other name caches nothing. Pinned so it is a known trade
-		// rather than a surprise to whoever next measures a cache hit rate.
-		if !catalogCacheable("localhost") {
-			t.Error("with no configured host, localhost is the advertised name and must be cacheable")
+// catalogFreshnessEnv seeds the project and admin the tests authenticate as, and pins the
+// advertised scheme (empty is http) and host (httptest addresses example.com).
+func catalogFreshnessEnv(t *testing.T) {
+	t.Helper()
+	seedRGWCompatFixtures(t)
+	t.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", "")
+	t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "example.com")
+}
+
+// issueCatalogToken issues a password token for the fixture project and returns it with its body.
+func issueCatalogToken(t *testing.T, r *gin.Engine) (token string, body tokenResponseBody) {
+	t.Helper()
+	w := postTokens(t, r, passwordAuthBody(rgwCompatProjectID))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("issue token: %d %s", w.Code, w.Body.String())
+	}
+	return w.Header().Get("X-Subject-Token"), decodeTokenBody(t, w)
+}
+
+// newCatalogProbe names a service type nothing else uses, the endpoint URL to create for it, and
+// the URL the catalog must advertise for it.
+func newCatalogProbe() (svcType, url, want string) {
+	svcType = "catalog-freshness-" + uuid.NewString()[:8]
+	return svcType, "http://lightstack:8999/" + svcType, "http://example.com:8999/" + svcType
+}
+
+func TestCatalogListsEndpointCreatedAfterIssue(t *testing.T) {
+	catalogFreshnessEnv(t)
+	r := newRGWCompatRouter(false)
+	first, _ := issueCatalogToken(t, r)
+	svcType, url, want := newCatalogProbe()
+	createProbeEndpoint(t, r, svcType, url)
+
+	if _, body := issueCatalogToken(t, r); !slices.Contains(catalogURLs(body.Token.Catalog, svcType), want) {
+		t.Errorf("issued token's catalog lists %v for %s; want %s (stale catalog)",
+			catalogURLs(body.Token.Catalog, svcType), svcType, want)
+	}
+	w := getToken(t, r, first)
+	if w.Code != http.StatusOK {
+		t.Fatalf("validate token: %d %s", w.Code, w.Body.String())
+	}
+	if got := catalogURLs(decodeValidationBody(t, w).Token.Catalog, svcType); !slices.Contains(got, want) {
+		t.Errorf("validated token's catalog lists %v for %s; want %s (stale catalog)", got, svcType, want)
+	}
+}
+
+func TestCatalogDropsDeletedEndpoint(t *testing.T) {
+	catalogFreshnessEnv(t)
+	r := newRGWCompatRouter(false)
+	svcType, url, want := newCatalogProbe()
+	_, endpointID := createProbeEndpoint(t, r, svcType, url)
+	// Issued after the create, so a kept catalog would hold the endpoint the delete removes.
+	if _, body := issueCatalogToken(t, r); !slices.Contains(catalogURLs(body.Token.Catalog, svcType), want) {
+		t.Fatalf("new endpoint missing from a fresh catalog; the test cannot run")
+	}
+	if w := postJSON(t, r, http.MethodDelete, "/v3/endpoints/"+endpointID, "", catalogAdminHeaders); w.Code != http.StatusNoContent {
+		t.Fatalf("delete endpoint: %d %s", w.Code, w.Body.String())
+	}
+	_, body := issueCatalogToken(t, r)
+	if got := catalogURLs(body.Token.Catalog, svcType); len(got) != 0 {
+		t.Errorf("deleted endpoint still in the catalog: %v (stale catalog)", got)
+	}
+}
+
+// The scheme is read on every call, so changing it here stands in for a restart with
+// LIGHTSTACK_ENDPOINT_SCHEME=https.
+func TestCatalogFollowsSchemeChange(t *testing.T) {
+	catalogFreshnessEnv(t)
+	r := newRGWCompatRouter(false)
+	issueCatalogToken(t, r)
+	t.Setenv("LIGHTSTACK_ENDPOINT_SCHEME", "https")
+	_, body := issueCatalogToken(t, r)
+	for _, e := range body.Token.Catalog {
+		if e.Type == "s3" {
+			continue // the configured RGW URL, served as-is
 		}
-		if catalogCacheable("lightstack.svc.cluster.local") {
-			t.Error("with no configured host, nothing else is cacheable — set LIGHTSTACK_ENDPOINT_HOST to enable it")
+		for _, ep := range e.Endpoints {
+			if !strings.HasPrefix(ep.URL, "https://") {
+				t.Errorf("%s endpoint %s is not https after the scheme change (stale catalog)", e.Type, ep.URL)
+			}
 		}
-	})
+	}
 }
