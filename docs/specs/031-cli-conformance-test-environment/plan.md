@@ -289,5 +289,6 @@ turn a self-healing probe into a plain assertion.
 
 ## 9. Migration sequence
 
-- Main uses migrations 074–075. This feature adds migrations 076–082 in order; each version has
-  backend-specific files where the PostgreSQL and SQLite schemas differ.
+- Main uses migrations 074–075. This feature adds migrations 076–083 in order; each version has
+  backend-specific files where the PostgreSQL and SQLite schemas differ. Migration 083 stores token
+  revocation hashes until their JWT expiry so revocation applies across server instances.
