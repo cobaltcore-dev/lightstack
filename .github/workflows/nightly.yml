@@ -29,7 +29,7 @@ jobs:
     # The full CLI and Terraform suites share one native server setup.
     services:
       postgres:
-        image: postgres:18.4-alpine
+        image: postgres:18.7-alpine
         env:
           POSTGRES_USER: lightstack
           POSTGRES_PASSWORD: secret
