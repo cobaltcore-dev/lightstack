@@ -142,6 +142,24 @@ func IntegrityCheck(ctx context.Context, dbURL, migrationsPath string) (uint64, 
 	if err := integrityResult(result); err != nil {
 		return 0, fmt.Errorf("%s: %w", path, err)
 	}
+	// A file that holds no Lightstack schema is refused as such, whatever version it records
+	// (SPEC-030 FR-005a). A Lightstack database migrated before the migration squash is refused
+	// next, before the checks that would judge it against the post-squash migrations (SPEC-032
+	// FR-011).
+	if err := requireLightstackTables(ctx, db, path); err != nil {
+		return 0, err
+	}
+	rec, err := readSQLiteRecords(ctx, db)
+	if err != nil {
+		return 0, err
+	}
+	in, err := inspectRecords(rec, migrationsPath, SQLite)
+	if err != nil {
+		return 0, err
+	}
+	if err := in.refusal(); err != nil {
+		return 0, err
+	}
 	version, err := schemaVersion(ctx, db, path)
 	if err != nil {
 		return 0, err
@@ -170,17 +188,36 @@ func integrityCheck(ctx context.Context, db *sql.DB) ([]string, error) {
 	return result, rows.Err()
 }
 
-// lightstackCoreTables are tables migration 001 creates and every later version keeps; the SQLite
-// baseline (073) has them too, so every Lightstack database carries all of them. Their presence —
-// not golang-migrate's own schema_migrations table, which any golang-migrate database has — is what
-// marks a file as holding Lightstack's schema.
+// lightstackCoreTables are tables every Lightstack database carries: the baseline (001) of each
+// backend creates them, as the migrations before the squash did, and no later version drops them.
+// Their presence, not golang-migrate's own schema_migrations table (which any golang-migrate
+// database has), is what marks a file as holding Lightstack's schema.
 var lightstackCoreTables = []string{"users", "projects", "instances", "flavors"}
 
-// schemaVersion reads the migration version golang-migrate records, refusing a database that is not
-// a restorable Lightstack one: an empty file, another program's golang-migrate database, a partial
-// .recover that kept only the version row, or one migrated all the way down. A recorded version is
-// generic golang-migrate metadata on its own, so it also requires Lightstack's own core tables to
-// be present (SPEC-030 FR-005a).
+// notLightstack refuses a file that is not a restorable Lightstack database.
+func notLightstack(path string) error {
+	return fmt.Errorf("%s holds no Lightstack schema: it is empty, an incomplete recovery, or not a Lightstack database", path)
+}
+
+// requireLightstackTables refuses a file that lacks golang-migrate's schema_migrations or any of
+// Lightstack's core tables: an empty file, another program's golang-migrate database, or a partial
+// .recover that kept only the version row. A recorded version is generic golang-migrate metadata
+// on its own, so the core tables are what mark a Lightstack database (SPEC-030 FR-005a).
+func requireLightstackTables(ctx context.Context, db *sql.DB, path string) error {
+	for _, name := range append([]string{"schema_migrations"}, lightstackCoreTables...) {
+		switch ok, err := tableExists(ctx, db, name); {
+		case err != nil:
+			return fmt.Errorf("read the schema version of %s: %w", path, err)
+		case !ok:
+			return notLightstack(path)
+		}
+	}
+	return nil
+}
+
+// schemaVersion reads the migration version golang-migrate records in a file that holds
+// Lightstack's tables (requireLightstackTables), refusing one migrated all the way down: it
+// records no version.
 //
 // It also refuses a version marked dirty. golang-migrate commits that mark before it runs a
 // migration and clears it after, so a dirty version means an interrupted migration, and startup
@@ -188,20 +225,11 @@ var lightstackCoreTables = []string{"users", "projects", "instances", "flavors"}
 // leaving an earlier version's schema under the dirty one, so the mark is read here, before the
 // schema comparison would report that as missing tables.
 func schemaVersion(ctx context.Context, db *sql.DB, path string) (uint64, error) {
-	notOurs := fmt.Errorf("%s holds no Lightstack schema: it is empty, an incomplete recovery, or not a Lightstack database", path)
-	for _, name := range append([]string{"schema_migrations"}, lightstackCoreTables...) {
-		switch ok, err := tableExists(ctx, db, name); {
-		case err != nil:
-			return 0, fmt.Errorf("read the schema version of %s: %w", path, err)
-		case !ok:
-			return 0, notOurs
-		}
-	}
 	var version uint64
 	var dirty bool
 	switch err := db.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations LIMIT 1").Scan(&version, &dirty); {
 	case errors.Is(err, sql.ErrNoRows):
-		return 0, notOurs
+		return 0, notLightstack(path)
 	case err != nil:
 		return 0, fmt.Errorf("read the schema version of %s: %w", path, err)
 	case dirty:

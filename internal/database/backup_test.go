@@ -492,29 +492,24 @@ func TestIntegrityCheckRefusesAnIncompleteSchema(t *testing.T) {
 
 // TestIntegrityCheckFollowsTheRecordedVersion pins that check holds a database to its own version's
 // schema. A complete database from an older Lightstack lacks what later migrations add; it passes,
-// and is migrated forward on start (FR-008). A version the migrations cannot build — here one below
-// the SQLite baseline — says nothing about what the file should hold, and is refused. (A version
-// from a newer Lightstack: TestMigrateUpRefusesANewerDatabase.)
+// and is migrated forward on start (FR-008). The folder gets one release migration past its newest,
+// so an older version exists whatever the real folder holds. (A version from a newer Lightstack:
+// TestMigrateUpRefusesANewerDatabase; one from before the migration squash: TestDatabaseState.)
 func TestIntegrityCheckFollowsTheRecordedVersion(t *testing.T) {
-	baseline, err := baselineVersion(os.DirFS(testMigrations))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if baseline >= latestSQLiteVersion(t) {
-		t.Fatalf("the baseline %d is the newest migration; the older-database case tests nothing", baseline)
-	}
+	migrations, probe := migrationsWithProbeRelease(t)
+	older := probe - 1
 	path := filepath.Join(t.TempDir(), "lightstack.db")
-	if err := MigrateToVersion(sqliteURL(path), testMigrations, uint(baseline)); err != nil {
+	if err := MigrateToVersion(sqliteURL(path), migrations, uint(older)); err != nil {
 		t.Fatal(err)
 	}
-	if v, err := IntegrityCheck(context.Background(), sqliteURL(path), testMigrations); err != nil || v != baseline {
-		t.Fatalf("IntegrityCheck on a complete older database = %d, %v; want version %d", v, err, baseline)
+	if v, err := IntegrityCheck(context.Background(), sqliteURL(path), migrations); err != nil || v != older {
+		t.Fatalf("IntegrityCheck on a complete older database = %d, %v; want version %d", v, err, older)
 	}
-
-	execRaw(t, path, "UPDATE schema_migrations SET version = 1")
-	if _, err := IntegrityCheck(context.Background(), sqliteURL(path), testMigrations); err == nil ||
-		!strings.Contains(err.Error(), "version 1") {
-		t.Fatalf("IntegrityCheck at version 1 = %v; want a refusal naming the version", err)
+	if err := MigrateUp(sqliteURL(path), migrations); err != nil {
+		t.Fatalf("the older database does not migrate forward: %v", err)
+	}
+	if v, err := IntegrityCheck(context.Background(), sqliteURL(path), migrations); err != nil || v != probe {
+		t.Fatalf("IntegrityCheck after migrating forward = %d, %v; want version %d", v, err, probe)
 	}
 }
 
@@ -524,28 +519,21 @@ func TestIntegrityCheckFollowsTheRecordedVersion(t *testing.T) {
 // version. Whether the migration applied (the schema is complete) or rolled back (the schema is an
 // earlier version's), the cause is the interrupted migration, not an incomplete recovery.
 func TestIntegrityCheckRefusesADirtyDatabase(t *testing.T) {
-	latest := latestSQLiteVersion(t)
-	baseline, err := baselineVersion(os.DirFS(testMigrations))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if baseline >= latest {
-		t.Fatalf("the baseline %d is the newest migration; the schema-behind case tests nothing", baseline)
-	}
+	migrations, latest := migrationsWithProbeRelease(t)
 	for _, tc := range []struct {
 		name   string
 		schema uint64 // the version whose schema the file holds
 	}{
 		{"the migration applied", latest},
-		{"the schema behind the version", baseline},
+		{"the schema behind the version", latest - 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "lightstack.db")
-			if err := MigrateToVersion(sqliteURL(path), testMigrations, uint(tc.schema)); err != nil {
+			if err := MigrateToVersion(sqliteURL(path), migrations, uint(tc.schema)); err != nil {
 				t.Fatal(err)
 			}
 			execRaw(t, path, fmt.Sprintf("UPDATE schema_migrations SET version = %d, dirty = 1", latest))
-			_, err := IntegrityCheck(context.Background(), sqliteURL(path), testMigrations)
+			_, err := IntegrityCheck(context.Background(), sqliteURL(path), migrations)
 			if want := fmt.Sprintf("marked dirty at migration version %d", latest); err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("IntegrityCheck on a dirty database = %v; want a refusal saying it is %s", err, want)
 			}

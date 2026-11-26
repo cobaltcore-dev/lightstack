@@ -9,7 +9,7 @@ import (
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 )
 
-// The default domain's stored id, seeded by migration 009. Tests assert against
+// The default domain's stored id, seeded by the baseline (`001`). Tests assert against
 // the row the resolver actually finds rather than this constant wherever they can,
 // so they stay honest if a deployment's default domain carries a different id —
 // which is the whole point of resolving by name (FR-003, research R2).
@@ -36,7 +36,7 @@ func TestResolveDomainRef(t *testing.T) {
 		t.Fatal("resolveDomainRef(\"\") returned an empty id")
 	}
 	if wantDefault != seededDefaultDomainID {
-		t.Logf("note: default domain id is %s, not the migration-009 value %s", wantDefault, seededDefaultDomainID)
+		t.Logf("note: default domain id is %s, not the value the baseline seeds, %s", wantDefault, seededDefaultDomainID)
 	}
 
 	tests := []struct {

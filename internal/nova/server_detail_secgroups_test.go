@@ -311,9 +311,9 @@ func TestEnsureDefaultSecurityGroup_SeedsNoIngress(t *testing.T) {
 	}
 }
 
-// The seeded project's `default` group (migration 002) is egress-only for the same
-// reason. Needs a database migrated from scratch: a database that ran the earlier
-// 002 keeps the ingress rule it inserted, since migrations are not re-applied.
+// The `default` group the baseline (`001`) seeds for the seeded project is egress-only
+// for the same reason. Earlier seeds gave it a world-open SSH ingress rule too, which
+// databases kept until a later migration deleted it (cloud-storage#528).
 func TestSeededDefaultSecurityGroup_HasNoIngress(t *testing.T) {
 	requireDB(t)
 	ctx := t.Context()

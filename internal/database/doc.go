@@ -65,6 +65,10 @@
 // # Migrations
 //
 // One migrations folder serves both backends, each through its own view; see
-// migrations/README.md. MigrateUp and the other Migrate functions pick the backend from the
-// URL, as Open does.
+// migrations/README.md. Both start at a generated baseline, 001; a release migration follows per
+// release, and between releases the view assembles the fragments in migrations/next/ into the open
+// release migration. Every migration records its checksum in applied_migrations. Before
+// golang-migrate runs, each entry point classifies the database (migrate_state.go) and refuses one
+// migrated before the squash, or one that applied an earlier state of its version, naming the way
+// out. MigrateUp and the other Migrate functions pick the backend from the URL, as Open does.
 package database

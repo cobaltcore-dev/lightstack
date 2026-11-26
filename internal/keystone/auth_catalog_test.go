@@ -98,9 +98,9 @@ func TestBuildServiceCatalogScheme(t *testing.T) {
 
 // TestBuildServiceCatalogS3EndpointFromConfig: the DB-backed catalog must advertise
 // the resolved RGW endpoint (cfg.Glance.S3Endpoint, wired via SetGlanceS3Endpoint —
-// the Helm chart populates it from YAML, NOT the env), never migration 062's seeded
-// http://localhost:7480 placeholder (PR #73 r3558646680). DB required — the harness
-// migrates 062, which seeds the s3 service+endpoint.
+// the Helm chart populates it from YAML, NOT the env), never the baseline's seeded
+// http://localhost:7480 placeholder (PR #73 r3558646680). DB required — the baseline
+// (`001`) seeds the s3 service+endpoint.
 func TestBuildServiceCatalogS3EndpointFromConfig(t *testing.T) {
 	requireDB(t)
 	const rgw = "http://rgw.example.test:8080"
@@ -123,9 +123,9 @@ func TestBuildServiceCatalogS3EndpointFromConfig(t *testing.T) {
 }
 
 // TestBuildServiceCatalogOmitsS3WhenUnconfigured: with RGW unconfigured, the
-// DB-backed catalog must omit the `s3` service entirely — migration 062's seeded
+// DB-backed catalog must omit the `s3` service entirely — the baseline's seeded
 // placeholder (http://localhost:7480) must never reach a client, on any service
-// (PR #73 review r3710751586). DB required: the harness migrates 062, which seeds it.
+// (PR #73 review r3710751586). DB required: the baseline (`001`) seeds it.
 func TestBuildServiceCatalogOmitsS3WhenUnconfigured(t *testing.T) {
 	requireDB(t)
 	t.Setenv("LIGHTSTACK_GLANCE_S3_ENDPOINT", "") // unconfigured deployment
@@ -140,7 +140,7 @@ func TestBuildServiceCatalogOmitsS3WhenUnconfigured(t *testing.T) {
 		}
 		for _, ep := range e.Endpoints {
 			if strings.Contains(ep.URL, "localhost:7480") {
-				t.Errorf("%s/%s advertises migration 062's placeholder: %s", e.Type, ep.Interface, ep.URL)
+				t.Errorf("%s/%s advertises the placeholder the baseline seeds: %s", e.Type, ep.Interface, ep.URL)
 			}
 		}
 	}
@@ -167,8 +167,8 @@ func TestHardcodedCatalogS3FromConfig(t *testing.T) {
 }
 
 // TestSubstituteURLTemplatesRewritesLocalhost: with a configured endpoint host,
-// substitution rewrites a localhost-seeded URL (the cinder `volume` alias …015,
-// migration 054) to that host — not just the `http://lightstack:` prefix (F5, FR-006/007).
+// substitution rewrites a localhost URL (the cinder `volume` alias …015 was once seeded
+// with one) to that host — not just the `http://lightstack:` prefix (F5, FR-006/007).
 // No DB required — substituteURLTemplates is pure.
 func TestSubstituteURLTemplatesRewritesLocalhost(t *testing.T) {
 	setSchemeEnv(t, "") // LIGHTSTACK_ENDPOINT_HOST=lightstack.example.com, scheme unset (http)
@@ -241,7 +241,7 @@ func TestBuildServiceCatalogListsPlacement(t *testing.T) {
 
 // The fallback is what clients get when the catalog table cannot be read, so it must
 // advertise the same services. The two had drifted both ways: placement only in the
-// fallback, cinder's `volume` alias (migration 054) only in the table.
+// fallback, cinder's `volume` alias only in the table.
 func TestHardcodedCatalogMatchesTheDatabase(t *testing.T) {
 	requireDB(t)
 	setSchemeEnv(t, "")

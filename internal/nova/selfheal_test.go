@@ -227,8 +227,8 @@ func TestStoredNetworkConfigsRebuildsEachInterface(t *testing.T) {
 	want := []struct{ mac string }{{"52:54:00:aa:bb:01"}, {"52:54:00:aa:bb:02"}}
 	for i, w := range want {
 		if _, err := testPool.Exec(t.Context(),
-			`INSERT INTO ports (network_id, project_id, device_id, mac_address, status, admin_state_up, created_at)
-			 VALUES ($1, $2, $3, $4, 'ACTIVE', true, $5)`,
+			`INSERT INTO ports (name, network_id, project_id, device_id, mac_address, status, admin_state_up, created_at)
+			 VALUES ('selfheal-port', $1, $2, $3, $4, 'ACTIVE', true, $5)`,
 			networkID, seededProjectID, instanceID, w.mac,
 			time.Now().Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatalf("seeding port %d: %v", i, err)
@@ -276,8 +276,8 @@ func TestStoredNetworkConfigsIgnoresAnotherProjectsPort(t *testing.T) {
 		{foreign, authzProjectB, "52:54:00:aa:cc:02"},
 	} {
 		if _, err := testPool.Exec(t.Context(),
-			`INSERT INTO ports (network_id, project_id, device_id, mac_address, status, admin_state_up, created_at)
-			 VALUES ($1, $2, $3, $4, 'ACTIVE', true, now())`,
+			`INSERT INTO ports (name, network_id, project_id, device_id, mac_address, status, admin_state_up, created_at)
+			 VALUES ('selfheal-port', $1, $2, $3, $4, 'ACTIVE', true, now())`,
 			p.network, p.project, instanceID, p.mac); err != nil {
 			t.Fatalf("seeding port %s: %v", p.mac, err)
 		}

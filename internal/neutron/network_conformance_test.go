@@ -449,7 +449,7 @@ func TestRouterInterfaceByPortAndDuplicateSubnet_DB(t *testing.T) {
 
 // TestNetworkDescriptionRoundTrip_DB — networks had no description column,
 // so 'network set --description' was a 400 "no updates provided"
-// (SPEC-031, migration 075).
+// (SPEC-031).
 func TestNetworkDescriptionRoundTrip_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -538,7 +538,7 @@ func TestSubnetSetDHCP_DB(t *testing.T) {
 
 // TestSubnetPoolPrefixValidationAndDescription_DB — a malformed prefix was
 // stored as-is (upstream 400s), and pools had no description column
-// (SPEC-031, migration 075).
+// (SPEC-031).
 func TestSubnetPoolPrefixValidationAndDescription_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()

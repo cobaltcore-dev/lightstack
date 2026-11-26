@@ -55,7 +55,7 @@ JWT auth path.
 | Health | (k8s probes) | — | on identity port | — | `/livez` `/readyz` `/healthcheck` |
 
 There is **no `object-store` (Swift) service** in the catalog; Ceph RGW's S3 API is instead advertised
-under a non-standard **`s3`** service type (migration 062) for tenant object storage — see
+under a non-standard **`s3`** service type for tenant object storage — see
 [§4](#4-storage-backends) and [§8](#8-known-gaps--limitations).
 
 ---

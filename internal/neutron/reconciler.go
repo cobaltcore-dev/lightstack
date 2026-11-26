@@ -519,11 +519,12 @@ func bridgeAddrFor(gatewayIP *string, cidr string) string {
 
 // reportGrandfatheredGateways logs any router whose gateway network is not marked external.
 //
-// Migration 066 added networks.external defaulting to false, so every gateway configured before it
-// looks invalid to the new validation. Those keep working — this reconcile pass deliberately does NOT
-// learn the check, because withdrawing SNAT here would silently remove working guest egress on
-// upgrade (FR-035a). Logging them instead makes the condition discoverable so an operator can mark
-// the network and converge deliberately rather than finding out later (FR-035b).
+// networks.external defaults to false, so every gateway configured before the column existed
+// looks invalid to the new validation. Those keep working — this reconcile
+// pass deliberately does NOT learn the check, because withdrawing SNAT here would silently remove
+// working guest egress on upgrade (FR-035a). Logging them instead makes the condition
+// discoverable so an operator can mark the network and converge deliberately rather than finding
+// out later (FR-035b).
 func (r *NetworkReconciler) reportGrandfatheredGateways(ctx context.Context) {
 	rows, err := r.svc.pool.Query(ctx, `
 		SELECT rt.id, n.id, n.name

@@ -55,8 +55,8 @@ internal/neutron/
 └── floatingip.go                # Floating IP management
 
 migrations/
-├── 003_add_routers.up.sql      # Router tables schema
-└── 003_add_routers.down.sql    # Rollback script
+├── 001_baseline.postgres.up.sql # Router tables schema, with the rest of the baseline
+└── 001_baseline.sqlite.up.sql   # The same baseline for SQLite
 ```
 
 ---

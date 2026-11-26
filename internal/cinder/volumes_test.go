@@ -69,7 +69,7 @@ func TestSerializeVolume(t *testing.T) {
 		}
 	}
 	if v["description"] != "desc1" {
-		t.Errorf("description = %v, want desc1 (real column, migration 012)", v["description"])
+		t.Errorf("description = %v, want desc1 (a real column, volumes.description)", v["description"])
 	}
 
 	// An explicit volume type is read back verbatim (FR-003), and volume_type_id agrees.

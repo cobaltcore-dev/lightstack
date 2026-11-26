@@ -89,9 +89,9 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 	}
 
 	// Resolve the domain reference through the shared resolver. This handler used to store
-	// whatever domain_id it was given — the column was a VARCHAR with no foreign key until
-	// migration 072 — so `default` was kept verbatim, a string naming no domain was
-	// accepted, and one domain could hold the same group name twice (SPEC-022 FR-006, A3).
+	// whatever domain_id it was given — the column was then a VARCHAR with no foreign key —
+	// so `default` was kept verbatim, a string naming no domain
+	// was accepted, and one domain could hold the same group name twice (SPEC-022 FR-006, A3).
 	domainID, outcome := resolveDomainRef(c.Request.Context(), svc.pool, req.Group.DomainID, enabledDomainsOnly)
 	switch outcome {
 	case domainNotFound:
@@ -111,10 +111,10 @@ func (svc *Service) CreateGroup(c *gin.Context) {
 		groupID, req.Group.Name, domainID, req.Group.Description, now, now,
 	)
 	if err != nil {
-		// groups is UNIQUE(name, domain_id) (migration 010), and the violation used to
-		// surface as a generic 500 — the same defect CreateProject just shed. The
-		// message names the domain because, unlike projects.name, the constraint is
-		// per-domain: the same group name is legitimate in another domain.
+		// groups is UNIQUE(name, domain_id), and the violation used to surface as a generic
+		// 500 — the same defect CreateProject just shed. The message names the domain
+		// because, unlike projects.name, the constraint is per-domain: the same group name
+		// is legitimate in another domain.
 		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("group with name '"+req.Group.Name+"' already exists in this domain"))
 			return

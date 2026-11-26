@@ -294,7 +294,7 @@ compute:
 
 ## Database Schema
 
-### Migration 004: VXLAN Support
+### VXLAN Support
 
 **compute_nodes**: Tracks compute nodes and their tunnel IPs
 
@@ -516,7 +516,7 @@ Expected: Both nodes have `vxlan-<network_id>` interface
 psql -U lightstack -d lightstack -h db.example.com -c "SELECT 1;"
 ```
 
-2. **Migration 004 applied:**
+2. **Database migrated:**
 
 ```sql
 SELECT table_name FROM information_schema.tables
@@ -536,7 +536,8 @@ ip -4 addr show | grep inet | grep -v 127.0.0.1
 **Solutions:**
 
 - Verify database URL in config
-- Run migration: `./bin/lightstack --config config/lightstack.yaml --migrate`
+- Run the migrations with `./bin/lightstack-migrate up -config config/lightstack.yaml`; the server also applies
+  them at start
 - Set explicit `tunnel_ip` in config if auto-detection fails
 
 ---

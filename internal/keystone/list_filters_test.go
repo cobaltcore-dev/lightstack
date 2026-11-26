@@ -75,7 +75,7 @@ func TestListFilterNoMatchIsEmpty(t *testing.T) {
 		{"/v3/endpoints?interface=no-such-interface", "endpoints"},
 		// Not a UUID, on a uuid column: the value reached the column, Postgres
 		// refused the cast (22P02), and these answered 500. groups.domain_id
-		// joined them when migration 072 made it a uuid.
+		// joined them when it became a uuid.
 		{"/v3/users?domain_id=no-such-domain", "users"},
 		{"/v3/projects?domain_id=no-such-domain", "projects"},
 		{"/v3/groups?domain_id=no-such-domain", "groups"},

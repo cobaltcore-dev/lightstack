@@ -250,11 +250,11 @@ func (f *serverFilter) applyRegexFilters(c *gin.Context, db database.DB, alias s
 //
 // A port counts for a server only when the two belong to the same project — the pairing
 // instanceAddressMap states as a join condition, for the same reason it gives:
-// `ports.device_id` has no foreign key (migration 001) and CreatePort takes it from the
-// request body unvalidated, so a port whose project disagrees with its instance's is
-// reachable. Without the pairing `?ip=X` returned a server whose own address map did not
-// contain X. Two readers of one relation have to select on the same basis or the listing
-// and the detail view disagree, which is what US7 exists to prevent.
+// `ports.device_id` has no foreign key and CreatePort takes it from the request body
+// unvalidated, so a port whose project disagrees with its instance's is reachable. Without
+// the pairing `?ip=X` returned a server whose own address map did not contain X. Two readers
+// of one relation have to select on the same basis or the listing and the detail view
+// disagree, which is what US7 exists to prevent.
 func serversWithFixedIP(ctx context.Context, db database.DB, c *gin.Context, re *regexp.Regexp) ([]string, error) {
 	project, all := listScope(c)
 	if !all && project == "" {

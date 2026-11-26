@@ -473,10 +473,10 @@ func TestMultipleExternalNetworksAreAllowed(t *testing.T) {
 
 // TestGrandfatheredGatewayKeepsWorking — contracts X13 and X14 / FR-035a.
 //
-// Migration 066 defaults external to false, so every gateway configured before it would fail the new
-// check. Validation therefore applies to NEW requests only: a stored gateway keeps working, and the
-// reconciler must keep asserting its NAT rather than withdrawing it — an upgrade may not silently
-// remove working guest egress.
+// The `external` column defaults to false, so every gateway configured before it existed would
+// fail the new check. Validation therefore applies to NEW requests only: a stored gateway keeps
+// working, and the reconciler must keep asserting its NAT rather than withdrawing it — an upgrade
+// may not silently remove working guest egress.
 func TestGrandfatheredGatewayKeepsWorking(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()

@@ -114,10 +114,8 @@ func TestNovaAddSecurityGroupDuplicate_Contract(t *testing.T) {
 //
 // Two security groups must be attached so the documented "cannot remove last
 // security group" guard (advanced_actions.go) does not fire. The server gets
-// "default" at create; the second is created here, per the explicit guidance in
-// migrations/058_seed_test_security_group.up.sql:
-//
-//	"Security group data for contract tests should be created by the test setup code."
+// "default" at create; the second is created here, because contract tests create
+// their own security group data rather than rely on seeds.
 func TestNovaRemoveSecurityGroup_Contract(t *testing.T) {
 	skipIfLightstackNotRunning(t)
 

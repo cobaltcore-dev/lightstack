@@ -22,9 +22,8 @@ const defaultDomainAlias = "default"
 
 // defaultDomainName is what the row actually carries — the two halves of the mapping,
 // named side by side, because the difference is exactly one letter's case and a reader
-// who misses it will misread the resolver. Migrations 009 and 037 both seed a domain of
-// this name (with different ids), which is why resolution goes by name; see
-// resolveDomainRef.
+// who misses it will misread the resolver. Two seeds once created a domain of this name
+// (with different ids), which is why resolution goes by name; see resolveDomainRef.
 const defaultDomainName = "Default"
 
 // domainOutcome is why resolveDomainRef did or did not produce an id.
@@ -66,11 +65,11 @@ const (
 // Three reference forms all name the same thing (FR-001, FR-003):
 //
 //   - "" (omitted) and the `default` alias resolve the deployment's Default domain
-//     **by name**, not by a hard-coded id. That matters: migrations 009 and 037 both
-//     seed a domain named `Default` but with *different* ids (…0100 and …0001), and
-//     009 wins only by running first. Resolving by name makes the outcome independent
-//     of migration ordering, and lets a deployment whose Default domain carries some
-//     other id keep working.
+//     **by name**, not by a hard-coded id. That matters: two seeds once created a domain
+//     named `Default` with *different* ids (…0100 and …0001), and the first to run won;
+//     the baseline (`001`) seeds …0100. Resolving by name does not depend on which id a
+//     database got, and lets a deployment whose Default domain carries some other id
+//     keep working.
 //   - a UUID resolves that domain directly.
 //   - anything else is not found, and deliberately without a query: handing a
 //     non-UUID to a `uuid`-typed column is what raises Postgres 22P02 and surfaces as

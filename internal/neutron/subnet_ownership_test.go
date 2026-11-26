@@ -529,7 +529,7 @@ func TestForeignSubnetReportsItsOwnTenantID(t *testing.T) {
 	}
 }
 
-// TestNullOwnerSubnetStaysReadable — subnets.project_id is nullable (migration 001
+// TestNullOwnerSubnetStaysReadable — subnets.project_id is nullable (the baseline, `001`,
 // declares no NOT NULL). No writer leaves it NULL — both INSERTs take the project from
 // the token — but a hand-edited row must not vanish from the listing, where the
 // network's subnets array would still name it (the dangling reference SPEC-020 FR-007

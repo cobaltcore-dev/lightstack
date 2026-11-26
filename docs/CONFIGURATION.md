@@ -162,9 +162,6 @@ export LIGHTSTACK_ENDPOINT_HOST="lightstack.example.com"
 export LIGHTSTACK_ENDPOINT_SCHEME="https"   # only when TLS is terminated in front of lightstack
 ```
 
-> Upgrading from a release that used the previous product name? These variables were renamed
-> with it and the old spellings are **not** read — see [UPGRADING](UPGRADING.md).
-
 To change anything else, edit (or mount) the config file. The Helm chart, for example,
 renders the full `lightstack.yaml` — including `keystone.admin_password` — into a Kubernetes
 **Secret** mounted at the `--config` path, precisely because no per-key env override exists.

@@ -707,10 +707,10 @@ func (svc *Service) CreateProject(c *gin.Context) {
 		projectID, req.Project.Name, req.Project.Description, domainID, enabled, now, now,
 	)
 	if err != nil {
-		// projects.name is UNIQUE (migration 001), and the violation used to surface as
-		// a generic 500. Report the collision for what it is, the way CreateUser
-		// already does for users_name_key. Detected by SQLSTATE rather than by matching
-		// the error text (FR-004).
+		// projects.name is UNIQUE, and the violation used to surface as a generic 500.
+		// Report the collision for what it is, the way CreateUser already does for
+		// users_name_key. Detected by SQLSTATE rather than by matching the error text
+		// (FR-004).
 		if database.IsUniqueViolation(err) {
 			common.SendError(c, common.NewConflictError("project with name '"+req.Project.Name+"' already exists"))
 			return

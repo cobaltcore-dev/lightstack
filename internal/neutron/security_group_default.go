@@ -19,8 +19,8 @@ import (
 //
 // Idempotence rests on one statement: INSERT … ON CONFLICT DO NOTHING RETURNING id.
 // A returned row means this call created the group, and only then are the seed
-// rules written (mirroring migrations/002_seed_data.up.sql: egress IPv4/IPv6
-// allow-all, and no ingress at all). No row means the group already existed —
+// rules written (mirroring the default group the baseline, `001`, seeds: egress
+// IPv4/IPv6 allow-all, and no ingress at all). No row means the group already existed —
 // created by a concurrent caller, via the API, or seeded — and it is left exactly
 // as found: an operator who removed rules from `default` keeps that decision.
 // Concurrent first use is serialized by the unique index on (project_id, name):

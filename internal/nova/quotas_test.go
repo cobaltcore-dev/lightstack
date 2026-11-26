@@ -304,7 +304,7 @@ func TestQuotaSetDetail(t *testing.T) {
 	// share that one `_get_usages`, so `?user_id=` does not reach a different answer.
 	//
 	// Counting at project scope is not an option here regardless: `keypairs` has no project_id
-	// (migration 001) and neither has `users`, so there is nothing to scope by.
+	// column and neither has `users`, so there is nothing to scope by.
 	code, kpBody := doReq(r, http.MethodPost, "/v2.1/os-keypairs",
 		`{"keypair":{"name":"spec020-detail-probe"}}`, testAuthHdr(projectID, seededUserID))
 	if code != http.StatusOK && code != http.StatusCreated {
@@ -501,7 +501,7 @@ func TestUpdateQuotaSet_AuthzBeforeBodyBinding(t *testing.T) {
 // GetQuotaSet counted these resources for real while GetLimits returned 0 for all
 // three, so the Overview widget and the quota-set view disagreed about usage — the same
 // class of drift FR-003 fixed for the limit values themselves (FR-004). The seeded
-// project has a `default` security group from migration 002, so totalSecurityGroupsUsed
+// project has a `default` security group from the baseline (`001`), so totalSecurityGroupsUsed
 // is non-zero on a stock database and a regression back to the literal 0 is caught.
 func TestLimitsUsageCountersAreReal(t *testing.T) {
 	requireDB(t)
@@ -519,10 +519,11 @@ func TestLimitsUsageCountersAreReal(t *testing.T) {
 		}
 	}
 
-	// The seeded project always has the `default` security group (migration 002), so
-	// this counter cannot legitimately be 0 — which is what the hardcoded literal gave.
+	// The seeded project always has the `default` security group (the baseline, `001`,
+	// seeds it), so this counter cannot legitimately be 0 — which is what the hardcoded
+	// literal gave.
 	if got := numOf(t, abs, "totalSecurityGroupsUsed"); got < 1 {
-		t.Errorf("totalSecurityGroupsUsed=%v; want >=1 (migration 002 seeds a default "+
+		t.Errorf("totalSecurityGroupsUsed=%v; want >=1 (the baseline seeds a default "+
 			"security group — 0 means the counter is hardcoded again)", got)
 	}
 

@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Seed identifiers from migrations 002 (seed_data) and 009 (default domain).
+// Seed identifiers from the baseline (`001`) seed data, the default domain included.
 const (
 	seededAdminName  = "admin"
 	defaultAdminPass = "secret" // the well-known seeded default password

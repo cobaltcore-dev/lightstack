@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -21,19 +22,25 @@ func writeMigrations(t *testing.T, files map[string]string) string {
 	return dir
 }
 
-// TestValidateMigrations pins contracts/migrations.md: each backend's view must pair
-// every up with a down, hold exactly one SQLite baseline and no version twice.
+// TestValidateMigrations pins the post-squash folder grammar (SPEC-032 contracts/migrations-folder.md):
+// version 001 is the baseline pair of each backend, every later numbered file is a release migration
+// numbered consecutively from 002 with one release per version, and each backend's view pairs every
+// up with a down. Any other numbered file is refused: schema changes go into fragments (FR-026).
 func TestValidateMigrations(t *testing.T) {
 	valid := map[string]string{
-		"001_init.up.sql":              "CREATE TABLE a (id TEXT);",
-		"001_init.down.sql":            "DROP TABLE a;",
-		"002_more.up.sql":              "CREATE TABLE b (id TEXT);",
-		"002_more.down.sql":            "DROP TABLE b;",
-		"002_baseline.sqlite.up.sql":   "CREATE TABLE a (id TEXT); CREATE TABLE b (id TEXT);",
-		"002_baseline.sqlite.down.sql": "DROP TABLE b; DROP TABLE a;",
-		"003_x.up.sql":                 "ALTER TABLE a ADD COLUMN x TEXT;",
-		"003_x.down.sql":               "ALTER TABLE a DROP COLUMN x;",
-		"README.md":                    "not a migration",
+		"001_baseline.postgres.up.sql":   "CREATE TABLE a (id UUID);",
+		"001_baseline.postgres.down.sql": "DROP TABLE a;",
+		"001_baseline.sqlite.up.sql":     "CREATE TABLE a (id TEXT);",
+		"001_baseline.sqlite.down.sql":   "DROP TABLE a;",
+		"002_v0.7.0.up.sql":              "ALTER TABLE a ADD COLUMN x TEXT;",
+		"002_v0.7.0.down.sql":            "ALTER TABLE a DROP COLUMN x;",
+		"003_v0.8.0.postgres.up.sql":     "ALTER TABLE a ADD COLUMN y BOOLEAN;",
+		"003_v0.8.0.postgres.down.sql":   "ALTER TABLE a DROP COLUMN y;",
+		"003_v0.8.0.sqlite.up.sql":       "ALTER TABLE a ADD COLUMN y INTEGER;",
+		"003_v0.8.0.sqlite.down.sql":     "ALTER TABLE a DROP COLUMN y;",
+		"004_v0.9.0-rc.1.up.sql":         "SELECT 1;",
+		"004_v0.9.0-rc.1.down.sql":       "SELECT 1;",
+		"README.md":                      "not a migration",
 	}
 	with := func(changes map[string]string, drop ...string) map[string]string {
 		out := map[string]string{}
@@ -54,16 +61,23 @@ func TestValidateMigrations(t *testing.T) {
 		want  string // "" for valid
 	}{
 		{"valid", valid, ""},
-		{"a PostgreSQL down file missing", with(nil, "001_init.down.sql"), "postgres view: 001_init.up.sql has no down migration"},
-		{"a SQLite down file missing", with(nil, "002_baseline.sqlite.down.sql"), "sqlite view: 002_baseline.sqlite.up.sql has no down migration"},
-		{"a down file shared by both views missing", with(nil, "003_x.down.sql"), "has no down migration"},
-		{"no SQLite baseline", with(nil, "002_baseline.sqlite.up.sql", "002_baseline.sqlite.down.sql"), "no SQLite baseline"},
-		{"two SQLite baselines", with(map[string]string{
-			"003_baseline.sqlite.up.sql": "", "003_baseline.sqlite.down.sql": "",
-		}), "two SQLite baselines"},
-		{"a version twice after the rules", with(map[string]string{
-			"003_y.sqlite.up.sql": "", "003_y.sqlite.down.sql": "", "003_z.sqlite.up.sql": "", "003_z.sqlite.down.sql": "",
-		}), "migrations for version 3 in the sqlite view"},
+		{"a PostgreSQL down file missing", with(nil, "001_baseline.postgres.down.sql"), "postgres view: 001_baseline.postgres.up.sql has no down migration"},
+		{"a SQLite down file missing", with(nil, "001_baseline.sqlite.down.sql"), "sqlite view: 001_baseline.sqlite.up.sql has no down migration"},
+		{"a down file shared by both views missing", with(nil, "002_v0.7.0.down.sql"), "has no down migration"},
+		{"no SQLite baseline", with(nil, "001_baseline.sqlite.up.sql", "001_baseline.sqlite.down.sql"),
+			"version 001 must be the baseline pair of each backend"},
+		{"a plain file at 001", with(map[string]string{"001_extra.up.sql": "", "001_extra.down.sql": ""}),
+			"version 001 must be the baseline pair of each backend"},
+		{"a hand-numbered migration", with(map[string]string{"005_add_x.up.sql": "", "005_add_x.down.sql": ""}),
+			"005_add_x.down.sql: a numbered migration other than the baseline or a release migration; schema changes go into fragments (migrations/next/)"},
+		{"a release name that is not semver", with(map[string]string{"005_v0.9.up.sql": "", "005_v0.9.down.sql": ""}),
+			"schema changes go into fragments (migrations/next/)"},
+		{"a gap in the release numbers", with(map[string]string{"006_v1.0.0.up.sql": "", "006_v1.0.0.down.sql": ""}),
+			"release migrations must be numbered consecutively from 002: 006_v1.0.0.down.sql"},
+		{"one release on two versions", with(map[string]string{"005_v0.8.0.up.sql": "", "005_v0.8.0.down.sql": ""}),
+			"release v0.8.0 has two versions: 003 and 005"},
+		{"a version naming two releases", with(map[string]string{"003_v0.8.1.up.sql": "", "003_v0.8.1.down.sql": ""}),
+			"version 003 names two releases: v0.8.0 and v0.8.1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateMigrations(writeMigrations(t, tc.files))
@@ -77,14 +91,46 @@ func TestValidateMigrations(t *testing.T) {
 	}
 }
 
-// TestShippedMigrationsValidate pins the real migrations/ folder, not a synthetic one: a
+// TestMigrationsFolder pins the real migrations/ folder, not a synthetic one (FR-006, FR-026): a
 // pairing mistake there stops the default container, which runs lightstack-migrate before the
-// server, and this fails the build first.
-func TestShippedMigrationsValidate(t *testing.T) {
-	if err := ValidateMigrations("../../migrations"); err != nil {
+// server, and a hand-numbered migration would bring back the per-feature numbering the squash
+// ended. CI runs this in the unit-test job, so both fail the build first.
+func TestMigrationsFolder(t *testing.T) {
+	const dir = "../../migrations"
+	if err := ValidateMigrations(dir); err != nil {
 		t.Fatal(err)
 	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := map[string]bool{}
+	for _, e := range entries {
+		f, ok := parseMigrationFile(e.Name())
+		if !ok {
+			continue
+		}
+		switch {
+		case f.version == 1:
+			baseline[e.Name()] = true
+		case !releaseFileNameSpec.MatchString(e.Name()):
+			t.Errorf("%s is neither the baseline nor a release migration", e.Name())
+		}
+	}
+	for _, want := range []string{"001_baseline.postgres.up.sql", "001_baseline.postgres.down.sql",
+		"001_baseline.sqlite.up.sql", "001_baseline.sqlite.down.sql"} {
+		if !baseline[want] {
+			t.Errorf("the folder lacks %s", want)
+		}
+	}
+	if len(baseline) != 4 {
+		t.Errorf("version 001 holds %d files; want exactly the four baseline files", len(baseline))
+	}
 }
+
+// releaseFileNameSpec is a release migration's file name, NNN_v<semver>[.backend].(up|down).sql,
+// written out here independently of the implementation's own pattern.
+var releaseFileNameSpec = regexp.MustCompile(`^\d{3}_v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\.(postgres|sqlite))?\.(up|down)\.sql$`)
 
 // sqliteTables lists the tables of a SQLite database other than the migrator's and
 // SQLite's own.
@@ -112,8 +158,6 @@ func sqliteTables(t *testing.T, path string) []string {
 	return out
 }
 
-// SQLite starts at its baseline: a version below it cannot be reached or forced, and
-// down and reset go through the baseline's down file to an empty database.
 // TestMigrateFuncsRefuseABadURL: every migrate entry point validates the URL first and
 // returns the scheme error, touching nothing on disk.
 func TestMigrateFuncsRefuseABadURL(t *testing.T) {
@@ -146,7 +190,7 @@ func TestInspectCommandsDoNotCreateADatabase(t *testing.T) {
 	checks := map[string]func() error{
 		"status": func() error { _, err := GetMigrationStatus(url, migrations); return err },
 		"down":   func() error { return MigrateDown(url, migrations) },
-		"force":  func() error { return ForceMigrationVersion(url, migrations, 74) },
+		"force":  func() error { return ForceMigrationVersion(url, migrations, 1) },
 	}
 	for name, run := range checks {
 		if err := run(); err == nil {
@@ -156,34 +200,32 @@ func TestInspectCommandsDoNotCreateADatabase(t *testing.T) {
 			t.Fatalf("%s created %s (stat: %v); must-exist commands create nothing", name, dir, statErr)
 		}
 	}
+	// status says what is missing, as a type a caller can tell from a failure: the new release
+	// creates the database at its first start (SPEC-032 FR-022).
+	info, err := GetMigrationStatus(url, migrations)
+	if !IsMissingDatabase(err) || !strings.Contains(err.Error(), path) {
+		t.Errorf("status on a missing file: %v; want a missing-database error naming %s", err, path)
+	}
+	if info == nil || info.Version != 0 {
+		t.Errorf("status on a missing file: info %+v; want version 0", info)
+	}
 }
 
-func TestSQLiteMigrationsStartAtTheBaseline(t *testing.T) {
+// TestSQLiteMigrationsGoDownThroughTheBaseline: both backends start at the baseline, 001 (FR-006).
+// Down and reset go through the baseline's down file to an empty database, and up rebuilds it.
+func TestSQLiteMigrationsGoDownThroughTheBaseline(t *testing.T) {
 	const migrations = "../../migrations"
 	path := filepath.Join(t.TempDir(), "db", "lightstack.db")
 	url := "sqlite://" + path
-
-	for name, run := range map[string]func() error{
-		"goto":  func() error { return MigrateToVersion(url, migrations, 50) },
-		"force": func() error { return ForceMigrationVersion(url, migrations, 50) },
-	} {
-		err := run()
-		if err == nil || err.Error() != "SQLite starts at its baseline 073; version 50 is below it" {
-			t.Errorf("%s 50 = %v; want the below-baseline refusal", name, err)
-		}
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("a refused goto created the database (stat: %v)", err)
-	}
 
 	if err := MigrateUp(url, migrations); err != nil {
 		t.Fatalf("up: %v", err)
 	}
 	newest, err := GetMigrationStatus(url, migrations)
-	if err != nil || newest.Version < 74 {
-		t.Fatalf("version after up = %+v, %v; want 074 or later", newest, err)
+	if err != nil || newest.Version < 1 {
+		t.Fatalf("version after up = %+v, %v; want 001 or later", newest, err)
 	}
-	for v := newest.Version; v >= 73; v-- {
+	for v := newest.Version; v >= 1; v-- {
 		if err := MigrateDown(url, migrations); err != nil {
 			t.Fatalf("down from %d: %v", v, err)
 		}

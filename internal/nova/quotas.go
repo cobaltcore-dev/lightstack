@@ -245,7 +245,7 @@ func (svc *Service) GetQuotaSetDetail(c *gin.Context) {
 	// An earlier revision counted `SELECT COUNT(*) FROM keypairs WHERE user_id = $1` with the
 	// REQUESTING user's id, which both undercounts a multi-user project and reports an admin's
 	// own keypairs as the target project's usage. Raised on PR #79. Counting at project scope is
-	// not available either — `keypairs` has no project_id (migration 001) and neither has `users`.
+	// not available either — `keypairs` has no project_id column and neither has `users`.
 	//
 	// `server_groups` is a genuine project resource upstream and is counted per project here.
 	//

@@ -39,15 +39,33 @@ func guestGetCtx(ctx context.Context, r *gin.Engine, path, peer string, headers 
 func seedGuest(t *testing.T, ip string) string {
 	t.Helper()
 	id := seedInstance(t, nil)
+	seedGuestPort(t, seededProjectID, id, ip)
+	return id
+}
+
+// seedGuestPort inserts the port a booted guest has, owned by project, attached to device and
+// holding ip, and removes it on cleanup. It is a whole port, with a name, a MAC and a network of
+// its own, as every port Lightstack creates is. A port on a network with a NULL name or MAC breaks
+// every listing of its project's ports while it exists, and other packages list the seeded
+// project's ports while this one runs.
+func seedGuestPort(t *testing.T, project, device, ip string) {
+	t.Helper()
 	ctx := context.Background()
+	networkID := uuid.NewString()
+	if _, err := testPool.Exec(ctx, `INSERT INTO networks (id, name, project_id, shared) VALUES ($1, $2, $3, false)`,
+		networkID, "md-guest-"+networkID[:8], project); err != nil {
+		t.Fatalf("seed network: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM networks WHERE id=$1", networkID) })
+	mac := fmt.Sprintf("fa:16:3e:%s:%s:%s", networkID[0:2], networkID[2:4], networkID[4:6])
 	var portID string
 	if err := testPool.QueryRow(ctx,
-		`INSERT INTO ports (project_id, device_id, device_owner, fixed_ips) VALUES ($1, $2, 'compute:nova', $3::jsonb) RETURNING id`,
-		seededProjectID, id, fmt.Sprintf(`[{"ip_address":%q}]`, ip)).Scan(&portID); err != nil {
-		t.Fatalf("insert port: %v", err)
+		`INSERT INTO ports (name, network_id, project_id, device_id, device_owner, mac_address, fixed_ips)
+		 VALUES ($1, $2, $3, $4, 'compute:nova', $5, $6::jsonb) RETURNING id`,
+		"md-guest-"+networkID[:8], networkID, project, device, mac, fmt.Sprintf(`[{"ip_address":%q}]`, ip)).Scan(&portID); err != nil {
+		t.Fatalf("seed port: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM ports WHERE id=$1", portID) })
-	return id
 }
 
 // When two instances hold one address — distinct device_ids on two ports of the same
@@ -56,18 +74,11 @@ func seedGuest(t *testing.T, ip string) string {
 // matches).
 func TestAmbiguousAddressIdentifiesNoInstance_DB(t *testing.T) {
 	requireDB(t)
-	ctx := context.Background()
 	const addr = "198.51.100.30"
 	a := seedInstance(t, nil)
 	b := seedInstance(t, nil)
 	for _, inst := range []string{a, b} {
-		var portID string
-		if err := testPool.QueryRow(ctx,
-			`INSERT INTO ports (project_id, device_id, device_owner, fixed_ips) VALUES ($1, $2, 'compute:nova', $3::jsonb) RETURNING id`,
-			seededProjectID, inst, fmt.Sprintf(`[{"ip_address":%q}]`, addr)).Scan(&portID); err != nil {
-			t.Fatalf("seed port for %s: %v", inst, err)
-		}
-		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM ports WHERE id = $1`, portID) })
+		seedGuestPort(t, seededProjectID, inst, addr)
 	}
 	code, body := guestGet(newMetadataTestRouter(), "/latest/meta-data/instance-id", addr, nil)
 	if code != http.StatusNotFound {
@@ -106,13 +117,7 @@ func TestGuestCannotClaimAnotherProjectsInstance_DB(t *testing.T) {
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM projects WHERE id=$1", attacker) })
 
-	var portID string
-	if err := testPool.QueryRow(ctx,
-		`INSERT INTO ports (project_id, device_id, device_owner, fixed_ips) VALUES ($1, $2, 'compute:nova', $3::jsonb) RETURNING id`,
-		attacker, victim, fmt.Sprintf(`[{"ip_address":%q}]`, "198.51.100.21")).Scan(&portID); err != nil {
-		t.Fatalf("seed attacker port: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, "DELETE FROM ports WHERE id=$1", portID) })
+	seedGuestPort(t, attacker, victim, "198.51.100.21")
 
 	code, body := guestGet(newMetadataTestRouter(), "/latest/meta-data/instance-id", "198.51.100.21", nil)
 	if code != http.StatusNotFound {

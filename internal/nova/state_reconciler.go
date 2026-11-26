@@ -269,7 +269,9 @@ func (r *StateReconciler) verdictFor(ctx context.Context, recorded, domainID str
 //     the recent part of it.
 //   - The absence of a foreign key on instance_id is what makes the first property
 //     require a NOT EXISTS rather than fall out of a cascade. That absence is
-//     deliberate; see migration 024.
+//     deliberate (SPEC-025 FR-042): action
+//     records outlive the server they describe, as upstream's do, and a foreign key
+//     would either cascade them away with it or, without a cascade, block its delete.
 func (r *StateReconciler) reclaimActionHistory(ctx context.Context) {
 	if r.retention <= 0 {
 		return

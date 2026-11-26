@@ -267,11 +267,16 @@ func TestUpdateTrunkAssignsEachFieldToItsOwnColumn(t *testing.T) {
 	requireDB(t)
 	r := newNeutronTestRouter()
 
-	portID, trunkID := uuid.NewString(), uuid.NewString()
+	portID, trunkID, portNetID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	cleanupRows(t, "networks", portNetID) // registered first, removed last
 	cleanupRows(t, "trunks", trunkID)
 	cleanupRows(t, "ports", portID)
-	mustExec(t, `INSERT INTO ports (id, name, project_id) VALUES ($1, 'src1-trunk-port', $2)`,
-		portID, seededProjectID)
+	// A whole port, with its network and MAC, as Lightstack creates them. A port on a network with a
+	// NULL name or MAC breaks every listing of its project's ports while it exists.
+	mustExec(t, `INSERT INTO networks (id, name, project_id) VALUES ($1, 'src1-trunk-net', $2)`,
+		portNetID, seededProjectID)
+	mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, mac_address)
+		VALUES ($1, 'src1-trunk-port', $2, $3, 'fa:16:3e:00:01:01')`, portID, portNetID, seededProjectID)
 	mustExec(t, `INSERT INTO trunks (id, project_id, port_id, name, description, admin_state_up)
 		VALUES ($1, $2, $3, 'before-name', 'before-description', false)`, trunkID, seededProjectID, portID)
 
@@ -306,14 +311,17 @@ func TestUpdateFloatingIPDisassociateAssignsEachColumn(t *testing.T) {
 	requireDB(t)
 	r := newNeutronTestRouter()
 
-	fipID, portID, netID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	fipID, portID, netID, portNetID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	cleanupRows(t, "networks", portNetID) // registered first, removed last
 	cleanupRows(t, "floating_ips", fipID)
 	cleanupRows(t, "ports", portID)
 	cleanupRows(t, "networks", netID)
 	mustExec(t, `INSERT INTO networks (id, name, project_id, external) VALUES ($1, 'src1-fip-ext', $2, true)`,
 		netID, seededProjectID)
-	mustExec(t, `INSERT INTO ports (id, name, project_id) VALUES ($1, 'src1-fip-port', $2)`,
-		portID, seededProjectID)
+	mustExec(t, `INSERT INTO networks (id, name, project_id) VALUES ($1, 'src1-fip-net', $2)`,
+		portNetID, seededProjectID)
+	mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, mac_address)
+		VALUES ($1, 'src1-fip-port', $2, $3, 'fa:16:3e:00:01:02')`, portID, portNetID, seededProjectID)
 	// floating_network_id is set because GetFloatingIP scans it into a plain string and a NULL there
 	// is an unconditional 500 — the same nullable-column shape B6 fixed for subnets.gateway_ip. It is
 	// not reachable through the API (CreateFloatingIP always writes one), so it is a fixture
@@ -360,13 +368,16 @@ func TestUpdatePortForwardingAssignsEachFieldToItsOwnColumn(t *testing.T) {
 	r := newNeutronTestRouter()
 
 	fipID, portID, pfID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	pfNetID := uuid.NewString()
+	pfNetID, portNetID := uuid.NewString(), uuid.NewString()
+	cleanupRows(t, "networks", portNetID) // registered first, removed last
 	cleanupRows(t, "port_forwardings", pfID)
 	cleanupRows(t, "floating_ips", fipID)
 	cleanupRows(t, "ports", portID)
 	cleanupRows(t, "networks", pfNetID)
-	mustExec(t, `INSERT INTO ports (id, name, project_id) VALUES ($1, 'src1-pf-port', $2)`,
-		portID, seededProjectID)
+	mustExec(t, `INSERT INTO networks (id, name, project_id) VALUES ($1, 'src1-pf-net', $2)`,
+		portNetID, seededProjectID)
+	mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, mac_address)
+		VALUES ($1, 'src1-pf-port', $2, $3, 'fa:16:3e:00:01:03')`, portID, portNetID, seededProjectID)
 	mustExec(t, `INSERT INTO networks (id, name, project_id, external) VALUES ($1, 'src1-pf-ext', $2, true)`,
 		pfNetID, seededProjectID)
 	mustExec(t, `INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address)

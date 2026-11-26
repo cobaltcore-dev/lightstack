@@ -685,8 +685,8 @@ func TestInterfaceAttachmentsRecordedAgainstOwner(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM networks WHERE id = $1`, netID) })
 	if err := testPool.QueryRow(ctx,
-		`INSERT INTO ports (network_id, project_id, mac_address, fixed_ips)
-		 VALUES ($1, $2, 'fa:16:3e:00:02:3b', '[]'::jsonb) RETURNING id::text`,
+		`INSERT INTO ports (name, network_id, project_id, mac_address, fixed_ips)
+		 VALUES ('spec023-port-b', $1, $2, 'fa:16:3e:00:02:3b', '[]'::jsonb) RETURNING id::text`,
 		netID, authzProjectB).Scan(&portID); err != nil {
 		t.Fatalf("seeding B's port: %v", err)
 	}

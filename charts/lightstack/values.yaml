@@ -150,11 +150,6 @@ realMode:
   #    binary as state_path — the two must match, because libvirtd on the host opens the
   #    paths Lightstack writes into the domain XML. Absolute.
   hostStoragePath: /var/lib/lightstack
-  # -- One-time in-place upgrade from a pre-rename install (cloud-storage#575).
-  #    Set to that node's old state root (the product was renamed, the root moved with
-  #    it) and an initContainer moves its contents into hostStoragePath once, before
-  #    the subdirs are pre-created. Empty renders nothing — fresh installs need it not.
-  legacyStatePath: ""
   floatingIpPool: ""          # operator-supplied pool routed to nodes (FR-009c)
 
 # -- noVNC console proxy (SPEC-021). Real mode only: stub mode has no guest, so

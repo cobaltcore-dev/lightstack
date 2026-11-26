@@ -92,7 +92,7 @@ func (m *VMManager) GetConsoleSocket(ctx context.Context, vmUUID string) (string
 // one the proxy mounts (FR-017, FR-023c).
 func checkConsoleSocketDir(socket string) error {
 	if filepath.Dir(filepath.Clean(socket)) != paths.ConsoleSocketDir() {
-		return fmt.Errorf("%w: %s is not in %s (a domain defined before console sockets moved there; see docs/UPGRADING.md)",
+		return fmt.Errorf("%w: %s is not in %s (a domain an earlier release defined; recreate the instance)",
 			ErrConsoleLegacySocket, socket, paths.ConsoleSocketDir())
 	}
 	return nil

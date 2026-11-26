@@ -163,7 +163,7 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   - **Real console**: the guest's VNC unix socket, read from libvirt per request via
     `DomainGetXMLDesc(dom, 0)` — flags `0`, the *running* definition, because the inactive one carries no
     socket path yet. Never cached: libvirt creates a new socket on every start.
-  - **Real token**: persisted in `console_auth_tokens` (migration 065) and projected into
+  - **Real token**: persisted in `console_auth_tokens` and projected into
     `/var/lib/lightstack/console-tokens/` for the proxy to read. Expiry is enforced by *deleting* that entry —
     websockify performs no expiry check — so a reconciler sweep is the mechanism, not housekeeping.
   - **Configurable URL**: `nova.console_proxy_base_url`, an **origin** only. This setting appeared in
@@ -214,8 +214,8 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
   limits helper per service as the single source of defaults (`resolveQuotaLimits`, `resolveCinderQuotaLimits`,
   `neutronQuotaLimits`) — Nova's and Cinder's overlaid with their quota tables, Neutron's code defaults only — so
   the limits and quota-set views cannot disagree; the missing `detail`/`default` variants added; Neutron
-  advertises `quota_details`. Nova's inflated map was **latent** — migration 007's seed masked it for the
-  seeded project, so only unseeded projects ever saw `100/200/512000`.
+  advertises `quota_details`. Nova's inflated map was **latent** — the quota rows seeded for the seeded
+  project masked it there, so only unseeded projects ever saw `100/200/512000`.
 - **Verified**: stub + real — the widget renders Compute, Volume and Network groups. The Network group
   appearing shows that `GET /v2.0/quotas/{id}/details` now carries every key Horizon reads: Horizon 2025.2
   calls it without checking for `quota_details` and reads its `reserved` key. Advertising `quota_details` is
@@ -281,10 +281,10 @@ _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pe
 - **Tracked**: [cloud-storage#532](https://github.com/cobaltcore-dev/cloud-storage/issues/532)
 
 ### F5 — Volume (Cinder) catalog endpoint advertises `localhost` (major) — _stub_ — ✅ **FIXED (SPEC-019 / #532, 2026-07-24)**
-- **Cause**: migration `040` seeds the volume endpoint (`…013`) as `http://localhost:8776/v3`; migration
-  `052` rewrites `…013` to `http://lightstack:8776/v3`, but migration `054_cinder_volume_alias` adds a **second**
-  volume endpoint (`…015`) hardcoded to `http://localhost:8776/v3`, which `052` (running earlier) never
-  rewrites. Horizon resolves the aliased endpoint → `localhost:8776`, unreachable from the Horizon
+- **Cause**: the seeds created the volume endpoint (`…013`) as `http://localhost:8776/v3` and later
+  rewrote it to `http://lightstack:8776/v3`, but a **second** volume endpoint (`…015`, the `volume` alias),
+  seeded after that rewrite, was hardcoded to `http://localhost:8776/v3` and never rewritten. Horizon
+  resolves the aliased endpoint → `localhost:8776`, unreachable from the Horizon
   container. The runtime host-substitution only rewrites the `http://lightstack:` prefix, so a `localhost`-seeded
   URL can't be rescued.
 - **Real (2026-07-23)**: on Horizon's v3 path the endpoint is **clean** — `catalog show volumev3` =
@@ -506,9 +506,10 @@ was no drift to inherit); **F16** was a limitation of the F7 fix and is fixed.
   surfaced as a generic `computeFault`. `POST /v3/users` rejected the same value cleanly with a `400`, so the
   reference implementation was already in the same file.
 - **Fix**: one shared resolver, used by project, user and group creation *and* by domain retrieval, resolving
-  the Default domain **by name** rather than by a hard-coded id (migrations 009 and 037 seed that name with
-  different ids). An unknown or disabled domain now answers `400` naming the field; a duplicate project name
-  answers `409` instead of a `500`. `GET /v3/domains/default` resolves, and `GET /v3/domains?name=` filters.
+  the Default domain **by name** rather than by a hard-coded id (two seeds created that name with
+  different ids). An unknown or disabled domain now answers `400` naming the field; a
+  duplicate project name answers `409` instead of a `500`. `GET /v3/domains/default` resolves, and
+  `GET /v3/domains?name=` filters.
 - **Verified — API (2026-08-07, stub stack built from `feature/545`)**: `POST /v3/projects --domain default`
   → **`201`**; `GET /v3/auth/projects` — the call that populates Horizon's project switcher — returns **both**
   projects; re-scoping a token to the second returns **`201`** with `token.project.name` set to it.
@@ -625,7 +626,7 @@ F19 is a defect in Lightstack's own dashboard configuration; F20 is the API gap 
 ### F19 — Horizon's default role (`_member_`) names a role Lightstack never seeds (major) — _config-level, mode-independent (found real, 2026-11-03)_ — ✅ **FIXED in-pass (config)**
 - **Cause**: both `local_settings` copies (`deployments/horizon-config/local_settings:65` and its generated
   chart copy) set `OPENSTACK_KEYSTONE_DEFAULT_ROLE = "_member_"`, since `16cfb26` (2026-03-13). Lightstack seeds
-  `admin`/`member`/`reader` (`migrations/002_seed_data.up.sql:20-24`, a week older) and no migration has ever
+  `admin`/`member`/`reader` (in its first seed data, a week older) and no migration has ever
   seeded `_member_`, the legacy member role older Keystone releases created. Horizon resolves the setting
   against an unfiltered `GET /v3/roles`, by id or name, once per process (`openstack_dashboard/api/keystone.py`,
   `get_default_role`), and caches the miss. Upstream Horizon's own default is `member`

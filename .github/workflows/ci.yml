@@ -27,6 +27,29 @@ jobs:
       - name: Build binary
         run: make build
 
+      - name: Numbered migrations are immutable
+        # SPEC-032 FR-025: the baseline and every release migration are frozen once on main; a schema
+        # change goes into a fragment (migrations/next/).
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git fetch --depth=1 origin "$GITHUB_BASE_REF"
+            base=FETCH_HEAD
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            git fetch --depth=1 origin "$BEFORE"
+            base=$BEFORE
+          else
+            echo "No earlier commit to compare with"
+            exit 0
+          fi
+          scripts/check-migrations-immutable.sh "$base"
+
+      - name: Test the migration and deploy scripts
+        run: |
+          bash test/migrations_immutable_test.sh
+          bash test/deploy_single_node_test.sh
+
       - name: Check binary size
         run: |
           SIZE=$(stat --format=%s bin/lightstack 2>/dev/null || stat -f%z bin/lightstack)

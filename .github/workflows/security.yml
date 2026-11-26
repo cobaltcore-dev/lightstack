@@ -108,3 +108,26 @@ jobs:
             docs/security/openvex.json
           if-no-files-found: warn
           retention-days: 30
+
+  release-fragments:
+    name: Release carries no unfrozen fragments
+    # SPEC-032 FR-027: a v* tag ships frozen release migrations only. A fragment left in
+    # migrations/next/ would reach every installation as an unreleased open migration.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: No fragments in migrations/next/
+        run: |
+          files=""
+          if [ -d migrations/next ]; then
+            files=$(find migrations/next -name '*.sql' | sort | paste -sd ' ' -)
+          fi
+          if [ -n "$files" ]; then
+            echo "::error::${GITHUB_REF_NAME} carries unfrozen fragments in migrations/next/: ${files}. Run make migrations-freeze RELEASE=${GITHUB_REF_NAME} on main, then delete and re-cut the tag."
+            exit 1
+          fi

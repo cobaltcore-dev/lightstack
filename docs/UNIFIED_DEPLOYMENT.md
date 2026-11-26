@@ -802,10 +802,12 @@ docker compose -f docker-compose-horizon.yml up -d horizon
 
 ### Database Migration
 
-Lightstack automatically runs migrations on startup. To manually run migrations:
+Lightstack automatically runs migrations on startup. To run them by hand, or to see where the
+database stands, use the migration tool the image carries beside the server:
 
 ```bash
-docker exec lightstack /app/lightstack migrate
+docker exec lightstack /app/lightstack-migrate up
+docker exec lightstack /app/lightstack-migrate status
 ```
 
 ## Backup and Restore

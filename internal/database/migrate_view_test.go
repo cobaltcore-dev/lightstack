@@ -33,36 +33,33 @@ func viewNames(t *testing.T, v fs.FS) []string {
 	return names
 }
 
-// TestMigrationView pins FR-024's three rules: a backend file belongs to its backend
-// only, it replaces the plain file of its version, and SQLite skips every version
-// below its baseline. Down files follow the same rules; non-migration files are ignored.
+// TestMigrationView pins the view's two rules (SPEC-028 FR-024, SPEC-032 FR-006): a backend file
+// belongs to its backend only, and it replaces the plain file of its version — separately for up
+// and down. Down files follow the same rules; non-migration files are ignored. Nothing is skipped:
+// both backends start at the baseline, 001.
 func TestMigrationView(t *testing.T) {
 	src := migrationsFS(
-		"001_initial.up.sql", "001_initial.down.sql",
-		"072_old.up.sql", "072_old.down.sql",
-		"073_volume_transfer.up.sql", "073_volume_transfer.down.sql",
-		"073_baseline.sqlite.up.sql", "073_baseline.sqlite.down.sql",
-		"074_shared.up.sql", "074_shared.down.sql",
-		"075_split.postgres.up.sql", "075_split.postgres.down.sql",
-		"075_split.sqlite.up.sql", "075_split.sqlite.down.sql",
-		"076_override.up.sql", "076_override.down.sql",
-		"076_override.sqlite.up.sql", "076_override.sqlite.down.sql",
+		"001_baseline.postgres.up.sql", "001_baseline.postgres.down.sql",
+		"001_baseline.sqlite.up.sql", "001_baseline.sqlite.down.sql",
+		"002_v0.7.0.up.sql", "002_v0.7.0.down.sql",
+		"003_v0.8.0.postgres.up.sql", "003_v0.8.0.postgres.down.sql",
+		"003_v0.8.0.sqlite.up.sql", "003_v0.8.0.sqlite.down.sql",
+		"004_v0.9.0.up.sql", "004_v0.9.0.down.sql",
+		"004_v0.9.0.sqlite.down.sql",
 		"README.md",
 	)
 	cases := map[Backend][]string{
 		Postgres: {
-			"001_initial.down.sql", "001_initial.up.sql",
-			"072_old.down.sql", "072_old.up.sql",
-			"073_volume_transfer.down.sql", "073_volume_transfer.up.sql",
-			"074_shared.down.sql", "074_shared.up.sql",
-			"075_split.postgres.down.sql", "075_split.postgres.up.sql",
-			"076_override.down.sql", "076_override.up.sql",
+			"001_baseline.postgres.down.sql", "001_baseline.postgres.up.sql",
+			"002_v0.7.0.down.sql", "002_v0.7.0.up.sql",
+			"003_v0.8.0.postgres.down.sql", "003_v0.8.0.postgres.up.sql",
+			"004_v0.9.0.down.sql", "004_v0.9.0.up.sql",
 		},
 		SQLite: {
-			"073_baseline.sqlite.down.sql", "073_baseline.sqlite.up.sql",
-			"074_shared.down.sql", "074_shared.up.sql",
-			"075_split.sqlite.down.sql", "075_split.sqlite.up.sql",
-			"076_override.sqlite.down.sql", "076_override.sqlite.up.sql",
+			"001_baseline.sqlite.down.sql", "001_baseline.sqlite.up.sql",
+			"002_v0.7.0.down.sql", "002_v0.7.0.up.sql",
+			"003_v0.8.0.sqlite.down.sql", "003_v0.8.0.sqlite.up.sql",
+			"004_v0.9.0.sqlite.down.sql", "004_v0.9.0.up.sql",
 		},
 	}
 	for backend, want := range cases {
@@ -74,9 +71,9 @@ func TestMigrationView(t *testing.T) {
 			if got := viewNames(t, v); strings.Join(got, " ") != strings.Join(want, " ") {
 				t.Fatalf("view:\n got  %v\n want %v", got, want)
 			}
-			hidden := "073_baseline.sqlite.up.sql"
+			hidden := "001_baseline.sqlite.up.sql"
 			if backend == SQLite {
-				hidden = "001_initial.up.sql"
+				hidden = "001_baseline.postgres.up.sql"
 			}
 			if _, err := v.Open(hidden); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("Open(%s) = %v; want fs.ErrNotExist", hidden, err)
@@ -91,13 +88,15 @@ func TestMigrationView(t *testing.T) {
 	}
 }
 
-// TestMigrationViewBaseline: SQLite starts at its baseline; the baseline is required
-// for a SQLite view and never shown to PostgreSQL.
-func TestMigrationViewBaseline(t *testing.T) {
-	if got, err := baselineVersion(migrationsFS("073_baseline.sqlite.up.sql", "001_a.up.sql")); err != nil || got != 73 {
-		t.Fatalf("baselineVersion = %d, %v; want 73", got, err)
+// TestMigrationViewSkipsNothing: the retired rule 3 let SQLite skip every version below its own
+// baseline. A view now neither requires a SQLite baseline nor hides a low version from SQLite —
+// whether the folder holds the baseline pair is ValidateMigrations' rule, not the view's.
+func TestMigrationViewSkipsNothing(t *testing.T) {
+	v, err := newMigrationView(migrationsFS("001_a.up.sql", "001_a.down.sql", "002_b.up.sql", "002_b.down.sql"), SQLite)
+	if err != nil {
+		t.Fatalf("a SQLite view without a SQLite baseline: %v", err)
 	}
-	if _, err := newMigrationView(migrationsFS("001_a.up.sql", "001_a.down.sql"), SQLite); err == nil {
-		t.Fatal("a SQLite view without a baseline was accepted")
+	if got := strings.Join(viewNames(t, v), " "); got != "001_a.down.sql 001_a.up.sql 002_b.down.sql 002_b.up.sql" {
+		t.Fatalf("view = %s; want every file", got)
 	}
 }

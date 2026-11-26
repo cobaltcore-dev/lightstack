@@ -42,8 +42,8 @@ func attachPort(t *testing.T, networkID, projectID, instanceID, fixedIP string) 
 	t.Helper()
 	var portID string
 	if err := testPool.QueryRow(t.Context(),
-		`INSERT INTO ports (network_id, project_id, device_id, mac_address, fixed_ips, status, admin_state_up)
-		 VALUES ($1, $2, $3, '52:54:00:12:34:56', $4::jsonb, 'ACTIVE', true)
+		`INSERT INTO ports (name, network_id, project_id, device_id, mac_address, fixed_ips, status, admin_state_up)
+		 VALUES ('addr-port', $1, $2, $3, '52:54:00:12:34:56', $4::jsonb, 'ACTIVE', true)
 		 RETURNING id::text`,
 		networkID, projectID, instanceID,
 		`[{"ip_address":"`+fixedIP+`","subnet_id":null}]`,

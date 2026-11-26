@@ -7,7 +7,7 @@ import (
 )
 
 // RoleAdmin is the administrative role. It is the only role Lightstack gates behavior on,
-// so it gets a constant while `member` and `reader` (also seeded by migration 002)
+// so it gets a constant while `member` and `reader` (seeded beside it by the baseline, `001`)
 // do not — nothing checks them. Roles are not a closed set: the roles table is
 // unconstrained and operators may define their own, so this is a name for the one
 // role the code depends on, not an enumeration of what may exist.
