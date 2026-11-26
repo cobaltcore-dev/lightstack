@@ -55,19 +55,26 @@ func EnsureDefaultSecurityGroup(ctx context.Context, pool database.DB, projectID
 		if err != nil {
 			return fmt.Errorf("insert default security group: %w", err)
 		}
-		// Freshly created by this call: seed the default rules. No ON CONFLICT
-		// here — security_group_rules has no unique constraint on the rule shape —
-		// and none is needed, because only the creating transaction reaches this.
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO security_group_rules (security_group_id, direction, ethertype, protocol, port_range_min, port_range_max)
-			VALUES
-				($1, 'egress', 'IPv4', NULL, NULL, NULL),
-				($1, 'egress', 'IPv6', NULL, NULL, NULL)`, sgID); err != nil {
-			return fmt.Errorf("seed default rules for %s: %w", sgID, err)
+		if err := seedDefaultSecurityGroupRules(ctx, tx, sgID); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {
 		return "", err
 	}
 	return sgID, nil
+}
+
+// seedDefaultSecurityGroupRules applies Neutron's default-rule templates to
+// a newly created group: unrestricted egress for IPv4 and IPv6, with no ingress.
+// Callers run it in the same transaction as group creation.
+func seedDefaultSecurityGroupRules(ctx context.Context, tx database.Tx, sgID string) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO security_group_rules (security_group_id, direction, ethertype, protocol, port_range_min, port_range_max)
+		VALUES
+			($1, 'egress', 'IPv4', NULL, NULL, NULL),
+			($1, 'egress', 'IPv6', NULL, NULL, NULL)`, sgID); err != nil {
+		return fmt.Errorf("seed default rules for %s: %w", sgID, err)
+	}
+	return nil
 }

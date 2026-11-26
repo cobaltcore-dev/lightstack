@@ -108,23 +108,15 @@ func TestListSecurityGroupsCarriesRulesArray(t *testing.T) {
 	}
 }
 
-// TestEmptySecurityGroupRulesArrayIsNotNull covers the nil→[] substitution in both
-// emitters, which nothing else reaches: the seeded default group always has rules, so
-// every other test in this file sees a populated array and the empty case never runs.
-//
-// It is the empty case that FR-022 is actually about. Go marshals a nil []gin.H as
-// `null`, not `[]`, so a group with no rules reproduces the original failure exactly —
-// openstacksdk hands Horizon a null, SecurityGroup.__init__ only guards the
-// missing-key case, and the null reaches a comprehension as "'NoneType' object is not
-// iterable". A freshly created group has zero rules: CreateSecurityGroup inserts into
-// security_groups only.
-func TestEmptySecurityGroupRulesArrayIsNotNull(t *testing.T) {
+// A newly created security group gets Neutron's IPv4 and IPv6 egress defaults.
+// Check that the create, list, and get response paths all report them.
+func TestNewSecurityGroupIncludesDefaultRules(t *testing.T) {
 	requireDB(t)
 	r := newNeutronTestRouter()
 	hdr := neutronAuthHdr(seededProjectID, true)
 
 	code, body := doReqBody(r, http.MethodPost, "/v2.0/security-groups",
-		`{"security_group":{"name":"spec020-empty-sg","description":"no rules"}}`, hdr)
+		`{"security_group":{"name":"spec020-default-sg","description":"default egress rules"}}`, hdr)
 	if code != http.StatusCreated {
 		t.Fatalf("create security group: code=%d body=%s; want 201", code, body)
 	}
@@ -155,7 +147,7 @@ func TestEmptySecurityGroupRulesArrayIsNotNull(t *testing.T) {
 			continue
 		}
 		found = true
-		assertEmptyRulesArray(t, "security-group list", sg)
+		assertDefaultRulesArray(t, "security-group list", sg)
 	}
 	if !found {
 		t.Errorf("the created group %s is absent from the list; body=%s", sgID, body)
@@ -172,21 +164,15 @@ func TestEmptySecurityGroupRulesArrayIsNotNull(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &one); err != nil {
 		t.Fatalf("parse security_group: %v; body=%s", err, body)
 	}
-	assertEmptyRulesArray(t, "security-group by id", one.SecurityGroup)
+	assertDefaultRulesArray(t, "security-group by id", one.SecurityGroup)
 }
 
-// assertEmptyRulesArray requires security_group_rules to be an empty array — present,
-// non-null, and length zero. `null` is the regression; a missing key is worse.
-func assertEmptyRulesArray(t *testing.T, where string, sg map[string]any) {
+// assertDefaultRulesArray requires both default egress rules to be present.
+func assertDefaultRulesArray(t *testing.T, where string, sg map[string]any) {
 	t.Helper()
 	raw, present := sg["security_group_rules"]
-	if !present {
-		t.Errorf("%s: security_group_rules key absent on a group with no rules", where)
-		return
-	}
-	if raw == nil {
-		t.Errorf("%s: security_group_rules is null on a group with no rules; want [] "+
-			"(a nil slice marshals to null, which Horizon iterates → 'NoneType' object is not iterable)", where)
+	if !present || raw == nil {
+		t.Errorf("%s: security_group_rules is absent or null", where)
 		return
 	}
 	rules, ok := raw.([]any)
@@ -194,8 +180,29 @@ func assertEmptyRulesArray(t *testing.T, where string, sg map[string]any) {
 		t.Errorf("%s: security_group_rules is %T; want an array", where, raw)
 		return
 	}
-	if len(rules) != 0 {
-		t.Errorf("%s: security_group_rules has %d entries; the group was created with none", where, len(rules))
+	if len(rules) != 2 {
+		t.Errorf("%s: security_group_rules has %d entries; want IPv4 and IPv6 egress rules", where, len(rules))
+		return
+	}
+	ethertypes := map[string]bool{}
+	for _, rawRule := range rules {
+		rule, ok := rawRule.(map[string]any)
+		if !ok {
+			t.Errorf("%s: rule is %T; want an object", where, rawRule)
+			continue
+		}
+		assertRuleKeys(t, where, rule)
+		if rule["direction"] != "egress" {
+			t.Errorf("%s: default rule direction is %v; want egress", where, rule["direction"])
+		}
+		if ethertype, ok := rule["ethertype"].(string); ok {
+			ethertypes[ethertype] = true
+		}
+	}
+	for _, ethertype := range []string{"IPv4", "IPv6"} {
+		if !ethertypes[ethertype] {
+			t.Errorf("%s: missing default egress rule for %s", where, ethertype)
+		}
 	}
 }
 

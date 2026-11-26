@@ -2,6 +2,8 @@ package keystone
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -470,7 +472,7 @@ func (s *AuthService) AuthenticateToken(ctx context.Context, req *AuthRequest, r
 	}
 
 	// Validate the provided token
-	claims, err := s.ValidateToken(req.Auth.Identity.Token.ID)
+	claims, err := s.ValidateTokenContext(ctx, req.Auth.Identity.Token.ID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -839,8 +841,15 @@ func (s *AuthService) BuildTokenResponse(ctx context.Context, claims *TokenClaim
 	return resp
 }
 
-// ValidateToken validates and parses a JWT token
+// ValidateToken validates and parses a JWT token. It uses a background context
+// for callers that do not have an HTTP request context (such as unit tests).
 func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
+	return s.ValidateTokenContext(context.Background(), tokenString)
+}
+
+// ValidateTokenContext validates a JWT and checks its revocation record. The
+// database lookup makes revocation effective across all Lightstack instances.
+func (s *AuthService) ValidateTokenContext(ctx context.Context, tokenString string) (*TokenClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -862,10 +871,58 @@ func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
 		if claims.ExpiresAt == nil {
 			return nil, common.NewUnauthorizedError("token missing expiry")
 		}
+		revoked, err := s.tokenIsRevoked(ctx, tokenString)
+		if err != nil {
+			return nil, err
+		}
+		if revoked {
+			return nil, common.NewUnauthorizedError("token has been revoked")
+		}
 		return claims, nil
 	}
 
 	return nil, common.NewUnauthorizedError("invalid token claims")
+}
+
+func (s *AuthService) tokenIsRevoked(ctx context.Context, tokenString string) (bool, error) {
+	// A nil pool is used only by middleware tests that exercise JWT signature
+	// validation in isolation. The application always wires a database pool.
+	if s.pool == nil {
+		return false, nil
+	}
+	hash := sha256.Sum256([]byte(tokenString))
+	var revoked bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM token_revocations
+			WHERE token_hash = $1 AND expires_at_unix > $2
+		)`, hex.EncodeToString(hash[:]), time.Now().Unix()).Scan(&revoked)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to check token revocation")
+		return false, common.NewServiceUnavailableError("token validation is temporarily unavailable")
+	}
+	return revoked, nil
+}
+
+func (s *AuthService) revokeToken(ctx context.Context, tokenString string, expiresAt time.Time) error {
+	if s.pool == nil {
+		return common.NewServiceUnavailableError("token revocation is temporarily unavailable")
+	}
+	hash := sha256.Sum256([]byte(tokenString))
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO token_revocations (token_hash, expires_at_unix)
+		VALUES ($1, $2) ON CONFLICT (token_hash) DO NOTHING`,
+		hex.EncodeToString(hash[:]), expiresAt.Unix())
+	if err != nil {
+		log.Error().Err(err).Msg("failed to persist token revocation")
+		return common.NewServiceUnavailableError("token revocation is temporarily unavailable")
+	}
+	// Prune expired hashes opportunistically. Cleanup failure does not undo a
+	// successful revocation; it only leaves harmless, already-expired rows.
+	if _, err := s.pool.Exec(ctx, `DELETE FROM token_revocations WHERE expires_at_unix <= $1`, time.Now().Unix()); err != nil {
+		log.Warn().Err(err).Msg("failed to prune expired token revocations")
+	}
+	return nil
 }
 
 // HashPassword hashes a password using bcrypt

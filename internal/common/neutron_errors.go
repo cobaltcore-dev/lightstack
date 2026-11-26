@@ -76,14 +76,15 @@ var neutronNotFoundTypes = map[string]string{
 	"project":                 "ProjectNotFound",
 }
 
-// neutronInUseTypes covers the 409s upstream names after the resource. Anything not listed is a
-// plain Conflict — upstream has no in-use class for it.
-var neutronInUseTypes = map[string]string{
-	"network":    "NetworkInUse",
-	"subnet":     "SubnetInUse",
-	"port":       "PortInUse",
-	"gateway ip": "GatewayIpInUse",
-	"router":     "RouterInUse",
+// neutronConflictTypes maps 409 conditions onto upstream's named conflict exceptions. Anything
+// not listed is a plain Conflict — upstream has no more specific class for it.
+var neutronConflictTypes = map[string]string{
+	"network":                                "NetworkInUse",
+	"subnet":                                 "SubnetInUse",
+	"port":                                   "PortInUse",
+	"gateway ip":                             "GatewayIpInUse",
+	"gateway conflict with allocation pools": "GatewayConflictWithAllocationPools",
+	"router":                                 "RouterInUse",
 }
 
 // neutronCodeTypes maps this package's envelope keys onto upstream class names for every status
@@ -121,7 +122,7 @@ func neutronType(e *OpenStackError) string {
 		}
 		return "NotFound"
 	case http.StatusConflict:
-		if t, ok := neutronInUseTypes[resource]; ok {
+		if t, ok := neutronConflictTypes[resource]; ok {
 			return t
 		}
 		return "Conflict"

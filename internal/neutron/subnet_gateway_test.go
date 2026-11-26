@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 // SPEC-024 (cloud-storage#546) US4 / B6 — the gateway is a three-valued attribute.
@@ -107,6 +110,43 @@ func TestExplicitGatewayIsStored(t *testing.T) {
 	}
 	if got := subnet["gateway_ip"]; got != "10.82.1.254" {
 		t.Errorf("gateway_ip = %#v, want 10.82.1.254", got)
+	}
+}
+
+func TestSubnetAllocationPoolsReserveGateway(t *testing.T) {
+	ptr := func(ip string) *string { return &ip }
+	tests := []struct {
+		name    string
+		cidr    string
+		gateway *string
+		want    []gin.H
+	}{
+		{
+			name: "default gateway", cidr: "10.82.1.0/24", gateway: ptr("10.82.1.1"),
+			want: []gin.H{{"start": "10.82.1.2", "end": "10.82.1.254"}},
+		},
+		{
+			name: "gateway inside pool splits it", cidr: "10.82.1.0/24", gateway: ptr("10.82.1.200"),
+			want: []gin.H{
+				{"start": "10.82.1.1", "end": "10.82.1.199"},
+				{"start": "10.82.1.201", "end": "10.82.1.254"},
+			},
+		},
+		{
+			name: "no gateway", cidr: "10.82.1.0/24",
+			want: []gin.H{{"start": "10.82.1.1", "end": "10.82.1.254"}},
+		},
+		{
+			name: "gateway at pool end", cidr: "10.82.1.0/24", gateway: ptr("10.82.1.254"),
+			want: []gin.H{{"start": "10.82.1.1", "end": "10.82.1.253"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := subnetAllocationPools(tt.cidr, tt.gateway); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("subnetAllocationPools(%q, %v) = %#v, want %#v", tt.cidr, tt.gateway, got, tt.want)
+			}
+		})
 	}
 }
 

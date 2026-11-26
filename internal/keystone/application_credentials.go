@@ -1,6 +1,7 @@
 package keystone
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -68,30 +69,13 @@ func (svc *Service) ListApplicationCredentials(c *gin.Context) {
 			credential["expires_at"] = expiresAt.Format(time.RFC3339)
 		}
 
-		// Get roles
-		roleRows, err := svc.pool.Query(c.Request.Context(), `
-			SELECT r.id, r.name
-			FROM application_credential_roles acr
-			JOIN roles r ON acr.role_id = r.id
-			WHERE acr.application_credential_id = $1
-		`, id)
-		if err == nil {
-			roles := []map[string]any{}
-			for roleRows.Next() {
-				var roleID, roleName string
-				if err := roleRows.Scan(&roleID, &roleName); err == nil {
-					roles = append(roles, map[string]any{
-						"id":   roleID,
-						"name": roleName,
-					})
-				}
-			}
-			if err := roleRows.Err(); err != nil {
-				log.Warn().Err(err).Msg("roleRows iteration error; list may be truncated")
-			}
-			roleRows.Close()
-			credential["roles"] = roles
+		roles, err := svc.credentialRoles(c.Request.Context(), id)
+		if err != nil {
+			log.Error().Err(err).Str("application_credential_id", id).Msg("failed to read application credential roles")
+			common.SendError(c, common.NewInternalServerError("failed to read application credential roles"))
+			return
 		}
+		credential["roles"] = roles
 
 		credentials = append(credentials, credential)
 	}
@@ -158,29 +142,85 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 		}
 	}
 
-	_, err = svc.pool.Exec(c.Request.Context(), `
+	// Resolve the requested roles BEFORE writing anything. With no explicit
+	// list, Keystone carries the creator's token roles into the credential.
+	requestedRoles := req.ApplicationCredential.Roles
+	if len(requestedRoles) == 0 {
+		for _, name := range c.GetStringSlice("roles") {
+			requestedRoles = append(requestedRoles, map[string]any{"name": name})
+		}
+	}
+	// A role entry may
+	// name an id or a name (upstream accepts both); the old code type-asserted
+	// role["id"] unconditionally, so a role given by name only panicked —
+	// recovered by gin as a 500 after the credential row was already committed
+	// (SPEC-031). Unresolvable roles are the caller's error now, and nothing
+	// is written.
+	type resolvedRole struct{ id, name string }
+	var resolved []resolvedRole
+	seenRoles := map[string]bool{}
+	for _, role := range requestedRoles {
+		idStr, _ := role["id"].(string)
+		nameStr, _ := role["name"].(string)
+		var rid, rname string
+		var err error
+		switch {
+		case idStr != "":
+			err = svc.pool.QueryRow(c.Request.Context(),
+				"SELECT id::text, name FROM roles WHERE id = $1", idStr).Scan(&rid, &rname)
+		case nameStr != "":
+			err = svc.pool.QueryRow(c.Request.Context(),
+				"SELECT id::text, name FROM roles WHERE name = $1", nameStr).Scan(&rid, &rname)
+		default:
+			common.SendError(c, common.NewBadRequestError("each role must have an id or name"))
+			return
+		}
+		if err != nil {
+			common.SendError(c, common.NewBadRequestError("application credential references a role that does not exist"))
+			return
+		}
+		if !common.HasRole(c, rname) {
+			common.SendError(c, common.NewBadRequestError("Cannot create an application credential with unassigned role"))
+			return
+		}
+		if !seenRoles[rid] {
+			resolved = append(resolved, resolvedRole{rid, rname})
+			seenRoles[rid] = true
+		}
+	}
+
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		_, err := tx.Exec(c.Request.Context(), `
 		INSERT INTO application_credentials (id, user_id, project_id, name, secret_hash, description, expires_at, unrestricted, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`, credID, userID, projectID, req.ApplicationCredential.Name, string(secretHash), req.ApplicationCredential.Description, expiresAt, req.ApplicationCredential.Unrestricted, now)
 
+		if err != nil {
+			return err
+		}
+		for _, role := range resolved {
+			if _, err := tx.Exec(c.Request.Context(), `
+			INSERT INTO application_credential_roles (application_credential_id, role_id)
+			VALUES ($1, $2)
+		`, credID, role.id); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
 	if err != nil {
+		// application_credentials is UNIQUE(user_id, name); a duplicate name
+		// is the caller's conflict, not a server fault — upstream answers
+		// 409 (SPEC-031).
+		if database.IsUniqueViolation(err) {
+			common.SendError(c, common.NewConflictError("application credential already exists"))
+			return
+		}
 		log.Error().Err(err).Str("operation", "create_application_credential").Str("user_id", userID).Msg("Failed to create application credential")
 		common.SendError(c, common.NewInternalServerError("failed to create application credential"))
 		return
-	}
-
-	// Associate roles. A failed role insert is logged but doesn't
-	// abort: the credential row already exists; missing roles will
-	// limit what it can do but the API caller still gets a working
-	// credential they can re-grant manually.
-	for _, role := range req.ApplicationCredential.Roles {
-		roleID := role["id"].(string)
-		if _, err := svc.pool.Exec(c.Request.Context(), `
-			INSERT INTO application_credential_roles (application_credential_id, role_id)
-			VALUES ($1, $2)
-		`, credID, roleID); err != nil {
-			log.Warn().Err(err).Str("credential_id", credID.String()).Str("role_id", roleID).Msg("failed to associate role with application credential")
-		}
 	}
 
 	credential := map[string]any{
@@ -201,10 +241,16 @@ func (svc *Service) CreateApplicationCredential(c *gin.Context) {
 		credential["expires_at"] = expiresAt.(time.Time).Format(time.RFC3339)
 	}
 
-	// Add roles to response
-	if len(req.ApplicationCredential.Roles) > 0 {
-		credential["roles"] = req.ApplicationCredential.Roles
+	// Upstream always includes the credential roles, which default to the
+	// creator's token roles when the request omits them.
+	responseRoles := []map[string]any{}
+	for _, role := range resolved {
+		responseRoles = append(responseRoles, map[string]any{
+			"id":   role.id,
+			"name": role.name,
+		})
 	}
+	credential["roles"] = responseRoles
 
 	c.JSON(201, gin.H{"application_credential": credential})
 }
@@ -261,30 +307,13 @@ func (svc *Service) GetApplicationCredential(c *gin.Context) {
 		credential["expires_at"] = expiresAt.Format(time.RFC3339)
 	}
 
-	// Get roles
-	roleRows, err := svc.pool.Query(c.Request.Context(), `
-		SELECT r.id, r.name
-		FROM application_credential_roles acr
-		JOIN roles r ON acr.role_id = r.id
-		WHERE acr.application_credential_id = $1
-	`, id)
-	if err == nil {
-		roles := []map[string]any{}
-		for roleRows.Next() {
-			var roleID, roleName string
-			if err := roleRows.Scan(&roleID, &roleName); err == nil {
-				roles = append(roles, map[string]any{
-					"id":   roleID,
-					"name": roleName,
-				})
-			}
-		}
-		if err := roleRows.Err(); err != nil {
-			log.Warn().Err(err).Msg("roleRows iteration error; list may be truncated")
-		}
-		roleRows.Close()
-		credential["roles"] = roles
+	roles, err := svc.credentialRoles(c.Request.Context(), id)
+	if err != nil {
+		log.Error().Err(err).Str("application_credential_id", id).Msg("failed to read application credential roles")
+		common.SendError(c, common.NewInternalServerError("failed to read application credential roles"))
+		return
 	}
+	credential["roles"] = roles
 
 	c.JSON(200, gin.H{"application_credential": credential})
 }
@@ -371,30 +400,35 @@ func (svc *Service) GetApplicationCredentialByID(c *gin.Context) {
 		credential["expires_at"] = expiresAt.Format(time.RFC3339)
 	}
 
-	// Get roles
-	roleRows, err := svc.pool.Query(c.Request.Context(), `
+	roles, err := svc.credentialRoles(c.Request.Context(), id)
+	if err != nil {
+		log.Error().Err(err).Str("application_credential_id", id).Msg("failed to read application credential roles")
+		common.SendError(c, common.NewInternalServerError("failed to read application credential roles"))
+		return
+	}
+	credential["roles"] = roles
+
+	c.JSON(200, gin.H{"application_credential": credential})
+}
+
+// credentialRoles returns the roles a credential carries, including an empty slice when there are none.
+func (svc *Service) credentialRoles(ctx context.Context, id string) ([]map[string]any, error) {
+	rows, err := svc.pool.Query(ctx, `
 		SELECT r.id, r.name
 		FROM application_credential_roles acr
 		JOIN roles r ON acr.role_id = r.id
-		WHERE acr.application_credential_id = $1
-	`, id)
-	if err == nil {
-		roles := []map[string]any{}
-		for roleRows.Next() {
-			var roleID, roleName string
-			if err := roleRows.Scan(&roleID, &roleName); err == nil {
-				roles = append(roles, map[string]any{
-					"id":   roleID,
-					"name": roleName,
-				})
-			}
-		}
-		if err := roleRows.Err(); err != nil {
-			log.Warn().Err(err).Msg("roleRows iteration error; list may be truncated")
-		}
-		roleRows.Close()
-		credential["roles"] = roles
+		WHERE acr.application_credential_id = $1`, id)
+	if err != nil {
+		return nil, err
 	}
-
-	c.JSON(200, gin.H{"application_credential": credential})
+	defer rows.Close()
+	roles := []map[string]any{}
+	for rows.Next() {
+		var roleID, roleName string
+		if err := rows.Scan(&roleID, &roleName); err != nil {
+			return nil, err
+		}
+		roles = append(roles, map[string]any{"id": roleID, "name": roleName})
+	}
+	return roles, rows.Err()
 }

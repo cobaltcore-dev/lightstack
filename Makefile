@@ -1,4 +1,4 @@
-.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity test-compose-kvm clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui
+.PHONY: build run test lint chart-test test-endpoint-migration test-compose-identity test-compose-kvm clean install-deps install-tools migrate db-up db-down build-ebpf bench bench-quick horizon-chart-sync horizon-chart-check test-horizon-ui test-cli cli-coverage test-terraform
 
 # Build variables
 BINARY_NAME=lightstack
@@ -18,7 +18,7 @@ DB_URL?=postgres://lightstack:secret@localhost:5432/lightstack?sslmode=disable
 build:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/lightstack
+	CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/lightstack
 
 # Build eBPF programs
 build-ebpf:
@@ -124,6 +124,27 @@ test-compose-kvm:
 	@echo "Running KVM Compose stack tests..."
 	@docker compose version >/dev/null 2>&1 || (echo "ERROR: 'docker compose' not found." && exit 1)
 	@bash test/compose_kvm_state_test.sh
+
+# Run the OpenStack CLI conformance suite against this checkout's binary.
+# Rebuild every time and force the isolated binary-test Compose stack so a
+# pre-existing server cannot make the target validate stale code.
+test-cli: build
+	@echo "Running OpenStack CLI conformance suite..."
+	@bash test/cli/bin/run.sh --force-compose
+
+# CLI conformance coverage gate (SPEC-031): cross-reference manifest/*.json
+# with results/results.json; fails on untested/failed/skipped tier A+B
+# commands. Run after test-cli (or a CI job that stores its results there).
+cli-coverage:
+	@echo "Checking CLI conformance coverage..."
+	@bash test/cli/bin/coverage.sh
+
+# Run the Terraform provider conformance module (SPEC-031) against a running
+# lightstack server. Requires terraform and network access to the provider
+# registry on first run.
+test-terraform:
+	@echo "Running Terraform conformance tests..."
+	@bash test/terraform/run.sh
 
 # Run Helm chart tests (helm lint + template + unittest; no cluster or running Lightstack needed)
 chart-test:

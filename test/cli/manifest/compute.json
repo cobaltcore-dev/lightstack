@@ -1,0 +1,55 @@
+{
+  "service": "compute",
+  "description": "Nova (compute) CLI surface served by lightstack: servers, actions, flavors, keypairs, server groups, consoles, aggregates, usage, migrations.",
+  "commands": [
+    { "id": "compute.server.create", "cmd": "openstack server create <name> --image <image> --flavor <flavor> --network <network>", "endpoints": ["POST /v2.1/servers"], "tiers": ["A", "B"] },
+    { "id": "compute.server.list", "cmd": "openstack server list", "endpoints": ["GET /v2.1/servers/detail"], "tiers": ["A"] },
+    { "id": "compute.server.show", "cmd": "openstack server show <server>", "endpoints": ["GET /v2.1/servers/{id}"], "tiers": ["A", "B"] },
+    { "id": "compute.server.set", "cmd": "openstack server set --name <name> <server>", "endpoints": ["PATCH /v2.1/servers/{id}"], "tiers": ["A", "B"] },
+    { "id": "compute.server.delete", "cmd": "openstack server delete [--wait] <server>", "endpoints": ["DELETE /v2.1/servers/{id}"], "tiers": ["A", "B"] },
+
+    { "id": "compute.server.action.stop", "cmd": "openstack server stop <server>", "endpoints": ["POST /v2.1/servers/{id}/action (os-stop)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.start", "cmd": "openstack server start <server>", "endpoints": ["POST /v2.1/servers/{id}/action (os-start)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.reboot", "cmd": "openstack server reboot [--hard] <server>", "endpoints": ["POST /v2.1/servers/{id}/action (reboot)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.pause", "cmd": "openstack server pause <server>", "endpoints": ["POST /v2.1/servers/{id}/action (pause)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.unpause", "cmd": "openstack server unpause <server>", "endpoints": ["POST /v2.1/servers/{id}/action (unpause)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.suspend", "cmd": "openstack server suspend <server>", "endpoints": ["POST /v2.1/servers/{id}/action (suspend)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.resume", "cmd": "openstack server resume <server>", "endpoints": ["POST /v2.1/servers/{id}/action (resume)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.lock", "cmd": "openstack server lock <server>", "endpoints": ["POST /v2.1/servers/{id}/action (lock)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.unlock", "cmd": "openstack server unlock <server>", "endpoints": ["POST /v2.1/servers/{id}/action (unlock)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.shelve", "cmd": "openstack server shelve <server>", "endpoints": ["POST /v2.1/servers/{id}/action (shelve)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.action.unshelve", "cmd": "openstack server unshelve <server>", "endpoints": ["POST /v2.1/servers/{id}/action (unshelve)"], "tiers": ["A", "B"] },
+
+    { "id": "compute.server.image.create", "cmd": "openstack server image create --name <name> <server>", "endpoints": ["POST /v2.1/servers/{id}/action (createImage)"], "tiers": ["A", "B"] },
+    { "id": "compute.server.backup.create", "cmd": "openstack server backup create --name <name> <server> --rotate <n>", "endpoints": ["POST /v2.1/servers/{id}/action (createBackup)"], "tiers": ["A"] },
+
+    { "id": "compute.console.log.show", "cmd": "openstack console log show <server>", "endpoints": ["POST /v2.1/servers/{id}/action (os-getConsoleOutput)"], "tiers": ["A", "B"] },
+    { "id": "compute.console.url.show", "cmd": "openstack console url show <server>", "endpoints": ["POST /v2.1/servers/{id}/remote-consoles"], "tiers": ["A"] },
+
+    { "id": "compute.flavor.list", "cmd": "openstack flavor list", "endpoints": ["GET /v2.1/flavors/detail"], "tiers": ["A"] },
+    { "id": "compute.flavor.show", "cmd": "openstack flavor show <flavor>", "endpoints": ["GET /v2.1/flavors/{id}"], "tiers": ["A", "B"] },
+    { "id": "compute.flavor.create", "cmd": "openstack flavor create <name> --ram <mb> --disk <gb> --vcpus <n>", "endpoints": ["POST /v2.1/flavors"], "tiers": ["A"] },
+    { "id": "compute.flavor.set", "cmd": "openstack flavor set --property <key=value> <flavor>", "endpoints": ["POST /v2.1/flavors/{id}/os-extra_specs"], "tiers": ["A"] },
+    { "id": "compute.flavor.delete", "cmd": "openstack flavor delete <flavor>", "endpoints": ["DELETE /v2.1/flavors/{id}"], "tiers": ["A", "B"] },
+
+    { "id": "compute.keypair.create", "cmd": "openstack keypair create <name> --public-key <file>", "endpoints": ["POST /v2.1/os-keypairs"], "tiers": ["A"] },
+    { "id": "compute.keypair.list", "cmd": "openstack keypair list", "endpoints": ["GET /v2.1/os-keypairs"], "tiers": ["A"] },
+    { "id": "compute.keypair.show", "cmd": "openstack keypair show <keypair>", "endpoints": ["GET /v2.1/os-keypairs/{name}"], "tiers": ["A", "B"] },
+    { "id": "compute.keypair.delete", "cmd": "openstack keypair delete <keypair>", "endpoints": ["DELETE /v2.1/os-keypairs/{name}"], "tiers": ["A", "B"] },
+
+    { "id": "compute.servergroup.create", "cmd": "openstack server group create <name> --policy <policy>", "endpoints": ["POST /v2.1/os-server-groups"], "tiers": ["A"] },
+    { "id": "compute.servergroup.list", "cmd": "openstack server group list", "endpoints": ["GET /v2.1/os-server-groups"], "tiers": ["A"] },
+    { "id": "compute.servergroup.show", "cmd": "openstack server group show <servergroup>", "endpoints": ["GET /v2.1/os-server-groups/{id}"], "tiers": ["A", "B"] },
+    { "id": "compute.servergroup.delete", "cmd": "openstack server group delete <servergroup>", "endpoints": ["DELETE /v2.1/os-server-groups/{id}"], "tiers": ["A", "B"] },
+
+    { "id": "compute.availabilityzone.list", "cmd": "openstack availability zone list", "endpoints": ["GET /v2.1/os-availability-zone"], "tiers": ["A"] },
+    { "id": "compute.hypervisor.list", "cmd": "openstack hypervisor list", "endpoints": ["GET /v2.1/os-hypervisors/detail"], "tiers": ["A"] },
+    { "id": "compute.usage.list", "cmd": "openstack usage list", "endpoints": ["GET /v2.1/os-simple-tenant-usage"], "tiers": ["A"] },
+
+    { "id": "compute.aggregate.list", "cmd": "openstack aggregate list", "endpoints": ["GET /v2.1/os-aggregates"], "tiers": ["A"] },
+    { "id": "compute.aggregate.create", "cmd": "openstack aggregate create <name>", "endpoints": ["POST /v2.1/os-aggregates"], "tiers": ["A"] },
+    { "id": "compute.aggregate.delete", "cmd": "openstack aggregate delete <aggregate>", "endpoints": ["DELETE /v2.1/os-aggregates/{id}"], "tiers": ["A", "B"] },
+
+    { "id": "compute.server.migration.list", "cmd": "openstack server migration list --server <server>", "endpoints": ["GET /v2.1/servers/{id}/migrations"], "tiers": ["A"] }
+  ]
+}

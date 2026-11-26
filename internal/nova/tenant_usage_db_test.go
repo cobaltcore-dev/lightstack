@@ -44,12 +44,12 @@ func TestTenantUsageTotals(t *testing.T) {
 	}
 
 	type usage struct {
-		TenantID    string  `json:"tenant_id"`
-		TotalHours  float64 `json:"total_hours"`
-		VCPUs       float64 `json:"total_vcpus_usage"`
-		MemoryMB    float64 `json:"total_memory_mb_usage"`
-		LocalGB     float64 `json:"total_local_gb_usage"`
-		ServerUsage []any   `json:"server_usages"`
+		TenantID    string           `json:"tenant_id"`
+		TotalHours  float64          `json:"total_hours"`
+		VCPUs       float64          `json:"total_vcpus_usage"`
+		MemoryMB    float64          `json:"total_memory_mb_usage"`
+		LocalGB     float64          `json:"total_local_gb_usage"`
+		ServerUsage []map[string]any `json:"server_usages"`
 	}
 	check := func(form string, u usage) {
 		t.Helper()
@@ -58,6 +58,17 @@ func TestTenantUsageTotals(t *testing.T) {
 		}
 		if u.VCPUs != 2 || u.MemoryMB != 1024 || u.LocalGB != 2 {
 			t.Errorf("%s: vcpus=%v memory=%v local_gb=%v; want 2, 1024, 2", form, u.VCPUs, u.MemoryMB, u.LocalGB)
+		}
+		if len(u.ServerUsage) != 3 {
+			t.Errorf("%s: server_usages has %d entries; want all 3 instances", form, len(u.ServerUsage))
+		}
+		for _, server := range u.ServerUsage {
+			if server["name"] != "usage" || server["state"] != "ACTIVE" {
+				t.Errorf("%s: unexpected server usage entry: %#v", form, server)
+			}
+			if id, ok := server["instance_id"].(string); !ok || id == "" {
+				t.Errorf("%s: server usage has no instance_id: %#v", form, server)
+			}
 		}
 	}
 
