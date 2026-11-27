@@ -193,6 +193,30 @@ type NeutronConfig struct {
 	// reconciler (WS-2). Zero means consumers apply a default (30s). Only used
 	// when NetworkingMode != "stub".
 	ReconcileInterval time.Duration `yaml:"reconcile_interval"`
+	// NetworkNode names, by its node name (common.NodeName), the one node that holds every
+	// router and DHCP namespace and carries north-south traffic (SPEC-033 FR-033). Required
+	// with VXLAN on. VXLAN off is a single node, its own network node, and this is ignored: the
+	// chart refuses several nodes without VXLAN (T242).
+	NetworkNode string `yaml:"network_node"`
+}
+
+// NetworkNodeFor returns the network node as the node named self sees it: the configured
+// neutron.network_node with VXLAN on, self with VXLAN off (FR-033).
+func (n NeutronConfig) NetworkNodeFor(self string) string {
+	if !n.VXLANEnabled {
+		return self
+	}
+	return n.NetworkNode
+}
+
+// CheckNetworkNode refuses VXLAN without a network node: several nodes would each think the
+// north-south state theirs, and no request could say which node must apply it (FR-033).
+func (n NeutronConfig) CheckNetworkNode() error {
+	if n.VXLANEnabled && n.NetworkNode == "" {
+		return fmt.Errorf("neutron.vxlan_enabled is true, but neutron.network_node is empty: name the node " +
+			"(its LIGHTSTACK_NODE_NAME, else its host name) that holds every router and DHCP namespace")
+	}
+	return nil
 }
 
 type CinderConfig struct {
@@ -225,9 +249,10 @@ type GlanceConfig struct {
 
 // MetadataConfig configures the EC2/OpenStack metadata service (WS-4).
 type MetadataConfig struct {
-	// BindAddress is the host address the metadata server listens on. In real
-	// mode it MUST be reachable from tenant network namespaces (not localhost);
-	// the per-namespace 169.254.169.254 DNAT redirects to it. Zero means
+	// BindAddress is the host address the metadata server's own listener binds. Guests do not use
+	// it: they reach metadata in their network's namespace, named by network and address. The host's
+	// listener names an instance only by X-Instance-ID, believed from loopback — or from anyone with
+	// TrustInstanceHeader, test stacks only; without it, a wide bind exposes no guest's data. Zero means
 	// consumers apply a default ("0.0.0.0:8775").
 	BindAddress string `yaml:"bind_address"`
 
@@ -272,6 +297,11 @@ func LoadConfig(path string) (*Config, error) {
 	if jwtSecret := os.Getenv("LIGHTSTACK_JWT_SECRET"); jwtSecret != "" {
 		cfg.Keystone.JWTSecret = jwtSecret
 	}
+	if v := os.Getenv("LIGHTSTACK_NEUTRON_NETWORK_NODE"); v != "" {
+		cfg.Neutron.NetworkNode = v
+	}
+	// A node name, read as the check that refuses an empty one reads it (SPEC-033 T276).
+	cfg.Neutron.NetworkNode = strings.TrimSpace(cfg.Neutron.NetworkNode)
 	// Ceph RGW compatibility (keystone.rgw_compat_tenant_ids). Two-way override:
 	// an operator must be able to flip it from the env in either direction when
 	// the config file is mounted read-only, matching the Glance S3 boolean

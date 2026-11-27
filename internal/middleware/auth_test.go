@@ -206,3 +206,19 @@ func TestAuthMiddlewareSkipsDiscoveryAndTokenIssuance(t *testing.T) {
 		})
 	}
 }
+
+// SPEC-033 T210: the shared middleware exempts no path under /internal/. The one route
+// there, Neutron's node call, checks its own node token and is registered ahead of this middleware
+// (cmd/lightstack's createNeutronServer), so a later /internal/ route of any service is not left open.
+func TestAuthMiddlewareExemptsNoInternalPath(t *testing.T) {
+	svc := keystone.NewAuthService(nil, "secret", time.Hour, nil)
+	r := gin.New()
+	r.Use(AuthMiddleware(svc))
+	r.POST("/internal/v1/converge", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	r.GET("/internal/anything", func(c *gin.Context) { c.Status(http.StatusOK) })
+	for _, req := range []struct{ method, path string }{{http.MethodPost, "/internal/v1/converge"}, {http.MethodGet, "/internal/anything"}} {
+		if w := authDo(r, req.method, req.path, ""); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s without a token: %d; want 401", req.method, req.path, w.Code)
+		}
+	}
+}

@@ -8,20 +8,21 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ListNetworkIPAvailabilities lists IP availability for all networks
+// ListNetworkIPAvailabilities lists IP availability for the caller's project's networks, every
+// project's for an administrator, narrowed by project_id/tenant_id (SPEC-033 FR-057).
 func (svc *Service) ListNetworkIPAvailabilities(c *gin.Context) {
-	projectID := c.GetString("project_id")
+	f := &common.SQLFilter{}
+	projectScope(c, f, "n.project_id", ownedBy("n.project_id"))
 
 	// Query networks with subnet information
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT n.id, n.name, n.project_id,
 		       COALESCE(COUNT(DISTINCT s.id), 0) as subnet_count
 		FROM networks n
-		LEFT JOIN subnets s ON n.id = s.network_id
-		WHERE n.project_id = $1
+		LEFT JOIN subnets s ON n.id = s.network_id`+f.Where()+`
 		GROUP BY n.id, n.name, n.project_id
 		ORDER BY n.created_at DESC
-	`, projectID)
+	`, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_network_ip_availabilities").Msg("failed to query network IP availabilities")
@@ -74,12 +75,13 @@ func (svc *Service) GetNetworkIPAvailability(c *gin.Context) {
 	networkID := c.Param("id")
 	projectID := c.GetString("project_id")
 
-	// Verify network exists and belongs to project
-	var name string
+	// Verify network exists and belongs to project, any project's for an administrator (SPEC-033
+	// FR-057); the answer names the network's project.
+	var name, owner string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT name FROM networks WHERE id = $1 AND project_id = $2",
-		networkID, projectID,
-	).Scan(&name)
+		"SELECT name, COALESCE(project_id::text, '') FROM networks WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+		networkID, projectID, isAdmin(c),
+	).Scan(&name, &owner)
 
 	if err != nil {
 		common.SendError(c, common.NewNotFoundError("network"))
@@ -135,7 +137,7 @@ func (svc *Service) GetNetworkIPAvailability(c *gin.Context) {
 		"network_ip_availability": gin.H{
 			"network_id":             networkID,
 			"network_name":           name,
-			"project_id":             projectID,
+			"project_id":             owner,
 			"total_ips":              totalIPs,
 			"used_ips":               usedIPs,
 			"subnet_ip_availability": subnetAvailabilities,

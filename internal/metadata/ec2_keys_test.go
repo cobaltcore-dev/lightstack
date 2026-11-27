@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -79,17 +80,23 @@ func seedInstanceWithPort(t *testing.T, name, fixedIP string) string {
 	return portID
 }
 
-// getEC2 issues a request as if it came from the guest at fixedIP.
+// getEC2 issues a request as if it came from the guest at fixedIP, through the namespace of its port's
+// network, where guests reach metadata (SPEC-033 T182).
 func getEC2(t *testing.T, key, fixedIP string) (int, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	NewService(testPool, "stub").RegisterRoutes(&r.RouterGroup)
+	var network string
+	if err := testPool.QueryRow(context.Background(),
+		"SELECT network_id::text FROM ports WHERE fixed_ips::text LIKE '%' || $1 || '%' LIMIT 1", strconv.Quote(fixedIP)).Scan(&network); err != nil {
+		t.Fatalf("the network of the guest at %s: %v", fixedIP, err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/2009-04-04/meta-data/"+key, nil)
 	req.RemoteAddr = fixedIP + ":12345"
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	ServeNetwork(r, network).ServeHTTP(w, req)
 	return w.Code, w.Body.String()
 }
 

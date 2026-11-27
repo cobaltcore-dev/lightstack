@@ -203,10 +203,13 @@ func TestListExtensions_AdvertisesQuotaDetails(t *testing.T) {
 	// answers with the empty list a node running dnsmasq directly genuinely has — the closed-set
 	// rule above is what forces the endpoint and the alias to land together, since the alias alone
 	// turns a blank column into an error pop-up per network row.
+	//
+	// stateful-security-group joins it with stateless groups (SPEC-033 FR-050, FR-051): openstacksdk
+	// and the CLI check for it before they send "stateful".
 	want := map[string]bool{
 		"security-group": true, "router": true, "port-security": true,
 		"binding": true, "provider": true, "quotas": true, "quota_details": true,
-		"dhcp_agent_scheduler": true,
+		"dhcp_agent_scheduler": true, "stateful-security-group": true,
 	}
 	got := map[string]bool{}
 	for _, e := range env.Extensions {

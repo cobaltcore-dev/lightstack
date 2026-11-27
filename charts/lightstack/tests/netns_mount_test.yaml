@@ -1,0 +1,119 @@
+# helm-unittest: SPEC-033 round 2, T151 (FR-036, FR-046; research R35). In real mode the pod mounts the
+# host's /run/netns with bidirectional propagation, so the router and DHCP namespaces Lightstack makes
+# are the host's and outlive the pod, and /lib/modules read-only, so it can load br_netfilter. Stub mode
+# mounts neither. Bidirectional propagation is allowed to privileged containers only, so real mode
+# always runs privileged (T177).
+suite: network namespaces and kernel modules
+set:
+  image.repository: ghcr.io/lightstack/lightstack
+  secrets.jwtSecret: jwt
+  secrets.adminPassword: pw
+  database.url: postgres://lightstack@db/lightstack
+tests:
+  - it: real mode mounts the host's /run/netns both ways and /lib/modules read-only
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: host-netns
+            hostPath:
+              path: /run/netns
+              type: DirectoryOrCreate
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: host-netns
+            mountPath: /run/netns
+            mountPropagation: Bidirectional
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: kernel-modules
+            hostPath:
+              path: /lib/modules
+              type: Directory
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: kernel-modules
+            mountPath: /lib/modules
+            readOnly: true
+
+  - it: so does every node's pod in multi-node mode
+    template: templates/daemonset.yaml
+    set:
+      deploymentMode: multi-node
+      neutron.networkNode: node-a
+      realMode.enabled: true
+      glance.storageMode: s3
+      cinder.storageMode: rbd
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: host-netns
+            mountPath: /run/netns
+            mountPropagation: Bidirectional
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: kernel-modules
+            mountPath: /lib/modules
+            readOnly: true
+
+  # By name (T244): a volume or mount of that name in any shape fails the case, not only the real-mode one.
+  - it: stub mode mounts neither
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: host-netns
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: host-netns
+          any: true
+      - notContains:
+          path: spec.template.spec.volumes
+          content:
+            name: kernel-modules
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: kernel-modules
+          any: true
+
+  # T177: bidirectional propagation is allowed to privileged containers only, so real mode always runs
+  # privileged; realMode.privileged, whose one accepted value was true, is gone.
+  - it: real mode runs the workload privileged with no flag of its own
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.privileged
+          value: true
+  - it: real mode runs the purge Job privileged with no flag of its own
+    template: templates/teardown-purge-job.yaml
+    set:
+      realMode.enabled: true
+      dataRetentionPolicy: delete
+      teardown.kubectlImage: rancher/kubectl:v1.31
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.privileged
+          value: true
+  - it: a values file still setting realMode.privileged is refused
+    template: templates/service.yaml
+    set:
+      realMode.enabled: true
+      realMode.privileged: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "privileged"

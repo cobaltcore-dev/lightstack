@@ -10,6 +10,10 @@
 # are overridable, so a second installation on the host can keep its own; the database URL
 # passes through to the binary, and empty keeps the config's.
 #
+# The router and DHCP namespaces Lightstack makes must be the host's, so they and the traffic
+# through them outlive the container: the host's /run/netns is mounted shared both ways
+# (SPEC-033 FR-036). /lib/modules is mounted read-only for `modprobe br_netfilter` (FR-046).
+#
 # This test renders the stack with `compose config` and checks the mounts and the URL, once
 # with nothing set and once with every override.
 #
@@ -45,8 +49,8 @@ if ! python3 -c "import yaml" >/dev/null 2>&1; then
     exit 1
 fi
 
-# Report the lightstack service's mounts as "MOUNT=<source>|<target>|<ro|rw>" lines, plus its
-# database URL and command. Compose v1 renders volumes as strings, v2 as mappings.
+# Report the lightstack service's mounts as "MOUNT=<source>|<target>|<ro|rw>|<propagation or ->"
+# lines, plus its database URL and command. Compose v1 renders volumes as strings, v2 as mappings.
 read_stack() {
     python3 -c '
 import sys, yaml
@@ -54,14 +58,18 @@ import sys, yaml
 doc = yaml.safe_load(sys.stdin) or {}
 svc = (doc.get("services") or {}).get("lightstack") or {}
 
+propagations = {"shared", "rshared", "slave", "rslave", "private", "rprivate"}
 for v in svc.get("volumes") or []:
     if isinstance(v, str):
         parts = v.split(":")
         src, dst = parts[0], parts[1] if len(parts) > 1 else parts[0]
-        ro = len(parts) > 2 and "ro" in parts[2].split(",")
+        options = parts[2].split(",") if len(parts) > 2 else []
+        ro = "ro" in options
+        propagation = next((o for o in options if o in propagations), "-")
     else:
         src, dst, ro = v.get("source", ""), v.get("target", ""), bool(v.get("read_only"))
-    print("MOUNT=%s|%s|%s" % (src, dst, "ro" if ro else "rw"))
+        propagation = (v.get("bind") or {}).get("propagation") or "-"
+    print("MOUNT=%s|%s|%s|%s" % (src, dst, "ro" if ro else "rw", propagation))
 
 env = svc.get("environment") or {}
 if isinstance(env, list):                          # "- KEY=value" form
@@ -95,9 +103,11 @@ test_defaults() {
     stack="$(echo "$out" | read_stack)"
 
     want="$(printf '%s\n' \
-        '/opt/lightstack/config|/opt/lightstack/config|ro' \
-        '/var/lib/lightstack|/var/lib/lightstack|rw' \
-        '/var/run/libvirt|/var/run/libvirt|rw' | sort)"
+        '/lib/modules|/lib/modules|ro|-' \
+        '/opt/lightstack/config|/opt/lightstack/config|ro|-' \
+        '/run/netns|/run/netns|rw|rshared' \
+        '/var/lib/lightstack|/var/lib/lightstack|rw|-' \
+        '/var/run/libvirt|/var/run/libvirt|rw|-' | sort)"
     if [ "$(mounts "$stack")" != "$want" ]; then
         log_fail "default mounts are:"$'\n'"$(mounts "$stack")"$'\n'"expected:"$'\n'"$want"; return
     fi
@@ -108,7 +118,7 @@ test_defaults() {
     if [ "$(field "$stack" COMMAND)" != "/app/lightstack -config /opt/lightstack/config/lightstack.yaml" ]; then
         log_fail "command is '$(field "$stack" COMMAND)'"; return
     fi
-    log_pass "the state root and the config mount at today's paths; the config's URL is used"
+    log_pass "the state root and the config mount at today's paths, the host's namespaces shared both ways, the modules read-only; the config's URL is used"
 }
 
 # --- every override reaches the mounts and the binary -------------------------------
@@ -124,9 +134,11 @@ test_overrides() {
     stack="$(echo "$out" | read_stack)"
 
     want="$(printf '%s\n' \
-        '/srv/ls-kvm-test/config|/opt/lightstack/config|ro' \
-        '/srv/ls-kvm-test/state|/srv/ls-kvm-test/state|rw' \
-        '/var/run/libvirt|/var/run/libvirt|rw' | sort)"
+        '/lib/modules|/lib/modules|ro|-' \
+        '/srv/ls-kvm-test/config|/opt/lightstack/config|ro|-' \
+        '/run/netns|/run/netns|rw|rshared' \
+        '/srv/ls-kvm-test/state|/srv/ls-kvm-test/state|rw|-' \
+        '/var/run/libvirt|/var/run/libvirt|rw|-' | sort)"
     if [ "$(mounts "$stack")" != "$want" ]; then
         log_fail "overridden mounts are:"$'\n'"$(mounts "$stack")"$'\n'"expected:"$'\n'"$want"; return
     fi

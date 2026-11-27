@@ -13,16 +13,16 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ListQoSPolicies lists all QoS policies
+// ListQoSPolicies lists the QoS policies the caller sees, every project's for an administrator,
+// narrowed by project_id/tenant_id (SPEC-033 FR-057).
 func (svc *Service) ListQoSPolicies(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
+	f := &common.SQLFilter{}
+	projectScope(c, f, "project_id", ownedOrShared)
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, project_id, name, description, shared, created_at, updated_at
-		FROM qos_policies
-		WHERE project_id = $1 OR shared = true
+		FROM qos_policies`+f.Where()+`
 		ORDER BY created_at DESC
-	`, projectID)
+	`, f.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_qos_policies").Msg("failed to query QoS policies")
 		common.SendError(c, common.NewInternalServerError("failed to list QoS policies"))
@@ -70,20 +70,25 @@ func (svc *Service) ListQoSPolicies(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"policies": policies})
 }
 
-// CreateQoSPolicy creates a new QoS policy
+// CreateQoSPolicy creates a new QoS policy, of the project an administrator names or else of the
+// caller's (SPEC-033 FR-058).
 func (svc *Service) CreateQoSPolicy(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
 	var req struct {
 		Policy struct {
 			Name        string  `json:"name" binding:"required"`
 			Description *string `json:"description"`
 			Shared      *bool   `json:"shared"`
+			ProjectID   *string `json:"project_id"`
+			TenantID    *string `json:"tenant_id"`
 		} `json:"policy" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+	projectID, ok := svc.ownerOf(c, req.Policy.ProjectID, req.Policy.TenantID)
+	if !ok {
 		return
 	}
 
@@ -136,8 +141,8 @@ func (svc *Service) GetQoSPolicy(c *gin.Context) {
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT project_id, name, description, shared, created_at, updated_at
 		FROM qos_policies
-		WHERE id = $1 AND (project_id = $2 OR shared = true)
-	`, policyID, projectID).Scan(&projectID, &name, &description, &shared, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+scopeOrAdmin(ownedOrShared("$2"), "$3")+`
+	`, policyID, projectID, isAdmin(c)).Scan(&projectID, &name, &description, &shared, &createdAt, &updatedAt)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("policy"))
@@ -184,8 +189,8 @@ func (svc *Service) UpdateQoSPolicy(c *gin.Context) {
 	// Check if policy exists and belongs to project
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND project_id = $2)",
-		policyID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		policyID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -234,8 +239,8 @@ func (svc *Service) DeleteQoSPolicy(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	result, err := svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM qos_policies WHERE id = $1 AND project_id = $2",
-		policyID, projectID,
+		"DELETE FROM qos_policies WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+		policyID, projectID, isAdmin(c),
 	)
 
 	if err != nil {
@@ -260,8 +265,8 @@ func (svc *Service) ListBandwidthLimitRules(c *gin.Context) {
 	// Check if policy exists and is accessible
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND (project_id = $2 OR shared = true))",
-		policyID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND "+scopeOrAdmin(ownedOrShared("$2"), "$3")+")",
+		policyID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -339,8 +344,8 @@ func (svc *Service) CreateBandwidthLimitRule(c *gin.Context) {
 	// Check if policy exists and belongs to project
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND project_id = $2)",
-		policyID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		policyID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -387,8 +392,8 @@ func (svc *Service) GetBandwidthLimitRule(c *gin.Context) {
 	// Check if policy exists and is accessible
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND (project_id = $2 OR shared = true))",
-		policyID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND "+scopeOrAdmin(ownedOrShared("$2"), "$3")+")",
+		policyID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -453,8 +458,8 @@ func (svc *Service) UpdateBandwidthLimitRule(c *gin.Context) {
 	// Check if policy exists and belongs to project
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND project_id = $2)",
-		policyID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		policyID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -517,8 +522,8 @@ func (svc *Service) DeleteBandwidthLimitRule(c *gin.Context) {
 	// Check if policy exists and belongs to project
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND project_id = $2)",
-		policyID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM qos_policies WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		policyID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {

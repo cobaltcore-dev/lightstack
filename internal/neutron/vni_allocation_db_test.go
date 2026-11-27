@@ -24,7 +24,7 @@ func TestAllocateVNITakesTheLowestFreeVNI(t *testing.T) {
 		}
 	}
 
-	vc := NewVXLANCoordinator(testPool, nil, nil, 0, start, end)
+	vc := NewVXLANCoordinator(testPool, nil, nil, 0, VNIRange{Start: start, End: end})
 	for _, want := range []int{start + 2, start + 4} {
 		got, err := vc.allocateVNI(ctx, seedNetwork(t, "vni-new"))
 		if err != nil {
@@ -44,7 +44,7 @@ func TestAllocateVNITakesTheLowestFreeVNI(t *testing.T) {
 func TestAllocateVNIInvertedRangeIsEmpty(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
-	vc := NewVXLANCoordinator(testPool, nil, nil, 0, 16777204, 16777200) // start > end
+	vc := NewVXLANCoordinator(testPool, nil, nil, 0, VNIRange{Start: 16777204, End: 16777200}) // start > end
 	if got, err := vc.allocateVNI(ctx, seedNetwork(t, "vni-inverted")); err == nil {
 		t.Errorf("allocateVNI on an inverted range = %d; want an error, not the start VNI", got)
 	}

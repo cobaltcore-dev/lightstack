@@ -104,6 +104,11 @@ neutron:
   vni_range_end: 10000
   coordination_poll_interval: 1s
   vxlan_mtu: 1450
+  # The one node that holds every router and DHCP namespace and carries north-south
+  # traffic, named by its node name (LIGHTSTACK_NODE_NAME, else its host name). Required
+  # with vxlan_enabled: true; ignored without VXLAN, where a node is its own network node.
+  # Overridden by LIGHTSTACK_NEUTRON_NETWORK_NODE.
+  # network_node: node-a
 
   # Real-mode network-state reconciler (WS-2): resync interval for rebuilding
   # DHCP/namespaces/bridges/security-group rules from the database on startup
@@ -126,9 +131,10 @@ glance:
   s3_endpoint: ""     # Custom S3 endpoint (for MinIO, Ceph RGW, etc.)
 
 metadata:
-  # Address the metadata service binds. In real mode it must be reachable from
-  # tenant network namespaces (the per-namespace 169.254.169.254 DNAT targets
-  # it); localhost is dev/stub only.
+  # Address of the host's own metadata listener. Guests do not use it: they reach
+  # metadata in their network's namespace, named by network and address. The host's
+  # listener names an instance only by X-Instance-ID, from loopback (or from anyone
+  # with trust_instance_header), so binding it widely exposes no guest's data.
   bind_address: "0.0.0.0:8775"
   # Believe the X-Instance-ID header from any caller, not only loopback. Guests are
   # identified by their address; the header lets tests name an instance instead. Test

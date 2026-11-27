@@ -151,7 +151,7 @@ func TestRouterGatewayDoesNotDiscloseInvisibleNetworks(t *testing.T) {
 
 			body := fmt.Sprintf(`{"router":{"name":%q,"external_gateway_info":{"network_id":%q}}}`,
 				routerName, tc.networkID)
-			code, resp := doReqBody(r, http.MethodPost, "/v2.0/routers", body, neutronAuthHdr(seededProjectID, true))
+			code, resp := doReqBody(r, http.MethodPost, "/v2.0/routers", body, neutronAuthHdr(seededProjectID, false))
 
 			// Both must be 404. A 400 for the first and 404 for the second is the oracle.
 			if code != http.StatusNotFound {
@@ -160,6 +160,19 @@ func TestRouterGatewayDoesNotDiscloseInvisibleNetworks(t *testing.T) {
 			}
 		})
 	}
+
+	// An administrator sees every project's networks (SPEC-033 FR-057), so another project's private
+	// network is one they can see, refused as not external, as upstream's.
+	t.Run("an administrator, another project's private network", func(t *testing.T) {
+		routerName := "src4-" + uuid.NewString()[:8]
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), "DELETE FROM routers WHERE name = $1", routerName) //nolint:errcheck // best-effort cleanup
+		})
+		body := fmt.Sprintf(`{"router":{"name":%q,"external_gateway_info":{"network_id":%q}}}`, routerName, foreignPrivate)
+		if code, resp := doReqBody(r, http.MethodPost, "/v2.0/routers", body, neutronAuthHdr(seededProjectID, true)); code != http.StatusBadRequest {
+			t.Errorf("gateway on another project's private network, as an administrator: code=%d body=%s; want 400", code, resp)
+		}
+	})
 }
 
 // A network that IS external stays usable and keeps reporting the helpful error when it is not —

@@ -196,6 +196,11 @@ func (svc *Service) reviveGuest(ctx context.Context, instanceID string) (string,
 	if err != nil {
 		return "", fmt.Errorf("rebuilding the guest definition: %w", err)
 	}
+	// The guest's ports are bound to this node first, as a booting guest's are, so their firewall is
+	// here when it starts (SPEC-033 FR-041; SPEC-033 T173).
+	if err := svc.bindBootPorts(ctx, spec.Networks); err != nil {
+		return "", fmt.Errorf("binding the guest's ports: %w", err)
+	}
 
 	domainID, err := svc.vmManager.CreateVM(ctx, hypervisor.GenerateVMXML(spec))
 	if err != nil {

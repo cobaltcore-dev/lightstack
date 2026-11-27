@@ -5,11 +5,12 @@
 1. [Overview](#overview)
 2. [Architecture](#architecture)
 3. [Components](#components)
-4. [Configuration](#configuration)
-5. [Database Schema](#database-schema)
-6. [Deployment](#deployment)
-7. [Troubleshooting](#troubleshooting)
-8. [Testing](#testing)
+4. [The network node](#the-network-node)
+5. [Configuration](#configuration)
+6. [Database Schema](#database-schema)
+7. [Deployment](#deployment)
+8. [Troubleshooting](#troubleshooting)
+9. [Testing](#testing)
 
 ---
 
@@ -31,7 +32,8 @@ Lightstack implements VXLAN (Virtual Extensible LAN) overlay networking to enabl
 - **Pull model**: Nodes poll database every 1 second for changes (no push notifications)
 - **Synchronous operations**: Direct function calls, no async message passing
 - **Fail-fast**: Clear errors when prerequisites not met
-- **Namespace isolation**: Per-project network namespaces for tenant separation
+- **One network node**: every router and every network's DHCP live in namespaces on one node, `neutron.network_node`;
+  the overlay carries the other nodes' guests to it (SPEC-033)
 
 ---
 
@@ -45,8 +47,8 @@ Lightstack implements VXLAN (Virtual Extensible LAN) overlay networking to enabl
 ├─────────────────────────────────────────────────────────────────┤
 │  lightstack Binary (Neutron API + VXLAN Coordinator)                   │
 │    ↓                    ↓                      ↓                │
-│  Node Registry    VXLANManager         NamespaceManager         │
-│  (Heartbeat)      (VXLAN/FDB)          (netns isolation)        │
+│  Node Registry    VXLANManager         FirewallManager          │
+│  (Heartbeat)      (VXLAN/FDB)          (the bound ports' chains)│
 │    ↓                    ↓                      ↓                │
 │  ┌──────────────────────────────────────────────────┐           │
 │  │            PostgreSQL (Shared State)             │           │
@@ -54,7 +56,7 @@ Lightstack implements VXLAN (Virtual Extensible LAN) overlay networking to enabl
 │                         ↓                                        │
 │         Linux Kernel (netlink, VXLAN, bridges)                  │
 │                         ↓                                        │
-│           vxlan-XXXXXXXX ←→ br-XXXXXXXX ←→ tap-XXXXXX           │
+│        vxlan-XXXXXXXX ←→ br-XXXXXXXX ←→ tapXXXXXXXXXXX          │
 │                         ↓                                        │
 │                   libvirt (KVM VM)                              │
 └─────────────────────────────────────────────────────────────────┘
@@ -92,10 +94,10 @@ Lightstack implements VXLAN (Virtual Extensible LAN) overlay networking to enabl
    ↓
 2. Neutron stores port in database with MAC address
    ↓
-3. Neutron calls VXLANCoordinator.DistributeFDBEntry()
+3. In the port's own transaction, Neutron writes its forwarding row (RecordFDB):
+   {network_id, mac_address, vtep_ip (this node's tunnel IP)}
    ↓
-4. Coordinator inserts FDB entry in database:
-   {network_id, mac_address, vtep_ip (local tunnel IP)}
+4. The row goes with its port (ON DELETE CASCADE)
    ↓
 5. All nodes poll database and see new FDB entry
    ↓
@@ -105,6 +107,9 @@ Lightstack implements VXLAN (Virtual Extensible LAN) overlay networking to enabl
    bridge fdb add <MAC> dev vxlan-<network_id> dst <vtep_ip>
    ↓
 8. Kernel now knows where to send packets for this MAC
+   ↓
+9. Each node removes the entries it wrote whose row is gone, or whose node is no
+   longer active, and the devices of deleted networks, after a complete read
 ```
 
 #### Packet Flow (VM1 on Node1 → VM2 on Node2)
@@ -112,7 +117,7 @@ Lightstack implements VXLAN (Virtual Extensible LAN) overlay networking to enabl
 ```
 1. VM1 sends Ethernet frame to VM2's MAC
    ↓
-2. Frame arrives on tap-<port_id> → br-<network_id>
+2. Frame arrives on tap<port_id[:11]> → br-<network_id[:8]>, through VM1's egress chain on Node1
    ↓
 3. Bridge looks up MAC in FDB
    ↓
@@ -128,7 +133,7 @@ Lightstack implements VXLAN (Virtual Extensible LAN) overlay networking to enabl
    ↓
 9. Kernel decapsulates VXLAN → original Ethernet frame
    ↓
-10. Frame delivered to br-<network_id> → tap-<port_id> → VM2
+10. Frame delivered to br-<network_id[:8]> → tap<port_id[:11]>, through VM2's ingress chain on Node2 → VM2
 ```
 
 ---
@@ -145,8 +150,8 @@ Manages VXLAN interfaces and FDB entries at the kernel level.
 // Create VXLAN interface
 CreateVXLAN(networkID string, vni int, localIP string) error
 
-// Delete VXLAN interface
-DeleteVXLAN(networkID string) error
+// Delete a VXLAN interface by its name, vxlan-<network id[:8]>
+DeleteVXLANDevice(name string) error
 
 // Add FDB entry (MAC -> VTEP IP mapping)
 AddFDBEntry(networkID, macAddress, remoteIP string) error
@@ -155,7 +160,7 @@ AddFDBEntry(networkID, macAddress, remoteIP string) error
 RemoveFDBEntry(networkID, macAddress string) error
 
 // Attach VXLAN to bridge
-AttachToBridge(networkID, bridgeName string, inNamespace bool, nsName string) error
+AttachToBridge(networkID, bridgeName string) error
 ```
 
 **Dual Mode Support:**
@@ -204,22 +209,19 @@ Start(ctx context.Context)
 // Stop coordinator (graceful shutdown)
 Stop()
 
-// Distribute FDB entry to all nodes (called from Neutron API)
-DistributeFDBEntry(ctx context.Context, networkID, portID, macAddress string) error
-
-// Remove FDB entry from all nodes
-RemoveFDBEntry(ctx context.Context, portID string) error
+// Write a port's forwarding row in the transaction that stores the port (called from Neutron)
+RecordFDB(ctx context.Context, tx database.Tx, networkID, portID, macAddress string) error
 ```
 
-**Synchronization Logic:**
+**Synchronization Logic** — every second, `sync()`:
 
-1. **syncNetworks()**: Every 1s, query database for VXLAN networks
-   - For each network without VXLAN interface: create it
-   - For each network with VNI but no VXLAN: allocate VNI and create interface
-
-2. **syncPorts()**: Every 1s, query database for FDB entries
-   - For each entry not in local FDB: add it via netlink
-   - For each local FDB entry not in DB: remove it
+1. Lists this node's VXLAN devices, then reads the VXLAN networks and the forwarding rows.
+2. **syncNetworks()**: for each VXLAN network, allocates its VNI if it has none, creates its device and
+   attaches it to the network's bridge.
+3. **syncPorts()**: for each network, adds the entry of every row of a port on another active node, and,
+   after a complete read, removes every entry Lightstack wrote that no such row holds — a deleted port's,
+   an inactive node's. Entries the kernel learned are left to age out.
+4. After a complete read, removes the device of every network that no longer exists.
 
 **VNI Allocation Strategy:**
 
@@ -237,6 +239,21 @@ for vni := 1000; vni <= 10000; vni++ {
     }
 }
 ```
+
+## The network node
+
+One node, `neutron.network_node`, holds every router (`qrouter-<id>`) and every network's DHCP and metadata
+(`qdhcp-<id>`); it is the only node that answers for router and floating addresses on its uplink. Every
+other node holds the bridges, the VXLAN devices and entries, and the chains of the ports bound to it. A
+request served by another node has the network node apply its north-south change before the answer,
+through an authenticated call on the Neutron port bounded at one second (`/internal/v1/converge`); a
+port's chains are applied the same way on its node. A failed or late call fails the request with `500`
+and undoes it.
+
+**Known gap**: a VXLAN device has no flooding destination — no all-zeros forwarding entry per remote
+node, and no multicast group — so broadcast frames do not cross nodes. With DHCP and the routers on the
+network node only, a guest on another node gets no DHCP lease and cannot resolve its gateway's address.
+Recorded in SPEC-033's tasks (T144); not yet fixed.
 
 ---
 
@@ -257,6 +274,7 @@ neutron:
   port: 9696
   networking_mode: iptables      # or "stub" for testing
   vxlan_enabled: true            # Enable VXLAN overlay
+  network_node: node-1           # The node holding every router and DHCP; required with VXLAN
   vni_range_start: 1000          # VNI allocation range start
   vni_range_end: 10000           # VNI allocation range end
   coordination_poll_interval: 1s # How often to sync state
@@ -271,6 +289,7 @@ neutron:
 | `compute.vxlan_port` | 4789 | UDP port for VXLAN encapsulation. |
 | `compute.heartbeat_interval` | 30s | How often to send heartbeat to database. |
 | `neutron.vxlan_enabled` | false | Enable VXLAN overlay networking. |
+| `neutron.network_node` | — | The node name (`LIGHTSTACK_NODE_NAME`, else the host name) of the node that holds every router and network DHCP. Required with VXLAN on: Lightstack refuses to start without it. Ignored without VXLAN, which is a single node, its own network node; the chart refuses several nodes without VXLAN. Read trimmed; a node that is not the network node removes the routers and DHCP it holds only while the named node is active. |
 | `neutron.vni_range_start` | 1000 | Minimum VNI for allocation. |
 | `neutron.vni_range_end` | 10000 | Maximum VNI for allocation. |
 | `neutron.coordination_poll_interval` | 1s | Database polling frequency. |
@@ -384,6 +403,10 @@ neutron:
 - PostgreSQL accessible from all nodes
 - Network connectivity between tunnel IPs
 - UDP port 4789 open between nodes
+- TCP to the Neutron port (`neutron.port`, 9696 by default) open between the tunnel IPs: a node has the node
+  holding a unit — the network node for routers and DHCP, a port's node for its chains — apply a change
+  through it, so every node uses the same Neutron port
+- The same `keystone.jwt_secret` on every node: the nodes sign those calls with it
 - Linux kernel with VXLAN support (kernel 3.7+)
 
 #### Node 1 Setup
@@ -398,12 +421,16 @@ compute:
 
 neutron:
   vxlan_enabled: true
+  network_node: node-1   # this node holds every router and network DHCP
   vni_range_start: 1000
   vni_range_end: 10000
 
 database:
   url: "postgres://lightstack:secret@db.example.com/lightstack"
 ```
+
+Start each node with `LIGHTSTACK_NODE_NAME` set to its name, here `node-1` and `node-2`: the network
+node is named by it, and a port's binding too.
 
 **Start Node 1:**
 
@@ -423,21 +450,16 @@ compute:
 
 neutron:
   vxlan_enabled: true
+  network_node: node-1   # the same network node on every node
   vni_range_start: 1000
   vni_range_end: 10000
 
 database:
   url: "postgres://lightstack:secret@db.example.com/lightstack"  # Same database
-
-keystone:
-  port: 45357  # Different port to avoid conflict
-
-nova:
-  port: 18774  # Different port
-
-neutron:
-  port: 19696  # Different port
 ```
+
+Every node uses the same ports, `neutron.port` above all, and the same `keystone.jwt_secret`: the nodes call
+each other on their tunnel IPs at their own Neutron port, signed with that secret.
 
 **Start Node 2:**
 

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/cobaltcore-dev/lightstack/internal/database"
+	"github.com/cobaltcore-dev/lightstack/internal/neutron"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/pkg/hypervisor"
@@ -729,73 +731,54 @@ func (svc *Service) LiveMigrateInstance(c *gin.Context, instanceID, projectID st
 	c.Status(http.StatusAccepted)
 }
 
-// securityGroupNamesForServer returns the names of the security groups currently
-// associated with a server. The INNER JOIN drops orphaned associations (an SG row
-// deleted out from under a server_security_groups row, which has no FK).
-func securityGroupNamesForServer(ctx context.Context, pool database.DB, serverID string) ([]string, error) {
-	rows, err := pool.Query(ctx, `
-		SELECT sg.name
-		FROM server_security_groups ssg
-		JOIN security_groups sg ON sg.id = ssg.security_group_id
-		WHERE ssg.server_id = $1
-		ORDER BY sg.name
-	`, serverID)
-	if err != nil {
-		return nil, fmt.Errorf("query security groups for server %s: %w", serverID, err)
-	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			log.Warn().Err(err).Str("operation", "securityGroupNamesForServer").Msg("failed to scan row")
-			return nil, fmt.Errorf("scan security group name for server %s: %w", serverID, err)
-		}
-		names = append(names, n)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate security groups for server %s: %w", serverID, err)
-	}
-	return names, nil
-}
-
-// securityGroupNamesForServers batches securityGroupNamesForServer across a page of
-// servers in a single query (no N+1), returning server_id → names.
-func securityGroupNamesForServers(ctx context.Context, pool database.DB, serverIDs []string) (map[string][]string, error) {
+// securityGroupNamesForServers returns, for each server, the groups its ports carry, in one query:
+// one name per port and group, ports in creation order and then by id, a port's groups by name.
+// Duplicates stay, as upstream reports them. A group with an empty name is reported by its id,
+// upstream's fallback. A server whose ports carry no group has no entry.
+//
+// The ports are the only list of a server's groups and the one its filter is built from, so a server
+// reports exactly what filters it (SPEC-033 FR-014, FR-015; research R10). A server's ports are those
+// naming it that are its project's, as the address map reads them: device_id is any port creator's to
+// set (SPEC-033 T180). A port may carry another project's group, which an administrator put there by id
+// (FR-004); only an administrator's report names it, as upstream skips a group its caller cannot list
+// (T262).
+func securityGroupNamesForServers(ctx context.Context, pool database.DB, serverIDs []string, admin bool) (map[string][]string, error) {
 	result := make(map[string][]string, len(serverIDs))
 	if len(serverIDs) == 0 {
 		return result, nil
 	}
 	rows, err := pool.Query(ctx, `
-		SELECT ssg.server_id::text, sg.name
-		FROM server_security_groups ssg
-		JOIN security_groups sg ON sg.id = ssg.security_group_id
-		WHERE ssg.server_id = ANY($1::uuid[])
-		ORDER BY sg.name
-	`, serverIDs)
+		SELECT p.device_id::text, COALESCE(NULLIF(sg.name, ''), sg.id::text)
+		FROM ports p
+		JOIN instances i ON i.id = p.device_id AND i.project_id = p.project_id
+		JOIN port_security_groups psg ON psg.port_id = p.id
+		JOIN security_groups sg ON sg.id = psg.security_group_id AND (sg.project_id = i.project_id OR $2)
+		WHERE p.device_id = ANY($1::uuid[])
+		ORDER BY p.created_at, p.id, sg.name
+	`, serverIDs, admin)
 	if err != nil {
-		return nil, fmt.Errorf("query security groups for servers: %w", err)
+		return nil, fmt.Errorf("query the security groups of the servers' ports: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var sid, name string
 		if err := rows.Scan(&sid, &name); err != nil {
-			log.Warn().Err(err).Str("operation", "securityGroupNamesForServers").Msg("failed to scan row")
-			return nil, fmt.Errorf("scan security group row: %w", err)
+			return nil, fmt.Errorf("scan a port's security group: %w", err)
 		}
 		result[sid] = append(result[sid], name)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate security groups for servers: %w", err)
+		return nil, fmt.Errorf("iterate the security groups of the servers' ports: %w", err)
 	}
 	return result, nil
 }
 
-// formatSecurityGroups renders SG names as Nova's [{"name": ...}] shape,
-// synthesizing the default group when the instance has none (FR-006).
+// formatSecurityGroups renders names in Nova's [{"name": ...}] shape. It returns nil for none, and
+// the caller then leaves security_groups out: upstream omits the key when no port carries a group,
+// and never invents default (SPEC-033 FR-015).
 func formatSecurityGroups(names []string) []gin.H {
 	if len(names) == 0 {
-		return []gin.H{{"name": "default"}}
+		return nil
 	}
 	out := make([]gin.H, 0, len(names))
 	for _, n := range names {
@@ -804,196 +787,272 @@ func formatSecurityGroups(names []string) []gin.H {
 	return out
 }
 
-// AddSecurityGroup adds a security group to an instance
+// AddSecurityGroup adds a security group to every port of a server (SPEC-033 FR-001, research R4).
 func (svc *Service) AddSecurityGroup(c *gin.Context, instanceID, projectID string) {
+	svc.changeServerSecurityGroup(c, instanceID, projectID, true)
+}
 
-	// Get action data from context (already parsed by ServerAction)
-	actionData, exists := c.Get("action_data")
-	if !exists {
-		common.SendError(c, common.NewBadRequestError("missing addSecurityGroup data"))
+// RemoveSecurityGroup removes a security group from every port of a server that carries it (SPEC-033
+// FR-002, research R4).
+func (svc *Service) RemoveSecurityGroup(c *gin.Context, instanceID, projectID string) {
+	svc.changeServerSecurityGroup(c, instanceID, projectID, false)
+}
+
+// serverGroupChange is what one addSecurityGroup or removeSecurityGroup stored: the group, the ports
+// it changed, and the list it left on each, which the undo compares against (research R5).
+type serverGroupChange struct {
+	serverGroupRequest
+	groupID string
+	ports   []string            // the ports changed, in id order
+	left    map[string][]string // port → the group ids this change left on it
+}
+
+// serverGroupRequest is an add or a remove of a security group on a server: the server, its project, the
+// group as named — a name or an id — and whether the caller is an administrator.
+type serverGroupRequest struct {
+	instanceID, projectID, ref string
+	add, admin                 bool
+}
+
+// changeServerSecurityGroup adds or removes a group on a server's ports. The ports are the only list
+// of a server's groups and the one their firewall is built from (research R1), so the change is
+// stored on them and then converged on the ports' nodes before the answer (R32). When a node cannot
+// apply it, the change is undone, compare-and-set, and the request answers 500 (FR-008, R5).
+func (svc *Service) changeServerSecurityGroup(c *gin.Context, instanceID, projectID string, add bool) {
+	data, _ := c.Get("action_data")
+	body, _ := data.(map[string]any)
+	// Upstream's refusals, before any lookup (nova's security_groups _parse; SPEC-033 T238).
+	ref, named := body["name"].(string)
+	if !named {
+		common.SendError(c, common.NewBadRequestError("Security group not specified"))
+		return
+	}
+	if strings.TrimSpace(ref) == "" {
+		common.SendError(c, common.NewBadRequestError("Security group name cannot be empty"))
 		return
 	}
 
-	addSGMap, ok := actionData.(map[string]any)
-	if !ok {
-		common.SendError(c, common.NewBadRequestError("invalid addSecurityGroup data"))
-		return
-	}
-
-	sgName, ok := addSGMap["name"].(string)
-	if !ok || sgName == "" {
-		common.SendError(c, common.NewBadRequestError("missing security group name"))
-		return
-	}
-
-	// Verify instance exists
-	var existsCheck bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&existsCheck)
-
-	if err != nil || !existsCheck {
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return
-	}
-
-	// Verify security group exists
-	var sgID string
-	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id FROM security_groups WHERE name = $1 AND project_id = $2",
-		sgName, projectID,
-	).Scan(&sgID)
-
-	if errors.Is(err, database.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("security group"))
+	var change *serverGroupChange
+	err := database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		var err error
+		change, err = storeServerGroupChange(c.Request.Context(), tx, serverGroupRequest{instanceID: instanceID,
+			projectID: projectID, ref: ref, add: add, admin: common.HasRole(c, common.RoleAdmin)})
+		return err
+	})
+	var refusal *common.OpenStackError
+	if errors.As(err, &refusal) {
+		common.SendError(c, refusal)
 		return
 	}
 	if err != nil {
-		log.Error().Err(err).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("database error"))
+		log.Error().Err(err).Str("instance_id", instanceID).Msg("store a security group change")
+		common.SendError(c, common.NewInternalServerError("failed to change the server's security groups"))
 		return
 	}
 
-	// Check if security group is already associated with instance
-	var alreadyAssociated bool
-	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM server_security_groups WHERE server_id = $1 AND security_group_id = $2)",
-		instanceID, sgID,
-	).Scan(&alreadyAssociated)
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "check_sg_association").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to check security group association"))
+	// Stored. From here the change is applied or undone, whether or not the client is still there.
+	ctx := context.WithoutCancel(c.Request.Context())
+	if err := svc.applyServerGroupChange(ctx, instanceID, change); err != nil {
+		log.Error().Err(err).Str("instance_id", instanceID).Strs("port_ids", change.ports).
+			Msg("this node could not apply the security group change; the change was not applied")
+		common.SendError(c, common.NewInternalServerError("failed to apply the security group change"))
 		return
 	}
-
-	// 400, not 409, as upstream: Nova appends the group's id to the port's list, Neutron
-	// rejects the duplicate and Nova maps that to SecurityGroupCannotBeApplied.
-	if alreadyAssociated {
-		common.SendError(c, common.NewBadRequestError("security group already associated with instance"))
-		return
-	}
-
-	// Add security group association
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO server_security_groups (server_id, security_group_id, created_at)
-		VALUES ($1, $2, $3)
-	`, instanceID, sgID, time.Now())
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "add_sg_to_instance").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to add security group"))
-		return
-	}
-
-	// In stub mode, just return success
-	// In real mode, would apply iptables rules and update Neutron port security groups
 	c.Status(http.StatusAccepted)
 }
 
-// RemoveSecurityGroup removes a security group from an instance
-func (svc *Service) RemoveSecurityGroup(c *gin.Context, instanceID, projectID string) {
-
-	// Get action data from context
-	actionData, exists := c.Get("action_data")
-	if !exists {
-		common.SendError(c, common.NewBadRequestError("missing removeSecurityGroup data"))
-		return
-	}
-
-	removeSGMap, ok := actionData.(map[string]any)
-	if !ok {
-		common.SendError(c, common.NewBadRequestError("invalid removeSecurityGroup data"))
-		return
-	}
-
-	sgName, ok := removeSGMap["name"].(string)
-	if !ok || sgName == "" {
-		common.SendError(c, common.NewBadRequestError("missing security group name"))
-		return
-	}
-
-	// Verify instance exists
-	var existsCheck bool
-	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM instances WHERE id = $1 AND project_id = $2)",
-		instanceID, projectID,
-	).Scan(&existsCheck)
-
-	if err != nil || !existsCheck {
-		common.SendError(c, common.NewNotFoundError("instance"))
-		return
-	}
-
-	// Verify security group exists
-	var sgID string
-	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT id FROM security_groups WHERE name = $1 AND project_id = $2",
-		sgName, projectID,
-	).Scan(&sgID)
-
+// storeServerGroupChange is the change's transaction. It locks the server, then its ports in id order
+// (research R3); resolves the group — a name in the server's project, which for an administrator acting
+// on a tenant's server is the tenant's (constitution register, entry 5), an id in any project for an
+// administrator, as upstream (FR-004, research R52); checks; and stores the change on the ports. A
+// refusal is returned as the *common.OpenStackError to answer with, and rolls back.
+func storeServerGroupChange(ctx context.Context, tx database.Tx, req serverGroupRequest) (*serverGroupChange, error) {
+	instanceID, projectID, ref := req.instanceID, req.projectID, req.ref
+	var one int
+	err := tx.QueryRow(ctx, "SELECT 1 FROM instances WHERE id = $1 AND project_id = $2 FOR UPDATE",
+		instanceID, projectID).Scan(&one)
 	if errors.Is(err, database.ErrNoRows) {
-		common.SendError(c, common.NewNotFoundError("security group"))
-		return
+		return nil, common.NewNotFoundError("instance") // deleted since the request found it
 	}
 	if err != nil {
-		log.Error().Err(err).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("database error"))
-		return
+		return nil, fmt.Errorf("lock instance %s: %w", instanceID, err)
 	}
-
-	// Check if security group is actually associated with instance
-	var isAssociated bool
-	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM server_security_groups WHERE server_id = $1 AND security_group_id = $2)",
-		instanceID, sgID,
-	).Scan(&isAssociated)
-
+	// The server's ports are those naming it that are its project's: device_id is any port creator's to
+	// set (SPEC-033 T180).
+	ports, err := lockPorts(ctx, tx, "device_id = $1 AND project_id = $2", instanceID, projectID)
 	if err != nil {
-		log.Error().Err(err).Str("operation", "check_sg_association_remove").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to check security group association"))
-		return
+		return nil, err
 	}
-
-	if !isAssociated {
-		common.SendError(c, common.NewNotFoundError("security group association"))
-		return
+	groupID, err := neutron.ResolveSecurityGroup(ctx, tx, ref, projectID, req.admin)
+	if errors.Is(err, neutron.ErrSecurityGroupNotFound) {
+		return nil, common.NewNotFoundError("security group")
 	}
-
-	// Check if this is the last security group (cannot remove last one)
-	var sgCount int
-	err = svc.pool.QueryRow(c.Request.Context(),
-		"SELECT COUNT(*) FROM server_security_groups WHERE server_id = $1",
-		instanceID,
-	).Scan(&sgCount)
-
+	var ambiguous *neutron.AmbiguousSecurityGroupError
+	if errors.As(err, &ambiguous) {
+		return nil, common.NewConflictError(ambiguous.Error()) // upstream Nova's NoUniqueMatch (FR-026)
+	}
 	if err != nil {
-		log.Error().Err(err).Str("operation", "count_sg_associations").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to count security groups"))
-		return
+		return nil, fmt.Errorf("resolve security group %q: %w", ref, err)
+	}
+	if len(ports) == 0 {
+		return nil, common.NewItemNotFoundError(fmt.Sprintf("instance_id %s could not be found as device id on any ports", instanceID))
 	}
 
-	if sgCount <= 1 {
-		common.SendError(c, common.NewBadRequestError("cannot remove last security group from instance"))
-		return
+	change := &serverGroupChange{serverGroupRequest: req, groupID: groupID, left: map[string][]string{}}
+	if req.add {
+		err = addGroupToPorts(ctx, tx, change, ports)
+	} else {
+		err = removeGroupFromPorts(ctx, tx, change, ports)
 	}
-
-	// Remove security group association
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		DELETE FROM server_security_groups
-		WHERE server_id = $1 AND security_group_id = $2
-	`, instanceID, sgID)
-
 	if err != nil {
-		log.Error().Err(err).Str("operation", "remove_sg_from_instance").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to remove security group"))
-		return
+		return nil, err
 	}
+	for _, p := range change.ports {
+		if change.left[p], err = neutron.PortSecurityGroupIDs(ctx, tx, p); err != nil {
+			return nil, fmt.Errorf("read the groups of port %s: %w", p, err)
+		}
+	}
+	return change, nil
+}
 
-	// In stub mode, just return success
-	// In real mode, would remove iptables rules and update Neutron port security groups
-	c.Status(http.StatusAccepted)
+// addGroupToPorts adds the group to every port. When any port already carries it, the whole add is
+// refused with 400 and nothing changes: upstream's own outcome when it reaches such a port, without
+// the ports it changed before (research R4).
+func addGroupToPorts(ctx context.Context, tx database.Tx, change *serverGroupChange, ports []string) error {
+	for _, p := range ports {
+		groups, err := neutron.PortSecurityGroupIDs(ctx, tx, p)
+		if err != nil {
+			return fmt.Errorf("read the groups of port %s: %w", p, err)
+		}
+		if slices.Contains(groups, change.groupID) {
+			return common.NewBadRequestError(fmt.Sprintf("Security group %s is already associated with the instance %s", change.ref, change.instanceID))
+		}
+	}
+	for _, p := range ports {
+		err := neutron.AddPortSecurityGroup(ctx, tx, p, change.groupID)
+		if errors.Is(err, neutron.ErrSecurityGroupNotFound) {
+			return common.NewNotFoundError("security group") // deleted since it was resolved
+		}
+		if errors.Is(err, neutron.ErrSecurityGroupConflict) {
+			// A port would carry stateful and stateless groups. Upstream Nova raises
+			// SecurityGroupConnectionStateConflict, 409, with the network service's reason (FR-051).
+			return common.NewConflictError(err.Error())
+		}
+		if err != nil {
+			return fmt.Errorf("add security group %s to port %s: %w", change.groupID, p, err)
+		}
+	}
+	change.ports = ports
+	return nil
+}
+
+// removeGroupFromPorts removes the group from every port that carries it; 404 when none does. The
+// server's last group may go, as upstream allows: its ports then carry none, and a floating IP on
+// them admits replies only (SPEC-033 FR-005).
+func removeGroupFromPorts(ctx context.Context, tx database.Tx, change *serverGroupChange, ports []string) error {
+	for _, p := range ports {
+		removed, err := neutron.RemovePortSecurityGroup(ctx, tx, p, change.groupID)
+		if err != nil {
+			return fmt.Errorf("remove security group %s from port %s: %w", change.groupID, p, err)
+		}
+		if removed {
+			change.ports = append(change.ports, p)
+		}
+	}
+	if len(change.ports) == 0 {
+		return common.NewItemNotFoundError(fmt.Sprintf("Security group %s not associated with the instance %s", change.ref, change.instanceID))
+	}
+	return nil
+}
+
+// lockPorts locks the ports matching where ($1 bound to arg) in id order, the order every change to a
+// port's groups takes them in (research R3), and returns their ids.
+func lockPorts(ctx context.Context, tx database.Tx, where string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, "SELECT id FROM ports WHERE "+where+" ORDER BY id FOR UPDATE", args...)
+	if err != nil {
+		return nil, fmt.Errorf("lock ports: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("lock ports: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// applyServerGroupChange converges the firewall of the changed ports, and of the ports whose rules
+// expand the group, on their nodes. When that fails, it undoes the change, converges them again from
+// what the database then holds, and returns the failure. Without a network service there is nothing
+// to converge.
+func (svc *Service) applyServerGroupChange(ctx context.Context, instanceID string, change *serverGroupChange) error {
+	if svc.neutronSvc == nil {
+		return nil
+	}
+	err := svc.neutronSvc.RefreshPortFilters(ctx, change.ports, []string{change.groupID})
+	if err == nil {
+		return nil
+	}
+	if uerr := svc.undoServerGroupChange(ctx, instanceID, change); uerr != nil {
+		log.Error().Err(uerr).Str("instance_id", instanceID).
+			Msg("undo a security group change; the reconciliation pass applies what the ports hold")
+	}
+	if rerr := svc.neutronSvc.RefreshPortFilters(ctx, change.ports, []string{change.groupID}); rerr != nil {
+		log.Error().Err(rerr).Str("instance_id", instanceID).
+			Msg("rebuild the filters after an undo; the reconciliation pass converges them")
+	}
+	return err
+}
+
+// undoServerGroupChange undoes a stored change in a transaction of its own, taking the same locks in
+// the same order, on each port whose list is still the one the change left: a port another request
+// has changed since keeps that change (research R5).
+func (svc *Service) undoServerGroupChange(ctx context.Context, instanceID string, change *serverGroupChange) error {
+	return database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		var one int
+		if err := tx.QueryRow(ctx, "SELECT 1 FROM instances WHERE id = $1 FOR UPDATE", instanceID).Scan(&one); err != nil && !errors.Is(err, database.ErrNoRows) {
+			return fmt.Errorf("lock instance %s: %w", instanceID, err)
+		}
+		// The ports still there: one deleted since has nothing to put back, and walking it would hit the
+		// foreign key and roll the whole undo back (SPEC-033 T207).
+		locked, err := lockPorts(ctx, tx, "id = ANY($1::uuid[])", change.ports)
+		if err != nil {
+			return err
+		}
+		if !change.add {
+			// A removed group may have been deleted since; then there is nothing to put back.
+			var exists bool
+			if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM security_groups WHERE id = $1)",
+				change.groupID).Scan(&exists); err != nil {
+				return fmt.Errorf("read security group %s: %w", change.groupID, err)
+			}
+			if !exists {
+				return nil
+			}
+		}
+		for _, p := range locked {
+			now, err := neutron.PortSecurityGroupIDs(ctx, tx, p)
+			if err != nil {
+				return fmt.Errorf("read the groups of port %s: %w", p, err)
+			}
+			if !slices.Equal(now, change.left[p]) {
+				log.Info().Str("port_id", p).Msg("undo: another change reached the port since; it keeps that change")
+				continue
+			}
+			if change.add {
+				_, err = neutron.RemovePortSecurityGroup(ctx, tx, p, change.groupID)
+			} else {
+				err = neutron.AddPortSecurityGroup(ctx, tx, p, change.groupID)
+			}
+			if err != nil {
+				return fmt.Errorf("undo on port %s: %w", p, err)
+			}
+		}
+		return nil
+	})
 }
 
 // ChangePassword changes the admin password for an instance

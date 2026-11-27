@@ -23,3 +23,14 @@ func WithTx(ctx context.Context, db DB, fn func(tx Tx) error) error {
 	}
 	return nil
 }
+
+// AdvisoryLock takes the transaction-scoped advisory lock named key, held until tx commits or rolls
+// back, so there is no unlock path to forget. It serialises a decision no row lock can: one about a row
+// that may not exist yet, or a value read across rows and then claimed. On SQLite it is a registered
+// no-op: an immediate transaction already holds the database's one write lock.
+func AdvisoryLock(ctx context.Context, tx Tx, key string) error {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+		return fmt.Errorf("take the lock %s: %w", key, err)
+	}
+	return nil
+}

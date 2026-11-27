@@ -91,6 +91,7 @@ tests:
   - it: refuses SQLite with deploymentMode other than single-node (FR-009)
     set:
       deploymentMode: multi-node
+      neutron.networkNode: node-a
       nodeSelector:
         kubernetes.io/hostname: node-a
     asserts:
@@ -309,6 +310,7 @@ tests:
       database.url: ""
       database.existingSecret: pg-sec
       deploymentMode: multi-node
+      neutron.networkNode: node-a
       replicaCount: 3
     asserts:
       - notFailedTemplate: {}

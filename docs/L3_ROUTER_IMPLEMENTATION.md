@@ -4,6 +4,12 @@
 **Phase**: v2 Development - Phase 2A
 **Status**: Complete
 
+> **Superseded in part by SPEC-033** (cloud-storage#579): every router lives on the network node in
+> `qrouter-<router id>`, its legs, NAT and floating IPs as
+> [`contracts/router-namespace-dataplane.md`](specs/033-sg-port-membership/contracts/router-namespace-dataplane.md)
+> describes them. The commands below are corrected; the veths, the `MASQUERADE` rule and the per-router steps
+> this document describes are the earlier layout's.
+
 ---
 
 ## Overview
@@ -171,7 +177,7 @@ CREATE TABLE router_routes (
 
 When a router is created:
 1. Database record is inserted
-2. Network namespace `qrouter-{id[:11]}` is created
+2. Network namespace `qrouter-<router id>` is created on the network node
 3. IP forwarding is enabled in the namespace
 4. Reverse path filtering is disabled (required for NAT)
 
@@ -187,8 +193,7 @@ openstack router create my-router
     "name": "my-router",
     "admin_state_up": true,
     "external_gateway_info": {
-      "network_id": "ext-net-uuid",
-      "enable_snat": true
+      "network_id": "ext-net-uuid"
     }
   }
 }
@@ -218,14 +223,12 @@ openstack router add subnet my-router private-subnet
 When external gateway is configured:
 1. External network interface is attached to router
 2. Default route is set via external gateway
-3. SNAT rules are added for internal subnets (if enable_snat=true)
+3. SNAT rules are added for internal subnets (when `enable_snat` is true, the default; only an administrator
+   may set it, as upstream)
 
-**SNAT Rule (Masquerading):**
+**SNAT rule**, in the router's namespace, to the gateway's address:
 ```bash
-iptables -t nat -A POSTROUTING \
-  -s 10.0.1.0/24 \
-  -o qg-ext-{id} \
-  -j MASQUERADE
+-A ls-l3-snat -o qg-<gateway port id[:11]> -m comment --comment lightstack -j SNAT --to-source <gateway address>
 ```
 
 This allows VMs on internal networks (10.0.1.0/24) to access external networks using the router's external IP.
@@ -469,18 +472,25 @@ ip netns list | grep qrouter
 
 # Execute commands in router namespace
 ROUTER_ID="abc123..."
-ip netns exec qrouter-${ROUTER_ID:0:11} ip addr
-ip netns exec qrouter-${ROUTER_ID:0:11} ip route
+ip netns exec qrouter-${ROUTER_ID} ip addr
+ip netns exec qrouter-${ROUTER_ID} ip route
 ```
 
 ### Verify NAT Rules
 
-```bash
-# Check SNAT rules
-ip netns exec qrouter-${ROUTER_ID:0:11} iptables -t nat -L POSTROUTING -v
+The built-in chains hold only jumps; the rules live in Lightstack's chains, every one commented `lightstack`.
 
-# Check DNAT rules
-ip netns exec qrouter-${ROUTER_ID:0:11} iptables -t nat -L PREROUTING -v
+```bash
+# Every NAT rule of the router
+ip netns exec qrouter-${ROUTER_ID} iptables -t nat -S
+
+# The gateway SNAT and the floating IPs' SNAT
+ip netns exec qrouter-${ROUTER_ID} iptables -t nat -S ls-l3-snat
+ip netns exec qrouter-${ROUTER_ID} iptables -t nat -S ls-l3-float-snat
+
+# The floating IPs' DNAT, and the port forwardings (ls-l3-fip-pf jumps to one ls-pf-<id[:8]> chain each)
+ip netns exec qrouter-${ROUTER_ID} iptables -t nat -S ls-l3-PREROUTING
+ip netns exec qrouter-${ROUTER_ID} iptables -t nat -S ls-l3-fip-pf
 ```
 
 ### Debug Connectivity
@@ -496,7 +506,7 @@ ping 8.8.8.8
 ping 203.0.113.10
 
 # Check IP forwarding
-ip netns exec qrouter-${ROUTER_ID:0:11} sysctl net.ipv4.ip_forward
+ip netns exec qrouter-${ROUTER_ID} sysctl net.ipv4.ip_forward
 # Should return: net.ipv4.ip_forward = 1
 ```
 

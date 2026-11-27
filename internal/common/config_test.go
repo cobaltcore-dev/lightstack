@@ -770,3 +770,72 @@ func TestShutdownTimeoutFitsInsideTheWriteDeadline(t *testing.T) {
 		}
 	})
 }
+
+// SPEC-033 round 2, T064 (FR-033, research R26): neutron.network_node names the node that holds
+// every router and DHCP namespace, by its node name. With VXLAN on it must be set; with VXLAN off a
+// node is its own network node whatever the key says.
+func TestLoadConfigNeutronNetworkNode(t *testing.T) {
+	load := func(t *testing.T, body, env string) *Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "lightstack.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("LIGHTSTACK_NEUTRON_NETWORK_NODE", env)
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		return cfg
+	}
+
+	t.Run("from the file", func(t *testing.T) {
+		cfg := load(t, "neutron:\n  vxlan_enabled: true\n  network_node: node-a\n", "")
+		if cfg.Neutron.NetworkNode != "node-a" {
+			t.Errorf("NetworkNode = %q; want node-a", cfg.Neutron.NetworkNode)
+		}
+		if err := cfg.Neutron.CheckNetworkNode(); err != nil {
+			t.Errorf("CheckNetworkNode with VXLAN on and the key set: %v; want nil", err)
+		}
+		if got := cfg.Neutron.NetworkNodeFor("node-b"); got != "node-a" {
+			t.Errorf("NetworkNodeFor(node-b) with VXLAN on = %q; want the configured node-a", got)
+		}
+	})
+
+	t.Run("from the environment", func(t *testing.T) {
+		cfg := load(t, "neutron:\n  vxlan_enabled: true\n  network_node: node-a\n", "node-c")
+		if cfg.Neutron.NetworkNode != "node-c" {
+			t.Errorf("NetworkNode = %q; want the environment's node-c", cfg.Neutron.NetworkNode)
+		}
+	})
+
+	// SPEC-033 T276: read trimmed, as the check that refuses an empty one reads it — a trailing space or an
+	// environment value's newline named no node, and every node removed every router and DHCP.
+	t.Run("trimmed", func(t *testing.T) {
+		for body, env := range map[string]string{"neutron:\n  vxlan_enabled: true\n  network_node: \"node-a \"\n": "", "neutron: {}\n": "node-a\n"} {
+			if cfg := load(t, body, env); cfg.Neutron.NetworkNode != "node-a" {
+				t.Errorf("NetworkNode from %q / env %q = %q; want node-a", body, env, cfg.Neutron.NetworkNode)
+			}
+		}
+	})
+
+	t.Run("VXLAN on without the key", func(t *testing.T) {
+		cfg := load(t, "neutron:\n  vxlan_enabled: true\n", "")
+		err := cfg.Neutron.CheckNetworkNode()
+		if err == nil || !strings.Contains(err.Error(), "neutron.network_node") {
+			t.Errorf("CheckNetworkNode = %v; want a refusal naming neutron.network_node", err)
+		}
+	})
+
+	t.Run("VXLAN off", func(t *testing.T) {
+		for _, body := range []string{"neutron: {}\n", "neutron:\n  network_node: node-a\n"} {
+			cfg := load(t, body, "")
+			if err := cfg.Neutron.CheckNetworkNode(); err != nil {
+				t.Errorf("CheckNetworkNode with VXLAN off (%q): %v; want nil", body, err)
+			}
+			if got := cfg.Neutron.NetworkNodeFor("node-b"); got != "node-b" {
+				t.Errorf("NetworkNodeFor(node-b) with VXLAN off (%q) = %q; want the node itself", body, got)
+			}
+		}
+	})
+}

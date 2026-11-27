@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
+	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/cobaltcore-dev/lightstack/pkg/paths"
 )
 
@@ -174,14 +175,6 @@ func TestIsAbsent(t *testing.T) {
 	}
 	if isAbsent(errors.New("permission denied")) {
 		t.Error("a real error (permission denied) must not be treated as absent")
-	}
-}
-
-func TestParseNetnsList(t *testing.T) {
-	got := parseNetnsList("light-ns-x (id: 0)\nqrouter-y\n\n")
-	want := []string{"light-ns-x", "qrouter-y"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("parseNetnsList = %v, want %v", got, want)
 	}
 }
 
@@ -418,5 +411,113 @@ func TestCleanupBoundsASilentDaemon(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("failed after %s; want within about 1s", elapsed)
+	}
+}
+
+// SPEC-033 round 2, T145 (research R48): without the database, the network fallback removes what it
+// recognises by name alone: the project namespaces of older deployments, every router and network DHCP
+// namespace named by an id as Lightstack names them, each converged to absent with what hangs off it on
+// the host, and the node's whole port firewall. Nothing else. SPEC-033 T222: it asks the
+// managers what they hold — HeldProjects, HeldRouters, HeldNetworks, one recognition in pkg/networking
+// (TestHeldProjects, TestHeldRouters, TestHeldNetworks) — rather than reading names itself.
+
+type purgeRecorder struct {
+	calls                       []string
+	fail                        map[string]bool
+	projects, routers, networks []string
+	listErr                     map[string]error // by "projects", "routers" or "networks"
+}
+
+func (r *purgeRecorder) HeldProjects(context.Context) ([]string, error) {
+	return r.projects, r.listErr["projects"]
+}
+func (r *purgeRecorder) HeldRouters(context.Context) ([]string, error) {
+	return r.routers, r.listErr["routers"]
+}
+func (r *purgeRecorder) HeldNetworks(context.Context) ([]string, error) {
+	return r.networks, r.listErr["networks"]
+}
+
+func (r *purgeRecorder) record(call string) error {
+	r.calls = append(r.calls, call)
+	if r.fail[call] {
+		return errors.New("refused")
+	}
+	return nil
+}
+
+func (r *purgeRecorder) ConvergeRouter(_ context.Context, id string, state *networking.RouterState, uplink string) error {
+	if state != nil {
+		return errors.New("the fallback converged a router to a state")
+	}
+	return r.record("router " + id + " " + uplink)
+}
+
+func (r *purgeRecorder) ConvergeDHCP(_ context.Context, id string, state *networking.DHCPState) error {
+	if state != nil {
+		return errors.New("the fallback converged a network's DHCP to a state")
+	}
+	return r.record("dhcp " + id)
+}
+
+func (r *purgeRecorder) DeleteNamespace(_ context.Context, projectID string) error {
+	return r.record("project " + projectID)
+}
+
+func (r *purgeRecorder) RemoveAll(context.Context) error { return r.record("firewall") }
+
+const (
+	purgeRouter  = "0b1c2d3e-0000-4000-8000-00000000000b"
+	purgeNetwork = "4d5e6f70-0000-4000-8000-000000000004"
+)
+
+const purgeProject = "6f7a8b9c-0000-4000-8000-000000000006"
+
+func newPrefixPurge(r *purgeRecorder) prefixPurge {
+	return prefixPurge{uplink: "eth0", routers: r, dhcp: r, projects: r, firewall: r}
+}
+
+func TestPrefixPurge_RemovesWhatItRecognises(t *testing.T) {
+	r := &purgeRecorder{projects: []string{purgeProject}, routers: []string{purgeRouter}, networks: []string{purgeNetwork}}
+	if err := newPrefixPurge(r).run(context.Background()); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	want := []string{"project " + purgeProject, "router " + purgeRouter + " eth0", "dhcp " + purgeNetwork, "firewall"}
+	if !reflect.DeepEqual(r.calls, want) {
+		t.Errorf("calls %q; want %q", r.calls, want)
+	}
+}
+
+func TestPrefixPurge_FailsClosed(t *testing.T) {
+	for _, failed := range []string{"projects", "routers", "networks"} {
+		t.Run("a failed listing of the "+failed+" fails the purge, and the rest still goes", func(t *testing.T) {
+			r := &purgeRecorder{listErr: map[string]error{failed: errors.New("exit status 1")}}
+			if err := newPrefixPurge(r).run(context.Background()); err == nil {
+				t.Error("no error")
+			}
+			if !reflect.DeepEqual(r.calls, []string{"firewall"}) {
+				t.Errorf("calls %q; want the firewall removed all the same", r.calls)
+			}
+		})
+	}
+
+	t.Run("a failed removal fails the purge, and the rest still goes", func(t *testing.T) {
+		r := &purgeRecorder{fail: map[string]bool{"router " + purgeRouter + " eth0": true},
+			routers: []string{purgeRouter}, networks: []string{purgeNetwork}}
+		err := newPrefixPurge(r).run(context.Background())
+		if err == nil {
+			t.Error("no error")
+		}
+		if !reflect.DeepEqual(r.calls, []string{"router " + purgeRouter + " eth0", "dhcp " + purgeNetwork, "firewall"}) {
+			t.Errorf("calls %q", r.calls)
+		}
+	})
+}
+
+// SPEC-033 T260: the database-less fallback is wired to the node's managers in the node's networking mode;
+// in stub mode, which touches no host, it removes nothing and succeeds.
+func TestNodePrefixPurgeInStubModeTouchesNothing(t *testing.T) {
+	if err := nodePrefixPurge("stub").run(context.Background()); err != nil {
+		t.Errorf("the stub fallback: %v; want nil", err)
 	}
 }

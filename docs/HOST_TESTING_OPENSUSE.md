@@ -706,7 +706,7 @@ secrets:
 endpointHost: $NODE_IP
 service:
   type: ClusterIP
-realMode: { enabled: true, privileged: true, hostNetwork: true }
+realMode: { enabled: true, hostNetwork: true }
 nova: { libvirtMode: real, consoleProxyBaseUrl: "http://$NODE_IP:30680" }
 neutron: { networkingMode: iptables, securityGroupMode: iptables }
 cinder: { storageMode: local }

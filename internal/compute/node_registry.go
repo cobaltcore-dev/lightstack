@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"time"
 
+	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
 
 	"github.com/google/uuid"
@@ -40,10 +40,13 @@ func NewNodeRegistry(pool database.DB, nodeID, tunnelIP string, heartbeatInterva
 		tunnelIP = detectedIP
 	}
 
-	// Get hostname
-	hostname, err := os.Hostname()
+	// The node name the whole process uses (SPEC-033 R26): LIGHTSTACK_NODE_NAME when set —
+	// the chart sets it to the Kubernetes node's name — else the host name. neutron.network_node
+	// and a port's binding_host_id name nodes by it, so the registry must key on it too; inside a
+	// pod the host name alone is the pod's.
+	hostname, err := common.NodeName()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get hostname: %w", err)
+		return nil, fmt.Errorf("failed to get the node name: %w", err)
 	}
 
 	if heartbeatInterval == 0 {

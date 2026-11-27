@@ -547,7 +547,7 @@ EOF
         sysctl -p /etc/sysctl.d/99-lightstack-bridge.conf > /dev/null 2>&1
         log_success "Bridge netfilter configured"
     else
-        log_warning "Could not load br_netfilter module (may not be needed)"
+        log_warning "Could not load br_netfilter: Lightstack's readiness fails, naming bridge-netfilter, until the bridge netfilter settings hold (SPEC-033 FR-046)"
     fi
 }
 
@@ -742,6 +742,12 @@ services:
       # ISOs, console logs). The novnc proxy below reads console-tokens from it too.
       - $STORAGE_DIR:$STORAGE_DIR
       - $CONFIG_DIR:/opt/lightstack/config:ro
+      # The host's network namespaces, shared both ways: the router and DHCP namespaces Lightstack
+      # makes are the host's, so they and the traffic through them outlive the container (SPEC-033
+      # FR-036). The host's /run must be a shared mount, as systemd makes it.
+      - /run/netns:/run/netns:rshared
+      # For modprobe br_netfilter at start (FR-046).
+      - /lib/modules:/lib/modules:ro
     command: [/app/lightstack, -config, /opt/lightstack/config/lightstack.yaml]
     restart: unless-stopped
     healthcheck:
@@ -846,6 +852,9 @@ deploy_services() {
     log_success "Lightstack image built"
 
     log_info "Starting services..."
+    # The compose file binds the host's /run/netns (SPEC-033 FR-036). Docker creates a missing bind
+    # source; Podman refuses one.
+    mkdir -p /run/netns
     record STATE_COMPOSE
     docker compose -f docker-compose-turnkey.yml up -d
 

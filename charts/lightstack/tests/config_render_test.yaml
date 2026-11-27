@@ -76,6 +76,7 @@ tests:
       database.url: postgres://lightstack@db/lightstack
       realMode.enabled: true
       deploymentMode: multi-node
+      neutron.networkNode: node-a
       glance.storageMode: rbd
       cinder.storageMode: rbd
     asserts:
@@ -120,3 +121,22 @@ tests:
       - matchRegex:
           path: stringData["lightstack.yaml"]
           pattern: '(?m)^  libvirt_uri: "qemu:///system"$'
+  - it: renders an empty network_node by default (SPEC-033 FR-033; single node is its own)
+    set:
+      database.url: postgres://lightstack@db/lightstack
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  network_node: ""$'
+  - it: renders neutron.networkNode as the binary's network_node (SPEC-033 FR-033)
+    set:
+      database.url: postgres://lightstack@db/lightstack
+      deploymentMode: multi-node
+      neutron.networkNode: worker-1
+    asserts:
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  vxlan_enabled: true$'
+      - matchRegex:
+          path: stringData["lightstack.yaml"]
+          pattern: '(?m)^  network_node: "worker-1"$'

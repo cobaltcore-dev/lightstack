@@ -71,6 +71,11 @@ where several were first filed, was closed as superseded); the 2026-09-22 re-tes
 > defects (F10, F11, F13, F15), one gap by design (F12), one config-drift bug introduced and fixed within the pass (F14), and one
 > limitation of the F7 fix, since fixed (F16). See *Findings from the #533 pass*.
 
+> **Update — 2026-11-23 (SPEC-033 / cloud-storage#579):** instance *Edit Security Groups* is **verified** in real
+> mode (workflow 7): the dialog pre-selects exactly the instance's groups, and saving changes the instance's
+> port, enforced at once (runbook:
+> [`../specs/033-sg-port-membership/HOST_TESTING.md`](../specs/033-sg-port-membership/HOST_TESTING.md), step 2.15).
+
 ## Environment
 
 | Field | Stub pass | Real pass (graded) |
@@ -127,6 +132,7 @@ container reports unhealthy — irrelevant, the console is not-exercised in stub
 | 4 | Create volume | ✅ **working** (#533) | ✅ **working** (#533) | Real (2026-07-23): volumev3 catalog is **clean** (`lightstack-lightstack:8776`) and CLI `volume create` → `available` — Cinder API works and F5's stub `localhost:8776` is **not** on Horizon's v3 path. Empty panel renders; **Create Volume button opens no dialog** (F8, create-UI cluster, not the endpoint). And once a volume exists the panel **500s** (`TemplateSyntaxError` in `get_rows`) → **F9**. **#533 (2026-07-29): FIXED** — the dialog opens (root was the cinder `groups/detail` route, not metadata) and `ui-vol` reaches `available`, backed by a real qcow2 under `/var/lib/lightstack/volumes`. | F5, F8, F9 |
 | 5 | Launch instance (+SSH) | ✅ **working** (#533) | ✅ **working via the UI** (#533) | Real (2026-07-23): UI wizard can't select a network (F7 — root-caused to F4's duplicate `id` plus three response-shape defects). But CLI `server create` → **ACTIVE**, `power_state Running`, real **libvirt VM booted from the RGW image**, `addresses=test-net=10.0.0.77`, `key_name`+`security_groups` present. Real compute + RGW-image boot **proven**; **`ssh cirros@10.0.0.77` succeeds** (`uid=1000` — cloud-init key injection + default-SG tcp/22 + reachable fixed IP all work). Console → T7. **#533 (2026-07-29): FIXED via the UI** — `ui-vm` launched from the wizard reaches **ACTIVE** on a real libvirt domain with an address on `spec020-net`; and with a key pair created **in Horizon**, `ssh cirros@<ip>` returns `uid=1000`. | F7 |
 | 6 | Instance console (noVNC) | not-exercised | **works** (after #534) — serial log **works** | Real (2026-07-23): `console log show vm1` returns real cirros boot + EC2 metadata + `vm1 login:` (serial console **works**). noVNC Console **tab** → "Unable to load Console" (F1 confirmed — no guest). **Re-verified after #534/SPEC-021: the Console tab renders the live guest framebuffer and accepts keyboard input.** | F1 ✅ |
+| 7 | Instance *Edit Security Groups* | not-exercised | ✅ **working** (SPEC-033 / #579, 2026-11-23) | Real (2026-11-23, the chart on k3s, real libvirt): the dialog pre-selected exactly the instance's groups (`ls579-client`, `ls579-ssh`, `ls579-web` on `ls579-vm2`); moving `ls579-web` out and saving sent one `PUT /v2.0/ports/{id}`, answered `200`, after which the port carried `ls579-ssh` and `ls579-client` and the guest's port 8080 closed at once while ssh stayed open. Before SPEC-033 the dialog pre-selected every group (the group listing ignored its filters) and the port API refused `security_groups`. | — |
 
 _Verdicts: working / partial / not-working / not-exercised (stub-only cell) / pending._
 

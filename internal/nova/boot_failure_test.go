@@ -55,11 +55,110 @@ type fakeNeutron struct {
 	mu          sync.Mutex
 	usableAdmin []bool
 	allocAdmin  []bool
+
+	refreshed  [][]string // the ports of every RefreshPortFilters call
+	refreshErr error      // what RefreshPortFilters returns
+
+	allocs []allocCall // every AllocatePortForInstance call, in order
+
+	converged [][]string // the floating IPs of every ConvergeDisassociated call
+
+	bound   []bindCall                // every BindPort call, in order
+	bindErr error                     // what BindPort returns
+	onBind  func(portID, node string) // runs in each BindPort before it answers
+
+	withdrawn   [][]string           // the ports of every WithdrawPorts call
+	withdrawErr error                // what WithdrawPorts returns
+	onWithdraw  func(ports []string) // runs in each WithdrawPorts before it answers
+	restored    int                  // how many withdrawals were restored
 }
 
-func (f *fakeNeutron) AllocatePortForInstance(_ context.Context, networkID, _, _ string, _ []string, admin bool) (any, error) {
+// WithdrawPorts records the ports, runs onWithdraw and returns withdrawErr; its restore counts.
+func (f *fakeNeutron) WithdrawPorts(_ context.Context, portIDs []string) (func(), error) {
+	f.mu.Lock()
+	f.withdrawn = append(f.withdrawn, append([]string(nil), portIDs...))
+	hook := f.onWithdraw
+	f.mu.Unlock()
+	if hook != nil {
+		hook(portIDs)
+	}
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.restored++
+	}, f.withdrawErr
+}
+
+// bindCall is what one BindPort call was given.
+type bindCall struct{ port, node string }
+
+// BindPort records the binding, runs onBind and returns bindErr.
+func (f *fakeNeutron) BindPort(_ context.Context, portID, node string) error {
+	f.mu.Lock()
+	f.bound = append(f.bound, bindCall{port: portID, node: node})
+	hook := f.onBind
+	f.mu.Unlock()
+	if hook != nil {
+		hook(portID, node)
+	}
+	return f.bindErr
+}
+
+// RebindPort records the binding back as a binding.
+func (f *fakeNeutron) RebindPort(ctx context.Context, portID, _, node string) error {
+	return f.BindPort(ctx, portID, node)
+}
+
+// bindings returns every BindPort call so far, in order.
+func (f *fakeNeutron) bindings() []bindCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bindCall(nil), f.bound...)
+}
+
+// ConvergeDisassociated records the floating IPs it is asked to converge.
+func (f *fakeNeutron) ConvergeDisassociated(_ context.Context, was []neutron.FloatingIPAssociation) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.converged = append(f.converged, floatingAddresses(was))
+}
+
+// floatingAddresses are the addresses of the floating IPs given.
+func floatingAddresses(was []neutron.FloatingIPAssociation) []string {
+	out := make([]string, 0, len(was))
+	for _, a := range was {
+		out = append(out, a.Address)
+	}
+	return out
+}
+
+// allocCall is what one AllocatePortForInstance call was given.
+type allocCall struct {
+	networkID string
+	groups    []string
+	copyFrom  string
+}
+
+// allocations returns every allocation so far, in order.
+func (f *fakeNeutron) allocations() []allocCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]allocCall(nil), f.allocs...)
+}
+
+// RefreshPortFilters records the ports it is asked to rebuild and returns refreshErr.
+func (f *fakeNeutron) RefreshPortFilters(_ context.Context, portIDs, _ []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refreshed = append(f.refreshed, append([]string(nil), portIDs...))
+	return f.refreshErr
+}
+
+func (f *fakeNeutron) AllocatePortForInstance(_ context.Context, req neutron.InstancePort) (any, error) {
+	networkID, groups, copyFrom, admin := req.NetworkID, req.SecurityGroupIDs, req.CopyGroupsFrom, req.Admin
 	f.mu.Lock()
 	f.allocAdmin = append(f.allocAdmin, admin)
+	f.allocs = append(f.allocs, allocCall{networkID: networkID, groups: append([]string(nil), groups...), copyFrom: copyFrom})
 	f.mu.Unlock()
 	f.allocCalls++
 	if err, ok := f.allocErrFor[networkID]; ok && err != nil {

@@ -871,6 +871,11 @@ func (s *AuthService) ValidateTokenContext(ctx context.Context, tokenString stri
 		if claims.ExpiresAt == nil {
 			return nil, common.NewUnauthorizedError("token missing expiry")
 		}
+		// A node token (SPEC-033 research R27) is signed with the same secret, and it is a node's,
+		// never a user's: it would authenticate a request as nobody.
+		if slices.Contains(claims.Audience, common.NodeTokenAudience) {
+			return nil, common.NewUnauthorizedError("not a user token")
+		}
 		revoked, err := s.tokenIsRevoked(ctx, tokenString)
 		if err != nil {
 			return nil, err

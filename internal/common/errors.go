@@ -23,6 +23,13 @@ type OpenStackError struct {
 	// Optional and purely additive: empty for the errors that are not about a specific resource,
 	// and read by nothing except the Neutron type table.
 	Resource string
+
+	// NeutronType, when set, is the upstream exception class Neutron's envelope names, ahead of
+	// anything the tables in neutron_errors.go derive from Resource or Code. Upstream raises
+	// several conditions about one resource with one status — a security group in use, the
+	// default group that cannot be removed, renamed or repeated — which the resource table alone
+	// cannot tell apart (SPEC-033 research R39). Read by nothing else.
+	NeutronType string
 }
 
 func (e *OpenStackError) Error() string {
@@ -68,6 +75,39 @@ func SendError(c *gin.Context, err *OpenStackError) {
 
 // Common error constructors
 
+// NewNeutronError returns an error that Neutron's envelope renders as upstream's exception class
+// neutronType, with the given status and message. Every other envelope renders it as any error of
+// that status. Use it where upstream's class cannot be derived from the resource alone.
+func NewNeutronError(status int, neutronType, message string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode:  status,
+		Code:        codeForStatus(status),
+		Message:     message,
+		NeutronType: neutronType,
+	}
+}
+
+// codeForStatus is the default envelope's key for a status, as the constructors below spell it.
+func codeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "badRequest"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "itemNotFound"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusPreconditionFailed:
+		return "preconditionFailed"
+	case http.StatusServiceUnavailable:
+		return "serviceUnavailable"
+	}
+	return "computeFault"
+}
+
 func NewUnauthorizedError(message string) *OpenStackError {
 	return &OpenStackError{
 		StatusCode: http.StatusUnauthorized,
@@ -90,6 +130,16 @@ func NewNotFoundError(resource string) *OpenStackError {
 		Code:       "itemNotFound",
 		Message:    fmt.Sprintf("%s could not be found.", resource),
 		Resource:   resource,
+	}
+}
+
+// NewItemNotFoundError returns a 404 carrying message as it is, for a condition upstream words in a
+// sentence of its own rather than as "<resource> could not be found".
+func NewItemNotFoundError(message string) *OpenStackError {
+	return &OpenStackError{
+		StatusCode: http.StatusNotFound,
+		Code:       "itemNotFound",
+		Message:    message,
 	}
 }
 
@@ -168,19 +218,6 @@ func NewOperationConflictError(operation, reason string) *OpenStackError {
 		Code:       "conflictingRequest",
 		Message:    fmt.Sprintf("Cannot %s", operation),
 		Details:    reason,
-	}
-}
-
-// NewResourceInUseError creates an error for an operation refused because the resource is still in
-// use. It differs from NewOperationConflictError only in recording the resource, which is what lets
-// Neutron's envelope name the condition (NetworkInUse, …); every other envelope renders the two alike.
-func NewResourceInUseError(resourceType, operation, reason string) *OpenStackError {
-	return &OpenStackError{
-		StatusCode: http.StatusConflict,
-		Code:       "conflictingRequest",
-		Message:    fmt.Sprintf("Cannot %s", operation),
-		Details:    reason,
-		Resource:   resourceType,
 	}
 }
 

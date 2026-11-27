@@ -113,9 +113,9 @@ Just as K3s removed heavyweight components from Kubernetes:
 - Horizontal scaling via load balancer
 
 ### Multi-Tenancy
-- Network namespace per project
-- Linux bridges (single-node) or VXLAN (multi-node)
-- iptables-based security groups (eBPF in future)
+- One Linux bridge per network, joined across nodes by VXLAN
+- Routers, DHCP and metadata in namespaces on one network node
+- Security groups as each port's iptables chains, on the node its guest runs on
 - Project-scoped JWT tokens
 
 ## 📚 Documentation

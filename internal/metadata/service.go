@@ -80,13 +80,32 @@ func (svc *Service) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/", svc.ListVersions)
 }
 
+// networkKey carries the network whose DHCP namespace a request arrived in (ServeNetwork).
+type networkKey struct{}
+
+// ServeNetwork serves h to the guests of one network. The listener in the network's DHCP namespace
+// serves the metadata engine through it (SPEC-033 R29), and a guest is then identified by its network
+// and its address, which stays unambiguous when two networks use one range, as upstream's may.
+func ServeNetwork(h http.Handler, networkID string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), networkKey{}, networkID)))
+	})
+}
+
+// requestNetwork is the network a request arrived through, or "" when it came to the host's own
+// listener.
+func requestNetwork(ctx context.Context) string {
+	network, _ := ctx.Value(networkKey{}).(string)
+	return network
+}
+
 // instanceFromRequest identifies the calling guest by the TCP peer address of its
-// request: the fixed IP of one of its ports, which the per-bridge 169.254.169.254 DNAT
-// preserves. Nothing the caller sends can change that answer. Upstream Nova believes
-// X-Forwarded-For only behind its own metadata proxy (use_forwarded_for, off by
-// default) and X-Instance-ID only with that proxy's HMAC signature. No proxy stands in
-// front of this server, so gin's ClientIP, which believes X-Forwarded-For from anyone,
-// would let a guest answer as any address it could name.
+// request: the fixed IP of one of its ports, on the network whose DHCP namespace the
+// request arrived in (ServeNetwork). Nothing the caller sends can change that answer.
+// Upstream Nova believes X-Forwarded-For only behind its own metadata proxy
+// (use_forwarded_for, off by default) and X-Instance-ID only with that proxy's HMAC
+// signature. No proxy stands in front of this server, so gin's ClientIP, which believes
+// X-Forwarded-For from anyone, would let a guest answer as any address it could name.
 func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
 	peer := c.RemoteIP()
 
@@ -98,22 +117,15 @@ func (svc *Service) instanceFromRequest(c *gin.Context) (string, error) {
 		return instanceID, nil
 	}
 
-	if net.ParseIP(peer) != nil {
-		// ports stores device_id (the attached instance) and fixed_ips as a JSONB
-		// array of {subnet_id, ip_address}; match the source IP against it.
-		//
-		// SPEC-009 v1 LIMITATION (single-node, #503): identity is matched by source
-		// IP alone, NOT scoped to the request's network. With non-overlapping tenant
-		// CIDRs the fixed IP is unique, so this is correct. Two tenants sharing a CIDR
-		// (e.g. both 10.0.0.0/24, each with a VM at 10.0.0.5) would cross-identify
-		// here — but that case is already unsupported at L2 in the flat single-node
-		// model (bridges share the gateway IP), so it is deferred to multi-node v2
-		// (#504), where per-tenant network namespaces + network-scoped metadata
-		// identity belong.
-		//
-		// The text search only narrows the ports down to those whose fixed_ips mention
-		// the address as a whole JSON string; the address itself is compared below.
-		instanceID, err := svc.instanceHolding(c.Request.Context(), peer)
+	// A guest is named by its address only on the network its request came through. The host's own
+	// listener names no caller by address: guests ask through their network's namespace, and anyone
+	// else on the node's network holding some guest's address would read that guest's metadata
+	// (SPEC-033 T182).
+	if network := requestNetwork(c.Request.Context()); network != "" && net.ParseIP(peer) != nil {
+		// ports stores device_id (the attached instance) and fixed_ips as a JSON array of
+		// {subnet_id, ip_address}; match the source IP against it on that network. An address two
+		// instances hold there identifies neither.
+		instanceID, err := svc.instanceHolding(c.Request.Context(), peer, network)
 		if err != nil {
 			return "", err // a database failure is a 500, not "no such instance"
 		}
@@ -149,9 +161,12 @@ func writeIdentifyError(c *gin.Context, err error, plain bool) {
 	}
 }
 
-// instanceHolding returns the instance whose port holds ip as a fixed IP, or "" when none
-// does. A database failure is returned as an error, so the caller answers 500 rather than a
+// instanceHolding returns the instance whose port on network holds ip as a fixed IP, or "" when
+// none does. A database failure is returned as an error, so the caller answers 500 rather than a
 // 404 that tells the guest it has no instance.
+//
+// The text search only narrows the ports down to those whose fixed_ips mention the address
+// as a whole JSON string; the address itself is compared below.
 //
 // The port must belong to the same project as the instance it names. A port's device_id
 // is caller-settable (PUT /v2.0/ports/{id}), so without the join a tenant could point
@@ -159,12 +174,10 @@ func writeIdentifyError(c *gin.Context, err error, plain bool) {
 // join drops that row, because the port carries the caller's project, not the victim's.
 // Two different instances holding one address is ambiguous and resolves to "" (upstream's
 // metadata agent answers only when exactly one port matches).
-func (svc *Service) instanceHolding(ctx context.Context, ip string) (string, error) {
-	rows, err := svc.pool.Query(ctx,
-		`SELECT p.device_id, p.fixed_ips FROM ports p
+func (svc *Service) instanceHolding(ctx context.Context, ip, network string) (string, error) {
+	rows, err := svc.pool.Query(ctx, `SELECT p.device_id, p.fixed_ips FROM ports p
 		 JOIN instances i ON i.id = p.device_id AND i.project_id = p.project_id
-		 WHERE p.fixed_ips::text LIKE '%' || $1 || '%'`,
-		strconv.Quote(ip))
+		 WHERE p.fixed_ips::text LIKE '%' || $1 || '%' AND p.network_id::text = $2`, strconv.Quote(ip), network)
 	if err != nil {
 		return "", fmt.Errorf("looking up the instance holding %s: %w", ip, err)
 	}

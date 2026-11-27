@@ -357,28 +357,25 @@ func TestUpdateFloatingIPDisassociateAssignsEachColumn(t *testing.T) {
 
 func TestUpdatePortForwardingAssignsEachFieldToItsOwnColumn(t *testing.T) {
 	requireDB(t)
-	r := newNeutronTestRouter()
-
-	fipID, portID, pfID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	pfNetID := uuid.NewString()
-	cleanupRows(t, "port_forwardings", pfID)
-	cleanupRows(t, "floating_ips", fipID)
-	cleanupRows(t, "ports", portID)
-	cleanupRows(t, "networks", pfNetID)
-	mustExec(t, `INSERT INTO ports (id, name, project_id) VALUES ($1, 'src1-pf-port', $2)`,
-		portID, seededProjectID)
-	mustExec(t, `INSERT INTO networks (id, name, project_id, external) VALUES ($1, 'src1-pf-ext', $2, true)`,
-		pfNetID, seededProjectID)
-	mustExec(t, `INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address)
-		VALUES ($1, $2, $3, '192.0.2.66')`, fipID, seededProjectID, pfNetID)
+	// The forwarding moves to another address of its port, so the update checks the port as a create does,
+	// the floating IP's router reaching it included (SPEC-033 T118, T256): a router joins the port's network
+	// to the floating network.
+	rig := newUnitRig(t)
+	r := rig.r
+	_, network := rig.router(t)
+	resp := rig.must(t, http.StatusCreated, http.MethodPost, "/v2.0/ports",
+		`{"port":{"network_id":"`+network+`","fixed_ips":[{"ip_address":"10.77.0.9"},{"ip_address":"10.77.0.77"}]}}`)
+	portID := createdID(t, resp, "port")
+	fipID, _ := rig.floatingIP(t, "")
+	pfID := uuid.NewString()
 	mustExec(t, `INSERT INTO port_forwardings
 		(id, project_id, floatingip_id, internal_port_id, internal_ip_address, external_port, internal_port, protocol, description)
-		VALUES ($1, $2, $3, $4, '10.0.0.9', 8080, 80, 'tcp', 'before-description')`,
+		VALUES ($1, $2, $3, $4, '10.77.0.9', 8080, 80, 'tcp', 'before-description')`,
 		pfID, seededProjectID, fipID, portID)
 
 	code, body := doReqBody(r, http.MethodPut,
 		"/v2.0/floatingips/"+fipID+"/port_forwardings/"+pfID,
-		`{"port_forwarding":{"internal_ip_address":"10.0.0.77","internal_port":8443,"description":"after-description"}}`,
+		`{"port_forwarding":{"internal_ip_address":"10.77.0.77","internal_port":8443,"description":"after-description"}}`,
 		neutronAuthHdr(seededProjectID, false))
 	if code != http.StatusOK {
 		t.Fatalf("PUT port forwarding: code=%d body=%s; want 200", code, body)
@@ -392,8 +389,8 @@ func TestUpdatePortForwardingAssignsEachFieldToItsOwnColumn(t *testing.T) {
 		pfID).Scan(&internalIP, &internalPort, &externalPort, &description); err != nil {
 		t.Fatalf("read back port forwarding: %v", err)
 	}
-	if internalIP != "10.0.0.77" {
-		t.Errorf("internal_ip_address = %q, want %q", internalIP, "10.0.0.77")
+	if internalIP != "10.77.0.77" {
+		t.Errorf("internal_ip_address = %q, want %q", internalIP, "10.77.0.77")
 	}
 	if internalPort != 8443 {
 		t.Errorf("internal_port = %d, want 8443", internalPort)

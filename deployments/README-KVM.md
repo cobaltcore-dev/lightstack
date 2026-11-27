@@ -134,6 +134,12 @@ This deployment uses:
 - **Libvirt socket mount**: the directory `/var/run/libvirt`, not the socket file — a bind of the file keeps its inode, so a libvirtd that re-creates its socket would stay unreachable until the container restarts
 - **State root** (`state_path`, default `/var/lib/lightstack`): mounted whole, at the same path inside and out. libvirtd on the host opens the paths Lightstack writes into each domain's XML — disks, config-drive ISOs, and the VNC socket the host's QEMU creates in `console-sockets/` even though no console proxy runs here, so without the mount no guest could start. Lightstack makes that directory QEMU's at startup. A SQLite database lives in `db/`, so it outlives the container too.
 - **Config mount**: `/opt/lightstack/config` (read-only), or `LIGHTSTACK_CONFIG_DIR`
+- **Host network namespaces** (`/run/netns:/run/netns:rshared`): shared both ways, so the router and DHCP
+  namespaces Lightstack makes are the host's and they, and the traffic through them, outlive the container
+  (SPEC-033 FR-036). The host's `/run` must be a shared mount, as systemd makes it. Docker creates a
+  missing `/run/netns`; Podman refuses one, so create it first: `sudo mkdir -p /run/netns`.
+- **Kernel modules** (`/lib/modules`, read-only): Lightstack runs `modprobe br_netfilter` at start
+  (FR-046); readiness fails, naming `bridge-netfilter`, while the bridge netfilter settings do not hold.
 - **No graphical console**: no console proxy runs here, so the config sets `nova.console_enabled: false` and console requests are answered `400 Unavailable console type novnc` instead of with a link that leads nowhere. The serial log (`openstack console log show`) still works. For noVNC, deploy with the Helm chart (`charts/lightstack`) or `scripts/deploy-turnkey.sh` / `scripts/deploy-single-node.sh`, which run the proxy.
 
 ## Why Not Pure Docker Compose?

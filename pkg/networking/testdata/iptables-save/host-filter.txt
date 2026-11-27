@@ -1,0 +1,10 @@
+# iptables v1.8.13 (nf_tables), captured by TestCaptureIPTablesSave
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:ls-l3-fwd - [0:0]
+-A FORWARD -m comment --comment lightstack -j ls-l3-fwd
+-A ls-l3-fwd -i eth0 -o lg+ -m comment --comment lightstack -j ACCEPT
+-A ls-l3-fwd -i lg+ -o eth0 -m comment --comment lightstack -j ACCEPT
+COMMIT

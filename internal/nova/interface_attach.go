@@ -1,6 +1,7 @@
 package nova
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,7 +170,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			common.SendError(c, common.NewBadRequestError("network has no subnet"))
 			return
 		}
-		subnetID, cidr := subnets[0].id, subnets[0].cidr
+		subnetID := subnets[0].id
 
 		// Use provided fixed_ip or allocate one
 		if req.InterfaceAttachment.FixedIP != "" {
@@ -189,7 +190,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			for _, subnet := range subnets {
 				_, ipNet, cidrErr := net.ParseCIDR(subnet.cidr)
 				if cidrErr == nil && ipNet.Contains(ip) {
-					subnetID, cidr = subnet.id, subnet.cidr
+					subnetID = subnet.id
 					matchedSubnet = true
 					break
 				}
@@ -201,11 +202,21 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 			fixedIP = ip.String()
 		}
 
+		// The new port gets the project's default group, as upstream: an interface attached on a
+		// network is not given the server's other groups (SPEC-033 FR-013). Ensured, not looked up,
+		// because a project has no default group until its first use; before the transaction,
+		// because ensuring it is a transaction of its own.
+		defaultGroupID, err := neutron.EnsureDefaultSecurityGroup(c.Request.Context(), svc.pool, projectID)
+		if err != nil {
+			log.Error().Err(err).Str("project_id", projectID).Msg("interface attach: ensuring the default security group failed")
+			common.SendError(c, common.NewInternalServerError("failed to create port"))
+			return
+		}
+
 		// Allocate/check and insert while holding the subnet lock shared with
 		// Neutron's port-create and server-boot paths.
 		err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
-			cidr, err = neutron.LockSubnet(c.Request.Context(), tx, subnetID)
-			if err != nil {
+			if _, err := neutron.LockSubnet(c.Request.Context(), tx, subnetID); err != nil {
 				return err
 			}
 			if fixedIP != "" {
@@ -217,7 +228,7 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 					return neutron.ErrNoAvailableIP
 				}
 			} else {
-				fixedIP, err = neutron.AllocateFreeIP(c.Request.Context(), tx, subnetID, cidr)
+				fixedIP, err = neutron.AllocateFreeIP(c.Request.Context(), tx, subnetID)
 				if err != nil {
 					return err
 				}
@@ -228,9 +239,19 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 				INSERT INTO ports (id, network_id, project_id, name, mac_address, fixed_ips, device_id, device_owner, status, created_at, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
 			`, portID, networkID, projectID, fmt.Sprintf("port-%s", portID[:8]), macAddress, fixedIPsJSON, instanceID, "compute:nova", "ACTIVE", time.Now(), time.Now())
-			return err
+			if err != nil {
+				return err
+			}
+			return neutron.AddPortSecurityGroup(c.Request.Context(), tx, portID, defaultGroupID)
 		})
 		if err != nil {
+			var invalid *neutron.InvalidIPForSubnetError
+			if errors.As(err, &invalid) {
+				// The subnet's network or broadcast address, as upstream's check_subnet_ip refuses it
+				// (SPEC-033 FR-053).
+				common.SendError(c, common.NewBadRequestError(invalid.Error()))
+				return
+			}
 			if errors.Is(err, neutron.ErrNoAvailableIP) {
 				message := "no IP address available in the network's subnet"
 				if req.InterfaceAttachment.FixedIP != "" {
@@ -286,8 +307,18 @@ func (svc *Service) AttachInterface(c *gin.Context) {
 		return
 	}
 
-	// In real mode, would hot-plug interface to libvirt VM
-	// For stub mode, just return success
+	// The port is bound to this node, where the guest runs, and its firewall converged here before
+	// the answer (SPEC-033 FR-041). When it cannot be, the attach is undone and answers 500.
+	if svc.neutronSvc != nil {
+		if err := svc.bindAttachedPort(c.Request.Context(), portID); err != nil {
+			log.Error().Err(err).Str("port_id", portID).Msg("attach an interface: its port could not be bound; the attach was not applied")
+			svc.undoInterfaceAttach(context.WithoutCancel(c.Request.Context()), instanceID, portID, attachmentID, novaCreatedPort)
+			common.SendError(c, common.NewInternalServerError("failed to bind the interface's port"))
+			return
+		}
+	}
+
+	// Real mode does not hot-plug the interface into a running guest yet.
 
 	// Recorded against the owning project once it has happened, so the tenant sees
 	// an administrator's change in their own history (SPEC-023 FR-007a).
@@ -325,11 +356,11 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 	// review: that scan fails on NULL, the error was dropped, and the "not
 	// attached" answer below was right only by accident, with real database
 	// errors 409-ing as "not attached" instead of 500-ing).
-	var attachedInstanceID string
+	var attachedInstanceID, boundTo string
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT COALESCE(device_id::text, '') FROM ports WHERE id = $1",
+		"SELECT COALESCE(device_id::text, ''), COALESCE(binding_host_id, '') FROM ports WHERE id = $1",
 		portID,
-	).Scan(&attachedInstanceID)
+	).Scan(&attachedInstanceID, &boundTo)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("port"))
@@ -346,27 +377,34 @@ func (svc *Service) DetachInterface(c *gin.Context) {
 		return
 	}
 
-	// Delete interface attachment record
-	_, err = svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM interface_attachments WHERE instance_id = $1 AND port_id = $2",
-		instanceID, portID,
-	)
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_interface_attachment").Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to delete interface attachment"))
-		return
+	// The port's firewall leaves its node before the attachment's records go (SPEC-033 FR-040,
+	// FR-041). A binding that cannot be removed was put back: the detach answers 500 and changes
+	// nothing.
+	if svc.neutronSvc != nil {
+		if err := svc.neutronSvc.BindPort(c.Request.Context(), portID, ""); err != nil {
+			log.Error().Err(err).Str("port_id", portID).Msg("detach an interface: its port could not be unbound; nothing detached")
+			common.SendError(c, common.NewInternalServerError("failed to unbind the interface's port"))
+			return
+		}
 	}
 
-	// Update port to detach from instance
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		UPDATE ports
-		SET device_id = NULL, device_owner = NULL, status = $1, updated_at = $2
-		WHERE id = $3
-	`, "DOWN", time.Now(), portID)
-
+	// The attachment and the port's device go together; when they cannot, the port is bound back to its
+	// node and nothing is detached (SPEC-033 T208).
+	err = database.WithTx(c.Request.Context(), svc.pool, func(tx database.Tx) error {
+		if _, err := tx.Exec(c.Request.Context(),
+			"DELETE FROM interface_attachments WHERE instance_id = $1 AND port_id = $2", instanceID, portID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(c.Request.Context(), `
+			UPDATE ports SET device_id = NULL, device_owner = NULL, status = $1, updated_at = $2 WHERE id = $3`,
+			"DOWN", time.Now(), portID)
+		return err
+	})
 	if err != nil {
-		log.Error().Err(err).Str("operation", "update_port_detach").Msg("database error")
+		if svc.neutronSvc != nil {
+			svc.rebindPorts(c.Request.Context(), instanceID, map[string]string{portID: boundTo})
+		}
+		log.Error().Err(err).Str("operation", "detach_interface").Str("port_id", portID).Msg("database error; the detach was not applied")
 		common.SendError(c, common.NewInternalServerError("failed to detach port"))
 		return
 	}
@@ -449,4 +487,33 @@ func generateMACAddress() string {
 	// Use OpenStack's OUI prefix: fa:16:3e
 	return fmt.Sprintf("fa:16:3e:%02x:%02x:%02x",
 		uuid.New()[0], uuid.New()[1], uuid.New()[2])
+}
+
+// bindAttachedPort binds an attached interface's port to this node, where the guest runs.
+func (svc *Service) bindAttachedPort(ctx context.Context, portID string) error {
+	if svc.node == "" {
+		return errors.New("this node has no name to bind ports to")
+	}
+	return svc.neutronSvc.BindPort(ctx, portID, svc.node)
+}
+
+// undoInterfaceAttach takes back an attach whose port could not be bound (SPEC-033 FR-008): its
+// attachment record, and the port, which goes when the attach made it and is released to its owner
+// otherwise, in both cases only while it is still this server's.
+func (svc *Service) undoInterfaceAttach(ctx context.Context, instanceID, portID, attachmentID string, created bool) {
+	err := database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		if _, err := tx.Exec(ctx, "DELETE FROM interface_attachments WHERE id = $1", attachmentID); err != nil {
+			return err
+		}
+		if created {
+			_, err := tx.Exec(ctx, "DELETE FROM ports WHERE id = $1 AND device_id = $2", portID, instanceID)
+			return err
+		}
+		_, err := tx.Exec(ctx, "UPDATE ports SET device_id = NULL, status = 'DOWN', updated_at = $1 WHERE id = $2 AND device_id = $3",
+			time.Now(), portID, instanceID)
+		return err
+	})
+	if err != nil {
+		log.Error().Err(err).Str("port_id", portID).Msg("undo an interface attach; the attachment stays")
+	}
 }

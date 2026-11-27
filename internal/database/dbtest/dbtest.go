@@ -239,6 +239,38 @@ func RequirePostgres(t testing.TB) {
 	}
 }
 
+// HolderPID is the PostgreSQL backend that runs tx, whose locks WaitUntilBlocked watches: a test holds a
+// lock in tx and starts a request it expects to wait for it. PostgreSQL only (RequirePostgres).
+func HolderPID(t testing.TB, tx database.Tx) int {
+	t.Helper()
+	var pid int
+	//sqlcheck:postgres-only
+	if err := tx.QueryRow(context.Background(), "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		t.Fatalf("read the holder's backend: %v", err)
+	}
+	return pid
+}
+
+// WaitUntilBlocked waits, ten seconds at most, until a backend waits for one of holder's locks: the
+// request a test started has reached the lock. PostgreSQL only (RequirePostgres).
+func WaitUntilBlocked(t testing.TB, db database.DB, holder int) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var waiting bool
+		//sqlcheck:postgres-only
+		err := db.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))", holder).Scan(&waiting)
+		if err != nil {
+			t.Fatalf("read the waiting backends: %v", err)
+		}
+		if waiting {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("nothing waited for the holder's lock")
+		}
+	}
+}
+
 // Unavailable makes every statement on table fail until release is called — a stand-in
 // for a database that cannot answer — while statements on other tables still succeed.
 //

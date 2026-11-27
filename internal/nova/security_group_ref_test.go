@@ -1,12 +1,15 @@
 package nova
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/cobaltcore-dev/lightstack/internal/neutron"
+	"github.com/google/uuid"
 )
 
 // SPEC-020 (cloud-storage#533) — server create must resolve `security_groups[].name`
@@ -49,8 +52,6 @@ func createdServerID(t *testing.T, body string) string {
 
 func TestCreateServerResolvesSecurityGroupByIDOrName(t *testing.T) {
 	requireDB(t)
-	r := newNovaTestRouter()
-	hdr := testAuthHdr(seededProjectID, seededUserID)
 	sgID := seededSecurityGroupID(t)
 	image := seededImageID(t)
 
@@ -59,34 +60,29 @@ func TestCreateServerResolvesSecurityGroupByIDOrName(t *testing.T) {
 		{"by id (Horizon's launch wizard)", sgID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Booted on a network: the resolved groups are stored on the server's port, and
+			// nowhere else (SPEC-033 research R1), so the boot's allocation is where they show.
+			netID := seedBootNetwork(t, seededProjectID, "sgref-net-"+uuid.NewString()[:6])
+			fake := &fakeNeutron{portFor: map[string]*neutron.PortInfo{
+				netID: {ID: uuid.NewString(), NetworkID: netID, MAC: "fa:16:3e:33:00:0c"},
+			}}
+			_, r := newBootService(t, fake)
+			name := "sgref-" + tc.name[:6]
+			cleanupServerNamed(t, name)
 			body := fmt.Sprintf(
-				`{"server":{"name":"sgref-%s","flavorRef":"00000000-0000-0000-0000-000000000011","imageRef":%q,"security_groups":[{"name":%q}]}}`,
-				tc.name[:6], image, tc.ref)
+				`{"server":{"name":%q,"flavorRef":"00000000-0000-0000-0000-000000000011","imageRef":%q,"networks":[{"uuid":%q}],"security_groups":[{"name":%q}]}}`,
+				name, image, netID, tc.ref)
 
-			code, resp := doReq(r, http.MethodPost, "/v2.1/servers", body, hdr)
+			code, resp := doReq(r, http.MethodPost, "/v2.1/servers", body, bootHdr())
 			if code != http.StatusAccepted {
 				t.Fatalf("create with security group %q: code=%d body=%s; want 202", tc.ref, code, resp)
 			}
-			id := createdServerID(t, resp)
-			// context.Background(), not t.Context(): the test context is already
-			// cancelled by the time cleanups run, so the DELETE would never execute.
-			t.Cleanup(func() {
-				if _, err := testPool.Exec(context.Background(), "DELETE FROM instances WHERE id = $1", id); err != nil {
-					t.Logf("cleanup instance %s: %v", id, err)
-				}
-			})
 
-			// The association must point at the real group either way — accepting the
-			// reference is not enough if it silently attaches nothing.
-			var attached string
-			if err := testPool.QueryRow(t.Context(),
-				"SELECT security_group_id::text FROM server_security_groups WHERE server_id = $1",
-				id,
-			).Scan(&attached); err != nil {
-				t.Fatalf("no security group attached to %s: %v", id, err)
-			}
-			if attached != sgID {
-				t.Errorf("attached security group = %s; want %s", attached, sgID)
+			// The port must get the real group either way: accepting the reference is not
+			// enough if it silently attaches nothing.
+			calls := awaitAllocations(t, fake, 1)
+			if len(calls) == 0 || !slices.Equal(calls[0].groups, []string{sgID}) {
+				t.Errorf("allocations: %+v; want the port to get %s", calls, sgID)
 			}
 		})
 	}

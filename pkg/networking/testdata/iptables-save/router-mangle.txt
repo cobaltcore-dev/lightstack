@@ -1,0 +1,11 @@
+# iptables v1.8.13 (nf_tables), captured by TestCaptureIPTablesSave
+*mangle
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:ls-l3-mark - [0:0]
+-A PREROUTING -m comment --comment lightstack -j ls-l3-mark
+-A ls-l3-mark -i qg-aa11bb22cc3 -m comment --comment lightstack -j MARK --set-xmark 0x2/0xffff
+COMMIT

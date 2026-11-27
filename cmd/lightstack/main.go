@@ -77,6 +77,10 @@ func main() {
 	if err := checkDatabaseConfig(cfg, true); err != nil {
 		log.Fatalf("%v", err)
 	}
+	// With VXLAN on, one named node holds every router and DHCP namespace (SPEC-033 FR-033).
+	if err := cfg.Neutron.CheckNetworkNode(); err != nil {
+		log.Fatalf("%v", err)
+	}
 	// The name this node reserves block-storage rows under while it creates them (FR-033).
 	nodeName, err := common.NodeName()
 	if err != nil {
@@ -163,11 +167,6 @@ func main() {
 		log.Printf("Hypervisor initialized successfully in %s mode", libvirtMode)
 	}
 
-	// Health checker for the Kubernetes probes (SPEC-013): readiness gates on the database
-	// being reachable and all listeners bound, and in real mode on the hypervisor being able
-	// to start guests (SPEC-031 FR-017); liveness is dependency-free.
-	healthChecker := health.New(zlog.Logger, readinessChecks(pool, novaService, libvirtMode)...)
-
 	// Set default networking mode if not specified
 	networkingMode := cfg.Neutron.NetworkingMode
 	if networkingMode == "" {
@@ -175,6 +174,23 @@ func main() {
 	}
 	neutronService := neutron.NewService(pool, networkingMode, cacheInstance)
 	log.Printf("Neutron initialized in %s mode", networkingMode)
+
+	// Health checker for the Kubernetes probes (SPEC-013): readiness gates on the database being
+	// reachable and all listeners bound, and in real mode on the hypervisor being able to start guests
+	// (SPEC-031 FR-017); liveness is dependency-free. Real-mode networking also gates it on the node's
+	// bridge netfilter (SPEC-033 FR-046, research R35): the ports' chains see bridged traffic only with
+	// br_netfilter loaded and both bridge-nf-call settings on. Until they hold, readiness fails naming
+	// the check — a node that reported ready would pass every port's traffic unfiltered.
+	checks := readinessChecks(pool, novaService, libvirtMode)
+	if networkingMode != "stub" {
+		bridgeNetfilter := networking.NewNodeSettings(networkingMode)
+		if err := bridgeNetfilter.Ensure(ctx); err != nil {
+			log.Printf("WARNING: bridge netfilter not in force; readiness fails until it is: %v", err)
+		}
+		checks = append(checks, health.Check{Name: "bridge-netfilter",
+			Probe: func(context.Context) error { return bridgeNetfilter.Check() }})
+	}
+	healthChecker := health.New(zlog.Logger, checks...)
 
 	// Wire up Nova-Neutron integration (so Nova can allocate ports)
 	novaService.SetNeutronService(neutronService)
@@ -213,8 +229,7 @@ func main() {
 			vxlanManager,
 			nodeRegistry,
 			cfg.Neutron.CoordinationPollInterval,
-			cfg.Neutron.VNIRangeStart,
-			cfg.Neutron.VNIRangeEnd,
+			neutron.VNIRange{Start: cfg.Neutron.VNIRangeStart, End: cfg.Neutron.VNIRangeEnd},
 		)
 
 		// Set coordinator in neutron service
@@ -226,9 +241,42 @@ func main() {
 		log.Printf("VXLAN overlay networking enabled (VNI range: %d-%d)", cfg.Neutron.VNIRangeStart, cfg.Neutron.VNIRangeEnd)
 	}
 
-	// Real-mode network-state reconciler (SPEC-009 WS-2): on startup + periodically,
-	// re-spawn DHCP (dnsmasq dies with the pod) and ensure bridges from the DB so VM
-	// networking survives a control-plane restart. Real networking modes only.
+	// This node's place in the deployment (SPEC-033 research R26, R27): its name, the network node —
+	// itself without VXLAN — and how the node-to-node call reaches the others, which needs the
+	// registry, so a single node reaches none.
+	neutronService.SetNodes(neutron.NodeOptions{
+		Name:        nodeName,
+		NetworkNode: cfg.Neutron.NetworkNodeFor(nodeName),
+		Registry:    nodeRegistry,
+		Port:        cfg.Neutron.Port,
+		Secret:      []byte(cfg.Keystone.JWTSecret),
+	})
+	log.Printf("Node %s; network node %s", nodeName, cfg.Neutron.NetworkNodeFor(nodeName))
+
+	// Initialize metadata service. Guests reach it in their network's DHCP namespace, where the network
+	// node's listeners serve its engine (SPEC-033 R29); the host's own listener serves loopback and the
+	// tests. In real networking mode the DHCP unit opens and closes the namespace listeners, before the
+	// reconciler's first pass opens them.
+	mdBind := cfg.Metadata.BindAddress
+	if mdBind == "" {
+		mdBind = ":8775"
+	}
+	metadataService := metadata.NewService(pool, mdBind)
+	metadataService.SetTrustInstanceHeader(cfg.Metadata.TrustInstanceHeader)
+	metadataEngine := newMetadataEngine(metadataService)
+	log.Printf("Metadata service initialized (bind %s)", mdBind)
+	if cfg.Metadata.TrustInstanceHeader {
+		log.Println("WARNING: metadata.trust_instance_header is on: any caller can read any instance's metadata and user-data. Test stacks only.")
+	}
+	if networkingMode != "stub" {
+		neutronService.SetMetadataListeners(metadata.NewListeners(metadataEngine))
+	}
+
+	// Real-mode network-state reconciler (SPEC-009 WS-2, SPEC-033 R24–R32): on startup and periodically
+	// it converges this node's state to the records both ways — every node its bridges and its bound
+	// ports' chains; the network node its routers and networks' DHCP, restarting the dnsmasq that died
+	// with the pod and re-opening the metadata listeners — and removes what earlier layouts left. Real
+	// networking modes only.
 	var networkReconciler *neutron.NetworkReconciler
 	if networkingMode != "stub" {
 		networkReconciler = neutron.NewNetworkReconciler(neutronService, cfg.Neutron.ReconcileInterval)
@@ -349,20 +397,6 @@ func main() {
 	log.Printf("Compute state reconciler started (interval: %s, action retention: %s)",
 		stateReconciler.Interval(), cfg.Nova.InstanceActionRetention)
 
-	// Initialize metadata service. It must bind a VM-reachable address (all
-	// interfaces by default) so the per-bridge 169.254.169.254 DNAT can reach it
-	// in real mode (SPEC-009 WS-4).
-	mdBind := cfg.Metadata.BindAddress
-	if mdBind == "" {
-		mdBind = ":8775"
-	}
-	metadataService := metadata.NewService(pool, mdBind)
-	metadataService.SetTrustInstanceHeader(cfg.Metadata.TrustInstanceHeader)
-	log.Printf("Metadata service initialized (bind %s)", mdBind)
-	if cfg.Metadata.TrustInstanceHeader {
-		log.Println("WARNING: metadata.trust_instance_header is on: any caller can read any instance's metadata and user-data. Test stacks only.")
-	}
-
 	// Initialize placement service
 	placementService := placement.NewService()
 	log.Println("Placement service initialized")
@@ -375,7 +409,7 @@ func main() {
 		createCinderServer(cfg, cinderService, authService),
 		createGlanceServer(cfg, glanceService, authService),
 		createPlacementServer(cfg, placementService, authService),
-		createMetadataServer(metadataService),
+		createMetadataServer(metadataService, metadataEngine),
 	}
 
 	// Bind all listeners up-front so readiness can honestly report "all HTTP
@@ -843,6 +877,9 @@ func createNeutronServer(cfg *common.Config, svc *neutron.Service, authService *
 	r.Use(middleware.LoggingMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
 	r.Use(middleware.CORSMiddlewareWithConfig(cfg.Server.CORSAllowedOrigins))
+	// The node call checks its own node token: registered before the user-token middleware, which a
+	// route only gets when it is registered after it (SPEC-033 T210).
+	svc.RegisterNodeRoutes(r.Group(""))
 	r.Use(middleware.AuthMiddleware(authService))
 	r.NoRoute(middleware.NotFoundHandler())
 	r.HandleMethodNotAllowed = true
@@ -935,7 +972,9 @@ func createPlacementServer(cfg *common.Config, svc *placement.Service, authServi
 	}
 }
 
-func createMetadataServer(svc *metadata.Service) *http.Server {
+// newMetadataEngine is the metadata service's engine, which the host's listener and every network's
+// namespace listener serve.
+func newMetadataEngine(svc *metadata.Service) *gin.Engine {
 	// Guests are identified by their TCP peer address (see metadata.Service); the engine
 	// trusts no proxy either, so no forwarding header speaks for the caller in its logs.
 	r := newEngine()
@@ -948,10 +987,13 @@ func createMetadataServer(svc *metadata.Service) *http.Server {
 	r.NoMethod(middleware.MethodNotAllowedHandler())
 
 	svc.RegisterRoutes(r.Group(""))
+	return r
+}
 
+func createMetadataServer(svc *metadata.Service, engine http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              svc.BindAddr(),
-		Handler:           r,
+		Handler:           engine,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      common.HTTPWriteTimeout,

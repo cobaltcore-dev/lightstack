@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"strconv"
 
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/cobaltcore-dev/lightstack/internal/database"
@@ -149,9 +148,9 @@ func (svc *Service) GetQuotaSet(c *gin.Context) {
 	}
 
 	quotaSet := gin.H{"id": targetProjectID}
-	// ParseBool accepts the "True" that python-cinderclient sends as well as "true"
-	// and "1"; anything unparseable is the documented default, false.
-	if withUsage, _ := strconv.ParseBool(c.Query("usage")); withUsage {
+	// Upstream's words, in any case — the "True" python-cinderclient sends among them — and anything
+	// else the documented default, false (common.ParseQueryBool; SPEC-033 T197).
+	if withUsage, _ := common.ParseQueryBool(c.Query("usage")); withUsage {
 		usage, usageErr := cinderQuotaUsage(c.Request.Context(), svc.pool, targetProjectID)
 		if usageErr != nil {
 			log.Error().Err(usageErr).Str("project_id", targetProjectID).Msg("failed to query quota usage")
@@ -417,7 +416,7 @@ func withCinderQuota(ctx context.Context, pool database.DB, projectID string, wa
 // rely on. The lock is transaction-scoped, so it is released on commit or rollback with no
 // unlock path to forget.
 func lockCinderQuota(ctx context.Context, tx database.Tx, projectID string) error {
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "cinder_quota:"+projectID); err != nil {
+	if err := database.AdvisoryLock(ctx, tx, "cinder_quota:"+projectID); err != nil {
 		return fmt.Errorf("locking cinder quota for project %s: %w", projectID, err)
 	}
 	return nil

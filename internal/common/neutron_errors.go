@@ -76,17 +76,6 @@ var neutronNotFoundTypes = map[string]string{
 	"project":                 "ProjectNotFound",
 }
 
-// neutronConflictTypes maps 409 conditions onto upstream's named conflict exceptions. Anything
-// not listed is a plain Conflict — upstream has no more specific class for it.
-var neutronConflictTypes = map[string]string{
-	"network":                                "NetworkInUse",
-	"subnet":                                 "SubnetInUse",
-	"port":                                   "PortInUse",
-	"gateway ip":                             "GatewayIpInUse",
-	"gateway conflict with allocation pools": "GatewayConflictWithAllocationPools",
-	"router":                                 "RouterInUse",
-}
-
 // neutronCodeTypes maps this package's envelope keys onto upstream class names for every status
 // other than 404.
 //
@@ -109,10 +98,15 @@ var neutronCodeTypes = map[string]string{
 
 // neutronType derives the upstream condition name for an error.
 //
-// 404s and 409s are resolved from the resource, because that is what distinguishes an absent network
-// from an absent port; everything else is resolved from the envelope key, which already carries the
-// semantic. An unrecognized value falls back to the generic rather than inventing a name.
+// 404s are resolved from the resource, because that is what distinguishes an absent network from an
+// absent port; a 409 upstream names after its condition — NetworkInUse, SecurityGroupInUse, … — is named
+// at the call site with the message upstream gives it, any other is a Conflict; everything else is
+// resolved from the envelope key, which already carries the semantic. An unrecognized value falls back
+// to the generic rather than inventing a name.
 func neutronType(e *OpenStackError) string {
+	if e.NeutronType != "" {
+		return e.NeutronType // named at the call site, where the tables cannot tell (R39)
+	}
 	resource := strings.ToLower(strings.TrimSpace(e.Resource))
 
 	switch e.StatusCode {
@@ -122,9 +116,6 @@ func neutronType(e *OpenStackError) string {
 		}
 		return "NotFound"
 	case http.StatusConflict:
-		if t, ok := neutronConflictTypes[resource]; ok {
-			return t
-		}
 		return "Conflict"
 	}
 

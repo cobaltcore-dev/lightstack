@@ -372,11 +372,11 @@ func setupPortForwardingPrerequisites(t *testing.T, client *gophercloud.ServiceC
 	)
 	require.NoError(t, err, "Failed to attach interface to router")
 
-	// Create floating IP
+	// Create a floating IP no port uses: a port forwarding goes on such a floating IP, its router found
+	// through the internal port, as upstream's (SPEC-033 T192).
 	fipOpts := map[string]interface{}{
 		"floatingip": map[string]interface{}{
 			"floating_network_id": extNetID,
-			"port_id":             port.ID,
 		},
 	}
 

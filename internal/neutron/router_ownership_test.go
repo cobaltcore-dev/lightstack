@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -16,9 +15,6 @@ import (
 // interface with no owner predicate anywhere; DeleteRouter removed the namespace before its
 // owner-scoped DELETE and answered 204 whatever that matched. A project that knew another's router id
 // could give that router's subnets egress, take its interfaces away, or delete its namespace.
-//
-// And egress SNAT, once installed, was never withdrawn: not when the gateway was cleared — which the
-// API could not even express — not when SNAT was turned off, and not when an interface went.
 
 // routerWithInterface seeds a router owned by project with an interface on a fresh subnet of range
 // cidr: the rows AddRouterInterface writes. It returns the router, subnet and port ids.
@@ -137,16 +133,24 @@ func TestRemoveRouterInterfaceTakesTheInterface(t *testing.T) {
 	}
 }
 
-// TestDeletingARouterWithInterfacesIsRouterInUse — upstream's class for the refusal.
+// TestDeletingARouterWithInterfacesIsRouterInUse — upstream's class for the refusal, and its message
+// (SPEC-033 T216): _ensure_router_not_in_use names every port attached to the router, its
+// gateway port among them, in the order they were attached.
 func TestDeletingARouterWithInterfacesIsRouterInUse(t *testing.T) {
 	requireDB(t)
 	r := newEnvelopeRouter()
-	routerID, _, _ := routerWithInterface(t, seededProjectID, "10.84.0.0/24")
+	routerID, _, port := routerWithInterface(t, seededProjectID, "10.84.0.0/24")
+	gateway := uuid.NewString()
+	external := seedExternalNetwork(t, "spec024-router-gw-"+uuid.NewString()[:8], seededProjectID, false, true)
+	mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, device_id, device_owner, mac_address, fixed_ips, created_at)
+		VALUES ($1, '', $2, NULL, $3, 'network:router_gateway', 'fa:16:3e:00:00:07', '[]'::jsonb, '2021-01-01 00:00:00')`,
+		gateway, external, routerID)
+	mustExec(t, "UPDATE ports SET created_at = '2020-01-01 00:00:00' WHERE id = $1", port)
 	code, body := doReqBody(r, http.MethodDelete, "/v2.0/routers/"+routerID, "", nil)
 	if code != http.StatusConflict {
 		t.Fatalf("code=%d body=%s, want 409", code, body)
 	}
-	assertNeutronShape(t, neutronError(t, body), "RouterInUse")
+	assertNeutronError(t, body, "RouterInUse", "Router "+routerID+" has ports still attached: "+port+", "+gateway)
 }
 
 // TestRouterGatewayCanBeCleared — `external_gateway_info` set to an empty object or to null clears the
@@ -194,44 +198,5 @@ func TestRouterGatewayEnableSNATMustBeABoolean(t *testing.T) {
 		fmt.Sprintf(`{"router":{"external_gateway_info":{"network_id":%q,"enable_snat":"no"}}}`, ext), hdr)
 	if code != http.StatusBadRequest {
 		t.Errorf("code=%d body=%s, want 400", code, body)
-	}
-}
-
-// TestEgressSNATIsWithdrawnOnlyWhenNoRouterStillNeedsIt — the MASQUERADE rule is per range, not per
-// router, and two projects may well both use the same range. A range is withdrawn only once no router
-// with SNAT on still has an interface on a subnet of that range.
-func TestEgressSNATIsWithdrawnOnlyWhenNoRouterStillNeedsIt(t *testing.T) {
-	requireDB(t)
-	ctx := context.Background()
-	svc := &Service{pool: testPool, mode: "iptables"}
-	ext := seedExternalNetwork(t, "spec024-snat-ext-"+uuid.NewString()[:8], seededProjectID, false, true)
-	gateway := func(routerID, info string) {
-		mustExec(t, `UPDATE routers SET external_gateway_info = $2::jsonb WHERE id = $1`, routerID, info)
-	}
-	on := fmt.Sprintf(`{"network_id":%q}`, ext)
-	off := fmt.Sprintf(`{"network_id":%q,"enable_snat":false}`, ext)
-
-	a, _, _ := routerWithInterface(t, seededProjectID, "10.87.0.0/24")
-	b, _, _ := routerWithInterface(t, seededProjectID, "10.87.0.0/24")
-	gateway(a, on)
-	gateway(b, on)
-	stale := func() []string {
-		got, err := svc.egressSNATNoLongerNeeded(ctx, []string{"10.87.0.0/24"})
-		if err != nil {
-			t.Fatalf("egressSNATNoLongerNeeded: %v", err)
-		}
-		return got
-	}
-
-	if got := stale(); len(got) != 0 {
-		t.Errorf("both routers egress, yet %v would be withdrawn", got)
-	}
-	mustExec(t, `UPDATE routers SET external_gateway_info = NULL WHERE id = $1`, a)
-	if got := stale(); len(got) != 0 {
-		t.Errorf("the other router still egresses on the range, yet %v would be withdrawn", got)
-	}
-	gateway(b, off)
-	if got := stale(); !slices.Equal(got, []string{"10.87.0.0/24"}) {
-		t.Errorf("no router needs the range any more, yet the withdrawal is %v", got)
 	}
 }

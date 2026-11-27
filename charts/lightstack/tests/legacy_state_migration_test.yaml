@@ -123,6 +123,7 @@ tests:
     template: templates/daemonset.yaml
     set:
       deploymentMode: multi-node
+      neutron.networkNode: node-a
       realMode.enabled: true
       realMode.legacyStatePath: /var/lib/legacy-root
       glance.storageMode: rbd   # multi-node gates (FR-012e); node-local state still moves

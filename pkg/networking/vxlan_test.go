@@ -113,10 +113,10 @@ func TestVXLANManagerStubMode(t *testing.T) {
 		t.Errorf("ListFDBEntries returned %d entries after removal, want 0", len(entries))
 	}
 
-	// Test DeleteVXLAN
-	err = mgr.DeleteVXLAN(networkID)
+	// Test DeleteVXLANDevice
+	err = mgr.DeleteVXLANDevice(mgr.GetVXLANName(networkID))
 	if err != nil {
-		t.Fatalf("DeleteVXLAN failed: %v", err)
+		t.Fatalf("DeleteVXLANDevice failed: %v", err)
 	}
 
 	// Verify VXLAN was deleted
@@ -295,5 +295,54 @@ func TestConcurrentFDBOperations(t *testing.T) {
 
 	if len(entries) != 10 {
 		t.Errorf("ListFDBEntries returned %d entries after concurrent adds, want 10", len(entries))
+	}
+}
+
+// SPEC-033 round 2, T144: a deleted network's VXLAN device is found by its name, the only trace of the
+// network left on the node — its VNI and forwarding rows go with its record — and removed by it.
+func TestVXLANDevices(t *testing.T) {
+	mgr := NewVXLANManager("stub", 0)
+	a, b := "0a1b2c3d-0000-4000-8000-00000000000a", "1b2c3d4e-0000-4000-8000-00000000000b"
+	for i, id := range []string{a, b} {
+		if err := mgr.CreateVXLAN(id, 1001+i, "192.0.2.1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mgr.AddFDBEntry(a, "fa:16:3e:00:00:01", "192.0.2.2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mgr.VXLANDevices()
+	if err != nil || fmt.Sprint(got) != "[vxlan-0a1b2c3d vxlan-1b2c3d4e]" {
+		t.Fatalf("devices = %q, %v", got, err)
+	}
+	if err := mgr.DeleteVXLANDevice("vxlan-0a1b2c3d"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := mgr.VXLANDevices(); fmt.Sprint(got) != "[vxlan-1b2c3d4e]" {
+		t.Errorf("devices after the delete = %q", got)
+	}
+	if entries, _ := mgr.ListFDBEntries(a); len(entries) != 0 {
+		t.Errorf("the deleted device's entries are still listed: %v", entries)
+	}
+	if err := mgr.DeleteVXLANDevice(mgr.GetVXLANName(b)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := mgr.VXLANDevices(); len(got) != 0 {
+		t.Errorf("devices after deleting the network's = %q", got)
+	}
+}
+
+func TestIsVXLANDevice(t *testing.T) {
+	for name, want := range map[string]bool{
+		"vxlan-0a1b2c3d": true,
+		"vxlan-0A1B2C3D": false,
+		"vxlan-0a1b2c3":  false,
+		"vxlan-foo":      false,
+		"vxlan0":         false,
+		"flannel.1":      false,
+	} {
+		if got := isVXLANDevice(name); got != want {
+			t.Errorf("isVXLANDevice(%q) = %v, want %v", name, got, want)
+		}
 	}
 }

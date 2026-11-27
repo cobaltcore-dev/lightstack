@@ -1,0 +1,31 @@
+# iptables v1.8.13 (nf_tables), captured by TestCaptureIPTablesSave
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:ls-l3-OUTPUT - [0:0]
+:ls-l3-POSTROUTING - [0:0]
+:ls-l3-PREROUTING - [0:0]
+:ls-l3-fip-pf - [0:0]
+:ls-l3-float-snat - [0:0]
+:ls-l3-snat - [0:0]
+:ls-pf-9f8e7d6c - [0:0]
+-A PREROUTING -m comment --comment lightstack -j ls-l3-PREROUTING
+-A OUTPUT -m comment --comment lightstack -j ls-l3-OUTPUT
+-A POSTROUTING -m comment --comment lightstack -j ls-l3-POSTROUTING
+-A POSTROUTING -m comment --comment lightstack -j ls-l3-snat
+-A ls-l3-OUTPUT -d 203.0.113.10/32 -m comment --comment lightstack -j DNAT --to-destination 10.0.1.5
+-A ls-l3-OUTPUT -d 203.0.113.11/32 -m comment --comment lightstack -j DNAT --to-destination 10.0.2.7
+-A ls-l3-POSTROUTING ! -o qg-aa11bb22cc3 -m conntrack ! --ctstate DNAT -m comment --comment lightstack -j ACCEPT
+-A ls-l3-PREROUTING -m comment --comment lightstack -j ls-l3-fip-pf
+-A ls-l3-PREROUTING -d 203.0.113.10/32 -m comment --comment lightstack -j DNAT --to-destination 10.0.1.5
+-A ls-l3-PREROUTING -d 203.0.113.11/32 -m comment --comment lightstack -j DNAT --to-destination 10.0.2.7
+-A ls-l3-fip-pf -m comment --comment lightstack -j ls-pf-9f8e7d6c
+-A ls-l3-float-snat -s 10.0.1.5/32 -m comment --comment lightstack -j SNAT --to-source 203.0.113.10
+-A ls-l3-float-snat -s 10.0.2.7/32 -m comment --comment lightstack -j SNAT --to-source 203.0.113.11
+-A ls-l3-snat -m comment --comment lightstack -j ls-l3-float-snat
+-A ls-l3-snat -o qg-aa11bb22cc3 -m comment --comment lightstack -j SNAT --to-source 203.0.113.2
+-A ls-l3-snat -m mark ! --mark 0x2/0xffff -m conntrack --ctstate DNAT -m comment --comment lightstack -j SNAT --to-source 203.0.113.2
+-A ls-pf-9f8e7d6c -d 203.0.113.12/32 -p tcp -m tcp --dport 2222 -m comment --comment lightstack -j DNAT --to-destination 10.0.1.6:22
+COMMIT

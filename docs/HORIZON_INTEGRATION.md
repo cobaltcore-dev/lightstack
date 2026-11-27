@@ -219,6 +219,10 @@ services:
       - /var/run/libvirt:/var/run/libvirt   # the socket's directory: survives a re-created socket
       - /var/lib/lightstack:/var/lib/lightstack   # state root (state_path), same path on both sides
       - /opt/lightstack/config:/opt/lightstack/config:ro
+      # The host's network namespaces, shared both ways: the router and DHCP namespaces outlive the
+      # container (SPEC-033 FR-036). The host's /run must be a shared mount, as systemd makes it.
+      - /run/netns:/run/netns:rshared
+      - /lib/modules:/lib/modules:ro   # for modprobe br_netfilter at start (FR-046)
 
   horizon:
     image: quay.io/openstack.kolla/horizon:2025.2-ubuntu-noble

@@ -35,6 +35,7 @@ tests:
       secrets.adminPassword: pw
       database.url: postgres://lightstack@db/lightstack
       deploymentMode: multi-node
+      neutron.networkNode: node-a
       realMode.enabled: true
       glance.storageMode: local
       cinder.storageMode: local
