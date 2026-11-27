@@ -44,12 +44,17 @@ func postAction(t *testing.T, token, ref, body string) (int, string) {
 // createNamedServer boots a server and returns its id, registering cleanup.
 func createNamedServer(t *testing.T, token, name string) string {
 	t.Helper()
-	image := firstImageID(t, token)
-	body := `{"server":{"name":"` + name + `","flavorRef":"m1.small","imageRef":"` + image + `"}}`
+	return createServer(t, token, name, "")
+}
 
+// createServer boots a server named name from the first image, the server object's extra fields (a JSON
+// fragment, "" for none) added, and returns its id, registering its deletion.
+func createServer(t *testing.T, token, name, extra string) string {
+	t.Helper()
+	body := `{"server":{"name":"` + name + `","flavorRef":"m1.small","imageRef":"` + firstImageID(t, token) + `"` + extra + `}}`
 	code, resp := createServerRaw(t, token, body)
 	require.Contains(t, []int{http.StatusAccepted, http.StatusCreated, http.StatusOK}, code,
-		"creating a server for the by-name test: %s", resp)
+		"creating server %s: %s", name, resp)
 
 	var out struct {
 		Server struct {
@@ -76,7 +81,12 @@ func TestNovaActionsByName_Contract(t *testing.T) {
 	token := issueToken(t)
 
 	const name = "spec025-byname"
-	createNamedServer(t, token, name)
+	// On a network, with its port: a server's security groups are its ports' groups, so a server
+	// without a port answers addSecurityGroup and removeSecurityGroup 404 (SPEC-033), which the check
+	// below would read as the name not resolving.
+	netID := createNetworkWithSubnet(t, token, name+"-net", "10.244.97.0/24")
+	id := createNamedServerOnNetwork(t, token, name, netID)
+	require.NotEmpty(t, awaitAddresses(t, token, id), "the server never got a port")
 
 	// Every entry in the serverActions dispatch table, plus the lifecycle tail. Bodies
 	// are the minimal valid form for each.

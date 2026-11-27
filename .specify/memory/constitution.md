@@ -1,50 +1,72 @@
 <!--
 SYNC IMPACT REPORT — constitution amendment
 ===========================================
-Version change: 1.4.0 → 1.5.0 (MINOR — one new permitted exception; one article's rule restated to
-its original intent, ruling out a runtime reading)
+Version change: 1.5.0 → 1.6.0 (MINOR — two new permitted exceptions; one exception's scope stated to
+match the component it was written for; one divergence registered). Refined in place on
+2026-11-18 and 2026-11-20, and editorially on 2026-11-24, before reaching `main`.
 
 Modified principles:
-  - III. Fail-Fast Design — title and rules unchanged. Adds "Permitted exception — re-establishing a
-    dependency in the background": a loop that restores the process's own connection to a
-    dependency, or completes a one-time preparation that depends on it, within four limits. Records
-    the libvirt reconnect loop shipped with 6ed30f7 (2026-09-24), which no spec or plan had recorded.
-  - IV. Multi-Mode Architecture — title unchanged. "Mode detection: … or `svc.vmManager == nil`" and
-    "Default to stub mode when dependencies unavailable" become Mode selection, Mode detection and
-    No runtime fallback: an unset mode defaults to stub; a configured real mode never falls back to
-    stub at runtime. Gains a rationale.
+  - I. OpenStack Flamingo API Compatibility — rules unchanged. Known Divergences gains entry 5:
+    a security group resolves only in the project it applies to, administrators included
+    (SPEC-033 FR-004, FR-018), narrowed on 2026-11-20 to names in an administrator's server actions
+    once administrators could see every project's groups. Entry 6 (unique security-group names)
+    was added on 2026-11-20 and withdrawn the same day: it had no limit-1 ground, and names follow
+    upstream (SPEC-033 FR-026).
+  - V. Project Isolation (2026-11-20) — its network-isolation bullet described per-project namespaces,
+    which no longer exist; it now names bridges, router and DHCP namespaces and per-port chains.
+  - II. Synchronous Operations — title and rules unchanged.
+    - "Permitted exception — stateless reconciliation loops": the loop corrects the record, or
+      makes node-local state match it — re-asserting what the record holds and removing what it no
+      longer holds, its own state only (was: corrects the record). The drift it may correct now
+      names node-local state lost to a restart or edited by hand, and three cases no request can
+      reach without a queue: the nodes that did not serve a change, a request whose process stopped
+      after storing its change, and a node whose own undo failed after the request had answered with
+      an error. A request that changes node-local state applies it before answering, or fails and
+      undoes it. Its three limits are otherwise unchanged.
+      Refined 2026-11-20: the request applies its change on the node that holds that state, asked
+      synchronously through a bounded call when that is not the serving node; the loop's first case
+      becomes state on nodes other than the one a change applies on.
+    - New: "Permitted exception — a change undone when its external work fails", with five limits.
+      It covers records whose node-local state is derived from them alone — stored, changed or
+      removed — and leaves resources whose external work cannot be derived again to the
+      reservation exception.
+    - New (2026-11-20): "Permitted exception — a removal applied before its record goes", with four
+      limits: checks first, host removal, record deletion that re-checks, re-application from the
+      records on any failure.
 
 Changed sections:
-  - Technology Constraints → Forbidden Patterns: the async-worker exemption names re-establishing a
-    dependency in the background (Article III).
-  - Amendment Log: entry for v1.5.0.
+  - Technology Constraints → Forbidden Patterns: the async-worker exemption names loops that make
+    node-local state match the record.
+  - Technology Constraints → Required Dependencies (editorial refinement, 2026-11-24): iptables is run
+    as commands; the go-iptables binding is gone (SPEC-033 T232).
+  - Known Divergences from Upstream: entry 5 (entry 6 added and withdrawn on 2026-11-20).
+  - Amendment Log: entry for v1.6.0.
 
-Added sections: none (the exception is a subsection of Article III).
+Added sections: none.
 Removed sections: none.
-
-Scope check (Article IV, "No runtime fallback"): the only runtime fallback to stub in the code is
-Nova's hypervisor — a failed `InitHypervisor` leaves `svc.vmManager` nil and `server create` takes the
-stub branch (`internal/nova/handlers.go:1390-1398` on `d81f081`), which SPEC-031 removes. Neutron, Cinder and
-Glance default to stub only when their mode is unset (`cmd/lightstack/main.go:147-151, 170-174,
-241-245, 264-268`), and a Glance init failure is already fatal (`main.go:285`). No other code becomes
-a violation.
 
 Template deferral check (templates are never edited — report only):
   - ✅ $HOME/.specify/templates/plan-template.md — Constitution Check still defers
     ("[Gates determined based on constitution file]", line 34).
   - ✅ $HOME/.specify/templates/spec-template.md — no principle references.
-  - ✅ $HOME/.specify/templates/tasks-template.md — no reference to Articles III or IV; its test
-    sections ("Write these tests FIRST") leave room for Test-First tasks.
-  - ✅ $HOME/.claude/commands/*.md (11 files) — no reference to Article III's retry rule, Article IV's
-    fallback rule, `vmManager`, or a stub fallback.
+  - ✅ $HOME/.specify/templates/tasks-template.md — no principle references.
+  - ✅ $HOME/.claude/commands/*.md — no reference to Article II's exceptions, to reconciliation
+    loops or to the register, and no CLAUDE.md-only guidance.
 
 Runtime guidance updated in the repo:
-  - CLAUDE.md — the "Nova stub mode" check and the "Mode Detection" idiom no longer treat a nil
-    `svc.vmManager` as stub mode; "Nova real mode" states that it never falls back to stub.
-  - docs/specs/031-realmode-dns-libvirt-fixes/plan.md and research.md — the Constitution Check cites
-    v1.5.0 as ratified; R13 records the ratified text and its two refinements of the draft.
+  - docs/specs/033-sg-port-membership/ — spec (both analysis sessions; FR-007b, FR-008, FR-008a–c,
+    FR-010, FR-021a), plan (the Constitution Check cites v1.6.0), research (R5, R8, R19–R24) and
+    tasks.
+  - CLAUDE.md — Project Isolation: security groups resolve only in their own project (register entry 5);
+    since 2026-11-20, a name in an administrator's server action resolves in the server's project, an id
+    may name any group the caller can see. Two database backends: a change to security-group membership
+    or rules, or to a floating IP's association, stores, applies and, on failure, undoes. Refined
+    2026-11-20: the node that holds the state applies it; deletions remove host state before their
+    record.
 
 Follow-up TODOs:
+  - ✅ (2026-11-20) The Neutron request paths that logged a failed node-local step and answered
+    success are brought in line by SPEC-033 round 2 (FR-045); the migration plan names no departure.
   - ⚠ CLAUDE.md "The Nine Articles (Constitution)" and .claude/memory/constitution.md (v1.0,
     "Library-First" …) still describe a different, generic document (flagged since v1.2.0; unchanged
     here — needs a decision).
@@ -100,15 +122,26 @@ All API operations complete before returning - no message queues, no async state
 
 **Rationale**: Simplicity over scalability. Trade throughput for debuggability and operational simplicity.
 
-**Permitted exception — stateless reconciliation loops** (added in v1.1.0). A periodic loop that compares
-recorded state against observed reality and corrects the record is NOT an async worker and does not
-violate this principle:
+**Permitted exception — stateless reconciliation loops** (added in v1.1.0; scope stated in v1.6.0). A
+periodic loop that compares recorded state against observed reality and corrects one from the other is
+NOT an async worker and does not violate this principle. It corrects the record where reality is
+authoritative — a guest that crashed — and makes reality match the record where the record is — a
+node's firewall, NAT, bridges and DHCP, rebuilt from the database where a record holds them and
+removed where none does any more. It removes only state of its own making, recognisable as such, and
+removes nothing on a read of the records it knows to be incomplete. Either way:
 
 - It carries no queue, no job records, no retries and no per-request state.
 - It never defers work an API request should have done — every API operation still completes before
-  returning, and persists its own result.
-- It exists only to correct drift the product did not cause: a guest that crashed, a resource removed
-  out of band, or a record that has aged past its retention.
+  returning, and persists its own result. A request that changes node-local state applies it on the
+  node that holds that state before answering — itself, or another node it asks through a
+  synchronous, bounded call — or fails and undoes it ("a change undone when its external work fails",
+  below); a deletion removes that state before its record ("a removal applied before its record
+  goes", below).
+- It exists only to correct drift: a guest that crashed, a resource removed out of band, a record that
+  has aged past its retention, or node-local state lost to a restart or edited by hand. For node-local
+  state it also covers three cases no request can reach without a queue: state on the nodes other than
+  the one a change applies on, a request whose process stopped after storing its change, and a node
+  whose own undo could not restore its state after the request had already answered with an error.
 
 A loop that accepts work from a request, or that an API response waits on, remains forbidden.
 
@@ -138,6 +171,65 @@ The correction leaves the partial result to the resource's delete because it can
 stopped: a process whose liveness signal lapsed — a database outage, a paused process — may still
 be writing that result, and removing it from under a live operation is worse than leaving it to the
 delete that cleans up the `error` resource anyway.
+
+**Permitted exception — a change undone when its external work fails** (added in v1.6.0). An
+operation whose external work only applies node-local state derived from database records — a
+floating IP's NAT and filter, a firewall rebuilt from security-group membership and rules — MAY
+store its change to those records in one short transaction, do the external work, and undo the change
+in a second transaction if the work fails. It does not violate this principle when all of the
+following hold:
+
+- Every record the operation stores, changes or removes is a complete final state without the
+  external work: the node-local state is derived from the records alone, and the reconciliation loop
+  re-asserts or removes it on every node. A resource whose external work produces what its record
+  cannot derive again — a volume's backing storage, a guest's disk — keeps the reservation exception
+  above. A stored record counts against its limits from the first transaction on, as a reservation
+  would, and an undo that removes it releases them.
+- The first transaction makes the operation's checks, takes its locks and stores the change. The
+  external work runs after it commits and before any second transaction begins. No transaction is
+  open across it.
+- If the external work fails, the second transaction undoes exactly this request's change — a
+  record it created is removed, one it removed is restored, one it changed is put back — on each
+  record only if it still holds what this request left, so a later change by another request
+  stays. The node-local state is then re-applied from the restored records, and the request answers
+  as one transaction would have: an error, nothing changed.
+- Every external step on the request path, and every wait for other work on the same node-local
+  state, is bounded at one second (Article III). A step or wait that exceeds it is a failed external
+  step.
+- A change whose process stopped mid-request stays stored, as a committed single-transaction change
+  would. It is a valid final state, not a reservation, and the node's reconciliation loop applies it
+  within one interval — adding what the records hold and removing what they no longer hold.
+
+**Rationale**: a record whose node-local state is derived from it is complete the moment it commits.
+The loop builds that state from it on every node, the serving node included after a restart, so a
+transitional row would tell readers that something is unfinished when nothing is. What the
+reservation's limits protect is kept: no transaction is held across external work, a limit counts the
+row from the first transaction, and the answer is the one the single-transaction form would have
+given. What they add for resources the loop cannot rebuild — a transitional state other requests
+must respect, an `error` state for an interrupted one — has nothing to apply to. Network creation
+already has this shape — the row first, then the bridge, and a bridge that cannot be created takes the
+row back — and SPEC-033 makes its undo compare-and-set.
+
+**Permitted exception — a removal applied before its record goes** (added in v1.6.0, refined
+2026-11-20). An operation that deletes a record whose node-local state is derived from it alone MAY
+remove that state first and delete the record after, outside any transaction. It does not violate
+this principle when all of the following hold:
+
+- A first, short transaction makes the deletion's checks — existence, in use, the refusals the
+  operation answers — and changes nothing.
+- The node-local state is removed after it, on the node that holds it, under the same bounds as any
+  external step (Article III). No transaction is open across it.
+- A second transaction deletes the record and makes the checks again. A refusal there is answered as
+  a refusal.
+- If the removal fails, or the second transaction refuses or fails, the node-local state is applied
+  again from the records, which still hold it, by the request or, failing that, by the
+  reconciliation loop within one interval; the request answers as one transaction would have: an
+  error or the refusal, nothing deleted.
+
+**Rationale**: a deleted record cannot be put back compare-and-set the way a changed one can — its
+dependants went with it. Keeping the record until its state is gone makes the record itself the
+undo, and the loop already rebuilds state from records. State on nodes other than the one that holds
+it is removed by their loop, as for any change.
 
 ### III. Fail-Fast Design
 External dependency failures return immediately (< 1 second timeouts).
@@ -207,7 +299,8 @@ stays the default when no mode is configured, which is what the rule was for.
 ### V. Project Isolation
 All resources scoped by `project_id` from JWT token.
 - Database queries auto-filter by project_id
-- Network namespaces per project for network isolation
+- Network isolation through one bridge per network, router and DHCP namespaces on the network node,
+  and per-port firewall chains (SPEC-033); there are no per-project namespaces
 - No cross-project resource access without explicit admin role check
 - JWT contains: user_id, project_id, roles
 
@@ -237,6 +330,7 @@ defect or an undocumented departure, and both are bugs.
 | 2 | A request with **no** compute version header resolves to the advertised **maximum** microversion | The advertised **minimum** is assumed | Adopting upstream's default would remove behaviour from every existing caller in a single release | SPEC-025-followup FR-040a |
 | 3 | A top-level domain-scoped token request is refused with `400` naming the scope | Domain-scoped tokens are issued | Lightstack's role assignments bind a user to a role *within a project*, so there is no domain-level grant a domain-scoped token could authorize | SPEC-023 (`internal/keystone/handlers.go`) |
 | 4 | Five server-list filter parameters (`host`, `hostname`, `availability_zone`, `tags`, and `ip` until its condition is met) are refused with `400` naming the filter | `host` and `hostname` are honoured for administrators and **silently ignored** for other callers; the rest are honoured | The product records none of those attributes, so honouring is impossible; and both compatible alternatives are silent — an empty list reads as a fact about the deployment, an ignored filter is the defect being repaired | SPEC-025-followup FR-004, bounded by FR-004a |
+| 5 | An administrator's `addSecurityGroup` / `removeSecurityGroup` on another project's server resolves a group **name** in the server's project. (Ids follow upstream: an administrator may name any project's group by id, in either API.) | A name resolves in the caller's own project | Matching upstream would break callers that work today: administrators adding a tenant's group to the tenant's server by name succeed now, and upstream's rule would refuse them | SPEC-033 FR-004 |
 
 **Entry 2 is the cautionary one.** It predates every feature that has examined it, was not introduced
 by any decision anyone recorded, and was found only when a later feature's research read upstream's
@@ -264,14 +358,16 @@ undocumented divergence does not merely go unfixed; it silently bounds the value
 - **Real Mode** (Linux only):
   - libvirt + KVM (github.com/digitalocean/go-libvirt)
   - netlink (github.com/vishvananda/netlink)
-  - iptables (github.com/coreos/go-iptables)
+  - iptables, ip6tables and their `-save`/`-restore`, and iproute2's `ip`, run as commands with a
+    one-second bound (no Go binding; SPEC-033 removed github.com/coreos/go-iptables)
   - Optional: Ceph RBD (github.com/ceph/go-ceph), S3 (AWS SDK v2)
 
 ### Forbidden Patterns
 - **No message queues**: RabbitMQ, Kafka, Redis streams
 - **No async workers**: Celery, background job processors, or any loop an API response waits on
-  (stateless reconciliation loops and the correction of interrupted reservations — at startup and by
-  a periodic pass — are permitted, see Article II; so is re-establishing a dependency in the
+  (stateless reconciliation loops — including those that make node-local state match the record,
+  re-asserting and removing it — and the correction of interrupted reservations — at startup and by a
+  periodic pass — are permitted, see Article II; so is re-establishing a dependency in the
   background, see Article III)
 - **No state machines**: Conductor-style workflows
 - **No service discovery**: Consul, etcd (services on fixed ports)
@@ -333,6 +429,68 @@ Amendments require:
 - Migration plan for existing deployments
 
 ## Amendment Log
+
+### v1.6.0 — 2026-11-17, refined 2026-11-18 and 2026-11-20, editorially 2026-11-24 — a change undone when its external work fails; a removal applied before its record goes; loops that make node-local state match the record (Article II); register entry 5 (Article I)
+
+**Rationale**: SPEC-033 (cloud-storage#579) makes security-group membership reach the ports and the
+firewall built from them. Its analysis found the plan justifying two departures from Article II
+instead of amending it, the pattern v1.2.0 named as insufficient:
+
+- A membership change stores rows and then rebuilds the node's firewall, which no transaction can
+  hold. The reservation exception covers that shape only with a transitional row counted against
+  limits; a membership row has no limit and no state between before and after that any reader uses.
+- The network reconciler, the loop v1.1.0 was written for, re-asserts the firewall from the database.
+  The exception's text spoke of correcting the record, and of drift the product did not cause, while
+  the feature relies on the loop for the nodes that did not serve a change, for a request whose
+  process stopped after storing its change, and for a node whose own undo failed after the request
+  had already answered with an error.
+
+The same analysis found a divergence from upstream recorded in the spec but missing from the
+register: a security group resolves only in the project it applies to, administrators included.
+
+A second analysis of SPEC-033 on 2026-11-18, before the amendment reached `main`, found its first
+draft too narrow in one place and silent in two:
+
+- It excluded every operation that creates or removes a record. A rule added to a group, a floating
+  IP created on a port and a network created with its bridge all create records whose node-local
+  state is derived from them alone, exactly as membership is. The line that matters is whether the
+  loop can rebuild the external result from the record, not whether a row comes into being.
+- It promised that the loop brings the nodes that did not serve a change into line, which for a
+  removal means removing state no record holds any more. The loop only re-asserted.
+- It added the rule that a request applies its node-local change before answering, or fails and
+  undoes it, and recorded only two request paths that do not yet comply. There are more.
+
+**Scope**: clarification and extension, not relaxation. The new exception is narrower than the
+reservation: it applies only to records whose node-local state the loop derives from them alone, and
+it requires a compare-and-set undo, a one-second bound on every external step and wait, and the answer
+the single-transaction form would have given. The loop exception's wording now matches the component
+it was written for: it re-asserts and removes, removing only what it can recognise as its own. Its
+limits are unchanged, and the three cases it gains are ones no request can reach without a queue.
+
+**Migration plan**: no deployment change. The network reconciler already re-asserts node-local state
+and already removes bridges and DHCP of deleted networks; SPEC-033 extends the removal to floating-IP
+NAT and filters. Register entry 5 records behaviour already on `main` for names; it first extended the
+same rule to ids and the port API, and on 2026-11-20 was narrowed back to names (SPEC-033 R52).
+
+**Refined 2026-11-20** (SPEC-033 round 2, before reaching `main`): SPEC-033 moved one network node
+into place, holding every router namespace, and a firewall on every port, on the node its TAP is on.
+A request served elsewhere could no longer apply its change "on the node that serves it". The request
+rule now names the node that holds the state, asked through a synchronous, bounded call — a request,
+not a queue: no retry, no record, no worker. Deletions gained their own exception, because a deleted
+record cannot be restored compare-and-set; removing the state first keeps the record as the undo.
+Every Neutron request path that logged a failed
+node-local step and answered success — network, subnet and DHCP changes, routers with their
+interfaces and gateways, port forwarding, port creation's FDB and eBPF steps, port and instance-port
+teardown, the LS-SG chains, network creation's undo — is brought in line by the same feature (FR-045),
+so this amendment names no departure. No deployment exists; the layout change is a clean break.
+Article V's network-isolation bullet, which described per-project namespaces that no longer exist,
+names the layout instead: one bridge per network, router and DHCP namespaces on the network node, and
+per-port firewall chains. Its rules are unchanged; it records what isolates projects.
+
+**Editorial refinement 2026-11-24** (SPEC-033 T232, before reaching `main`): Required Dependencies
+named `github.com/coreos/go-iptables`, which SPEC-033 removed from `go.mod`. They now name iptables,
+ip6tables and their `-save`/`-restore`, and iproute2's `ip`, run as commands with a one-second bound.
+No principle, rule or limit changes.
 
 ### v1.5.0 — 2026-11-06 — re-establishing a dependency in the background (Article III); no runtime fallback to stub (Article IV)
 
@@ -434,4 +592,4 @@ forbidden, and the synchronous-operations rule for API operations is unchanged.
 **Migration plan**: none required. No behaviour changes. One shipped component stops being a deviation,
 and SPEC-025's compute state reconciler and action-history reclamation are permitted on the same terms.
 
-**Version**: 1.5.0 | **Ratified**: 2026-03-13 | **Last Amended**: 2026-11-06
+**Version**: 1.6.0 | **Ratified**: 2026-03-13 | **Last Amended**: 2026-11-26

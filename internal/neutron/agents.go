@@ -122,14 +122,15 @@ func (svc *Service) ListDHCPAgentsOnNetwork(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	// Owner or shared or external, the same predicate GetNetwork uses (FR-033a) — a network the
-	// caller cannot see must not be distinguishable here from one that does not exist.
+	// caller cannot see must not be distinguishable here from one that does not exist. By id an
+	// administrator sees every project's (SPEC-033 FR-057); a name resolves in the caller's scope.
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT EXISTS(
 			SELECT 1 FROM networks
-			WHERE (id::text = $1 OR name = $1)
-			  AND (project_id = $2 OR shared = true OR external = true)
-		)`, networkID, projectID).Scan(&exists)
+			WHERE (id::text = $1 AND `+scopeOrAdmin(networkReadScope("$2"), "$3")+`)
+			   OR (name = $1 AND `+networkReadScope("$2")+`)
+		)`, networkID, projectID, isAdmin(c)).Scan(&exists)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_dhcp_agents_on_network").Str("network_id", networkID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list agents"))
@@ -156,8 +157,8 @@ func (svc *Service) ListL3AgentsOnRouter(c *gin.Context) {
 	// Compared as text so a malformed id matches nothing rather than erroring the query into a 500.
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM routers WHERE id::text = $1 AND project_id = $2)",
-		routerID, c.GetString("project_id")).Scan(&exists)
+		"SELECT EXISTS(SELECT 1 FROM routers WHERE id::text = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		routerID, c.GetString("project_id"), isAdmin(c)).Scan(&exists)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_l3_agents_on_router").Str("router_id", routerID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to list agents"))
@@ -240,8 +241,8 @@ func (svc *Service) AddL3AgentToRouter(c *gin.Context) {
 	// incidental cover, not a decision, and a read path must not end up better protected than a write.
 	var routerExists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM routers WHERE id::text = $1 AND project_id = $2)",
-		routerID, c.GetString("project_id")).Scan(&routerExists)
+		"SELECT EXISTS(SELECT 1 FROM routers WHERE id::text = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		routerID, c.GetString("project_id"), isAdmin(c)).Scan(&routerExists)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "add_l3_agent_to_router").Str("router_id", routerID).Msg("database error")
 		common.SendError(c, common.NewInternalServerError("failed to add agent to router"))

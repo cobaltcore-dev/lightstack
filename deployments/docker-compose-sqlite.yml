@@ -15,33 +15,12 @@ version: "3.8"
 # Docker named volume is local by default; do not back it with NFS/CephFS).
 
 services:
-  # Redis Cache (optional - for performance optimization)
-  redis:
-    image: redis:7-alpine
-    container_name: lightstack-redis
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - lightstack-network
-    restart: unless-stopped
-
   # Lightstack OpenStack-Compatible Cloud (SQLite backend)
   lightstack:
     build:
       context: ..
       dockerfile: build/package/Dockerfile
     container_name: lightstack
-    depends_on:
-      redis:
-        condition: service_healthy
     ports:
       - "35357:35357" # Keystone (Identity)
       - "8774:8774" # Nova (Compute)
@@ -60,8 +39,6 @@ services:
       # an interrupted create from the old container as another node's and leave it stuck in
       # creating, holding quota (SPEC-028 FR-033).
       LIGHTSTACK_NODE_NAME: "lightstack"
-      LIGHTSTACK_REDIS_URL: "redis://redis:6379/0"
-      LIGHTSTACK_CACHE_ENABLED: "true"
       LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
       LIGHTSTACK_ENDPOINT_HOST: "localhost" # Use localhost for service catalog URLs (accessible from host)
       # Stub mode only (no real guests). See docker-compose.yml for the full warning:
@@ -85,8 +62,6 @@ services:
 
 volumes:
   lightstack_state:
-    driver: local
-  redis_data:
     driver: local
 
 networks:

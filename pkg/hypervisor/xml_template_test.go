@@ -48,6 +48,39 @@ func TestGenerateVMXML(t *testing.T) {
 	}
 }
 
+// SPEC-033 round 2, T128 (FR-041; research R32): the guest's NIC is the port's TAP, named as Neutron
+// names it, so the port's firewall knows the device: the interface carries its target.
+func TestGenerateVMXMLNamesThePortsTAP(t *testing.T) {
+	spec := VMSpec{
+		Name: "tap-vm", UUID: "550e8400-e29b-41d4-a716-446655440009", MemoryMB: 512, VCPUs: 1,
+		ImagePath: "/var/lib/libvirt/images/tap.qcow2",
+		Networks: []NetworkConfig{{PortID: "aaaaaaaa-1111-4222-8333-444455556666",
+			BridgeName: "br-aaaaaaaa", MACAddress: "fa:16:3e:00:00:01"}},
+	}
+	xml := GenerateVMXML(spec)
+	want := "<interface type='bridge'>\n      <mac address='fa:16:3e:00:00:01'/>\n      <source bridge='br-aaaaaaaa'/>\n      <target dev='tapaaaaaaaa-11'/>\n"
+	if !strings.Contains(xml, want) {
+		t.Errorf("the interface:\n%s\nwant it to hold:\n%s", xml, want)
+	}
+}
+
+// SPEC-033 T173: a guest revived from stored state got interfaces with no target, so libvirt named
+// their TAPs vnetN, which the port firewall neither filters nor drops. An interface always names its
+// port's TAP.
+func TestGenerateVMXMLNamesEveryInterfacesTAP(t *testing.T) {
+	spec := VMSpec{
+		Name: "revived-vm", UUID: "550e8400-e29b-41d4-a716-44665544000a", MemoryMB: 512, VCPUs: 1,
+		ImagePath: "/var/lib/libvirt/images/revived.qcow2",
+		Networks: []NetworkConfig{{PortID: "bbbbbbbb-2222-4222-8333-444455556666",
+			BridgeName: "br-bbbbbbbb", MACAddress: "fa:16:3e:00:00:02"}},
+	}
+	xml := GenerateVMXML(spec)
+	want := "<source bridge='br-bbbbbbbb'/>\n      <target dev='tapbbbbbbbb-22'/>\n"
+	if !strings.Contains(xml, want) {
+		t.Errorf("the interface:\n%s\nwant it to hold:\n%s", xml, want)
+	}
+}
+
 func TestGenerateVMXMLMultipleNetworks(t *testing.T) {
 	spec := VMSpec{
 		Name:      "multi-net-vm",

@@ -207,11 +207,15 @@ pkg/                        # Public/reusable packages
 **Project Isolation**:
 - All resources scoped by `project_id` from JWT token
 - Per-network L2 isolation comes from one Linux bridge per network, **not** from a namespace per
-  project. Nothing creates per-project namespaces (`light-ns-<project>`) any more — bridges, TAPs,
-  dnsmasq, the VXLAN devices and the egress NAT rules all live in the namespace Lightstack itself runs in,
-  because libvirt has to reach them there (SPEC-024 F10). `NetworkNamespaceManager` survives only so
-  teardown can reclaim what older deployments left behind. Router namespaces (`qrouter-*`,
-  `RouterManager`) are separate and still live. `BridgeManager`, `TAPDeviceManager` and
+  project, and no bridge holds an address. Nothing creates per-project namespaces (`light-ns-<project>`)
+  any more; `NetworkNamespaceManager` survives only so teardown can reclaim what older deployments left
+  behind. Bridges, the guests' TAPs (libvirt's, `tap<port id[:11]>`) and the VXLAN devices live in the
+  namespace Lightstack itself runs in, because libvirt has to reach them there (SPEC-024 F10). One
+  **network node** (`neutron.network_node`; without VXLAN every node is its own) holds every router in a
+  `qrouter-<id>` namespace — floating-IP NAT, port forwardings, SNAT — and each network's DHCP and
+  metadata in a `qdhcp-<network>` namespace (SPEC-033). Every port is firewalled on the node it is
+  bound to (`binding:host_id`) by its own chains, `ls-i`/`ls-o`/`ls-s`, as upstream's iptables driver,
+  in `iptables` and `ebpf` mode alike (SPEC-033 FR-041, FR-047). `BridgeManager` and
   `VXLANManager.AttachToBridge` take **no namespace argument** — do not add one back
 - Database queries auto-filter by `project_id`
 - **Except for the administrative override** (SPEC-023): a caller holding the `admin` role may act
@@ -219,17 +223,23 @@ pkg/                        # Public/reusable packages
   overridable, and a server addressed by **name** never resolves outside the caller's own project —
   Lightstack accepts a name where upstream accepts only a UUID, so a shared name must not become a way to
   reach the wrong tenant's server.
-- Listings never widen implicitly. `?all_tenants` is the opt-in, administrators only; a
-  non-administrator passing it is silently ignored, not refused.
+- Compute listings never widen implicitly. `?all_tenants` is the opt-in, administrators only; a
+  non-administrator passing it is silently ignored, not refused. Networking API listings follow
+  upstream instead: an administrator's list every project's resources, `project_id`/`tenant_id`
+  narrowing them, and an administrator may show, update and delete any project's resource by id;
+  names still resolve in the caller's own project only (SPEC-033 FR-057, FR-058).
 - Surfaces belonging to the **deployment** rather than to a project — host aggregates, the
   deployment-wide migration list, the aggregate usage report — are administrator-only. They have no
   `project_id` to filter on, so they take a role gate instead of a scoping predicate.
 - Use `common.HasRole` / `common.RoleAdmin` for the role check and `nova.targetInstance` for the
   server lookup; do not re-implement either.
+- A security group named by id may be any group the caller can see — an administrator's, any
+  project's, as upstream. A group named by name in a server action resolves in the server's project,
+  administrators included (constitution register, entry 5).
 
 **Dependency Injection Pattern**: Every database-using service receives the process's one `database.DB` as the first parameter of its constructor, for example `nova.NewService(pool, libvirtURI, libvirtMode, cache)` in `internal/nova/handlers.go`. Handlers query through it with `svc.pool.Query(ctx, ...)`. Package-level helpers take it as a parameter, e.g. `database.WithTx(ctx, pool, fn)`. There is no process-wide handle. Tests hand services a database of their own (see `internal/keystone/pool_injection_test.go`). See ADR-001 and ADR-003.
 
-**Two database backends** (SPEC-028, ADR-003): `database.DB` is an interface over the method set the code calls on pgx, with a PostgreSQL implementation (pgxpool, unchanged) and a SQLite one (`modernc.org/sqlite`, pure Go). `database.url`'s scheme picks one at startup — `postgres://…` or `sqlite:///absolute/path`; SQLite serves a single node only (VXLAN is refused). Write SQL in PostgreSQL syntax from the set `internal/database`'s package documentation lists; SQLite translates casts, `= ANY($n)`, `LIMIT NULL`, `FOR UPDATE` and `~`, and `TestSQLConstructs` fails the build on anything only PostgreSQL runs (jsonb operators, `ARRAY_AGG`, `DISTINCT ON`, `CURRENT_TIMESTAMP`, …). Never hold a transaction across storage, libvirt, network or HTTP work: on SQLite one transaction holds the whole file. Volume and snapshot creates reserve their row, do the backing work outside, then finalise.
+**Two database backends** (SPEC-028, ADR-003): `database.DB` is an interface over the method set the code calls on pgx, with a PostgreSQL implementation (pgxpool, unchanged) and a SQLite one (`modernc.org/sqlite`, pure Go). `database.url`'s scheme picks one at startup — `postgres://…` or `sqlite:///absolute/path`; SQLite serves a single node only (VXLAN is refused). Write SQL in PostgreSQL syntax from the set `internal/database`'s package documentation lists; SQLite translates casts, `= ANY($n)`, `LIMIT NULL`, `FOR UPDATE` and `~`, and `TestSQLConstructs` fails the build on anything only PostgreSQL runs (jsonb operators, `ARRAY_AGG`, `DISTINCT ON`, `CURRENT_TIMESTAMP`, …). Never hold a transaction across storage, libvirt, network or HTTP work: on SQLite one transaction holds the whole file. Volume and snapshot creates reserve their row, do the backing work outside, then finalise. A request that changes real-mode network state stores the change, has the node that holds that state apply it — the network node for routers, DHCP and floating IPs, the port's bound node for its firewall chains, asked through a synchronous one-second call when that is another node — and undoes exactly its own change, compare-and-set, if that fails; a deletion removes the host state before its record and re-applies it on failure. The network reconciler re-asserts what the records hold and removes Lightstack's state they no longer hold (constitution v1.6.0, Article II).
 
 ## Operating Modes
 
@@ -261,9 +271,15 @@ Requires Linux with appropriate dependencies.
   that need it fail, never return fake data
 
 **Neutron real mode** (`networking_mode: iptables` or `ebpf`):
-- Requires Linux with network namespaces
-- Uses `github.com/vishvananda/netlink` for namespace/bridge creation
-- iptables via `github.com/coreos/go-iptables` for security groups
+- Requires Linux with network namespaces, `iptables`/`ip6tables` with their `-save`/`-restore`, and
+  `br_netfilter`: Lightstack loads it and sets `net.bridge.bridge-nf-call-ip(6)tables` at start, and
+  readiness fails, naming `bridge-netfilter`, while they do not hold
+- Uses `github.com/vishvananda/netlink` for bridges and VXLAN devices, and `ip`, `iptables-restore`
+  and `ip6tables-restore` through a command runner bounded at one second per command for the router
+  and DHCP namespaces and the port firewall (`pkg/networking/router_namespace.go`,
+  `dhcp_namespace.go`, `port_firewall.go`)
+- The port firewall enforces security groups in both modes; the eBPF filter is not wired
+  (`docs/EBPF_STATUS.md`)
 
 **Cinder/Glance real mode** (`storage_mode: local`, `rbd`, `s3`, or hybrid):
 - `local`: Host filesystem storage
@@ -272,7 +288,7 @@ Requires Linux with appropriate dependencies.
 
 ## Database Schema
 
-72 tables, the same on PostgreSQL and SQLite (`TestSchemaParity` proves it). Key tables:
+76 tables, the same on PostgreSQL and SQLite (`TestSchemaParity` proves it). Key tables:
 
 - **users**: User credentials (bcrypt hashed passwords)
 - **projects**: Projects/tenants
@@ -494,8 +510,12 @@ if requestedVersion == "" {
 - the operator's SQLite database file and a sibling `backups/` directory under the node storage root (`state_path` / `realMode.hostStoragePath`, default `/var/lib/lightstack`). **No schema change, no migration, no persisted data owned by the chart.** PostgreSQL is untouched except the backend-neutral ceiling check. (030-sqlite-backup-restore)
 - Go 1.27.3 (`go.mod`; the constitution requires 1.26+). Helm 3.12+ chart templates (Go `text/template` + Sprig), JSON Schema draft-07. Markdown. + `digitalocean/go-libvirt` at the pinned `v0.0.0-20260609165003-6254771e63a8` (`socket.Dialer`, `ConnectToURI`, `Disconnected()`); `golang.org/x/sync/singleflight` (already required, now direct); `gin`; `internal/health`; helm-unittest. **No new module.** (031-realmode-dns-libvirt-fixes)
 - nothing new. No database schema change, no migration. Node-local ownership only: `<state_path>/console-sockets` (as today) and `<state_path>/instances/<id>` (now ensured before every launch). (031-realmode-dns-libvirt-fixes)
+- Go 1.27.3 (`go.mod`). Markdown. + `gin`; `internal/database` over pgx/pgxpool and `modernc.org/sqlite`; `google/uuid`. In real mode: `iptables`/`ip6tables` and their `-restore` from Alpine's `iptables` package, `ip`/`ip netns` from iproute2, BusyBox `modprobe` for `br_netfilter`; the chart mounts the host's `/run/netns` (bidirectional) and `/lib/modules`. `gophercloud` v1.14.1 for contract tests. **No new module.** (033-sg-port-membership)
+- PostgreSQL or SQLite, chosen by `database.url`. Migration 084 (pair): `subnet_allocation_pools`, `subnets.pools_stored`, `ports.binding_host_id`, `networks.ct_zone`, `security_groups.revision_number` and `stateful`, one floating IP of a network per fixed IP (a unique index), the seeded `default`'s member rules. `server_security_groups` is retired, not dropped. Migration 085 (pair): group names may repeat, one `default` per project (a partial unique index), and an index on `security_groups (project_id, name)`; its SQLite file runs with foreign keys off. New setting `neutron.network_node` (033-sg-port-membership)
+- 034-drop-catalog-cache: the service catalog is no longer cached — `BuildServiceCatalog` reads `services` ⋈ `endpoints` on every token issue and validation, and Keystone holds no cache (`NewAuthService`, `keystone.NewService` and `BuildServiceCatalog` lose their cache parameter). Redis stays for flavors, images and networks. **No new module** (miniredis only in the RED step), no schema change, no migration, no API change.
 
 ## Recent Changes
+- 034-drop-catalog-cache: plan — remove the catalog cache instead of fixing it (#581's decision). Mostly deletion: cache read/write, `catalogCacheable`, the FR-031a key comments, Keystone's two cache fields and parameters, the dead Redis wiring in two compose files, two docs passages. RED is automated against an in-process Redis and leaves with the cache parameter; a cache-off test of Identity API endpoint writes → next token's catalog stays (SPEC-034 plan)
 - 028-sqlite-database-layer: plan — SQLite as a second backend behind a backend-neutral `internal/database` contract whose method sets mirror pgx's, so the 736 call sites change types only. PostgreSQL passes SQL through untouched; SQLite translates casts, `= ANY($n)`, `FOR UPDATE` and the console expiry, registers `now()`/`gen_random_uuid()`/no-op advisory locks, and converts times, JSON, lists and `[]byte` (a STRICT TEXT column refuses BLOBs). Ten rewrite sites, the same for both backends; `name ~` stays a database match (`REGEXP` on SQLite), as upstream's. Cinder creates reserve a `creating` row and build the backing outside any transaction (+ a per-node startup sweep); Nova gains a binding quota recheck under an advisory lock and answers **403** instead of 413 (with FR-036a's 400s, the two API changes). Probe-verified: deferred read-then-write hits `SQLITE_BUSY_SNAPSHOT` (517) → immediate transactions expected (SPEC-028 plan)
 - 025-followup: plan — SPEC-025's seven follow-ups (F1–F4, F6–F8), a pseudo-ticket on the same branch, **no new issue**. Same dominant finding as its parent: the shared thing exists and a caller bypasses it (`common.SQLFilter` + identity's filter pattern, `nova.CheckQuota`'s tx+row-lock, `common.BaseURL`'s host precedence, one already-shared quota resolution behind three views). Planning re-derived FR-019 from the code and found **eight** quota call sites across four files where the spec named two — three `INSERT INTO volumes` outside the shared provisioning routine, plus snapshots/backups/extend. Research (Context7, available again) turned up three things clarify could not know: `host` is **role-split** upstream so F7's refusal diverges two-sidedly, image-patch refusals are **403** not 400, and a request with **no** microversion header resolves to upstream's *minimum* where Lightstack uses its *maximum* — a third Article I deviation, pre-existing, which caps US6 to clients that negotiate explicitly. No migration, no new setting; cost sits in negative tests (every defect answers 2xx today) (SPEC-025-followup plan)
 - 025-nova-gaps-client-discovery: plan — ten defects in two families (discovery self-links + compute answers that look successful). Dominant finding: **the right shape already exists and one caller ignores it** — `common.BaseURL` (5 services bypass it), `nova.targetInstance` (the action table already passes the resolved id; 17 handlers discard it and re-read the raw param), two accepted reconcilers to copy, and both halves of boot-from-volume. So: broad but shallow, **no new Go modules**, 2 small reversible migrations. Genuinely new: the self-heal of a missing libvirt guest (rebuildable from stored state — the blocker is that the `VMSpec` assembly is inline in a goroutine) and an upstream `fault` field. **B12's root cause stays open on purpose** — the chosen fix is correct whatever it turns out to be (SPEC-025 plan)

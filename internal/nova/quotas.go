@@ -520,7 +520,7 @@ type quotaRequest struct {
 // defaults has no quotas row a FOR UPDATE could lock, and that is the common case. On
 // SQLite the lock is a no-op, and immediate transactions serialise the check instead.
 func checkQuotaLocked(ctx context.Context, tx database.Tx, projectID string, wants []quotaRequest) error {
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "nova_quota:"+projectID); err != nil {
+	if err := database.AdvisoryLock(ctx, tx, "nova_quota:"+projectID); err != nil {
 		return fmt.Errorf("locking the compute quota of project %s: %w", projectID, err)
 	}
 	var overs []quotaOverage

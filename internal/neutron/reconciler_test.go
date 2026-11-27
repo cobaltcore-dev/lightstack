@@ -34,40 +34,33 @@ func TestPollIntervalReportsTheEffectiveValue(t *testing.T) {
 	}
 }
 
-// TestApplyDHCPForNetworkTellsUnreadFromAbsent — a network whose subnet could not be read is not a
-// network without one. applyDHCPForNetwork used to answer both with two empty strings, so the
-// reconciler left an unread network out of the set it prunes metadata redirects against and deleted
-// a live network's redirect on a transient read error. Both cases return before any host call, which
-// is why a non-stub Service with nothing but a pool is enough here.
-func TestApplyDHCPForNetworkTellsUnreadFromAbsent(t *testing.T) {
+// TestReadDHCPStateTellsUnreadFromAbsent — a network whose records could not be read is not a network
+// without DHCP. Reading both as "nothing to serve" would converge a live network's DHCP away on a
+// transient read error, taking DHCP and metadata from its guests.
+func TestReadDHCPStateTellsUnreadFromAbsent(t *testing.T) {
 	requireDB(t)
-	svc := &Service{pool: testPool, mode: "iptables"}
 
-	t.Run("no DHCP-enabled subnet is nothing to do", func(t *testing.T) {
-		bridge, addr, err := svc.applyDHCPForNetwork(context.Background(), absentID, false)
-		if bridge != "" || addr != "" || err != nil {
-			t.Fatalf("= (%q, %q, %v), want (\"\", \"\", nil)", bridge, addr, err)
+	t.Run("no DHCP port is nothing to serve", func(t *testing.T) {
+		_, found, err := readDHCPState(context.Background(), testPool, absentID, nil)
+		if found || err != nil {
+			t.Fatalf("= (found %v, %v), want (false, nil)", found, err)
 		}
 	})
 
 	t.Run("a failed read is an error", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		bridge, addr, err := svc.applyDHCPForNetwork(ctx, absentID, false)
-		if err == nil {
-			t.Fatal("a read that failed returned no error — the reconciler would prune this network's redirect")
-		}
-		if bridge != "" || addr != "" {
-			t.Errorf("= (%q, %q), want nothing asserted", bridge, addr)
+		if _, _, err := readDHCPState(ctx, testPool, absentID, nil); err == nil {
+			t.Fatal("a read that failed returned no error — the unit would converge this network's DHCP away")
 		}
 	})
 }
 
-// TestPruneDeletedNetworksKeepsWhatAReadCanSee — the prune removes the bridge and the DHCP server of a
-// network the database no longer has, and nothing of one it has. It lists the host state first and
-// reads the networks after, so a network created while a pass runs is in the read; the pass used to
-// read once up front, and a network created between that read and the prune lost both right after
-// its 201. That interleaving cannot be forced here; the contract around it can.
+// TestPruneDeletedNetworksKeepsWhatAReadCanSee — the prune removes the bridge of a network the database
+// no longer has, and not one it has. It lists the bridges first and reads the networks after, so a
+// network created while a pass runs is in the read; the pass used to read once up front, and a network
+// created between that read and the prune lost its bridge right after its 201. That interleaving
+// cannot be forced here; the contract around it can.
 func TestPruneDeletedNetworksKeepsWhatAReadCanSee(t *testing.T) {
 	requireDB(t)
 	svc := NewService(testPool, "stub", nil)
@@ -77,66 +70,14 @@ func TestPruneDeletedNetworksKeepsWhatAReadCanSee(t *testing.T) {
 	gone := uuid.NewString() // a network with no row: deleted, as far as the host can tell
 	for _, id := range []string{live, gone} {
 		plantStubBridge(t, svc, id)
-		markDHCPServing(t, svc, id)
 	}
 
 	r.pruneDeletedNetworks(context.Background())
 
-	if !hasStubBridge(t, svc, "br-"+live[:8]) || !svc.dhcpManager.IsRunning(live) {
-		t.Errorf("an existing network lost its host state: bridge=%v dhcp=%v",
-			hasStubBridge(t, svc, "br-"+live[:8]), svc.dhcpManager.IsRunning(live))
+	if !hasStubBridge(t, svc, "br-"+live[:8]) {
+		t.Error("an existing network lost its bridge")
 	}
-	if hasStubBridge(t, svc, "br-"+gone[:8]) || svc.dhcpManager.IsRunning(gone) {
-		t.Errorf("a deleted network kept its host state: bridge=%v dhcp=%v",
-			hasStubBridge(t, svc, "br-"+gone[:8]), svc.dhcpManager.IsRunning(gone))
-	}
-}
-
-// TestDesiredRedirectsNowAddsNetworksTheEnumerationMissed — the metadata DNAT prune compares the
-// listed rules with what this returns, called after the listing. A network whose DHCP subnet was
-// created after the pass enumerated them, and whose handler has added its redirect since, is not in
-// the pass's own map; without this read its fresh rule was pruned. The pass's entries are kept as
-// they are, and the added address is the one applyDHCPForNetwork derives.
-func TestDesiredRedirectsNowAddsNetworksTheEnumerationMissed(t *testing.T) {
-	requireDB(t)
-	svc := &Service{pool: testPool, mode: "iptables"}
-
-	inPass := seedNetwork(t, "spec024-redirect-pass-"+uuid.NewString()[:8])
-	seedDHCPSubnet(t, inPass, "spec024-redirect-pass", "10.70.0.0/24")
-	missed := seedNetwork(t, "spec024-redirect-missed-"+uuid.NewString()[:8])
-	seedDHCPSubnet(t, missed, "spec024-redirect-missed", "10.71.0.0/24")
-	noDHCP := seedNetwork(t, "spec024-redirect-nodhcp-"+uuid.NewString()[:8])
-	seedSubnet(t, noDHCP, "spec024-redirect-nodhcp", "10.72.0.0/24", nil, 4, false)
-	// Two DHCP subnets: the redirect follows the first one created, as applyDHCPForNetwork's.
-	two := seedNetwork(t, "spec028-redirect-two-"+uuid.NewString()[:8])
-	later := seedDHCPSubnet(t, two, "spec028-redirect-later", "10.74.0.0/24")
-	first := seedDHCPSubnet(t, two, "spec028-redirect-first", "10.73.0.0/24")
-	created := time.Now().UTC().Add(-time.Hour)
-	for i, id := range []string{first, later} {
-		if _, err := testPool.Exec(context.Background(), "UPDATE subnets SET created_at = $1 WHERE id = $2",
-			created.Add(time.Duration(i)*time.Minute), id); err != nil {
-			t.Fatalf("order subnets: %v", err)
-		}
-	}
-
-	pass := map[string]string{"br-" + inPass[:8]: "10.70.0.99"}
-	want, err := svc.desiredRedirectsNow(context.Background(), pass)
-	if err != nil {
-		t.Fatalf("desiredRedirectsNow: %v", err)
-	}
-	if got := want["br-"+inPass[:8]]; got != "10.70.0.99" {
-		t.Errorf("the pass's own entry = %q, want it kept as 10.70.0.99", got)
-	}
-	if got := want["br-"+missed[:8]]; got != "10.71.0.1" {
-		t.Errorf("the missed network's redirect = %q, want 10.71.0.1 (its gatewayless subnet's first host)", got)
-	}
-	if got := want["br-"+two[:8]]; got != "10.73.0.1" {
-		t.Errorf("a network with two DHCP subnets got %q, want 10.73.0.1 (its first subnet's first host)", got)
-	}
-	if _, ok := want["br-"+noDHCP[:8]]; ok {
-		t.Errorf("a network without a DHCP-enabled subnet got a redirect")
-	}
-	if len(pass) != 1 {
-		t.Errorf("the pass's map was modified: %v", pass)
+	if hasStubBridge(t, svc, "br-"+gone[:8]) {
+		t.Error("a deleted network kept its bridge")
 	}
 }

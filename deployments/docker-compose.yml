@@ -24,24 +24,6 @@ services:
     networks:
       - lightstack-network
 
-  # Redis Cache (optional - for performance optimization)
-  redis:
-    image: redis:7-alpine
-    container_name: lightstack-redis
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - lightstack-network
-    restart: unless-stopped
-
   # Lightstack OpenStack-Compatible Cloud
   lightstack:
     build:
@@ -50,8 +32,6 @@ services:
     container_name: lightstack
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     ports:
       - "35357:35357" # Keystone (Identity)
@@ -62,8 +42,6 @@ services:
       - "8775:8775" # Metadata Service
     environment:
       LIGHTSTACK_DB_URL: "postgres://${POSTGRES_USER:-lightstack}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-lightstack}?sslmode=disable"
-      LIGHTSTACK_REDIS_URL: "redis://redis:6379/0"
-      LIGHTSTACK_CACHE_ENABLED: "true"
       LIGHTSTACK_JWT_SECRET: "${LIGHTSTACK_JWT_SECRET:-change-me-in-production}"
       LIGHTSTACK_ENDPOINT_HOST: "localhost" # Use localhost for service catalog URLs (accessible from host)
       # Why this exists: tests run outside any guest, so they name the instance they ask
@@ -123,8 +101,6 @@ services:
 
 volumes:
   postgres_data:
-    driver: local
-  redis_data:
     driver: local
   horizon_static:
     driver: local

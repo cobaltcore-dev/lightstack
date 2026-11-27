@@ -6,29 +6,35 @@ Lightstack supports three networking modes, each with different performance char
 
 1. **Stub Mode** - Testing and development (no kernel dependencies)
 2. **IPTables Mode** - Traditional Linux networking with iptables security groups
-3. **eBPF Mode** - Modern high-performance networking with eBPF security groups
+3. **eBPF Mode** - accepted as configuration; today it behaves exactly as IPTables mode (`docs/EBPF_STATUS.md`)
 
 ## Architecture
 
-All three modes share the same basic structure but differ in implementation:
+The real modes share one layout, upstream's for a network node (SPEC-033); stub mode programs none of
+it:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  Networking Layer                        │
-├─────────────────────────────────────────────────────────┤
-│  Network Namespaces (per project)                       │
-│  Linux Bridges (per network)                            │
-│  TAP Devices (per VM interface)                         │
-│  DHCP (dnsmasq per network)                             │
-└─────────────────────────────────────────────────────────┘
-                         ↓
-         ┌───────────────┼────────────────┐
-         ↓               ↓                ↓
-    Stub Mode      IPTables Mode      eBPF Mode
-    (Simulated)    (iptables rules)   (BPF programs)
+ every node                                   the network node, besides
+ ┌──────────────────────────────────────┐     ┌───────────────────────────────────────────┐
+ │ br-<network[:8]> per network,         │     │ qrouter-<router> per router:              │
+ │   no address                          │     │   qg- leg to the host (gateway, floating  │
+ │ the guests' TAPs, tap<port[:11]>,     │     │   addresses, NAT), qr- leg per interface  │
+ │   libvirt's                           │     │   on its network's bridge                 │
+ │ vxlan-<network[:8]> per network       │     │ qdhcp-<network> per network with DHCP:    │
+ │   (multi-node)                        │     │   dnsmasq, the metadata listener          │
+ │ the chains of the ports bound to it   │     │ proxy ARP on the uplink for the routers'  │
+ │   (ls-i/ls-o/ls-s per port)           │     │   and floating addresses                  │
+ └──────────────────────────────────────┘     └───────────────────────────────────────────┘
 ```
 
-**Key Insight**: Stub, IPTables, and eBPF modes use the same networking infrastructure. They only differ in how security groups are implemented.
+A request that changes host state stores it, then has the node holding that state apply it before the
+answer: the network node for routers, DHCP and floating IPs, a port's node for its chains — a function
+call on that node itself, an authenticated one-second HTTP call otherwise (`/internal/v1/converge`).
+When that fails, the change is undone and the request answers `500`. Each node's reconciler converges
+what it holds to the records, both ways.
+
+**Key Insight**: IPTables and eBPF modes are the same today: the ports' iptables chains enforce security
+groups in both (see `docs/EBPF_STATUS.md`).
 
 ---
 
@@ -95,69 +101,53 @@ sudo dnf install -y iproute iptables bridge-utils dnsmasq
 
 ### How It Works
 
-1. **Layer-2 Isolation via One Bridge per Network**
+1. **A bridge per network, on every node**, `br-<network id[:8]>`, holding no address. Isolation comes
+   from the bridge. Bridges, the guests' TAPs and the VXLAN devices live in the namespace Lightstack
+   itself runs in, because libvirt has to reach them there.
 
-   Isolation comes from the bridge, not from a namespace per project. Everything below runs in the
-   namespace Lightstack itself runs in, because libvirt has to reach the bridges and TAPs there
-   (SPEC-024 / cloud-storage#546 F10). Lightstack no longer creates `light-ns-<project_id>` at all.
+2. **The guest's TAP is libvirt's**, named `tap<port id[:11]>` in the domain, as upstream names it, so
+   the firewall knows which port a TAP is. Nova binds the port to the node (`binding:host_id`) and has
+   its chains in force before the guest starts.
 
-   ```bash
-   ip link add br-<network_id> type bridge
-   ip link set br-<network_id> up
-   ```
+3. **DHCP and metadata on the network node**: per network with DHCP, a namespace `qdhcp-<network id>`
+   holding the network's DHCP port's addresses and `169.254.169.254`, its leg `ld-…` on the bridge; one
+   dnsmasq inside, with static ranges, so only ports with a reservation get a lease, and option 121
+   routing the metadata address to the DHCP address. Lightstack serves metadata in the namespace itself
+   and identifies a guest by its network and address.
 
-2. **TAP Devices for VMs**
-   ```bash
-   # Create TAP for each VM interface
-   ip tuntap add tap-<port_id> mode tap
-   ip link set tap-<port_id> master br-<network_id>
-   ```
+4. **Routers on the network node**: per router, a namespace `qrouter-<router id>`. Its gateway leg
+   `qg-…`/`lg-…` holds the gateway's and the floating addresses; an interface leg `qr-…`/`lr-…` per
+   subnet joins that network's bridge with the subnet's gateway address. Floating-IP DNAT and SNAT, the
+   router's SNAT and port forwardings are iptables rules inside the namespace. On the host, the router's
+   and floating addresses are routed to `lg-…` and answered for on the uplink by proxy ARP.
 
-3. **DHCP with dnsmasq**
-   ```bash
-   # One dnsmasq per network
-   dnsmasq \
-     --interface=br-<network_id> \
-     --dhcp-range=192.168.1.10,192.168.1.200,24h
-   ```
+5. **The port firewall, on each port's node**, as upstream's iptables driver: `ls-filter-top` from
+   `FORWARD` and `INPUT`, a `physdev` dispatch per TAP to the port's chains `ls-i<port[:10]>` (ingress),
+   `ls-o<port[:10]>` (egress) and `ls-s<port[:10]>` (its addresses with its MAC), one `RETURN` per rule
+   of its groups, remote groups resolved to their members' addresses, replies by connection tracking —
+   one zone per network, so overlapping CIDRs do not mix — and everything else dropped. A TAP without a
+   bound port is dropped; the router and DHCP legs are trusted. Changes go in one `iptables-restore`
+   and one `ip6tables-restore` per node.
 
-4. **Security Groups with iptables**
-   ```bash
-   # Create chain per security group
-   iptables -t filter -N lightstack-SG-<sg_id>
-   iptables -t filter -A lightstack-SG-<sg_id> -j DROP  # Default deny
-
-   # Add rules
-   iptables -t filter -I lightstack-SG-<sg_id> 1 -p tcp --dport 22 -j ACCEPT
-   iptables -t filter -I lightstack-SG-<sg_id> 1 -p icmp -j ACCEPT
-   ```
-
-### Performance
-- **Throughput**: Good (near line-rate for most workloads)
-- **Latency**: Low (userspace iptables processing adds ~10-50μs)
-- **Connection Rate**: Moderate (thousands of new connections/sec)
-- **CPU Usage**: Low to moderate (scales with connection count)
+Needed on the node: `ip` (iproute2), `iptables` and `ip6tables` with their `-save`/`-restore`, the
+`br_netfilter` module (Lightstack loads it and sets `net.bridge.bridge-nf-call-iptables` and
+`-ip6tables` to `1`; readiness fails while they do not hold), the `physdev`, `conntrack` and `comment`
+matches, and, on the network node, `dnsmasq`.
 
 ### Pros
-- Well-understood and debugged
-- Works on all Linux kernels
-- Extensive tooling (iptables-save, iptables-restore)
-- Easy to troubleshoot
+- Upstream's iptables driver's chains: well understood, and inspectable with `iptables-save`
+- Works on every kernel with `br_netfilter`, `physdev`, `conntrack` and `comment`
+- One `iptables-restore` and one `ip6tables-restore` per node per change
 
 ### Cons
-- Userspace processing adds latency
-- Not as performant as eBPF for high packet rates
-- Security group updates require iptables chain modifications
+- A large number of ports and rules makes long chains; Lightstack publishes no benchmark
 
 ---
 
 ## Mode 3: eBPF Mode
 
 ### Purpose
-- High-performance production deployments
-- Low-latency requirements
-- High packet rate scenarios (millions of pps)
-- Modern Linux environments
+Reserved for an eBPF dataplane. Today it is IPTables mode under another name.
 
 ### Configuration
 ```yaml
@@ -165,140 +155,19 @@ neutron:
   networking_mode: ebpf
 ```
 
-### Requirements
+### Requirements, behaviour and performance
 
-**System:**
-- Linux kernel 4.18+ (5.10+ recommended for best eBPF features)
-- `ip` command (iproute2 package)
-- `bpftool` command
-- Root or CAP_NET_ADMIN + CAP_BPF privileges
-- BTF (BPF Type Format) support in kernel
-
-**Packages (Ubuntu 22.04+):**
-```bash
-sudo apt-get install -y iproute2 linux-tools-common linux-tools-generic bpftool
-```
-
-**Packages (Fedora 36+):**
-```bash
-sudo dnf install -y iproute bpftool
-```
-
-**Kernel Configuration:**
-Verify eBPF support:
-```bash
-# Check kernel version
-uname -r  # Should be 4.18+
-
-# Check eBPF features
-zgrep CONFIG_BPF /proc/config.gz | grep -E '(BPF|XDP)'
-# Should show:
-# CONFIG_BPF=y
-# CONFIG_BPF_SYSCALL=y
-# CONFIG_XDP_SOCKETS=y
-```
-
-### How It Works
-
-1. **Bridge per Network** (same as iptables mode)
-   ```bash
-   ip link add br-<network_id> type bridge
-   ```
-
-2. **TAP Devices** (same as iptables mode)
-   ```bash
-   ip tuntap add tap-<port_id> mode tap
-   ip link set tap-<port_id> master br-<network_id>
-   ```
-
-3. **DHCP** (same as iptables mode)
-   ```bash
-   dnsmasq --interface=br-<network_id> ...
-   ```
-
-4. **Security Groups with eBPF**
-   ```bash
-   # Compile and load eBPF program
-   clang -O2 -target bpf -c security_group.c -o security_group.o
-
-   # Attach to TC (traffic control) ingress/egress
-   tc qdisc add dev tap-<port_id> clsact
-   tc filter add dev tap-<port_id> ingress bpf direct-action obj security_group.o sec ingress
-   tc filter add dev tap-<port_id> egress bpf direct-action obj security_group.o sec egress
-   ```
-
-**eBPF Program Structure:**
-```c
-// security_group.c
-#include <linux/bpf.h>
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <linux/tcp.h>
-
-SEC("ingress")
-int sg_ingress(struct __sk_buff *skb) {
-    // Parse packet headers in kernel space
-    // Check against security group rules in BPF map
-    // Return TC_ACT_OK (allow) or TC_ACT_SHOT (drop)
-
-    // Example: Allow TCP port 22
-    struct ethhdr *eth = bpf_skb_load_bytes(skb, 0, sizeof(*eth));
-    if (eth->h_proto == htons(ETH_P_IP)) {
-        struct iphdr *ip = bpf_skb_load_bytes(skb, sizeof(*eth), sizeof(*ip));
-        if (ip->protocol == IPPROTO_TCP) {
-            struct tcphdr *tcp = bpf_skb_load_bytes(skb, ...);
-            if (ntohs(tcp->dest) == 22) {
-                return TC_ACT_OK;  // Allow SSH
-            }
-        }
-    }
-    return TC_ACT_SHOT;  // Default drop
-}
-```
-
-### Performance
-- **Throughput**: Excellent (10-40% better than iptables)
-- **Latency**: Ultra-low (kernel-space processing, ~1-5μs overhead)
-- **Connection Rate**: Very high (millions of new connections/sec)
-- **CPU Usage**: Very low (in-kernel processing, no context switches)
-
-### Pros
-- Kernel-space packet filtering (no userspace overhead)
-- Extremely fast (orders of magnitude faster than iptables for complex rules)
-- Dynamic rule updates without packet loss
-- Low CPU usage even under high load
-- Modern, future-proof technology
-
-### Cons
-- Requires newer kernels (4.18+, best on 5.10+)
-- More complex to debug (requires bpftool, kernel tracing)
-- Smaller community compared to iptables
-- Requires eBPF program compilation
+Exactly as IPTables mode: the ports' iptables chains enforce security groups (SPEC-033 FR-047), so the node
+needs what IPTables mode needs and nothing more — no `bpftool`, no BTF — and the two modes perform alike. The
+eBPF filter attached to a TAP Neutron itself made; that TAP is gone, and the filter is not wired to
+libvirt's. See `docs/EBPF_STATUS.md`.
 
 ---
 
-## Performance Comparison
+## Performance
 
-### Packet Processing Latency
-| Mode      | Latency (μs) | Notes                               |
-|-----------|--------------|-------------------------------------|
-| Stub      | N/A          | No actual packet processing         |
-| IPTables  | 10-50        | Userspace iptables processing       |
-| eBPF      | 1-5          | Kernel-space BPF processing         |
-
-### Throughput (10 Gbps NIC)
-| Mode      | Throughput   | Packet Rate   |
-|-----------|--------------|---------------|
-| Stub      | N/A          | N/A           |
-| IPTables  | 8-9 Gbps     | 1-2M pps      |
-| eBPF      | 9.5-9.8 Gbps | 5-10M pps     |
-
-### CPU Overhead (at 5 Gbps)
-| Mode      | CPU Usage | Notes                           |
-|-----------|-----------|----------------------------------|
-| Stub      | 0%        | No processing                   |
-| IPTables  | 15-25%    | Per core, scales with rules     |
-| eBPF      | 3-8%      | Per core, minimal scaling       |
+The real modes enforce through the same iptables chains, so they perform alike. Lightstack publishes no
+benchmark of either.
 
 ---
 
@@ -332,24 +201,8 @@ EOF
 sudo systemctl start lightstack
 ```
 
-### Example 3: High-Performance on Ubuntu 24.04 (eBPF Mode)
-```bash
-# Install dependencies
-sudo apt-get update
-sudo apt-get install -y iproute2 linux-tools-generic bpftool clang llvm
-
-# Verify kernel version
-uname -r  # Should be 5.15+ or 6.x
-
-# Configure lightstack
-cat > /etc/lightstack/lightstack.yaml <<EOF
-neutron:
-  networking_mode: ebpf
-EOF
-
-# Run lightstack with systemd
-sudo systemctl start lightstack
-```
+### Example 3: eBPF Mode
+`networking_mode: ebpf` needs exactly what Example 2 installs, and behaves as IPTables mode.
 
 ---
 
@@ -391,20 +244,8 @@ openstack network create test-network
 ip link show type bridge | grep br-
 ```
 
-### Test eBPF Mode (Linux 4.18+ only)
-```bash
-# Start lightstack
-sudo go run cmd/lightstack/main.go --config config/lightstack.yaml
-
-# Create network
-openstack network create test-network
-
-# Verify eBPF programs loaded
-sudo bpftool prog list | grep lightstack
-
-# Verify TC filters
-sudo tc filter show dev tap-<port_id> ingress
-```
+### Test eBPF Mode
+As IPTables mode: the same bridge, and the same port chains (`iptables-save | grep -- '-A ls-'`).
 
 ---
 
@@ -413,16 +254,19 @@ sudo tc filter show dev tap-<port_id> ingress
 ### Common Issues
 
 **Issue**: `exec: "ip": executable file not found`
-- **Cause**: Running iptables/eBPF mode on non-Linux OS
+- **Cause**: Running iptables or eBPF mode on a non-Linux OS
 - **Solution**: Use stub mode for development, or deploy on Linux
 
-**Issue**: `failed to initialize iptables`
-- **Cause**: Missing iptables package or insufficient permissions
-- **Solution**: Install iptables, run with sudo
+**Issue**: `/readyz` answers `503` with `bridge-netfilter unavailable`; the log says `bridge netfilter not in force`
+- **Cause**: `br_netfilter` is not loaded, or `net.bridge.bridge-nf-call-iptables` or `-ip6tables` is not `1`.
+  Lightstack sets both at start when it can: it needs `/lib/modules` and the privilege to load the module
+- **Solution**: On the host, `modprobe br_netfilter` and
+  `sysctl -w net.bridge.bridge-nf-call-iptables=1 net.bridge.bridge-nf-call-ip6tables=1`
 
-**Issue**: `failed to load eBPF program`
-- **Cause**: Kernel too old or missing eBPF support
-- **Solution**: Upgrade to Linux 4.18+, enable CONFIG_BPF in kernel
+**Issue**: `exec: "iptables-restore": executable file not found` (or `iptables-save`, `ip6tables-restore`,
+`ip6tables-save`)
+- **Cause**: Missing iptables package
+- **Solution**: Install iptables with its `-save`/`-restore` tools for IPv4 and IPv6, and run as root
 
 **Issue**: `permission denied` when creating namespace
 - **Cause**: Insufficient privileges
@@ -437,23 +281,15 @@ sudo tc filter show dev tap-<port_id> ingress
 - Running CI/CD tests
 - Don't need actual networking
 
-**Choose IPTables Mode if:**
-- Running on Linux kernel <4.18
-- Need maximum compatibility
-- Prefer battle-tested technology
-- Have moderate performance requirements
+**Choose IPTables Mode** for every real deployment.
 
-**Choose eBPF Mode if:**
-- Running on Linux kernel 4.18+
-- Need maximum performance
-- Have high packet rate requirements
-- Building for the future
+**eBPF Mode** gives nothing beyond IPTables mode today.
 
 ---
 
 ## Future Enhancements
 
-### Planned for eBPF Mode
+### Not started: an eBPF dataplane
 - [ ] XDP (eXpress Data Path) support for even faster processing
 - [ ] BPF map-based rule updates (no program reload needed)
 - [ ] Per-connection state tracking in BPF maps

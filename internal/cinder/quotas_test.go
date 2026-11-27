@@ -173,7 +173,8 @@ func TestBackupUsageIsCounted(t *testing.T) {
 	// And the usage view must agree, on every resource — not just the pair that was
 	// hardcoded. An assertion that only checks the keys are present would pass with every
 	// in_use stuck at 0, which is the defect this whole test exists for.
-	_, detBody := doReq(r, http.MethodGet, "/v3/quota-sets/"+projectID+"?usage=true", "", hdr)
+	// usage=yes is upstream's true as much as usage=true is (SPEC-033 T197).
+	_, detBody := doReq(r, http.MethodGet, "/v3/quota-sets/"+projectID+"?usage=yes", "", hdr)
 	det := cinderQuotaSet(t, detBody)
 	_, limBody = doReq(r, http.MethodGet, "/v3/limits", "", hdr)
 	abs = cinderAbsolute(t, limBody)

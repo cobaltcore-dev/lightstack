@@ -211,6 +211,12 @@ This guide covers scaling Lightstack from a single demonstration node to a produ
 - Storage: 192.168.30.0/24 (Ceph backend)
 - External: 192.168.1.0/24 (floating IPs)
 
+One node is the **network node** (`neutron.network_node`): it holds every router and every network's
+DHCP, and it alone answers ARP for the routers' and floating addresses on its uplink (SPEC-033). Its
+uplink must be on the external network, and the floating range must reach it: on a LAN its ARP answers
+do that; where an underlay delivers only the addresses assigned to a node — a cloud provider's network,
+most routed fabrics — allow the floating range for the network node there.
+
 ### Step 1: Prepare All Nodes
 
 **On all nodes**:
@@ -250,13 +256,12 @@ sudo tee -a /etc/hosts <<EOF
 192.168.10.33   ceph3
 EOF
 
-# Enable IP forwarding
+# Enable IP forwarding. Lightstack loads br_netfilter and sets net.bridge.bridge-nf-call-iptables
+# and -ip6tables itself at start, and its readiness fails while they do not hold.
 sudo tee -a /etc/sysctl.conf <<EOF
 net.ipv4.ip_forward=1
 net.ipv4.conf.all.forwarding=1
 net.ipv6.conf.all.forwarding=1
-net.bridge.bridge-nf-call-iptables=1
-net.bridge.bridge-nf-call-ip6tables=1
 EOF
 
 sudo sysctl -p

@@ -161,6 +161,22 @@ FR-006/006a/007/007a/008b/012e/018.
 {{- fail "\n\nSQLite requires a single-node pin (SPEC-029 FR-008): set nodeSelector with a non-empty kubernetes.io/hostname (e.g. nodeSelector: { kubernetes.io/hostname: <node> }), or an affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution whose every nodeSelectorTerm constrains kubernetes.io/hostname (or metadata.name via matchFields) with operator In to the SAME single node. A group selector such as kubernetes.io/os: linux, a required affinity that allows more than one node (multiple hostnames, differing terms, or no hostname constraint), a soft (preferred) affinity, or no pin at all does not bind the pod to one node: a rescheduled pod would find an empty directory and SQLite would start a fresh database there while the data stays on the old node, and the teardown purge Job could run on a different node from the database.\n" -}}
 {{-   end -}}
 {{- end -}}
+{{- /* Multi-node is VXLAN with one named network node (SPEC-033 FR-033). Without VXLAN every node is its
+       own network node, each holding every router and DHCP and answering ARP for every floating address,
+       and no node keeps the registry the node-to-node call needs, so a change to ports bound on two nodes
+       answers 500. Stub mode binds ports and makes that call too, so the refusal is not real mode's
+       alone (T242). With VXLAN the binary refuses to start without the network node's name: the render
+       refuses it first, so no release crash-loops on it. Both settings go into the configuration the
+       chart renders; with secrets.existingSecret the operator's own is used, which the chart never sees
+       (T243). Last, so a release wrong in another way is told that first. */ -}}
+{{- if and (eq .Values.deploymentMode "multi-node") (not .Values.secrets.existingSecret) -}}
+{{-   if not .Values.multiNode.vxlanEnabled -}}
+{{- fail "\n\nmulti-node requires multiNode.vxlanEnabled (SPEC-033 FR-033): without VXLAN every node is its own network node, so each holds every router and DHCP and answers ARP for every floating IP, and the nodes keep no registry to reach one another, so a change to ports bound on two nodes fails. Keep multiNode.vxlanEnabled: true, or use deploymentMode: single-node.\n" -}}
+{{-   end -}}
+{{-   if not (trim .Values.neutron.networkNode) -}}
+{{- fail "\n\nmulti-node with multiNode.vxlanEnabled requires neutron.networkNode (SPEC-033 FR-033): name the node that holds every router and DHCP namespace, by its Kubernetes node name, which the chart passes as LIGHTSTACK_NODE_NAME. Lightstack refuses to start without it.\n" -}}
+{{-   end -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -267,6 +283,7 @@ neutron:
   networking_mode: {{ .Values.neutron.networkingMode | quote }}
   security_group_mode: {{ .Values.neutron.securityGroupMode | quote }}
   vxlan_enabled: {{ if eq .Values.deploymentMode "multi-node" }}{{ .Values.multiNode.vxlanEnabled }}{{ else }}false{{ end }}
+  network_node: {{ .Values.neutron.networkNode | quote }}
 cinder:
   port: 8776
   storage_mode: {{ .Values.cinder.storageMode | quote }}
@@ -477,7 +494,9 @@ initContainers:
   # Real-mode node-local storage: the host-storage hostPath is DirectoryOrCreate, so it
   # materializes only the base dir and shadows the image's pre-created subdirs. Pre-create
   # the per-service subdirs here (before Lightstack starts) so a fresh deploy boots a VM with no
-  # manual mkdir (SPEC-011 / cloud-storage#510). Subdir list mirrors pkg/paths/paths.go.
+  # manual mkdir (SPEC-011 / cloud-storage#510). Subdir list mirrors pkg/paths/paths.go. The
+  # database directory only for SQLite, and the one database.url names: PostgreSQL has none
+  # on the node, and nothing would remove an empty one (T245).
   - name: init-host-storage
     image: {{ include "lightstack.image" . }}
     imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -493,7 +512,9 @@ initContainers:
         "{{ .Values.realMode.hostStoragePath }}/dhcp"
         "{{ .Values.realMode.hostStoragePath }}/console-tokens"
         "{{ .Values.realMode.hostStoragePath }}/console-sockets"
-        "{{ .Values.realMode.hostStoragePath }}/db"
+        {{- if include "lightstack.sqliteEnabled" . }}
+        "{{ dir (trimPrefix "sqlite://" .Values.database.url) }}"
+        {{- end }}
     volumeMounts:
       - name: host-storage
         mountPath: {{ .Values.realMode.hostStoragePath }}
@@ -508,7 +529,8 @@ containers:
     command: ["/app/lightstack", "--config", "/app/config/lightstack.yaml"]
     {{- if .Values.realMode.enabled }}
     securityContext:
-      privileged: {{ .Values.realMode.privileged }}
+      # Bidirectional propagation of /run/netns is allowed to privileged containers only (SPEC-033 FR-036).
+      privileged: true
     {{- end }}
     env:
       # The name block-storage reservations are recorded under (SPEC-028 FR-033). Without
@@ -592,6 +614,16 @@ containers:
         mountPath: {{ dir .Values.realMode.libvirtSocketPath }}
       - name: host-storage
         mountPath: {{ .Values.realMode.hostStoragePath }}
+      # The host's network namespaces, both ways: the routers' and the networks' DHCP namespaces
+      # Lightstack makes are the host's, so they and the traffic through them outlive the pod (SPEC-033
+      # FR-036, R35). Bidirectional propagation needs the privileged container real mode requires.
+      - name: host-netns
+        mountPath: /run/netns
+        mountPropagation: Bidirectional
+      # For `modprobe br_netfilter` at start (FR-046).
+      - name: kernel-modules
+        mountPath: /lib/modules
+        readOnly: true
       {{- end }}
     {{- with .Values.resources }}
     resources:
@@ -625,6 +657,14 @@ volumes:
     hostPath:
       path: {{ .Values.realMode.hostStoragePath }}
       type: DirectoryOrCreate
+  - name: host-netns
+    hostPath:
+      path: /run/netns
+      type: DirectoryOrCreate
+  - name: kernel-modules
+    hostPath:
+      path: /lib/modules
+      type: Directory
   {{- if .Values.realMode.legacyStatePath }}
   - name: legacy-state
     hostPath:

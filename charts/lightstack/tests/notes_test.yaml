@@ -19,6 +19,7 @@ tests:
   - it: multi-node points rollout status at the DaemonSet
     set:
       deploymentMode: multi-node
+      neutron.networkNode: node-a
     asserts:
       - matchRegexRaw:
           pattern: "rollout status ds/"
@@ -32,3 +33,42 @@ tests:
           pattern: "NON-AUTHORITATIVE"
       - matchRegexRaw:
           pattern: "CONTRACT\\.md"
+  # SPEC-033 FR-035, T178: the network node translates the floating addresses and answers ARP for them on
+  # its uplink, so the pool goes to that node only; announcing it from the other nodes, as the earlier
+  # MetalLB recipe did, competes with those answers.
+  - it: sends the floating-IP pool to the network node only
+    set:
+      realMode.enabled: true
+      realMode.floatingIpPool: 192.0.2.128/25
+    asserts:
+      - matchRegexRaw:
+          pattern: "network node answers ARP for them"
+      - notMatchRegexRaw:
+          pattern: "routed to the nodes|MetalLB"
+  # SPEC-033 FR-033, T242: in multi-node the note names the network node. With secrets.existingSecret
+  # the name lives in the operator's configuration, which the chart never reads, so it names none rather
+  # than an empty pair of brackets.
+  - it: names the multi-node network node in the floating-IP note
+    set:
+      deploymentMode: multi-node
+      neutron.networkNode: node-a
+      realMode.enabled: true
+      realMode.floatingIpPool: 192.0.2.128/25
+      glance.storageMode: s3
+      cinder.storageMode: rbd
+    asserts:
+      - matchRegexRaw:
+          pattern: "the network node \\(node-a\\)"
+  - it: names no network node it does not know
+    set:
+      deploymentMode: multi-node
+      secrets.existingSecret: my-lightstack-config
+      realMode.enabled: true
+      realMode.floatingIpPool: 192.0.2.128/25
+      glance.storageMode: s3
+      cinder.storageMode: rbd
+    asserts:
+      - matchRegexRaw:
+          pattern: "the network node\n"
+      - notMatchRegexRaw:
+          pattern: "\\(\\)"

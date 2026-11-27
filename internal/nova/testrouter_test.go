@@ -29,7 +29,15 @@ func newNovaTestRouter() *gin.Engine {
 func novaRouterOn(db database.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(func(c *gin.Context) {
+	r.Use(testAuthMiddleware())
+	NewService(db, "", "stub", nil).RegisterRoutes(&r.RouterGroup)
+	return r
+}
+
+// testAuthMiddleware stands in for the auth middleware: it sets project_id, user_id and roles from
+// the X-Test-* headers. Every Nova test router uses it.
+func testAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if p := c.GetHeader("X-Test-Project"); p != "" {
 			c.Set("project_id", p)
 		}
@@ -39,9 +47,7 @@ func novaRouterOn(db database.DB) *gin.Engine {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))
 		}
-	})
-	NewService(db, "", "stub", nil).RegisterRoutes(&r.RouterGroup)
-	return r
+	}
 }
 
 // doReq issues an httptest request with an optional JSON body and headers,

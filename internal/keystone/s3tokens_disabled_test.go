@@ -228,7 +228,7 @@ func TestRenderS3TokenMissingIdentityDenied(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v3/s3tokens", nil)
-			NewService(testPool, nil, nil).renderS3Token(c, tc.user, tc.project)
+			NewService(testPool, nil).renderS3Token(c, tc.user, tc.project)
 			assertMaskedS3Denial(t, w)
 		})
 	}

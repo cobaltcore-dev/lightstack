@@ -51,22 +51,20 @@ func TestGenerateMAC(t *testing.T) {
 	})
 }
 
-// TestNeutronBool: the list-filter boolean parser accepts neutron's boolean spellings
-// and reports absence distinctly from false (F4). Pure — no DB.
-func TestNeutronBool(t *testing.T) {
-	cases := []struct {
-		in           string
-		val, present bool
+// TestNetworkListDecisionTakesUpstreamsBooleans: the network listing's boolean filters are read as
+// upstream's strutils.bool_from_string reads them (common.ParseQueryBool): yes/no, on/off, t/f, 1/0, true/
+// false, any case; another value is ignored, as before (SPEC-033 T197). Pure — no DB.
+func TestNetworkListDecisionTakesUpstreamsBooleans(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want sharedFilter
 	}{
-		{"", false, false},
-		{"true", true, true}, {"True", true, true}, {"1", true, true},
-		{"false", false, true}, {"False", false, true}, {"0", false, true},
-		{"bogus", false, false},
-	}
-	for _, tc := range cases {
-		v, p := neutronBool(tc.in)
-		if v != tc.val || p != tc.present {
-			t.Errorf("neutronBool(%q) = (%v,%v), want (%v,%v)", tc.in, v, p, tc.val, tc.present)
+		{"yes", sharedOnly}, {"On", sharedOnly}, {"t", sharedOnly}, {"True", sharedOnly},
+		{"no", nonSharedOnly}, {"OFF", nonSharedOnly}, {"f", nonSharedOnly}, {"0", nonSharedOnly},
+		{"bogus", sharedAny}, {"", sharedAny},
+	} {
+		if sf, empty := networkListDecision(tc.in, ""); sf != tc.want || empty {
+			t.Errorf("shared=%q → (%v, empty=%v), want (%v, false)", tc.in, sf, empty, tc.want)
 		}
 	}
 }
@@ -107,7 +105,7 @@ func TestBuildNetworkListFilter(t *testing.T) {
 
 	// SPEC-024 F11: router:external is a real predicate now, complementary rather than always-empty
 	// (FR-032, contract X6). The old assertion — empty=true — encoded the defect.
-	f, empty := buildNetworkListFilter(caller, "", "true", "", "", "", false)
+	f, empty := buildNetworkListFilter(callerScope{project: caller}, networkListQuery{routerExternal: "true"})
 	if empty {
 		t.Fatal("router:external=true must no longer force an empty result")
 	}
@@ -119,7 +117,7 @@ func TestBuildNetworkListFilter(t *testing.T) {
 	}
 
 	// ...and its complement.
-	f, _ = buildNetworkListFilter(caller, "", "false", "", "", "", false)
+	f, _ = buildNetworkListFilter(callerScope{project: caller}, networkListQuery{routerExternal: "false"})
 	if args := f.Args(); len(args) != 2 || args[1] != false {
 		t.Errorf("router:external=false args = %v, want [caller false]", args)
 	}
@@ -127,7 +125,7 @@ func TestBuildNetworkListFilter(t *testing.T) {
 	// Default (no filters): scope = caller's own OR shared OR external, one arg (the caller).
 	// `external` is a THIRD INDEPENDENT disjunct — it must not require `shared`, or a tenant cannot
 	// see the external network they need to pick as a router gateway (FR-033a).
-	f, empty = buildNetworkListFilter(caller, "", "", "", "", "", false)
+	f, empty = buildNetworkListFilter(callerScope{project: caller}, networkListQuery{})
 	if empty {
 		t.Fatal("default filter should not be empty")
 	}
@@ -139,7 +137,7 @@ func TestBuildNetworkListFilter(t *testing.T) {
 	}
 
 	// shared=true → only shared, and NO caller arg (so pagination starts at $1).
-	f, _ = buildNetworkListFilter(caller, "true", "", "", "", "", false)
+	f, _ = buildNetworkListFilter(callerScope{project: caller}, networkListQuery{shared: "true"})
 	if where := f.Conds(); where != "shared = true" {
 		t.Errorf("shared=true where = %q", where)
 	}
@@ -148,17 +146,15 @@ func TestBuildNetworkListFilter(t *testing.T) {
 	}
 
 	// shared=false → exclude shared, scoped to the caller.
-	f, _ = buildNetworkListFilter(caller, "false", "", "", "", "", false)
+	f, _ = buildNetworkListFilter(callerScope{project: caller}, networkListQuery{shared: "false"})
 	if where := f.Conds(); !strings.Contains(where, "shared = false") {
 		t.Errorf("shared=false where = %q", where)
 	}
 
 	// tenant + name append sequential placeholders after the scope arg ($1).
-	// The tenant filter compares as ::text (a non-UUID value narrows to
-	// nothing rather than failing the uuid cast; SPEC-031).
-	f, _ = buildNetworkListFilter(caller, "", "", "proj-A", "", "netx", false)
+	f, _ = buildNetworkListFilter(callerScope{project: caller}, networkListQuery{projects: []string{"proj-A"}, name: "netx"})
 	where := f.Conds()
-	if !strings.Contains(where, "project_id::text = $2") || !strings.Contains(where, "name = $3") {
+	if !strings.Contains(where, "project_id::text = ANY($2)") || !strings.Contains(where, "name = $3") {
 		t.Errorf("tenant+name where = %q, want $2/$3 placeholders", where)
 	}
 	if args := f.Args(); len(args) != 3 {
@@ -171,21 +167,21 @@ func TestBuildNetworkListFilter(t *testing.T) {
 	// (SPEC-031). Upstream honours the filter for admin tokens. The filter
 	// compares as ::text: a non-UUID value must narrow to nothing, not fail
 	// the uuid cast and answer 500 (SPEC-031).
-	f, _ = buildNetworkListFilter(caller, "", "", "proj-B", "", "", true)
+	f, _ = buildNetworkListFilter(callerScope{project: caller, admin: true}, networkListQuery{projects: []string{"proj-B"}})
 	where = f.Conds()
-	if where != "project_id::text = $1" {
-		t.Errorf("admin+tenant where = %q, want exactly \"project_id::text = $1\"", where)
+	if where != "project_id::text = ANY($1)" {
+		t.Errorf("admin+tenant where = %q, want exactly \"project_id::text = ANY($1)\"", where)
 	}
 	// Non-admin + tenant keeps the scope intersection (unchanged semantics).
-	f, _ = buildNetworkListFilter(caller, "", "", "proj-B", "", "", false)
+	f, _ = buildNetworkListFilter(callerScope{project: caller}, networkListQuery{projects: []string{"proj-B"}})
 	where = f.Conds()
-	if !strings.Contains(where, "project_id = $1 OR shared = true OR external = true") || !strings.Contains(where, "project_id::text = $2") {
+	if !strings.Contains(where, "project_id = $1 OR shared = true OR external = true") || !strings.Contains(where, "project_id::text = ANY($2)") {
 		t.Errorf("non-admin+tenant where = %q, want scope AND tenant", where)
 	}
-	// Admin without a tenant filter keeps the ordinary scope.
-	f, _ = buildNetworkListFilter(caller, "", "", "", "", "", true)
-	if where := f.Conds(); where != "(project_id = $1 OR shared = true OR external = true)" {
-		t.Errorf("admin default where = %q, want the ordinary read scope", where)
+	// Admin without a tenant filter: every project's networks, as upstream's (SPEC-033 FR-057).
+	f, _ = buildNetworkListFilter(callerScope{project: caller, admin: true}, networkListQuery{})
+	if where := f.Conds(); where != "" {
+		t.Errorf("admin default where = %q, want no condition", where)
 	}
 }
 

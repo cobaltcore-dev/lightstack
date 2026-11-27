@@ -255,6 +255,37 @@ redis-cli --scan --pattern 'lightstack:image:*'   | xargs -r redis-cli del
 
 Adjust the prefix if `cache.key_prefix` is not the default.
 
+## The service catalog is no longer cached
+
+With `cache.enabled: true`, Keystone kept each project's service catalog, as served to callers
+addressing `LIGHTSTACK_ENDPOINT_HOST` (`localhost` when unset), in Redis for 24 hours, already
+resolved, and nothing ever removed it. So for up to a day:
+
+- a service or endpoint created or deleted, or a service changed, through the Identity API
+  reached no token's catalog, although `openstack endpoint list` showed it;
+- a restart with a different `LIGHTSTACK_ENDPOINT_SCHEME` (for example `tls.enabled` in the chart)
+  or `glance.s3_endpoint` kept handing out the old URLs;
+- a release whose migrations add or fix catalog rows shipped without clients seeing them.
+
+The catalog is now read from the database on every token issue and validation. Every change above
+shows in the next token, on every node. The cache still serves flavors, images and networks, so
+`cache.enabled` keeps its meaning for them. This only matters where caching is enabled; it is off by
+default in both `config/lightstack.yaml` and the chart.
+
+Entries the previous version wrote (`service_catalog:<project>:<host>`) are never read again and
+expire within 24 hours. There is no action to take. To drop them at once:
+
+```bash
+redis-cli --scan --pattern 'lightstack:service_catalog:*' | xargs -r redis-cli del
+```
+
+Adjust the prefix if `cache.key_prefix` is not the default.
+
+The bundled compose stacks (`deployments/docker-compose.yml`, `deployments/docker-compose-sqlite.yml`)
+no longer start a Redis or set `LIGHTSTACK_REDIS_URL` / `LIGHTSTACK_CACHE_ENABLED`. The binary never
+read either variable, so those stacks never ran with the cache on. To use the cache, set `cache:` in
+the configuration file.
+
 ## Quota, limits, security-group, image and volume API changes
 
 Several quota, limits and security-group answers changed, and so did server create and rebuild,
@@ -532,8 +563,8 @@ reach the metadata service.
 
 The binary always served placement on `:8778`, but the catalog never listed it, so clients that look
 it up there, such as Horizon's Hypervisors → *Resource Provider* tab, reported it as unavailable.
-Migration 071 adds it on the next start; nothing to do. Where the catalog is cached in Redis
-(`cache.enabled`), a cached copy lives up to 24 hours, so placement appears once it expires.
+Migration 071 adds it on the next start; nothing to do. Placement appears in the next token's
+catalog.
 
 On a single node placement schedules nothing: Lightstack's placement is a stub that reports no
 resource providers, so Horizon's tab shows an empty table rather than an error.
@@ -650,3 +681,246 @@ the legacy `block_device_mapping` alone was never honoured either, and is now re
 Suspend, resume and shelve answer `202` and only then ask libvirt. A failed suspend or resume already
 turned the server `ERROR`; a failed shelve was dropped, and the server read `SHELVED` while its guest
 ran on. It now ends `ERROR` too, and all three log the cause (`shelve failed in libvirt`, and so on).
+
+## Security-group membership reaches the ports
+
+A server's security groups now live on its ports, the list the firewall is built from. Adding or
+removing a group through the compute API changes the ports, and with them what reaches the server.
+It used to change a separate record that the firewall never read, so a group added to a running
+server opened nothing and a group removed closed nothing.
+
+| | before | after |
+|---|---|---|
+| `addSecurityGroup` / `removeSecurityGroup` | changed a record of the server's; the ports and the firewall stayed as they were | change every port of the server, and its chains on its node, before the answer |
+| the group in either action | by name only | by name or by id, as server create, resolved in the server's project |
+| either action on a server with no port | `202` | `404`, "instance_id `<id>` could not be found as device id on any ports", as upstream |
+| removing a server's last group | `400 cannot remove last security group from instance` | `202`, as upstream: its ports carry no group and admit replies only |
+| a server's `security_groups` | its own record, with `default` invented when it held none | its ports' groups, one entry per port and group; no key when they carry none. Servers created by v0.6.1 or earlier report none, since their ports carry none |
+| an interface attached with `net_id` | a port with no group | a port in the project's `default` group, created if missing; the server's other groups are not copied, as upstream |
+| `PUT /v2.0/ports/{id}` with `security_groups` | ignored, or `400 no updates provided` when it was the only field | replaces the port's groups and converges its chains before the answer |
+| `POST /v2.0/ports` with `security_groups: []` or `null` | the port got `default` | the port gets no group; absent still gives `default` |
+| `GET /v2.0/security-groups?id=…&name=…` | every group of the project | the groups matching `id` (repeatable) and `name` |
+| deleting a group a port carries | `204`, and the group left every port | `409 SecurityGroupInUse`, as upstream |
+| deleting a group that does not exist or is another project's | `204` | `404` |
+| deleting a port or a server whose port has a floating IP | the floating IP kept its fixed IP, router and `ACTIVE`, and its NAT stayed | the floating IP loses its port, fixed IP and router and goes `DOWN` in the same step, and the network node stops forwarding it before the answer |
+| the `forceDelete` server action | deleted the instance row and its domain; the server's ports and volume attachments stayed | deletes the server as `DELETE` does: its boot ports go, ports attached by id are detached, its volumes are released |
+| any real-mode change — a port's groups, a rule, a floating IP, a router, a network, a subnet, a port, a port forwarding — that the node holding its state cannot apply, or that waits more than one second | answered success | `500`, and the change is undone; a deletion keeps its record |
+| a server's `security_groups` naming a group of another project that an administrator put on its port by id | named to the tenant | named only to an administrator, as upstream, which skips a group its caller cannot list |
+| a server deletion whose boot port is a port forwarding's internal port | the forwarding went, its floating IP kept its router and `ACTIVE` | the floating IP is freed with it, as a port's deletion frees it: no router, `DOWN` |
+| a deletion that loses a race with another deletion of the same server | `404`, and the tenant's detached port was bound back to its old node | `404`; the port stays as the winning deletion left it |
+
+Each server keeps the groups it has. A server created by v0.6.1 or earlier, whose ports carry none,
+now reports none: that is what its firewall was enforcing. Add its groups again with
+`openstack server add security group` to have them enforced.
+
+### The Networking API
+
+| | before | after |
+|---|---|---|
+| `GET /v2.0/security-groups` with `description`, `project_id`, `tenant_id`, `stateful`, `revision_number`, `shared` or the tag filters | ignored: every group of the project | honoured, as upstream; an administrator's `project_id` names any project; a boolean filter that is not one answers `400` |
+| a group's representation | no `stateful`, `revision_number`, `shared` or `tags` | all four: `stateful` as created, `revision_number` from `0`, one more on every update and on every rule added or deleted; `shared: false`, `tags: []` |
+| creating a group with `"stateful": false` | ignored | a stateless group: its ports' traffic is not connection-tracked. A port carrying stateful and stateless groups at once answers `409 SecurityGroupConflict`, and changing `stateful` on a group a port carries `409 SecurityGroupInUse` |
+| `PUT` or `DELETE` of a group with `If-Match: revision_number=<n>` | ignored | `412 RevisionNumberConstraintFailed` when the revision differs; `400 Bad if-match request` for two `revision_number=` tags or a number that does not parse. Other entity tags, `*` among them, are still ignored |
+| a new group's rules | none | two egress rules, IPv4 and IPv6, as upstream |
+| creating a rule upstream refuses: a `direction`, `ethertype` or `protocol` it does not know; ports without a protocol, on one without ports, or out of range; a `remote_ip_prefix` that is no address or network, or of the other family; a remote prefix and a remote group together | `201`, stored as sent | `400` under upstream's name (`SecurityGroupRuleInvalidProtocol`, `InvalidCIDR`, `SecurityGroupRuleParameterConflict`, `SecurityGroupProtocolRequiredWithPorts`, …), storing nothing |
+| a rule whose `security_group_id` is not a UUID | `404` | `400`, as upstream |
+| a boolean query filter — a group listing's `shared` and `stateful`, a network listing's `shared` and `router:external`, a subnet listing's `enable_dhcp`, Cinder's `?usage=` | ignored by the group listing; the network and subnet listings and Cinder took Go's `strconv.ParseBool` words (`1`/`0`, `t`/`f`, `true`/`false`, some capitalisations) and ignored any other | upstream's words, in any case: `yes`/`no`, `y`/`n` and `on`/`off` too |
+| a rule's `remote_ip_prefix`, `protocol`, `ethertype` and ports | stored as sent | stored as upstream stores them: an address as its host prefix (`192.0.2.10` → `192.0.2.10/32`), a netmask as a prefix length, a protocol name lowercased and `any` as none, an IPv6 rule's `icmp` as `ipv6-icmp`, ports `1`–`65535` as none, `ipv4` as `IPv4` |
+| a `default` group created from now on, and the seeded project's | egress only | egress, and ingress from its own members, IPv4 and IPv6; still nothing open to every address. Every other existing group keeps its rules: see below |
+| listing groups or rules, or creating a group, in a project that has no `default` yet (no port so far) | no `default` listed | the project's `default` is created first, as upstream: `?name=default` finds it |
+| `GET /v2.0/security-group-rules` with `security_group_id`, `direction`, `protocol` and the other attribute filters | ignored: every rule you can see, for an administrator every project's | honoured, each repeatable: `openstack security group rule list <group>` lists that group's rules |
+| deleting an unused `default` as a non-administrator | `204` | `409 SecurityGroupCannotRemoveDefault` |
+| renaming `default` | `200` | `409 SecurityGroupCannotUpdateDefault`; its description still changes |
+| creating a group named `default` (any case), or renaming one to it | `500` for `default` exactly, which the unique name refused a second time; another case, `Default` say, accepted | `409 SecurityGroupDefaultAlreadyExists` |
+| a group name used twice in a project | `500` | `201`: names repeat, as upstream |
+| a name several of your groups share, in server create, `addSecurityGroup` or `removeSecurityGroup` | — | `409 NoUniqueMatch`; `GET /v2.0/security-groups/{name}` answers `404`, list with `?name=` instead |
+| floating-IP creates sent at the same time | could answer `500` | each `201`, with an address of its own |
+| a floating IP on a port no router joins to its network, a port on a subnet without a gateway included | create `201`, update `400` | `404 ExternalGatewayForFloatingIPNotFound`, storing nothing |
+| a second floating IP of one external network on a fixed IP | accepted | `409 FloatingIPPortAlreadyAssociated` |
+| a floating IP on a network with no IPv4 subnet | an address of `192.0.2.0/24` | `400` |
+| a floating IP's address | from `.100` up in the network's first subnet | the lowest free address of the pools of the network's IPv4 subnets; `400 ExternalIpAddressExhausted` when they are taken |
+| a floating IP's `fixed_ip_address` that is not the port's; a taken `floating_ip_address` | accepted | `400`; `409 IpAddressAlreadyAllocated`. `subnet_id` and `floating_ip_address` are honoured |
+| a floating IP's `floating_ip_address` chosen by a caller holding neither `admin` nor `manager` (`openstack floating ip create --floating-ip-address`) | honoured | `403 PolicyNotAuthorized`, as upstream: the address is an administrator's or the project manager's to choose. Lightstack seeds no `manager` role; create it and assign it on a project to give its holders the choice |
+| a subnet's `allocation_pools` | ignored on create and update; reported as computed | stored, validated as upstream (`400 InvalidAllocationPool`, `400 OutOfBoundsAllocationPool`, `409 OverlappingAllocationPools`, `409 GatewayConflictWithAllocationPools`) and reported. Ports, DHCP ports, router gateways and floating IPs take their addresses from them. Existing subnets get the default pool, so an external network's floating range is set through its pools |
+| a subnet's `dns_nameservers` on create | stored as sent | each an IP address of the subnet's IP version, an IPv4 one without leading zeros, none twice, at most 5, as upstream; `400` otherwise, storing nothing. An update still ignores them |
+| a requested fixed IP that is its subnet's network or broadcast address | a port ignored any requested address; an interface attach took it | `400 InvalidIpForSubnet`, on a port and an interface attach |
+| `POST /v2.0/ports` with `fixed_ips` | ignored | honoured, as upstream |
+| deleting a subnet a port or a floating IP has an address on | `204`, the port or floating IP keeping a dangling address | `409 SubnetInUse`; the network's DHCP port does not count |
+| a router interface on a subnet the router already has, or on one without a gateway | `500` | `400`, storing nothing |
+| a router interface on another project's subnet, a shared network's included, as a non-administrator; on the subnet of the router's gateway; or on a subnet overlapping one of its interfaces' | `200` | `400`, as upstream, storing nothing |
+| a port, a router gateway's `external_fixed_ips` or a floating IP requesting its subnet's gateway address, held by nothing | ignored: none of the three allocated a requested address | allocated, as upstream's IPAM does; `409 IpAddressAlreadyAllocated` once something holds it. The pools still leave the gateway out |
+| a router interface on a subnet whose gateway address a port holds, another router's interface say | `200`, two ports holding one address | `409 IpAddressAlreadyAllocated` |
+| changing the `gateway_ip` of a subnet a router's gateway is on | the routers kept the previous default route | every such router's default route moves before the answer; when one cannot take it, `500` and the update is undone |
+| a router's gateway | `external_gateway_info` as the request gave it; no address allocated | a port with `device_owner` `network:router_gateway` holding an address from the pools, or the one requested, reported in `external_gateway_info.external_fixed_ips`; requesting one is administrator-only (`403`), as upstream |
+| `enable_snat` in a router's `external_gateway_info`, from a non-administrator, on create or update (`openstack router create`/`set` with `--enable-snat` or `--disable-snat`) | stored and applied, `false` sending the router's subnets out un-NATed | `403 PolicyNotAuthorized`, whatever the value, as upstream: an administrator's to set. A gateway without it masquerades, as before |
+| a port forwarding on a floating IP no port uses | `400` ("floating IP must be associated with a router") | `201`, as upstream: the router is found through the internal port and recorded on the floating IP, which the last forwarding frees |
+| a port forwarding on a floating IP a port uses; to an internal port with a floating IP of its own | `201` | `409 FloatingIPPortAlreadyAssociated`; `409 PortHasBindingFloatingIP`, as upstream. Free the floating IP first: `openstack floating ip unset --port` |
+| giving a floating IP its port forwardings use a port | accepted | `409 FipInUseByPortForwarding`, as upstream |
+| removing an interface, or clearing or changing a gateway, that a floating IP or one of its port forwardings goes through | accepted | `409 RouterInterfaceInUseByFloatingIP`; `409 RouterExternalGatewayInUseByFloatingIp` |
+| deleting a router that a member's own port names as its device, with owner `network:router_gateway` | the member's port deleted with the router | the member's port stays: only the router's own gateway port goes |
+| deleting a router's interface port with `DELETE /v2.0/ports/{id}`; an administrator deleting its gateway port | `204`, the router losing the interface and its floating IPs their path | `409 ServicePortInUse`, administrators included, as upstream. Remove them through the router: `openstack router remove subnet`, `openstack router unset --external-gateway` |
+| ports | — | report `binding:host_id` to administrators; each network with DHCP has a port with `device_owner` `network:dhcp`, as upstream |
+| another project's port naming a server in `device_id` | changed by the server's group actions, or vetoing them; listed in its groups; detached or deleted with it | left alone, as the server's addresses already left it: a server's ports are its project's |
+| a `device_owner` starting `network:` on a port of another project's network, set by a non-administrator on create or update | stored | `403 PolicyNotAuthorized`, as upstream: only an administrator or the network's project gives a port a network's role |
+| another project's ports on a shared network, for a non-administrator | listed and shown, with their addresses and servers | not visible, as upstream: a port is its project's and its network owner's to read; a marker naming one answers `404` |
+| an administrator's Networking API listings | the administrator's own project's resources | every project's, narrowed by `project_id`/`tenant_id`, as upstream; a show by id reaches any project's resource |
+| `project_id`/`tenant_id` in a create of a port, security group, subnet, router, floating IP, QoS policy, RBAC policy, trunk, metering label, subnet pool or address scope | ignored: the caller's project owned it | an administrator's sets the owner, as upstream; another project named by a member, the two spellings disagreeing, or a project that does not exist answer `400` |
+| an administrator's update, delete or action on another project's resource by id | `404` | allowed, as upstream; a create may reference another project's resource by id. Names still resolve in your own project only |
+| the message of a `409` `NetworkInUse`, `RouterInUse`, `GatewayIpInUse` or `SecurityGroupInUse` | `Cannot <operation>`, the reason in `detail` | upstream's: `Unable to complete operation on network <id>. There are one or more ports still in use on the network, id for these ports is: <ids>.`, `Router <id> has ports still attached: <ports>`, `Current gateway ip <ip> already in use by port <port>. Unable to update.`, `Security Group <id> in use.`; `detail` empty. A network's floating IPs and port-less gateways are named the same way |
+| a port's create response | written from the request: no `project_id`, no `binding:host_id` for an administrator, `status` always `ACTIVE`, the timestamps the handler's | the port as its show reports it, read back after the create |
+| a subnet's create and update responses | create: written from the request, with the handler's timestamps; update: no `created_at` or `updated_at` | the subnet as its show reports it, read back after the change |
+| `addSecurityGroup`/`removeSecurityGroup` with a `name` of blanks only | `404` | `400`, as upstream ("Security group name cannot be empty"); a missing `name`, `400` "Security group not specified" |
+| `POST /v2.0/subnets` with an IPv6 CIDR and `ip_version: 4`, or `ip_version: 5` | `201`: stored as given, an IPv6 range as an IPv4 DHCP subnet that crashed the network node's reconciliation | `400`, as upstream's `_validate_ip_version`; an absent `ip_version` is the CIDR's |
+| one address requested twice in a port's `fixed_ips` or a gateway's `external_fixed_ips` | `201`/`200`, the address stored twice | `400` "Duplicate IP address"; two entries naming only a subnet get two addresses |
+| a gateway update with `external_fixed_ips: []`, or naming only the subnet it has an address on | `200`, the address moved | `200`, the address kept, as upstream |
+| a port forwarding's update to another internal port | checked the port's project and address only | checked as a create: `409 PortHasBindingFloatingIP`, `400` for a port the floating IP's router does not reach; a create to such a port `400` too |
+| `PUT /v2.0/networks/{id}` unsetting `router:external` while a router's gateway is on it | `200` | `409 ExternalNetworkInUse`, as upstream |
+| a trunk or a subport on another project's port, or a malformed subport id | `201`/`200`; the owner's own trunk on it then `500` | `404`; a malformed id `400` |
+| a port update that answers `500` (its firewall change could not be applied) | its groups went back, its other fields stayed | all of it goes back, compare-and-set |
+| `device_owner` changed into or out of `network:*` on a bound port | the port's chains changed at the next reconciliation pass | its node is converged before the answer, or `500` and undone |
+| `POST /v2.0/ports` with a `network:*` `device_owner` | the port got `default`, or the groups given | no group, as upstream: a trusted port carries none |
+| a rule with `remote_group_id: ""` | `404` (SQLite) or `500` (PostgreSQL) | `201`, no remote group, as upstream |
+| the rule listing's `ethertype`, `protocol`, `remote_ip_prefix`, `port_range_min`/`_max` filters | compared as sent: `ipv4`, `TCP` or a bare address listed nothing | converted as upstream: any case, a prefix as netaddr prints it; a port that is not one `400`; `protocol=any` lists rules without one |
+| a router interface on a subnet whose gateway a floating IP holds | `200`: the address held twice | `409 IpAddressAlreadyAllocated` |
+| `add_router_interface` with `port_id` | `404 subnet` | adds the port as the interface, as upstream; `409 PortInUse`, `400` for no fixed IP, a second IPv4 subnet, a subnet the router has, or an IPv6 address on a network where the router has an IPv6 port already; a subnet and a port together `400`. Every fixed IP of the port is on the router's leg, and a removal by one of its subnets takes only that subnet off the port |
+| an IPv6 subnet added by subnet to a router with an IPv6 interface port on its network | a second interface port | the subnet's gateway joins that port, as upstream |
+| a floating IP's `fixed_ip_address` without a `port_id`; an update's non-string `fixed_ip_address` or `description` | ignored | `400`, as upstream |
+| an allocation pool address with an IPv6 zone (`%eth0`) | stored and handed out | `400 InvalidAllocationPool` |
+| the auto-allocated topology's network where the node coordinates VXLAN | `flat`, MTU 1500 | `vxlan`, MTU 1450, as a network create makes |
+| deleting a rule while its group is deleted (PostgreSQL) | one of the two `500`, deadlocked | both complete: the rule's delete takes the group's lock first |
+
+#### Existing security groups and the port firewall
+
+Every port is now firewalled on its node, and its chains end in a drop: egress and traffic between VMs are
+filtered where the earlier release filtered neither. Existing groups keep the rules they have, so two kinds
+of group stop admitting traffic they let through before:
+
+- A group created through the API before this release has no rule at all — the earlier release gave a new
+  group none, where this one gives it two egress rules, as upstream. A port carrying only such groups cannot
+  open a connection. Give each of them the two egress rules, with `GROUP` set to its name or id:
+
+  ```sh
+  openstack security group rule create --egress --ethertype IPv4 "$GROUP"
+  openstack security group rule create --egress --ethertype IPv6 "$GROUP"
+  ```
+
+- A project's `default` created before this release, other than the seeded project's, has egress only: no
+  rule admits its own members, so the VMs in it no longer reach each other. Give each such `default` the
+  member rules this release gives a new one, with `PROJECT` set to its project:
+
+  ```sh
+  openstack security group rule create --ingress --ethertype IPv4 --remote-group default --project "$PROJECT" default
+  openstack security group rule create --ingress --ethertype IPv6 --remote-group default --project "$PROJECT" default
+  ```
+
+`openstack security group rule list --egress "$GROUP"` shows a group's egress rules, and
+`openstack security group rule list --ingress --project "$PROJECT" default` a `default`'s ingress.
+
+### The real-mode layout: a clean break
+
+Real mode moves to upstream's layout for a network node:
+
+- One node, the **network node**, holds every router, each in a namespace `qrouter-<router id>`, and
+  every network's DHCP and metadata, each in a namespace `qdhcp-<network id>`. Floating IPs, port
+  forwardings and the routers' SNAT live in the routers' namespaces; the network node answers ARP for
+  the routers' and floating addresses on its uplink, and no other node holds them. With VXLAN on,
+  `neutron.network_node` (the chart's `neutron.networkNode`) names the network node and Lightstack
+  refuses to start without it; without VXLAN the node is its own.
+- Every port is firewalled on the node its guest runs on, both ways, as upstream's iptables driver:
+  chains `ls-i`, `ls-o` and `ls-s` per port, built from its groups, remote groups resolved to their
+  members' addresses. This needs the `br_netfilter` module and
+  `net.bridge.bridge-nf-call-iptables` and `-ip6tables` at `1`: Lightstack sets them at start, and its
+  readiness fails, naming `bridge-netfilter`, while they do not hold. The router namespaces' NAT rules
+  need iptables' `comment` match (`xt_comment` with the legacy backend), the ports' chains its
+  `physdev` match (`xt_physdev`).
+- A guest's TAP whose port is gone — deleted while the guest runs — has its frames dropped both ways before
+  any port's chains see them, those addressed to the node itself included, by two fixed chains, `ls-bound-in` and
+  `ls-bound-out`, in both families; teardown removes them. Such a TAP used to reach every bound port on its bridge,
+  checked only by the receiver's ingress.
+- A rule with protocol `vrrp` (112) no longer fails the node's whole firewall commit: protocols are written by
+  name exactly where iptables prints one, otherwise by number, and `gre`, `108`, `135` and ICMP type `255` alone
+  are no longer rewritten on every pass.
+- Requests waiting together on a node's firewall, a router or a network's DHCP share one convergence: many guests
+  booting at once on one node no longer run out of the one-second wait and end in `ERROR`.
+- The node-to-node call goes straight to the node's tunnel address, never through an `HTTP_PROXY` the
+  environment names. `neutron.network_node` is read trimmed, and a node that is not the network node removes
+  the routers and DHCP it holds only while the named node is active.
+- `lightstack cleanup` also removes the earlier layout's two `FORWARD` accepts per recorded subnet, and its
+  removal of an older deployment's project namespaces is bounded at one second, a failure failing the purge.
+- Guests reach metadata in their network's namespace, named by network and address. The host's own
+  listener (`metadata.bind_address`) names no caller by its address any more; only `X-Instance-ID`, from
+  loopback or with `metadata.trust_instance_header`, names an instance there.
+- No bridge holds an address, no dnsmasq runs on the host, and the host carries no floating-IP NAT,
+  floating addresses or filter chains of its own.
+
+Nothing converts a host running the earlier layout: each node is reset, and what it held is created
+again. A port has firewall chains only once it is bound to a node, which happens when a server boots
+or an interface is attached, so servers are recreated, not kept.
+
+`lightstack cleanup` resets a node, and it removes more than the guests and the host networking:
+everything Lightstack keeps on the node goes with them — images, volumes, instance disks, cloud-init
+and DHCP files, the console directories — and, with a SQLite `database.url`, the database file. A
+PostgreSQL database is left as it is. Before running it:
+
+1. Back up what you keep. A SQLite database: `lightstack-migrate backup`, whose default target,
+   `<state_path>/backups/`, the reset leaves alone. PostgreSQL: `pg_dump`. Image and volume data has
+   no backup command; copy what you need off the node first.
+2. On PostgreSQL, delete through the earlier release's API the servers, volumes and images you will
+   recreate, so that no record names data the reset removes, or start this release on an empty
+   database.
+3. See what the reset would remove: `lightstack cleanup --dry-run` with the node's `--config`.
+
+Then run `lightstack cleanup` on each node (the chart's `helm uninstall` runs it as its purge hook,
+one Job on one node the workload's node selection allows, when the release sets
+`dataRetentionPolicy: delete`; with the default `retain`, and on every other node, run it yourself),
+and remove the earlier layout's router namespaces, named `qrouter-` and the first
+11 characters of the router's id: the cleanup and the reconciliation recognise this release's
+`qrouter-<router id>` only.
+
+```sh
+ip netns list | awk '/^qrouter-/ && length($1) == 19 {print $1}' | xargs -r -n1 ip netns del
+```
+
+Start this release, and create the images, volumes and servers again. `lightstack cleanup` removed
+what a record names of the earlier layout — the unmarked NAT and `/32` uplink addresses of floating
+IPs that exist, and the egress `MASQUERADE` of existing subnets — and, as this release does once on its
+own when it starts, what a mark or a name makes Lightstack's: marked floating-IP NAT, the `LS-NSI-*`
+and `LS-SG-*` chains, bridge addresses, the per-bridge metadata DNAT, host dnsmasq and Neutron's
+`tap-*` devices. Neither touches an unmarked rule no record names, which it cannot tell from an
+operator's own: those of floating IPs and subnets deleted before the upgrade stay. List them on each
+node with
+
+```sh
+iptables -t nat -S PREROUTING | grep -- '-j DNAT' | grep -v lightstack-fip
+iptables -t nat -S OUTPUT | grep -- '-j DNAT' | grep -v lightstack-fip
+iptables -t nat -S POSTROUTING | grep -- '-j MASQUERADE'
+```
+
+and remove the ones that are not yours.
+
+Floating addresses must reach the network node's uplink: on a LAN the node's ARP answers do it; where
+an underlay delivers only the addresses assigned to a node, allow the floating range for the network
+node there.
+
+### Kubernetes and Compose
+
+- `realMode.privileged` is gone: real mode always runs the pod, and the purge Job, privileged, since Kubernetes
+  allows the bidirectional `/run/netns` mount to privileged containers only. Remove the key from your values;
+  the schema refuses it (`additional properties 'privileged' not allowed`).
+  The pod, and the teardown purge Job, mount the host's `/run/netns` with bidirectional propagation,
+  so the routers' and networks' DHCP namespaces are the host's and outlive the pod. The pod also mounts
+  `/lib/modules` read-only for `modprobe br_netfilter`; the purge Job does not.
+- A multi-node release with `multiNode.vxlanEnabled: false` no longer renders: without VXLAN every node was its
+  own network node and every change touching another node answered `500`. The chart's `neutron.networkNode`
+  and VXLAN checks are skipped under `secrets.existingSecret`, whose configuration the chart never renders. On
+  PostgreSQL, real mode no longer creates an empty `<hostStoragePath>/db`; on SQLite it creates the directory
+  `database.url` names.
+- The turnkey Compose (`scripts/deploy-turnkey.sh`) mounts the host's `/run/netns` and `/lib/modules` as the
+  KVM file does, and creates `/run/netns` first: its routers' and networks' DHCP namespaces outlive the
+  container.
+- The KVM Compose file mounts `/run/netns:/run/netns:rshared` and `/lib/modules:/lib/modules:ro`. The
+  host's `/run` must be a shared mount, as systemd makes it. Podman, unlike Docker, does not create a
+  missing bind source: create `/run/netns` on the host first.
+- Multi-node: name the network node. In the chart, `neutron.networkNode`, its Kubernetes node name;
+  with VXLAN on, the chart refuses to render without it. In Lightstack's own configuration,
+  `neutron.network_node`, its `LIGHTSTACK_NODE_NAME`, else its host name.

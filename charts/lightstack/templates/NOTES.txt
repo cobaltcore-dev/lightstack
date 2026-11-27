@@ -49,8 +49,9 @@ Requires a product image >= {{ .Values.multiNode.minProductVersion }} (FR-010).
 {{- end }}
 {{- if and .Values.realMode.enabled .Values.realMode.floatingIpPool }}
 
-Floating-IP pool "{{ .Values.realMode.floatingIpPool }}" must be routed to the nodes
-via MetalLB or a routed/L2 subnet (FR-009c — see chart README).
+Floating-IP pool "{{ .Values.realMode.floatingIpPool }}": the network node{{ if eq .Values.deploymentMode "multi-node" }}{{ with .Values.neutron.networkNode }} ({{ . }}){{ end }}{{ else }}, this node,{{ end }}
+translates these addresses, and the network node answers ARP for them on its uplink. Route or
+allow the pool to that node only, and announce it from nowhere else (see the chart README).
 {{- end }}
 {{- if eq .Values.deploymentMode "multi-node" }}
 

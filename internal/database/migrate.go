@@ -115,7 +115,8 @@ func newSQLiteMigrator(dbURL string, src source.Driver, create bool) (*migrate.M
 		unlock()
 		return nil, nil, fmt.Errorf("failed to create migrator: %w", err)
 	}
-	m, err := migrate.NewWithInstance("iofs", src, "sqlite", drv)
+	// A file marked "-- lightstack:foreign-keys-off" runs with foreign keys off (migrate_notx.go).
+	m, err := migrate.NewWithInstance("iofs", src, "sqlite", &sqliteMigrationDriver{Driver: drv, db: db})
 	if err != nil {
 		_ = drv.Close()
 		unlock()

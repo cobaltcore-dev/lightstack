@@ -63,6 +63,7 @@ func newNeutronTestRouterWithService() (*gin.Engine, *Service) {
 		}
 	})
 	svc := NewService(testPool, "stub", nil)
+	svc.RegisterNodeRoutes(&r.RouterGroup)
 	svc.RegisterRoutes(&r.RouterGroup)
 	return r, svc
 }

@@ -10,6 +10,7 @@ set:
   secrets.adminPassword: pw
   database.url: postgres://lightstack@db/lightstack
   deploymentMode: multi-node
+  neutron.networkNode: node-a
   realMode.enabled: true
 tests:
   - it: rejects local glance/cinder backends in multi-node real (FR-012e)

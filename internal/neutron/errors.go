@@ -1,9 +1,24 @@
 package neutron
 
 import (
+	"fmt"
+	"net/http"
+
 	"github.com/cobaltcore-dev/lightstack/internal/common"
 	"github.com/gin-gonic/gin"
 )
+
+// invalidAttribute is the API layer's refusal of an attribute its validator rejects: 400, upstream's
+// "Invalid input for <attribute>. Reason: <reason>.".
+func invalidAttribute(attribute, reason string) *common.OpenStackError {
+	return common.NewBadRequestError("Invalid input for " + attribute + ". Reason: " + reason + ".")
+}
+
+// badRequest is neutron_lib's BadRequest: 400, its message upstream's "Bad <resource> request: <msg>.",
+// the resource and msg as the upstream code raising it passes them.
+func badRequest(resource, message string) *common.OpenStackError {
+	return common.NewNeutronError(http.StatusBadRequest, "BadRequest", fmt.Sprintf("Bad %s request: %s.", resource, message))
+}
 
 // ErrorEnvelope marks every request to this service so its errors render in Neutron's envelope
 // rather than the compute one shared by the other services (SPEC-024 / cloud-storage#546 B10).

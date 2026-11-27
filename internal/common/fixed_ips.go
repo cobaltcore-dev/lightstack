@@ -3,7 +3,11 @@ package common
 // FixedIPs is a port's fixed_ips column — the addresses assigned to the port. It scans from the
 // jsonb/json column on either backend, and both Neutron (router-interface lookup) and the
 // metadata service (instance-by-address lookup) read it to find which port holds an address.
-type FixedIPs []struct {
+type FixedIPs []FixedIP
+
+// FixedIP is one of a port's addresses: an alias of the element type FixedIPs always had, so a
+// single entry can be passed around by name.
+type FixedIP = struct {
 	IPAddress string `json:"ip_address"`
 	SubnetID  string `json:"subnet_id"`
 }

@@ -89,7 +89,6 @@ tests:
     template: templates/deployment.yaml
     set:
       realMode.enabled: true
-      realMode.privileged: true
     asserts:
       - equal:
           path: spec.strategy.type
@@ -99,7 +98,6 @@ tests:
     template: templates/deployment.yaml
     set:
       realMode.enabled: true
-      realMode.privileged: true
     asserts:
       - matchRegex:
           path: spec.template.spec.initContainers[0].command[2]
@@ -111,6 +109,20 @@ tests:
             hostPath:
               path: /var/lib/lightstack/db
               type: DirectoryOrCreate
+
+  # T245: the directory created is the one database.url names, not a fixed db/.
+  - it: real mode creates the database directory database.url names
+    template: templates/deployment.yaml
+    set:
+      realMode.enabled: true
+      database.url: sqlite:///var/lib/lightstack/state/lightstack.db
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: /var/lib/lightstack/state"
+      - notMatchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: /var/lib/lightstack/db"
 
   - it: honors a custom hostStoragePath for the db mount (stub)
     template: templates/deployment.yaml

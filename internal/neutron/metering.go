@@ -10,16 +10,17 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ListMeteringLabels handles GET /v2.0/metering/metering-labels
+// ListMeteringLabels handles GET /v2.0/metering/metering-labels: the caller's project's labels and
+// the shared ones, every project's for an administrator, narrowed by project_id/tenant_id (SPEC-033
+// FR-057).
 func (svc *Service) ListMeteringLabels(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
+	f := &common.SQLFilter{}
+	projectScope(c, f, "project_id", ownedOrShared)
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, name, description, project_id, shared, created_at, updated_at
-		FROM metering_labels
-		WHERE project_id = $1 OR shared = true
+		FROM metering_labels`+f.Where()+`
 		ORDER BY created_at DESC
-	`, projectID)
+	`, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_metering_labels").Msg("failed to query metering labels")
@@ -65,20 +66,25 @@ func (svc *Service) ListMeteringLabels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"metering_labels": labels})
 }
 
-// CreateMeteringLabel handles POST /v2.0/metering/metering-labels
+// CreateMeteringLabel handles POST /v2.0/metering/metering-labels. The label belongs to the project
+// an administrator names, or else to the caller's (SPEC-033 FR-058).
 func (svc *Service) CreateMeteringLabel(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
 	var req struct {
 		MeteringLabel struct {
-			Name        string `json:"name" binding:"required"`
-			Description string `json:"description"`
-			Shared      bool   `json:"shared"`
+			Name        string  `json:"name" binding:"required"`
+			Description string  `json:"description"`
+			Shared      bool    `json:"shared"`
+			ProjectID   *string `json:"project_id"`
+			TenantID    *string `json:"tenant_id"`
 		} `json:"metering_label" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+	projectID, ok := svc.ownerOf(c, req.MeteringLabel.ProjectID, req.MeteringLabel.TenantID)
+	if !ok {
 		return
 	}
 
@@ -128,8 +134,8 @@ func (svc *Service) GetMeteringLabel(c *gin.Context) {
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT id, name, description, project_id, shared, created_at, updated_at
 		FROM metering_labels
-		WHERE id = $1 AND (project_id = $2 OR shared = true)
-	`, labelID, projectID).Scan(&id, &name, &description, &labelProjectID, &shared, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+scopeOrAdmin(ownedOrShared("$2"), "$3")+`
+	`, labelID, projectID, isAdmin(c)).Scan(&id, &name, &description, &labelProjectID, &shared, &createdAt, &updatedAt)
 
 	if err != nil {
 		common.SendError(c, common.NewNotFoundError("metering label"))
@@ -157,8 +163,8 @@ func (svc *Service) DeleteMeteringLabel(c *gin.Context) {
 	labelID := c.Param("id")
 
 	result, err := svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM metering_labels WHERE id = $1 AND project_id = $2",
-		labelID, projectID,
+		"DELETE FROM metering_labels WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+		labelID, projectID, isAdmin(c),
 	)
 
 	if err != nil {
@@ -175,17 +181,20 @@ func (svc *Service) DeleteMeteringLabel(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// ListMeteringLabelRules handles GET /v2.0/metering/metering-label-rules
+// ListMeteringLabelRules handles GET /v2.0/metering/metering-label-rules: the rules of the labels the
+// caller sees, every project's for an administrator, narrowed by project_id/tenant_id on the label's
+// project (SPEC-033 FR-057).
 func (svc *Service) ListMeteringLabelRules(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
+	f := &common.SQLFilter{}
+	projectScope(c, f, "ml.project_id", func(caller string) string {
+		return "(ml.project_id = " + caller + " OR ml.shared = true)"
+	})
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT mlr.id, mlr.metering_label_id, mlr.remote_ip_prefix, mlr.direction, mlr.excluded, mlr.created_at
 		FROM metering_label_rules mlr
-		JOIN metering_labels ml ON mlr.metering_label_id = ml.id
-		WHERE ml.project_id = $1 OR ml.shared = true
+		JOIN metering_labels ml ON mlr.metering_label_id = ml.id`+f.Where()+`
 		ORDER BY mlr.created_at DESC
-	`, projectID)
+	`, f.Args()...)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_metering_label_rules").Msg("failed to query metering label rules")
@@ -247,8 +256,8 @@ func (svc *Service) CreateMeteringLabelRule(c *gin.Context) {
 	// Verify label belongs to project
 	var labelExists bool
 	err := svc.pool.QueryRow(c.Request.Context(), `
-		SELECT EXISTS(SELECT 1 FROM metering_labels WHERE id = $1 AND (project_id = $2 OR shared = true))
-	`, req.MeteringLabelRule.MeteringLabelID, projectID).Scan(&labelExists)
+		SELECT EXISTS(SELECT 1 FROM metering_labels WHERE id = $1 AND `+scopeOrAdmin(ownedOrShared("$2"), "$3")+`)
+	`, req.MeteringLabelRule.MeteringLabelID, projectID, isAdmin(c)).Scan(&labelExists)
 
 	if err != nil || !labelExists {
 		common.SendError(c, common.NewNotFoundError("metering label"))
@@ -293,9 +302,9 @@ func (svc *Service) DeleteMeteringLabelRule(c *gin.Context) {
 	result, err := svc.pool.Exec(c.Request.Context(), `
 		DELETE FROM metering_label_rules
 		WHERE id = $1 AND metering_label_id IN (
-			SELECT id FROM metering_labels WHERE project_id = $2
+			SELECT id FROM metering_labels WHERE `+ownerOrAdmin("project_id", "$2", "$3")+`
 		)
-	`, ruleID, projectID)
+	`, ruleID, projectID, isAdmin(c))
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "delete_metering_label_rule").Msg("failed to delete metering label rule")

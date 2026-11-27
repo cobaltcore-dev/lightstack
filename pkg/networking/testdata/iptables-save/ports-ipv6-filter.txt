@@ -1,0 +1,146 @@
+# iptables v1.8.13 (nf_tables), captured by TestCaptureIPTablesSave
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:ls-bound-in - [0:0]
+:ls-bound-out - [0:0]
+:ls-filter-top - [0:0]
+:ls-iaaaaaaaa-1 - [0:0]
+:ls-ibbbbbbbb-2 - [0:0]
+:ls-icccccccc-3 - [0:0]
+:ls-idddddddd-4 - [0:0]
+:ls-local - [0:0]
+:ls-oaaaaaaaa-1 - [0:0]
+:ls-obbbbbbbb-2 - [0:0]
+:ls-occcccccc-3 - [0:0]
+:ls-odddddddd-4 - [0:0]
+:ls-saaaaaaaa-1 - [0:0]
+:ls-sdddddddd-4 - [0:0]
+:ls-sg-chain - [0:0]
+:ls-sg-fallback - [0:0]
+-A INPUT -j ls-filter-top
+-A FORWARD -j ls-filter-top
+-A ls-bound-in -m physdev --physdev-in tapaaaaaaaa-11 -j RETURN
+-A ls-bound-in -m physdev --physdev-in tapbbbbbbbb-22 -j RETURN
+-A ls-bound-in -m physdev --physdev-in tapcccccccc-33 -j RETURN
+-A ls-bound-in -m physdev --physdev-in tapdddddddd-44 -j RETURN
+-A ls-bound-in -j DROP
+-A ls-bound-out -m physdev --physdev-out tapaaaaaaaa-11 -j RETURN
+-A ls-bound-out -m physdev --physdev-out tapbbbbbbbb-22 -j RETURN
+-A ls-bound-out -m physdev --physdev-out tapcccccccc-33 -j RETURN
+-A ls-bound-out -m physdev --physdev-out tapdddddddd-44 -j RETURN
+-A ls-bound-out -j DROP
+-A ls-filter-top -j ls-local
+-A ls-iaaaaaaaa-1 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j RETURN
+-A ls-iaaaaaaaa-1 -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j RETURN
+-A ls-iaaaaaaaa-1 -p ipv6-icmp -m icmp6 --icmpv6-type 132 -j RETURN
+-A ls-iaaaaaaaa-1 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-A ls-iaaaaaaaa-1 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
+-A ls-iaaaaaaaa-1 -p udp -m udp --sport 547 --dport 546 -j RETURN
+-A ls-iaaaaaaaa-1 -m state --state RELATED,ESTABLISHED -j RETURN
+-A ls-iaaaaaaaa-1 -p ipv6-icmp -j RETURN
+-A ls-iaaaaaaaa-1 -m state --state INVALID -j DROP
+-A ls-iaaaaaaaa-1 -j ls-sg-fallback
+-A ls-ibbbbbbbb-2 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j RETURN
+-A ls-ibbbbbbbb-2 -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j RETURN
+-A ls-ibbbbbbbb-2 -p ipv6-icmp -m icmp6 --icmpv6-type 132 -j RETURN
+-A ls-ibbbbbbbb-2 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-A ls-ibbbbbbbb-2 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
+-A ls-ibbbbbbbb-2 -p udp -m udp --sport 547 --dport 546 -j RETURN
+-A ls-ibbbbbbbb-2 -j ls-sg-fallback
+-A ls-icccccccc-3 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j RETURN
+-A ls-icccccccc-3 -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j RETURN
+-A ls-icccccccc-3 -p ipv6-icmp -m icmp6 --icmpv6-type 132 -j RETURN
+-A ls-icccccccc-3 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-A ls-icccccccc-3 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
+-A ls-icccccccc-3 -p udp -m udp --sport 547 --dport 546 -j RETURN
+-A ls-icccccccc-3 -m state --state RELATED,ESTABLISHED -j RETURN
+-A ls-icccccccc-3 -m state --state INVALID -j DROP
+-A ls-icccccccc-3 -j ls-sg-fallback
+-A ls-idddddddd-4 -p ipv6-icmp -m icmp6 --icmpv6-type 130 -j RETURN
+-A ls-idddddddd-4 -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j RETURN
+-A ls-idddddddd-4 -p ipv6-icmp -m icmp6 --icmpv6-type 132 -j RETURN
+-A ls-idddddddd-4 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-A ls-idddddddd-4 -p ipv6-icmp -m icmp6 --icmpv6-type 136 -j RETURN
+-A ls-idddddddd-4 -p udp -m udp --sport 547 --dport 546 -j RETURN
+-A ls-idddddddd-4 -m state --state RELATED,ESTABLISHED -j RETURN
+-A ls-idddddddd-4 -m state --state INVALID -j DROP
+-A ls-idddddddd-4 -j ls-sg-fallback
+-A ls-local -i br-net1 -m physdev --physdev-in tap+ -j ls-bound-in
+-A ls-local -o br-net1 -m physdev --physdev-out tap+ --physdev-is-bridged -j ls-bound-out
+-A ls-local -i br-net2 -m physdev --physdev-in tap+ -j ls-bound-in
+-A ls-local -o br-net2 -m physdev --physdev-out tap+ --physdev-is-bridged -j ls-bound-out
+-A ls-local -m physdev --physdev-out tapaaaaaaaa-11 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapaaaaaaaa-11 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapaaaaaaaa-11 -j ls-oaaaaaaaa-1
+-A ls-local -m physdev --physdev-out tapbbbbbbbb-22 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapbbbbbbbb-22 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapbbbbbbbb-22 -j ls-obbbbbbbb-2
+-A ls-local -m physdev --physdev-out tapcccccccc-33 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapcccccccc-33 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapcccccccc-33 -j ls-occcccccc-3
+-A ls-local -m physdev --physdev-out tapdddddddd-44 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapdddddddd-44 --physdev-is-bridged -j ls-sg-chain
+-A ls-local -m physdev --physdev-in tapdddddddd-44 -j ls-odddddddd-4
+-A ls-local -m physdev --physdev-out lr+ --physdev-is-bridged -j ACCEPT
+-A ls-local -m physdev --physdev-in lr+ --physdev-is-bridged -j ACCEPT
+-A ls-local -m physdev --physdev-out ld+ --physdev-is-bridged -j ACCEPT
+-A ls-local -m physdev --physdev-in ld+ --physdev-is-bridged -j ACCEPT
+-A ls-oaaaaaaaa-1 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j RETURN
+-A ls-oaaaaaaaa-1 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-A ls-oaaaaaaaa-1 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 143 -j RETURN
+-A ls-oaaaaaaaa-1 -j ls-saaaaaaaa-1
+-A ls-oaaaaaaaa-1 -p ipv6-icmp -m icmp6 --icmpv6-type 134 -j DROP
+-A ls-oaaaaaaaa-1 -p ipv6-icmp -j RETURN
+-A ls-oaaaaaaaa-1 -p udp -m udp --sport 546 --dport 547 -j RETURN
+-A ls-oaaaaaaaa-1 -p udp -m udp --sport 547 --dport 546 -j DROP
+-A ls-oaaaaaaaa-1 -m state --state RELATED,ESTABLISHED -j RETURN
+-A ls-oaaaaaaaa-1 -j RETURN
+-A ls-oaaaaaaaa-1 -m state --state INVALID -j DROP
+-A ls-oaaaaaaaa-1 -j ls-sg-fallback
+-A ls-obbbbbbbb-2 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j RETURN
+-A ls-obbbbbbbb-2 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-A ls-obbbbbbbb-2 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 143 -j RETURN
+-A ls-obbbbbbbb-2 -p ipv6-icmp -m icmp6 --icmpv6-type 134 -j DROP
+-A ls-obbbbbbbb-2 -p ipv6-icmp -j RETURN
+-A ls-obbbbbbbb-2 -p udp -m udp --sport 546 --dport 547 -j RETURN
+-A ls-obbbbbbbb-2 -p udp -m udp --sport 547 --dport 546 -j DROP
+-A ls-obbbbbbbb-2 -j ls-sg-fallback
+-A ls-occcccccc-3 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j RETURN
+-A ls-occcccccc-3 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-A ls-occcccccc-3 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 143 -j RETURN
+-A ls-occcccccc-3 -p ipv6-icmp -m icmp6 --icmpv6-type 134 -j DROP
+-A ls-occcccccc-3 -p ipv6-icmp -j RETURN
+-A ls-occcccccc-3 -p udp -m udp --sport 546 --dport 547 -j RETURN
+-A ls-occcccccc-3 -p udp -m udp --sport 547 --dport 546 -j DROP
+-A ls-occcccccc-3 -m state --state RELATED,ESTABLISHED -j RETURN
+-A ls-occcccccc-3 -m state --state INVALID -j DROP
+-A ls-occcccccc-3 -j ls-sg-fallback
+-A ls-odddddddd-4 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 131 -j RETURN
+-A ls-odddddddd-4 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 135 -j RETURN
+-A ls-odddddddd-4 -s ::/128 -d ff02::/16 -p ipv6-icmp -m icmp6 --icmpv6-type 143 -j RETURN
+-A ls-odddddddd-4 -j ls-sdddddddd-4
+-A ls-odddddddd-4 -p ipv6-icmp -m icmp6 --icmpv6-type 134 -j DROP
+-A ls-odddddddd-4 -p ipv6-icmp -j RETURN
+-A ls-odddddddd-4 -p udp -m udp --sport 546 --dport 547 -j RETURN
+-A ls-odddddddd-4 -p udp -m udp --sport 547 --dport 546 -j DROP
+-A ls-odddddddd-4 -m state --state RELATED,ESTABLISHED -j RETURN
+-A ls-odddddddd-4 -m state --state INVALID -j DROP
+-A ls-odddddddd-4 -j ls-sg-fallback
+-A ls-saaaaaaaa-1 -s fd00::5/128 -m mac --mac-source fa:16:3e:aa:00:01 -j RETURN
+-A ls-saaaaaaaa-1 -s fe80::f816:3eff:feaa:1/128 -m mac --mac-source fa:16:3e:aa:00:01 -j RETURN
+-A ls-saaaaaaaa-1 -j DROP
+-A ls-sdddddddd-4 -m mac --mac-source fa:16:3e:dd:00:04 -j RETURN
+-A ls-sdddddddd-4 -j DROP
+-A ls-sg-chain -m physdev --physdev-out tapaaaaaaaa-11 --physdev-is-bridged -j ls-iaaaaaaaa-1
+-A ls-sg-chain -m physdev --physdev-in tapaaaaaaaa-11 --physdev-is-bridged -j ls-oaaaaaaaa-1
+-A ls-sg-chain -m physdev --physdev-out tapbbbbbbbb-22 --physdev-is-bridged -j ls-ibbbbbbbb-2
+-A ls-sg-chain -m physdev --physdev-in tapbbbbbbbb-22 --physdev-is-bridged -j ls-obbbbbbbb-2
+-A ls-sg-chain -m physdev --physdev-out tapcccccccc-33 --physdev-is-bridged -j ls-icccccccc-3
+-A ls-sg-chain -m physdev --physdev-in tapcccccccc-33 --physdev-is-bridged -j ls-occcccccc-3
+-A ls-sg-chain -m physdev --physdev-out tapdddddddd-44 --physdev-is-bridged -j ls-idddddddd-4
+-A ls-sg-chain -m physdev --physdev-in tapdddddddd-44 --physdev-is-bridged -j ls-odddddddd-4
+-A ls-sg-chain -j ACCEPT
+-A ls-sg-fallback -j DROP
+COMMIT

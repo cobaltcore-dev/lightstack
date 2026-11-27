@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cobaltcore-dev/lightstack/pkg/networking"
 	"github.com/google/uuid"
 )
 
@@ -17,14 +16,15 @@ import (
 // Two unrelated causes shared that one message, and only the first is reachable without a Linux host:
 //
 //   - stub: BridgeManager.stubBridges is an in-process map (netns.go — written by createBridgeStub,
-//     read by the stub branch of AttachToBridge). It is never persisted and never rebuilt, so a port
+//     read by the stub branch of BridgeManager.AttachToBridge, since removed). It is never persisted and never rebuilt, so a port
 //     on any network created before the current process failed. That is why the ticket's repro fails
 //     against a long-running compose stack (restart: unless-stopped) and passes if you create the
 //     network and the port back to back.
 //
 //   - real: the TAP was created and attached inside light-ns-<project> while the bridge lives in the
 //     root namespace, and nothing on that path ever created the namespace. Verified on a host in
-//     T092; the placement is now enforced by TAPDeviceManager's namespace-free signature.
+//     T092. Neutron makes no TAP any more: the guest's TAP is libvirt's, named for its port (SPEC-033
+//     FR-041), on the bridge libvirt finds in the namespace Lightstack runs in.
 //
 // The fix direction is forced rather than chosen: the bridge (network.go, "for libvirt access"),
 // dnsmasq (reconciler.go, empty nsName) and the egress SNAT rules are ALL already in the root
@@ -81,32 +81,6 @@ func TestCreatePortOnNetworkAbsentFromBridgeRegistry(t *testing.T) {
 	}
 	if mac, _ := resp.Port["mac_address"].(string); mac == "" {
 		t.Error("port must report a MAC address")
-	}
-}
-
-// TestCreatePortPlacesTapWhereTheBridgeIs — the real-mode placement rule (FR-003).
-//
-// Asserted through the managers rather than the handler, because a stub TAP cannot be inspected for
-// its namespace: the point is that the port path asks for the SAME placement the bridge path uses.
-//
-// The TAP half of this is now enforced by the compiler — CreateTAPDevice takes no namespace, so the
-// inNamespace=true regression is unrepresentable. What remains testable, and what this still guards,
-// is the bridge half: BridgeManager keeps its namespace parameters because auto_allocated_topology.go
-// genuinely passes true, so the port path can still drift back to naming a namespace there.
-func TestCreatePortPlacesTapWhereTheBridgeIs(t *testing.T) {
-	br := networking.NewBridgeManager("stub")
-	taps := networking.NewTAPDeviceManager("stub")
-
-	// The bridge path: root namespace, as network.go does for libvirt's benefit.
-	if err := br.CreateBridge("br-placement"); err != nil {
-		t.Fatalf("create bridge in root ns: %v", err)
-	}
-	if err := taps.CreateTAPDevice("tap-placement"); err != nil {
-		t.Fatalf("create tap: %v", err)
-	}
-	// The attach must name the same placement the bridge was created with.
-	if err := br.AttachToBridge("tap-placement", "br-placement"); err != nil {
-		t.Fatalf("attach in root ns: %v", err)
 	}
 }
 

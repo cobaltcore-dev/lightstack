@@ -10,21 +10,26 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// CreateRBACPolicy handles POST /v2.0/rbac-policies
+// CreateRBACPolicy handles POST /v2.0/rbac-policies. The policy belongs to the project an
+// administrator names, or else to the caller's (SPEC-033 FR-058).
 func (svc *Service) CreateRBACPolicy(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
 	var req struct {
 		RBACPolicy struct {
-			ObjectType   string `json:"object_type" binding:"required"`
-			ObjectID     string `json:"object_id" binding:"required"`
-			TargetTenant string `json:"target_tenant" binding:"required"`
-			Action       string `json:"action" binding:"required"`
+			ObjectType   string  `json:"object_type" binding:"required"`
+			ObjectID     string  `json:"object_id" binding:"required"`
+			TargetTenant string  `json:"target_tenant" binding:"required"`
+			Action       string  `json:"action" binding:"required"`
+			ProjectID    *string `json:"project_id"`
+			TenantID     *string `json:"tenant_id"`
 		} `json:"rbac_policy" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+	projectID, ok := svc.ownerOf(c, req.RBACPolicy.ProjectID, req.RBACPolicy.TenantID)
+	if !ok {
 		return
 	}
 
@@ -54,16 +59,16 @@ func (svc *Service) CreateRBACPolicy(c *gin.Context) {
 	})
 }
 
-// ListRBACPolicies handles GET /v2.0/rbac-policies
+// ListRBACPolicies handles GET /v2.0/rbac-policies: the caller's project's policies, every
+// project's for an administrator, narrowed by project_id/tenant_id (SPEC-033 FR-057).
 func (svc *Service) ListRBACPolicies(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
+	f := &common.SQLFilter{}
+	projectScope(c, f, "project_id", ownedBy("project_id"))
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, project_id, object_type, object_id, target_tenant, action
-		FROM rbac_policies
-		WHERE project_id = $1
+		FROM rbac_policies`+f.Where()+`
 		ORDER BY created_at DESC
-	`, projectID)
+	`, f.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_rbac_policies").Msg("failed to query RBAC policies")
 		common.SendError(c, common.NewInternalServerError("failed to list RBAC policies"))
@@ -108,8 +113,8 @@ func (svc *Service) GetRBACPolicy(c *gin.Context) {
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT project_id, object_type, object_id, target_tenant, action
 		FROM rbac_policies
-		WHERE id = $1 AND project_id = $2
-	`, policyID, projectID).Scan(&projectID, &objectType, &objectID, &targetTenant, &action)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, policyID, projectID, isAdmin(c)).Scan(&projectID, &objectType, &objectID, &targetTenant, &action)
 
 	if err != nil {
 		common.SendError(c, common.NewNotFoundError("RBAC policy"))
@@ -160,7 +165,7 @@ func (svc *Service) UpdateRBACPolicy(c *gin.Context) {
 	u.Set("updated_at", time.Now())
 
 	query := "UPDATE rbac_policies SET " + u.Assignments() +
-		" WHERE id = " + u.Arg(policyID) + " AND project_id = " + u.Arg(projectID)
+		" WHERE id = " + u.Arg(policyID) + " AND " + ownerOrAdmin("project_id", u.Arg(projectID), u.Arg(isAdmin(c)))
 
 	_, err := svc.pool.Exec(c.Request.Context(), query, u.Args()...)
 
@@ -180,8 +185,8 @@ func (svc *Service) DeleteRBACPolicy(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	result, err := svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM rbac_policies WHERE id = $1 AND project_id = $2",
-		policyID, projectID,
+		"DELETE FROM rbac_policies WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+		policyID, projectID, isAdmin(c),
 	)
 
 	if err != nil {

@@ -94,6 +94,17 @@ func assertNeutronShape(t *testing.T, inner map[string]any, wantType string) {
 	}
 }
 
+// assertNeutronError checks the envelope's shape, upstream's type and message, and the detail empty, as
+// upstream's exceptions leave it.
+func assertNeutronError(t *testing.T, body, wantType, wantMessage string) {
+	t.Helper()
+	inner := neutronError(t, body)
+	assertNeutronShape(t, inner, wantType)
+	if inner["message"] != wantMessage || inner["detail"] != "" {
+		t.Errorf("message %q, detail %q; want %q and none", inner["message"], inner["detail"], wantMessage)
+	}
+}
+
 func sortedKeys(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -147,39 +158,56 @@ func TestNeutronNotFoundNamesTheConditionPerResource(t *testing.T) {
 // other than its own automatic ones remains, and a floating IP or a router gateway is such a port
 // there. Here each is a row of its own, so each is a case of its own. Subnets are not a case:
 // upstream deletes them with the network (TestDeleteNetworkTakesItsSubnets).
+//
+// SPEC-033 T216: the message is upstream's, "Unable to complete operation on network
+// <id>. <reason>.", its reason naming the ports as _ensure_network_not_in_use does, and the floating
+// IPs and routers that have no port here the same way; the detail is empty.
 func TestNeutronInUseNamesTheCondition(t *testing.T) {
 	requireDB(t)
 	r := newEnvelopeRouter()
 
 	for _, tc := range []struct {
 		name string
-		seed func(t *testing.T, networkID string)
+		seed func(t *testing.T, networkID string) (reason string)
 	}{
-		{"active port", func(t *testing.T, networkID string) {
-			mustExec(t, `INSERT INTO ports (name, network_id, project_id, mac_address)
-				VALUES ('spec024-in-use', $1, $2, 'fa:16:3e:00:00:02')`, networkID, seededProjectID)
+		{"active port", func(t *testing.T, networkID string) string {
+			id := uuid.NewString()
+			mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, mac_address)
+				VALUES ($1, 'spec024-in-use', $2, $3, 'fa:16:3e:00:00:02')`, id, networkID, seededProjectID)
+			return "There are one or more ports still in use on the network, id for these ports is: " + id
 		}},
-		{"floating IP", func(t *testing.T, networkID string) {
-			mustExec(t, `INSERT INTO floating_ips (project_id, floating_network_id, floating_ip_address)
-				VALUES ($1, $2, '203.0.113.77')`, seededProjectID, networkID)
+		{"two active ports, in the order they were made", func(t *testing.T, networkID string) string {
+			later, earlier := uuid.NewString(), uuid.NewString()
+			for _, p := range []struct{ id, mac, at string }{{later, "fa:16:3e:00:00:12", "2021-01-01 00:00:00"}, {earlier, "fa:16:3e:00:00:11", "2020-01-01 00:00:00"}} {
+				mustExec(t, `INSERT INTO ports (id, name, network_id, project_id, mac_address, created_at)
+					VALUES ($1, 'spec024-in-use', $2, $3, $4, $5)`, p.id, networkID, seededProjectID, p.mac, p.at)
+			}
+			return "There are one or more ports still in use on the network, id for these ports is: " + earlier + "," + later
 		}},
-		{"router gateway", func(t *testing.T, networkID string) {
+		{"floating IP", func(t *testing.T, networkID string) string {
+			id := uuid.NewString()
+			mustExec(t, `INSERT INTO floating_ips (id, project_id, floating_network_id, floating_ip_address)
+				VALUES ($1, $2, $3, '203.0.113.77')`, id, seededProjectID, networkID)
+			return "There are one or more floating IPs allocated from the network, id for these floating IPs is: " + id
+		}},
+		{"router gateway", func(t *testing.T, networkID string) string {
 			routerID := uuid.NewString()
 			mustExec(t, `INSERT INTO routers (id, name, project_id, external_gateway_info)
 				VALUES ($1, 'spec024-in-use', $2, $3::jsonb)`,
 				routerID, seededProjectID, fmt.Sprintf(`{"network_id":%q}`, networkID))
 			cleanupRows(t, "routers", routerID)
+			return "There are one or more routers using the network as their external gateway, id for these routers is: " + routerID
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id := seedNetwork(t, "spec024-in-use-"+uuid.NewString()[:8])
-			tc.seed(t, id)
+			reason := tc.seed(t, id)
 
 			code, body := doReq(r, http.MethodDelete, "/v2.0/networks/"+id, nil)
 			if code != http.StatusConflict {
 				t.Fatalf("status = %d, want 409 (body %s)", code, body)
 			}
-			assertNeutronShape(t, neutronError(t, body), "NetworkInUse")
+			assertNeutronError(t, body, "NetworkInUse", "Unable to complete operation on network "+id+". "+reason+".")
 		})
 	}
 }

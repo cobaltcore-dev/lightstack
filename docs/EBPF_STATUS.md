@@ -1,24 +1,28 @@
 # eBPF Security Groups - Implementation Status
 
-**Status**: ⚠️ **PARTIAL IMPLEMENTATION** — wired into the port lifecycle, but the eBPF object does not load
-in a stock build, so eBPF mode currently adds no east-west filtering (see *What eBPF mode does today*)
-**Created**: 2026-03-16 (Sprint 69) · **Updated**: 2026-10-01 (cloud-storage#533)
+**Status**: ⚠️ **NOT WIRED** — security groups are enforced in `ebpf` mode by the ports' iptables chains, as in
+`iptables` mode; the eBPF filter has no attach point and no caller (see *What eBPF mode does today*)
+**Created**: 2026-03-16 (Sprint 69) · **Updated**: 2026-11-23 (cloud-storage#579, SPEC-033 FR-047)
 
 ---
 
 ## What eBPF mode does today
 
-`networking_mode: ebpf` currently behaves like `networking_mode: iptables`:
+`networking_mode: ebpf` behaves exactly as `networking_mode: iptables` (SPEC-033 FR-047):
 
-- The **north-south** ingress filter applies in both modes. It is the per-fixed-IP iptables chain built from
-  `port_security_groups` when a floating IP is associated, and rebuilt when a group's rules change
-  (`RouterManager.EnsureIngressFilter`, `pkg/networking/northsouth.go`).
-- The **east-west** XDP filter does not exist. `neutron.NewService` creates the security-group manager with
-  an empty object path (`internal/neutron/network.go:40`), `ebpf.LoadCollectionSpec("")` fails, Neutron
-  logs `failed to initialize security group manager` and runs without a manager, and `CreatePort` skips the
-  eBPF block: no rules are programmed and no filter is attached.
+- **Every port is firewalled by its chains** on the node its guest runs on, in both directions and for all
+  traffic — between VMs, through floating IPs and for egress — as upstream's iptables driver does: chains
+  `ls-i`, `ls-o` and `ls-s` per port, built from its groups, with remote groups resolved to their members'
+  addresses (FR-041; `pkg/networking/port_firewall.go`). This needs `br_netfilter`, which Lightstack loads at
+  start in either mode (FR-046).
+- **The eBPF filter is not used.** It attached to the TAP Neutron itself made for each port. That TAP is gone:
+  a guest's TAP is libvirt's, named `tap<port id[:11]>` in the domain, and port creation's eBPF step went with
+  Neutron's TAP. Nothing calls the eBPF package (`pkg/networking/ebpf`) any more — its wrapper in
+  `pkg/networking`, which translated a port's rules, went with its last caller (SPEC-033 T221) — and the object never loaded in a stock build anyway (an empty object path).
 
-Everything below describes the code path that runs once the object loads.
+Whether eBPF goes, or is re-targeted at libvirt's TAP and the ports' records, is a decision for the project; it
+is not made here. Everything below describes the code as it stands, unreached, and the translation a re-target
+would need again.
 
 ---
 
@@ -39,10 +43,10 @@ Everything below describes the code path that runs once the object loads.
 - Statistics API
 
 ### 3. Rule Translation
-**File**: `pkg/networking/security_groups_ebpf.go`
-
-`ApplySecurityGroupToPort()` turns a port's Neutron rules into map entries. It fails closed — a rule the
-filter cannot express is dropped, never widened:
+**Removed** with its last caller (SPEC-033 T221): `pkg/networking/security_groups.go` and
+`security_groups_ebpf.go` wrapped the package for Neutron, and `ApplySecurityGroupToPort()` turned a port's
+Neutron rules into map entries. A re-target writes its own translation; it must fail closed as that one did — a
+rule the filter cannot express is dropped, never widened:
 
 - **Egress rules** are skipped; the program filters ingress only.
 - **A rule whose only source is `remote_group_id`** is dropped, so it admits nothing: the filter is
@@ -52,15 +56,8 @@ filter cannot express is dropped, never widened:
   `0.0.0.0/0`, and one with an IPv6 prefix made the port's whole rule set fail to program.
 
 ### 4. Port Lifecycle
-**File**: `internal/neutron/ports.go`
-
-- **Create**: `security_groups` is accepted and stored in `port_security_groups` (migrations 006 and 053).
-  In eBPF mode, for a port with a fixed IP, the rules of its groups are fetched and programmed, and the XDP
-  filter is attached to the TAP **whether or not programming succeeded** — attaching only on success left
-  everything that port sent unchecked. If the attach itself fails, the port is **not created**: the request
-  answers `500` and the port row and TAP are rolled back, so no interface exists whose traffic skips the
-  filter.
-- **Delete**: the XDP filter is detached and the port's rule set removed.
+**Not wired.** Until SPEC-033, port creation programmed a port's rules and attached the filter to Neutron's own
+TAP, and port deletion detached it. Neutron no longer makes a TAP, so both steps went (FR-045, FR-047).
 
 ### 5. Build System
 **File**: `Makefile`
@@ -81,18 +78,19 @@ only if one of that port's ingress rules matches its protocol, source address an
   MAC and broadcast, so DHCP and off-host traffic from the VM do not get through.
 - Non-IPv4 frames — ARP and IPv6 among them — pass unfiltered.
 - Traffic arriving from outside the host never crosses a local VM's TAP receive path, so this filter does
-  not see it; the north-south iptables filter covers floating-IP ingress.
+  not see it.
 
 ---
 
 ## What's Missing ❌
 
-1. **Loading.** The object path is hard-coded empty (`internal/neutron/network.go:40`), the
-   `security_group_mode` and `ebpf_object_path` keys in `config/lightstack.yaml` are read by nothing, and the
-   container image does not build `secgroup.o`.
-2. **Rule synchronization.** Creating or deleting a security-group rule refreshes only the north-south filter
-   (`refreshIngressFiltersForSG`); the eBPF map keeps the rules the port was created with.
-3. **Security-group changes on an existing port.** Rules are programmed once, at port creation.
+1. **An attach point.** Neutron's TAP is gone; libvirt's appears when the guest starts, on the node it is
+   bound to, which nothing in the eBPF path follows.
+2. **Loading.** The object path is empty, the `security_group_mode` and `ebpf_object_path` keys in
+   `config/lightstack.yaml` are read by nothing, and the container image does not build `secgroup.o`.
+3. **Following the records.** Rules were programmed once, at port creation: a rule change, a membership
+   change or a remote group's members never reached the map. The ports' chains follow all three (FR-008b,
+   FR-041).
 4. **Destinations that are not local ports.** Frames to the gateway, to broadcast, or to anything off-host
    are dropped (see *How the Filter Decides*).
 5. **IPv6.** IPv6 frames pass unfiltered, and IPv6 rules are dropped.
@@ -140,16 +138,12 @@ make build-with-ebpf
 
 - **eBPF C Program**: `pkg/networking/ebpf/secgroup.c`
 - **Go Integration**: `pkg/networking/ebpf/secgroup_ebpf.go`
-- **Security Group Manager**: `pkg/networking/security_groups.go`
-- **Security Group Helpers**: `pkg/networking/security_groups_ebpf.go`
-- **Port lifecycle**: `internal/neutron/ports.go` (`CreatePort`, `DeletePort`)
-- **North-south filter**: `pkg/networking/northsouth.go`
 - **Makefile**: Build targets for eBPF compilation
 
 ---
 
 ## Status Summary
 
-**Foundation**: ✅ eBPF program, Go wrapper, fail-closed rule translation, build targets
-**Integration**: ⚠️ Port create and delete wired; no rule sync, no security-group changes on existing ports
-**Usability**: ❌ Does not load in a stock build — eBPF mode currently equals iptables mode
+**Foundation**: ✅ eBPF program, its Go package, build targets; the rule translation was removed with its caller
+**Integration**: ❌ Not wired since SPEC-033: no attach point, no caller
+**Enforcement**: ✅ in `ebpf` mode by the ports' iptables chains, as in `iptables` mode

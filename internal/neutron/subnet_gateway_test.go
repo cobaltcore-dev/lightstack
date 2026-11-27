@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"reflect"
 	"testing"
 
@@ -113,6 +114,8 @@ func TestExplicitGatewayIsStored(t *testing.T) {
 	}
 }
 
+// TestSubnetAllocationPoolsReserveGateway — a new subnet's default pools leave its gateway out, a
+// gateway inside the range splitting it in two, as upstream's (SPEC-033 FR-030).
 func TestSubnetAllocationPoolsReserveGateway(t *testing.T) {
 	ptr := func(ip string) *string { return &ip }
 	tests := []struct {
@@ -143,8 +146,9 @@ func TestSubnetAllocationPoolsReserveGateway(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := subnetAllocationPools(tt.cidr, tt.gateway); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("subnetAllocationPools(%q, %v) = %#v, want %#v", tt.cidr, tt.gateway, got, tt.want)
+			got := renderPools(generatePools(netip.MustParsePrefix(tt.cidr), parseGateway(tt.gateway)))
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("generatePools(%q, %v) = %#v, want %#v", tt.cidr, derefOr(tt.gateway, "none"), got, tt.want)
 			}
 		})
 	}

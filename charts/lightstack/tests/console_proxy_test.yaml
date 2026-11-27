@@ -41,6 +41,7 @@ tests:
     set:
       realMode.enabled: true
       deploymentMode: multi-node
+      neutron.networkNode: node-a
       glance.storageMode: rbd
       cinder.storageMode: rbd
     asserts:

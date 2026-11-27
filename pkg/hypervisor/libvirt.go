@@ -126,6 +126,13 @@ func NewVMManager(libvirtURI, mode string) (*VMManager, error) {
 	return mgr, nil
 }
 
+// NewDisconnectedVMManager is a real-mode manager whose libvirt connection is down, as one is between a
+// lost connection and its re-dial: every call that needs libvirt fails, "not connected to libvirt".
+// Tests drive a hypervisor's failure through it without a libvirt to stop (SPEC-033 T199).
+func NewDisconnectedVMManager(libvirtURI string) *VMManager {
+	return &VMManager{libvirtURI: libvirtURI, mode: "real", stubVMs: make(map[string]*stubVM)}
+}
+
 // StartVMManager is NewVMManager for the server. In real mode it returns at once, with the
 // connection to libvirt still to be made: a background loop dials — each attempt bounded at
 // connectAttemptTimeout, the pause between failures growing from reconnectBackoffMin to

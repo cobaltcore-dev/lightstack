@@ -30,10 +30,12 @@
 
 ---
 
-## 1. eBPF Security Groups ⚠️ PARTIAL
+## 1. eBPF Security Groups ⚠️ NOT WIRED
 
-**Status**: ⚠️ **PARTIAL** - integrated into the port lifecycle in commit 6881e7d, but the eBPF object does
-not load in a stock build, so eBPF mode adds no filtering — see [EBPF_STATUS.md](EBPF_STATUS.md)
+**Status**: ⚠️ **NOT WIRED** - integrated into the port lifecycle in commit 6881e7d; SPEC-033 removed port
+creation's eBPF step with the Neutron TAP it attached to, and the `pkg/networking` wrapper with its last caller.
+Security groups are each port's iptables chains in `ebpf` mode as in `iptables` mode — see
+[EBPF_STATUS.md](EBPF_STATUS.md). What follows is the earlier integration, as history.
 
 ### What Was Fixed
 - ✅ Port creation now applies eBPF rules when `mode == "ebpf"`

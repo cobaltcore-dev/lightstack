@@ -96,6 +96,7 @@ neutron:
 
   # VXLAN overlay networking (multi-node)
   vxlan_enabled: false
+  network_node: ""           # with VXLAN: the node holding every router and DHCP
   vni_range_start: 1000
   vni_range_end: 10000
   coordination_poll_interval: 1s
@@ -140,7 +141,8 @@ The binary honors exactly these environment variables:
 |----------|----------------------|------------------|
 | `LIGHTSTACK_DB_URL` | `database.url`: `postgres://…` or `sqlite:///absolute/path` (see [Database Configuration](#database-configuration)) | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_DB_BACKEND` | the backend the deployment expects, `postgres` or `sqlite`. When set, a `database.url` that selects the other one is refused at startup | startup (`cmd/lightstack/main.go`, `cmd/lightstack-migrate`) |
-| `LIGHTSTACK_NODE_NAME` | the name this node reserves volumes and snapshots under while it creates them; the startup sweep resolves only its own. Defaults to the host name. Set it where the host name changes across restarts — a pod without host networking; the Helm chart sets it to the pod's node name | startup (`internal/common/nodename.go`) |
+| `LIGHTSTACK_NODE_NAME` | the name this node goes by: it registers under it in the node registry, which the other nodes' calls find it by; the ports its guests use are bound to it (`binding:host_id`), so their firewall is built here; `neutron.network_node` names the network node by it; and it reserves volumes and snapshots under it while it creates them, the startup sweep resolving only its own. Defaults to the host name. Set it where the host name changes across restarts — a pod without host networking; the Helm chart sets it to the pod's node name | startup (`internal/common/nodename.go`) |
+| `LIGHTSTACK_NEUTRON_NETWORK_NODE` | `neutron.network_node`: the node, by its `LIGHTSTACK_NODE_NAME`, that holds every router's and every network's DHCP namespace (SPEC-033 FR-033). Required with VXLAN, where the server refuses to start while it is empty; ignored without VXLAN, a single node that is its own network node; read trimmed | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_JWT_SECRET` | `keystone.jwt_secret` | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_KEYSTONE_RGW_COMPAT_TENANT_IDS` | `keystone.rgw_compat_tenant_ids`. Two-way boolean: `true`/`1` turns it **on** over a config file that shipped it off; `false`/`0` turns it **off** against a config file that shipped it on. Renders `token.project.id` in OpenStack's dash-free form in the `/v3/auth/tokens` responses; `/v3/s3tokens` already uses that historical form. The EC2 mint accepts dash-free or alternate UUID encodings as input and stores the canonical database id. Enabling the flag therefore unifies Swift with the existing S3 tenant namespace without re-keying S3 data. | `internal/common/config.go` (`LoadConfig`) |
 | `LIGHTSTACK_ENDPOINT_HOST` | advertised catalog / self-link host — a **fallback**, see below | request time (`internal/keystone/auth.go`, `internal/common/baseurl.go`) |
@@ -191,27 +193,6 @@ What to expect after upgrading:
 - **There is deliberately no setting to restore the old order.** Two rules for the same
   question is what produced the defect.
 
-#### `LIGHTSTACK_ENDPOINT_HOST` also decides what the service catalog caches
-
-A second, narrower role. The catalog cache key includes the host a request addressed —
-it has to, or one caller's `Host` header would decide which endpoints another caller in
-the same project is handed, and therefore where that caller sends its token. But the host
-comes from a client-supplied header, so keying on it lets callers choose the key space:
-with `cache.enabled: true`, a tenant varying that one header writes a Redis entry per
-value, each held 24 hours in a store shared across the deployment.
-
-So **only the host named by `LIGHTSTACK_ENDPOINT_HOST` is cached.** A request addressing any
-other name is answered correctly, from the database, uncached.
-
-What that means in practice:
-
-- `cache.enabled` defaults to **false**, so most deployments are unaffected either way.
-- If you enable caching and want catalog lookups served from it, **set
-  `LIGHTSTACK_ENDPOINT_HOST` to the name your clients use.** Left unset, the advertised host is
-  `localhost` and a deployment addressed by any other name caches no catalogs.
-- The endpoints themselves are unaffected: precedence is still request host first, as
-  above. This setting governs caching only.
-
 **The service catalog now follows the same rule** (SPEC-025-followup). It previously did not:
 catalog endpoint URLs were resolved from `LIGHTSTACK_ENDPOINT_HOST` alone, so pointing it at a name
 clients could not resolve made *every* command fail at catalog lookup — one step **before** any
@@ -221,7 +202,7 @@ can reach the deployment at all is now handed a catalog naming the address it us
 `LIGHTSTACK_ENDPOINT_HOST` remains the fallback for both, used when a request carries no usable host, and
 `localhost` is the last resort so an advertised URL is always absolute and parseable.
 
-Two consequences worth knowing:
+One consequence worth knowing:
 
 - **A forwarded-host header is deliberately not trusted.** Lightstack reads `Host`, never
   `X-Forwarded-Host`. On a direct connection a forwarding header is chosen by the client, and the
@@ -230,10 +211,12 @@ Two consequences worth knowing:
   preserve the original `Host`** (nginx: `proxy_set_header Host $host;`); otherwise Lightstack advertises
   whatever name the proxy forwarded, typically the internal service name. That is no worse than the
   old `localhost` default, but it is not automatically better either.
-- **The catalog cache is keyed on the host as well as the project.** Enabling `cache.enabled`
-  (Redis, off by default) with a project-only key would let one caller's `Host` decide the endpoints
-  another caller in the same project receives. Nothing to configure — noted because the cache's
-  24-hour TTL previously rested on the catalog being identical for every caller, and it no longer is.
+
+The catalog is **not cached** (SPEC-034). It is read from the database on every token issue and
+validation, whether or not `cache.enabled` is set. A restart with a changed
+`LIGHTSTACK_ENDPOINT_HOST`, `LIGHTSTACK_ENDPOINT_SCHEME` or `glance.s3_endpoint`, an endpoint created
+or deleted through the Identity API, and a migration that rewrites catalog rows all show in the next
+token.
 
 The advertised **port** is applied consistently now too. It names the port the target
 service is reachable on, and replaces whatever port the request carried — which is what
@@ -525,6 +508,7 @@ neutron:
 
   # VXLAN overlay (multi-node)
   vxlan_enabled: false               # Enable VXLAN overlay
+  network_node: ""                   # Required with VXLAN: the network node's name
   vni_range_start: 1000              # VNI range start
   vni_range_end: 10000               # VNI range end
   coordination_poll_interval: 1s     # Coordination check interval
@@ -533,12 +517,21 @@ neutron:
 
 **networking_mode:**
 - `stub` - Mock networking (no actual networks)
-- `iptables` - iptables-based security groups (production)
-- `ebpf` - east-west XDP filtering on top of the iptables north-south filter — partial, and it does not
-  load in a stock build (see [EBPF_STATUS.md](EBPF_STATUS.md))
+- `iptables` - every port firewalled by iptables chains on the node its guest runs on, as upstream's
+  iptables driver (production)
+- `ebpf` - the same as `iptables` today: the eBPF filter is not wired (see [EBPF_STATUS.md](EBPF_STATUS.md))
+
+**The network node** (SPEC-033): one node holds every router and every network's DHCP and metadata,
+in namespaces `qrouter-<id>` and `qdhcp-<id>`, and alone answers for router and floating addresses on its
+uplink. Without VXLAN, which is a single node (the chart refuses several), the node is its own network node
+and `network_node` is ignored. With VXLAN, `network_node` names it — by the node name every node goes by, `LIGHTSTACK_NODE_NAME` when set (the chart
+sets it to the Kubernetes node's name), else the host name — and the server refuses to start while it is
+empty. A node that never registers makes every north-south change answer `500`, and the other nodes keep the
+routers and DHCP they hold until it is active: a name that matches no node takes nothing away.
 
 **VXLAN configuration** (multi-node only):
 - `vxlan_enabled: true` - Enable VXLAN overlay networking
+- `network_node` - The network node's name; required with VXLAN
 - `vni_range` - VXLAN Network Identifier range (1000-10000)
 - `vxlan_mtu: 1450` - Accounts for VXLAN overhead (50 bytes)
 

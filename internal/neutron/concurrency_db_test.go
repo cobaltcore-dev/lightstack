@@ -56,7 +56,7 @@ func TestNeutronConcurrencyMatrix(t *testing.T) {
 			svc := NewService(db, "stub", nil)
 			errs := make([]error, n)
 			dbtest.Concurrently(n, func(i int) {
-				_, errs[i] = svc.AllocatePortForInstance(context.Background(), netID, seededProjectID, uuid.NewString(), nil, false)
+				_, errs[i] = svc.AllocatePortForInstance(context.Background(), InstancePort{NetworkID: netID, ProjectID: seededProjectID, InstanceID: uuid.NewString(), SecurityGroupIDs: nil, CopyGroupsFrom: "", Admin: false})
 			})
 			for _, err := range errs {
 				if err != nil {

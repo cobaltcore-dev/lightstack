@@ -91,11 +91,14 @@ Lightstack is built on three core principles:
 
 **Technology:**
 - `github.com/vishvananda/netlink` - Linux networking
-- `github.com/vishvananda/netns` - Network namespaces
-- `github.com/coreos/go-iptables` - iptables rules
+- `iptables-restore` and `ip6tables-restore`, through a command runner bounded at one second per
+  command - the port firewall and the routers' NAT
+- `ip` and `ip netns` (iproute2), through the same command runner - the routers' namespaces and the
+  networks' DHCP namespaces
 
 **Key Design Decisions:**
-- **Namespace isolation**: Per-project network namespaces
+- **Isolation**: one bridge per network; every port firewalled on its node; routers and each network's
+  DHCP in namespaces on one network node (SPEC-033)
 - **No VXLAN in v1**: Single-node deployment uses bridges only
 - **iptables security groups**: Simple, proven, no eBPF complexity in v1
 - **dnsmasq for DHCP**: Standard, well-tested DHCP server
@@ -224,8 +227,8 @@ Services receive their database through constructors rather than importing a glo
     |
     +-- health.DatabaseCheck(db)
     +-- keystone.BootstrapAdmin(ctx, db, cfg.Keystone)
-    +-- keystone.NewAuthService(db, jwtSecret, ttl, cache)
-    +-- keystone.NewService(db, authService, cache)
+    +-- keystone.NewAuthService(db, jwtSecret, ttl)
+    +-- keystone.NewService(db, authService)
     +-- nova.NewService(db, libvirtURI, mode, cache)
     +-- neutron.NewService(db, mode, cache)
     +-- neutron.NewVXLANCoordinator(db, vxlanManager, nodeRegistry, ...)

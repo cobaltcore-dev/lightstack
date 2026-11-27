@@ -157,6 +157,16 @@ func TestNeutronFloatingIPCreate_Contract(t *testing.T) {
 	require.NoError(t, err, "Failed to create external network")
 	defer networks.Delete(client, extNetwork.ID)
 
+	// A floating IP's address comes from the pools of the network's IPv4 subnets; a network without
+	// one is refused, where it used to hand out an address of 192.0.2.0/24 (SPEC-033 FR-031).
+	extSubnet, err := subnets.Create(client, subnets.CreateOpts{
+		NetworkID: extNetwork.ID,
+		CIDR:      "198.18.251.0/24",
+		IPVersion: gophercloud.IPv4,
+	}).Extract()
+	require.NoError(t, err, "Failed to create external subnet")
+	defer subnets.Delete(client, extSubnet.ID)
+
 	// Create floating IP
 	createOpts := floatingips.CreateOpts{
 		FloatingNetworkID: extNetwork.ID,

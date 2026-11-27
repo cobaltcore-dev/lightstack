@@ -71,54 +71,50 @@ func (svc *Service) CreateAutoAllocatedTopology(c *gin.Context) {
 		return
 	}
 
-	// Create auto-allocated network
-	networkID := uuid.New().String()
-	networkName := "auto-allocated-network"
+	// The topology through the same functions as its parts (SPEC-033 R40): one transaction makes the
+	// network with its zone, its subnet and the subnet's DHCP port; then the network's bridge on this node
+	// and its DHCP on the network node. A part that cannot be applied takes the whole topology back,
+	// compare-and-set, and answers 500.
+	ctx := c.Request.Context()
+	networkID, subnetID := uuid.New().String(), uuid.New().String()
 	now := time.Now()
-
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, network_type, mtu, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, networkID, networkName, projectID, true, "ACTIVE", false, "flat", 1500, now, now)
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "create_auto_allocated_network").Str("project_id", projectID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to create auto-allocated network"))
-		return
-	}
-
-	// Create auto-allocated subnet
-	subnetID := uuid.New().String()
-	subnetCIDR := "192.168.100.0/24"
-	gatewayIP := "192.168.100.1"
-
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version, enable_dhcp, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, subnetID, "auto-allocated-subnet", networkID, projectID, subnetCIDR, gatewayIP, 4, true, now, now)
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "create_auto_allocated_subnet").Str("project_id", projectID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to create auto-allocated subnet"))
-		return
-	}
-
-	// Create the bridge if in real mode, in the namespace Lightstack runs in — where the port path, the
-	// reconciler, dnsmasq and the egress SNAT rules all put it. Bridge creation failures are logged but
-	// not surfaced: the DB rows are already committed, and a missing bridge is retried on the next port
-	// plug and on every reconciler pass.
-	//
-	// This used to create light-ns-<project> and build the bridge inside it, which produced a SECOND
-	// bridge of the same name that nothing could reach. BridgeManager.EnsureBridgeIP and
-	// ListManagedBridges are netlink-only, so a namespaced bridge could never be given its gateway
-	// address and was invisible to the reconciler's prune, while the guest TAPs, dnsmasq and the NAT
-	// rules all lived on the root-namespace bridge of the same name. Same defect as the port path, one
-	// path later (SPEC-024 / cloud-storage#546 F10).
-	if svc.mode != "stub" {
-		bridgeName := networking.BridgeNameForNetwork(networkID)
-		if err := svc.brManager.CreateBridge(bridgeName); err != nil {
-			log.Warn().Err(err).Str("bridge", bridgeName).Msg("failed to create auto-allocated bridge")
+	networkType, mtu := svc.networkTypeAndMTU()
+	err = database.WithTx(ctx, svc.pool, func(tx database.Tx) error {
+		if err := database.AdvisoryLock(ctx, tx, ctZoneLock); err != nil {
+			return err
 		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO networks (id, name, project_id, admin_state_up, status, shared, network_type, mtu, created_at, updated_at, ct_zone)
+			VALUES ($1, 'auto-allocated-network', $2, true, 'ACTIVE', false, $4, $5, $3, $3, `+nextZone+`)`,
+			networkID, projectID, now, networkType, mtu); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO subnets (id, name, network_id, project_id, cidr, gateway_ip, ip_version, enable_dhcp, created_at, updated_at)
+			VALUES ($1, 'auto-allocated-subnet', $2, $3, '192.168.100.0/24', '192.168.100.1', 4, true, $4, $4)`,
+			subnetID, networkID, projectID, now); err != nil {
+			return err
+		}
+		// The network is this transaction's alone: no lock to take before its DHCP port.
+		return syncDHCPPort(ctx, tx, networkID, []string{subnetID})
+	})
+	if err != nil {
+		log.Error().Err(err).Str("operation", "create_auto_allocated_topology").Str("project_id", projectID).Msg("database error")
+		common.SendError(c, common.NewInternalServerError("failed to create auto-allocated topology"))
+		return
+	}
+	apply := func() error {
+		if err := svc.brManager.CreateBridge(networking.BridgeNameForNetwork(networkID)); err != nil {
+			return err
+		}
+		return svc.convergeDHCPUnit(ctx, networkID)
+	}
+	if err := apply(); err != nil {
+		log.Error().Err(err).Str("network_id", networkID).Msg("the auto-allocated topology could not be applied; undoing it")
+		svc.undoNetworkCreate(ctx, networkID, now, subnetID)
+		svc.reapplyDHCP(ctx, networkID)
+		common.SendError(c, common.NewInternalServerError("failed to create auto-allocated topology"))
+		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -146,40 +142,14 @@ func (svc *Service) DeleteAutoAllocatedTopology(c *gin.Context) {
 		return
 	}
 
+	if err == nil {
+		// The same deletion as any network's, upstream's delete_network: refused while in use, under the
+		// network's lock (SPEC-033 T185).
+		err = svc.removeNetwork(c.Request.Context(), networkID)
+	}
 	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_auto_allocated_topology_lookup").Str("project_id", projectID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to find auto-allocated topology"))
+		sendChangeError(c, err, "delete", "auto-allocated topology")
 		return
 	}
-
-	// The same refusal as any network delete. This used to delete the subnets and the network
-	// regardless, and the cascade took the ports of any VM still on it. Upstream deletes the topology's
-	// network through delete_network, whose NetworkInUse reaches the caller.
-	inUse, err := svc.networkInUse(c.Request.Context(), networkID)
-	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_auto_allocated_topology").Str("network_id", networkID).Msg("failed to check whether the network is in use")
-		common.SendError(c, common.NewInternalServerError("failed to delete auto-allocated topology"))
-		return
-	}
-	if inUse != "" {
-		common.SendError(c, common.NewResourceInUseError("network", "delete auto-allocated topology", inUse))
-		return
-	}
-
-	// Delete network; its subnets go with it.
-	_, err = svc.pool.Exec(c.Request.Context(), `
-		DELETE FROM networks WHERE id = $1
-	`, networkID)
-
-	if err != nil {
-		log.Error().Err(err).Str("operation", "delete_auto_allocated_network").Str("network_id", networkID).Msg("database error")
-		common.SendError(c, common.NewInternalServerError("failed to delete auto-allocated network"))
-		return
-	}
-
-	// The same host teardown as any network delete. This used to remove only the bridge, leaving the
-	// network's dnsmasq and metadata DNAT to the reconciler's next pass.
-	svc.teardownNetworkHost(networkID)
-
 	c.Status(http.StatusNoContent)
 }

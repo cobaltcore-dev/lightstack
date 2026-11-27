@@ -2,6 +2,7 @@ package neutron
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -73,7 +74,9 @@ func TestListSecurityGroupsCarriesRulesArray(t *testing.T) {
 	requireDB(t)
 	r := newNeutronTestRouter()
 
-	code, body := doReq(r, http.MethodGet, "/v2.0/security-groups", neutronAuthHdr(seededProjectID, true))
+	// As a member: an administrator's listing spans every project (SPEC-033 FR-057), and this test
+	// reads the seeded project's groups.
+	code, body := doReq(r, http.MethodGet, "/v2.0/security-groups", neutronAuthHdr(seededProjectID, false))
 	if code != http.StatusOK {
 		t.Fatalf("list security groups: code=%d body=%s; want 200", code, body)
 	}
@@ -115,45 +118,77 @@ func TestNewSecurityGroupIncludesDefaultRules(t *testing.T) {
 	r := newNeutronTestRouter()
 	hdr := neutronAuthHdr(seededProjectID, true)
 
+	sgID, created := createShapeTestGroup(t, r, hdr, "spec020-default-sg")
+	assertDefaultRulesArray(t, "security-group create", created)
+	listed, shown := readGroupEmitters(t, r, hdr, sgID)
+	assertDefaultRulesArray(t, "security-group list", listed)
+	assertDefaultRulesArray(t, "security-group by id", shown)
+}
+
+// TestEmptySecurityGroupRulesArrayIsNotNull covers the nil→[] substitution in both
+// emitters, which nothing else reaches: the seeded default group always has rules, so
+// every other test in this file sees a populated array and the empty case never runs.
+//
+// It is the empty case that FR-022 is actually about. Go marshals a nil []gin.H as
+// `null`, not `[]`, so a group with no rules reproduces the original failure exactly —
+// openstacksdk hands Horizon a null, SecurityGroup.__init__ only guards the
+// missing-key case, and the null reaches a comprehension as "'NoneType' object is not
+// iterable". A group starts with upstream's two egress rules (SPEC-033 FR-043), so the
+// test deletes them, as an operator can.
+func TestEmptySecurityGroupRulesArrayIsNotNull(t *testing.T) {
+	requireDB(t)
+	r := newNeutronTestRouter()
+	hdr := neutronAuthHdr(seededProjectID, true)
+
+	sgID, _ := createShapeTestGroup(t, r, hdr, "spec020-empty-sg")
+	mustExec(t, "DELETE FROM security_group_rules WHERE security_group_id = $1", sgID)
+	listed, shown := readGroupEmitters(t, r, hdr, sgID)
+	assertEmptyRulesArray(t, "security-group list", listed)
+	assertEmptyRulesArray(t, "security-group by id", shown)
+}
+
+// createShapeTestGroup creates a group through the API, deleted again when the test ends, and
+// returns its id and the group the create answered with.
+func createShapeTestGroup(t *testing.T, r *gin.Engine, hdr map[string]string, name string) (string, map[string]any) {
+	t.Helper()
 	code, body := doReqBody(r, http.MethodPost, "/v2.0/security-groups",
-		`{"security_group":{"name":"spec020-default-sg","description":"default egress rules"}}`, hdr)
+		fmt.Sprintf(`{"security_group":{"name":%q,"description":"shape test"}}`, name), hdr)
 	if code != http.StatusCreated {
 		t.Fatalf("create security group: code=%d body=%s; want 201", code, body)
 	}
 	var created struct {
-		SecurityGroup struct {
-			ID string `json:"id"`
-		} `json:"security_group"`
+		SecurityGroup map[string]any `json:"security_group"`
 	}
 	if err := json.Unmarshal([]byte(body), &created); err != nil {
 		t.Fatalf("parse created group: %v; body=%s", err, body)
 	}
-	sgID := created.SecurityGroup.ID
+	sgID, _ := created.SecurityGroup["id"].(string)
 	if sgID == "" {
 		t.Fatalf("created group has no id; body=%s", body)
 	}
 	t.Cleanup(func() {
 		doReq(r, http.MethodDelete, "/v2.0/security-groups/"+sgID, hdr) //nolint:errcheck // best-effort fixture cleanup
 	})
+	return sgID, created.SecurityGroup
+}
 
-	// Emitter 1: the group list.
-	code, body = doReq(r, http.MethodGet, "/v2.0/security-groups", hdr)
+// readGroupEmitters reads a group back through the two emitters that substitute its rules
+// separately: the group list, and group-by-id.
+func readGroupEmitters(t *testing.T, r *gin.Engine, hdr map[string]string, sgID string) (listed, shown map[string]any) {
+	t.Helper()
+	code, body := doReq(r, http.MethodGet, "/v2.0/security-groups", hdr)
 	if code != http.StatusOK {
 		t.Fatalf("list security groups: code=%d body=%s; want 200", code, body)
 	}
-	var found bool
 	for _, sg := range securityGroupsFromBody(t, body) {
-		if id, _ := sg["id"].(string); id != sgID {
-			continue
+		if id, _ := sg["id"].(string); id == sgID {
+			listed = sg
 		}
-		found = true
-		assertDefaultRulesArray(t, "security-group list", sg)
 	}
-	if !found {
-		t.Errorf("the created group %s is absent from the list; body=%s", sgID, body)
+	if listed == nil {
+		t.Fatalf("the created group %s is absent from the list; body=%s", sgID, body)
 	}
 
-	// Emitter 2: group-by-id, which substitutes separately.
 	code, body = doReq(r, http.MethodGet, "/v2.0/security-groups/"+sgID, hdr)
 	if code != http.StatusOK {
 		t.Fatalf("get security group: code=%d body=%s; want 200", code, body)
@@ -164,7 +199,31 @@ func TestNewSecurityGroupIncludesDefaultRules(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &one); err != nil {
 		t.Fatalf("parse security_group: %v; body=%s", err, body)
 	}
-	assertDefaultRulesArray(t, "security-group by id", one.SecurityGroup)
+	return listed, one.SecurityGroup
+}
+
+// assertEmptyRulesArray requires security_group_rules to be an empty array — present,
+// non-null, and length zero. `null` is the regression; a missing key is worse.
+func assertEmptyRulesArray(t *testing.T, where string, sg map[string]any) {
+	t.Helper()
+	raw, present := sg["security_group_rules"]
+	if !present {
+		t.Errorf("%s: security_group_rules key absent on a group with no rules", where)
+		return
+	}
+	if raw == nil {
+		t.Errorf("%s: security_group_rules is null on a group with no rules; want [] "+
+			"(a nil slice marshals to null, which Horizon iterates → 'NoneType' object is not iterable)", where)
+		return
+	}
+	rules, ok := raw.([]any)
+	if !ok {
+		t.Errorf("%s: security_group_rules is %T; want an array", where, raw)
+		return
+	}
+	if len(rules) != 0 {
+		t.Errorf("%s: security_group_rules has %d entries; its rules were deleted", where, len(rules))
+	}
 }
 
 // assertDefaultRulesArray requires both default egress rules to be present.

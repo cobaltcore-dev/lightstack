@@ -665,9 +665,10 @@ func TestGetNetworkAdminCarveOut_DB(t *testing.T) {
 
 // TestAddRouterInterfaceSubnetScope_DB — the subnet lookup behind
 // add_router_interface was unscoped: a caller who owned a router could attach
-// an interface to ANOTHER project's private subnet by id. The port path was
-// already project-scoped; now the subnet row must be the caller's, or sit on
-// a shared/external network (SPEC-031).
+// an interface to ANOTHER project's private subnet by id (SPEC-031). A subnet
+// the caller cannot see is now a 404; one it can see but another project owns —
+// on a shared network, or on the caller's own network — is upstream's 400
+// (_add_interface_by_subnet, LP-1757482; SPEC-033 FR-055).
 func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -724,17 +725,18 @@ func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 		t.Errorf("attach other project's private subnet: code=%d; want 404 (body=%s)", code, body)
 	}
 
-	// A subnet on a SHARED network is legitimately attachable.
+	// A subnet on a network shared with every project is visible, and still
+	// not the caller's to route: a 400, as upstream's.
 	code, body = doReqBody(r, http.MethodPut, "/v2.0/routers/"+routerID+"/add_router_interface",
 		fmt.Sprintf(`{"subnet_id":"%s"}`, sharedSub), hdr)
-	if code != http.StatusOK {
-		t.Errorf("attach shared-network subnet: code=%d; want 200 (body=%s)", code, body)
+	if code != http.StatusBadRequest {
+		t.Errorf("attach shared-network subnet: code=%d; want 400 (body=%s)", code, body)
 	}
 
-	// A subnet ANOTHER project created on a network the caller owns is
-	// attachable too — the same entitlement subnetReadScope grants, so the
-	// network owner is not locked out of their own network by an admin
-	// subnet (e.g. the seeded public net's subnets).
+	// A subnet ANOTHER project created on a network the caller owns: the
+	// network's ownership makes the subnet visible, not the caller's — the
+	// same 400 (upstream allows it only through an RBAC share naming the
+	// caller, which Lightstack does not have).
 	adminSub := uuid.NewString()
 	ownNet := uuid.NewString()
 	if _, err := testPool.Exec(ctx,
@@ -753,18 +755,18 @@ func TestAddRouterInterfaceSubnetScope_DB(t *testing.T) {
 	})
 	code, body = doReqBody(r, http.MethodPut, "/v2.0/routers/"+routerID+"/add_router_interface",
 		fmt.Sprintf(`{"subnet_id":"%s"}`, adminSub), hdr)
-	if code != http.StatusOK {
-		t.Errorf("attach admin-created subnet on own network: code=%d; want 200 (body=%s)", code, body)
+	if code != http.StatusBadRequest {
+		t.Errorf("attach admin-created subnet on own network: code=%d; want 400 (body=%s)", code, body)
 	}
 }
 
 // TestGetNetworkCacheDoesNotCrossRoles_DB — the admin carve-out (see
 // TestGetNetworkAdminCarveOut_DB) meets the project-scoped network cache:
-// the cache key names only (project, network), and the lookup precedes any
-// visibility check, so an ADMIN's fetch of another project's private network
-// must not leave an entry that a plain member of the admin's project then
-// reads as a 200 where the uncached answer is 404. Only rows the project is
-// entitled to by the read scope may be cached (SPEC-031).
+// the lookup precedes any visibility check, so an ADMIN's fetch of another
+// project's private network must not leave an entry that a plain member of
+// the admin's project then reads as a 200 where the uncached answer is 404
+// (SPEC-031). The key names the caller's role as well as its project, so the
+// administrator's entry is never the member's (SPEC-033 FR-057).
 func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 	requireDB(t)
 
@@ -834,8 +836,8 @@ func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 
 	// The entitlement-positive path still caches: two member reads of the
 	// project's own network both succeed (the second is a cache hit), and
-	// the entry is provably present after the first — so the guard above
-	// suppresses only the foreign-private rows, not caching itself.
+	// the entry is provably present after the first — so the role in the key
+	// separates the entries without suppressing caching itself.
 	for i := 1; i <= 2; i++ {
 		if code, body := doReq(r, http.MethodGet, "/v2.0/networks/"+ownNet, memberHdr); code != http.StatusOK {
 			t.Errorf("member read #%d of own network: code=%d; want 200 (body=%s)", i, code, body)
@@ -851,9 +853,9 @@ func TestGetNetworkCacheDoesNotCrossRoles_DB(t *testing.T) {
 
 // TestAddRouterInterfaceNullGateway_DB — a subnet without a gateway (an
 // explicit null clears it, S14) made add_router_interface 500: the lookup
-// scanned gateway_ip into a plain string and NULL cannot land in one.
-// Upstream attaches with an address allocated from the subnet; the fix
-// falls back to the same allocator CreatePort uses (SPEC-031).
+// scanned gateway_ip into a plain string and NULL cannot land in one
+// (SPEC-031). Upstream refuses such a subnet with a 400: "Subnet for router
+// interface must have a gateway IP" (_add_interface_by_subnet; SPEC-033 FR-055).
 func TestAddRouterInterfaceNullGateway_DB(t *testing.T) {
 	requireDB(t)
 	ctx := context.Background()
@@ -889,8 +891,8 @@ func TestAddRouterInterfaceNullGateway_DB(t *testing.T) {
 	hdr := map[string]string{"X-Test-Project": seededProjectID, "X-Test-Roles": "member"}
 	code, body := doReqBody(r, http.MethodPut, "/v2.0/routers/"+routerID+"/add_router_interface",
 		fmt.Sprintf(`{"subnet_id":"%s"}`, subID), hdr)
-	if code != http.StatusOK {
-		t.Errorf("attach subnet without gateway: code=%d; want 200 (body=%s)", code, body)
+	if code != http.StatusBadRequest || !strings.Contains(body, "must have a gateway IP") {
+		t.Errorf("attach subnet without gateway: code=%d; want 400, must have a gateway IP (body=%s)", code, body)
 	}
 }
 
@@ -1027,41 +1029,6 @@ func TestListTenantFilterHonoredForAdmin_DB(t *testing.T) {
 	}
 	if code, body := doReq(r, http.MethodGet, "/v2.0/routers/"+otherRouter, memberHdr); code != http.StatusNotFound {
 		t.Errorf("member shows foreign router: code=%d; want 404 (body=%s)", code, body)
-	}
-}
-
-// TestAllocateIPHandlesTinyAndIPv6Pools — upstream Neutron's generate_pools()
-// allocates from /30, /31, /32 and every IPv6 subnet, excluding only the
-// network/broadcast addresses where they exist; it refuses nothing as "too
-// small". The old allocator returned "" for maxOffset <= 10 (every /29–/30)
-// and for IPv6 (int64 overflow), turning valid subnets into 400s. Also guards
-// the old failure mode: rand.Int panics on a non-positive bound.
-func TestAllocateIPHandlesTinyAndIPv6Pools(t *testing.T) {
-	for _, cidr := range []string{
-		"10.0.0.0/30",
-		"10.0.0.0/29",
-		"10.0.0.0/31",
-		"10.0.0.0/32",
-		"fd00::/64",
-		"fd00::/126",
-		"10.0.0.0/24", // healthy pool, unchanged
-	} {
-		cidr := cidr
-		t.Run(cidr, func(t *testing.T) {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Fatalf("allocateIP(%q) panicked: %v", cidr, r)
-				}
-			}()
-			if got := allocateIP(cidr); got == "" {
-				t.Errorf("allocateIP(%q) = \"\"; want an address (upstream allocates from this pool)", cidr)
-			}
-		})
-	}
-
-	// Invalid input still fails closed rather than panicking.
-	if got := allocateIP("not-a-cidr"); got != "" {
-		t.Errorf("allocateIP(\"not-a-cidr\") = %q; want \"\"", got)
 	}
 }
 

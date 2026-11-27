@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/google/uuid"
@@ -17,7 +18,7 @@ func TestAllocateFreeIPFindsLastAddress(t *testing.T) {
 		seedN4Port(t, networkID, subnetID, fmt.Sprintf("192.168.249.%d", i))
 	}
 	for range 10 {
-		ip, err := AllocateFreeIP(t.Context(), testPool, subnetID, "192.168.249.0/24")
+		ip, err := AllocateFreeIP(t.Context(), testPool, subnetID)
 		if err != nil || ip != "192.168.249.254" {
 			t.Fatalf("last address: ip=%q err=%v; want 192.168.249.254", ip, err)
 		}
@@ -69,11 +70,16 @@ func TestIPAvailableCanonicalIPv6(t *testing.T) {
 	requireDB(t)
 	networkID, subnetID := seedN4Subnet(t, "2001:db8::/64", "2001:0db8:0:0:0:0:0:1")
 	seedN4Port(t, networkID, subnetID, "2001:0db8:0:0:0:0:0:2")
-	for _, ip := range []string{"2001:db8::1", "2001:db8::2", "2001:DB8::2"} {
+	// The port's address, stored uncanonically, is held in every spelling. The gateway, held by
+	// nothing, is not: upstream's IPAM gives it (SPEC-033 T198).
+	for _, ip := range []string{"2001:db8::2", "2001:DB8::2", "2001:0db8:0:0:0:0:0:2"} {
 		available, err := IPAvailable(t.Context(), testPool, subnetID, ip)
 		if err != nil || available {
 			t.Errorf("IPAvailable(%s)=%v, %v; want occupied", ip, available, err)
 		}
+	}
+	if available, err := IPAvailable(t.Context(), testPool, subnetID, "2001:db8::1"); err != nil || !available {
+		t.Errorf("IPAvailable of the free gateway = %v, %v; want available", available, err)
 	}
 }
 
@@ -131,7 +137,7 @@ func TestAllocateFreeIPAvoidsUsedAddresses(t *testing.T) {
 	}
 
 	for range 20 {
-		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID, "192.168.250.0/28")
+		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID)
 		if err != nil {
 			t.Fatalf("allocateFreeIP: %v", err)
 		}
@@ -148,7 +154,7 @@ func TestAllocateFreeIPSkipsGateway(t *testing.T) {
 	_, subnetID := seedN4Subnet(t, "192.168.251.0/29", "192.168.251.1")
 
 	for range 20 {
-		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID, "192.168.251.0/29")
+		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID)
 		if err != nil {
 			t.Fatalf("allocateFreeIP: %v", err)
 		}
@@ -167,39 +173,40 @@ func TestAllocateFreeIPExhaustedSubnet(t *testing.T) {
 	seedN4Port(t, networkID, subnetID, "192.168.252.1")
 	seedN4Port(t, networkID, subnetID, "192.168.252.2")
 
-	if _, err := AllocateFreeIP(context.Background(), testPool, subnetID, "192.168.252.0/30"); err == nil {
+	if _, err := AllocateFreeIP(context.Background(), testPool, subnetID); err == nil {
 		t.Fatal("allocating from a subnet whose every usable address is held must fail")
 	}
 }
 
-// TestAllocateIPTinySubnetDoesNotPanic pins the adjacent defect found while
-// fixing N-4: the old candidate range [10, maxOffset) went negative for
-// subnets with fewer than ~12 addresses, and crypto/rand.Int PANICS on a
-// non-positive bound.
-func TestAllocateIPTinySubnetDoesNotPanic(t *testing.T) {
-	for _, cidr := range []string{
-		"192.168.253.0/30",
-		"192.168.253.0/29",
-		"192.168.253.0/28",
-		"192.168.253.0/31",
-		"192.168.253.1/32",
-		"fd00::/64",
-		"fd00::/126",
+// Tiny subnets still have a usable default pool, as upstream's generate_pools gives them: /30 the two
+// host addresses, /31 and /32 whole, a small IPv6 subnet all but its first address (SPEC-033 R30). It
+// replaces the test of the random draw the pools replaced.
+func TestGeneratePoolsTinySubnets(t *testing.T) {
+	for cidr, want := range map[string]string{
+		"192.168.253.0/30": "192.168.253.1-192.168.253.2",
+		"192.168.253.0/29": "192.168.253.1-192.168.253.6",
+		"192.168.253.0/28": "192.168.253.1-192.168.253.14",
+		"192.168.253.0/31": "192.168.253.0-192.168.253.1",
+		"192.168.253.1/32": "192.168.253.1-192.168.253.1",
+		"fd00::/64":        "fd00::1-fd00::ffff:ffff:ffff:ffff",
+		"fd00::/126":       "fd00::1-fd00::3",
 	} {
-		if ip := allocateIP(cidr); ip == "" {
-			t.Errorf("allocateIP(%s) = \"\"; want a usable address", cidr)
+		prefix, err := parsePrefix(cidr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := generatePools(prefix, netip.Addr{})
+		if len(got) != 1 || got[0].String() != want {
+			t.Errorf("generatePools(%s) = %v; want [%s]", cidr, got, want)
 		}
 	}
 }
 
-// TestAllocateFreeIPv6Subnet: an IPv6 subnet is allocated from normally. The
-// old allocator shifted by hostBits, so a /64 overflowed int64 and panicked —
-// IPv6 could not be used at all.
 func TestAllocateFreeIPv6Subnet(t *testing.T) {
 	requireDB(t)
 	_, subnetID := seedN4Subnet(t, "fd00:1::/64", "")
 	for range 10 {
-		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID, "fd00:1::/64")
+		ip, err := AllocateFreeIP(context.Background(), testPool, subnetID)
 		if err != nil {
 			t.Fatalf("allocateFreeIP on IPv6: %v", err)
 		}
@@ -240,7 +247,7 @@ func TestAllocateFreeIPToleratesLegacyNullFixedIPs(t *testing.T) {
 	// A different, healthy subnet must still allocate. Before the guard this
 	// failed for every subnet in the deployment.
 	_, subnetID := seedN4Subnet(t, "192.168.254.0/29", "")
-	ip, err := AllocateFreeIP(ctx, testPool, subnetID, "192.168.254.0/29")
+	ip, err := AllocateFreeIP(ctx, testPool, subnetID)
 	if err != nil {
 		t.Fatalf("allocation on a healthy subnet failed because another port has JSON-null fixed_ips: %v", err)
 	}

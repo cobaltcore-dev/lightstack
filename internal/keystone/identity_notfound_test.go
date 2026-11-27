@@ -20,7 +20,7 @@ func TestIdentityNotFound_ReadPaths(t *testing.T) {
 	requireDB(t)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	svc := NewService(testPool, nil, nil)
+	svc := NewService(testPool, nil)
 	svc.RegisterRoutes(&r.RouterGroup, func(c *gin.Context) {
 		if roles := c.GetHeader("X-Test-Roles"); roles != "" {
 			c.Set("roles", strings.Split(roles, ","))

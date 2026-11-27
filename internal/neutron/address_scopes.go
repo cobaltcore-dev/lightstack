@@ -15,14 +15,15 @@ import (
 
 // ListAddressScopes lists all address scopes
 func (svc *Service) ListAddressScopes(c *gin.Context) {
-	projectID := c.GetString("project_id")
+	f := &common.SQLFilter{}
+	projectScope(c, f, "project_id", ownedBy("project_id")) // every project's for an administrator (SPEC-033 FR-057)
 
 	rows, err := svc.pool.Query(c.Request.Context(), `
 		SELECT id, project_id, name, ip_version, shared, created_at, updated_at
 		FROM address_scopes
-		WHERE project_id = $1
+		`+f.Where()+`
 		ORDER BY created_at DESC
-	`, projectID)
+	`, f.Args()...)
 	if err != nil {
 		log.Error().Err(err).Str("operation", "list_address_scopes").Msg("failed to query address scopes")
 		common.SendError(c, common.NewInternalServerError("failed to list address scopes"))
@@ -70,20 +71,25 @@ func (svc *Service) ListAddressScopes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"address_scopes": scopes})
 }
 
-// CreateAddressScope creates a new address scope
+// CreateAddressScope creates a new address scope, of the project an administrator names or else of
+// the caller's (SPEC-033 FR-058).
 func (svc *Service) CreateAddressScope(c *gin.Context) {
-	projectID := c.GetString("project_id")
-
 	var req struct {
 		AddressScope struct {
-			Name      string `json:"name" binding:"required"`
-			IPVersion int    `json:"ip_version" binding:"required"`
-			Shared    *bool  `json:"shared"`
+			Name      string  `json:"name" binding:"required"`
+			IPVersion int     `json:"ip_version" binding:"required"`
+			Shared    *bool   `json:"shared"`
+			ProjectID *string `json:"project_id"`
+			TenantID  *string `json:"tenant_id"`
 		} `json:"address_scope" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.SendError(c, common.NewBadRequestError("invalid request body"))
+		return
+	}
+	projectID, ok := svc.ownerOf(c, req.AddressScope.ProjectID, req.AddressScope.TenantID)
+	if !ok {
 		return
 	}
 
@@ -136,8 +142,8 @@ func (svc *Service) GetAddressScope(c *gin.Context) {
 	err := svc.pool.QueryRow(c.Request.Context(), `
 		SELECT project_id, name, ip_version, shared, created_at, updated_at
 		FROM address_scopes
-		WHERE id = $1 AND project_id = $2
-	`, scopeID, projectID).Scan(&projectID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, scopeID, projectID, isAdmin(c)).Scan(&projectID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
 
 	if errors.Is(err, database.ErrNoRows) {
 		common.SendError(c, common.NewNotFoundError("address scope"))
@@ -183,8 +189,8 @@ func (svc *Service) UpdateAddressScope(c *gin.Context) {
 	// Check if scope exists
 	var exists bool
 	err := svc.pool.QueryRow(c.Request.Context(),
-		"SELECT EXISTS(SELECT 1 FROM address_scopes WHERE id = $1 AND project_id = $2)",
-		scopeID, projectID,
+		"SELECT EXISTS(SELECT 1 FROM address_scopes WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3")+")",
+		scopeID, projectID, isAdmin(c),
 	).Scan(&exists)
 
 	if err != nil || !exists {
@@ -198,8 +204,8 @@ func (svc *Service) UpdateAddressScope(c *gin.Context) {
 		SET name = COALESCE($1, name),
 		    shared = COALESCE($2, shared),
 		    updated_at = $3
-		WHERE id = $4 AND project_id = $5
-	`, req.AddressScope.Name, req.AddressScope.Shared, time.Now(), scopeID, projectID)
+		WHERE id = $4 AND `+ownerOrAdmin("project_id", "$5", "$6")+`
+	`, req.AddressScope.Name, req.AddressScope.Shared, time.Now(), scopeID, projectID, isAdmin(c))
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_address_scope").Msg("failed to update address scope")
@@ -219,8 +225,8 @@ func (svc *Service) UpdateAddressScope(c *gin.Context) {
 	err = svc.pool.QueryRow(c.Request.Context(), `
 		SELECT project_id, name, ip_version, shared, created_at, updated_at
 		FROM address_scopes
-		WHERE id = $1 AND project_id = $2
-	`, scopeID, projectID).Scan(&projectID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
+		WHERE id = $1 AND `+ownerOrAdmin("project_id", "$2", "$3")+`
+	`, scopeID, projectID, isAdmin(c)).Scan(&projectID, &name, &ipVersion, &shared, &createdAt, &updatedAt)
 
 	if err != nil {
 		log.Error().Err(err).Str("operation", "update_address_scope_fetch").Msg("failed to fetch updated address scope")
@@ -248,8 +254,8 @@ func (svc *Service) DeleteAddressScope(c *gin.Context) {
 	projectID := c.GetString("project_id")
 
 	result, err := svc.pool.Exec(c.Request.Context(),
-		"DELETE FROM address_scopes WHERE id = $1 AND project_id = $2",
-		scopeID, projectID,
+		"DELETE FROM address_scopes WHERE id = $1 AND "+ownerOrAdmin("project_id", "$2", "$3"),
+		scopeID, projectID, isAdmin(c),
 	)
 
 	if err != nil {

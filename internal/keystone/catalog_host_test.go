@@ -23,7 +23,7 @@ func TestCatalogEchoesRequestHost(t *testing.T) {
 	requireDB(t)
 	t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.internal")
 
-	cat := BuildServiceCatalog(testPool, "proj1", "lightstack.example.com", nil, "")
+	cat := BuildServiceCatalog(testPool, "proj1", "lightstack.example.com", "")
 	if len(cat) == 0 {
 		t.Fatal("empty catalog")
 	}
@@ -55,7 +55,7 @@ func TestCatalogNeverDoublesThePort(t *testing.T) {
 	t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.internal")
 
 	for _, requestHost := range []string{"lightstack.example.com:35357", "[::1]:35357", "10.0.0.5:35357"} {
-		for _, entry := range BuildServiceCatalog(testPool, "proj1", requestHost, nil, "") {
+		for _, entry := range BuildServiceCatalog(testPool, "proj1", requestHost, "") {
 			if entry.Type == "s3" {
 				continue
 			}
@@ -81,7 +81,7 @@ func TestCatalogNeverDoublesThePort(t *testing.T) {
 func TestCatalogFallsBackWhenNoHost(t *testing.T) {
 	requireDB(t)
 	t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.configured")
-	for _, entry := range BuildServiceCatalog(testPool, "proj1", "", nil, "") {
+	for _, entry := range BuildServiceCatalog(testPool, "proj1", "", "") {
 		if entry.Type == "s3" {
 			continue
 		}
@@ -100,7 +100,7 @@ func TestCatalogFallsBackWhenNoHost(t *testing.T) {
 	if err := os.Unsetenv("LIGHTSTACK_ENDPOINT_HOST"); err != nil {
 		t.Fatalf("unsetenv: %v", err)
 	}
-	for _, entry := range BuildServiceCatalog(testPool, "proj1", "", nil, "") {
+	for _, entry := range BuildServiceCatalog(testPool, "proj1", "", "") {
 		if entry.Type == "s3" {
 			continue
 		}
@@ -120,7 +120,7 @@ func TestCatalogLeavesObjectStorageAlone(t *testing.T) {
 	t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.internal")
 	const rgw = "http://rgw.example.test:8080"
 
-	for _, entry := range BuildServiceCatalog(testPool, "proj-s3", "lightstack.example.com", nil, rgw) {
+	for _, entry := range BuildServiceCatalog(testPool, "proj-s3", "lightstack.example.com", rgw) {
 		if entry.Type != "s3" {
 			continue
 		}
@@ -150,19 +150,18 @@ func TestCatalogHostPrecedence(t *testing.T) {
 	}
 }
 
-// TestCatalogCacheKeyIncludesHost is T081: FR-031a, and the security half of this story.
+// TestCatalogIsBuiltForEachCallersHost is T081: FR-031a, and the security half of this story.
 //
-// The request host is CLIENT-SUPPLIED. Keyed on the project alone, the 24-hour catalog
-// cache would let one caller's Host header decide the endpoints another caller in the same
-// project receives — and therefore where that caller sends its token. This asserts the two
-// hosts produce different keys; the cache itself is off by default, which bounds the
-// exposure without removing the requirement.
-func TestCatalogCacheKeyIncludesHost(t *testing.T) {
+// The request host is CLIENT-SUPPLIED, and the catalog is where a client sends its token. Two
+// callers in the same project addressing different names must each be handed their own: if one
+// caller's Host decided the endpoints another receives, it would decide where that caller's
+// token goes.
+func TestCatalogIsBuiltForEachCallersHost(t *testing.T) {
 	requireDB(t)
 	t.Setenv("LIGHTSTACK_ENDPOINT_HOST", "lightstack.internal")
 
-	first := BuildServiceCatalog(testPool, "shared-proj", "alice.example.com", nil, "")
-	second := BuildServiceCatalog(testPool, "shared-proj", "bob.example.com", nil, "")
+	first := BuildServiceCatalog(testPool, "shared-proj", "alice.example.com", "")
+	second := BuildServiceCatalog(testPool, "shared-proj", "bob.example.com", "")
 
 	hostOf := func(cat []CatalogEntry) string {
 		for _, e := range cat {
@@ -181,6 +180,6 @@ func TestCatalogCacheKeyIncludesHost(t *testing.T) {
 		t.Errorf("first caller got %q; want its own host", h)
 	}
 	if h := hostOf(second); h != "bob.example.com" {
-		t.Errorf("second caller got %q; want its own host, NOT the first caller's — a shared cache key is a token-exfiltration path", h)
+		t.Errorf("second caller got %q; want its own host, NOT the first caller's — that would send its token to the first caller's name", h)
 	}
 }
